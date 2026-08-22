@@ -6,6 +6,7 @@ Configuration options for `.planning/` directory behavior.
 ```json
 "planning": {
   "commit_docs": true,
+  "pr_strict": false,
   "search_gitignored": false
 },
 "git": {
@@ -27,6 +28,7 @@ Configuration options for `.planning/` directory behavior.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `commit_docs` | `true` | Whether to commit planning artifacts to git |
+| `pr_strict` | `false` | Filter mode for `/gsd:pr-branch`. `false` keeps structural planning state (STATE.md, ROADMAP.md, MILESTONES.md, PROJECT.md, REQUIREMENTS.md, milestones/) in the PR branch; `true` drops every `.planning/` path |
 | `search_gitignored` | `false` | Add `--no-ignore` to broad rg searches |
 | `git.branching_strategy` | `"none"` | Git branching approach: `"none"`, `"phase"`, or `"milestone"` |
 | `git.base_branch` | `null` (auto-detect) | Target branch for PRs and merges (e.g. `"master"`, `"develop"`). When `null`, auto-detects from `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"main"`. |

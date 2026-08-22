@@ -958,3 +958,38 @@ describe('complexity-trigger: typed surface', () => {
     assert.equal(SCHEMA_VERSION, 1);
   });
 });
+
+describe('complexity-trigger: proposal fence-width tolerant read (#3657)', () => {
+  test('parseProposal accepts a formatter-narrowed 3-backtick fence (#3657)', () => {
+    const { renderProposal, parseProposal } = require('../gsd-core/bin/lib/complexity-trigger.cjs');
+    const proposal = {
+      schema_version: 1,
+      status: 'proposed',
+      phase: '2',
+      target_file: 'src/a.ts',
+      target_function: 'handleThing',
+      score: 7,
+      baseline: 5,
+      delta: 2,
+      metric: 'decision-points',
+      recorded_at: '2026-07-19T00:00:00Z',
+      resolved_at: null,
+      reason: 'score above threshold',
+      candidates: [{ name: 'handleThing', score: 7 }],
+    };
+    const rendered = renderProposal(proposal);
+    const parsed4 = parseProposal(rendered);
+    assert.notEqual(parsed4, null, 'writer form must round-trip');
+
+    // Same artifact after a CommonMark formatter narrows the fence to the
+    // shortest legal width — the identical #3657 defect class.
+    const narrowed = rendered
+      .replace(/^````json$/m, '```json')
+      .replace(/^````$/m, '```');
+    const parsed3 = parseProposal(narrowed);
+    assert.notEqual(parsed3, null, 'a formatter-narrowed proposal must parse');
+    assert.equal(parsed3.status, 'proposed');
+    assert.equal(parsed3.candidates.length, 1);
+    assert.equal(parsed3.candidates[0].name, 'handleThing');
+  });
+});

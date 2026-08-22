@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "execute-phase.md": {
+      "reason": "#2856 \u2014 step 5.75 now dispatches every `kind == \"step\"` at execute:wave:post. That point previously dispatched only contribution and gate, so any registered step was declared and silently never run; the capability validator refuses to generate a registry containing such a step. Also adds the validate-ref.command-before-shell warning matching the sibling gate-dispatch line. Supersedes the spent #3370 fragment entry (merged into next, so its ripple is already absorbed at the base and it can no longer clear anything), which also named execute-phase.md and would otherwise double-ack the same path \u2014 the same supersede that entry itself performed on the spent #3324 fragment. #3659 corrects the auto-degrade paragraph's restore-advice to the orchestrator/harness split (+~300B): worktree.baseRef:\"head\" restores parallel execution only where GSD itself creates worktrees; harness-isolated runtimes do not read the setting (#48, upstream claude-code#44965). Deliberate growth."
+    }
+  }
+}

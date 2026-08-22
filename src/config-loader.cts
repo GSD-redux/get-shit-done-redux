@@ -79,6 +79,7 @@ function _resetFederatedRegistryForTests(): void {
  *  - git.*               → flat git keys (branching_strategy, templates)
  *  - workflow.*          → flat names (research, verifier, …)
  *  - planning.sub_repos  → sub_repos
+ *  - planning.pr_strict  → pr_strict
  *  - planning.commit_docs / search_gitignored → top-level flat keys
  */
 
@@ -115,6 +116,7 @@ const CONFIG_DEFAULTS = {
   exa_search: _getConfigDefault('exa_search'),
   text_mode: _getNestedConfigDefault('workflow', 'text_mode'),
   sub_repos: _getNestedConfigDefault('planning', 'sub_repos'),
+  pr_strict: _getNestedConfigDefault('planning', 'pr_strict'),
   resolve_model_ids: _getConfigDefault('resolve_model_ids'),
   context_window: _getConfigDefault('context_window'),
   phase_naming: _getConfigDefault('phase_naming'),
@@ -844,6 +846,7 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       _auto_chain_active: get('_auto_chain_active', { section: 'workflow', field: '_auto_chain_active' }) ?? false,
       mode: get('mode') ?? 'interactive',
       sub_repos: get('sub_repos', { section: 'planning', field: 'sub_repos' }) ?? defaults.sub_repos,
+      pr_strict: get('pr_strict', { section: 'planning', field: 'pr_strict' }) ?? defaults.pr_strict,
       resolve_model_ids: get('resolve_model_ids') ?? defaults.resolve_model_ids,
       context_window: get('context_window') ?? defaults.context_window,
       phase_naming: get('phase_naming') ?? defaults.phase_naming,

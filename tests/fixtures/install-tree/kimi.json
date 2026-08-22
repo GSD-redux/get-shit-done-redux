@@ -26,6 +26,8 @@
   "agents/subagents/gsd-doc-verifier.yaml",
   "agents/subagents/gsd-doc-writer.md",
   "agents/subagents/gsd-doc-writer.yaml",
+  "agents/subagents/gsd-dom-verifier.md",
+  "agents/subagents/gsd-dom-verifier.yaml",
   "agents/subagents/gsd-domain-researcher.md",
   "agents/subagents/gsd-domain-researcher.yaml",
   "agents/subagents/gsd-eval-auditor.md",

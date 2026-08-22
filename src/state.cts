@@ -27,7 +27,8 @@ const {
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;
+// #3642: hasMilestoneSectioning no longer consumed here — its >=2 semantics answered sibling conflation, but this branch asks asserted-vs-section (>=1). It stays exported from roadmap-parser.cjs for its unit pins.
+const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasAnyMilestoneSection } = roadmapParserMod;
 import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, toPosixPath, execGit } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -2233,10 +2234,19 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // deliberately weaker than isMilestoneBoundedInRoadmap above (no
             // version-token requirement); see hasMilestoneSectioning's own
             // doc comment for why that distinction is load-bearing.
-            const roadmapHasMilestoneSectioning = roadmapRaw !== null
-              && hasMilestoneSectioning(roadmapRaw);
+            // #3642: the flat test uses the >=1 sibling (hasAnyMilestoneSection),
+            // not the >=2 predicate. >=2 under-answers the question this branch
+            // asks: with EXACTLY ONE milestone section and an asserted milestone
+            // absent from the ROADMAP, >=2 read "flat" and the whole-document
+            // count — which IS that single section's phases — was written as the
+            // asserted milestone's total, silently clobbering the stored value.
+            // The >=2 threshold governs SIBLING conflation; asserted-vs-section
+            // needs only one section to go wrong. Zero sections (genuinely flat)
+            // keeps the whole-document count, per #2828.
+            const roadmapHasAnyMilestoneSection = roadmapRaw !== null
+              && hasAnyMilestoneSection(roadmapRaw);
             const safeToUseRoadmapCount = milestoneBounded
-              || (roadmapPhaseCount > 0 && !roadmapHasMilestoneSectioning);
+              || (roadmapPhaseCount > 0 && !roadmapHasAnyMilestoneSection);
             // #3354: the milestoned-but-unbounded sibling of the #2828/#3204
             // shapes. The whole-document roadmapPhaseCount is rightly rejected
             // above (it would conflate sibling milestones, #1761), but the
@@ -2252,10 +2262,10 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // The degenerate un-sectioned zero-heading case keeps the
             // phaseDirs.length fallback — with nothing declared anywhere else,
             // the disk count is the only source and remains correct.
-            const milestonedButUnbounded = !milestoneBounded && roadmapHasMilestoneSectioning;
+            const milestonedButUnbounded = !milestoneBounded && roadmapHasAnyMilestoneSection;
             if (milestonedButUnbounded) {
               process.stderr.write(
-                `gsd: warning — milestone '${String(assertedMilestoneVersion ?? '').trim()}' is asserted in STATE.md but matches no ROADMAP heading, and the ROADMAP carries multiple milestone sections; the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3354)\n`
+                `gsd: warning — milestone '${String(assertedMilestoneVersion ?? '').trim()}' is asserted in STATE.md but matches no ROADMAP heading, and the ROADMAP carries milestone section(s) — one (#3642) or several (#3354) — none matching it; the whole-document count would attribute a foreign section's phases to this milestone and the on-disk phase-directory count would understate the declared total, so progress.total_phases is left at its stored value. (#3354/#3642)\n`
               );
             }
             // #3573: the roadmap-absent sibling of the #3354 shape. With ROADMAP.md

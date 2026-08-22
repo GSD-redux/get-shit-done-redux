@@ -578,6 +578,102 @@ Pass `--json` to receive the typed IR directly (useful in scripts and test asser
 
 ---
 
+## Planning Snapshot Commands
+
+### `planning inspect`
+
+Emits a read-only, schema-versioned snapshot of everything `.planning/` knows,
+as one JSON document. It exists so a downstream tool — a harness UI, a
+mission-control view, a dashboard — can consume planning state without parsing
+`ROADMAP.md` / `REQUIREMENTS.md` / `*-PLAN.md` / `*-SUMMARY.md` a second time
+and drifting from gsd-core's own answers.
+
+```bash
+gsd-tools query planning inspect
+gsd-tools query planning.inspect     # dotted canonical form — identical output
+```
+
+**Takes no arguments.** A stray positional or an unrecognized flag is a
+fail-loud usage error, not a silently-ignored one: a caller who believed
+`--phase 3` was scoping the query would otherwise receive a whole-project
+snapshot presented as a scoped one.
+
+`planning inspect` writes nothing, anywhere. It is safe to run against a
+project mid-workflow.
+
+#### The schema contract
+
+```json
+{ "schema_version": 1, "...": "..." }
+```
+
+`schema_version` is the contract. **A consumer must reject any value other than
+the one it was written against** rather than best-effort-parsing a shape it does
+not know. Every top-level key is always present; a key is never omitted to
+signal absence, because omission is itself something callers come to depend on.
+
+| Key | What it carries |
+|-----|-----------------|
+| `schema_version` | Always `1` today |
+| `generated_from` | Resolved `cwd` and `.planning/` root (`null` when there is no planning root) |
+| `milestone` | `version`, `name`, and the `scope` of that answer |
+| `active` | `phase`, `plan`, and `status` — three distinct STATE.md facts, each scoped separately |
+| `phases[]` | Per phase: completion, verification, roadmap acceptance, UAT, plan and task rows |
+| `orphan_phase_dirs[]` | Directories under `phases/` that the current milestone window does not declare |
+| `requirements[]` | Requirement rows with mapped-phase traceability |
+| `progress` | `accepted_phases` and `completed_plans`, as independent fractions |
+| `diagnostics[]` | Coded reasons for every non-answer above |
+
+#### Three kinds of evidence, never folded together
+
+Each phase reports `verification`, `roadmap_acceptance`, and `uat` **side by
+side**. They are not combined into a single verdict, because they answer
+different questions and can legitimately disagree — a phase can pass
+verification while UAT items remain open.
+
+`roadmap_acceptance.checkbox` is reported with `authoritative: false`. A ticked
+ROADMAP checkbox is a human annotation with no machine authority: completion is
+derived from disk state (a passing `*-VERIFICATION.md`), and a stale tick never
+overrides it. See [Milestone window scope](#milestone-window-scope-roadmap-analyze).
+
+#### Unknown is a real answer; nothing is inferred
+
+Where the evidence is absent, or where two sources disagree, the value is `null`
+or `"unknown"` and a coded entry in `diagnostics[]` says why. It is never
+reconciled, guessed, or filled from a plausible default.
+
+The most common case is task-scoped file provenance. A `<task>` block declares
+the files it plans to touch, but `SUMMARY.md`'s `## Files Created/Modified`
+section describes the **whole plan**, not an individual task. Spreading that
+plan-level list across the plan's tasks would be inference, so instead:
+
+| `provenance` | Meaning |
+|---|---|
+| `task_scoped` | The summary attributed files to this specific task (via a deviation block naming `Found during: Task N`) |
+| `plan_scoped` | A summary exists, but only carries a plan-level file list — this task's changed files are unknown |
+| `absent` | No summary exists yet |
+
+When a task's planned and changed file sets both exist and disagree,
+`agreement` is `"conflicting"` and **both lists are emitted verbatim**.
+
+#### Percentages are withheld rather than guessed
+
+`progress.accepted_phases` and `progress.completed_plans` are independent
+fractions, each `{completed, total, percent, scope}`. `percent` is `null`
+whenever `scope` is anything other than `complete` — the same rule the roadmap
+and progress surfaces follow, for the same reason. See
+[A non-`COMPLETE` scope withholds the percentage entirely](#a-non-complete-scope-withholds-the-percentage-entirely-3217).
+
+`0` is a real answer under a `complete` scope and is never withheld.
+
+#### Large payloads
+
+Output over ~50 KB is written to a temp file and returned as
+`@file:<path>`, which `gsd-tools` resolves transparently before writing to
+stdout — the same channel `init` uses. Callers see JSON either way.
+
+---
+
 ## Template Commands
 
 Template selection and filling.
@@ -905,11 +1001,12 @@ node gsd-tools.cjs worktree base-check
 node gsd-tools.cjs worktree set-baseref
 ```
 
-**`worktree base-check`** reads `worktree.baseRef` from a three-layer cascade — `.claude/settings.local.json`, then `.claude/settings.json`, then the user/global `settings.json` under `CLAUDE_CONFIG_DIR` (or `~/.claude`) — and compares the current `HEAD` SHA against `origin/HEAD`. Project-level settings take precedence over the user/global layer, so a machine-wide `worktree.baseRef:"head"` set via `/config` is honored when no project override exists. The `shouldDegrade` field is `true` when the execute-phase orchestrator will fall back to sequential execution. Possible `reason` values:
+**`worktree base-check`** reads `worktree.baseRef` from a three-layer cascade — `.claude/settings.local.json`, then `.claude/settings.json`, then the user/global `settings.json` under `CLAUDE_CONFIG_DIR` (or `~/.claude`) — and compares the current `HEAD` SHA against `origin/HEAD`. Project-level settings take precedence over the user/global layer, so a machine-wide `worktree.baseRef:"head"` set via `/config` is honored when no project override exists. The `shouldDegrade` field is `true` when the execute-phase orchestrator will fall back to sequential execution. `--mode` declares who creates the isolated worktree (#3659): `harness-worktree` (the default — the runtime harness forks it and does **not** read project-settings `baseRef`, #48) or `orchestrator-worktree` (GSD itself runs `git worktree add` with an explicit start-point and honors `"head"`); invalid values fail closed with an error. Possible `reason` values:
 
 | `reason` | `shouldDegrade` | Meaning |
 |---|---|---|
-| `baseref-head` | `false` | `worktree.baseRef:"head"` is set; no mismatch possible |
+| `baseref-head` | `false` | `worktree.baseRef:"head"` is set and `--mode orchestrator-worktree` declares GSD-managed worktrees — the fork base is the orchestrator HEAD by construction |
+| `baseref-head-ignored-by-harness` | `true` | `worktree.baseRef:"head"` is set but HEAD differs from `origin/HEAD` in harness (default) mode — the harness does not read the setting (#48), so the run degrades to sequential (#3659) |
 | `head-matches-fork` | `false` | HEAD and `origin/HEAD` are the same commit |
 | `head-diverged-from-fork` | `true` | Branch is ahead of or diverged from `origin/HEAD` |
 | `fork-ref-unknown` | `true` | `origin/HEAD` could not be resolved |

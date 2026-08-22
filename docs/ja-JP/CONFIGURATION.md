@@ -121,6 +121,7 @@ GSD はプロジェクト設定を `.planning/config.json` に保存します。
 | 設定 | 型 | デフォルト | 説明 |
 |------|-----|-----------|------|
 | `planning.commit_docs` | boolean | `true` | `.planning/` ファイルを git にコミットするかどうか |
+| `planning.pr_strict` | boolean | `false` | `/gsd-pr-branch` のフィルタモード。`false` は STATE.md、ROADMAP.md、MILESTONES.md、PROJECT.md、REQUIREMENTS.md、milestones/ などの構造的なプランニング状態を PR ブランチに残す。`true` はすべての `.planning/` パスを削除する |
 | `planning.search_gitignored` | boolean | `false` | `.planning/` を含めるために広範な検索に `--no-ignore` を追加 |
 
 ### 自動検出

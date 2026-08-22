@@ -88,6 +88,9 @@ const {
 } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- milestone-lock.cjs is an export= CommonJS module
 import milestoneLockMod = require('./milestone-lock.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planDocumentMod = require('./plan-document.cjs');
+const { parsePlanDocument, planIdFromFile } = planDocumentMod;
 const { extractFrontmatter } = frontmatterMod;
 const {
   readModifyWriteStateMd,
@@ -583,11 +586,6 @@ function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
   output(notFound, raw, '');
 }
 
-function extractObjective(content: string): string | null {
-  const m = content.match(/<objective>\s*\n?\s*(.+)/);
-  return m ? m[1].trim() : null;
-}
-
 interface RawPlan {
   id: string;
   declaredWave: number | null;
@@ -800,51 +798,14 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   const rawPlans: RawPlan[] = [];
 
   for (const planFile of planFiles) {
-    const planId = planFile.replace('-PLAN.md', '').replace('PLAN.md', '');
+    const planId = planIdFromFile(planFile);
     const planPath = path.join(phaseDir, planFile);
     const content = fs.readFileSync(planPath, 'utf-8');
-    // Pass planPath so a truncated PLAN.md names the file in the #1882 diagnostic.
-    const fm = extractFrontmatter(content, planPath);
-
-    const xmlTasks = content.match(/<task[\s>]/gi) || [];
-    const mdTasks = content.match(/##\s*Task\s*\d+/gi) || [];
-    const taskCount = xmlTasks.length || mdTasks.length;
-
-    const parsedWave = parseInt(fm['wave'] as string, 10);
-    const declaredWave = Number.isNaN(parsedWave) ? null : parsedWave;
-
-    let dependsOn: string[] = [];
-    const fmDeps = fm['depends_on'];
-    if (Array.isArray(fmDeps)) {
-      dependsOn = fmDeps.map(String);
-    } else if (typeof fmDeps === 'string' && fmDeps.trim() !== '') {
-      dependsOn = [fmDeps];
-    }
-
-    let autonomous = true;
-    if (fm['autonomous'] !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue comparison
-      autonomous = fm['autonomous'] === 'true' || String(fm['autonomous']) === 'true';
-    }
-
-    let filesModified: string[] = [];
-    const fmFiles = fm['files_modified'] || fm['files-modified'];
-    if (fmFiles) {
-      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue scalar-to-string
-      filesModified = Array.isArray(fmFiles) ? fmFiles.map(String) : [String(fmFiles)];
-    }
-
-    // #1689: optional per-plan specialist executor hint. Read verbatim here; the
-    // orchestrator resolves it against the active runtime's agent dir at dispatch
-    // time (execute-phase.md -> `gsd_run query resolve-agent`), falling back to
-    // gsd-executor when the field is unset or the named agent does not resolve.
-    let agentHint: string | null = null;
-    const fmAgentHint = fm['agent_hint'];
-    if (fmAgentHint !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue scalar-to-string
-      const hintStr = String(fmAgentHint).trim();
-      agentHint = hintStr !== '' ? hintStr : null;
-    }
+    // #2790: plan-body parsing is owned by the shared Plan Document Module, so
+    // this command and the read-only `planning.inspect` query cannot drift on
+    // what a plan document says. planPath is still passed so a truncated
+    // PLAN.md names the file in the #1882 diagnostic.
+    const planDoc = parsePlanDocument(content, planPath);
 
     const hasSummary = !unsummarizedPlanFiles.has(planFile);
 
@@ -860,13 +821,13 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
 
     rawPlans.push({
       id: planId,
-      declaredWave,
-      dependsOn,
-      autonomous,
-      objective: extractObjective(content) || (fm['objective'] as string | null) || null,
-      filesModified,
-      agentHint,
-      taskCount,
+      declaredWave: planDoc.declaredWave,
+      dependsOn: planDoc.dependsOn,
+      autonomous: planDoc.autonomous,
+      objective: planDoc.objective,
+      filesModified: planDoc.filesModified,
+      agentHint: planDoc.agentHint,
+      taskCount: planDoc.taskCount,
       hasSummary,
       halted,
     });

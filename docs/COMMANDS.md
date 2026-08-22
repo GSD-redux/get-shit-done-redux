@@ -240,6 +240,9 @@ See [Package Legitimacy Gate in the User Guide](USER-GUIDE.md#package-legitimacy
 **In-repo value citation:**
 For any in-repo *discrete value* the researcher reports — an enum, a schema or type union, an error code, a status constant, or a filesystem path — a `[VERIFIED: …]` tag requires that it opened the source-of-truth file with `Read` during the run and cited the path **and line range** (`[VERIFIED: src/types/order.ts:14-22]`). The values are quoted verbatim in RESEARCH.md beside the claim, and any value used in a code example must also appear in that quote; anything else stays `[ASSUMED]`. A codebase `grep`, training memory, or a web search do not earn the tag on their own. This stops a plausible-but-drifted enum from reaching PLAN.md — where the planner lifts it into the plan's `<interfaces>` context block and the executor trusts it as ground truth — and surfacing only as a mid-execution deviation at typecheck.
 
+**Absent-evidence citation:**
+A compatibility claim the researcher reports — "this library does not support that runtime version" — earns a `[VERIFIED: …]` tag only from *positive* evidence. Metadata that is simply **missing** (no `python_requires`, no `engines` field, no per-version classifier, no changelog entry, no matching row in a support matrix) does not qualify, however authoritative the registry or documentation consulted: an absence says nothing about the version you are ruling out *and* nothing about the version you are standardizing on, so the same evidence would "prove" both. The rule keys on the evidence rather than the wording, so rephrasing the claim positively ("supports only up to 3.13") changes nothing, and an absence is equally not evidence that the version *is* supported. A **present** constraint is the opposite case and still earns the tag — `requires-python = ">=3.9,<3.12"` is a declared exclusion — as does documentation stating the incompatibility affirmatively, which is `[CITED: …]`. What separates the two is whether the declaration bounds every value or only the ones it names: an explicit range or upper bound speaks about all versions, while an enumerated allow-list that stops short of the target (classifiers running `:: 3.9` through `:: 3.13` with no `:: 3.14`) stays silent about the target and remains a governed absence unless the project says the list is exhaustive. See [How-to: verify a dependency-compatibility claim](how-to/verify-a-dependency-compatibility-claim.md). The one route from an absence to `[VERIFIED]` is a positive falsification attempt: run it against the real target and paste the failing output. Everything short of that stays `[ASSUMED]`, which routes the claim through the usual confirmation checkpoint before it can lock a decision in CONTEXT.md — so a probe you cannot run in this environment costs a checkpoint, not a blocked plan.
+
 ```bash
 /gsd-plan-phase 1                              # Research + plan + verify phase 1
 /gsd-plan-phase 3 --skip-research              # Plan without research (familiar domain)
@@ -649,6 +652,31 @@ node gsd-tools.cjs phase uat-passed 3                        # Evaluate UAT for 
 node gsd-tools.cjs phase uat-passed 3 --require-verification # Also require VERIFICATION.md
 node gsd-tools.cjs phase uat-passed 3 --raw                  # Machine-readable JSON output
 ```
+
+---
+
+### `planning inspect`
+
+Emit a read-only, schema-versioned JSON snapshot of the whole planning state —
+milestone identity, active phase/plan/status, per-phase verification, roadmap
+acceptance and UAT evidence (kept separate), requirement rows with mapped-phase
+traceability, plan and task rows with planned/changed file provenance, and
+independent `accepted_phases` / `completed_plans` fractions.
+
+For downstream tools that need planning state without re-parsing GSD's Markdown.
+Mutates nothing. Takes no arguments — a stray positional or unknown flag is a
+fail-loud usage error rather than a silently-ignored one.
+
+```bash
+node gsd-tools.cjs query planning inspect       # schema-v1 snapshot
+node gsd-tools.cjs query planning.inspect       # dotted canonical form, identical
+node gsd-tools.cjs query planning inspect --cwd /path/to/project
+```
+
+Check `schema_version` before reading any other field, and branch on each value's
+`scope` — `complete` with an empty value is a real answer, `unreadable` is not.
+Full field reference: [CLI Tools](CLI-TOOLS.md#planning-inspect). Integration
+walkthrough: [Consume the planning snapshot](how-to/consume-the-planning-snapshot.md).
 
 ---
 
@@ -1695,6 +1723,10 @@ Create a clean PR branch by filtering out `.planning/` commits.
 | `target branch` | No | Base branch (default: `main`) |
 
 **Purpose:** Reviewers see only code changes, not GSD planning artifacts.
+
+**Prerequisites:** Clean working tree — uncommitted changes are rejected before the PR branch is created.
+
+**Filter mode:** Set by [`planning.pr_strict`](CONFIGURATION.md#planning-settings). Default (`false`) keeps structural planning state — `STATE.md`, `ROADMAP.md`, `MILESTONES.md`, `PROJECT.md`, `REQUIREMENTS.md`, `milestones/**` — and drops the transient subdirectories. Strict (`true`) drops every `.planning/` path. The active mode is printed in the run header and in the verification summary.
 
 ```bash
 /gsd-pr-branch                     # Filter against main

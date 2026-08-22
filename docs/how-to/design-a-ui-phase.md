@@ -1,6 +1,6 @@
 # How to design a UI phase
 
-**Goal:** Produce a locked UI design contract (`UI-SPEC.md`) that fixes spacing, colour, typography, and copywriting decisions before the planner writes tasks, preventing visual inconsistency caused by ad-hoc styling choices during execution.
+**Goal:** Produce a locked UI design contract (`UI-SPEC.md`) that fixes spacing, color, typography, and copywriting decisions before the planner writes tasks, preventing visual inconsistency caused by ad-hoc styling choices during execution.
 
 **Prerequisites:** `.planning/ROADMAP.md` exists. The phase must have frontend or UI work. Running `/gsd-discuss-phase N` first is strongly recommended — the UI researcher reads `CONTEXT.md` to avoid re-asking decisions you have already made.
 
@@ -13,7 +13,7 @@ Not all phases need `/gsd-ui-phase`. Use it when:
 - The phase introduces new UI surfaces (pages, flows, layouts)
 - Multiple components will be built and visual consistency matters
 - You are starting a new project's frontend and need a design system baseline
-- You are adding significant UI work to an existing project and want to lock tokens, spacing, and colour before execution
+- You are adding significant UI work to an existing project and want to lock tokens, spacing, and color before execution
 
 Skip it when:
 
@@ -34,8 +34,8 @@ If no phase number is given, GSD Core targets the current phase.
 
 The command runs in two stages:
 
-1. **`gsd-ui-researcher`** — reads `CONTEXT.md`, `RESEARCH.md`, and `REQUIREMENTS.md` for existing decisions, detects the design system state (shadcn `components.json`, Tailwind config, existing tokens), and asks only the unanswered design questions across five areas: spacing, colour, typography, copywriting, and registry safety.
-2. **`gsd-ui-checker`** — validates the resulting `UI-SPEC.md` across six dimensions. If issues are found, a revision loop reruns the researcher (up to two iterations) targeting only the flagged items.
+1. **`gsd-ui-researcher`** — reads `CONTEXT.md`, `RESEARCH.md`, and `REQUIREMENTS.md` for existing decisions, detects the design system state (shadcn `components.json`, Tailwind config, existing tokens), and asks only the unanswered design questions across five areas: spacing, color, typography, copywriting, and registry safety.
+2. **`gsd-ui-checker`** — validates the resulting `UI-SPEC.md` across seven dimensions. If issues are found, a revision loop reruns the researcher (up to two iterations) targeting only the flagged items.
 
 **Output:** `{padded_phase}-UI-SPEC.md` in `.planning/phases/{phase-dir}/`.
 
@@ -48,20 +48,21 @@ The researcher locks decisions across five areas:
 | Area | Examples |
 |---|---|
 | **Spacing** | Base scale (4px or 8px), grid alignment, component padding |
-| **Colour** | Primary, accent, neutral palette; 60/30/10 rule; dark-mode considerations |
+| **Color** | Primary, accent, neutral palette; 60/30/10 rule; dark-mode considerations |
 | **Typography** | Font families, size/weight scale constraints, heading hierarchy |
 | **Copywriting** | CTA labels, empty state messages, error state copy, loading indicators |
 | **Registry safety** | shadcn component inspection protocol (see below) |
+| **Component inventory** | What the design system actually provides, plus the command that enumerated it (see below) |
 
-The checker validates the spec against six pillars, scored 1–4 each: Copywriting, Visuals, Colour, Typography, Spacing, and Experience Design (loading / error / empty state coverage).
+The checker validates the spec against its seven dimensions — Copywriting, Visuals, Color, Typography, Spacing, Registry Safety, and Inventory Provenance — returning PASS, FLAG or BLOCK for each. (The scored 1–4 six-pillar rubric belongs to `/gsd-ui-review`'s retroactive audit, not to this checker.)
 
 ---
 
-## shadcn initialisation
+## shadcn initialization
 
-For React, Next.js, and Vite projects, the researcher offers to initialise shadcn if no `components.json` is found. The flow:
+For React, Next.js, and Vite projects, the researcher offers to initialize shadcn if no `components.json` is found. The flow:
 
-1. Visit `ui.shadcn.com/create` and configure your preset (colours, border radius, fonts)
+1. Visit `ui.shadcn.com/create` and configure your preset (colors, border radius, fonts)
 2. Copy the preset string
 3. Run:
 
@@ -69,7 +70,7 @@ For React, Next.js, and Vite projects, the researcher offers to initialise shadc
 npx shadcn init --preset <paste>
 ```
 
-The preset string becomes a first-class GSD Core planning artefact that is reproducible across phases and milestones.
+The preset string becomes a first-class GSD Core planning artifact that is reproducible across phases and milestones.
 
 ---
 
@@ -83,6 +84,86 @@ npx shadcn diff <component>   # compare against the official registry
 ```
 
 The checker will flag the spec as BLOCKED if registry safety is not addressed. Disable the gate via `/gsd-settings` if your project does not use shadcn or you have an alternative vetting process.
+
+---
+
+## Record where the component inventory came from
+
+If your project has a design system, the UI-SPEC lists the components it provides — and the
+planner and executor read that list as the design surface they are allowed to build from. A list
+written from the model's recall looks identical to one enumerated from the installed package, so
+`gsd-ui-checker` Dimension 7 requires the spec to say which it was.
+
+The section carries one provenance line, directly above its table:
+
+```text
+Enumerated by `npx shadcn info --json` — 153 components — @acme/design-system@4.2.1 — 2026-08-21.
+```
+
+Four things are required, and each is there for a reason:
+
+| Part | Why it is required |
+|---|---|
+| The command | The only re-runnable part. A reader can check the claim without re-deriving it. |
+| The count | Makes an under-listed inventory visible at a glance — "13 components" against a package reporting 153 is a difference you can see. |
+| `<package>@<version>` | The **resolved installed** version, so a spec reused after an upgrade is visibly stale. A caret range from `package.json` does not do this. |
+| The date | Bounds how old the claim is. |
+
+Use whatever the design system provides — a first-party CLI with a JSON mode, an MCP tool, or the
+installed package's own metadata:
+
+```bash
+npx shadcn info                                                             # shadcn projects
+node -p "Object.keys(require('@acme/design-system/package.json').exports).length"
+node -p "require('@acme/design-system/package.json').version"               # resolved version
+```
+
+If nothing can enumerate it, record that in the same slot instead, with a real reason:
+
+```text
+Could not enumerate: package ships no exports map and no CLI.
+```
+
+### What the checker does with it
+
+| What the spec carries | Dimension 7 | What it means for the executor |
+|---|---|---|
+| Command, count, version, date | **PASS** | Sourced list. |
+| Command and count, no version or date | **FLAG** | Accepted, but staleness is invisible. Add the missing part. |
+| A complete line, but below the table instead of above it | **FLAG** | Accepted. Move it up — a caveat has to be read before the list it qualifies. |
+| `Could not enumerate: <reason>` | **FLAG** | Honest and accepted. The list is explicitly non-exhaustive. |
+| An inventory with no provenance line | **BLOCK** | Enumerate and re-run `/gsd-ui-phase`. |
+| A count with no command, or a bare `Could not enumerate:` | **BLOCK** | Nothing falsifiable was recorded. |
+| No inventory section at all | **PASS** | Not applicable — including every spec written before this dimension existed, and any project with `Tool: none`. Nothing to enumerate is not a defect. |
+
+**A missing provenance line never blocks the executor.** The checker reports it against the spec
+and downgrades the list to a **non-exhaustive set of known-good components** — so nothing stops
+you using a component the spec simply failed to mention. Reaching for one outside the table is the
+expected path, not an exception.
+
+The checker never runs the recorded command. It reads the spec as a document; executing a command
+string lifted out of one would be a code-execution path through untrusted text.
+
+### What this check is and is not
+
+Worth knowing before you rely on it, because the check is narrower than it looks:
+
+- **It makes the inventory's origin falsifiable, not verified.** Nothing re-runs the command or
+  compares the count against the installed package. A line that was simply made up passes. What
+  you gain is that a reader — or you, six months later — can re-run the recorded command and see
+  for yourself; before the field existed there was nothing to re-run.
+- **It cannot tell a stale inventory from a current one.** That is what the recorded
+  `<package>@<version>` is for: compare it against what is installed now. A spec reused after an
+  upgrade looks exactly like a fresh one apart from that string.
+- **Enforcement is applied by an agent, not by a parser.** Dimension 7 is a rule `gsd-ui-checker`
+  follows, the same as the other six dimensions. It is not a schema check that runs over your
+  spec, so treat a PASS as "the reviewer found a provenance line", not as a machine guarantee.
+- **"The checker never runs the recorded command" is an instruction, not a sandbox.** See
+  [Security model → Trade-offs and limits](../explanation/security-model.md#trade-offs-and-limits)
+  for why that distinction matters and what does back it up.
+
+None of this makes the field pointless — an unsourced inventory used to be indistinguishable from
+a sourced one, and now it is not. But it is a record you can audit, not a proof.
 
 ---
 
@@ -109,13 +190,13 @@ This is the main reason to run `/gsd-sketch --wrap-up` before `/gsd-ui-phase`: i
 /gsd-ui-review 3      # audit phase 3 specifically
 ```
 
-It works on any project with frontend code — GSD project initialisation is not required.
+It works on any project with frontend code — GSD project initialization is not required.
 
 **What it checks (6 pillars, scored 1–4 each):**
 
 1. Copywriting — CTA labels, empty states, error states
 2. Visuals — focal points, visual hierarchy, icon accessibility
-3. Colour — accent usage discipline, 60/30/10 compliance
+3. Color — accent usage discipline, 60/30/10 compliance
 4. Typography — font size and weight constraint adherence
 5. Spacing — grid alignment, token consistency
 6. Experience Design — loading, error, and empty state coverage
@@ -137,7 +218,7 @@ It works on any project with frontend code — GSD project initialisation is not
 /gsd-ui-review N          ← retroactive visual audit (optional but recommended)
 ```
 
-`/gsd-ui-phase` sits between discuss and plan because the planner reads `UI-SPEC.md` as design context — tasks in `PLAN.md` reference spacing tokens, colour variables, and copywriting decisions that the spec locked.
+`/gsd-ui-phase` sits between discuss and plan because the planner reads `UI-SPEC.md` as design context — tasks in `PLAN.md` reference spacing tokens, color variables, and copywriting decisions that the spec locked.
 
 ---
 

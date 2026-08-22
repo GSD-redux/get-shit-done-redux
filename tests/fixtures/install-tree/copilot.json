@@ -12,6 +12,7 @@
   "agents/gsd-doc-synthesizer.agent.md",
   "agents/gsd-doc-verifier.agent.md",
   "agents/gsd-doc-writer.agent.md",
+  "agents/gsd-dom-verifier.agent.md",
   "agents/gsd-domain-researcher.agent.md",
   "agents/gsd-eval-auditor.agent.md",
   "agents/gsd-eval-planner.agent.md",
