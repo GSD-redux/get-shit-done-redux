@@ -214,7 +214,7 @@ issue:
 
 **Question:** Do two same-wave plans depend on each other through shared mutable state or
 execution order without declaring it? Dimension 3 checks *declared* edges and the wave guard
-checks `files_modified` overlap; neither sees an undeclared edge, which under parallel
+checks `files_modified`/`files_deleted` overlap (#3003); neither sees an undeclared edge, which under parallel
 execution becomes an intermittent failure nobody can attribute.
 
 **Scope: PLAN pairs, not tasks.** Tasks inside one plan run sequentially and cannot race.
@@ -229,7 +229,7 @@ Execution; strong-but-local coupling inside one plan is fine):
    produces.
 
 **Do NOT flag:** both sides only READ it, or it is immutable; the pair already overlaps in
-`files_modified` (report that once, on the file axis); the plans sit in a different wave, which
+`files_modified` or `files_deleted` (report that once, on the file axis); the plans sit in a different wave, which
 already orders them; two tasks inside one plan; a vague same-subsystem claim naming no
 resource; incompatible *transformations* of one entity — that is Dimension 9.
 

@@ -276,7 +276,8 @@ CREATE_JSON=$(gsd_run query worktree.create \
   --branch "$WT_BRANCH" \
   --base "$EXPECTED_BASE" \
   --root "$ORCH_ROOT" \
-  --files "$PLAN_FILES" 2>&1) || {
+  --files "$PLAN_FILES" \
+  --deletions "$PLAN_DELETIONS" 2>&1) || {
     echo "FATAL: worktree create failed for plan {plan_number}: $CREATE_JSON" >&2
     exit 1
   }
@@ -303,6 +304,8 @@ fi
 ```
 
 `--files` carries the plan's declared `files_modified` (the same `PLAN_FILES` the per-plan worktree gate extracts) so this backend routes through the SAME advisory scope-conformance check the Claude worktree path uses at merge (#2596) — one validation, both backends. It is advisory and never blocks; omitting it just skips the check.
+
+`--deletions` carries the plan's declared `files_deleted` (`PLAN_DELETIONS`, extracted alongside `PLAN_FILES`) so this backend also routes through the deletions guard's opt-in (#3003). Unlike `--files` this one is **not** advisory: omitting it leaves the guard blocking on any deletion at all, which would make a plan that declares a removal merge on the harness path and fail here. Every dispatch surface that records a worktree must pass it.
 
 `worktree create` records the entry in `$WAVE_WORKTREE_MANIFEST` itself, so **do not** call `worktree.record-agent` for these plans — that verb is the harness-path counterpart, used because the harness creates the worktree behind GSD's back. Double-recording is deduped by path+branch, but the create verb is the single writer here.
 

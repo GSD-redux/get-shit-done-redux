@@ -79,6 +79,14 @@ interface PlanDocument {
   agentHint: string | null;
   /** Frontmatter `files_modified` / `files-modified`, normalised to an array. */
   filesModified: string[];
+  /**
+   * #3003: frontmatter `files_deleted` / `files-deleted`, normalised to an array.
+   * Paths the plan declares it will REMOVE, so `worktree cleanup-wave`'s deletions
+   * guard can authorize exactly those and keep blocking anything undeclared.
+   * OPTIONAL — a plan that omits it declares nothing and keeps the guard's original
+   * unconditional block.
+   */
+  filesDeleted: string[];
   tasks: PlanTask[];
   /**
    * Legacy count. Invariant: `taskCount === tasks.length`, always. Exposed as
@@ -289,6 +297,13 @@ function parsePlanDocument(content: string, planPath = ''): PlanDocument {
     filesModified = Array.isArray(fmFiles) ? fmFiles.map(String) : [String(fmFiles)];
   }
 
+  let filesDeleted: string[] = [];
+  const fmDeleted = fm['files_deleted'] || fm['files-deleted'];
+  if (fmDeleted) {
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue scalar-to-string
+    filesDeleted = Array.isArray(fmDeleted) ? fmDeleted.map(String) : [String(fmDeleted)];
+  }
+
   let agentHint: string | null = null;
   const fmAgentHint = fm['agent_hint'];
   if (fmAgentHint !== undefined) {
@@ -304,6 +319,7 @@ function parsePlanDocument(content: string, planPath = ''): PlanDocument {
     autonomous,
     agentHint,
     filesModified,
+    filesDeleted,
     tasks,
     taskCount: tasks.length,
   };

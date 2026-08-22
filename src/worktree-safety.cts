@@ -486,6 +486,18 @@ interface CleanupManifestEntry {
   allowed_bases?: string[];
   /** #2596: the plan's declared `files_modified`, when the recorder supplied it. Absent = unknown, never "declares nothing". */
   files_modified?: string[];
+  /**
+   * #3003: paths the PLAN declared it would delete. The deletions guard blocks only
+   * deletions NOT in this list. Absent = declares nothing, which keeps the guard's
+   * original unconditional block — never "authorizes everything".
+   *
+   * A path LIST, not a boolean, deliberately: a boolean would disarm the guard for the
+   * whole entry, so an unexpected deletion riding along with a declared one would pass
+   * unnoticed. Matching is EXACT after `normalizeScopePath`, never a prefix and never a
+   * glob — a directory prefix authorizes a mass deletion, which is the precise accident
+   * this guard exists to catch.
+   */
+  declared_deletions?: string[];
 }
 
 function normalizeCleanupManifestEntry(entry: unknown): CleanupManifestEntry | null {
@@ -510,6 +522,12 @@ function normalizeCleanupManifestEntry(entry: unknown): CleanupManifestEntry | n
   // would make an unrecorded plan look 100% out of scope.
   const filesModified = (Array.isArray(e.files_modified) ? e.files_modified : [])
     .filter((f): f is string => typeof f === 'string' && f.trim().length > 0);
+  // #3003: same liberal-in-what-we-accept rule as `files_modified` above — non-array,
+  // or non-string / empty elements, are dropped rather than coerced, and an EMPTY
+  // result omits the field entirely so "declares nothing" stays indistinguishable
+  // from "not recorded" (the guard's own absence-check already treats both as unknown).
+  const declaredDeletions = (Array.isArray(e.declared_deletions) ? e.declared_deletions : [])
+    .filter((f): f is string => typeof f === 'string' && f.trim().length > 0);
   const normalized: CleanupManifestEntry = {
     agent_id: typeof e.agent_id === 'string' ? e.agent_id : null,
     worktree_path: worktreePath,
@@ -518,6 +536,7 @@ function normalizeCleanupManifestEntry(entry: unknown): CleanupManifestEntry | n
     allowed_bases: allowedBases,
   };
   if (filesModified.length > 0) normalized.files_modified = filesModified;
+  if (declaredDeletions.length > 0) normalized.declared_deletions = declaredDeletions;
   return normalized;
 }
 
@@ -635,15 +654,77 @@ const SUMMARY_ARTIFACT_DIR = '.planning';
 const SUMMARY_ARTIFACT_SUFFIX = 'SUMMARY.md';
 
 /**
+ * Decode a git-quoted path. With `core.quotepath` left at its default (`true`)
+ * git wraps any path containing non-ASCII or special bytes in double quotes
+ * and C-escapes it — e.g. `tests/é.ts` is emitted as the literal
+ * `"tests/\303\251.ts"`. Both sides of the deletion/scope comparison
+ * (a declared path and a git-reported path) must agree on the same decoded
+ * shape, and decoding it here — rather than passing `-c core.quotepath=false`
+ * on the `execGit` call — keeps the git argv, and therefore every existing
+ * test fixture that asserts on exact argv, unchanged. It also works
+ * regardless of the user's own `core.quotepath` config.
+ *
+ * A value that is not wrapped in a leading and trailing `"` is returned
+ * completely untouched — this is the overwhelmingly common (plain ASCII)
+ * case and must not be altered in any way.
+ *
+ * Escapes decode to BYTES, collected into a Buffer and decoded as UTF-8 only
+ * at the end: `\303\251` is two bytes that together form one character (é),
+ * so decoding them one at a time would produce mojibake. Malformed input
+ * (a trailing lone backslash, or an octal escape with fewer than three
+ * digits) never throws — it degrades to treating the character literally, so
+ * a single bad path can never take down the whole cleanup wave.
+ */
+function decodeGitQuotedPath(raw: string): string {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const body = raw.slice(1, -1);
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== '\\' || i === body.length - 1) {
+      // UTF-8 bytes, not the code unit: a DECLARED path may be quoted while
+      // still holding a literal `é`, and pushing 0xE9 alone is invalid UTF-8.
+      // codePointAt keeps a surrogate pair together.
+      const codePoint = body.codePointAt(i);
+      const char = codePoint === undefined ? ch : String.fromCodePoint(codePoint);
+      bytes.push(...Buffer.from(char, 'utf8'));
+      i += char.length - 1;
+      continue;
+    }
+    const rest = body.slice(i + 1);
+    const octalMatch = /^([0-3][0-7][0-7])/.exec(rest);
+    if (octalMatch) {
+      bytes.push(parseInt(octalMatch[1], 8));
+      i += 3;
+      continue;
+    }
+    const next = body[i + 1];
+    const CONTROL_ESCAPES: Record<string, number> = {
+      a: 0x07, b: 0x08, f: 0x0c, n: 0x0a, r: 0x0d, t: 0x09, v: 0x0b,
+      '\\': 0x5c, '"': 0x22,
+    };
+    if (Object.prototype.hasOwnProperty.call(CONTROL_ESCAPES, next)) {
+      bytes.push(CONTROL_ESCAPES[next]);
+    } else {
+      bytes.push(next.charCodeAt(0));
+    }
+    i += 1;
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+/**
  * Normalize one path for scope comparison. Applied to BOTH sides so a declared
- * path and a git-reported path meet in the same shape: backslashes become
- * slashes unconditionally (a backslash path is not a Windows-only input),
- * a leading `./` and any trailing `/` are stripped. This is the single
- * normalizer shared by the SUMMARY-artifact predicate and the scope advisory,
- * so the two can never disagree about what `./a\b/` means.
+ * path and a git-reported path meet in the same shape: any git C-quoting is
+ * decoded first (order matters — the backslash-to-slash conversion below
+ * would destroy the escape sequences if it ran first), then backslashes
+ * become slashes unconditionally (a backslash path is not a Windows-only
+ * input), and a leading `./` and any trailing `/` are stripped. This is the
+ * single normalizer shared by the SUMMARY-artifact predicate and the scope
+ * advisory, so the two can never disagree about what `./a\b/` means.
  */
 function normalizeScopePath(raw: string): string {
-  return String(raw || '')
+  return decodeGitQuotedPath(String(raw || '').trim())
     .replace(/\\/g, '/')
     .trim()
     .replace(/^\.\//, '')
@@ -869,6 +950,42 @@ function planWaveScopeConformance(
   return warnings;
 }
 
+/**
+ * #3003: split git's reported deletions into declared and undeclared.
+ *
+ * EXACT match after `normalizeScopePath` — the same normalizer both other path
+ * comparisons in this file use, so a declared path and a git-reported path meet in the
+ * same shape (`a\b` and `./a/b/` both become `a/b`).
+ *
+ * Deliberately NOT `declaredScopePrefix`. That helper returns `null` for a glob-leading
+ * pattern meaning "matches everything", which is right for the ADVISORY it serves — a
+ * false alarm there costs more than a miss — and exactly wrong for a GATE, where it would
+ * let `["*.ts"]` disarm the guard. A glob here is simply a literal path that matches
+ * nothing. Prefix matching is likewise refused: `["tests"]` must not authorize deleting
+ * everything under tests/.
+ *
+ * Pure — no git, no IO. Returns the undeclared residue in the order git reported it.
+ */
+function partitionDeclaredDeletions(deletedPaths: unknown, declared: unknown): string[] {
+  const allowed = new Set(
+    (Array.isArray(declared) ? declared : [])
+      .filter((p): p is string => typeof p === 'string')
+      .map((p) => normalizeScopePath(p))
+      .filter((p) => p.length > 0),
+  );
+  const undeclared: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of Array.isArray(deletedPaths) ? deletedPaths : []) {
+    if (typeof raw !== 'string') continue;
+    const normalized = normalizeScopePath(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    if (allowed.has(normalized)) continue;
+    undeclared.push(normalized);
+  }
+  return undeclared;
+}
+
 interface WaveCleanupEntryResult extends CleanupManifestEntry {
   status: string;
   reason: string | null;
@@ -950,13 +1067,20 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       continue; // #2852: isolate
     }
     if (deletions.stdout) {
-      // Unconditional: any deletion in this entry's branch blocks THIS entry. Whether
-      // that guard should have an opt-in for intentional deletions is a deferred
-      // product decision (issue #2852's own triage scoped it out — tracked in #3003);
-      // this fix only isolates the block to this one entry (#2852) instead of aborting
-      // the rest of the wave, same as every other block reason below.
-      blockEntry(result, 'branch_contains_deletions', deletions.stdout);
-      continue; // #2852: isolate
+      // #3003: a deletion the PLAN declared is authorized; anything else still blocks.
+      // Only a SUCCESSFUL check reaches here — a failed one blocked above on its own
+      // reason, so a broken check can never be filtered into a pass.
+      //
+      // The block detail carries ONLY the undeclared residue. Listing declared paths
+      // there would misdirect the operator toward paths that were fine.
+      const undeclaredDeletions = partitionDeclaredDeletions(
+        deletions.stdout.split('\n'),
+        entry.declared_deletions,
+      );
+      if (undeclaredDeletions.length > 0) {
+        blockEntry(result, 'branch_contains_deletions', undeclaredDeletions.join('\n'));
+        continue; // #2852: isolate
+      }
     }
 
     // #2596: advisory scope conformance — does the branch's ACTUAL committed
@@ -968,13 +1092,34 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
     // ADVISORY ONLY. Unlike the deletions check above, a finding here does NOT
     // call blockEntry and does NOT touch `ok` — the merge proceeds. Promotion
     // to a hard gate is a separate, disclosed change.
-    if (Array.isArray(entry.files_modified) && entry.files_modified.length > 0) {
+    // #3003: a declared deletion is in scope by construction — `git diff --name-only`
+    // includes deleted paths, so without accounting for the declaration, authorizing a
+    // deletion would immediately warn that the same path is out of declared scope.
+    //
+    // It is SUBTRACTED from the findings rather than UNIONED into the declared scope,
+    // and the difference is not cosmetic. `planWaveScopeConformance` reads its scope
+    // list with prefix-and-glob semantics, so unioning would silently hand
+    // `declared_deletions` a second, WIDER matching rule than the gate gives it:
+    // `["*.md"]` (inert at the gate) would yield a null prefix meaning "matches
+    // everything" and mute the advisory entirely, and `["src"]` would mute all of
+    // `src/`. One field with two matching rules is a trap. Subtracting keeps the
+    // field exact-match-only on every surface it touches.
+    //
+    // Gating stays on `files_modified` alone for the same reason: a plan that declares
+    // only deletions has still declared no modification scope, so the advisory stays
+    // exactly as silent as it was before this change instead of warning on every
+    // modified path.
+    const declaredFiles = Array.isArray(entry.files_modified) ? entry.files_modified : [];
+    if (declaredFiles.length > 0) {
       const scopeDiff = execGit(['diff', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
       const scopeWarnings: WaveCleanupWarning[] = !gitResultOk(scopeDiff)
         // A broken advisory must never become a gate: record that conformance
         // is unknown rather than blocking (or, worse, silently passing).
         ? [{ code: WAVE_CLEANUP_WARNING.SCOPE_CHECK_UNAVAILABLE, branch: entry.branch, path: null }]
-        : planWaveScopeConformance((scopeDiff.stdout || '').split('\n'), entry.files_modified, entry.branch);
+        : planWaveScopeConformance((scopeDiff.stdout || '').split('\n'), declaredFiles, entry.branch)
+          // A path-less warning (SCOPE_CHECK_UNAVAILABLE) is never subtracted.
+          .filter((w) => w.path === null
+            || partitionDeclaredDeletions([w.path], entry.declared_deletions).length > 0);
       result.warnings.push(...scopeWarnings);
       allWarnings.push(...scopeWarnings);
     }
@@ -1117,6 +1262,7 @@ interface RecordAgentFields {
   branch: string;
   base: string;
   files?: string;
+  deletions?: string;
 }
 
 /**
@@ -1184,12 +1330,16 @@ function planWorktreeRecordAgent(manifestRaw: string, fields: RecordAgentFields)
   // 2. Shared validation: run the candidate through the reader's normalizer.
   //    If it returns null the reader would drop this entry on read — reject now.
   const declaredScope = parseDeclaredScopeFlag(fields.files);
+  // #3003: reuse parseDeclaredScopeFlag — a blank/absent --deletions leaves the
+  // entry shape untouched, mirroring the --files rule directly above.
+  const declaredDeletions = parseDeclaredScopeFlag(fields.deletions);
   const candidate = {
     agent_id: agentId,
     worktree_path: worktreePath,
     branch,
     expected_base: base,
     ...(declaredScope.length > 0 ? { files_modified: declaredScope } : {}),
+    ...(declaredDeletions.length > 0 ? { declared_deletions: declaredDeletions } : {}),
   };
   const entry = normalizeCleanupManifestEntry(candidate);
   if (!entry) {
@@ -1283,6 +1433,11 @@ function planWorktreeRecordAgent(manifestRaw: string, fields: RecordAgentFields)
   if (entry.files_modified && entry.files_modified.length > 0) {
     recorded.files_modified = entry.files_modified;
   }
+  // #3003: same conservative rule as --files above — a blank --deletions
+  // leaves the entry shape untouched.
+  if (entry.declared_deletions && entry.declared_deletions.length > 0) {
+    recorded.declared_deletions = entry.declared_deletions;
+  }
   worktrees.push(recorded);
 
   return {
@@ -1311,7 +1466,7 @@ interface RecordAgentCmdResult {
 /**
  * CLI command: append a validated per-agent entry to a wave cleanup manifest.
  *
- * Usage: worktree record-agent --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> [--files "<space-separated paths>"]
+ * Usage: worktree record-agent --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> [--files "<space-separated paths>"] [--deletions "<space-separated paths>"]
  *
  * Fails loudly (non-zero exit + recovery hint on stderr) when a field is
  * missing/garbled or the manifest is absent/malformed, rather than appending an
@@ -1320,14 +1475,15 @@ interface RecordAgentCmdResult {
 function cmdWorktreeRecordAgent(cwd: string, args: string[] = [], deps: RecordAgentCmdDeps = {}): RecordAgentCmdResult {
   const flag = (name: string): string => {
     const i = args.indexOf(name);
-    return i >= 0 && i + 1 < args.length ? args[i + 1] : '';
+    if (i < 0 || i + 1 >= args.length) return '';
+    return args[i + 1];
   };
   const write = deps.write || ((s: string) => process.stdout.write(s));
   const writeErr = deps.writeErr || ((s: string) => process.stderr.write(s));
 
   const manifestPath = flag('--manifest');
   if (!manifestPath) {
-    writeErr('Usage: worktree record-agent --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> [--files "<space-separated paths>"]\n');
+    writeErr('Usage: worktree record-agent --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> [--files "<space-separated paths>"] [--deletions "<space-separated paths>"]\n');
     process.exitCode = 2;
     return { ok: false, reason: 'usage', entry: null };
   }
@@ -1351,6 +1507,7 @@ function cmdWorktreeRecordAgent(cwd: string, args: string[] = [], deps: RecordAg
     branch: flag('--branch'),
     base: flag('--base'),
     files: flag('--files'),
+    deletions: flag('--deletions'),
   });
 
   if (!plan.ok || plan.manifest === null) {
@@ -1381,6 +1538,7 @@ interface WorktreeCreateFields {
   branch: string;
   base: string;
   files?: string;
+  deletions?: string;
 }
 
 interface WorktreeCreatePlan {
@@ -1419,12 +1577,16 @@ function planWorktreeCreate(fields: WorktreeCreateFields): WorktreeCreatePlan {
   }
 
   const declaredScope = parseDeclaredScopeFlag(fields.files);
+  // #3003: reuse parseDeclaredScopeFlag — a blank/absent --deletions leaves the
+  // entry shape untouched, mirroring the --files rule directly above.
+  const declaredDeletions = parseDeclaredScopeFlag(fields.deletions);
   const candidate = {
     agent_id: agentId,
     worktree_path: worktreePath,
     branch,
     expected_base: base,
     ...(declaredScope.length > 0 ? { files_modified: declaredScope } : {}),
+    ...(declaredDeletions.length > 0 ? { declared_deletions: declaredDeletions } : {}),
   };
   const entry = normalizeCleanupManifestEntry(candidate);
   if (!entry) {
@@ -1581,7 +1743,7 @@ interface WorktreeCreateCmdResult {
  * validated manifest entry so the worktree is immediately manageable by
  * `worktree cleanup-wave` / `worktree reap-orphans`.
  *
- * Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir> [--files "<space-separated paths>"]
+ * Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir> [--files "<space-separated paths>"] [--deletions "<space-separated paths>"]
  *
  * #2584 FIX 1 — ORDERING CONTRACT: every manifest read/parse/shape-validate/
  * plan step runs BEFORE the git side effect (step 5). The ONLY manifest
@@ -1595,14 +1757,15 @@ interface WorktreeCreateCmdResult {
 function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCmdDeps & WorktreeDeps = {}): WorktreeCreateCmdResult {
   const flag = (name: string): string => {
     const i = args.indexOf(name);
-    return i >= 0 && i + 1 < args.length ? args[i + 1] : '';
+    if (i < 0 || i + 1 >= args.length) return '';
+    return args[i + 1];
   };
   const write = deps.write || ((s: string) => process.stdout.write(s));
   const writeErr = deps.writeErr || ((s: string) => process.stderr.write(s));
 
   const manifestPath = flag('--manifest');
   if (!manifestPath) {
-    writeErr('Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir> [--files "<space-separated paths>"]\n');
+    writeErr('Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir> [--files "<space-separated paths>"] [--deletions "<space-separated paths>"]\n');
     process.exitCode = 2;
     return { ok: false, reason: 'usage' };
   }
@@ -1667,6 +1830,7 @@ function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCm
     branch: flag('--branch'),
     base: flag('--base'),
     files: flag('--files'),
+    deletions: flag('--deletions'),
   });
 
   if (!plan.ok || !plan.entry) {
@@ -1740,6 +1904,11 @@ function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCm
   // what we send, so a blank --files leaves the 4-field shape untouched.
   if (Array.isArray(plan.entry.files_modified) && plan.entry.files_modified.length > 0) {
     recorded.files_modified = plan.entry.files_modified;
+  }
+  // #3003: same conservative rule as --files above — a blank --deletions
+  // leaves the entry shape untouched.
+  if (Array.isArray(plan.entry.declared_deletions) && plan.entry.declared_deletions.length > 0) {
+    recorded.declared_deletions = plan.entry.declared_deletions;
   }
   const dedupeKey = `${recorded.worktree_path}\0${recorded.branch}`;
   const alreadyPresent = worktrees.some((existing) => {

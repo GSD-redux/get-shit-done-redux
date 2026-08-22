@@ -748,12 +748,12 @@ for each plan in plan_order:
 # Implicit dependency: files_modified overlap forces a later wave.
 for each plan B in plan_order:
   for each earlier plan A where A != B:
-    if any file in B.files_modified is also in A.files_modified:
+    if any file in (B.files_modified + B.files_deleted) is also in (A.files_modified + A.files_deleted):
       B.wave = max(B.wave, A.wave + 1)
       waves[B.id] = B.wave
 ```
 
-**Rule:** Same-wave plans must have zero `files_modified` overlap. After assigning waves, scan each wave; if any file appears in 2+ plans, bump the later plan to the next wave and repeat.
+**Rule:** Same-wave plans must have zero `files_modified`/`files_deleted` overlap. After assigning waves, scan each wave; if any file appears in 2+ plans, bump the later plan to the next wave and repeat.
 </step>
 
 <step name="group_into_plans">

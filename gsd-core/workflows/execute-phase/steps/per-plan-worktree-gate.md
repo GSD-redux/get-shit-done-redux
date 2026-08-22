@@ -10,6 +10,10 @@ Run this for **each plan in the current wave** before its `Agent()` dispatch. Th
 # plan_json is the JSON object for this plan from PLAN_INDEX.plans[]
 # files_modified is an array of strings (repo-relative paths or globs)
 PLAN_FILES=$(jq -r '.files_modified // [] | join(" ")' <<<"$plan_json")
+# #3003: files_deleted is the paths the plan declared it will REMOVE. Separate from
+# files_modified on purpose — it authorizes the cleanup-wave deletions guard, and a
+# deletion authorization must never be inferred from a general scope declaration.
+PLAN_DELETIONS=$(jq -r '.files_deleted // [] | join(" ")' <<<"$plan_json")
 plan_id=$(jq -r '.id' <<<"$plan_json")
 ```
 
@@ -18,11 +22,23 @@ Then run the per-plan gate:
 ```bash
 USE_WORKTREES_FOR_PLAN="$USE_WORKTREES"
 
+# #3003: this gate asks "does the plan touch a submodule at all", and REMOVING a file
+# inside one is as much a touch as modifying it. Both declared channels feed the
+# intersection: before files_deleted existed a deleted path had to appear in
+# files_modified to be planned at all, so the gate saw it. Now that plan-md.md tells
+# authors a deleted path needs no files_modified entry, reading files_modified alone
+# would let a deletion-only submodule plan keep worktree isolation on — exactly the
+# case #2772 disabled it for. Note this is the OPPOSITE posture from the cleanup-wave
+# deletions guard: there the two channels are kept apart because a deletion
+# AUTHORIZATION must never be inferred; here they are merged because a safety fallback
+# must never MISS a touch.
+PLAN_SCOPE_PATHS=$(printf '%s %s' "$PLAN_FILES" "$PLAN_DELETIONS" | tr -s ' ' | sed 's/^ //; s/ $//')
+
 if [ -n "$SUBMODULE_PATHS" ] && [ "$USE_WORKTREES_FOR_PLAN" != "false" ]; then
-  if [ -z "$PLAN_FILES" ]; then
+  if [ -z "$PLAN_SCOPE_PATHS" ]; then
     # Fallback: planned paths are unknown/unparseable — fall back to the safe
     # behavior (disable worktree isolation for this plan) and log why.
-    echo "[worktree] Plan ${plan_id}: files_modified missing/unparseable — disabling worktree isolation as a safety fallback (submodule project)"
+    echo "[worktree] Plan ${plan_id}: files_modified and files_deleted both missing/unparseable — disabling worktree isolation as a safety fallback (submodule project)"
     USE_WORKTREES_FOR_PLAN=false
   else
     # Compute intersection with glob-safe normalization. Both sides are
@@ -37,7 +53,7 @@ if [ -n "$SUBMODULE_PATHS" ] && [ "$USE_WORKTREES_FOR_PLAN" != "false" ]; then
       sm="${sm_raw#./}"
       sm="${sm%/}"
       [ -z "$sm" ] && continue
-      for pf_raw in $PLAN_FILES; do
+      for pf_raw in $PLAN_SCOPE_PATHS; do
         # Normalize planned path the same way
         pf="${pf_raw#./}"
         pf="${pf%/}"
@@ -113,3 +129,5 @@ fi
 ```
 
 **`PLAN_FILES` is reused after dispatch (#2596):** pass it as `--files "$PLAN_FILES"` on the step-3 `worktree.record-agent` call (and on `worktree.create` in the orchestrator-worktree path) so the post-wave cleanup gauntlet can compare each plan branch's actual committed diff against the scope the plan declared, and report any path outside it. That check is advisory — it warns, it never blocks the merge — and omitting the flag simply skips it for that plan.
+
+**`PLAN_DELETIONS` is reused the same way (#3003):** pass it as `--deletions "$PLAN_DELETIONS"` on the same `worktree.record-agent` / `worktree.create` calls. Unlike `--files`, this one is **not** advisory — it is what lets the post-wave deletions guard merge a branch whose plan declared a file removal. Matching is exact per path: a declared path merges, anything else still blocks that entry (and only that entry). Omitting the flag keeps the guard's original behavior of blocking on any deletion at all, so a plan that declares nothing loses nothing.

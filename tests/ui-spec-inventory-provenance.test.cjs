@@ -137,18 +137,44 @@ const WORD_NUMERAL = Object.freeze({
   여섯: 6, 일곱: 7, 여덟: 8,
 });
 
-/** Every numeric "N dimensions" claim in `text`, in any of the three shipped languages.
- *  Returns plain numbers — the typed IR the parity function consumes. */
-function parseDeclaredCounts(text) {
+/** A numeral introduced by "other" or "remaining" is a BACK-REFERENCE to the rest of a set
+ *  — "the same as the other six dimensions" — never a claim about the set's SIZE. Counting
+ *  one turned `next` red on dacae9273 against entirely correct documentation, and a drift
+ *  guard that fires on accurate prose is a false positive, which is how guards end up
+ *  disabled.
+ *
+ *  Declared once and shared by both English scans so the two can never drift apart — the
+ *  same divergence class this whole suite exists to catch. `\b` anchors it to the whole
+ *  word, so "another six dimensions" (a real claim about a second set) still counts, and
+ *  both scans apply it case-insensitively: a sentence-initial "Other six dimensions…" is
+ *  the same back-reference as a mid-sentence one.
+ *
+ *  Known limits: the exclusion is English-only — the ja/zh/ko/pt patterns have no
+ *  equivalent, because translated docs here are CORRECTED to match English rather than
+ *  authored, so there is no instance to model the grammar on. And it cannot tell a
+ *  back-reference from a genuine total that happens to open with the same word ("Other 6
+ *  dimensions were added"); prose alone does not disambiguate those, and the false-negative
+ *  is the safer side of that trade for a guard whose failure mode is being switched off. */
+const NOT_A_BACK_REFERENCE = String.raw`(?<!\b(?:other|remaining)\s)`;
+
+/** Every numeric "N dimensions" claim in `text`, in any of the shipped languages.
+ *  Returns plain numbers — the typed IR the parity function consumes.
+ *
+ *  `excludeBackReferences: false` reproduces the pre-fix behavior. It exists so a test can
+ *  prove, against the real shipped files, that the exclusion is load-bearing rather than
+ *  decorative — see the dacae9273 regression block. */
+function parseDeclaredCounts(text, { excludeBackReferences = true } = {}) {
   const body = lf(text);
   const found = [];
   const push = (v) => { if (Number.isInteger(v)) found.push(v); };
   const scan = (re, take) => { for (const m of body.matchAll(re)) take(m); };
+  const guard = excludeBackReferences ? NOT_A_BACK_REFERENCE : '';
 
   // "6 dimensions", "6 design quality dimensions", "6 Validation Dimensions"
-  scan(/(\d+)\s+(?:[A-Za-z][A-Za-z-]*\s+){0,3}?[Dd]imensions?\b/g, (m) => push(Number(m[1])));
+  scan(new RegExp(`${guard}(\\d+)\\s+(?:[A-Za-z][A-Za-z-]*\\s+){0,3}?[Dd]imensions?\\b`, 'gi'),
+    (m) => push(Number(m[1])));
   // "six dimensions", "six quality dimensions"
-  scan(/\b(five|six|seven|eight|nine|ten)\s+(?:[A-Za-z][A-Za-z-]*\s+){0,3}?dimensions\b/gi,
+  scan(new RegExp(`${guard}\\b(five|six|seven|eight|nine|ten)\\s+(?:[A-Za-z][A-Za-z-]*\\s+){0,3}?dimensions\\b`, 'gi'),
     (m) => push(WORD_NUMERAL[m[1].toLowerCase()]));
   // "Dimensions: 6/6 passed"
   scan(/Dimensions:\s*(\d+)\/(\d+)/g, (m) => { push(Number(m[1])); push(Number(m[2])); });
@@ -452,6 +478,63 @@ describe('#2845 — parsers are total and newline-agnostic', () => {
       assert.deepEqual(parseYamlExampleBlocks(input), []);
       assert.equal(sectionContaining(input, 'REQ-UI-03'), '');
     }
+  });
+});
+
+describe('#2845 — a back-reference is not a count claim (regression: `next` red on dacae9273)', () => {
+  // The how-to gained "Dimension 7 is a rule gsd-ui-checker follows, the same as the
+  // other six dimensions" — correct prose — and the guard read "six dimensions" as that
+  // document claiming the checker has six. `next` went red on documentation that was
+  // right.
+  //
+  // Worth recording WHY it reached `next`: the docs PR was green. A doc-only diff
+  // inert-skips the test matrix in the PR lane, so the guard that reads docs never ran
+  // against the docs change that broke it. It fired on push to `next` — after merge.
+
+  test('"the other N dimensions" / "the remaining N dimensions" are not counted', () => {
+    for (const phrase of [
+      'Dimension 7 is a rule the checker follows, the same as the other six dimensions.',
+      'the same as the other 6 dimensions',
+      'the remaining six dimensions are unchanged',
+      'the remaining 6 dimensions are unchanged',
+      // Sentence-initial: the digit scan was case-SENSITIVE while the word scan was not,
+      // so these two slipped through the first version of this fix.
+      'Other six dimensions apply.',
+      'Other 6 dimensions apply.',
+      'Remaining six dimensions are unaffected.',
+      'Remaining 6 dimensions are unaffected.',
+    ]) {
+      assert.deepEqual(parseDeclaredCounts(phrase), [], `counted a back-reference: ${phrase}`);
+    }
+  });
+
+  test('a real count claim is still counted — the fix must not blind the guard', () => {
+    assert.deepEqual(parseDeclaredCounts('validates the spec across six dimensions'), [6]);
+    assert.deepEqual(parseDeclaredCounts('System MUST validate against 7 dimensions'), [7]);
+    assert.deepEqual(parseDeclaredCounts('All 7 dimensions evaluated'), [7]);
+    assert.deepEqual(parseDeclaredCounts('**7 Validation Dimensions:**'), [7]);
+    assert.deepEqual(parseDeclaredCounts('gsd-ui-checker seven quality dimensions'), [7]);
+  });
+
+  test('the exclusion is anchored to the whole word, not a substring', () => {
+    // "another" contains "other" but has no word boundary before it, so a genuine claim
+    // about a second set must survive.
+    assert.deepEqual(parseDeclaredCounts('another six dimensions'), [6]);
+  });
+
+  test('the exclusion is load-bearing on the real shipped how-to, not just on fixtures', () => {
+    // Typed proof rather than a substring match on prose: run the matcher over the real
+    // file with the exclusion OFF and then ON. Off, it must report a 6 — that 6 is the
+    // back-reference, and is literally what turned `next` red. On, only 7s survive.
+    // If the docs prose is ever reworded away, the first assertion fails loudly rather
+    // than this guard quietly ceasing to exercise the path it exists for.
+    const howto = readShipped(SURFACE.HOWTO);
+    const withoutExclusion = [...new Set(parseDeclaredCounts(howto, { excludeBackReferences: false }))].sort();
+    const withExclusion = [...new Set(parseDeclaredCounts(howto))].sort();
+
+    assert.deepEqual(withoutExclusion, [6, 7],
+      'vacuous unless the how-to still carries the back-reference this guard exists for');
+    assert.deepEqual(withExclusion, [7]);
   });
 });
 
