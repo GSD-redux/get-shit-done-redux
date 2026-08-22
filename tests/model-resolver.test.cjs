@@ -349,7 +349,10 @@ describe('#3533 effort inherit: expressible at every layer, never a wire level',
     }
     // Concrete levels unchanged.
     assert.strictEqual(renderEffortForRuntime('claude', 'minimal').value, 'low');
-    assert.strictEqual(renderEffortForRuntime('codex', 'max').value, 'xhigh');
+    // #3007: corrected — Codex DOES advertise 'max' (per-model table), so
+    // ADR-443's "Codex has no max" premise went stale and this pinned the
+    // defect (clamping 'max' down to 'xhigh') instead of the fix.
+    assert.strictEqual(renderEffortForRuntime('codex', 'max').value, 'max');
     assert.strictEqual(renderEffortForRuntime('claude', 'xhigh').value, 'xhigh');
   });
 });
@@ -5928,3 +5931,236 @@ describe('issue #2612: partial override merge for new Group A runtimes', () => {
 });
   });
 }
+
+// ─── #3007: Codex effort capability is per-model ─────────────────────────────
+//
+// Ground truth (Codex's models.json): gpt-5.6-sol advertises
+// low/medium/high/xhigh/max/ultra; gpt-5.6-luna and gpt-5.6-terra advertise
+// low/medium/high/xhigh/max (no ultra); no Codex model advertises 'minimal'.
+// An unknown/omitted model id falls back to the family baseline
+// (low/medium/high/xhigh/max).
+
+const CODEX_MODEL_EFFORT_SETS = {
+  'gpt-5.6-sol': new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+  'gpt-5.6-luna': new Set(['low', 'medium', 'high', 'xhigh', 'max']),
+  'gpt-5.6-terra': new Set(['low', 'medium', 'high', 'xhigh', 'max']),
+};
+const CODEX_FAMILY_BASELINE = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+function advertisedCodexEfforts(model) {
+  return CODEX_MODEL_EFFORT_SETS[model] || CODEX_FAMILY_BASELINE;
+}
+
+describe('#3007 — Codex effort capability is per-model, and every clamp is visible', () => {
+  test('max survives for a model that advertises it', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'max', 'gpt-5.6-sol');
+    assert.strictEqual(r.value, 'max');
+    assert.strictEqual(r.clamped, false);
+    assert.strictEqual(r.reason, null);
+  });
+
+  test('max survives on luna, not only sol', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'max', 'gpt-5.6-luna');
+    assert.strictEqual(r.value, 'max');
+  });
+
+  test('a level below the ceiling is not reported as clamped', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'xhigh', 'gpt-5.6-sol');
+    assert.strictEqual(r.value, 'xhigh');
+    assert.strictEqual(r.clamped, false);
+  });
+
+  test('ultra is rejected, never clamped to max', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'ultra', 'gpt-5.6-sol');
+    assert.strictEqual(r.value, null);
+    assert.ok(typeof r.reason === 'string' && /deleg/i.test(r.reason), `reason should mention delegation: ${r.reason}`);
+  });
+
+  test('minimal clamps to low on a model that floors at low', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'minimal', 'gpt-5.6-luna');
+    assert.strictEqual(r.value, 'low');
+    assert.strictEqual(r.clamped, true);
+    assert.ok(typeof r.reason === 'string' && r.reason.length > 0);
+  });
+
+  test('minimal clamps on sol too', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'minimal', 'gpt-5.6-sol');
+    assert.strictEqual(r.value, 'low');
+    assert.strictEqual(r.clamped, true);
+  });
+
+  test('an unknown model id gets the family baseline, not a clamp', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'max', 'gpt-9.9-unreleased');
+    assert.strictEqual(r.value, 'max');
+    assert.strictEqual(r.clamped, false);
+  });
+
+  test('an unknown model id still floors at low', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'minimal', 'gpt-9.9-unreleased');
+    assert.strictEqual(r.value, 'low');
+    assert.strictEqual(r.clamped, true);
+  });
+
+  test('the model-less form resolves against the family baseline', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'max');
+    assert.strictEqual(r.value, 'max');
+  });
+
+  test('the model-less form still floors at low', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('codex', 'minimal');
+    assert.strictEqual(r.value, 'low');
+  });
+
+  test('the two-argument signature keeps working for every level', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const UNCHANGED = new Set(['low', 'medium', 'high', 'xhigh']);
+    for (const level of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+      let r;
+      assert.doesNotThrow(() => { r = renderEffortForRuntime('codex', level); });
+      if (UNCHANGED.has(level)) {
+        assert.strictEqual(r.value, level, `level ${level} should pass through unchanged`);
+      }
+    }
+  });
+
+  test('claude rendering is untouched by the codex table', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    assert.strictEqual(renderEffortForRuntime('claude', 'max').value, 'max');
+    assert.strictEqual(renderEffortForRuntime('claude', 'minimal').value, 'low');
+    // passing a codex model id as the 3rd arg to claude must change nothing
+    const withModel = renderEffortForRuntime('claude', 'max', 'gpt-5.6-sol');
+    assert.strictEqual(withModel.value, 'max');
+  });
+
+  test('inherit is not measured against any supported set', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    for (const runtime of ['claude', 'codex', 'something-unknown']) {
+      for (const model of [undefined, 'gpt-5.6-sol']) {
+        const r = renderEffortForRuntime(runtime, 'inherit', model);
+        assert.deepStrictEqual(
+          { value: r.value, param: r.param, channel: r.channel },
+          { value: 'inherit', param: null, channel: null },
+          `runtime=${runtime} model=${JSON.stringify(model)}`,
+        );
+      }
+    }
+  });
+
+  test('an undeclared runtime still renders nothing', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const r = renderEffortForRuntime('something-unknown', 'high');
+    assert.strictEqual(r.param, null);
+    assert.strictEqual(r.channel, null);
+  });
+
+  test('a bare tier alias is not treated as a model id', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    let r;
+    assert.doesNotThrow(() => { r = renderEffortForRuntime('codex', 'max', 'opus'); });
+    assert.strictEqual(r.value, 'max');
+  });
+
+  test('an anthropic-flavored id is not an effort-capability error', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    let r;
+    assert.doesNotThrow(() => { r = renderEffortForRuntime('codex', 'max', 'claude-opus-4-8'); });
+    assert.strictEqual(r.value, 'max');
+  });
+
+  test('an empty model argument behaves exactly like omitting it', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    for (const level of ['max', 'minimal']) {
+      const omitted = renderEffortForRuntime('codex', level);
+      for (const emptyish of ['', null, undefined]) {
+        assert.deepStrictEqual(
+          renderEffortForRuntime('codex', level, emptyish),
+          omitted,
+          `level=${level} emptyish=${JSON.stringify(emptyish)}`,
+        );
+      }
+    }
+  });
+
+  test('effort matching is case-sensitive, as the ladder always was', () => {
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    // 'MAX' is not 'max' — whatever the renderer does with an unrecognized
+    // level, it must not silently treat it as a clean pass-through of 'max'.
+    const r = renderEffortForRuntime('codex', 'MAX', 'gpt-5.6-sol');
+    assert.notStrictEqual(r.value, 'max');
+  });
+});
+
+// ─── #3007 PARITY: known-defect gauntlet ──────────────────────────────────────
+
+test('every catalog preset ships an effort its own model supports', () => {
+  const catalogPath = path.join(__dirname, '..', 'gsd-core', 'bin', 'shared', 'model-catalog.json');
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  const offenders = [];
+
+  const checkEntry = (entryPath, entry) => {
+    if (!entry || typeof entry !== 'object') return;
+    const model = entry.model;
+    const effort = entry.reasoning_effort;
+    if (typeof model !== 'string' || !model.startsWith('gpt-') || typeof effort !== 'string') return;
+    const allowed = advertisedCodexEfforts(model);
+    if (!allowed.has(effort)) {
+      offenders.push(`${entryPath}: model=${model} reasoning_effort=${effort} (not in {${[...allowed].join(', ')}})`);
+    }
+  };
+
+  const codexDefaults = catalog.runtimeTierDefaults && catalog.runtimeTierDefaults.codex;
+  if (codexDefaults) {
+    for (const [tier, entry] of Object.entries(codexDefaults)) {
+      checkEntry(`runtimeTierDefaults.codex.${tier}`, entry);
+    }
+  }
+
+  const openaiPresets = catalog.providerPresets && catalog.providerPresets.openai;
+  if (openaiPresets) {
+    for (const [tier, profiles] of Object.entries(openaiPresets)) {
+      if (!profiles || typeof profiles !== 'object') continue;
+      for (const [profile, entry] of Object.entries(profiles)) {
+        checkEntry(`providerPresets.openai.${tier}.${profile}`, entry);
+      }
+    }
+  }
+
+  assert.deepStrictEqual(offenders, [], `offending presets (model does not advertise the assigned effort):\n${offenders.join('\n')}`);
+});
+
+// ─── #3007 PROPERTY: rendered codex effort is always within the model's ceiling ─
+
+describe('#3007 PROPERTY: renderEffortForRuntime never renders a level the model does not advertise', () => {
+  test('for every (model, level) pair, the outcome is pass-through, clamp, or reject', () => {
+    const fc = require('./helpers/fast-check-setup.cjs');
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-9.9-unreleased-model'];
+    const LADDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    fc.assert(
+      fc.property(fc.constantFrom(...MODELS), fc.constantFrom(...LADDER), (model, level) => {
+        const allowed = advertisedCodexEfforts(model);
+        const r = renderEffortForRuntime('codex', level, model);
+        if (r.value === null) {
+          assert.ok(!allowed.has(level), `value===null for a level the model DOES advertise: model=${model} level=${level}`);
+          return;
+        }
+        assert.ok(allowed.has(r.value), `rendered value not in model's advertised set: model=${model} level=${level} value=${r.value}`);
+        if (r.value === level) {
+          assert.strictEqual(r.clamped, false, `pass-through reported as clamped: model=${model} level=${level}`);
+        } else {
+          assert.strictEqual(r.clamped, true, `changed value not reported as clamped: model=${model} level=${level} value=${r.value}`);
+        }
+      }),
+      { seed: 3007, numRuns: 200 },
+    );
+  });
+});
