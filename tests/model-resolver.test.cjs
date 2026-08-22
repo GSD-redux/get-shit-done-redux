@@ -1644,9 +1644,13 @@ const {
 //   Anthropic: output_config.effort — https://docs.anthropic.com (Claude API)
 //   OpenAI:    model_reasoning_effort — https://platform.openai.com/docs (Codex)
 // ─────────────────────────────────────────────────────────────────────────────
+// #3007: corrected — Codex's own models.json now advertises 'max' (and 'ultra',
+// which is policy-rejected separately, #2167) but no Codex model advertises
+// 'minimal'. The old enum here ('minimal'..'xhigh', no 'max') encoded ADR-443's
+// stale premise, not the real API.
 const PROVIDER_EFFORT_ENUMS = {
   claude: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
-  codex:  new Set(['minimal', 'low', 'medium', 'high', 'xhigh']),
+  codex:  new Set(['low', 'medium', 'high', 'xhigh', 'max']),
 };
 
 // Helper: write config.json into a temp project
@@ -1675,8 +1679,10 @@ describe('#443 integration (a): cross-provider validity invariant', () => {
   });
 
   // Documented clamps must hold exactly
-  test("render('codex','max').value === 'xhigh' (max is Anthropic-only)", () => {
-    assert.strictEqual(renderEffortForRuntime('codex', 'max').value, 'xhigh');
+  // #3007: corrected — Codex gained 'max' (declared per-model via
+  // supported_reasoning_levels); 'max' is no longer Anthropic-only.
+  test("render('codex','max').value === 'max' (Codex now advertises max)", () => {
+    assert.strictEqual(renderEffortForRuntime('codex', 'max').value, 'max');
   });
 
   test("render('claude','minimal').value === 'low' (minimal is Codex-only)", () => {
@@ -2656,9 +2662,11 @@ describe('#443 resolveEffortForTier escalation', () => {
 // ─── Rendering / clamping ──────────────────────────────────────────────────────
 
 describe('#443 renderEffortForRuntime', () => {
-  test('codex: "max" clamps to "xhigh"', () => {
+  // #3007: corrected — Codex gained 'max' (per-model supported_reasoning_levels);
+  // it no longer clamps to 'xhigh'.
+  test('codex: "max" passes through as "max"', () => {
     const r = renderEffortForRuntime('codex', 'max');
-    assert.strictEqual(r.value, 'xhigh');
+    assert.strictEqual(r.value, 'max');
     assert.strictEqual(r.param, 'model_reasoning_effort');
   });
 
@@ -2669,8 +2677,10 @@ describe('#443 renderEffortForRuntime', () => {
     assert.strictEqual(renderEffortForRuntime('codex', 'xhigh').value, 'xhigh');
   });
 
-  test('codex: "minimal" passthrough', () => {
-    assert.strictEqual(renderEffortForRuntime('codex', 'minimal').value, 'minimal');
+  // #3007: corrected — no Codex model advertises 'minimal'; it now clamps up
+  // to the family floor, 'low', instead of passing through.
+  test('codex: "minimal" clamps to "low"', () => {
+    assert.strictEqual(renderEffortForRuntime('codex', 'minimal').value, 'low');
   });
 
   test('claude: "minimal" clamps to "low"', () => {
@@ -2731,7 +2741,9 @@ describe('#443 resolve-execution CLI command', () => {
     assert.ok('profile' in output, 'should have profile field');
   });
 
-  test('codex runtime -> effort_param=model_reasoning_effort, max clamps to xhigh, fast_mode_supported=false', () => {
+  // #3007: corrected — Codex gained 'max' (per-model supported_reasoning_levels),
+  // so 'max' now renders through unchanged instead of clamping to 'xhigh'.
+  test('codex runtime -> effort_param=model_reasoning_effort, max passes through, fast_mode_supported=false', () => {
     writeConfig(tmpDir, {
       runtime: 'codex',
       effort: { default: 'max' },
@@ -2740,7 +2752,7 @@ describe('#443 resolve-execution CLI command', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.strictEqual(output.effort_param, 'model_reasoning_effort');
-    assert.strictEqual(output.effort_rendered, 'xhigh');
+    assert.strictEqual(output.effort_rendered, 'max');
     // fast_mode_supported: codex does not support fast mode via subagent
     assert.strictEqual(output.fast_mode_supported, false);
   });
