@@ -156,7 +156,7 @@ Worth knowing before you rely on it, because the check is narrower than it looks
   `<package>@<version>` is for: compare it against what is installed now. A spec reused after an
   upgrade looks exactly like a fresh one apart from that string.
 - **Enforcement is applied by an agent, not by a parser.** Dimension 7 is a rule `gsd-ui-checker`
-  follows, the same as the other six dimensions. It is not a schema check that runs over your
+  follows, the same as every other dimension. It is not a schema check that runs over your
   spec, so treat a PASS as "the reviewer found a provenance line", not as a machine guarantee.
 - **"The checker never runs the recorded command" is an instruction, not a sandbox.** See
   [Security model → Trade-offs and limits](../explanation/security-model.md#trade-offs-and-limits)
