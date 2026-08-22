@@ -259,6 +259,33 @@ const COVERED = {
     ],
     minScore: 94,
   },
+  // model-catalog: net-new registration by #3007. The module was entirely
+  // outside mutation scoring (has_work: "false") before this entry, so the
+  // #3007 per-model Codex effort rewrite (renderEffortForRuntime's
+  // CODEX_MODEL_EFFORT lookup, the 'ultra' policy rejection, the ladder
+  // walk-up clamp) had zero mutation coverage.
+  //
+  // Same #2790 precedent as planning-inspect above: this shard points at a
+  // dedicated tests/model-catalog.unit.test.cjs, NOT tests/model-resolver.test.cjs
+  // — that integration file uses runGsdTools heavily and would hit the same
+  // 15-minute shard-cap cancellation #2790 documented (a `node --test <file>`
+  // invocation is ONE test costing whatever its slowest case costs, re-run
+  // per mutant). tests/model-catalog.unit.test.cjs is spawn-free, in-process,
+  // and runs in well under a second.
+  //
+  // ⚠️ minScore: 1 is a PLACEHOLDER, not a measured floor — unlike every
+  // other entry in this file, it has NOT yet been through a CI mutation run.
+  // It MUST be ratcheted up to the actual measured CI score (following the
+  // planning-inspect/plan-document/planning-command-router pattern above)
+  // BEFORE this PR merges. A placeholder floor of 1 that survives to `next`
+  // makes this gate decorative — it would pass regardless of whether any
+  // mutant here is ever actually killed. Do not ship this PR with this
+  // comment still describing minScore: 1 as provisional.
+  'model-catalog': {
+    cjs: 'gsd-core/bin/lib/model-catalog.cjs',
+    tests: ['tests/model-catalog.unit.test.cjs'],
+    minScore: 1,
+  },
 };
 
 // ── Files that, when changed, invalidate ALL modules ─────────────────────────
