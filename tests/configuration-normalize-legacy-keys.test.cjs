@@ -1,17 +1,18 @@
 'use strict';
 
 /**
- * Tests for `normalizeLegacyKeys` legacy-key hoisting (#3648 round-2 review).
+ * Tests for `normalizeLegacyKeys` block 5 — top-level `base_branch` →
+ * `git.base_branch` (#3648).
  *
- * Blocks 1 and 5 hoist a top-level legacy key into its canonical nested
- * section (`branching_strategy` → `git.branching_strategy`, `base_branch` →
- * `git.base_branch`). Both spread `result['git']` without first proving it is
- * a plain object, so a config whose `git` key holds a string is spread into
- * index keys. That output is then persisted by config-loader's write-on-
- * normalize path, so the corruption reaches the user's config.json.
+ * Block 5 is new in this PR and is a fifth trigger for the write-on-normalize
+ * path, so it must obey the same contract #3760 established for blocks 1-3:
+ * hoist into an absent or object section, and REFUSE — preserving the legacy
+ * key, pushing no `Normalization`, and reporting via `skipped` — when the
+ * destination section is present but is not an object.
  *
- * Both blocks also record a normalization entry on the canonical-wins branch
- * carrying the DISCARDED value, describing a migration that did not happen.
+ * #3760's own suite (tests/configuration-migrate-config.test.cjs) locks that
+ * contract for blocks 1, 2 and 3. This file locks it for block 5, which did not
+ * exist when that suite was written, plus block 5's ordinary hoist semantics.
  */
 
 const { describe, test } = require('node:test');
@@ -19,90 +20,101 @@ const assert = require('node:assert/strict');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { normalizeLegacyKeys } = require('../gsd-core/bin/lib/configuration.cjs');
 
-/** Keys that only a string/array spread can produce. */
+/** Keys only a string/array spread can produce. */
 function numericKeys(obj) {
   return Object.keys(obj).filter((k) => /^\d+$/.test(k));
 }
 
-describe('#3648 normalizeLegacyKeys — non-object `git` section must not be spread', () => {
-  test('block 5: a string `git` section does not leak index keys into git.base_branch', () => {
-    const { parsed } = normalizeLegacyKeys({ git: 'main', base_branch: 'release' });
+describe('#3648 normalizeLegacyKeys block 5 — ordinary hoist semantics', () => {
+  test('an absent `git` section is created carrying the hoisted value', () => {
+    const { parsed, normalizations, skipped } = normalizeLegacyKeys({ base_branch: 'release' });
 
-    assert.deepStrictEqual(numericKeys(parsed.git), [],
-      'spreading a string `git` value produces {0:"m",1:"a",...}; the guard must reject it first');
     assert.deepStrictEqual(parsed.git, { base_branch: 'release' });
-    assert.strictEqual(parsed.base_branch, undefined, 'stale top-level key must still be dropped');
+    assert.strictEqual(parsed.base_branch, undefined, 'the stale flat key must be dropped');
+    assert.deepStrictEqual(skipped, []);
+    assert.deepStrictEqual(
+      normalizations.find((n) => n.from === 'base_branch'),
+      { from: 'base_branch', to: 'git.base_branch', value: 'release' },
+    );
   });
 
-  test('block 1: a string `git` section does not leak index keys into git.branching_strategy', () => {
-    const { parsed } = normalizeLegacyKeys({ git: 'main', branching_strategy: 'phase' });
+  test('an existing `git` section is merged into, not replaced', () => {
+    const { parsed } = normalizeLegacyKeys({
+      git: { phase_branch_template: 'x' },
+      base_branch: 'release',
+    });
 
-    assert.deepStrictEqual(numericKeys(parsed.git), []);
-    assert.deepStrictEqual(parsed.git, { branching_strategy: 'phase' });
-    assert.strictEqual(parsed.branching_strategy, undefined);
+    assert.deepStrictEqual(parsed.git, { phase_branch_template: 'x', base_branch: 'release' });
   });
 
-  test('negative control: object / array / null `git` sections were already clean', () => {
-    // These three must keep behaving exactly as before the guard was added —
-    // if the guard changed them, it is doing more than rejecting non-objects.
-    assert.deepStrictEqual(
-      normalizeLegacyKeys({ git: [], base_branch: 'release' }).parsed.git,
-      { base_branch: 'release' });
-    assert.deepStrictEqual(
-      normalizeLegacyKeys({ git: null, base_branch: 'release' }).parsed.git,
-      { base_branch: 'release' });
-    assert.deepStrictEqual(
-      normalizeLegacyKeys({ git: { phase_branch_template: 'x' }, base_branch: 'release' }).parsed.git,
-      { phase_branch_template: 'x', base_branch: 'release' });
-  });
-});
+  test('a null `git` section still means "absent" and is created', () => {
+    const { parsed, skipped } = normalizeLegacyKeys({ git: null, base_branch: 'release' });
 
-describe('#3648 normalizeLegacyKeys — canonical-wins must not report a migration that did not happen', () => {
-  test('block 5: the recorded value is the surviving canonical one, not the discarded flat one', () => {
+    assert.deepStrictEqual(parsed.git, { base_branch: 'release' });
+    assert.deepStrictEqual(skipped, [], 'null is absence, not a malformed section');
+  });
+
+  test('a canonical `git.base_branch` outranks the flat key, which is dropped', () => {
     const { parsed, normalizations } = normalizeLegacyKeys({
       git: { base_branch: 'nested' },
       base_branch: 'flat',
     });
 
     assert.strictEqual(parsed.git.base_branch, 'nested', 'canonical value must win');
-
-    const entry = normalizations.find((n) => n.from === 'base_branch');
-    assert.ok(entry, 'an entry must still be recorded so the stale key is written away');
-    assert.strictEqual(entry.value, 'nested',
-      'value must describe what now lives at git.base_branch, not the value that was thrown away');
-    assert.strictEqual(entry.discarded, 'flat',
-      'the discarded flat value belongs in its own field, not masquerading as the migrated value');
-  });
-
-  test('block 1: same contract for branching_strategy', () => {
-    const { normalizations } = normalizeLegacyKeys({
-      git: { branching_strategy: 'milestone' },
-      branching_strategy: 'phase',
-    });
-
-    const entry = normalizations.find((n) => n.from === 'branching_strategy');
-    assert.ok(entry);
-    assert.strictEqual(entry.value, 'milestone');
-    assert.strictEqual(entry.discarded, 'phase');
-  });
-
-  test('negative control: a genuine migration records the migrated value and no `discarded`', () => {
-    const { normalizations } = normalizeLegacyKeys({ base_branch: 'release' });
-    const entry = normalizations.find((n) => n.from === 'base_branch');
-
-    assert.strictEqual(entry.value, 'release');
-    assert.strictEqual(entry.discarded, undefined,
-      'nothing was discarded, so the field must be absent — otherwise it cannot distinguish the two cases');
+    assert.strictEqual(parsed.base_branch, undefined);
+    assert.ok(normalizations.find((n) => n.from === 'base_branch'),
+      'an entry is still recorded so the stale flat key is written away');
   });
 });
 
-describe('#3648 normalizeLegacyKeys — property: hoisting never fabricates index keys', () => {
-  test('hoisting adds no key the input section did not already carry', () => {
-    // NOTE the invariant is "adds none", not "has none". A user's `git`
-    // section may legitimately contain a numeric-looking key ({"0": ""}), and
-    // preserving it is correct — fast-check found exactly that counterexample
-    // against the stronger phrasing. What must never happen is the hoist
-    // MANUFACTURING index keys by spreading a non-object.
+describe('#3648 normalizeLegacyKeys block 5 — a non-object `git` section blocks the migration', () => {
+  // Same contract as #3760 blocks 1-3: preserve, refuse, report. Anything else
+  // is destructive, because config-loader persists whatever normalization
+  // produced whenever `normalizations` is non-empty.
+
+  for (const [label, section] of [
+    ['string', 'main'],
+    ['number', 42],
+    ['boolean', true],
+    ['array', ['main']],
+  ]) {
+    test(`a ${label} \`git\` section: value preserved, nothing normalized, refusal reported`, () => {
+      const input = { git: section, base_branch: 'release' };
+      const { parsed, normalizations, skipped } = normalizeLegacyKeys(input);
+
+      assert.deepStrictEqual(parsed.git, section, 'the section value must survive verbatim');
+      assert.strictEqual(parsed.base_branch, 'release', 'the legacy key must NOT be consumed');
+      assert.deepStrictEqual(
+        normalizations.filter((n) => n.from === 'base_branch'), [],
+        'pushing a Normalization is what makes config-loader write the file back',
+      );
+      assert.deepStrictEqual(skipped, [{
+        from: 'base_branch',
+        to: 'git.base_branch',
+        section: 'git',
+        reason: 'non_object_section',
+        value: 'release',
+        sectionType: label,
+      }]);
+    });
+  }
+
+  test('negative control: the refusal is scoped to block 5, not to the whole call', () => {
+    // A non-object `git` must not stop an unrelated block from normalizing —
+    // otherwise the guard is a blanket bail-out rather than a per-section one.
+    const { parsed, normalizations } = normalizeLegacyKeys({
+      git: 'main',
+      base_branch: 'release',
+      depth: 'quick',
+    });
+
+    assert.strictEqual(parsed.granularity, 'coarse', 'block 4 must still run');
+    assert.ok(normalizations.find((n) => n.from === 'depth'));
+  });
+});
+
+describe('#3648 normalizeLegacyKeys block 5 — property: hoist or refuse, never corrupt', () => {
+  test('across arbitrary `git` values the two outcomes are exhaustive and exclusive', () => {
     fc.assert(
       fc.property(
         fc.oneof(
@@ -115,19 +127,30 @@ describe('#3648 normalizeLegacyKeys — property: hoisting never fabricates inde
         ),
         fc.string({ minLength: 1 }),
         (gitValue, branch) => {
-          const isPlainObject = gitValue !== null
-            && typeof gitValue === 'object'
-            && !Array.isArray(gitValue);
-          const carriedIn = isPlainObject ? numericKeys(gitValue) : [];
+          const receivable = gitValue === null
+            || (typeof gitValue === 'object' && !Array.isArray(gitValue));
+          const carriedIn = receivable && gitValue !== null ? numericKeys(gitValue) : [];
 
-          const { parsed } = normalizeLegacyKeys({ git: gitValue, base_branch: branch });
+          const { parsed, normalizations, skipped } =
+            normalizeLegacyKeys({ git: gitValue, base_branch: branch });
 
-          // The section must always end up a plain object…
-          assert.ok(parsed.git && typeof parsed.git === 'object' && !Array.isArray(parsed.git));
-          // …carrying the hoisted key…
-          assert.strictEqual(parsed.git.base_branch, branch);
-          // …and no numeric key beyond whatever the input already had.
-          assert.deepStrictEqual(numericKeys(parsed.git).sort(), carriedIn.sort());
+          const hoisted = normalizations.some((n) => n.from === 'base_branch');
+          const refused = skipped.some((s) => s.from === 'base_branch');
+          assert.notStrictEqual(hoisted, refused,
+            'exactly one of the two outcomes must be reported for this key');
+          assert.strictEqual(hoisted, receivable);
+
+          if (receivable) {
+            assert.ok(parsed.git && typeof parsed.git === 'object' && !Array.isArray(parsed.git));
+            assert.strictEqual(parsed.git.base_branch, branch);
+            assert.strictEqual(parsed.base_branch, undefined);
+            // No numeric key beyond whatever the input section already had: a
+            // spread of a non-object is what would manufacture them.
+            assert.deepStrictEqual(numericKeys(parsed.git).sort(), carriedIn.sort());
+          } else {
+            assert.deepStrictEqual(parsed.git, gitValue);
+            assert.strictEqual(parsed.base_branch, branch);
+          }
         },
       ),
       { numRuns: 300 },
