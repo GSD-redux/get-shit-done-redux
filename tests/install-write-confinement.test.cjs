@@ -3669,14 +3669,15 @@ describe('#3712 in-process home confinement', () => {
         'it must refuse BEFORE creating the escaped skill directory');
     });
 
-    // The guard call is conditional on `target.installRoot !== targetDir` — the
-    // read-off-the-same-result stand-in for "the skills kind declared a home
-    // override". Pin the ALLOW half too, so widening that condition cannot pass
-    // silently. configDir sits INSIDE the (fake) real home deliberately: that is
-    // what gives this row teeth. With the condition as written the guard is never
-    // consulted, because no home override was declared; widened to run
-    // unconditionally it would see a destination inside the real home with no
-    // sandbox to derive from, and refuse an ordinary confined migration.
+    // The guard call is conditional on `target.hasHomeOverride` — the skills
+    // kind's own answer to "did it declare a home override?", read off the same
+    // layout resolution the write uses. Pin the ALLOW half too, so widening that
+    // condition cannot pass silently. configDir sits INSIDE the (fake) real home
+    // deliberately: that is what gives this row teeth. With the condition as
+    // written the guard is never consulted, because no home override was
+    // declared; widened to run unconditionally it would see a destination inside
+    // the real home with no sandbox to derive from, and refuse an ordinary
+    // confined migration.
     test('… and still migrates for a runtime whose skills kind declares no home override', (t) => {
       const { homeDir, deps } = forgottenSandbox(t);
       const configDir = path.join(homeDir, '.claude');
