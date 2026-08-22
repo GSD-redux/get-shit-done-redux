@@ -36,6 +36,10 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const AGENT_PATH = path.join(ROOT, 'agents', 'gsd-plan-checker.md');
 const DOCS_AGENTS_PATH = path.join(ROOT, 'docs', 'AGENTS.md');
+const REVISION_LOOP_PATH = path.join(ROOT, 'gsd-core', 'references', 'revision-loop.md');
+const PLAN_PHASE_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'plan-phase.md');
+const PLANNER_PATH = path.join(ROOT, 'agents', 'gsd-planner.md');
+const PLANNER_COUPLING_REF_PATH = path.join(ROOT, 'gsd-core', 'references', 'planner-coupling.md');
 
 const agentDoc = fs.readFileSync(AGENT_PATH, 'utf-8');
 const docsAgents = fs.readFileSync(DOCS_AGENTS_PATH, 'utf-8');
@@ -146,12 +150,21 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
   });
 
   describe('severity is advisory, and stays advisory', () => {
-    test('the sub-check finding is info (local #3724 patch: advisory tier must not gate the revision loop)', () => {
+    test('the sub-check severity is the tier the revision loop exempts (#3724 parity)', () => {
+      // #3724's defect was exactly this coming apart: 3b spec'd "advisory" but
+      // tagged `warning`, the tier the revision loop treats as must-fix. The
+      // exempt tier is therefore DERIVED from revision-loop.md's flow, never
+      // hardcoded — if the loop's exemption ever changes, this fails instead
+      // of silently re-opening the guaranteed-replan defect.
+      const loopDoc = fs.readFileSync(REVISION_LOOP_PATH, 'utf-8');
+      const exempt = loopDoc.match(/If PASSED or only (\w+)-level issues/);
+      assert.ok(exempt, 'revision-loop.md must state its exempt severity tier in the flow');
+      const tier = exempt[1].toLowerCase();
       const span = sliceBetween(agentDoc, D3B_HEADING, D4_HEADING);
       assert.match(
         span,
-        /severity:\s*info/,
-        'Dimension 3b\'s example issue must carry severity: info'
+        new RegExp(`severity:\\s*${tier}`),
+        `Dimension 3b's example issue must carry severity: ${tier} — the tier revision-loop.md exempts`
       );
       assert.doesNotMatch(
         span,
@@ -288,6 +301,83 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
         section,
         /coupling/i,
         'docs/AGENTS.md\'s gsd-plan-checker section must document the coupling check'
+      );
+    });
+  });
+
+  describe('#3724 — the advisory contract holds across the wiring', () => {
+    // The defect #3724 fixed lived in three places at once: the checker's tier,
+    // the orchestrator's loop gate, and the planner's ignorance of the rule.
+    // Each assertion here pins one side; reverting any one of them alone must
+    // red this suite, because #3237 shipping 3b with no orchestration-side
+    // assertion is exactly how the defect arrived.
+
+    test('plan-phase accepts an INFO-only issues block without entering the revision loop', () => {
+      const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+      const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
+      const paragraph = splitLines(planPhase).find((line) =>
+        line.startsWith('Parse issue count from checker return:')
+      );
+      assert.ok(paragraph, 'plan-phase.md step 12 must carry the parse-issue-count paragraph');
+      assert.match(
+        paragraph,
+        /likewise when the block has only INFO entries \(display them as advisories\)/,
+        'step 12 must accept an INFO-only issues block and surface the advisories (#3724 criterion 1)'
+      );
+    });
+
+    test('plan-phase still counts BLOCKER + WARNING for the revision gate', () => {
+      // Criterion 2's orchestration half: severity-blindness must not invert.
+      // INFO joining the count would re-arm the loop; BLOCKER or WARNING
+      // leaving it would let real defects through.
+      const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
+      assert.match(
+        planPhase,
+        /count BLOCKER \+ WARNING entries in the YAML issues block/,
+        'step 12 must keep gating the revision loop on BLOCKER + WARNING counts'
+      );
+    });
+
+    test('the checker recognizes coupling_justified as a Do-NOT-flag exemption', () => {
+      const span = sliceBetween(agentDoc, D3B_HEADING, D4_HEADING);
+      assert.match(
+        span,
+        /declared `coupling_justified` in either plan's frontmatter/,
+        'Dimension 3b must exempt a coupling_justified pair so intentional coupling can converge (#3724 criterion 4)'
+      );
+      assert.match(
+        span,
+        /fix_hint:[^\n]*coupling_justified/,
+        'the 3b fix_hint must name coupling_justified so the planner learns the escape hatch'
+      );
+    });
+
+    test('the planner routes to the coupling reference, and the reference teaches the rule', () => {
+      const planner = fs.readFileSync(PLANNER_PATH, 'utf-8');
+      assert.match(
+        planner,
+        /@~\/\.claude\/gsd-core\/references\/planner-coupling\.md/,
+        'gsd-planner.md must point at the planner-coupling reference (#3724 criterion 3)'
+      );
+      assert.ok(
+        fs.existsSync(PLANNER_COUPLING_REF_PATH),
+        'gsd-core/references/planner-coupling.md must exist — the planner pointer routes there'
+      );
+      const ref = fs.readFileSync(PLANNER_COUPLING_REF_PATH, 'utf-8');
+      assert.match(
+        ref,
+        /mutable\s+resource/i,
+        'planner-coupling.md must state the shared-mutable-resource rule'
+      );
+      assert.match(
+        ref,
+        /coupling_justified/,
+        'planner-coupling.md must document the coupling_justified declaration'
+      );
+      assert.match(
+        ref,
+        /Dimension 3b/,
+        'planner-coupling.md must name the verifying side (Dimension 3b)'
       );
     });
   });
