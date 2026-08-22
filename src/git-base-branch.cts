@@ -66,6 +66,17 @@ export interface BaseBranchDeps {
 interface EffectiveGitConfig {
   baseBranch: string | null;
   protectedBranches: string[];
+  /** Rendered form of every entry rejected as unusable, for the caller to report. */
+  rejectedProtectedBranches: string[];
+}
+
+/** Render a rejected config value for a diagnostic without throwing on exotic input. */
+function renderRejected(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**
@@ -110,14 +121,29 @@ function readEffectiveGitConfig(
   const baseBranch = typeof rawBaseBranch === 'string' && rawBaseBranch.trim()
     ? rawBaseBranch.trim()
     : null;
+  // A protection predicate must not fail OPEN. `config-set` validation is
+  // bypassable by a direct edit of .planning/config.json, so one bad element
+  // discarding the whole list would silently answer "not protected" for names
+  // the user believes are protected — the exact failure #3552 exists to close,
+  // reintroduced through a different door (#3648 review Blocker 3). Drop only
+  // the bad elements, and report every rejection so it cannot pass unnoticed.
   const rawProtectedBranches = config.protected_branches;
-  const protectedBranches = Array.isArray(rawProtectedBranches)
-    && rawProtectedBranches.length > 0
-    && rawProtectedBranches.every((branch) => typeof branch === 'string' && branch.trim() !== '')
-    ? (rawProtectedBranches as string[]).map((branch) => branch.trim())
-    : [];
+  const protectedBranches: string[] = [];
+  const rejectedProtectedBranches: string[] = [];
+  if (Array.isArray(rawProtectedBranches)) {
+    for (const branch of rawProtectedBranches) {
+      if (typeof branch === 'string' && branch.trim() !== '') {
+        protectedBranches.push(branch.trim());
+      } else {
+        rejectedProtectedBranches.push(renderRejected(branch));
+      }
+    }
+  } else if (rawProtectedBranches !== undefined && rawProtectedBranches !== null) {
+    // Not a list at all — contributes no names, but is still a misconfiguration.
+    rejectedProtectedBranches.push(renderRejected(rawProtectedBranches));
+  }
 
-  return { baseBranch, protectedBranches };
+  return { baseBranch, protectedBranches, rejectedProtectedBranches };
 }
 
 /**
@@ -301,6 +327,8 @@ export function resolveBaseBranch(
 export interface ProtectedBranchStatus {
   baseBranch: string;
   protectedBranches: string[];
+  /** Rendered `git.protected_branches` entries that were unusable and ignored. */
+  rejectedProtectedBranches: string[];
   isProtected: boolean;
   verified: boolean;
 }
@@ -321,6 +349,7 @@ export function resolveProtectedBranchStatus(
   return {
     baseBranch,
     protectedBranches,
+    rejectedProtectedBranches: effectiveConfig.rejectedProtectedBranches,
     isProtected: protectedBranches.includes(currentBranch),
     verified,
   };
@@ -483,13 +512,21 @@ export function cmdGitBaseBranch(
 ): string {
   if (args[0] === '--is-protected') {
     const status = resolveProtectedBranchStatus(cwd, args[1] ?? '', deps);
+    const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
+    if (status.rejectedProtectedBranches.length > 0) {
+      writeDiagnostic(
+        `⚠ git-base-branch: ignoring ${status.rejectedProtectedBranches.length} unusable ` +
+        `git.protected_branches entr${status.rejectedProtectedBranches.length === 1 ? 'y' : 'ies'} ` +
+        `(${status.rejectedProtectedBranches.join(', ')}) — each must be a non-empty branch name. ` +
+        `The remaining names are still enforced. See #3552.\n`
+      );
+    }
     // A protection guard must fail closed: if the base branch could not be
     // verified against this repository (a git query timed out or failed to
     // run — #3057 B4), report "protected" rather than silently trusting an
     // unverified guess that might happen to not match the current branch.
     const rendered = String(status.verified ? status.isProtected : true);
     if (!status.verified) {
-      const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
       writeDiagnostic(
         `⚠ git-base-branch: --is-protected could not verify the base branch against this ` +
         `repository — defaulting to protected (fail-closed). See #3057.\n`
