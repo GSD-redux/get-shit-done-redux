@@ -274,7 +274,7 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | [ADR-1671](1671-dynamic-context-management-platform.md) | Dynamic context management platform | Proposed | — |
 | [ADR-1953](1953-complexity-triggered-refactor.md) | Complexity-triggered refactor — the loop measures the entropy it just added | Proposed | — |
 | [ADR-3128](3128-adaptive-runtime-evidence.md) | Adaptive runtime evidence for GSD Debug | Proposed | — |
-| [ADR-3159](3159-session-survivability-dispatch.md) | Dispatch safety is host capability **and** session survivability | Proposed | — |
+| [ADR-3159](3159-session-survivability-dispatch.md) | The dispatch predicate takes a dispatch **kind** and a session **survivability**, not a host descriptor alone | Proposed | — |
 
 ### Superseded, Retired, and Legacy
 
