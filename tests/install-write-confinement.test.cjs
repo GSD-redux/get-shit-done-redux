@@ -3310,6 +3310,28 @@ describe('#3712 in-process home confinement', () => {
       );
     });
 
+    // Review N2: the leaking cell of the truth table. A destination's ancestor
+    // chain is linear, so "inside the real home AND inside the effective HOME"
+    // admits `realHome ⊂ effectiveHome` as well as the intended
+    // `effectiveHome ⊂ realHome`. HOME at /Users, /home or C:\Users is not a
+    // sandbox — it is the real home spelled more widely — and without the third
+    // conjunct it exempts a stale destination pointing straight at ~/.agents.
+    test('a HOME that is an ANCESTOR of the real home is not a sandbox', (t) => {
+      const container = createTempDir('gsd-3712-ancestor-');
+      t.after(() => cleanup(container));
+      const realHome = path.join(container, 'someone');
+      fs.mkdirSync(path.join(realHome, '.agents'), { recursive: true });
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('applySurface', 'codex',
+          escapingKinds(path.join(realHome, '.agents')),
+          // HOME is the DIRECTORY THAT CONTAINS the real home, so it differs from
+          // the passwd home and still contains the destination.
+          { os: fakeOs(container, realHome), env: underTest }),
+        /destination inside\s+your REAL home/,
+        'a HOME above the real home spells it more widely; it does not sandbox it',
+      );
+    });
+
     // The escape the nested-sandbox exemption opens if it trusts the SPELLING of
     // a path instead of where it resolves. HOME is sandboxed to a directory
     // inside the real home (legitimate on Windows), but the sandbox's `.agents`

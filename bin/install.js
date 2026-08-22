@@ -11609,7 +11609,8 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // #3245 CR finding 2 — any throw in the pre-config install operations (skills copy,
     // agents copy, VERSION write, manifest write, etc.) triggers the Codex pre-config
     // rollback so the caller is never left in a partially-installed state.
-    rollbackInstallerMigrations();
+    // (The second, identical rollbackInstallerMigrations() that used to sit here was
+    // a duplicate of the line above, not a second phase — removed in #3725 review.)
     // #3712 — the test-home guard refuses before any LAYOUT-DRIVEN write, so no
     // gsd-* directory in the skills root has been touched and there is nothing
     // there to undo. (Legacy install migrations DO run first; that is why the

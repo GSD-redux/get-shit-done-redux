@@ -472,12 +472,19 @@ function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string
   // Exported and directly callable, and `_runLegacyInstallMigrations` runs it
   // BEFORE installRuntimeArtifacts' own assertion, so a future runtime pairing a
   // home override with this migration would write to the real home ahead of any
-  // guard. It creates rather than prunes, which is why it was missed. Scoped to
-  // the one kind it writes.
-  if (runtime) {
-    const _layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir, scope as any);
-    const _skillsKind = _layout.kinds.find((k: any) => k.kind === 'skills');
-    if (_skillsKind) testHomeGuard.assertTestHomeSandboxed('migrateLegacyDevPreferencesToSkill', runtime, [_skillsKind]);
+  // guard. It creates rather than prunes, which is why it was missed.
+  //
+  // Guards the destination ALREADY RESOLVED above, never a second resolution of
+  // its own. An earlier revision re-ran resolveRuntimeArtifactLayout() here —
+  // and without `capabilityRegistry`, so a registry-dependent descriptor could
+  // make the two disagree and leave the guard vouching for a path the migration
+  // does not write. That is the generative-fix-divergence shape; reported in
+  // review of #3725. `installRoot !== targetDir` is exactly the condition under
+  // which the skills kind declared a `home` override, read off the same result.
+  if (runtime && target.installRoot !== targetDir) {
+    testHomeGuard.assertTestHomeSandboxed('migrateLegacyDevPreferencesToSkill', runtime, [
+      { kind: 'skills', home: path.dirname(target.skillFile) },
+    ]);
   }
   const { skillFile, installRoot } = target;
   const skillDir = path.dirname(skillFile);

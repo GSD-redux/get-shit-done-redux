@@ -12,7 +12,7 @@
  *   readSurface(runtimeConfigDir)
  *   writeSurface(runtimeConfigDir, surfaceState)
  *   resolveSurface(runtimeConfigDir, manifest, clusterMap?, registry?)
- *   applySurface(runtimeConfigDir, layout, manifest, clusterMap?, registry?)
+ *   applySurface(runtimeConfigDir, layout, manifest, clusterMap?, registry?, opts?, deps?)
  *   listSurface(runtimeConfigDir, manifest, clusterMap?, registry?)
  *   pruneSkillDirs(skillsDir, retainedNames, prefix, manifest)
  *

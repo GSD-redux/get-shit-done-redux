@@ -226,7 +226,7 @@ function assertTestHomeSandboxed(
       // it was spelled as; see resolveThroughLinks.
       const dest = resolveThroughLinks(declared);
       if (!isInside(dest, realHome)) continue;
-      if (derivesFromSandboxedHome(dest, effectiveHome, realHome)) continue;
+      if (derivesFromSandboxedHome(dest, effectiveHome, realHome, passwdHome as string)) continue;
       throw refusal(
         `${operation}("${runtime}") was called under a test runner with a destination inside ` +
         `your REAL home. The "${kind.kind}" kind declares a global home override, so it ` +
@@ -311,10 +311,13 @@ function resolveThroughLinks(dest: string): string {
  * #3725 failed on legitimately sandboxed destinations before this conjunct
  * existed.
  *
- * BOTH conditions are required, and neither is sufficient:
+ * THREE conditions are required, and no two of them suffice:
  *
  *   - HOME differs from the passwd home — otherwise nothing was sandboxed and
  *     `dest` is simply in the real home.
+ *   - the passwd home is NOT beneath that HOME — see the comment on the third
+ *     check; the first two together still admit a HOME that merely spells the
+ *     real home more widely.
  *   - `dest` is beneath that sandboxed HOME — otherwise this decays into the
  *     "is HOME sandboxed?" check the module docblock rejects, and a layout
  *     resolved before the sandbox walks straight through.
@@ -326,11 +329,21 @@ function derivesFromSandboxedHome(
   dest: string,
   effectiveHome: string | null,
   realHome: { dev: number; ino: number },
+  passwdHome: string,
 ): boolean {
   if (effectiveHome === null) return false;
   const eff = identify(effectiveHome);
   if (eff.kind !== 'ok') return false;
   if (eff.dev === realHome.dev && eff.ino === realHome.ino) return false;
+  // A sandbox sits BENEATH the real home (the Windows temp shape) — never above
+  // it. A destination's ancestor chain is linear, so "inside the real home AND
+  // inside the effective HOME" admits two arrangements, not one: the intended
+  // `effectiveHome ⊂ realHome`, and `realHome ⊂ effectiveHome` — HOME pointed at
+  // `/Users`, `/home`, or `C:\Users`. The second is not a sandbox, it is the real
+  // home reached by a wider spelling, and without this it exempts a stale
+  // destination. Reported in review of #3725 as the one leaking cell of a
+  // six-row truth table.
+  if (isInside(passwdHome, eff)) return false;
   return isInside(dest, eff);
 }
 
