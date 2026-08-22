@@ -901,6 +901,165 @@ describe('#3552: configured protected branches', () => {
 // here as known-unkillable rather than left to look like coverage this suite
 // does not provide.
 
+describe('#3648 property: config-set validation and resolver filtering must agree', () => {
+  // The two new validating surfaces this PR adds are deliberately different
+  // shapes: `config-set` is all-or-nothing (reject the whole write), while the
+  // resolver is per-entry (drop the bad names, keep the good ones, report), so
+  // that a direct edit of config.json cannot fail the predicate OPEN. Nothing
+  // structural keeps the two definitions of "usable branch name" in step —
+  // only this property, which asks both about the same values.
+  const fc = require('./helpers/fast-check-setup.cjs');
+  const { isValidProtectedBranches } = require('../gsd-core/bin/lib/config.cjs');
+
+  /** A value generator weighted towards the boundary cases both surfaces care about. */
+  const entry = () => fc.oneof(
+    fc.string(),
+    fc.constantFrom('', '   ', '\t\n', ' develop ', 'develop'),
+    fc.integer(),
+    fc.boolean(),
+    fc.constant(null),
+    fc.constant(undefined),
+  );
+
+  test('accepted by config-set ⟺ the resolver rejects nothing from a non-empty list', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.array(entry(), { maxLength: 6 }), entry()),
+        (configured) => {
+          const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/x', {
+            loadConfig: () => ({ base_branch: 'main', protected_branches: configured }),
+          });
+
+          const resolverKeptEverything = Array.isArray(configured)
+            && configured.length > 0
+            && status.rejectedProtectedBranches.length === 0;
+
+          assert.strictEqual(isValidProtectedBranches(configured), resolverKeptEverything,
+            `disagreement on ${JSON.stringify(configured)}`);
+        },
+      ),
+      { numRuns: 400 },
+    );
+  });
+
+  test('every surviving name is trimmed, non-empty, and de-duplicated against the base', () => {
+    fc.assert(
+      fc.property(
+        fc.array(entry(), { maxLength: 6 }),
+        (configured) => {
+          const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/x', {
+            loadConfig: () => ({ base_branch: 'main', protected_branches: configured }),
+          });
+
+          for (const name of status.protectedBranches) {
+            assert.strictEqual(typeof name, 'string');
+            assert.strictEqual(name, name.trim(), 'names must be stored trimmed');
+            assert.notStrictEqual(name, '', 'a blank name would silently match a detached HEAD');
+          }
+          assert.deepStrictEqual(
+            status.protectedBranches, [...new Set(status.protectedBranches)],
+            'duplicates (including one equal to the base branch) must collapse');
+          assert.strictEqual(status.protectedBranches[0], 'main',
+            'the resolved base branch is always protected and always leads');
+
+          // Nothing is lost silently: each input element is either kept
+          // (trimmed) or reported as rejected.
+          const kept = configured.filter((b) => typeof b === 'string' && b.trim() !== '');
+          assert.strictEqual(
+            kept.length + status.rejectedProtectedBranches.length, configured.length);
+        },
+      ),
+      { numRuns: 400 },
+    );
+  });
+});
+
+describe('#3648 Blocker 1: --is-protected is a QUERY and must not rewrite config.json', () => {
+  // The predicate runs on every execute-phase and every ship. It resolves config
+  // through config-loader's `loadConfig`, which normalizes legacy keys and then
+  // WRITES the migrated shape back to .planning/config.json. A boolean question
+  // was therefore silently rewriting the user's checked-in config — and this PR
+  // widened the trigger by adding a fifth normalization block (top-level
+  // `base_branch` -> `git.base_branch`). The read now passes `persist: false`.
+  //
+  // Asserted on BYTES, not on parsed shape: the persisted rewrite reorders keys
+  // and reflows whitespace even when the resolved values are equivalent.
+
+  /** A config whose ONLY interesting property is that it triggers a normalization. */
+  function writeLegacyConfig(dir) {
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    const cfgPath = path.join(dir, '.planning', 'config.json');
+    // Hand-written formatting deliberately unlike JSON.stringify(cfg, null, 2):
+    // if anything rewrites this file, the bytes cannot come back identical.
+    fs.writeFileSync(cfgPath, '{"base_branch": "develop", "granularity": "standard"}\n');
+    return cfgPath;
+  }
+
+  test('a legacy-key config survives --is-protected byte-for-byte, and is still honoured', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const cfgPath = writeLegacyConfig(dir);
+    const before = fs.readFileSync(cfgPath);
+
+    const match = runGsdTools(['query', 'git.base-branch', '--is-protected', 'develop'], dir);
+    const control = runGsdTools(['query', 'git.base-branch', '--is-protected', 'topic/3648'], dir);
+
+    assert.ok(match.success, match.error);
+    assert.ok(control.success, control.error);
+    // Positive control: the flat legacy `base_branch` DID reach the predicate.
+    // Without this the byte assertion below would also pass for a query that
+    // ignored the config entirely.
+    assert.strictEqual(match.output, 'true');
+    assert.strictEqual(control.output, 'false');
+
+    assert.deepStrictEqual(
+      fs.readFileSync(cfgPath), before,
+      'a read-only predicate must leave .planning/config.json byte-identical',
+    );
+  });
+
+  test('negative control: an ordinary persisting load DOES rewrite the same fixture', (t) => {
+    // Without this the test above cannot fail for the right reason — a fixture
+    // that never triggered a normalization would keep its bytes no matter what
+    // `persist` did. This proves the fixture is live.
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-neg-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const cfgPath = writeLegacyConfig(dir);
+    const before = fs.readFileSync(cfgPath);
+
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    const persisted = configLoader.loadConfig(dir);
+
+    assert.notDeepStrictEqual(
+      fs.readFileSync(cfgPath), before,
+      'the default (omitted) option must keep migrating legacy configs on disk',
+    );
+    assert.strictEqual(persisted['base_branch'], 'develop',
+      'and it must resolve the same value the non-persisting read resolves');
+  });
+
+  test('persist:false changes only the side effect, not the resolved config', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-parity-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const cfgPath = writeLegacyConfig(dir);
+    const before = fs.readFileSync(cfgPath);
+
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    const quiet = configLoader.loadConfig(dir, { persist: false });
+    assert.deepStrictEqual(fs.readFileSync(cfgPath), before,
+      'persist:false must not write');
+
+    const loud = configLoader.loadConfig(dir);
+    assert.notDeepStrictEqual(fs.readFileSync(cfgPath), before,
+      'the same directory, without the option, must write — proving the two differ');
+    assert.deepStrictEqual(quiet, loud,
+      'resolution must be identical; only the write is suppressed');
+  });
+});
+
 describe('#3648 Major 1: readEffectiveGitConfig readFile seam — config present but unusable', () => {
   const CWD = path.join(path.sep, 'gsd-3648-seam');
 

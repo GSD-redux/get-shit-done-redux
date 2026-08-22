@@ -80,9 +80,39 @@ function renderRejected(value: unknown): string {
 }
 
 /**
+ * Flat-then-nested lookup, mirroring `loadConfigResolved`'s own `get()`: a
+ * top-level `base_branch` outranks `git.base_branch`, because
+ * `normalizeLegacyKeys` normally hoists the flat key away and a flat key that
+ * SURVIVED normalization is one the migration refused (a non-object `git`
+ * section, #3760) — the user's only remaining expression of intent.
+ */
+function readGitKey(config: Record<string, unknown>, field: string): unknown {
+  if (config[field] !== undefined) return config[field];
+  const git = config['git'];
+  if (git !== null && typeof git === 'object' && !Array.isArray(git)) {
+    return (git as Record<string, unknown>)[field];
+  }
+  return undefined;
+}
+
+/**
  * Read the effective root/workstream configuration once for branch policy.
- * The readFile branch preserves the historical low-level test seam; production
- * uses config-loader's canonical root+workstream merge.
+ *
+ * Production takes the `loadConfig` branch, with `persist: false` — this is a
+ * PREDICATE, invoked on every `execute-phase` and every `ship` run, and a
+ * question must not rewrite the file it is asking about. Without it, any project
+ * carrying a legacy flat key (`base_branch`, `branching_strategy`, `depth`, …)
+ * has `.planning/config.json` silently normalized and rewritten by a call whose
+ * entire contract is to answer a boolean (#3648 review Blocker 1).
+ *
+ * The `readFile` branch is a unit-test seam, NOT a second production path, and
+ * it is deliberately narrower than `loadConfig`. It covers exactly two of
+ * production's steps — `normalizeLegacyKeys`, then the flat-then-nested lookup
+ * — over a single `<cwd>/.planning/config.json`. It does NOT apply
+ * root/workstream `_deepMergeConfig`, builtin or `~/.gsd/defaults.json`
+ * defaults, or `mergeFederatedConfig`. Tests that assert on any of those must
+ * drive `loadConfig` instead; the seam's own tests are scoped to normalization
+ * and shape validation, which is all it reproduces (#3648 review Major 3).
  */
 function readEffectiveGitConfig(
   cwd: string,
@@ -96,24 +126,17 @@ function readEffectiveGitConfig(
       try {
         const parsed: unknown = JSON.parse(raw);
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          // Route through the same precedence authority production uses
-          // (config-loader's loadConfig also normalizes via this function)
-          // so this low-level seam cannot silently diverge from production
-          // resolution order (#3648 review Blocker 2).
           const { parsed: normalized } = normalizeLegacyKeys(parsed as Record<string, unknown>);
-          const git = normalized.git && typeof normalized.git === 'object' && !Array.isArray(normalized.git)
-            ? normalized.git as Record<string, unknown>
-            : {};
           config = {
-            base_branch: git.base_branch,
-            protected_branches: git.protected_branches,
+            base_branch: readGitKey(normalized, 'base_branch'),
+            protected_branches: readGitKey(normalized, 'protected_branches'),
           };
         }
       } catch { /* malformed direct edit contributes no policy values */ }
     }
   } else {
     try {
-      config = (deps?.loadConfig ?? loadConfigSeam)(cwd);
+      config = (deps?.loadConfig ?? loadConfigSeam)(cwd, { persist: false });
     } catch { /* configuration loading is fail-soft for branch resolution */ }
   }
 
@@ -517,11 +540,17 @@ export function cmdGitBaseBranch(
     // branch is named '', the answer is false, and that is not a fault worth
     // reporting. The flag with NO argument is a different thing — a caller bug
     // that `args[1] ?? ''` used to collapse into the detached-HEAD case. Same
-    // answer, but said out loud so the two can be told apart.
+    // handling, but said out loud so the two can be told apart.
+    //
+    // This diagnostic deliberately does NOT state the answer. The empty branch
+    // matches no protected name, but the fail-closed guard below still renders
+    // `true` when the base branch could not be verified — so promising "false"
+    // here would contradict what this same call prints on stdout (#3648 review).
     if (args.length < 2) {
       writeDiagnostic(
         `⚠ git-base-branch: --is-protected was called without a branch argument; ` +
-        `answering false. Pass the branch to test, e.g. --is-protected "$CURRENT_BRANCH".\n`
+        `treating it as an empty branch name. Pass the branch to test, ` +
+        `e.g. --is-protected "$CURRENT_BRANCH".\n`
       );
     }
     const status = resolveProtectedBranchStatus(cwd, args[1] ?? '', deps);

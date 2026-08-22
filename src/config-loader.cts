@@ -633,8 +633,18 @@ function _warnUnusableConfig(fault: ConfigFault): void {
  * diagnostic names the file. Before this, a trailing comma in config.json was
  * byte-identical to the file not existing: builtin defaults, degraded:false,
  * and the user's entire configuration silently discarded.
+ *
+ * `options.persist: false` (#3648) suppresses the two normalize-then-write-back
+ * side effects below. Resolution is otherwise identical — same precedence, same
+ * returned object — the migrated shape simply stays in memory. Callers that only
+ * ASK the config something (a predicate, a status readout) pass it so that a read
+ * cannot dirty the working tree; the ~30 callers that omit it keep persisting, so
+ * a legacy config is still migrated exactly once by ordinary use.
  */
 function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}): ConfigResolution {
+  // Opt-OUT, not opt-in: omitting the option must preserve the historical
+  // write-back for every existing caller.
+  const persist = options['persist'] !== false;
   // NOTE: loadConfigResolved resolves from cwd AS-IS (no walk-up).
   // Callers that need ancestor-anchoring (e.g. cmdAgentSkills) must do so
   // themselves via findProjectRoot() before calling this function.
@@ -713,7 +723,9 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
           }
         }
         rootParsed = rootNormalized;
-        try { platformWriteSync(rootConfigPath, JSON.stringify(rootParsed, null, 2)); } catch { /* ignore */ }
+        if (persist) {
+          try { platformWriteSync(rootConfigPath, JSON.stringify(rootParsed, null, 2)); } catch { /* ignore */ }
+        }
       } else {
         rootParsed = rootNormalized;
       }
@@ -778,7 +790,7 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       }
     }
 
-    if (configDirty) {
+    if (configDirty && persist) {
       try { platformWriteSync(configPath, JSON.stringify(fileData, null, 2)); } catch { /* ignore */ }
     }
 
