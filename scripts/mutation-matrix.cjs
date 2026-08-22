@@ -92,10 +92,16 @@ function readStdinSync() {
 // confirmed equivalent mutant is acceptable.
 //
 // HOW TO UPDATE:
-//   1. Run the per-module Stryker shard locally.
-//   2. Note the reported score.
-//   3. Set minScore = floor(score) - 1 (never lower than current value).
-//   4. Open a PR — the CI gate will enforce the new floor on every future run.
+//   1. The per-module Stryker shard CANNOT be run locally: Stryker's command
+//      runner invokes `node --test` once per mutant (see stryker.config.mjs),
+//      and this repo hard-blocks local `node --test` via
+//      .claude/hooks/block-local-node-test.sh. Push the branch instead and
+//      let CI run the shard for the changed module.
+//   2. Read the measured score from the CI shard's output.
+//   3. Set minScore = floor(measured) - 1 (never lower than current value)
+//      and update the matching RATCHET_BASELINE entry in the same diff.
+//   4. Open/update the PR — the CI gate will enforce the new floor on every
+//      future run.
 
 /** Long-run target for all modules (ADR-456). */
 const TARGET_MUTATION_SCORE = 80;
@@ -273,18 +279,23 @@ const COVERED = {
   // per mutant). tests/model-catalog.unit.test.cjs is spawn-free, in-process,
   // and runs in well under a second.
   //
-  // ⚠️ minScore: 1 is a PLACEHOLDER, not a measured floor — unlike every
-  // other entry in this file, it has NOT yet been through a CI mutation run.
+  // ⚠️ minScore: 50 is a BOOTSTRAP FLOOR, not a measured one — unlike every
+  // other entry in this file, this module has NOT yet been through a CI
+  // mutation run. 50 is the lowest legal starting point: the ratchet guard
+  // (tests/mutation-matrix-ratchet.test.cjs) requires minScore >= 50, and 50
+  // is also Stryker's own configured `break` threshold (stryker.config.mjs),
+  // so it cannot go any lower without weakening the shared gate.
   // It MUST be ratcheted up to the actual measured CI score (following the
   // planning-inspect/plan-document/planning-command-router pattern above)
-  // BEFORE this PR merges. A placeholder floor of 1 that survives to `next`
-  // makes this gate decorative — it would pass regardless of whether any
-  // mutant here is ever actually killed. Do not ship this PR with this
-  // comment still describing minScore: 1 as provisional.
+  // BEFORE this PR merges — measurement happens in CI, not locally (see
+  // "HOW TO UPDATE" above). A bootstrap floor of 50 that survives to `next`
+  // unratcheted leaves this module's gate weaker than every other entry in
+  // this file. Do not ship this PR with this comment still describing
+  // minScore: 50 as a bootstrap floor.
   'model-catalog': {
     cjs: 'gsd-core/bin/lib/model-catalog.cjs',
     tests: ['tests/model-catalog.unit.test.cjs'],
-    minScore: 1,
+    minScore: 50,
   },
 };
 
