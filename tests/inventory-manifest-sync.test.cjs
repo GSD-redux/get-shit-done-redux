@@ -263,6 +263,50 @@ test('row 10b — a fenced code block does not split a section or contribute cel
   );
 });
 
+// ─── Fence-length boundary: the matcher's only numeric limit is `{3,}` ──────────
+//
+// RULESET.TESTS.boundary-coverage — exercise limit-1 / limit / limit+1 on the fence
+// marker, for both delimiter characters. Two backticks is a plain inline code span
+// and must NOT swallow the rows beneath it; three and four must.
+
+test('row 10f — a TWO-character run is not a fence, and swallows nothing (limit-1)', () => {
+  for (const mark of ['``', '~~']) {
+    const text = emptySections({
+      References: mark + '\n| `kept.md` | Role. |\n' + mark,
+    });
+    assert.deepStrictEqual(
+      findMissingRosterRows(text, { references: ['kept.md'] }).missingRows,
+      [],
+      'a two-' + mark[0] + ' run is inline markup, not a fence — treating it as one hides a real row',
+    );
+  }
+});
+
+test('row 10g — a THREE-character run opens and closes a fence (limit)', () => {
+  for (const mark of ['```', '~~~']) {
+    const text = emptySections({
+      References: mark + '\n| `swallowed.md` | Role. |\n' + mark + '\n\n| `kept.md` | Role. |',
+    });
+    assert.deepStrictEqual(
+      findMissingRosterRows(text, { references: ['kept.md', 'swallowed.md'] }).missingRows,
+      ['references/swallowed.md'],
+    );
+  }
+});
+
+test('row 10h — a FOUR-character run opens and closes a fence (limit+1)', () => {
+  for (const mark of ['````', '~~~~']) {
+    const text = emptySections({
+      References: mark + '\n| `swallowed.md` | Role. |\n' + mark + '\n\n| `kept.md` | Role. |',
+    });
+    assert.deepStrictEqual(
+      findMissingRosterRows(text, { references: ['kept.md', 'swallowed.md'] }).missingRows,
+      ['references/swallowed.md'],
+      'a longer run is still a fence; only `{3,}` matters, not an exact count',
+    );
+  }
+});
+
 test('row 10c — a heading indented up to 3 spaces is still a heading (CommonMark)', (t) => {
   // Anchoring hard at /^##/ looks harmless and is not. CommonMark permits an ATX
   // heading to carry 1-3 leading spaces, so an author who indents one writes a
