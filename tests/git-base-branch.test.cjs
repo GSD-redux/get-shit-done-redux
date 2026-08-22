@@ -831,6 +831,135 @@ describe('#3552: configured protected branches', () => {
   });
 });
 
+// ─── #3648 Major 1: negative space for readEffectiveGitConfig's readFile seam ─
+//
+// The #3057 W3 suite that pinned readConfigBaseBranch's unusable-config arms
+// was deleted with the function it targeted, but every arm it covered survives
+// verbatim in readEffectiveGitConfig's readFile branch: the JSON.parse catch,
+// the non-object guard, the git-section object guard, .trim(), and blank-string
+// rejection. Deleting the tests left all of them unexercised — the four
+// surviving readFile injections are positive-path only, and protected_branches
+// was never driven through this seam at all.
+//
+// Reaching the seam requires readFile WITHOUT loadConfig. execGit is stubbed to
+// answer cleanly-but-emptily so tiers 2-4 fall to a VERIFIED 'main', which
+// makes 'main' the unambiguous signal that the config tier contributed nothing.
+//
+// WHAT THIS SUITE DOES AND DOES NOT PIN. Verified by mutating the built lib and
+// re-running:
+//
+//   .trim() on the resolved value            -> KILLED by the positive controls
+//   the non-object guard on JSON.parse output -> SURVIVES
+//   the blank-string rejection                -> SURVIVES
+//
+// The two survivors are unreachable through this entry point, for the same
+// reason the deleted #3057 W3 suite recorded against its own equivalents:
+//
+//   * A JSON-parsed value can never carry a `.git` or `.base_branch` own
+//     property unless it is already an object, so `null` / `42` / `"x"` / `[]`
+//     read as "no keys" whether or not the guard runs.
+//   * A blank base_branch is rejected a second time downstream — the resolver's
+//     `if (configured)` treats '' as falsy — so removing the guard here changes
+//     no observable output.
+//
+// Both remain defence-in-depth for a future non-JSON caller. They are recorded
+// here as known-unkillable rather than left to look like coverage this suite
+// does not provide.
+
+describe('#3648 Major 1: readEffectiveGitConfig readFile seam — config present but unusable', () => {
+  const CWD = path.join(path.sep, 'gsd-3648-seam');
+
+  /** Drive the seam with raw config text, recording the paths requested. */
+  function readWith(raw, seenPaths) {
+    return gitBaseBranch.resolveProtectedBranchStatus(CWD, 'some-topic-branch', {
+      execGit: makeFaultyGit(),
+      readFile: (requested) => { if (seenPaths) seenPaths.push(requested); return raw; },
+    });
+  }
+
+  test('config.json exists but is not valid JSON → parse failure swallowed, base falls through', () => {
+    const seen = [];
+    assert.strictEqual(readWith('{ not json', seen).baseBranch, 'main');
+    assert.deepStrictEqual(seen, [path.join(CWD, '.planning', 'config.json')],
+      'the seam must look for config.json inside the planning dir under the cwd it was given');
+  });
+
+  test('config.json parses to a non-object → ignored for null / string / number / array', () => {
+    assert.strictEqual(readWith('null').baseBranch, 'main', 'JSON null must not be treated as a config');
+    assert.strictEqual(readWith('"master"').baseBranch, 'main', 'a bare JSON string must not be treated as a config');
+    assert.strictEqual(readWith('42').baseBranch, 'main', 'a bare JSON number must not be treated as a config');
+    assert.strictEqual(readWith('[]').baseBranch, 'main', 'a JSON array must not be treated as a config');
+  });
+
+  test('"git" section present but base_branch missing / non-string / blank → no override', () => {
+    assert.strictEqual(readWith('{"git":{}}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"git":{"base_branch":42}}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"git":{"base_branch":null}}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"git":{"base_branch":""}}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"git":{"base_branch":"   "}}').baseBranch, 'main',
+      'a whitespace-only override must not win the precedence ladder');
+  });
+
+  test('"git" key present but not a usable object → the flat legacy key is still honoured', () => {
+    // These also guard the hoist: a non-object "git" must not be spread into
+    // index keys on the way to carrying the flat value across.
+    assert.strictEqual(readWith('{"git":"main","base_branch":"release"}').baseBranch, 'release');
+    assert.strictEqual(readWith('{"git":[],"base_branch":"release"}').baseBranch, 'release');
+    assert.strictEqual(readWith('{"git":null,"base_branch":"release"}').baseBranch, 'release');
+  });
+
+  test('flat base_branch present but non-string / blank → no override', () => {
+    assert.strictEqual(readWith('{"base_branch":true}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"base_branch":["main"]}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"base_branch":""}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"base_branch":"   "}').baseBranch, 'main');
+  });
+
+  test('config parses cleanly but carries neither key → distinct from an absent file', () => {
+    // The absent-file path returns before JSON.parse; these parse a real object
+    // and fall all the way through both lookups.
+    assert.strictEqual(readWith('{"other":1}').baseBranch, 'main');
+    assert.strictEqual(readWith('{}').baseBranch, 'main');
+    assert.strictEqual(readWith('').baseBranch, 'main', 'absent file (empty read) also yields no override');
+    assert.strictEqual(readWith(null).baseBranch, 'main', 'a null read is an absent file');
+  });
+
+  test('positive controls: values are trimmed and the nested key outranks the flat one', () => {
+    // Without these the whole describe could pass against a seam that ignored
+    // config entirely — every assertion above expects the fallback value.
+    assert.strictEqual(readWith('{"git":{"base_branch":"  develop  "}}').baseBranch, 'develop');
+    assert.strictEqual(readWith('{"base_branch":"  release\\n"}').baseBranch, 'release');
+    assert.strictEqual(readWith('{"git":{"base_branch":"nested"},"base_branch":"flat"}').baseBranch, 'nested');
+  });
+
+  test('protected_branches is honoured and validated through this seam too', () => {
+    const clean = readWith('{"git":{"base_branch":"main","protected_branches":["develop"," next "]}}');
+    assert.deepStrictEqual(clean.protectedBranches, ['main', 'develop', 'next']);
+    assert.deepStrictEqual(clean.rejectedProtectedBranches, []);
+
+    const partial = readWith('{"git":{"base_branch":"main","protected_branches":["develop",42]}}');
+    assert.deepStrictEqual(partial.protectedBranches, ['main', 'develop'],
+      'a bad element must drop only itself on this path as well');
+    assert.deepStrictEqual(partial.rejectedProtectedBranches, ['42']);
+
+    const notAList = readWith('{"git":{"base_branch":"main","protected_branches":"develop"}}');
+    assert.deepStrictEqual(notAList.protectedBranches, ['main']);
+    assert.deepStrictEqual(notAList.rejectedProtectedBranches, ['"develop"']);
+  });
+
+  test('loadConfig wins when both seams are supplied — readFile is the test-only path', () => {
+    const status = gitBaseBranch.resolveProtectedBranchStatus(CWD, 'from-loader', {
+      execGit: makeFaultyGit(),
+      readFile: () => '{"git":{"base_branch":"from-readfile"}}',
+      loadConfig: () => ({ base_branch: 'from-loader' }),
+    });
+
+    assert.strictEqual(status.baseBranch, 'from-loader',
+      'production resolution must not be displaced by the low-level seam');
+    assert.strictEqual(status.isProtected, true);
+  });
+});
+
 // ─── #3057 W3: negative-space coverage for the resolver's failure arms ───────
 //
 // Everything below drives the *unhappy* halves of git-base-branch: malformed
