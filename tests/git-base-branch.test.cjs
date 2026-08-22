@@ -515,9 +515,14 @@ function writeProtectedBranchWarningScript(prefix, bash) {
     '    printf "unexpected protected-branch query\\n"',
     '    return 0',
     '  fi',
+    // The real command writes its fail-closed and rejected-entry
+    // explanations to stderr. Emitting one here is what makes a swallowed
+    // `2>/dev/null` at the call site visible to a test.
+    '  if [ -n "${DIAGNOSTIC_TEXT:-}" ]; then printf "%s\\n" "$DIAGNOSTIC_TEXT" >&2; fi',
     '  printf "%s\\n" "$PROTECTED_RESULT"',
     '}',
     bash,
+    'printf "IS_PROTECTED=%s\\n" "${IS_PROTECTED:-unbound}"',
     'printf "continued\\n"',
   ].join('\n'), { mode: 0o755 });
   return { scriptDir, scriptPath };
@@ -711,8 +716,8 @@ describe('#3552: configured protected branches', () => {
 
     assert.strictEqual(match.exitCode, 0, match.stderr);
     assert.strictEqual(control.exitCode, 0, control.stderr);
-    assert.strictEqual(match.stdout, 'continued\n');
-    assert.strictEqual(control.stdout, 'continued\n');
+    assert.match(match.stdout, /continued\n$/);
+    assert.match(control.stdout, /continued\n$/);
     assert.match(match.stderr, /protected branch/i);
     assert.doesNotMatch(control.stderr, /protected branch/i);
     assert.notStrictEqual(match.stderr, control.stderr,
@@ -739,8 +744,8 @@ describe('#3552: configured protected branches', () => {
 
     assert.strictEqual(match.exitCode, 0, match.stderr);
     assert.strictEqual(control.exitCode, 0, control.stderr);
-    assert.strictEqual(match.stdout, 'continued\n');
-    assert.strictEqual(control.stdout, 'continued\n');
+    assert.match(match.stdout, /continued\n$/);
+    assert.match(control.stdout, /continued\n$/);
     assert.match(match.stderr, /protected branch/i);
     assert.doesNotMatch(control.stderr, /protected branch/i);
     assert.notStrictEqual(match.stderr, control.stderr,
@@ -753,6 +758,76 @@ describe('#3552: configured protected branches', () => {
     );
     assert.match(preflight, /branching_strategy is `none`: offer to create a branch now/i,
       'protected-branch warning must retain the none-strategy feature-branch offer');
+  });
+
+  test('#3648 Blocker 4: the predicate diagnostic reaches the user at both call sites', (t) => {
+    // Both call sites piped the query's stderr to /dev/null, so the
+    // fail-closed explanation ("could not verify the base branch ... defaulting
+    // to protected") was discarded and the user saw a bare protected-branch
+    // warning on a branch that is not protected. The diagnostic was exercised
+    // only by its unit test — dead in production.
+    const cases = [
+      ['execute-phase.md', 'handle_branching', 'gsd-3648-b4-execute-'],
+      ['ship.md', 'preflight_checks', 'gsd-3648-b4-ship-'],
+    ];
+
+    for (const [workflow, step, prefix] of cases) {
+      const bash = extractProtectedBranchWarningBash(workflow, step);
+      const { scriptDir, scriptPath } = writeProtectedBranchWarningScript(prefix, bash);
+      t.after(() => cleanup(scriptDir));
+
+      const baseEnv = {
+        ...process.env,
+        CURRENT_BRANCH_VALUE: 'develop',
+        PROTECTED_RESULT: 'true',
+      };
+      const surfaced = runHook(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...baseEnv, DIAGNOSTIC_TEXT: 'could not verify the base branch' },
+      });
+      const control = runHook(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...baseEnv, DIAGNOSTIC_TEXT: '' },
+      });
+
+      assert.strictEqual(surfaced.exitCode, 0, surfaced.stderr);
+      assert.match(surfaced.stderr, /could not verify the base branch/,
+        workflow + " must not discard the predicate's explanation");
+      // Negative control: with nothing emitted that text must be absent,
+      // otherwise the assertion above could pass on unrelated output.
+      assert.doesNotMatch(control.stderr, /could not verify the base branch/);
+      assert.notStrictEqual(surfaced.stderr, control.stderr);
+      // The warning itself still fires in both, so the diagnostic is additive.
+      assert.match(surfaced.stderr, /protected branch/i);
+      assert.match(control.stderr, /protected branch/i);
+    }
+  });
+
+  test('#3648 Minor 2: ship binds the predicate result instead of discarding it', (t) => {
+    // ship.md's prose branches on protectedness twice ("warn - should be on a
+    // feature branch", "if branching_strategy is none, offer to create a
+    // branch"). Echoing the warning without binding leaves the agent inferring
+    // state from warning text in tool output; the comparison it replaced was
+    // directly evaluable.
+    const bash = extractProtectedBranchWarningBash('ship.md', 'preflight_checks');
+    const { scriptDir, scriptPath } = writeProtectedBranchWarningScript('gsd-3648-bind-', bash);
+    t.after(() => cleanup(scriptDir));
+
+    const baseEnv = { ...process.env, CURRENT_BRANCH_VALUE: 'develop' };
+    const match = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'true' },
+    });
+    const control = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'false' },
+    });
+
+    assert.match(match.stdout, /^IS_PROTECTED=true$/m,
+      'ship must bind the predicate result to a variable the following prose can branch on');
+    assert.match(control.stdout, /^IS_PROTECTED=false$/m,
+      'the binding must track the predicate, not be hardcoded');
+    assert.notStrictEqual(match.stdout, control.stdout);
   });
 });
 
