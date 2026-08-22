@@ -3524,6 +3524,77 @@ describe('#3712 in-process home confinement', () => {
       );
     });
 
+    // Codex review of #3725. resolveThroughLinks swallowed EVERY realpathSync
+    // error and fell back to the LEXICAL spelling. That is a fail-open, and it
+    // inverts the function's whole purpose: an aliased `<sandbox>/.agents` that
+    // cannot be canonicalized keeps its sandbox spelling, satisfies the
+    // nested-sandbox exemption, and the write is ALLOWED into the real home. The
+    // module documents ONE named fail-open (the marker branch); this was a second,
+    // unnamed one. ENOENT/ENOTDIR still walk up — that is the ordinary
+    // destination-does-not-exist-yet case, and the split matches identify()'s.
+    test('a destination component that cannot be canonicalized is refused, not assumed safe', (t) => {
+      const sandbox = createTempDir('gsd-3712-uncanon-');
+      const realHome = createTempDir('gsd-3712-uncanon-real-');
+      t.after(() => { cleanup(sandbox); cleanup(realHome); });
+      // A symlink CYCLE is the portable way to make realpathSync fail with
+      // something other than "not there": every lookup through it returns ELOOP
+      // while the parent directory resolves normally.
+      const loopA = path.join(sandbox, 'loop-a');
+      const loopB = path.join(sandbox, 'loop-b');
+      try {
+        fs.symlinkSync(loopB, loopA);
+        fs.symlinkSync(loopA, loopB);
+      } catch {
+        t.skip('symlink creation unsupported on this platform/privilege');
+        return;
+      }
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('applySurface', 'codex',
+          escapingKinds(path.join(loopA, '.agents')),
+          { os: fakeOs(sandbox, realHome), env: underTest }),
+        /could not be canonicalized/,
+        'an unresolvable component must refuse — falling back to the lexical spelling is the '
+        + 'exact ALLOW an aliased <sandbox>/.agents needs to reach the real home',
+      );
+    });
+
+    // Non-vacuity for the row above, and the reason it cannot simply refuse on
+    // ANY realpath error: the ordinary case is a destination that does not exist
+    // yet, where realpath fails ENOENT on the leaf and on every not-yet-created
+    // ancestor. Refusing there would reject every fresh install.
+    test('… but a destination that merely does not exist yet still resolves and is allowed', (t) => {
+      const sandbox = createTempDir('gsd-3712-uncanon-enoent-');
+      const realHome = createTempDir('gsd-3712-uncanon-enoent-real-');
+      t.after(() => { cleanup(sandbox); cleanup(realHome); });
+      const neverCreated = path.join(sandbox, 'not-created-yet', '.agents');
+      assert.strictEqual(fs.existsSync(neverCreated), false,
+        'the row is only meaningful while the destination is absent');
+      assert.doesNotThrow(
+        () => testHomeGuard.assertTestHomeSandboxed('applySurface', 'codex',
+          escapingKinds(neverCreated),
+          { os: fakeOs(sandbox, realHome), env: underTest }),
+        'ENOENT is the expected shape of a fresh install, not a canonicalization failure',
+      );
+    });
+
+    // ENOTDIR takes the same walk-up branch as ENOENT, deliberately: both mean
+    // "no such path as named", which is the question identify() answers the same
+    // way. Pinned so the two cannot drift apart.
+    test('… and a component sitting behind a FILE (ENOTDIR) walks up rather than refusing', (t) => {
+      const sandbox = createTempDir('gsd-3712-uncanon-enotdir-');
+      const realHome = createTempDir('gsd-3712-uncanon-enotdir-real-');
+      t.after(() => { cleanup(sandbox); cleanup(realHome); });
+      const asFile = path.join(sandbox, 'a-file');
+      fs.writeFileSync(asFile, 'not a directory\n');
+      assert.doesNotThrow(
+        () => testHomeGuard.assertTestHomeSandboxed('applySurface', 'codex',
+          escapingKinds(path.join(asFile, '.agents')),
+          { os: fakeOs(sandbox, realHome), env: underTest }),
+        'ENOTDIR means the path does not exist as named — identify() calls that absent, and this '
+        + 'walk must agree with it rather than inventing a second errno policy',
+      );
+    });
+
     // Review of #3725, Major 1. sameDirectory() is read by the marker branch as
     // permission to PROCEED, so "cannot tell" has to answer no. It used to answer
     // yes whenever neither side identified — two absent paths here, or two stats

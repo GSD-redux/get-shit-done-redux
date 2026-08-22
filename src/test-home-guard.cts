@@ -164,6 +164,16 @@ type Deps = { os?: OsLike; env?: Record<string, string | undefined> };
  */
 const REFUSAL_FLAG = 'gsdTestHomeGuardRefusal';
 
+/**
+ * Static remediation line, shared by every refusal this module raises. Hoisted to
+ * module scope because `resolveThroughLinks` refuses too and sits outside
+ * `assertTestHomeSandboxed`'s body, where this used to be a local.
+ */
+const SANDBOX_FIX_HINT =
+  `Fix the TEST, not this guard: sandbox HOME and USERPROFILE BEFORE resolving the ` +
+  `layout, for the duration of the call — use sandboxHome(t, dir) from tests/helpers.cjs ` +
+  `(see #3712).`;
+
 function refusal(message: string): Error {
   const err = new Error(message);
   (err as Error & Record<string, unknown>)[REFUSAL_FLAG] = true;
@@ -196,10 +206,7 @@ function assertTestHomeSandboxed(
     passwdHome = null;
   }
 
-  const fix =
-    `Fix the TEST, not this guard: sandbox HOME and USERPROFILE BEFORE resolving the ` +
-    `layout, for the duration of the call — use sandboxHome(t, dir) from tests/helpers.cjs ` +
-    `(see #3712).`;
+  const fix = SANDBOX_FIX_HINT;
 
   const realHome = passwdHome === null ? { kind: 'unknown' as const } : identify(passwdHome);
   if (realHome.kind === 'ok') {
@@ -307,6 +314,10 @@ function assertTestHomeSandboxed(
  * shape any caller here produces. A cross-process swap of a checked directory
  * between this call and the write (TOCTOU) is likewise out of reach and not
  * claimed.
+ *
+ * Canonicalization itself fails CLOSED — see the errno split below. A component
+ * that EXISTS but cannot be resolved is refused, because falling back to the
+ * lexical spelling is the exact ALLOW an unresolvable alias needs.
  */
 function resolveThroughLinks(dest: string): string {
   const tail: string[] = [];
@@ -314,7 +325,34 @@ function resolveThroughLinks(dest: string): string {
   for (;;) {
     try {
       return path.join(fs.realpathSync(cur), ...tail);
-    } catch {
+    } catch (err) {
+      // Same errno split `identify` already draws, and deliberately the same one:
+      // both functions are asking "does this path exist as named?", so they must
+      // not disagree. ENOENT/ENOTDIR mean NOT THERE — the expected case, since a
+      // fresh install resolves a destination that does not exist yet and realpath
+      // fails on the leaf and on every not-yet-created ancestor. That is what this
+      // walk is FOR, so keep walking.
+      //
+      // Any other errno means the component EXISTS but could not be canonicalized —
+      // EACCES/EPERM on a directory whose mode changed, ELOOP on a symlink cycle,
+      // EIO on a failing mount. Falling through to the lexical spelling there is a
+      // FAIL-OPEN that precisely inverts this function's purpose: an aliased
+      // `<sandbox>/.agents` that cannot be resolved keeps its sandbox spelling,
+      // satisfies the nested-sandbox exemption, and the write is ALLOWED straight
+      // into the real home. The module documents that it fails CLOSED with exactly
+      // ONE named exception (the marker branch); a swallowed canonicalization error
+      // was a second, unnamed one. Refuse instead. (Codex review of #3725.)
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        throw refusal(
+          `A component of the destination could not be canonicalized, so this guard cannot ` +
+          `tell whether the write would reach your REAL home.\nFailed on: ${cur} ` +
+          `(${code ?? 'unknown error'})\nSymlinks and junctions are resolved BEFORE the ` +
+          `decision, because an aliased "<sandbox>/.agents" would otherwise read as confined ` +
+          `while pointing at the real one. A component that cannot be resolved is refused ` +
+          `rather than assumed safe.\n${SANDBOX_FIX_HINT}`,
+        );
+      }
       const parent = path.dirname(cur);
       if (parent === cur) return path.resolve(dest);
       tail.unshift(path.basename(cur));
