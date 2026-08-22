@@ -528,13 +528,18 @@ test('mergeDefaults clones defaults without JSON serialization fragility (#321)'
       }
     });
 
-    __t3760('a skipped section emits exactly one deduplicated diagnostic, and a repeat emits none', () => {
+    __t3760('migrateOnDisk itself emits nothing — configuration.cjs must stay dependency-free', () => {
+      // #3571 pins that `configuration.cjs` loads from an install layout holding
+      // only itself plus its manifests, so it cannot require the diagnostic seam.
+      // The refusal is reported in-band here; the CALLERS do the emitting. If this
+      // ever starts emitting, configuration.cjs has grown a sibling require and the
+      // install layout will fail at load time with MODULE_NOT_FOUND.
       const dir = track(__project3760(JSON.stringify({ git: 'main', branching_strategy: 'none' }, null, 2)));
       try {
-        const first = __emissionsDuring3760(() => { __migrate3760(dir); });
-        __assert3760.strictEqual(first, 1, 'the operator must be told once');
-        const second = __emissionsDuring3760(() => { __migrate3760(dir); });
-        __assert3760.strictEqual(second, 0, 'the ADR-1411 dedup guard must suppress the repeat');
+        let result;
+        const emitted = __emissionsDuring3760(() => { result = __migrate3760(dir); });
+        __assert3760.strictEqual(emitted, 0, 'the pure module must not reach the diagnostic seam');
+        __assert3760.strictEqual(result.skipped.length, 1, 'but it must still report the refusal in-band');
       } finally {
         for (const d of dirs) __cleanup3760(d);
       }

@@ -28,6 +28,13 @@ const { VALID_CONFIG_KEYS, isValidConfigKey, getCapabilityConfigSchema } = confi
 import { isSecretKey, maskSecret } from './secrets.cjs';
 import { normalizeConfiguredDefaultReviewers, INSTANCE_NAME_PATTERN, KNOWN_REVIEWER_SLUGS } from './review-reviewer-selection.cjs';
 import { migrateOnDisk } from './configuration.cjs';
+// #3760: the ADR-1411 out-of-band diagnostic. It lives here rather than inside
+// `migrateOnDisk` because `configuration.cjs` must stay loadable from an install
+// layout holding only itself plus its manifests (#3571) — see the note at the top
+// of configuration.cts.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import unusableInputModule = require('./unusable-input.cjs');
+const { UNUSABLE_REASON, warnUnusableInput } = unusableInputModule;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1198,6 +1205,14 @@ function cmdConfigPath(cwd: string, _raw: boolean, workstreamContext: Workstream
 function cmdMigrateConfig(cwd: string, raw: boolean): void {
   const ws = process.env['GSD_WORKSTREAM'] || null;
   const report = migrateOnDisk(cwd, ws || undefined);
+
+  // #3760: deduplicated on (path, reason), so a repeated invocation stays quiet.
+  if (report.skipped.length > 0) {
+    warnUnusableInput({
+      reason: UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT,
+      source: path.join(planningDir(cwd, ws || undefined), 'config.json'),
+    });
+  }
 
   if (raw) {
     // #3760: a refused migration is NOT an already-canonical config. Reporting

@@ -11,11 +11,16 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-// #3760: the ADR-1411 out-of-band diagnostic seam. `unusable-input.cjs` is a leaf
-// (node:crypto only), so this adds no cycle to the config dependency chain.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-import unusableInputModule = require('./unusable-input.cjs');
-const { UNUSABLE_REASON, warnUnusableInput } = unusableInputModule;
+
+// ⚠️ DO NOT add a sibling `.cjs` import to this module. `configuration.cjs` must load
+// from an install layout containing ONLY itself plus `bin/shared/*.manifest.json` —
+// that is the #3571 contract, pinned by "co-located bin/shared manifests let
+// configuration.cjs load without sdk/shared" in tests/install.test.cjs. A `require`
+// for a sibling that the installer does not co-locate fails at load time with
+// MODULE_NOT_FOUND. This is why #3760's out-of-band diagnostic is emitted by this
+// module's CALLERS (`cmdMigrateConfig` in config.cts, `loadConfigResolved` in
+// config-loader.cts) rather than here: `normalizeLegacyKeys` reports refusals
+// in-band via `skipped[]`, which keeps it both pure AND dependency-free.
 
 // In .cts (CommonJS output) files, `require` is available as a global.
 const _require: NodeRequire = require;
@@ -350,13 +355,6 @@ function migrateOnDisk(cwd: string, workstream?: string): MigrateOnDiskResult {
         result['planning'] = { ...existing, sub_repos: detected, commit_docs: false };
       }
     }
-  }
-  // ADR-1411 out-of-band half: `normalizeLegacyKeys` stays pure (CONTEXT.md — the
-  // Configuration Module's stated invariant), so the diagnostic is emitted here, by
-  // the impure caller that actually holds the resolved path. Deduplicated on
-  // (path, reason) by the shared seam, so a repeated read stays quiet.
-  if (skipped.length > 0) {
-    warnUnusableInput({ reason: UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT, source: configPath });
   }
   if (normalizations.length === 0) {
     // Nothing changed — and that now includes the case where every legacy key was

@@ -1557,6 +1557,35 @@ describe('regressions — #3760 loader never expands or persists a non-object se
     assert.equal(resolution.degraded, false);
   });
 
+  test('a refused section emits exactly one deduplicated diagnostic, and a repeat emits none', () => {
+    // The loader is where the out-of-band diagnostic has to live: loadConfig
+    // returns `.config` alone, so an in-band `skipped` record would be unreachable
+    // to nearly every caller (ADR-1411: "a reason no caller reads is an
+    // unreachable field"). Asserted on the typed emission counter, never by
+    // scraping stderr prose.
+    const {
+      _resetUnusableInputWarningsForTests,
+      _unusableInputEmissionCountForTests,
+    } = require('../gsd-core/bin/lib/unusable-input.cjs');
+
+    function emissionsDuring(fn) {
+      const before = _unusableInputEmissionCountForTests();
+      const original = process.stderr.write;
+      process.stderr.write = () => true;
+      try { fn(); } finally { process.stderr.write = original; }
+      return _unusableInputEmissionCountForTests() - before;
+    }
+
+    _resetUnusableInputWarningsForTests();
+    writeConfig(tmpDir, { git: 'main', branching_strategy: 'none' });
+
+    const first = emissionsDuring(() => { loadConfig(tmpDir); });
+    assert.equal(first, 1, 'the operator must be told once');
+
+    const second = emissionsDuring(() => { loadConfig(tmpDir); });
+    assert.equal(second, 0, 'the ADR-1411 dedup guard must suppress the repeat');
+  });
+
   test('an already-canonical config is still migrated normally', () => {
     // Negative space: the guard must not suppress a legitimate hoist.
     writeConfig(tmpDir, { git: { remote: 'origin' }, branching_strategy: 'none' });
