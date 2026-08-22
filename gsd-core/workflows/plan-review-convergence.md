@@ -200,9 +200,50 @@ Your final response MUST include a machine-readable line of exactly this form:
 Where <N> is the integer count of HIGH-severity concerns that REMAIN UNRESOLVED in this cycle's findings.
 Where <M> is the integer count of actionable MEDIUM/LOW concerns that REMAIN UNRESOLVED because the latest PLAN.md files do not yet incorporate them or explicitly defer/reject them.
 
+Consensus gate (applies to NEWLY RAISED HIGHs only; evaluate before the counting rules below):
+  This gate engages ONLY when 2 or more reviewers actually ran and produced a review section this
+  cycle. With exactly one reviewer, skip this entire gate — a single reviewer's HIGH always counts,
+  exactly as before.
+
+  Classify each newly raised HIGH by what the claim ASSERTS, not by whether it happens to contain a
+  file:line citation:
+    - EXISTENCE-CLASS — asserts that a named symbol, file, path, flag, commit, or ID exists,
+      is absent, or says something specific ("X does not exist", "the plan cites Y which is missing",
+      "file Z contains Q").
+    - JUDGMENT-CLASS — asserts a design or correctness property ("no idempotency on retried writes",
+      "race between A and B", "missing rate limit"). A judgment-class HIGH stays judgment-class even
+      when it cites a file for context.
+
+  A HIGH raised by 2+ reviewers is corroborated and always counts.
+
+  For a HIGH raised by exactly ONE reviewer:
+    - EXISTENCE-CLASS — counts only if the source-grounding pass independently confirms it against
+      real project source, or another reviewer raised the same or a materially overlapping concern
+      (i.e. it lands in REVIEWS.md's Consensus Summary "Agreed Concerns").
+    - JUDGMENT-CLASS — counts UNLESS that reviewer's own section OPENS with an evidence-quality
+      discount marker blockquote: `[reviewed-without-source-citations]` or
+      `[reviewed-without-repo-access]`, or the reviewer is a diff-only lane (CodeRabbit). The marker
+      must be the LEADING blockquote of that reviewer's section — a review that merely quotes a
+      marker while discussing it is NOT marked. Corroboration by another reviewer overrides the
+      marker and the HIGH counts.
+
+  Judgment-class findings are deliberately NOT subject to corroboration. Different reviewers catch
+  materially different classes of issue, so requiring two of them to independently raise the same
+  architectural concern would suppress exactly the findings a multi-reviewer setup exists to surface.
+
+  FAIL OPEN: if EVERY reviewer that ran this cycle carries a discount marker, this gate does not
+  apply at all — count as if it were absent. A gate must never manufacture convergence out of a
+  cycle in which nothing was verified.
+
+  A HIGH suppressed by this gate is still listed under "## Current HIGH Concerns", tagged
+  `(single-reviewer, unconfirmed)`. It is excluded from current_high only — never silently dropped,
+  and never removed from the report.
+
+  This gate governs current_high only. current_actionable is unaffected.
+
 Counting rules:
   INCLUDE in the count:
-    - Newly raised HIGHs in this cycle
+    - Newly raised HIGHs in this cycle (subject to the consensus gate above)
     - PARTIALLY RESOLVED HIGHs: concern acknowledged and a mitigation is in progress, but not yet verified/completed
     - Previously raised HIGHs that are still unresolved
 

@@ -272,6 +272,17 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 
 **Exit behavior:** Loop exits when both `current_high` and `current_actionable` hit zero. Stall detection warns when the total unresolved review count is not decreasing across cycles. Escalation gate asks the user to proceed or review manually when `--max-cycles` is hit with HIGH or actionable non-HIGH concerns still open.
 
+**Consensus gate (2+ reviewers only).** When two or more reviewers actually run in a cycle, a HIGH raised by exactly one of them is weighed by what the claim asserts before it counts toward `current_high`:
+
+| Lone reviewer's HIGH asserts | Counts toward `current_high` when |
+|---|---|
+| **Existence** — a symbol, file, flag, commit or ID exists, is absent, or says something specific | source-grounding confirms it, **or** another reviewer raised the same concern |
+| **Judgment** — a design or correctness property (missing idempotency, a race, an absent rate limit) | always, **unless** that reviewer's section opens with an evidence-quality discount marker (`[reviewed-without-source-citations]`, `[reviewed-without-repo-access]`, or a diff-only lane) |
+
+Judgment-class findings are deliberately exempt from corroboration: reviewers catch materially different classes of issue, so requiring two of them to independently raise the same architectural concern would suppress exactly what a multi-reviewer setup exists to surface. A suppressed HIGH is still reported, tagged `(single-reviewer, unconfirmed)` — never dropped. If **every** reviewer in a cycle carries a discount marker the gate disengages entirely, so a cycle in which nothing was verified can never be counted as converged. `current_actionable` is unaffected.
+
+With a single reviewer configured — the common case — behavior is unchanged. See [reviewer instances](../gsd-core/references/reviewer-instances.md) for how this interacts with `review.reviewer_instances`.
+
 ```bash
 /gsd-plan-review-convergence 3                    # Default reviewers, 3 cycles
 /gsd-plan-review-convergence 3 --codex            # Codex-only review

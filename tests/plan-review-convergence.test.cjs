@@ -2068,10 +2068,13 @@ describe('#2398 — gate semantics: the clauses that make it correct', () => {
     assert.ok(/tag|unconfirmed|single-reviewer/.test(g), 'and must be visibly tagged, not silently dropped');
   });
 
-  test('gate does not touch current_actionable', () => {
+  test('gate governs current_high only, and says so explicitly', () => {
     const g = gate();
     assert.ok(/current_high/.test(g), 'gate must name the count it governs');
-    assert.ok(!/current_actionable/.test(g), 'current_actionable is out of scope and must stay untouched');
+    // Asserting the gate never MENTIONS current_actionable was the wrong test: stating the
+    // exclusion is what keeps a future editor from quietly widening the gate's reach.
+    assert.ok(/current_actionable is unaffected|does not affect current_actionable|current_actionable is out of scope/.test(g),
+      'gate must state explicitly that current_actionable is out of scope');
   });
 
   test('gate keys on a leading marker, not a quoted one', () => {
