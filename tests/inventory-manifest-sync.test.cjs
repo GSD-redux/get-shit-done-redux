@@ -246,6 +246,23 @@ test('row 10 — CRLF line endings are tolerated', () => {
   );
 });
 
+test('row 10b — a fenced code block does not split a section or contribute cells', () => {
+  // docs/INVENTORY.md carries no fence today. The day someone documents a `## `
+  // example inside one, an unfenced scanner truncates the family section at that
+  // line and reds a document that is perfectly correct — and a pipe-delimited line
+  // inside the fence would count as a row it is not.
+  const text = emptySections({
+    References:
+      '```\n## References\n| `imposter.md` | not a row |\n```\n\n' +
+      '| Reference | Role |\n|---|---|\n| `real.md` | Real. |',
+  });
+
+  assert.deepStrictEqual(
+    findMissingRosterRows(text, { references: ['real.md', 'imposter.md'] }).missingRows,
+    ['references/imposter.md'],
+  );
+});
+
 test('row 11 — a missing family section is reported as a section failure', () => {
   const text = '# Fixture\n\n## Agents\n\n| Agent |\n|---|\n| gsd-planner |\n';
   const { missingSections, missingRows } = findMissingRosterRows(text, {

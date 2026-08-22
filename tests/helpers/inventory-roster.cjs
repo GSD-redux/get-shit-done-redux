@@ -81,14 +81,37 @@ function commandSourceBasename(entry) {
  * regardless of which `###` subsection a contributor files them under. Split on
  * `\r?\n`: a Windows checkout is a supported working tree, and a `\n`-only split
  * would leave a trailing `\r` on every cell and red the whole gate there.
+ *
+ * Fenced code blocks (``` or ~~~) are skipped wholesale — neither their headings
+ * nor their pipe-delimited lines participate. `docs/INVENTORY.md` carries no fence
+ * today, which is exactly why this is worth writing down: the day someone documents
+ * a `## ` example inside one, an unfenced scanner would silently truncate a family
+ * section and red the gate on a document that is perfectly correct.
+ *
+ * The heading pattern is deliberately `(.*)` + trim rather than a lazy `(.+?)` with
+ * a trailing `[ \t]*$`: the lazy form backtracks quadratically on a heading line
+ * padded with thousands of spaces, and this gate parses a file any contributor can
+ * write.
  */
 function splitLevel2Sections(text) {
   const sections = new Map();
   let current = null;
+  let fence = null;
   for (const line of String(text).split(/\r?\n/)) {
-    const m = /^##[ \t]+(.+?)[ \t]*$/.exec(line);
+    const fenceMark = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMark) {
+      if (fence === null) {
+        fence = fenceMark[1][0];
+        continue;
+      }
+      if (fenceMark[1][0] === fence) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+
+    const m = /^##[ \t]+(.*)$/.exec(line);
     if (m) {
-      current = m[1];
+      current = m[1].trim();
       if (!sections.has(current)) sections.set(current, []);
       continue;
     }
@@ -193,12 +216,14 @@ function formatRosterFailure({ missingSections, missingRows }) {
   ].filter(Boolean).join('\n\n');
 }
 
+// Only the three names the gate actually consumes are exported. The parsing
+// helpers above stay module-private on purpose: exporting them would create a
+// surface nothing calls, and every one of their behaviors is already pinned
+// through `findMissingRosterRows` by the fixture rows in
+// `tests/inventory-manifest-sync.test.cjs` — asserting them directly would test
+// the implementation instead of the contract.
 module.exports = {
   ROSTER_SECTIONS,
-  commandSourceBasename,
-  splitLevel2Sections,
-  tableCells,
-  commandSourceLinks,
   findMissingRosterRows,
   formatRosterFailure,
 };
