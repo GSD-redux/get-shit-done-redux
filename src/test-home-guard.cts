@@ -231,7 +231,8 @@ function assertTestHomeSandboxed(
         `${operation}("${runtime}") was called under a test runner with a destination inside ` +
         `your REAL home. The "${kind.kind}" kind declares a global home override, so it ` +
         `resolves from os.homedir() and NOT from the sandboxed configDir — this call would ` +
-        `write to (and prune GSD entries from) ${dest}.\nThe real home it was ` +
+        `write inside ${dest} (and install, uninstall and surface-apply also PRUNE GSD ` +
+        `entries there).\nThe real home it was ` +
         `compared against is ${passwdHome} — if that is not your home, this ` +
         `refusal is the bug and not the call.\n${fix}`,
       );
@@ -239,19 +240,44 @@ function assertTestHomeSandboxed(
     return;
   }
 
-  // The real home cannot be identified, so containment cannot be evaluated at all.
-  // Fall back to the weaker signal: a marker naming the home currently in effect.
-  // Weaker deliberately — it attests that a caller sandboxed HOME, not that these
-  // destinations derive from it — and it is only reachable on hosts with no
-  // readable passwd entry, where the alternative is refusing every such run.
+  // The real home cannot be identified, so containment against it cannot be
+  // evaluated at all. Fall back to the weaker signal: a marker naming the home
+  // currently in effect. Only reachable on hosts with no readable passwd entry,
+  // where the alternative is refusing every such run.
+  //
+  // TWO things are required, not one. An earlier revision returned as soon as the
+  // marker matched the effective HOME, which attested that a caller sandboxed HOME
+  // but said NOTHING about where these destinations resolve — so a layout captured
+  // BEFORE sandboxHome(), still naming the real `~/.agents`, was waved straight
+  // through on a passwd-less host. That is the same stale-layout shape the primary
+  // branch above refuses by design, and it made the marker a bypass for exactly
+  // the case the guard exists for. Reported in Codex review of #3725.
+  //
+  // The marker must also IDENTIFY: `sameDirectory` answers yes for two identical
+  // unidentifiable pathnames (see its docblock), and that is not enough to place a
+  // destination against.
   const marker = env[SANDBOX_MARKER];
-  if (marker && sameDirectory(marker, osMod.homedir())) return;
+  const markerId = marker ? identify(marker) : { kind: 'unknown' as const };
+  if (marker && markerId.kind === 'ok' && sameDirectory(marker, osMod.homedir())) {
+    const stale = overriding.find(
+      (kind) => !isInside(resolveThroughLinks(path.resolve(path.join(kind.home as string, kind.destSubpath ?? ''))), markerId),
+    );
+    if (!stale) return;
+    throw refusal(
+      `${operation}("${runtime}") was called under a test runner on a host with no identifiable ` +
+      `passwd home. HOME was sandboxed and recorded, but the "${stale.kind}" kind resolves to ` +
+      `${resolveThroughLinks(path.resolve(path.join(stale.home as string, stale.destSubpath ?? '')))}, ` +
+      `which is NOT beneath that sandbox — so this layout was resolved before the sandbox and still ` +
+      `names another home. A recorded sandbox vouches for HOME, never for a destination that does ` +
+      `not derive from it.\n${fix}`,
+    );
+  }
   throw refusal(
     `${operation}("${runtime}") was called under a test runner and this environment has no ` +
     `identifiable passwd home, so GSD cannot establish where the real home is. The ` +
     `"${overriding[0]?.kind}" kind declares a global home override, which resolves from ` +
-    `os.homedir() and would write to (and prune GSD entries from) whatever real home that ` +
-    `is. Refusing rather than guessing.\n${fix}`,
+    `os.homedir() and would write inside whatever real home that is (and, for the pruning ` +
+    `writers, delete GSD entries there). Refusing rather than guessing.\n${fix}`,
   );
 }
 
@@ -311,16 +337,21 @@ function resolveThroughLinks(dest: string): string {
  * #3725 failed on legitimately sandboxed destinations before this conjunct
  * existed.
  *
- * THREE conditions are required, and no two of them suffice:
+ * TWO conditions carry the decision, and neither suffices alone:
  *
- *   - HOME differs from the passwd home — otherwise nothing was sandboxed and
- *     `dest` is simply in the real home.
- *   - the passwd home is NOT beneath that HOME — see the comment on the third
- *     check; the first two together still admit a HOME that merely spells the
- *     real home more widely.
+ *   - the passwd home is NOT beneath that HOME — see the comment on that check;
+ *     without it a HOME that merely spells the real home more widely (`/Users`,
+ *     `C:\Users`) is mistaken for a sandbox.
  *   - `dest` is beneath that sandboxed HOME — otherwise this decays into the
  *     "is HOME sandboxed?" check the module docblock rejects, and a layout
  *     resolved before the sandbox walks straight through.
+ *
+ * The first check below — HOME differs from the passwd home — is a cheap fast
+ * path, NOT an independent condition: `isInside` is reflexive, so whenever HOME
+ * identifies the passwd home the second check already returns false on its own.
+ * Removing it changes no outcome; it is kept to answer the common case without
+ * an ancestor walk. Raised in review of #3725 against prose that claimed the
+ * three were independent.
  *
  * Fails CLOSED: an unreadable or unidentifiable HOME returns false, so the
  * caller refuses rather than exempting a destination it cannot place.

@@ -3198,12 +3198,17 @@ describe('install()/uninstall() degrade (never abort) on a staging-root resoluti
  * surviving, suite still exit 0, because the runtime's own config home was
  * untouched and the manifest kept reporting a healthy install.
  *
- * FIVE writers resolve a kind `home` and then destroy under it. The three
+ * SIX writers resolve a kind `home` and then write or destroy under it. The four
  * reachable today are covered below by driving the REAL entrypoint — not the
  * predicate — so that deleting a guard call site turns these rows red. The other
  * two, `installOpencodeFamilySkills` and `installAgentsKindStandalone`, are
  * guarded but not wiring-tested: no runtime declares a `home` override on those
  * kinds, so neither path can be exercised without inventing a descriptor.
+ *
+ * The sixth, `migrateLegacyDevPreferencesToSkill`, CREATES rather than prunes and
+ * runs from `_runLegacyInstallMigrations` — i.e. BEFORE installRuntimeArtifacts'
+ * own assertion — so it carries its own guard call and its own wiring row. The
+ * count read FIVE/three until review of #3725 caught the row missing.
  */
 describe('#3712 in-process home confinement', () => {
   const { createTempDir, sandboxHome } = require('./helpers.cjs');
@@ -3496,6 +3501,29 @@ describe('#3712 in-process home confinement', () => {
       );
     });
 
+    // Codex review of #3725. The marker attests that a caller sandboxed HOME; it
+    // says NOTHING about where an already-resolved destination points. A layout
+    // captured before sandboxHome() still names the real `~/.agents`, and the
+    // marker branch waved it straight through — the exact stale-layout shape the
+    // primary branch refuses by design, reachable on any passwd-less host. Both
+    // halves are now required: the marker names the home in effect AND every
+    // destination derives from it.
+    test('a marker matching HOME does not vouch for a destination that does not derive from it', (t) => {
+      const sandbox = createTempDir('gsd-3712-marker-stale-');
+      const realHome = createTempDir('gsd-3712-marker-real-');
+      t.after(() => { cleanup(sandbox); cleanup(realHome); });
+      assert.throws(
+        () => testHomeGuard.assertTestHomeSandboxed('applySurface', 'codex',
+          escapingKinds(path.join(realHome, '.agents')),
+          {
+            os: { homedir: () => sandbox, userInfo: () => { throw new Error('no passwd entry'); } },
+            env: { ...underTest, [testHomeGuard.SANDBOX_MARKER]: sandbox },
+          }),
+        /NOT beneath that sandbox/,
+        'a recorded sandbox vouches for HOME, never for a destination outside it',
+      );
+    });
+
     // Review of #3725, Major 1. sameDirectory() is read by the marker branch as
     // permission to PROCEED, so "cannot tell" has to answer no. It used to answer
     // yes whenever neither side identified — two absent paths here, or two stats
@@ -3621,6 +3649,70 @@ describe('#3712 in-process home confinement', () => {
         /destination inside\s+your REAL home/,
         'surface apply is the third writer that reaches kind.home',
       );
+    });
+
+    // The fourth reachable writer, and the one the first pass of #3712 missed: it
+    // CREATES SKILL.md under the skills kind's `home` instead of pruning, and it
+    // runs from _runLegacyInstallMigrations — BEFORE installRuntimeArtifacts'
+    // assertion — so the rows above cannot cover it. Driven directly because that
+    // is the seam it has; `saved` must carry dev-preferences.md or the function
+    // returns early before ever resolving a target.
+    test('migrateLegacyDevPreferencesToSkill refuses — it writes SKILL.md under kind.home', (t) => {
+      const { configDir, homeDir, deps } = forgottenSandbox(t);
+      const saved = new Map([['dev-preferences.md', '# saved\n']]);
+      assert.throws(
+        () => installEngine.migrateLegacyDevPreferencesToSkill(configDir, saved, 'codex', 'global', deps),
+        /destination inside\s+your REAL home/,
+        'the legacy migration is the sixth writer that reaches kind.home, and it runs first',
+      );
+      assert.ok(!fs.existsSync(path.join(homeDir, '.agents', 'skills', 'gsd-dev-preferences')),
+        'it must refuse BEFORE creating the escaped skill directory');
+    });
+
+    // The guard call is conditional on `target.installRoot !== targetDir` — the
+    // read-off-the-same-result stand-in for "the skills kind declared a home
+    // override". Pin the ALLOW half too, so widening that condition cannot pass
+    // silently. configDir sits INSIDE the (fake) real home deliberately: that is
+    // what gives this row teeth. With the condition as written the guard is never
+    // consulted, because no home override was declared; widened to run
+    // unconditionally it would see a destination inside the real home with no
+    // sandbox to derive from, and refuse an ordinary confined migration.
+    test('… and still migrates for a runtime whose skills kind declares no home override', (t) => {
+      const { homeDir, deps } = forgottenSandbox(t);
+      const configDir = path.join(homeDir, '.claude');
+      fs.mkdirSync(configDir, { recursive: true });
+      const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout('claude', configDir, 'global');
+      const skills = layout.kinds.find((k) => k.kind === 'skills');
+      assert.ok(skills && !skills.home,
+        'claude skills must carry NO home override — if this fails the descriptor drifted '
+        + 'and this row is no longer testing the ALLOW half');
+      const saved = new Map([['dev-preferences.md', '# saved\n']]);
+      assert.strictEqual(
+        installEngine.migrateLegacyDevPreferencesToSkill(configDir, saved, 'claude', 'global', deps),
+        true,
+        'a confined destination must not be refused — the guard is destination-keyed, not runtime-keyed',
+      );
+    });
+
+    // Codex review of #3725. `installRoot !== targetDir` was the stand-in for "the
+    // skills kind declared a home override", and the two are not equivalent: the
+    // inequality is FALSE when the override resolves onto targetDir itself — a
+    // configDir of `$HOME/.agents`, which is exactly where codex's override points.
+    // The guard was skipped and SKILL.md was written into the real home under a
+    // test runner. The condition now reads the declaration off the same layout
+    // resolution instead of comparing two paths.
+    test('… and refuses when the configDir IS the home-override destination', (t) => {
+      const { homeDir, deps } = forgottenSandbox(t);
+      const configDir = path.join(homeDir, '.agents');
+      fs.mkdirSync(configDir, { recursive: true });
+      const saved = new Map([['dev-preferences.md', '# saved\n']]);
+      assert.throws(
+        () => installEngine.migrateLegacyDevPreferencesToSkill(configDir, saved, 'codex', 'global', deps),
+        /destination inside\s+your REAL home/,
+        'an override that resolves onto targetDir is still a declared override',
+      );
+      assert.ok(!fs.existsSync(path.join(configDir, 'skills', 'gsd-dev-preferences')),
+        'it must refuse BEFORE creating the skill directory in the real home');
     });
   });
 

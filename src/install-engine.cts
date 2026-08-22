@@ -437,7 +437,7 @@ function _tryResolveUserArtifactStagingRoot(configDir: string): string | null {
  *   no skills layout to migrate into (mirrors `migrateLegacyDevPreferencesToSkill`'s
  *   own early return for that case).
  */
-function _resolveDevPreferencesSkillTarget(targetDir: string, runtime?: string, scope: string = 'global'): { skillFile: string; installRoot: string } | null {
+function _resolveDevPreferencesSkillTarget(targetDir: string, runtime?: string, scope: string = 'global'): { skillFile: string; installRoot: string; hasHomeOverride: boolean } | null {
   let skillDir: string;
   // #2911: the actual install root the skill dir resolves under — defaults to
   // targetDir, but a skills-kind `home` override (e.g. Codex -> $HOME/.agents)
@@ -445,6 +445,15 @@ function _resolveDevPreferencesSkillTarget(targetDir: string, runtime?: string, 
   // must confine against installRoot, not targetDir, or it would flag the
   // legitimate override destination as an escape.
   let installRoot: string = targetDir;
+  // Reported in Codex review of #3725: `installRoot !== targetDir` was used as the
+  // stand-in for "the skills kind declared a `home` override", and the two are NOT
+  // equivalent — a resolved `home` that happens to EQUAL targetDir (a configDir of
+  // `$HOME/.agents`, which is exactly where codex's override points) makes the
+  // inequality false while the override is very much declared, skipping the guard
+  // and writing SKILL.md into the real home. Report the declaration itself instead
+  // of inferring it from two paths, read off the SAME layout resolution the
+  // destination came from so the guard cannot vouch for a path this does not write.
+  let hasHomeOverride = false;
   if (runtime) {
     const layout: any = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir, scope as any);
     const skillsKindEntry = layout.kinds.find((k: any) => k.kind === 'skills');
@@ -455,16 +464,31 @@ function _resolveDevPreferencesSkillTarget(targetDir: string, runtime?: string, 
     // -> $HOME/.agents) instead of always resolving against targetDir, so a
     // legacy dev-preferences migration lands in the SAME tree the installer
     // and surface-apply use. Runtimes with no `home` override are unaffected.
+    hasHomeOverride = skillsKindEntry.home != null;
     installRoot = skillsKindEntry.home ?? targetDir;
     skillDir = path.join(runtimeArtifactInstallPlan.assertDestWithinConfigHome(installRoot, skillsKindEntry.destSubpath), stemName);
   } else {
     // Legacy fallback for callers that have not yet been updated to pass runtime
     skillDir = path.join(runtimeArtifactInstallPlan.assertDestWithinConfigHome(targetDir, 'skills'), 'gsd-dev-preferences');
   }
-  return { skillFile: path.join(skillDir, 'SKILL.md'), installRoot };
+  return { skillFile: path.join(skillDir, 'SKILL.md'), installRoot, hasHomeOverride };
 }
 
-function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string, string>, runtime?: string, scope: string = 'global'): boolean {
+/**
+ * @param deps - #3712 test seam, mirroring the one on `installRuntimeArtifacts`
+ *   and `uninstallRuntimeArtifacts`. This is the SIXTH writer that resolves a
+ *   skills-kind `home`, and its guard's trigger condition — "HOME equals the
+ *   passwd home" — cannot be reproduced without pointing at the developer's real
+ *   home, so it is injected rather than simulated. Production callers pass
+ *   nothing and bind real `os`/`process.env`.
+ */
+function migrateLegacyDevPreferencesToSkill(
+  targetDir: string,
+  saved: Map<string, string>,
+  runtime?: string,
+  scope: string = 'global',
+  deps: { os?: any; env?: Record<string, string | undefined> } = {},
+): boolean {
   if (!saved || !saved.has('dev-preferences.md')) return false;
   const target = _resolveDevPreferencesSkillTarget(targetDir, runtime, scope);
   if (!target) return false; // runtime has no skills layout at this scope (e.g. cline local)
@@ -479,12 +503,14 @@ function migrateLegacyDevPreferencesToSkill(targetDir: string, saved: Map<string
   // and without `capabilityRegistry`, so a registry-dependent descriptor could
   // make the two disagree and leave the guard vouching for a path the migration
   // does not write. That is the generative-fix-divergence shape; reported in
-  // review of #3725. `installRoot !== targetDir` is exactly the condition under
-  // which the skills kind declared a `home` override, read off the same result.
-  if (runtime && target.installRoot !== targetDir) {
+  // review of #3725. `target.hasHomeOverride` is that same resolution's own answer
+  // to "did the skills kind declare a `home`?" — not re-derived, and not inferred
+  // from `installRoot !== targetDir`, which is false whenever the override happens
+  // to resolve onto targetDir itself (Codex review of #3725).
+  if (runtime && target.hasHomeOverride) {
     testHomeGuard.assertTestHomeSandboxed('migrateLegacyDevPreferencesToSkill', runtime, [
       { kind: 'skills', home: path.dirname(target.skillFile) },
-    ]);
+    ], { os: deps.os, env: deps.env });
   }
   const { skillFile, installRoot } = target;
   const skillDir = path.dirname(skillFile);
