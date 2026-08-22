@@ -92,13 +92,19 @@ function commandSourceBasename(entry) {
  * a trailing `[ \t]*$`: the lazy form backtracks quadratically on a heading line
  * padded with thousands of spaces, and this gate parses a file any contributor can
  * write.
+ *
+ * Both the heading and the fence marker allow CommonMark's LEADING INDENT of up to
+ * three spaces. Anchoring hard at `^##` looks harmless and is not: an author who
+ * indents a heading by one space writes a perfectly valid document that this gate
+ * would read as having NO family sections at all, reporting all six as missing —
+ * a structural red for zero real drift.
  */
 function splitLevel2Sections(text) {
   const sections = new Map();
   let current = null;
   let fence = null;
   for (const line of String(text).split(/\r?\n/)) {
-    const fenceMark = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
+    const fenceMark = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     if (fenceMark) {
       if (fence === null) {
         fence = fenceMark[1][0];
@@ -109,7 +115,7 @@ function splitLevel2Sections(text) {
     }
     if (fence !== null) continue;
 
-    const m = /^##[ \t]+(.*)$/.exec(line);
+    const m = /^ {0,3}##[ \t]+(.*)$/.exec(line);
     if (m) {
       current = m[1].trim();
       if (!sections.has(current)) sections.set(current, []);
@@ -121,9 +127,47 @@ function splitLevel2Sections(text) {
 }
 
 /**
- * Every whole table cell in `lines`, trimmed, with WRAPPING backticks removed.
- * Wrapping only: a cell reading "`a` and `b`" keeps its backticks and therefore
- * cannot masquerade as either `a` or `b`.
+ * Peel the presentation off a whole table cell, one layer at a time, and return
+ * every form encountered — the raw text and each unwrapped result.
+ *
+ * Two layers are recognized, and only when they wrap the cell ENTIRELY:
+ *   • a code span:      `` `x.md` ``            → `x.md`
+ *   • a markdown link:  `` [`x.md`](../x.md) `` → `` `x.md` `` → `x.md`
+ *
+ * ENTIRELY is the whole safety property. A role cell reading "superseded by
+ * `ghost.md`" keeps its text intact, so a file merely MENTIONED in prose can never
+ * masquerade as a row — which is the false PASS this gate exists to prevent, and is
+ * strictly worse than the false red that motivated handling the link form. The link
+ * text may not itself contain `]`, so a cell holding two links degrades to "no
+ * unwrap" rather than to a garbled middle substring.
+ */
+function unwrapCellForms(cell) {
+  const forms = [cell];
+  let current = cell;
+  // At most two peels: link → code span. Bounded, so no pathological input can
+  // turn this into a loop.
+  for (let i = 0; i < 2; i++) {
+    const code = /^`(.+)`$/.exec(current);
+    if (code) {
+      current = code[1].trim();
+      forms.push(current);
+      continue;
+    }
+    const link = /^\[([^\]]+)\]\([^)]*\)$/.exec(current);
+    if (link) {
+      current = link[1].trim();
+      forms.push(current);
+      continue;
+    }
+    break;
+  }
+  return forms;
+}
+
+/**
+ * Every whole table cell in `lines`, trimmed, plus the unwrapped forms of each (see
+ * `unwrapCellForms`). Only cells are collected — a line that is not a table row
+ * contributes nothing.
  */
 function tableCells(lines) {
   const cells = new Set();
@@ -132,8 +176,7 @@ function tableCells(lines) {
     for (const raw of line.split('|')) {
       const trimmed = raw.trim();
       if (!trimmed) continue;
-      const unwrapped = /^`(.+)`$/.exec(trimmed);
-      cells.add(unwrapped ? unwrapped[1].trim() : trimmed);
+      for (const form of unwrapCellForms(trimmed)) cells.add(form);
     }
   }
   return cells;

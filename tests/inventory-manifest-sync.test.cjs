@@ -108,19 +108,19 @@ test('docs/INVENTORY.md carries a roster row for every manifest entry', () => {
 const FIXTURE_HEAD = '# Fixture\n\n';
 
 /** Assemble a fixture document from `{heading: bodyText}`, optionally with CRLF endings. */
-function doc(sectionsBySpec, { crlf = false } = {}) {
+function doc(sectionsBySpec, { crlf = false, indent = '' } = {}) {
   let out = FIXTURE_HEAD;
   for (const [heading, body] of Object.entries(sectionsBySpec)) {
-    out += '## ' + heading + '\n\n' + body + '\n\n';
+    out += indent + '## ' + heading + '\n\n' + body + '\n\n';
   }
   return crlf ? out.replace(/\n/g, '\r\n') : out;
 }
 
 /** Every in-scope section present and empty, so a row supplies only the table it cares about. */
-function emptySections(overrides = {}) {
+function emptySections(overrides = {}, opts) {
   const spec = {};
   for (const heading of Object.values(ROSTER_SECTIONS)) spec[heading] = '(no rows)';
-  return doc({ ...spec, ...overrides });
+  return doc({ ...spec, ...overrides }, opts);
 }
 
 test('row 2 — the PR #3758 shape: a manifest reference with no roster row is reported', () => {
@@ -263,6 +263,47 @@ test('row 10b — a fenced code block does not split a section or contribute cel
   );
 });
 
+test('row 10c — a heading indented up to 3 spaces is still a heading (CommonMark)', (t) => {
+  // Anchoring hard at /^##/ looks harmless and is not. CommonMark permits an ATX
+  // heading to carry 1-3 leading spaces, so an author who indents one writes a
+  // perfectly valid document that a `^##`-anchored scanner reads as having NO family
+  // sections at all — all six reported missing, a structural red for zero real drift.
+  const text = emptySections(
+    { References: '| Reference | Role |\n|---|---|\n| `only.md` | Only. |' },
+    { indent: '   ' },
+  );
+  const { missingSections, missingRows } = findMissingRosterRows(text, { references: ['only.md'] });
+
+  assert.deepStrictEqual(missingSections, [], 'a 3-space indent must not erase every family section');
+  assert.deepStrictEqual(missingRows, [], 'rows under an indented heading are still rows');
+  t.diagnostic('CommonMark 4.2: an ATX heading may be indented 0-3 spaces');
+});
+
+test('row 10d — a cell that is a link wrapping a code span is a row', () => {
+  // docs/INVENTORY.md already writes file references as [`docs/AGENTS.md`](AGENTS.md)
+  // in prose. The first contributor who writes a FAMILY ROW that way gets an
+  // inexplicable red on a row that plainly documents the file.
+  const text = emptySections({
+    References: '| Reference | Role |\n|---|---|\n| [`linked.md`](../references/linked.md) | Linked. |',
+  });
+
+  assert.deepStrictEqual(findMissingRosterRows(text, { references: ['linked.md'] }).missingRows, []);
+});
+
+test('row 10e — a file merely MENTIONED in a role cell is still not a row', () => {
+  // The guard on row 10d. Unwrapping presentation must peel only layers that wrap the
+  // cell ENTIRELY; the moment a code span mentioned mid-prose counts, the gate has
+  // traded a false red for a false pass, which is the strictly worse failure.
+  const text = emptySections({
+    References: '| Reference | Role |\n|---|---|\n| `real.md` | Superseded by `ghost.md` in the role prose. |',
+  });
+
+  assert.deepStrictEqual(
+    findMissingRosterRows(text, { references: ['real.md', 'ghost.md'] }).missingRows,
+    ['references/ghost.md'],
+  );
+});
+
 test('row 11 — a missing family section is reported as a section failure', () => {
   const text = '# Fixture\n\n## Agents\n\n| Agent |\n|---|\n| gsd-planner |\n';
   const { missingSections, missingRows } = findMissingRosterRows(text, {
@@ -324,6 +365,40 @@ test('the failure message names every missing path and the remedy that satisfies
     rendered,
     /Regenerating the manifest does NOT satisfy this/,
     'the predictable wrong guess is "run the generator"; the message has to close that door',
+  );
+});
+
+test('property — a command is reported missing exactly when no Source link names its file', () => {
+  // The cell-equality property below covers the five families that share one rule.
+  // `commands` is the family with its OWN rule, and therefore the one where an
+  // untested edge is most likely — so it gets its own property rather than riding on
+  // the five hand-written command fixtures.
+  const stemArb = fc.stringMatching(/^[a-z][a-z0-9-]{0,10}$/);
+
+  fc.assert(
+    fc.property(
+      fc.uniqueArray(stemArb, { minLength: 1, maxLength: 8 }),
+      fc.uniqueArray(stemArb, { maxLength: 8 }),
+      (linked, candidates) => {
+        const absent = candidates.filter((c) => !linked.includes(c));
+        // Render each row with a DISPLAY NAME that is deliberately not the file stem,
+        // mirroring the six real namespace routers: if the matcher ever falls back to
+        // the rendered name, this property fails.
+        const rows = linked
+          .map((s) => '| `/gsd-alias-' + s + '` | role | [src](../commands/gsd/' + s + '.md) |')
+          .join('\n');
+        const text = emptySections({ Commands: '| Command | Role | Source |\n|---|---|---|\n' + rows });
+
+        const { missingRows } = findMissingRosterRows(text, {
+          commands: [...linked, ...absent].map((s) => '/gsd-' + s),
+        });
+
+        assert.deepStrictEqual(
+          missingRows.slice().sort(),
+          absent.map((s) => 'commands//gsd-' + s).sort(),
+        );
+      },
+    ),
   );
 });
 
