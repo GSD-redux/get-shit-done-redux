@@ -619,7 +619,12 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
   const fastMode = resolveFastModeInternal(cwd, agentType!, fastModeOpts);
 
   const runtime = (config['runtime'] as string) || 'claude';
-  const rendered = renderEffortForRuntime(runtime, effort);
+  // #3007: pass the resolved model so the per-model advertised-effort ceiling
+  // (CODEX_MODEL_EFFORT) is reachable from this production seam. `model` may
+  // be a tier alias or a non-Codex id for other runtimes — that's fine and
+  // must not be special-cased here: advertisedCodexEffort() falls back to the
+  // family baseline for any id it doesn't recognize.
+  const rendered = renderEffortForRuntime(runtime, effort, model);
 
   const fastModeSupported = RUNTIMES_WITH_FAST_MODE.has(runtime);
 
@@ -675,6 +680,9 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
     effort_rendered: rendered.value,
     effort_param: rendered.param,
     effort_propagation: rendered.channel,
+    effort_requested: rendered.requested,
+    effort_clamped: rendered.clamped,
+    effort_clamp_reason: rendered.reason,
     effort_effective: effortEffective,
     effort_effective_source: effortEffectiveSource,
     fast_mode: fastMode,

@@ -6051,6 +6051,14 @@ describe('#3007 — Codex effort capability is per-model, and every clamp is vis
           { value: 'inherit', param: null, channel: null },
           `runtime=${runtime} model=${JSON.stringify(model)}`,
         );
+        // #3007's new requested/clamped/reason fields must be honest on this
+        // path too: 'inherit' is never a clamp target, so it can never be
+        // reported as clamped, and it echoes itself back as `requested`.
+        assert.deepStrictEqual(
+          { requested: r.requested, clamped: r.clamped, reason: r.reason },
+          { requested: 'inherit', clamped: false, reason: null },
+          `runtime=${runtime} model=${JSON.stringify(model)}`,
+        );
       }
     }
   });
@@ -6060,6 +6068,13 @@ describe('#3007 — Codex effort capability is per-model, and every clamp is vis
     const r = renderEffortForRuntime('something-unknown', 'high');
     assert.strictEqual(r.param, null);
     assert.strictEqual(r.channel, null);
+    // #3007's new fields must also be honest for a host with no spec at all:
+    // the value passes straight through, unclamped, and there is nothing to
+    // explain about it.
+    assert.strictEqual(r.value, 'high');
+    assert.strictEqual(r.requested, 'high');
+    assert.strictEqual(r.clamped, false);
+    assert.strictEqual(r.reason, null);
   });
 
   test('a bare tier alias is not treated as a model id', () => {
@@ -6094,8 +6109,17 @@ describe('#3007 — Codex effort capability is per-model, and every clamp is vis
     const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
     // 'MAX' is not 'max' — whatever the renderer does with an unrecognized
     // level, it must not silently treat it as a clean pass-through of 'max'.
+    // 'MAX' is off the EFFORT_LADDER entirely, so #3007's per-model path
+    // must fall through to the runtime-level clamp verbatim rather than
+    // inventing new handling — and it must report that verbatim pass-through
+    // as NOT clamped, with `requested` echoing the exact (unrecognized) input.
+    // Under a fully reverted #3007, `clamped`/`requested` do not exist on the
+    // returned object at all, so this fails there too.
     const r = renderEffortForRuntime('codex', 'MAX', 'gpt-5.6-sol');
     assert.notStrictEqual(r.value, 'max');
+    assert.strictEqual(r.value, 'MAX');
+    assert.strictEqual(r.clamped, false);
+    assert.strictEqual(r.requested, 'MAX');
   });
 
   test('a clamp never lands on ultra, even for a model that only advertises it', () => {
@@ -6159,9 +6183,74 @@ test('every catalog preset ships an effort its own model supports', () => {
   assert.deepStrictEqual(offenders, [], `offending presets (model does not advertise the assigned effort):\n${offenders.join('\n')}`);
 });
 
+// ─── #3007 PARITY: argv channel must agree with the render-for-runtime channel ─
+//
+// `renderEffortArgv('codex', ...)` (invocation-time, `-c model_reasoning_effort=`)
+// and `renderEffortForRuntime('codex', ...)` (install-time / api channel) each
+// read their own EFFORT_ARGV.codex / EFFORT_RENDERING.codex tables. Those two
+// tables must describe the SAME capability, or a user gets a different answer
+// depending on which code path asked — the repo's documented "generative fix
+// divergence" class (two surfaces reading one fact that can drift apart).
+
+describe('#3007 PARITY: argv channel agrees with renderEffortForRuntime for codex', () => {
+  test('renderEffortArgv and renderEffortForRuntime never disagree across the ladder', () => {
+    const { renderEffortArgv, renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const LADDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    for (const level of LADDER) {
+      const argvResult = renderEffortArgv('codex', level, 'argv');
+      const runtimeResult = renderEffortForRuntime('codex', level);
+      if (level === 'ultra') {
+        // 'ultra' is Codex's automatic-delegation switch (#2167): the
+        // install-time channel rejects it outright (value: null, policy
+        // reason). The argv channel has no concept of that policy rejection
+        // — it simply isn't in EFFORT_ARGV.codex's supported set, so it also
+        // degrades to a `null` value. Both channels landing on `null` here
+        // is the explicit agreement contract for this level; it is not a
+        // case the parity check can skip.
+        assert.strictEqual(argvResult.value, null, `argv channel must also refuse ultra: got ${argvResult.value}`);
+        assert.strictEqual(runtimeResult.value, null, `runtime channel must refuse ultra: got ${runtimeResult.value}`);
+        continue;
+      }
+      assert.strictEqual(
+        argvResult.value,
+        runtimeResult.value,
+        `argv/runtime channels disagree for level=${level}: argv=${argvResult.value} runtime=${runtimeResult.value}`,
+      );
+    }
+  });
+});
+
 // ─── #3007 PROPERTY: rendered codex effort is always within the model's ceiling ─
 
 describe('#3007 PROPERTY: renderEffortForRuntime never renders a level the model does not advertise', () => {
+  test('every (model, level) pair is exhaustively checked, not sampled', () => {
+    // fc.constantFrom over MODELS x LADDER with numRuns: 200 is very likely to
+    // hit all 4 x 7 = 28 pairs but is not GUARANTEED to. This deterministic
+    // nested loop covers the full cross-product with certainty; it is kept
+    // alongside the fast-check property below (not instead of it) because the
+    // repo requires a property test for a closed-vocabulary contract, and the
+    // property still adds shrinking value on failure.
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-9.9-unreleased-model'];
+    const LADDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    for (const model of MODELS) {
+      for (const level of LADDER) {
+        const allowed = advertisedCodexEfforts(model);
+        const r = renderEffortForRuntime('codex', level, model);
+        if (r.value === null) {
+          assert.strictEqual(level, 'ultra', `only ultra may be rejected: model=${model} level=${level}`);
+          continue;
+        }
+        assert.ok(allowed.has(r.value), `rendered value not in model's advertised set: model=${model} level=${level} value=${r.value}`);
+        if (r.value === level) {
+          assert.strictEqual(r.clamped, false, `pass-through reported as clamped: model=${model} level=${level}`);
+        } else {
+          assert.strictEqual(r.clamped, true, `changed value not reported as clamped: model=${model} level=${level} value=${r.value}`);
+        }
+      }
+    }
+  });
+
   test('for every (model, level) pair, the outcome is pass-through, clamp, or reject', () => {
     const fc = require('./helpers/fast-check-setup.cjs');
     const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');

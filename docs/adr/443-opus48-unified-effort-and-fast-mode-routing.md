@@ -95,10 +95,17 @@ Two defects this corrects, both live on `next` before it:
    level luna does not advertise, written into a document Codex itself validates.
 
 **Clamping becomes visible rather than silent.** `RenderedEffort` gains `requested` / `clamped` /
-`reason`, and `resolve-execution` surfaces them. The old table clamped correctly-but-invisibly, so a
-user asking for `max` on Codex had no way to learn they were getting `xhigh` — the failure mode
-Postel's robustness critique warns about, and the reason "be liberal" here has to mean "liberal and
-loud".
+`reason`, and `resolve-execution` surfaces them as the flat result keys `effort_requested`,
+`effort_clamped`, and `effort_clamp_reason` — siblings of the existing `effort_rendered`, not a
+nested `effort` object. The old table clamped correctly-but-invisibly, so a user asking for `max` on
+Codex had no way to learn they were getting `xhigh` — the failure mode Postel's robustness critique
+warns about, and the reason "be liberal" here has to mean "liberal and loud".
+
+**No model divergence is observable today.** All three shipped Codex models advertise the same
+usable set (`low`…`max`), and `ultra` — sol's only differentiator — is rejected for every model
+regardless. So today, the same requested level renders identically across `gpt-5.6-sol`,
+`gpt-5.6-terra`, and `gpt-5.6-luna`; the per-model table exists because Codex declares capability
+per model and the sets are free to diverge, not because a user can currently observe a difference.
 
 **`ultra` is refused, not laddered.** Codex's catalog describes it as *"Maximum reasoning with
 automatic task delegation"*, and at `ultra` Codex enters proactive multi-agent mode

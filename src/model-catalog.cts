@@ -152,10 +152,25 @@ export const PROVIDER_PRESETS: Record<string, Record<string, Record<string, Tier
 // about what it sends: read the ceiling as DATA from the catalog (never
 // branch on model id in code) and fall back to the family baseline for any
 // model the catalog doesn't know about.
+// (b) A malformed catalog entry (e.g. a non-array value like `"gpt-x": 5`) must
+// degrade to "ignore that entry", never throw — model-catalog.cjs is required
+// across the whole CLI, so one bad JSON value must not kill every command.
+// `new Set(5)` would throw at module load; filter to array values first.
 export const CODEX_MODEL_EFFORT: Record<string, Set<string>> = Object.fromEntries(
-  Object.entries(_catalog.codexModelEffort ?? {}).map(([model, levels]) => [model, new Set(levels)])
+  Object.entries(_catalog.codexModelEffort ?? {})
+    .filter(([, levels]) => Array.isArray(levels))
+    .map(([model, levels]) => [model, new Set(levels)])
 );
-const CODEX_EFFORT_BASELINE: Set<string> = CODEX_MODEL_EFFORT['_baseline'] ?? new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+// (a) `??` only catches null/undefined. A malformed `"_baseline": null` still
+// produces `new Set(null)` above — an empty Set, which is truthy — so a bare
+// `??` fallback would never fire and every level would silently lose its
+// advertised set (every effort would render as `value: null`). Guard on
+// `.size > 0` so an empty/missing/malformed baseline always falls back to the
+// hardcoded floor instead of failing open.
+const CODEX_EFFORT_BASELINE: Set<string> =
+  CODEX_MODEL_EFFORT['_baseline'] && CODEX_MODEL_EFFORT['_baseline'].size > 0
+    ? CODEX_MODEL_EFFORT['_baseline']
+    : new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 function advertisedCodexEffort(model: string | null | undefined): Set<string> {
   if (typeof model !== 'string' || model.length === 0) return CODEX_EFFORT_BASELINE;
@@ -259,6 +274,8 @@ export const EFFORT_RENDERING: Record<string, EffortSpec> = {
     // spec is kept in sync with the family baseline so the two tables can
     // never disagree; renderEffortForRuntime layers the per-model ceiling
     // (and the 'ultra' policy rejection) on top of it.
+    // KEEP IN SYNC with EFFORT_ARGV.codex below — same family baseline, two
+    // channels (install-time vs invocation-time); they must never diverge.
     param: 'model_reasoning_effort',
     channel: 'api',
     supported: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
@@ -317,10 +334,14 @@ export const EFFORT_ARGV: Record<string, EffortArgvSpec> = {
   },
   // First-party Codex docs: `model_reasoning_effort` is a config-only key with no
   // dedicated flag, so the generic `-c key=value` override is the only argv route.
+  // #3007: KEEP IN SYNC with EFFORT_RENDERING.codex above — this table must match
+  // the family baseline exactly (no 'minimal', 'max' passes through unclamped),
+  // otherwise the argv channel and the install-time channel disagree about the
+  // same runtime's capability.
   codex: {
     render: (level: string): string[] => ['-c', `model_reasoning_effort=${level}`],
-    supported: new Set(['minimal', 'low', 'medium', 'high', 'xhigh']),
-    clamp: (level: string): string => (level === 'max' ? 'xhigh' : level),
+    supported: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
+    clamp: (level: string): string => (level === 'minimal' ? 'low' : level),
   },
 };
 
@@ -414,6 +435,12 @@ export function renderEffortForRuntime(runtime: string, universalEffort: string,
     // practice is 'minimal' — below every model's floor. Walk UP the ladder
     // to the nearest level the model actually advertises (its floor): there
     // is nothing below 'minimal' to fall back to.
+    // Walking UP is safe today only because every advertised set floors at
+    // 'low' — a future model whose floor is, say, 'high' would silently turn
+    // a requested 'low' into 'high': MORE reasoning and MORE cost than asked
+    // for, with no error. `clamped`/`reason` below is what makes that
+    // escalation visible to a caller instead of a silent cost surprise, which
+    // is why those fields are not optional decoration.
     for (let i = idx + 1; i < EFFORT_LADDER.length; i++) {
       const candidate = EFFORT_LADDER[i];
       // 'ultra' is never a valid clamp target: it would re-enter, by the back
