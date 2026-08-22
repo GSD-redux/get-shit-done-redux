@@ -59,6 +59,62 @@ Recorded as a dated section rather than by editing the amendment above or Decisi
 
 **Boundary — unchanged.** [ADR-2313](2313-codex-passive-model-posture.md) still owns the static/install-time channel; [ADR-1239](1239-gsd-embeddable-orchestration-engine.md)'s `effortSurface` amendment still owns the invocation-time argv channel. This amendment changes neither, and changes no runtime behavior at all.
 
+## Amendment (#3007, 2026-08-22) — the Codex capability premise went stale
+
+**What changed underneath this ADR.** The Context section below records, as fact, that Codex's
+ladder is `minimal, low, medium, high, xhigh` and that it *"has `minimal`; no `max`"*, and Decision
+item 2 clamps `max → xhigh` on that basis. That was accurate when written. It is no longer:
+Codex's `ReasoningEffort` now accepts `none, minimal, low, medium, high, xhigh, max, ultra`, and
+capability is declared **per model** via `supported_reasoning_levels`, which Codex validates against
+(`validate_spawn_agent_reasoning_effort`) and exposes through `model/list`.
+
+Verified against Codex's own `codex-rs/models-manager/models.json`:
+
+| Model | `supported_reasoning_levels` | `default_reasoning_level` |
+|---|---|---|
+| `gpt-5.6-sol` | low, medium, high, xhigh, max, **ultra** | `low` |
+| `gpt-5.6-luna` | low, medium, high, xhigh, max | `medium` |
+
+**No Codex model advertises `minimal`** — the level this ADR called Codex-only.
+
+**What this amendment changes.** Decision item 2's per-runtime clamp table is superseded for Codex
+by a per-**model** advertised set, with the family baseline `low, medium, high, xhigh, max` for any
+model GSD does not know:
+
+| Universal level | Claude rendering | Codex rendering (was → now) |
+|---|---|---|
+| `minimal` | `low` (clamped) | `minimal` → **`low` (clamped)** |
+| `low`–`xhigh` | unchanged | unchanged |
+| `max` | `max` | `xhigh` (clamped) → **`max` (passes)** |
+| `ultra` | *not on the ladder* | **rejected, never clamped** |
+
+Two defects this corrects, both live on `next` before it:
+
+1. `max` was silently discarded for every Codex model, all of which advertise it.
+2. `providerPresets.openai.haiku.low` paired `gpt-5.6-luna` with `reasoning_effort: "minimal"` — a
+   level luna does not advertise, written into a document Codex itself validates.
+
+**Clamping becomes visible rather than silent.** `RenderedEffort` gains `requested` / `clamped` /
+`reason`, and `resolve-execution` surfaces them. The old table clamped correctly-but-invisibly, so a
+user asking for `max` on Codex had no way to learn they were getting `xhigh` — the failure mode
+Postel's robustness critique warns about, and the reason "be liberal" here has to mean "liberal and
+loud".
+
+**`ultra` is refused, not laddered.** Codex's catalog describes it as *"Maximum reasoning with
+automatic task delegation"*, and at `ultra` Codex enters proactive multi-agent mode
+(`effective_multi_agent_mode` → `Proactive`), spawning sub-agents on its own initiative underneath
+GSD's orchestration ([#2167](https://github.com/open-gsd/gsd-core/issues/2167)). It is a mode
+switch, not a reasoning depth, so it is not added to the universal ladder — which stays
+provider-agnostic per Decision item 2 — and it is rejected for every model including `gpt-5.6-sol`,
+which advertises it. GSD is deliberately stricter than Codex here: Codex applies proactive mode only
+to V2 sessions and never to spawned sub-agents, but GSD writes effort at install time and cannot
+know the session source of a future invocation.
+
+**What this amendment does NOT change.** The universal ladder itself, the cascade, the resolver
+precedence, the two channel boundaries above, and Claude's rendering are all untouched. The
+per-model table is static and will go stale exactly as this premise did; runtime discovery via
+`model/list` is the known escape hatch and was deliberately deferred as the larger step.
+
 ## Context
 
 ### Effort control and fast mode in Claude Opus 4.8

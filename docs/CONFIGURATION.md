@@ -1521,7 +1521,48 @@ minimal < low < medium < high < xhigh < max
 
 Effort is rendered per-runtime: `output_config.effort` for Claude (Claude Code subagent `effort` frontmatter / `CLAUDE_CODE_EFFORT_LEVEL` env), `model_reasoning_effort` for Codex (Responses API `reasoning.effort`).
 
-**Cross-provider clamping:** `max` is Anthropic-only — it clamps to `xhigh` on Codex. `minimal` is Codex-only — it clamps to `low` on Claude.
+**Cross-provider clamping:** `minimal` is Anthropic-unsupported — it clamps to `low` on Claude.
+
+**Codex effort is resolved per model, not per runtime (#3007).** Codex advertises a
+`supported_reasoning_levels` set on each model and validates against it, so the same universal level
+can pass cleanly on one model and clamp on another. GSD therefore renders against the model's own
+advertised set:
+
+| Model | Advertised levels |
+|---|---|
+| `gpt-5.6-sol` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
+| `gpt-5.6-terra` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` |
+| any other / unknown id | `low`, `medium`, `high`, `xhigh`, `max` (family baseline) |
+
+Three consequences:
+
+- **`max` reaches Codex.** It is no longer clamped to `xhigh`. Earlier GSD releases described `max`
+  as Anthropic-only; that was accurate when written and Codex has since added it. If you set `max`
+  for a Codex agent, your generated `model_reasoning_effort` now says `max` where it previously said
+  `xhigh`.
+- **`minimal` no longer reaches Codex.** No Codex model advertises it, so it clamps up to `low` —
+  the floor every model does advertise. GSD previously emitted `minimal` verbatim, which Codex
+  rejects.
+- **`ultra` is refused outright**, and is not part of GSD's ladder. See below.
+
+**Every clamp is now visible.** `resolve-execution` reports the level you asked for alongside the
+level actually rendered, so a downgrade is legible instead of silent:
+
+```json
+{ "effort": { "value": "low", "requested": "minimal", "clamped": true,
+              "reason": "requested 'minimal' is not in gpt-5.6-luna's advertised reasoning levels; clamped up to its floor, 'low'." } }
+```
+
+**Why `ultra` is rejected rather than clamped.** Codex's own catalog describes `ultra` as *"Maximum
+reasoning with automatic task delegation"* — it is a mode switch, not a louder `max`. At `ultra`
+Codex enters proactive multi-agent mode and spawns sub-agents on its own initiative, which would run
+underneath GSD's orchestration rather than inside it ([#2167](https://github.com/open-gsd/gsd-core/issues/2167)).
+GSD refuses it for every model, including `gpt-5.6-sol`, which does advertise it. This is
+deliberately stricter than Codex requires: Codex only applies proactive mode to V2 sessions and
+never to spawned sub-agents, but GSD writes effort into generated agent files at install time and
+cannot know the session source of a future invocation. Clamping `ultra` down to `max` was rejected
+as an option — it would silently discard what you actually asked for.
 
 The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for reference; effort is now config-driven.
 

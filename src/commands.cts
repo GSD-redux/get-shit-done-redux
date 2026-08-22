@@ -855,8 +855,10 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
       continue;
     }
 
+    // `runtime` is guaranteed 'claude' by the guard above (#3007: only
+    // codex's 'ultra' rejection can produce a null value).
     const rendered = renderEffortForRuntime(runtime, universalEffort);
-    const newEffortValue = rendered.value;
+    const newEffortValue = rendered.value as string;
 
     // eslint-disable-next-line local/no-unbounded-quantifier -- lazy `*?` bounded by the `^---$/m` closing anchor, no nested quantifier, measured linear to 5MB (no-closing-marker adversarial input)
     const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);

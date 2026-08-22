@@ -6097,6 +6097,28 @@ describe('#3007 — Codex effort capability is per-model, and every clamp is vis
     const r = renderEffortForRuntime('codex', 'MAX', 'gpt-5.6-sol');
     assert.notStrictEqual(r.value, 'max');
   });
+
+  test('a clamp never lands on ultra, even for a model that only advertises it', () => {
+    // The clamp-up loop in renderEffortForRuntime walks EFFORT_LADDER
+    // upward from the requested level looking for the model's floor. Today's
+    // catalog can't actually exercise the 'ultra'-as-clamp-target path — every
+    // model advertises 'max', so the allowed.has() fast path always returns
+    // first. This test guards a latent path, not a currently-reachable one:
+    // do not delete it as redundant just because it never fails today. The
+    // invariant it protects is general — for EVERY model and EVERY ladder
+    // level, a clamp must never produce 'ultra', because that would re-enter
+    // by the back door the delegation mode the #2167 rejection exists to
+    // keep out.
+    const { renderEffortForRuntime } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    const models = [undefined, 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-9.9-unreleased'];
+    const levels = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    for (const model of models) {
+      for (const level of levels) {
+        const r = renderEffortForRuntime('codex', level, model);
+        assert.notStrictEqual(r.value, 'ultra', `model=${JSON.stringify(model)} level=${level}`);
+      }
+    }
+  });
 });
 
 // ─── #3007 PARITY: known-defect gauntlet ──────────────────────────────────────
@@ -6150,7 +6172,13 @@ describe('#3007 PROPERTY: renderEffortForRuntime never renders a level the model
         const allowed = advertisedCodexEfforts(model);
         const r = renderEffortForRuntime('codex', level, model);
         if (r.value === null) {
-          assert.ok(!allowed.has(level), `value===null for a level the model DOES advertise: model=${model} level=${level}`);
+          // Rejection is a POLICY outcome, not a capability one, so it is not
+          // predicted by the advertised set. `ultra` is refused even on sol,
+          // which does advertise it: GSD is deliberately stricter than Codex
+          // because ultra turns on automatic task delegation (#2167).
+          // Reserving null for exactly `ultra` is what keeps that a decision
+          // rather than a side effect — any OTHER null is a bug.
+          assert.strictEqual(level, 'ultra', `only ultra may be rejected: model=${model} level=${level}`);
           return;
         }
         assert.ok(allowed.has(r.value), `rendered value not in model's advertised set: model=${model} level=${level} value=${r.value}`);
