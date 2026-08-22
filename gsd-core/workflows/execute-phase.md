@@ -284,7 +284,7 @@ Check `branching_strategy` from init:
 
 ```bash
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
-if [ "$(gsd_run query git.base-branch --is-protected "$CURRENT_BRANCH" 2>/dev/null)" = true ]; then
+if [ "$(gsd_run query git.base-branch --is-protected "$CURRENT_BRANCH")" = true ]; then
   echo "⚠ Current branch '$CURRENT_BRANCH' is a protected branch; branching_strategy=none will continue here." >&2
 fi
 ```
