@@ -1943,7 +1943,7 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
 
 const WORKFLOW_2398 = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-review-convergence.md');
 const REVIEWER_INSTANCES_2398 = path.join(__dirname, '..', 'gsd-core', 'references', 'reviewer-instances.md');
-const RUNNER_2398 = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'review-lane-runner.cjs');
+const runner2398 = require('../gsd-core/bin/lib/review-lane-runner.cjs');
 
 const lf2398 = (t) => String(t == null ? '' : t).replace(/\r\n/g, '\n');
 
@@ -2086,23 +2086,63 @@ describe('#2398 — gate semantics: the clauses that make it correct', () => {
   });
 });
 
-describe('#2398 — marker parity between the gate and what the runner emits', () => {
-  test('gate names only markers review-lane-runner actually emits', () => {
-    const emitted = markerNames2398(read2398(RUNNER_2398));
-    const named = markerNames2398(consensusGate2398(step5a2398(read2398(WORKFLOW_2398))));
-    assert.ok(emitted.length >= 2, `runner should emit at least 2 markers, found ${JSON.stringify(emitted)}`);
-    assert.ok(named.length >= 1, 'the gate must name at least one concrete marker literal');
-    const unemitted = named.filter((m) => !emitted.includes(m));
-    assert.deepEqual(unemitted, [],
-      `gate names marker(s) the runner never emits — the gate would be inert: ${JSON.stringify(unemitted)}`);
+describe('#2398 — marker parity: the gate names markers the runner actually PRODUCES', () => {
+  // Earlier this asserted the marker string appeared somewhere in the runner's SOURCE TEXT.
+  // That would pass even if stampUngroundedReview were broken or never called — string
+  // co-occurrence, not behavior. These invoke the real exported stampers instead.
+
+  /** Markers the runner genuinely emits, observed by calling it. */
+  function emittedMarkers2398() {
+    const observed = new Set();
+    const ungrounded = runner2398.stampUngroundedReview('HIGH: no idempotency on retried writes.');
+    const blind = runner2398.stampBlindReview('REVIEWED-WITHOUT-REPO-ACCESS\nHIGH: something.');
+    for (const stamped of [ungrounded, blind]) {
+      const m = /^> (\[reviewed-without-[a-z-]+\])/.exec(stamped);
+      if (m) observed.add(m[1]);
+    }
+    return [...observed].sort();
+  }
+
+  test('the runner stamps an uncited review, and the marker LEADS the output', () => {
+    const stamped = runner2398.stampUngroundedReview('HIGH: no idempotency on retried writes.');
+    assert.match(stamped, /^> \[reviewed-without-source-citations\]/,
+      'the marker must be the leading blockquote — the gate keys on that position');
+    assert.ok(stamped.includes('HIGH: no idempotency on retried writes.'),
+      'the original review must be preserved beneath the marker');
   });
 
-  test('parity fails when the gate names an unemitted marker', () => {
-    // Non-vacuity: a parity guard that only reads the correct tree never runs its failure branch.
-    const emitted = markerNames2398(read2398(RUNNER_2398));
+  test('the runner does NOT stamp a review carrying a file:line citation', () => {
+    const cited = 'HIGH: see src/a.ts:42 — the race is real.';
+    assert.equal(runner2398.stampUngroundedReview(cited), cited);
+  });
+
+  test('the runner stamps a self-reported blind review', () => {
+    assert.match(
+      runner2398.stampBlindReview('REVIEWED-WITHOUT-REPO-ACCESS\nHIGH: something.'),
+      /^> \[reviewed-without-repo-access\]/,
+    );
+  });
+
+  test('stamping is idempotent — an already-stamped review gains no second marker', () => {
+    const once = runner2398.stampUngroundedReview('bare review');
+    assert.equal(runner2398.stampUngroundedReview(once), once);
+  });
+
+  test('gate names only markers the runner actually produces', () => {
+    const emitted = emittedMarkers2398();
+    const named = markerNames2398(consensusGate2398(step5a2398(read2398(WORKFLOW_2398))));
+    assert.deepEqual(emitted, ['[reviewed-without-repo-access]', '[reviewed-without-source-citations]'],
+      'runner must produce both markers when invoked');
+    assert.ok(named.length >= 1, 'the gate must name at least one concrete marker literal');
+    assert.deepEqual(named.filter((m) => !emitted.includes(m)), [],
+      'gate names a marker the runner never produces — the gate would be inert');
+  });
+
+  test('parity fails when the gate names a marker the runner does not produce', () => {
+    // Non-vacuity: a guard that only reads a correct tree never runs its failure branch.
+    const emitted = emittedMarkers2398();
     const mutated = markerNames2398('[reviewed-without-source-citations] and [reviewed-without-telemetry]');
-    const unemitted = mutated.filter((m) => !emitted.includes(m));
-    assert.deepEqual(unemitted, ['[reviewed-without-telemetry]']);
+    assert.deepEqual(mutated.filter((m) => !emitted.includes(m)), ['[reviewed-without-telemetry]']);
   });
 
   test('parsers are total on empty, whitespace-only and absent input', () => {
@@ -2114,7 +2154,7 @@ describe('#2398 — marker parity between the gate and what the runner emits', (
   });
 
   test('parsers are newline-agnostic (CRLF === LF)', () => {
-    for (const p of [WORKFLOW_2398, REVIEWER_INSTANCES_2398, RUNNER_2398]) {
+    for (const p of [WORKFLOW_2398, REVIEWER_INSTANCES_2398]) {
       const lfText = lf2398(read2398(p));
       const crlf = lfText.replace(/\n/g, '\r\n');
       assert.equal(step5a2398(crlf), step5a2398(lfText));
@@ -2122,16 +2162,14 @@ describe('#2398 — marker parity between the gate and what the runner emits', (
     }
   });
 
-  test('property: marker parity is strictly sensitive to an unemitted name', () => {
-    const emitted = markerNames2398(read2398(RUNNER_2398));
+  test('property: parity is strictly sensitive to a marker the runner never produces', () => {
+    const emitted = emittedMarkers2398();
     fc.assert(
       fc.property(
         fc.subarray(emitted, { minLength: 1 }),
         fc.constantFrom('telemetry', 'network', 'sandbox', 'cache'),
         (subset, novel) => {
-          // any subset of genuinely-emitted markers parses clean
           assert.deepEqual(markerNames2398(subset.join(' ')).filter((m) => !emitted.includes(m)), []);
-          // adding one the runner never emits is always caught
           const withNovel = `${subset.join(' ')} [reviewed-without-${novel}]`;
           assert.deepEqual(markerNames2398(withNovel).filter((m) => !emitted.includes(m)),
             [`[reviewed-without-${novel}]`]);

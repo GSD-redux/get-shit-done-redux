@@ -283,6 +283,8 @@ Judgment-class findings are deliberately exempt from corroboration: reviewers ca
 
 With a single reviewer configured — the common case — behavior is unchanged. See [reviewer instances](../gsd-core/references/reviewer-instances.md) for how this interacts with `review.reviewer_instances`.
 
+**What this gate does not do.** It weighs *evidence*, not correctness. A reviewer that cites source evidence anywhere in its review is never discount-marked, so a **judgment-class finding it invents still counts on its own** — the marker catches "cited nothing" and "had no repo access", not "drew the wrong conclusion from a real citation". That is the deliberate side of the trade: the alternative is requiring corroboration for design findings, which suppresses the genuine architectural concern only one reviewer noticed, and would make adding reviewers *weaken* the gate. Existence-class claims are the ones tightened here.
+
 ```bash
 /gsd-plan-review-convergence 3                    # Default reviewers, 3 cycles
 /gsd-plan-review-convergence 3 --codex            # Codex-only review
