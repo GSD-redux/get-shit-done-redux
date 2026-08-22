@@ -146,12 +146,17 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
   });
 
   describe('severity is advisory, and stays advisory', () => {
-    test('the sub-check finding is a warning', () => {
+    test('the sub-check finding is info (local #3724 patch: advisory tier must not gate the revision loop)', () => {
       const span = sliceBetween(agentDoc, D3B_HEADING, D4_HEADING);
       assert.match(
         span,
+        /severity:\s*info/,
+        'Dimension 3b\'s example issue must carry severity: info'
+      );
+      assert.doesNotMatch(
+        span,
         /severity:\s*warning/,
-        'Dimension 3b\'s example issue must carry severity: warning'
+        'Dimension 3b must not carry a warning-severity example — warning re-triggers the revision loop'
       );
     });
 
