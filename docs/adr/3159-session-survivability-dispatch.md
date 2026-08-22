@@ -165,7 +165,14 @@ Both rows are unchanged. The earlier draft of this ADR routed leaf sites through
 
 **Negative.** Declaring `false` costs parallelism at every leaf site — that is the trade, and it is real. GSD acquires a config axis that can be set wrongly in a direction it cannot detect. Six workflow files must read a query they do not read today. The predicate takes three inputs where it took one, and a caller that omits the kind gets the strict answer, which is safe but can silently under-parallelize if a site is added without one.
 
-**Expected breakage on landing.** Editing shipped `gsd-core/workflows/*.md` moves emitted-artifact hashes, so the differential attribution check (`tests/emitted-attribution.test.cjs`, [ADR-2719](2719-emitted-artifact-attribution.md)) will fire — correctly. Ripples not attributable to the diff need a per-PR fragment under `tests/emitted-drift-acks/`. Growth is separately reported against the size-budget ratchet ([ADR-1610](1610-workflow-agent-size-budget-ratchet.md)), and **`execute-phase.md` has little room**: XL-tier against a 96 KiB hard cap, measuring 92,356 bytes on `next` at `2f86278b` — under 6 KB of headroom in the most-edited file in the tree. Phase 2 should reach the predicate through the shortest possible addition there and may need to land explanatory prose in a `steps/` fragment.
+**Expected breakage on landing.** Editing shipped `gsd-core/workflows/*.md` moves emitted-artifact hashes, so the differential attribution check (`tests/emitted-attribution.test.cjs`, [ADR-2719](2719-emitted-artifact-attribution.md)) will fire — correctly. Ripples not attributable to the diff need a per-PR fragment under `tests/emitted-drift-acks/`. Growth is separately reported against the size-budget ratchet ([ADR-1610](1610-workflow-agent-size-budget-ratchet.md)), and **the two files Phase 2 must edit are the two with the least room in the tree.** The operative bound is the per-file *margin ceiling*, which is far tighter than the XL tier's 96 KiB hard cap:
+
+| File | Size on `next` @ `2f86278b` | Margin budget | Headroom |
+|---|---|---|---|
+| `execute-phase.md` | 92,356 B | 93,400 B | **1,044 B** |
+| `plan-phase.md` | 94,431 B | 94,519 B | **88 B** |
+
+Eighty-eight bytes will not hold a query invocation and a conditional, let alone an explanation. Phase 2 therefore **cannot** add its prose inline in `plan-phase.md`, and very likely not in `execute-phase.md` either: both must reach the predicate through a `steps/` fragment, or land alongside a compensating reduction. This is a hard planning constraint on Phase 2, not a caution.
 
 **Verification standard.** Phase 3's regression must move the verdict on each axis with the others held constant — kind alone, survivability alone, descriptor alone. A test that exercises only the default path passes identically before and after the change it exists to prove.
 
