@@ -1455,3 +1455,101 @@ describe('#3532 shadowed global-defaults warning', () => {
     assert.equal(configLoader._warnedShadowedGlobalKeys.size, 0);
   });
 });
+
+// ─── Regressions — #3760: a non-object section must not be expanded or written ──
+//
+// The loader is the surface that actually WRITES: a non-empty `normalizations`
+// array marks the config dirty and `platformWriteSync` persists it. Before the
+// fix a config holding `{"git":"main","branching_strategy":"none"}` came back
+// from `normalizeLegacyKeys` as `{"git":{"0":"m","1":"a","2":"i","3":"n",...}}`
+// and that object was written to the user's file — the original `"main"` was
+// unrecoverable afterwards.
+//
+// The loader's own multiRepo branches carried a second, quieter form of the
+// same defect: `if (!fileData.planning) fileData.planning = {}` treats a
+// non-empty STRING as an already-present section, so the next line
+// (`fileData.planning['sub_repos'] = detected`) threw a strict-mode TypeError.
+// That throw was swallowed by the enclosing catch, which discarded the entire
+// configuration and fell back to defaults — the ADR-1411 silent-fallback
+// failure, reached from an input the user can trivially write by hand.
+
+describe('regressions — #3760 loader never expands or persists a non-object section', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTempProject('gsd-3760-loader-');
+    _resetRuntimeWarningCacheForTests();
+  });
+
+  afterEach(() => {
+    if (tmpDir) cleanup(tmpDir);
+    tmpDir = null;
+  });
+
+  function readRawConfig() {
+    return fs.readFileSync(path.join(tmpDir, '.planning', 'config.json'), 'utf-8');
+  }
+
+  test('loadConfig leaves a string git section untouched on disk', () => {
+    writeConfig(tmpDir, { git: 'main', branching_strategy: 'none' });
+    const before = readRawConfig();
+
+    let config;
+    assert.doesNotThrow(() => { config = loadConfig(tmpDir); });
+
+    assert.equal(readRawConfig(), before, 'the config file must not be rewritten with an expanded section');
+    assert.equal(config.git, 'main', 'the resolved config must carry the value the user wrote');
+  });
+
+  test('loadConfig leaves a string planning section untouched on disk', () => {
+    writeConfig(tmpDir, { planning: 'docs', sub_repos: ['a'] });
+    const before = readRawConfig();
+
+    assert.doesNotThrow(() => { loadConfig(tmpDir); });
+
+    assert.equal(readRawConfig(), before);
+    assert.equal(JSON.parse(readRawConfig()).planning, 'docs');
+  });
+
+  test('loadConfig does not discard the config when multiRepo meets a string planning section', () => {
+    // multiRepo DOES normalize, so this file legitimately gets rewritten. The
+    // pre-fix loader threw a TypeError assigning sub_repos onto the string and
+    // the catch discarded everything.
+    fs.mkdirSync(path.join(tmpDir, 'sub', '.git'), { recursive: true });
+    writeConfig(tmpDir, { planning: 'docs', multiRepo: true, model_profile: 'balanced' });
+
+    let config;
+    assert.doesNotThrow(() => { config = loadConfig(tmpDir); });
+
+    assert.equal(
+      config.model_profile, 'balanced',
+      'an unrelated user setting must survive — a swallowed TypeError would have reverted it to the default',
+    );
+    assert.equal(
+      JSON.parse(readRawConfig()).planning, 'docs',
+      'the string planning section must not be spread into character keys on the way to disk',
+    );
+  });
+
+  test('loadConfigResolved reports a usable resolution and writes no expanded section', () => {
+    writeConfig(tmpDir, { git: 'main', branching_strategy: 'none' });
+    const before = readRawConfig();
+
+    let resolution;
+    assert.doesNotThrow(() => { resolution = loadConfigResolved(tmpDir); });
+
+    assert.equal(readRawConfig(), before);
+    assert.equal(resolution.source, 'root', 'a present, parseable config still resolves from the project');
+    assert.equal(resolution.degraded, false);
+  });
+
+  test('an already-canonical config is still migrated normally', () => {
+    // Negative space: the guard must not suppress a legitimate hoist.
+    writeConfig(tmpDir, { git: { remote: 'origin' }, branching_strategy: 'none' });
+
+    const config = loadConfig(tmpDir);
+    assert.equal(config.git.branching_strategy, 'none', 'a well-formed section must still receive the hoisted key');
+    assert.equal(config.git.remote, 'origin', 'existing section keys must be preserved');
+    assert.equal(JSON.parse(readRawConfig()).branching_strategy, undefined, 'the stale top-level key is consumed');
+  });
+});
