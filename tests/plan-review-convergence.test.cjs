@@ -33,6 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('node:child_process');
 const { readFileNormalized } = require('./helpers.cjs');
+const fc = require('fast-check');
 
 const COMMAND_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'plan-review-convergence.md');
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-review-convergence.md');
@@ -1911,5 +1912,238 @@ describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () =
         'the ARCHITECTURE.md drift-guard paragraph must describe the cross-artifact fact-drift axis'
       );
     });
+  });
+});
+
+// ══ #2398 — consensus gate for CYCLE_SUMMARY with multi-reviewer runs ═══════════════════
+//
+// Supersedes PR #2417, which its author closed on the unresolved B2 finding: the approved
+// wording let a lone HIGH count if "the source-grounding pass independently confirms it",
+// but that pass verifies "every symbol THE PLAN cites" — it never takes reviewer claims as
+// input. For a genuine architectural HIGH raised by one reviewer and missed by another:
+// ungroundable, uncorroborated, so it stopped gating. Net effect, in the #2417 review's
+// words: configuring MORE reviewers produced a WEAKER gate than configuring one.
+//
+// The gate therefore splits by what a claim ASSERTS:
+//   - existence/citation-class  -> source-grounding OR corroboration (catches fabricated cites)
+//   - judgment/architectural    -> counts unless the RAISER carries an evidence-quality
+//                                  discount marker  <- this is the B2 fix
+//
+// Linus's Law is the reason: "different reviewers think differently" — demanding two of them
+// independently raise the SAME architectural finding destroys the mechanism a multi-reviewer
+// setup exists for. Its limits clause supplies the other half: "rubber-stamp reviews don't
+// count", and a reviewer that produced no file:line evidence is a rubber-stamp for that cycle.
+//
+// Assertions are on parsed structure and typed sets. The contract SENTENCES are themselves the
+// deliverable (source-text-is-the-product), and carry no allow-test-rule marker deliberately:
+// no-source-grep never inspects .md reads, so a marker suppresses nothing and consumes the
+// ceilinged unverified-marker budget (measured 2026-08-21, 280 -> 281 fails the gate).
+//
+// See https://github.com/open-gsd/gsd-core/issues/2398
+
+const WORKFLOW_2398 = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-review-convergence.md');
+const REVIEWER_INSTANCES_2398 = path.join(__dirname, '..', 'gsd-core', 'references', 'reviewer-instances.md');
+const RUNNER_2398 = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'review-lane-runner.cjs');
+
+const lf2398 = (t) => String(t == null ? '' : t).replace(/\r\n/g, '\n');
+
+function read2398(p) {
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+}
+
+/** The `### 5a` step body, bounded by the next `### ` heading. */
+function step5a2398(text) {
+  const lines = lf2398(text).split('\n');
+  const start = lines.findIndex((l) => /^###\s+5a[.\s]/.test(l));
+  if (start === -1) return '';
+  let end = start + 1;
+  while (end < lines.length && !/^###\s/.test(lines[end])) end += 1;
+  return lines.slice(start, end).join('\n');
+}
+
+/** The consensus-gate block: from its heading to the line before `Counting rules:`. */
+function consensusGate2398(text) {
+  const body = lf2398(text);
+  const gateAt = body.search(/^\s*Consensus gate\b/m);
+  if (gateAt === -1) return '';
+  const countingAt = body.indexOf('Counting rules:', gateAt);
+  return countingAt === -1 ? body.slice(gateAt) : body.slice(gateAt, countingAt);
+}
+
+/** Every `[reviewed-without-*]` marker literal named in `text`, deduped and sorted. */
+function markerNames2398(text) {
+  return [...new Set([...lf2398(text).matchAll(/\[reviewed-without-[a-z-]+\]/g)].map((m) => m[0]))].sort();
+}
+
+/** Ordered positions of the contract landmarks the gate must sit between. */
+function landmarks2398(text) {
+  const body = lf2398(text);
+  return {
+    contract: body.indexOf('IMPORTANT — CYCLE_SUMMARY contract'),
+    gate: body.search(/^\s*Consensus gate\b/m),
+    counting: body.indexOf('Counting rules:'),
+    definitions: body.indexOf('Definitions:'),
+  };
+}
+
+describe('#2398 — consensus gate is declared and correctly positioned', () => {
+  const workflow = read2398(WORKFLOW_2398);
+
+  test('step 5a declares a consensus gate', () => {
+    assert.notEqual(consensusGate2398(step5a2398(workflow)), '', 'no Consensus gate block found in step 5a');
+  });
+
+  test('gate precedes the counting rules it constrains', () => {
+    const at = landmarks2398(step5a2398(workflow));
+    assert.ok(at.contract >= 0 && at.gate >= 0 && at.counting >= 0 && at.definitions >= 0,
+      `missing landmark: ${JSON.stringify(at)}`);
+    assert.ok(at.contract < at.gate, 'gate must sit inside the CYCLE_SUMMARY contract');
+    assert.ok(at.gate < at.counting, 'gate must precede Counting rules, or it constrains nothing');
+    assert.ok(at.counting < at.definitions, 'existing Counting rules -> Definitions order must survive');
+  });
+
+  test('the CYCLE_SUMMARY contract line itself is unchanged', () => {
+    // The orchestrator greps `current_high=[0-9]+` at :320-321. This change alters the NUMBER
+    // the agent computes, never the line's shape — that is the Hyrum-safe boundary.
+    assert.ok(lf2398(workflow).includes('CYCLE_SUMMARY: current_high=<N> current_actionable=<M>'));
+  });
+
+  test('step 5a fences stay balanced', () => {
+    const fences = (lf2398(step5a2398(workflow)).match(/^\s*```/gm) || []).length;
+    assert.equal(fences % 2, 0, `odd fence count (${fences}) in step 5a — a fence was left open`);
+  });
+});
+
+describe('#2398 — gate semantics: the clauses that make it correct', () => {
+  const gate = () => lf2398(consensusGate2398(step5a2398(read2398(WORKFLOW_2398)))).toLowerCase();
+
+  test('gate engages only when 2+ reviewers actually ran', () => {
+    const g = gate();
+    assert.ok(/2\+|two or more|at least two/.test(g), 'gate must state its 2+ reviewer trigger');
+    assert.ok(/\bran\b|produced|returned/.test(g),
+      'trigger must be reviewers that RAN, not merely configured — a failed reviewer must not arm the gate');
+  });
+
+  test('single reviewer is documented as unchanged', () => {
+    assert.ok(/single reviewer|one reviewer|exactly one/.test(gate()),
+      'the single-reviewer no-op is the backward-compatibility promise and must be stated');
+  });
+
+  test('threshold is two, not three', () => {
+    const g = gate();
+    assert.ok(!/three or more|3\+ reviewers/.test(g), 'threshold must be 2, matching the approved scope');
+  });
+
+  // ── the B2 regression ──────────────────────────────────────────────────────────────────
+  test('judgment-class lone HIGH is exempt from corroboration (B2)', () => {
+    const g = gate();
+    assert.ok(/judgment|architectural/.test(g), 'gate must name the judgment/architectural class');
+    assert.ok(/counts?\b[\s\S]{0,200}?(unless|except)[\s\S]{0,200}?marker/.test(g),
+      'a judgment-class lone HIGH must COUNT unless the raiser is marked — if it instead requires '
+      + 'corroboration, B2 is back and more reviewers produce a weaker gate');
+  });
+
+  test('existence-class lone HIGH requires grounding or corroboration', () => {
+    const g = gate();
+    assert.ok(/existence|citation-class|cites a symbol/.test(g), 'gate must name the checkable class');
+    assert.ok(/source-ground/.test(g) && /corroborat/.test(g),
+      'the checkable class keeps both original paths: grounding OR corroboration');
+  });
+
+  test('classification is by assertion, not by citation presence (row 14)', () => {
+    assert.ok(/asserts?\b/.test(gate()),
+      'gate must classify by what the claim ASSERTS — keying on the presence of a file:line '
+      + 'silently reclassifies every architectural finding that cites context, reintroducing B2');
+  });
+
+  test('an all-marked cycle fails open', () => {
+    const g = gate();
+    assert.ok(/every reviewer|all reviewers/.test(g) && /(does not (apply|engage)|fails? open)/.test(g),
+      'if every reviewer is marked the gate must disengage — a gate must never manufacture convergence');
+  });
+
+  test('a suppressed HIGH remains listed and tagged', () => {
+    const g = gate();
+    assert.ok(/current high concerns/.test(g), 'suppressed HIGHs must still be listed');
+    assert.ok(/tag|unconfirmed|single-reviewer/.test(g), 'and must be visibly tagged, not silently dropped');
+  });
+
+  test('gate does not touch current_actionable', () => {
+    const g = gate();
+    assert.ok(/current_high/.test(g), 'gate must name the count it governs');
+    assert.ok(!/current_actionable/.test(g), 'current_actionable is out of scope and must stay untouched');
+  });
+
+  test('gate keys on a leading marker, not a quoted one', () => {
+    // stampBlindReview's own doc warns a review that merely QUOTES a marker must not be
+    // mis-stamped; the stamp is a LEADING blockquote, so the gate must say so.
+    assert.ok(/leading|opens|begins|first line|blockquote/.test(gate()),
+      'gate must require the marker to OPEN the reviewer section, or a review quoting a marker '
+      + 'gets its own findings suppressed');
+  });
+});
+
+describe('#2398 — marker parity between the gate and what the runner emits', () => {
+  test('gate names only markers review-lane-runner actually emits', () => {
+    const emitted = markerNames2398(read2398(RUNNER_2398));
+    const named = markerNames2398(consensusGate2398(step5a2398(read2398(WORKFLOW_2398))));
+    assert.ok(emitted.length >= 2, `runner should emit at least 2 markers, found ${JSON.stringify(emitted)}`);
+    assert.ok(named.length >= 1, 'the gate must name at least one concrete marker literal');
+    const unemitted = named.filter((m) => !emitted.includes(m));
+    assert.deepEqual(unemitted, [],
+      `gate names marker(s) the runner never emits — the gate would be inert: ${JSON.stringify(unemitted)}`);
+  });
+
+  test('parity fails when the gate names an unemitted marker', () => {
+    // Non-vacuity: a parity guard that only reads the correct tree never runs its failure branch.
+    const emitted = markerNames2398(read2398(RUNNER_2398));
+    const mutated = markerNames2398('[reviewed-without-source-citations] and [reviewed-without-telemetry]');
+    const unemitted = mutated.filter((m) => !emitted.includes(m));
+    assert.deepEqual(unemitted, ['[reviewed-without-telemetry]']);
+  });
+
+  test('parsers are total on empty, whitespace-only and absent input', () => {
+    for (const input of ['', '   \n\t\n ', null, undefined, read2398('/nonexistent/2398.md')]) {
+      assert.equal(step5a2398(input), '');
+      assert.equal(consensusGate2398(input), '');
+      assert.deepEqual(markerNames2398(input), []);
+    }
+  });
+
+  test('parsers are newline-agnostic (CRLF === LF)', () => {
+    for (const p of [WORKFLOW_2398, REVIEWER_INSTANCES_2398, RUNNER_2398]) {
+      const lfText = lf2398(read2398(p));
+      const crlf = lfText.replace(/\n/g, '\r\n');
+      assert.equal(step5a2398(crlf), step5a2398(lfText));
+      assert.deepEqual(markerNames2398(crlf), markerNames2398(lfText));
+    }
+  });
+
+  test('property: marker parity is strictly sensitive to an unemitted name', () => {
+    const emitted = markerNames2398(read2398(RUNNER_2398));
+    fc.assert(
+      fc.property(
+        fc.subarray(emitted, { minLength: 1 }),
+        fc.constantFrom('telemetry', 'network', 'sandbox', 'cache'),
+        (subset, novel) => {
+          // any subset of genuinely-emitted markers parses clean
+          assert.deepEqual(markerNames2398(subset.join(' ')).filter((m) => !emitted.includes(m)), []);
+          // adding one the runner never emits is always caught
+          const withNovel = `${subset.join(' ')} [reviewed-without-${novel}]`;
+          assert.deepEqual(markerNames2398(withNovel).filter((m) => !emitted.includes(m)),
+            [`[reviewed-without-${novel}]`]);
+        },
+      ),
+      { seed: 2398, numRuns: 100 },
+    );
+  });
+});
+
+describe('#2398 — reviewer-instances cross-reference', () => {
+  test('reviewer-instances documents the convergence-gate interaction', () => {
+    const ref = lf2398(read2398(REVIEWER_INSTANCES_2398)).toLowerCase();
+    assert.ok(/consensus gate/.test(ref), 'the reference must name the gate');
+    assert.ok(/plan-review-convergence|current_high/.test(ref),
+      'and must point at where it takes effect, so a reader configuring instances finds it');
   });
 });
