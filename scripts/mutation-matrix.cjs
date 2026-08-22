@@ -279,23 +279,22 @@ const COVERED = {
   // per mutant). tests/model-catalog.unit.test.cjs is spawn-free, in-process,
   // and runs in well under a second.
   //
-  // ⚠️ minScore: 50 is a BOOTSTRAP FLOOR, not a measured one — unlike every
-  // other entry in this file, this module has NOT yet been through a CI
-  // mutation run. 50 is the lowest legal starting point: the ratchet guard
-  // (tests/mutation-matrix-ratchet.test.cjs) requires minScore >= 50, and 50
-  // is also Stryker's own configured `break` threshold (stryker.config.mjs),
-  // so it cannot go any lower without weakening the shared gate.
-  // It MUST be ratcheted up to the actual measured CI score (following the
-  // planning-inspect/plan-document/planning-command-router pattern above)
-  // BEFORE this PR merges — measurement happens in CI, not locally (see
-  // "HOW TO UPDATE" above). A bootstrap floor of 50 that survives to `next`
-  // unratcheted leaves this module's gate weaker than every other entry in
-  // this file. Do not ship this PR with this comment still describing
-  // minScore: 50 as a bootstrap floor.
+  // Measured CI score (GitHub Actions run 32605073352, job 97108869486):
+  //   model-catalog 59.62% → floor 58  (248 killed, 168 survived, 0 timeouts,
+  //     0 errors; below TARGET_MUTATION_SCORE (80) — ratchet candidate like
+  //     planning-inspect (56): comfortably clears its own floor but has real
+  //     room to grow. Raise as its tests improve, never lower it.)
+  // Floor follows this file's documented rule, minScore = floor(measured) - 1,
+  // matching the sibling precedent exactly (57.03 → 56, 76.58 → 75, 95.65 → 94).
+  //
+  // The shard completed in 57 seconds — concrete evidence the spawn-free
+  // unit-file design above worked: the #2790 precedent's 15-minute shard-cap
+  // cancellations do not apply here, and for comparison the `frontmatter`
+  // shard in the same run took 9m46s.
   'model-catalog': {
     cjs: 'gsd-core/bin/lib/model-catalog.cjs',
     tests: ['tests/model-catalog.unit.test.cjs'],
-    minScore: 50,
+    minScore: 58,
   },
 };
 
