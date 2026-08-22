@@ -7398,6 +7398,66 @@ describe('#3003 — declared deletions: authorization is exact set membership', 
     assert.ok(paths.includes('src/rogue.ts'), 'the advisory must not be blunted by this change');
   });
 
+  // ── git C-quoting decode: both sides meet in the same shape ────────────────────────────
+
+  test('a declared non-ASCII deletion merges even though git C-quotes the path', () => {
+    // With core.quotepath at its git default, a non-ASCII deleted path comes back from
+    // `git diff --diff-filter=D --name-only` wrapped in double quotes and C-escaped:
+    // `tests/é.ts` is reported as the literal string built here with String.raw so the
+    // runtime value actually contains backslash-3-0-3 / backslash-2-5-1 sequences, not a
+    // JS-interpreted escape. Confirmed via `raw.length === 19` and `raw.includes('\\303')`.
+    // Without decodeGitQuotedPath this quoted form can never equal the plainly-declared
+    // path below, so the entry would block forever.
+    const quoted = String.raw`"tests/\303\251.ts"`;
+    const result = runWave(
+      { declared_deletions: ['tests/é.ts'] },
+      { deletions: `${quoted}\n` },
+    );
+    assert.ok(!blockedOnDeletions(result), `expected merge, got ${firstEntry(result).reason}`);
+  });
+
+  test('a declaration written in git-quoted form also matches a plainly reported path', () => {
+    // The reverse direction: normalizeScopePath runs on BOTH sides, so a declaration
+    // authored in the quoted-and-escaped form must still match a plain git report. This
+    // pins the symmetry so a future one-sided decode (only on the git side) is caught.
+    const quoted = String.raw`"tests/\303\251.ts"`;
+    const result = runWave(
+      { declared_deletions: [quoted] },
+      { deletions: 'tests/é.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result), `expected merge, got ${firstEntry(result).reason}`);
+  });
+
+  test('an undeclared non-ASCII deletion still blocks, and the residue names the decoded path', () => {
+    // The path must not be declared, so the guard blocks — and the operator-facing detail
+    // must show the DECODED path (the one they can actually act on), not the raw escaped
+    // quoted form git emitted.
+    const quoted = String.raw`"tests/\303\251.ts"`;
+    const result = runWave(
+      { declared_deletions: ['src/keep.ts'] },
+      { deletions: `${quoted}\n` },
+    );
+    assert.ok(blockedOnDeletions(result));
+    const detail = firstEntry(result).stderr;
+    assert.match(detail, /tests\/é\.ts/, 'the block detail must name the decoded path, not the raw escaped form');
+    assert.doesNotMatch(detail, /\\303\\251/, 'the raw C-escaped bytes must not leak into the operator-facing detail');
+  });
+
+  test('a path merely containing a quote is not decoded', () => {
+    // `tests/a"b.ts` is not wrapped in a leading-and-trailing quote pair, so the
+    // startsWith('"') && endsWith('"') guard must leave it completely untouched — declaring
+    // that exact literal string must still merge.
+    const result = runWave(
+      { declared_deletions: ['tests/a"b.ts'] },
+      { deletions: 'tests/a"b.ts\n' },
+    );
+    assert.ok(!blockedOnDeletions(result), `expected merge, got ${firstEntry(result).reason}`);
+  });
+
+  // NOTE: "a fully declared deletion merges" (above) already covers a plain ASCII declared
+  // deletion merging — no additional plain-ASCII regression test added here to avoid
+  // duplicating it.
+
   // ── #2852 regression: a block isolates, it does not abort the wave ─────────────────────
 
   test('a blocked entry does not abort the rest of the wave', () => {

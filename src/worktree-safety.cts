@@ -654,15 +654,77 @@ const SUMMARY_ARTIFACT_DIR = '.planning';
 const SUMMARY_ARTIFACT_SUFFIX = 'SUMMARY.md';
 
 /**
+ * Decode a git-quoted path. With `core.quotepath` left at its default (`true`)
+ * git wraps any path containing non-ASCII or special bytes in double quotes
+ * and C-escapes it — e.g. `tests/é.ts` is emitted as the literal
+ * `"tests/\303\251.ts"`. Both sides of the deletion/scope comparison
+ * (a declared path and a git-reported path) must agree on the same decoded
+ * shape, and decoding it here — rather than passing `-c core.quotepath=false`
+ * on the `execGit` call — keeps the git argv, and therefore every existing
+ * test fixture that asserts on exact argv, unchanged. It also works
+ * regardless of the user's own `core.quotepath` config.
+ *
+ * A value that is not wrapped in a leading and trailing `"` is returned
+ * completely untouched — this is the overwhelmingly common (plain ASCII)
+ * case and must not be altered in any way.
+ *
+ * Escapes decode to BYTES, collected into a Buffer and decoded as UTF-8 only
+ * at the end: `\303\251` is two bytes that together form one character (é),
+ * so decoding them one at a time would produce mojibake. Malformed input
+ * (a trailing lone backslash, or an octal escape with fewer than three
+ * digits) never throws — it degrades to treating the character literally, so
+ * a single bad path can never take down the whole cleanup wave.
+ */
+function decodeGitQuotedPath(raw: string): string {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const body = raw.slice(1, -1);
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== '\\' || i === body.length - 1) {
+      // UTF-8 bytes, not the code unit: a DECLARED path may be quoted while
+      // still holding a literal `é`, and pushing 0xE9 alone is invalid UTF-8.
+      // codePointAt keeps a surrogate pair together.
+      const codePoint = body.codePointAt(i);
+      const char = codePoint === undefined ? ch : String.fromCodePoint(codePoint);
+      bytes.push(...Buffer.from(char, 'utf8'));
+      i += char.length - 1;
+      continue;
+    }
+    const rest = body.slice(i + 1);
+    const octalMatch = /^([0-3][0-7][0-7])/.exec(rest);
+    if (octalMatch) {
+      bytes.push(parseInt(octalMatch[1], 8));
+      i += 3;
+      continue;
+    }
+    const next = body[i + 1];
+    const CONTROL_ESCAPES: Record<string, number> = {
+      a: 0x07, b: 0x08, f: 0x0c, n: 0x0a, r: 0x0d, t: 0x09, v: 0x0b,
+      '\\': 0x5c, '"': 0x22,
+    };
+    if (Object.prototype.hasOwnProperty.call(CONTROL_ESCAPES, next)) {
+      bytes.push(CONTROL_ESCAPES[next]);
+    } else {
+      bytes.push(next.charCodeAt(0));
+    }
+    i += 1;
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+/**
  * Normalize one path for scope comparison. Applied to BOTH sides so a declared
- * path and a git-reported path meet in the same shape: backslashes become
- * slashes unconditionally (a backslash path is not a Windows-only input),
- * a leading `./` and any trailing `/` are stripped. This is the single
- * normalizer shared by the SUMMARY-artifact predicate and the scope advisory,
- * so the two can never disagree about what `./a\b/` means.
+ * path and a git-reported path meet in the same shape: any git C-quoting is
+ * decoded first (order matters — the backslash-to-slash conversion below
+ * would destroy the escape sequences if it ran first), then backslashes
+ * become slashes unconditionally (a backslash path is not a Windows-only
+ * input), and a leading `./` and any trailing `/` are stripped. This is the
+ * single normalizer shared by the SUMMARY-artifact predicate and the scope
+ * advisory, so the two can never disagree about what `./a\b/` means.
  */
 function normalizeScopePath(raw: string): string {
-  return String(raw || '')
+  return decodeGitQuotedPath(String(raw || '').trim())
     .replace(/\\/g, '/')
     .trim()
     .replace(/^\.\//, '')
@@ -999,11 +1061,7 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       continue; // #2852: isolate
     }
 
-    // #3003: `-c core.quotepath=false` so a non-ASCII path arrives raw rather than
-    // C-escaped and double-quoted. Without it a declared deletion of `tests/é.ts`
-    // could never match its declaration, and the entry would block forever with no
-    // diagnostic pointing at the encoding.
-    const deletions = execGit(['-c', 'core.quotepath=false', 'diff', '--diff-filter=D', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
+    const deletions = execGit(['diff', '--diff-filter=D', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
     if (!gitResultOk(deletions)) {
       blockEntry(result, 'deletion_check_failed', deletions?.stderr || '');
       continue; // #2852: isolate
@@ -1053,7 +1111,7 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
     // modified path.
     const declaredFiles = Array.isArray(entry.files_modified) ? entry.files_modified : [];
     if (declaredFiles.length > 0) {
-      const scopeDiff = execGit(['-c', 'core.quotepath=false', 'diff', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
+      const scopeDiff = execGit(['diff', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
       const scopeWarnings: WaveCleanupWarning[] = !gitResultOk(scopeDiff)
         // A broken advisory must never become a gate: record that conformance
         // is unknown rather than blocking (or, worse, silently passing).
