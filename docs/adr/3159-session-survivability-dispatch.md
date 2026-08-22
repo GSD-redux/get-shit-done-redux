@@ -112,11 +112,28 @@ An opt-out. Default preserves today's behavior byte-for-byte on every currently-
 
 **It is named for the property, not the mechanism, and that is load-bearing.** A mechanism name (`workflow.background_dispatch`, the name the earlier abandoned attempt on PR [#3214](https://github.com/open-gsd/gsd-core/pull/3214) used) collides conceptually with the descriptor's own `dispatch.background` and `dispatch.backgroundDispatch`, which are vendor-sourced and mean different things. Three similarly-named knobs across two layers, one of which silently overrides the others, is the confusion this ADR exists to remove. The key states the fact the operator knows; GSD decides what to do about it.
 
-### D7 — Registration ripple
+### D7 — The default is declared in the schema, **not** re-typed at each call site
 
-The key is registered on every seam a config key must reach: the schema manifest's `validKeys`, `SCHEMA_DEFAULTS` (`src/config.cts`), and a `docs/CONFIGURATION.md` row matching the `workflow.use_worktrees` precedent.
+The key is registered in the schema manifest's `validKeys`, in `SCHEMA_DEFAULTS` (`src/config.cts`), and as a `docs/CONFIGURATION.md` row.
 
-**One hazard is called out so it is a design constraint rather than a review finding.** `resolveSchemaDefault` resolves an absent key in two tiers — the hardcoded `SCHEMA_DEFAULTS` first, then the capability-registry `configSchema` default that `capability-activation.cts`'s resolver honors. A key registered in one tier and not the other lets `config-get` and capability activation disagree on the effective default. That is the class [#2256](https://github.com/open-gsd/gsd-core/issues/2256) fixed for existing keys, and a new key can reintroduce it.
+**`workflow.use_worktrees` is this ADR's sizing precedent, and explicitly *not* its registration precedent.** That distinction is load-bearing, so it is recorded with the measurement behind it. Against an empty `.planning/config.json` on `next` at `2f86278b`:
+
+| Key | Registered in | `config-get` result |
+|---|---|---|
+| `git.create_tag` | `validKeys` + `SCHEMA_DEFAULTS` | `true`, exit 0 |
+| `workflow.use_worktrees` | `validKeys` only | `Error: Key not found`, exit 1 |
+| an unregistered key | nothing | `Error: Key not found`, exit 1 |
+
+The last two rows are **output-identical**: `workflow.use_worktrees` is indistinguishable from a key nobody ever registered. Its "default `true`" exists only as a literal `|| echo "true"` repeated at each call site.
+
+That pattern must not be copied here, for a reason specific to this key's direction:
+
+- `use_worktrees`'s caller-supplied fallback resolves to `true` — *toward* parallel isolation. A call site that forgets the fallback gets an empty string, which is falsy, and degrades to sequential: **fail-safe by luck of the polarity**.
+- `session_outlives_turn`'s safe direction is the opposite. A forgotten fallback yields an empty string, which is not `"false"`, so the predicate concludes the session survives and backgrounds — **failing open, into precisely the orphaning this ADR exists to prevent.**
+
+A safety predicate whose default is re-typed at every call site has as many chances to be wrong as it has callers. Declaring it once in `SCHEMA_DEFAULTS` gives `config-get` an exit-0 answer and removes the per-site literal entirely.
+
+**One further hazard, called out so it is a design constraint rather than a review finding.** `resolveSchemaDefault` resolves an absent key in two tiers — the hardcoded `SCHEMA_DEFAULTS` first, then the capability-registry `configSchema` default that `capability-activation.cts`'s resolver honors. A key registered in one tier and not the other lets `config-get` and capability activation disagree on the effective default. That is the class [#2256](https://github.com/open-gsd/gsd-core/issues/2256) fixed for existing keys, and a new key can reintroduce it.
 
 ## Consequences
 
