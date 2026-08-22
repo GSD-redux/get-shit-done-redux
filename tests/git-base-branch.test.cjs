@@ -760,6 +760,41 @@ describe('#3552: configured protected branches', () => {
       'protected-branch warning must retain the none-strategy feature-branch offer');
   });
 
+  test('#3648 Nit: detached HEAD answers false; a missing argument is reported', () => {
+    // `git branch --show-current` prints nothing on a detached HEAD, so the
+    // call sites pass an explicit empty string. That must answer false — no
+    // protected branch is named '' — and must stay SILENT, because a detached
+    // HEAD is a normal state, not a misconfiguration.
+    const detachedDiagnostics = [];
+    const detachedOut = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', ''], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      write: (chunk) => detachedOut.push(chunk),
+      writeDiagnostic: (chunk) => detachedDiagnostics.push(chunk),
+    });
+    assert.strictEqual(detachedOut.join('').trim(), 'false');
+    assert.deepStrictEqual(detachedDiagnostics, [],
+      'a detached HEAD is not an error and must not warn');
+
+    // The flag with NO argument at all is a caller bug that `args[1] ?? ''`
+    // silently collapsed into the detached-HEAD case. Same answer, but said
+    // out loud so the two are distinguishable.
+    const missingDiagnostics = [];
+    const missingOut = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected'], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      write: (chunk) => missingOut.push(chunk),
+      writeDiagnostic: (chunk) => missingDiagnostics.push(chunk),
+    });
+    assert.strictEqual(missingOut.join('').trim(), 'false');
+    assert.strictEqual(missingDiagnostics.length, 1,
+      'a missing branch argument must be reported, not read as a detached HEAD');
+    assert.match(missingDiagnostics.join(''), /--is-protected/);
+
+    assert.notDeepStrictEqual(detachedDiagnostics, missingDiagnostics,
+      'the two paths must be distinguishable — that is the whole point of the arm');
+  });
+
   test('#3648 Blocker 4: the predicate diagnostic reaches the user at both call sites', (t) => {
     // Both call sites piped the query's stderr to /dev/null, so the
     // fail-closed explanation ("could not verify the base branch ... defaulting
