@@ -363,6 +363,20 @@ describe('#3156: a raw installer spawn cannot write into the ambient HOME', () =
         'USERPROFILE must track HOME — os.homedir() reads it on Windows');
       assert.strictEqual(build({ HOME: '/explicit', USERPROFILE: '/explicit' }).HOME, '/explicit',
         'an explicit HOME override must still win (overrides spread last)');
+      // #3712 / Codex review of #3725: the marker attests to the home ACTUALLY in
+      // effect. Spreading `overrides` last used to leave it naming this helper's
+      // default home while HOME was the caller's, and on a passwd-less host the
+      // test-home guard compares the two and refuses a legitimately sandboxed
+      // spawn. Asserting HOME alone did not catch it — the marker has to move too.
+      assert.strictEqual(build().GSD_TEST_HOME_SANDBOX, build().HOME,
+        'the marker must name the default sandbox home');
+      const overridden = build({ HOME: '/explicit', USERPROFILE: '/explicit' });
+      assert.strictEqual(overridden.GSD_TEST_HOME_SANDBOX, '/explicit',
+        'the marker must follow an overridden HOME, not keep naming the default one');
+      assert.strictEqual(
+        build({ HOME: '/explicit', GSD_TEST_HOME_SANDBOX: '/caller-chosen' }).GSD_TEST_HOME_SANDBOX,
+        '/caller-chosen',
+        'an explicitly supplied marker still wins over the derived one');
     }
   });
 

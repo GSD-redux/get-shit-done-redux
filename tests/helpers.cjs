@@ -1003,7 +1003,7 @@ function installSpawnEnv(overrides = {}) {
   // legitimately redirected HOME, so without this it is refused on exactly the
   // environment the fallback exists to serve. The name is the same constant
   // sandboxHome() writes; see the note there on why it is a bare string.
-  return {
+  const env = {
     ...process.env,
     ...testEnvBase(),
     HOME: home,
@@ -1011,6 +1011,17 @@ function installSpawnEnv(overrides = {}) {
     [TEST_HOME_SANDBOX_MARKER]: home,
     ...overrides,
   };
+  // The marker attests to the home ACTUALLY in effect, so it has to follow an
+  // overridden HOME rather than keep naming this helper's default one. Spreading
+  // `overrides` last is deliberate (an explicit HOME must win — see the docblock's
+  // "A test needing that passes its own { HOME, USERPROFILE }"), but it left the
+  // marker stale: a caller supplying its own HOME got HOME=<theirs> and
+  // marker=<helper default>. On a passwd-less host the guard compares the two and
+  // REFUSES a legitimately sandboxed spawn — tests/install.test.cjs:7143 and
+  // install-shared.cjs's own runInstaller both take that path. An explicitly
+  // supplied marker still wins over both. Reported in Codex review of #3725.
+  if (!(TEST_HOME_SANDBOX_MARKER in overrides)) env[TEST_HOME_SANDBOX_MARKER] = env.HOME;
+  return env;
 }
 
 /**
