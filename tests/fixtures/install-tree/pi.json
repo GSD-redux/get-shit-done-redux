@@ -81,6 +81,7 @@
   "gsd-core/references/phase-argument-parsing.md",
   "gsd-core/references/planner-antipatterns.md",
   "gsd-core/references/planner-chunked.md",
+  "gsd-core/references/planner-coupling.md",
   "gsd-core/references/planner-gap-closure.md",
   "gsd-core/references/planner-graphify-auto-update.md",
   "gsd-core/references/planner-guidance.md",

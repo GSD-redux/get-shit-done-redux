@@ -251,6 +251,7 @@
       "phase-argument-parsing.md",
       "planner-antipatterns.md",
       "planner-chunked.md",
+      "planner-coupling.md",
       "planner-gap-closure.md",
       "planner-graphify-auto-update.md",
       "planner-guidance.md",

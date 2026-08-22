@@ -214,8 +214,7 @@ issue:
 
 **Question:** Do two same-wave plans depend on each other through shared mutable state or
 execution order without declaring it? Dimension 3 checks *declared* edges and the wave guard
-checks `files_modified`/`files_deleted` overlap (#3003); neither sees an undeclared edge, which under parallel
-execution becomes an intermittent failure nobody can attribute.
+checks `files_modified`/`files_deleted` overlap (#3003); neither sees an undeclared edge.
 
 **Scope: PLAN pairs, not tasks.** Tasks inside one plan run sequentially and cannot race.
 Compare same-wave plan pairs over the union of their tasks' `<files>` and `<action>`.
@@ -231,19 +230,21 @@ Execution; strong-but-local coupling inside one plan is fine):
 **Do NOT flag:** both sides only READ it, or it is immutable; the pair already overlaps in
 `files_modified` or `files_deleted` (report that once, on the file axis); the plans sit in a different wave, which
 already orders them; two tasks inside one plan; a vague same-subsystem claim naming no
-resource; incompatible *transformations* of one entity — that is Dimension 9.
+resource; incompatible *transformations* of one entity — that is Dimension 9; the pair is
+declared `coupling_justified` in either plan's frontmatter.
 
-**Severity: ALWAYS WARNING, never a blocker.** Coupling is sometimes intentional; the finding
-lets the planner declare the edge, move a plan to a later wave, or justify the pair.
+**Severity: ALWAYS INFO, never a blocker.** Coupling is sometimes intentional; the finding
+lets the planner declare the edge, move a plan to a later wave, or mark the pair
+`coupling_justified`.
 
 ```yaml
 issue:
   dimension: dependency_correctness
-  severity: warning
+  severity: info
   description: "Plans 02 and 03 are both Wave 1 with no depends_on, but 02 writes config key
     auth.session_ttl and 03 reads it"
   plans: ["02", "03"]
-  fix_hint: "Declare depends_on, move 03 to a later wave, or justify either order"
+  fix_hint: "Declare depends_on, move 03 to a later wave, or set coupling_justified"
 ```
 
 ## Dimension 4: Key Links Planned
