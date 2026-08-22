@@ -543,6 +543,7 @@ describe('#3552: configured protected branches', () => {
     assert.deepStrictEqual(match, {
       baseBranch: 'main',
       protectedBranches: ['main', 'develop', 'next'],
+      rejectedProtectedBranches: [],
       isProtected: true,
       verified: true,
     });
@@ -563,23 +564,77 @@ describe('#3552: configured protected branches', () => {
       'negative control must disagree with the resolved-base match');
   });
 
-  test('#3552 malformed direct edit contributes no names but retains resolved base', () => {
-    const malformedValues = [
-      'develop',
-      [],
-      ['develop', 42],
-      ['develop', '   '],
-    ];
-
-    for (const protectedBranches of malformedValues) {
+  test('#3552 a bad element drops only itself — valid names still protect', () => {
+    // A protection predicate must not fail OPEN. config-set validation is
+    // bypassable by a direct edit of .planning/config.json, so one bad element
+    // discarding the whole list is the exact failure #3552 exists to close,
+    // reintroduced through a different door (#3648 review Blocker 3).
+    for (const protectedBranches of [['develop', 42], ['develop', '   '], ['develop', null]]) {
       const loadConfig = () => ({ base_branch: 'main', protected_branches: protectedBranches });
-      const base = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', { loadConfig });
       const configuredName = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { loadConfig });
 
-      assert.deepStrictEqual(base.protectedBranches, ['main']);
-      assert.strictEqual(base.isProtected, true);
-      assert.strictEqual(configuredName.isProtected, false);
+      assert.strictEqual(configuredName.isProtected, true,
+        `'develop' must stay protected alongside a bad sibling: ${JSON.stringify(protectedBranches)}`);
+      assert.deepStrictEqual(configuredName.protectedBranches, ['main', 'develop']);
+      assert.strictEqual(configuredName.rejectedProtectedBranches.length, 1,
+        'the bad element must be reported, not silently swallowed');
     }
+  });
+
+  test('#3552 a non-array value contributes no names and is reported', () => {
+    const loadConfig = () => ({ base_branch: 'main', protected_branches: 'develop' });
+    const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { loadConfig });
+
+    assert.strictEqual(status.isProtected, false,
+      'a bare string is not a list of branch names — it must not protect');
+    assert.deepStrictEqual(status.protectedBranches, ['main']);
+    assert.deepStrictEqual(status.rejectedProtectedBranches, ['"develop"']);
+  });
+
+  test('#3552 negative control: a well-formed list reports nothing rejected', () => {
+    // Must disagree with every case above — otherwise the reject channel is
+    // reporting unconditionally and proves nothing.
+    const loadConfig = () => ({ base_branch: 'main', protected_branches: ['develop'] });
+    const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { loadConfig });
+
+    assert.strictEqual(status.isProtected, true);
+    assert.deepStrictEqual(status.rejectedProtectedBranches, []);
+  });
+
+  test('#3552 an empty list is well-formed, not malformed', () => {
+    const loadConfig = () => ({ base_branch: 'main', protected_branches: [] });
+    const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', { loadConfig });
+
+    assert.deepStrictEqual(status.protectedBranches, ['main']);
+    assert.deepStrictEqual(status.rejectedProtectedBranches, [],
+      'declaring no extra protected branches is a valid choice, not an error');
+  });
+
+  test('#3552 --is-protected writes a diagnostic naming the rejected elements', () => {
+    const diagnostics = [];
+    const out = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop', 42] }),
+      write: (chunk) => out.push(chunk),
+      writeDiagnostic: (chunk) => diagnostics.push(chunk),
+    });
+
+    assert.strictEqual(out.join('').trim(), 'true');
+    assert.strictEqual(diagnostics.length, 1, 'the rejection must be surfaced, not swallowed');
+    assert.match(diagnostics.join(''), /protected_branches/);
+    assert.match(diagnostics.join(''), /42/);
+  });
+
+  test('#3552 negative control: a clean list writes no diagnostic', () => {
+    const diagnostics = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      write: () => {},
+      writeDiagnostic: (chunk) => diagnostics.push(chunk),
+    });
+
+    assert.deepStrictEqual(diagnostics, [],
+      'a well-formed list must be silent — otherwise the diagnostic carries no signal');
   });
 
   test('#3552 active workstream CLI uses configured list and excludes root-only names', (t) => {
