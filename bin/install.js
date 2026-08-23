@@ -41,6 +41,7 @@ const {
 // consentRequired, hostPrecedenceRank) instead of the id being re-derived
 // and re-interpreted at each call site. See src/install-scope.cts.
 const { resolveScope } = require('../gsd-core/bin/lib/install-scope.cjs');
+const { isTestHomeGuardRefusal } = require('../gsd-core/bin/lib/test-home-guard.cjs');
 // getDirName (runtime -> local config dir name) is relocated out of this
 // installer to the runtime-name-policy leaf (ADR-1508 / #1510 Phase 1) so the
 // conversion module's rewrite engine can consume it without importing
@@ -4012,8 +4013,10 @@ function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, 
   // #443 — Unified effort for Codex .toml. Uses the same config-driven precedence chain
   // as the Claude .md effort injection (resolveInstallTimeEffort), so both runtimes read
   // from the same effort.agent_overrides / effort.routing_tier_defaults / effort.default
-  // config source. Codex does not support 'max' → clamped to 'xhigh' by
-  // gsdRenderEffortForRuntime('codex', ...).
+  // config source. #3007 — Codex advertises supported_reasoning_levels per model, so the
+  // pinned model id is passed through and the value is resolved against that model's own
+  // set: 'max' now passes, 'minimal' clamps up to 'low', and 'ultra' is refused (no key
+  // emitted) rather than clamped to a fabricated level.
   // #838 — Do not pin effort when Codex is intentionally inheriting the parent
   // chat model. A TOML with no `model` but a static `model_reasoning_effort`
   // creates confusing partial routing: model follows the Codex UI while effort
@@ -4023,8 +4026,12 @@ function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, 
     // #3533 (10d): 'inherit' means OMIT the pin — the agent follows the host's
     // own effort default. Never write the literal.
     if (_universalEffortCodex !== 'inherit') {
-      const _renderedEffortCodex = _getGsdEffortCatalog().renderEffortForRuntime('codex', _universalEffortCodex).value;
-      lines.push(`model_reasoning_effort = ${JSON.stringify(_renderedEffortCodex)}`);
+      const _renderedEffortCodex = _getGsdEffortCatalog().renderEffortForRuntime('codex', _universalEffortCodex, pinnedModel).value;
+      // #3007 — 'ultra' is rejected by the model's supported_reasoning_levels and
+      // renders as null. Omit the key entirely rather than write a literal `null`.
+      if (_renderedEffortCodex !== null) {
+        lines.push(`model_reasoning_effort = ${JSON.stringify(_renderedEffortCodex)}`);
+      }
     }
   }
 
@@ -11608,7 +11615,20 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // #3245 CR finding 2 — any throw in the pre-config install operations (skills copy,
     // agents copy, VERSION write, manifest write, etc.) triggers the Codex pre-config
     // rollback so the caller is never left in a partially-installed state.
-    rollbackInstallerMigrations();
+    // (The second, identical rollbackInstallerMigrations() that used to sit here was
+    // a duplicate of the line above, not a second phase — removed in #3725 review.)
+    // #3712 — the test-home guard refuses before any LAYOUT-DRIVEN write, so no
+    // gsd-* directory in the skills root has been touched and there is nothing
+    // there to undo. (Legacy install migrations DO run first; that is why the
+    // rollbackInstallerMigrations() calls above still execute, and why the one
+    // migration that can reach a `home` override carries its own assertion.)
+    // Running the codex rollback anyway would delete and recreate every
+    // snapshotted gsd-* directory in the resolved skills root, which for an
+    // un-sandboxed codex install IS the real ~/.agents/skills: the guard's own
+    // refusal would provoke the mutation it exists to prevent. This is the only
+    // _codexPreConfigRollback() call site, and applySurface/uninstall cannot
+    // reach it. Every other error still rolls back. Found by review, not by CI.
+    if (isTestHomeGuardRefusal(_earlyInstallErr)) throw _earlyInstallErr;
     if (_codexPreConfigRollback) {
       _codexPreConfigRollback();
     }
