@@ -55,6 +55,7 @@ export interface ModelCatalog {
   runtimeTierDefaults: Record<string, Record<string, TierEntry | null>>;
   providerPresets: Record<string, Record<string, Record<string, TierEntry | null>>>;
   agents: Record<string, AgentMeta>;
+  codexModelEffort?: Record<string, string[]>;
 }
 
 let catalog: ModelCatalog | null = null;
@@ -144,6 +145,43 @@ export const RUNTIMES_WITH_REASONING_EFFORT: Set<string> = new Set(
 export const PROVIDER_PRESETS: Record<string, Record<string, Record<string, TierEntry | null>>> =
   _catalog.providerPresets ?? {};
 
+// ─── #3007 — Codex per-model effort capability ───────────────────────────────
+//
+// Codex's own `models.json` publishes `supported_reasoning_levels` per model and
+// rejects an unsupported level at request time, so GSD must be conservative
+// about what it sends: read the ceiling as DATA from the catalog (never
+// branch on model id in code) and fall back to the family baseline for any
+// model the catalog doesn't know about.
+// (b) A malformed catalog entry (e.g. a non-array value like `"gpt-x": 5`) must
+// degrade to "ignore that entry", never throw — model-catalog.cjs is required
+// across the whole CLI, so one bad JSON value must not kill every command.
+// `new Set(5)` would throw at module load; filter to array values first.
+export const CODEX_MODEL_EFFORT: Record<string, Set<string>> = Object.fromEntries(
+  Object.entries(_catalog.codexModelEffort ?? {})
+    .filter(([, levels]) => Array.isArray(levels))
+    .map(([model, levels]) => [model, new Set(levels)])
+);
+// (a) `??` only catches null/undefined. A malformed `"_baseline": null` still
+// produces `new Set(null)` above — an empty Set, which is truthy — so a bare
+// `??` fallback would never fire and every level would silently lose its
+// advertised set (every effort would render as `value: null`). Guard on
+// `.size > 0` so an empty/missing/malformed baseline always falls back to the
+// hardcoded floor instead of failing open.
+const CODEX_EFFORT_BASELINE: Set<string> =
+  CODEX_MODEL_EFFORT['_baseline'] && CODEX_MODEL_EFFORT['_baseline'].size > 0
+    ? CODEX_MODEL_EFFORT['_baseline']
+    : new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+function advertisedCodexEffort(model: string | null | undefined): Set<string> {
+  if (typeof model !== 'string' || model.length === 0) return CODEX_EFFORT_BASELINE;
+  return Object.prototype.hasOwnProperty.call(CODEX_MODEL_EFFORT, model) ? CODEX_MODEL_EFFORT[model] : CODEX_EFFORT_BASELINE;
+}
+
+// The full universal effort ladder, low-to-high. Used only to find "the
+// nearest advertised level below" when a requested level isn't supported —
+// never to invent behaviour for a level that isn't on it at all.
+const EFFORT_LADDER: string[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+
 // KNOWN_PROVIDERS excludes 'generic' — it is a sentinel (all null entries) that
 // forces users to supply model IDs via model_profile_overrides. It is not a
 // real catalog-backed provider (#49).
@@ -229,20 +267,35 @@ export const EFFORT_RENDERING: Record<string, EffortSpec> = {
     },
   },
   codex: {
+    // #3007: 'max' and 'minimal' are stale here — Codex's per-model table
+    // (CODEX_MODEL_EFFORT above) is now the source of truth for what a given
+    // model actually advertises, and every model in the family baseline DOES
+    // advertise 'max' (no model advertises 'minimal'). This runtime-level
+    // spec is kept in sync with the family baseline so the two tables can
+    // never disagree; renderEffortForRuntime layers the per-model ceiling
+    // (and the 'ultra' policy rejection) on top of it.
+    // KEEP IN SYNC with EFFORT_ARGV.codex below — same family baseline, two
+    // channels (install-time vs invocation-time); they must never diverge.
     param: 'model_reasoning_effort',
     channel: 'api',
-    supported: new Set(['minimal', 'low', 'medium', 'high', 'xhigh']),
+    supported: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
     clamp(level: string): string {
-      if (level === 'max') return 'xhigh';
+      if (level === 'minimal') return 'low';
       return level;
     },
   },
 };
 
 export interface RenderedEffort {
-  value: string;
+  value: string | null;
   param: string | null;
   channel: string | null;
+  /** The level as originally asked for. */
+  requested?: string;
+  /** true ONLY when value !== requested. */
+  clamped?: boolean;
+  /** Why, when clamped or rejected; null otherwise. */
+  reason?: string | null;
 }
 
 // ─── Invocation-time (argv) effort rendering ─────────────────────────────────
@@ -281,10 +334,14 @@ export const EFFORT_ARGV: Record<string, EffortArgvSpec> = {
   },
   // First-party Codex docs: `model_reasoning_effort` is a config-only key with no
   // dedicated flag, so the generic `-c key=value` override is the only argv route.
+  // #3007: KEEP IN SYNC with EFFORT_RENDERING.codex above — this table must match
+  // the family baseline exactly (no 'minimal', 'max' passes through unclamped),
+  // otherwise the argv channel and the install-time channel disagree about the
+  // same runtime's capability.
   codex: {
     render: (level: string): string[] => ['-c', `model_reasoning_effort=${level}`],
-    supported: new Set(['minimal', 'low', 'medium', 'high', 'xhigh']),
-    clamp: (level: string): string => (level === 'max' ? 'xhigh' : level),
+    supported: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
+    clamp: (level: string): string => (level === 'minimal' ? 'low' : level),
   },
 };
 
@@ -323,23 +380,108 @@ export function renderEffortArgv(
 
 /**
  * Render a universal effort string for a specific runtime.
+ *
+ * `model` (#3007) is consulted ONLY for codex: Codex's per-model
+ * `supported_reasoning_levels` means the same universal level can be a clean
+ * pass-through on one model and a clamp (or, for 'ultra', an outright
+ * rejection) on another. Every other runtime ignores the third argument
+ * entirely — passing a model id to claude changes nothing.
  */
-export function renderEffortForRuntime(runtime: string, universalEffort: string): RenderedEffort {
+export function renderEffortForRuntime(runtime: string, universalEffort: string, model?: string | null): RenderedEffort {
   // #3533 (10d): 'inherit' is not a wire level on ANY runtime — it means
   // "omit the key / pass no argument and follow the session/host default".
   // Renderers must never emit it as a literal; null param/channel tells
-  // resolve-execution consumers there is no propagation.
+  // resolve-execution consumers there is no propagation. Never measured
+  // against any supported set.
   if (universalEffort === 'inherit') {
-    return { value: 'inherit', param: null, channel: null };
+    return { value: 'inherit', param: null, channel: null, requested: 'inherit', clamped: false, reason: null };
   }
   const spec = EFFORT_RENDERING[runtime];
   if (!spec) {
-    return { value: universalEffort, param: null, channel: null };
+    return { value: universalEffort, param: null, channel: null, requested: universalEffort, clamped: false, reason: null };
   }
+
+  if (runtime === 'codex') {
+    // #2167 — 'ultra' turns on Codex's automatic task delegation, which would
+    // let Codex spawn agents underneath GSD's own orchestration. GSD rejects
+    // it unconditionally as a POLICY call, never as a capability clamp — this
+    // holds even for a model (e.g. gpt-5.6-sol) that DOES advertise 'ultra',
+    // so it is never softened down to 'max'.
+    if (universalEffort === 'ultra') {
+      return {
+        value: null,
+        param: null,
+        channel: null,
+        requested: 'ultra',
+        clamped: false,
+        reason: "'ultra' turns on Codex's automatic task delegation, which would let Codex spawn agents underneath GSD's own orchestration (#2167); GSD rejects it regardless of what the model advertises.",
+      };
+    }
+
+    const allowed = advertisedCodexEffort(model);
+    if (allowed.has(universalEffort)) {
+      return { value: universalEffort, param: spec.param, channel: spec.channel, requested: universalEffort, clamped: false, reason: null };
+    }
+
+    const idx = EFFORT_LADDER.indexOf(universalEffort);
+    if (idx === -1) {
+      // Not on the ladder at all (e.g. 'MAX') — preserve prior behaviour:
+      // fall through to the runtime-level clamp rather than inventing new
+      // handling for input the ladder doesn't recognize.
+      return { value: spec.clamp(universalEffort), param: spec.param, channel: spec.channel, requested: universalEffort, clamped: false, reason: null };
+    }
+    // Every model's advertised set is a contiguous run up to 'max' (or 'ultra'
+    // for sol, already handled above), so the only unsupported level in
+    // practice is 'minimal' — below every model's floor. Walk UP the ladder
+    // to the nearest level the model actually advertises (its floor): there
+    // is nothing below 'minimal' to fall back to.
+    // Walking UP is safe today only because every advertised set floors at
+    // 'low' — a future model whose floor is, say, 'high' would silently turn
+    // a requested 'low' into 'high': MORE reasoning and MORE cost than asked
+    // for, with no error. `clamped`/`reason` below is what makes that
+    // escalation visible to a caller instead of a silent cost surprise, which
+    // is why those fields are not optional decoration.
+    for (let i = idx + 1; i < EFFORT_LADDER.length; i++) {
+      const candidate = EFFORT_LADDER[i];
+      // 'ultra' is never a valid clamp target: it would re-enter, by the back
+      // door, the delegation mode the #2167 rejection above exists to keep
+      // out. A clamp may never produce a value that a direct request for
+      // that same value would have refused.
+      if (candidate === 'ultra') {
+        continue;
+      }
+      if (allowed.has(candidate)) {
+        return {
+          value: candidate,
+          param: spec.param,
+          channel: spec.channel,
+          requested: universalEffort,
+          clamped: true,
+          reason: `requested '${universalEffort}' is not in ${model ? `${model}'s` : "the codex family baseline's"} advertised reasoning levels; clamped up to its floor, '${candidate}'.`,
+        };
+      }
+    }
+    // No advertised level at or above the request either (shouldn't happen
+    // given today's catalog data, but never throw): reject rather than emit
+    // an unsupported level.
+    return {
+      value: null,
+      param: null,
+      channel: null,
+      requested: universalEffort,
+      clamped: false,
+      reason: `requested '${universalEffort}' is not in ${model ? `${model}'s` : "the codex family baseline's"} advertised reasoning levels, and no advertised level is available either.`,
+    };
+  }
+
+  const value = spec.clamp(universalEffort);
   return {
-    value: spec.clamp(universalEffort),
+    value,
     param: spec.param,
     channel: spec.channel,
+    requested: universalEffort,
+    clamped: value !== universalEffort,
+    reason: value !== universalEffort ? `requested '${universalEffort}' clamped to '${value}' for ${runtime}.` : null,
   };
 }
 

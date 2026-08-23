@@ -78,6 +78,18 @@ const UNUSABLE_REASON = Object.freeze({
    * planning-snapshot's projectSections field)
    */
   PROJECT_UNREADABLE: 'project_unreadable',
+  /**
+   * A config.json parsed cleanly, but a section that a legacy-key migration needed to write
+   * into (`git`, `planning`) holds something that is not an object — a string, number, boolean
+   * or array. Distinct from the section being absent: absence is the ordinary path and the
+   * migration simply creates the section. Only a PRESENT non-object is corruption, and it is
+   * exactly the ADR-227 "shape, not just parseability" class one level down from the top-level
+   * document check `_readConfigFile` already performs. The migration is refused rather than
+   * applied — spreading the value would enumerate a string into character keys, and a number
+   * or boolean into nothing at all — so the section, the legacy key, and the file on disk are
+   * all left exactly as the user wrote them. (#3760, tenth #1879 site)
+   */
+  CONFIG_SECTION_NOT_OBJECT: 'config_section_not_object',
 } as const);
 
 type UnusableReason = (typeof UNUSABLE_REASON)[keyof typeof UNUSABLE_REASON];
@@ -96,6 +108,8 @@ const REASON_PROSE: Readonly<Record<UnusableReason, string>> = Object.freeze({
     'config.json exists but could not be read or parsed; the config field fell back to unavailable',
   [UNUSABLE_REASON.PROJECT_UNREADABLE]:
     'PROJECT.md exists but could not be read; the projectSections field fell back to unavailable',
+  [UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT]:
+    'a config section that a legacy-key migration targets holds a non-object value; the migration was SKIPPED and both the section and the legacy key were left unchanged — fix the section by hand, or the legacy key will never migrate',
 });
 
 // ─── Dedup state ──────────────────────────────────────────────────────────────

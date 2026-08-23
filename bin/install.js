@@ -4013,8 +4013,10 @@ function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, 
   // #443 — Unified effort for Codex .toml. Uses the same config-driven precedence chain
   // as the Claude .md effort injection (resolveInstallTimeEffort), so both runtimes read
   // from the same effort.agent_overrides / effort.routing_tier_defaults / effort.default
-  // config source. Codex does not support 'max' → clamped to 'xhigh' by
-  // gsdRenderEffortForRuntime('codex', ...).
+  // config source. #3007 — Codex advertises supported_reasoning_levels per model, so the
+  // pinned model id is passed through and the value is resolved against that model's own
+  // set: 'max' now passes, 'minimal' clamps up to 'low', and 'ultra' is refused (no key
+  // emitted) rather than clamped to a fabricated level.
   // #838 — Do not pin effort when Codex is intentionally inheriting the parent
   // chat model. A TOML with no `model` but a static `model_reasoning_effort`
   // creates confusing partial routing: model follows the Codex UI while effort
@@ -4024,8 +4026,12 @@ function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, 
     // #3533 (10d): 'inherit' means OMIT the pin — the agent follows the host's
     // own effort default. Never write the literal.
     if (_universalEffortCodex !== 'inherit') {
-      const _renderedEffortCodex = _getGsdEffortCatalog().renderEffortForRuntime('codex', _universalEffortCodex).value;
-      lines.push(`model_reasoning_effort = ${JSON.stringify(_renderedEffortCodex)}`);
+      const _renderedEffortCodex = _getGsdEffortCatalog().renderEffortForRuntime('codex', _universalEffortCodex, pinnedModel).value;
+      // #3007 — 'ultra' is rejected by the model's supported_reasoning_levels and
+      // renders as null. Omit the key entirely rather than write a literal `null`.
+      if (_renderedEffortCodex !== null) {
+        lines.push(`model_reasoning_effort = ${JSON.stringify(_renderedEffortCodex)}`);
+      }
     }
   }
 

@@ -619,7 +619,12 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
   const fastMode = resolveFastModeInternal(cwd, agentType!, fastModeOpts);
 
   const runtime = (config['runtime'] as string) || 'claude';
-  const rendered = renderEffortForRuntime(runtime, effort);
+  // #3007: pass the resolved model so the per-model advertised-effort ceiling
+  // (CODEX_MODEL_EFFORT) is reachable from this production seam. `model` may
+  // be a tier alias or a non-Codex id for other runtimes — that's fine and
+  // must not be special-cased here: advertisedCodexEffort() falls back to the
+  // family baseline for any id it doesn't recognize.
+  const rendered = renderEffortForRuntime(runtime, effort, model);
 
   const fastModeSupported = RUNTIMES_WITH_FAST_MODE.has(runtime);
 
@@ -675,6 +680,9 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
     effort_rendered: rendered.value,
     effort_param: rendered.param,
     effort_propagation: rendered.channel,
+    effort_requested: rendered.requested,
+    effort_clamped: rendered.clamped,
+    effort_clamp_reason: rendered.reason,
     effort_effective: effortEffective,
     effort_effective_source: effortEffectiveSource,
     fast_mode: fastMode,
@@ -855,8 +863,10 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
       continue;
     }
 
+    // `runtime` is guaranteed 'claude' by the guard above (#3007: only
+    // codex's 'ultra' rejection can produce a null value).
     const rendered = renderEffortForRuntime(runtime, universalEffort);
-    const newEffortValue = rendered.value;
+    const newEffortValue = rendered.value as string;
 
     // eslint-disable-next-line local/no-unbounded-quantifier -- lazy `*?` bounded by the `^---$/m` closing anchor, no nested quantifier, measured linear to 5MB (no-closing-marker adversarial input)
     const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);

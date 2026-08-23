@@ -3827,7 +3827,10 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
       `gsd-planner.toml should have model_reasoning_effort = "low" from config override\nActual:\n${tomlContent.slice(0, 500)}`);
   });
 
-  test('Codex .toml clamps effort max → xhigh when agent_overrides.gsd-planner=max', () => {
+  // #3007: corrected — Codex's gpt-5.6-sol advertises 'max' in its own
+  // supported_reasoning_levels, so install-time rendering now passes 'max'
+  // through instead of clamping it to 'xhigh'.
+  test('Codex .toml renders effort max → max when agent_overrides.gsd-planner=max', () => {
     const projectDir = path.dirname(codexHome);
     // Overwrite config with max override. #3241: include an explicit
     // model_overrides pin (D1 removed the resolver-only auto-embed).
@@ -3853,11 +3856,11 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
     );
     assert.match(tomlContent, /^model\s*=\s*"gpt-5.6-sol"$/m,
       `gsd-planner.toml should pin Codex model when runtime:"codex" is configured\nActual:\n${tomlContent.slice(0, 500)}`);
-    // Codex does not support 'max' → clamped to 'xhigh'
-    assert.match(tomlContent, /^model_reasoning_effort\s*=\s*"xhigh"$/m,
-      `gsd-planner.toml should clamp max → xhigh for Codex\nActual:\n${tomlContent.slice(0, 500)}`);
-    assert.doesNotMatch(tomlContent, /model_reasoning_effort\s*=\s*"max"/,
-      'Codex .toml must never contain model_reasoning_effort = "max"');
+    // gpt-5.6-sol advertises 'max' -> renders through unchanged, no clamp.
+    assert.match(tomlContent, /^model_reasoning_effort\s*=\s*"max"$/m,
+      `gsd-planner.toml should render max for Codex on a model that advertises it\nActual:\n${tomlContent.slice(0, 500)}`);
+    assert.doesNotMatch(tomlContent, /model_reasoning_effort\s*=\s*"xhigh"/,
+      'Codex .toml must not clamp "max" down to "xhigh" for a model that advertises max');
   });
 });
 

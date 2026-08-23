@@ -297,10 +297,14 @@ describe('#2481 renderEffortArgv — per-host syntax and clamping', () => {
     );
   });
 
+  // #3007: corrected — Codex gained 'max' (declared per-model), and no Codex
+  // model advertises 'minimal', so 'max' now passes through and 'minimal'
+  // clamps to 'low' instead.
   test('clamps the provider-unique tail levels', () => {
-    // claude has no `minimal`; codex has no `max`.
+    // claude has no `minimal`; codex has no `minimal` either (clamps to 'low').
     assert.deepEqual(renderEffortArgv('claude', 'minimal', 'argv').argv, ['--effort', 'low']);
-    assert.deepEqual(renderEffortArgv('codex', 'max', 'argv').argv, ['-c', 'model_reasoning_effort=xhigh']);
+    assert.deepEqual(renderEffortArgv('codex', 'max', 'argv').argv, ['-c', 'model_reasoning_effort=max']);
+    assert.deepEqual(renderEffortArgv('codex', 'minimal', 'argv').argv, ['-c', 'model_reasoning_effort=low']);
   });
 
   test('emits nothing when the surface is not argv', () => {
