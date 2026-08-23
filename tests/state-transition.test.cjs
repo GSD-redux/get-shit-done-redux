@@ -523,6 +523,45 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     assert.strictEqual(result.data && result.data.reason, 'last_plan');
   });
 
+  test('compound format preserves zero-padding on both halves', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Plan:** 04 of 06',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '05 of 06');
+  });
+
+  test('padding widens rather than truncates when the plan number grows', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Plan:** 09 of 12',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '10 of 12');
+  });
+
+  test('unpadded compound stays unpadded', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Plan:** 2 of 6',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 6');
+  });
+
   // The legacy pair must keep winning when both are present: a stray "of N"
   // inside the Current Plan value must not override an explicit Total Plans.
   test('legacy pair still takes precedence over an "of N" in Current Plan', () => {

@@ -1079,7 +1079,13 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   const newPlan = currentPlan + 1;
   let planDisplayValue: string;
   if (useCompoundFormat) {
-    planDisplayValue = (planRawValue as string).replace(/^\d+/, String(newPlan));
+    // Preserve the written zero-padding: "04 of 06" advances to "05 of 06",
+    // not "5 of 06". Only the leading half was being rewritten, so a padded
+    // file drifted into a lopsided one, which is the kind of untidiness that
+    // invites the next writer to "fix" the line into a shape nothing parses.
+    // padStart never truncates, so 09 -> 10 widens correctly.
+    planDisplayValue = (planRawValue as string).replace(/^\d+/, (digits) =>
+      String(newPlan).padStart(digits.length, '0'));
     body = stateReplaceField(body, planSourceField, planDisplayValue) || body;
   } else {
     planDisplayValue = `${newPlan} of ${totalPlans}`;
