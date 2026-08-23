@@ -42,7 +42,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 // Import the leaf I/O module directly (core.cjs re-export spine retired in epic #1267).
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import io = require('./io.cjs');
@@ -458,10 +458,91 @@ function posTimeout(timeoutMs: number | undefined, def: number): number {
   return typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : def;
 }
 
-/** POSIX only: `detached` makes the child a process-GROUP LEADER, which is what lets us reap its whole
- * subtree via `process.kill(-pid)`. Windows has no equivalent (a negative PID is not a process group
- * there), so it keeps the plain single-child kill `spawnSync`'s `timeout` already does. */
+/** Reaping a bounded check's whole subtree is platform-specific; the INVARIANT is not. The
+ * `--test-isolation=process` runner/worker split that strands the worker exists on EVERY platform, so
+ * every platform gets a real reap:
+ *
+ *  - POSIX: `detached` makes the child a process-GROUP LEADER, so `process.kill(-pid)` reaches every
+ *    member of that group — the runner AND the worker it re-execs.
+ *  - Windows: a negative PID names nothing there, but `taskkill /T` terminates a process together with
+ *    the processes it started, which is the same reach. `detached` stays OFF: on Windows it means
+ *    `DETACHED_PROCESS` (no console), which `taskkill` does not need and which changes the child's
+ *    stdio setup for no gain.
+ */
 const CAN_REAP_GROUP = process.platform !== 'win32';
+
+/** Bound for the Windows reap itself: `taskkill` is a fast one-shot, so this only guards against it
+ * wedging, never against normal slowness. DEFECT.UNBOUNDED-SUBPROCESS applies to the reaper too. */
+const TASKKILL_TIMEOUT_MS = 5_000;
+
+/**
+ * Kill everything still descending from a finished bounded check. NEVER throws.
+ *
+ * On PID REUSE: `spawnSync` has already waited on this PID, so the OS is free to recycle it before we
+ * get here. On POSIX that is harmless by rule rather than by luck — a process-group ID cannot be
+ * reused while the group still has members, so the only case in which `-pid` could name a STRANGER'S
+ * group is one where our own group is already empty and the reap had nothing to do anyway. Windows has
+ * no such rule, so its window is real, but it is a few JS statements wide and the tree-kill is the
+ * only primitive that reaches the worker at all.
+ */
+function reapDescendants(pid: number | undefined): void {
+  // `pid > 0` is load-bearing: `process.kill(-0, ...)` would signal the VERIFIER'S OWN process group.
+  if (typeof pid !== 'number' || pid <= 0) return;
+  try {
+    if (CAN_REAP_GROUP) {
+      process.kill(-pid, 'SIGKILL');
+    } else {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        timeout: TASKKILL_TIMEOUT_MS,
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+    }
+  } catch { /* nothing left to reap (POSIX: ESRCH — the group is already empty) */ }
+}
+
+/** Group leaders of bounded checks that are live RIGHT NOW, for the interrupt handler to reap. */
+const LIVE_REAP_TARGETS = new Set<number>();
+
+/** Signals whose DEFAULT disposition would kill the verifier mid-check and strand the subtree. */
+const INTERRUPT_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+let interruptReapInstalled = false;
+
+/**
+ * Stop an interrupt from stranding what the `finally` in `runBoundedCapture` would have reaped.
+ *
+ * `detached` moves the child OUT of the terminal's foreground process group, so a Ctrl-C during a
+ * bounded check no longer reaches it — and with no listener installed the DEFAULT disposition applies,
+ * so the kernel kills the verifier mid-`spawnSync`, `finally` never unwinds, and the entire child tree
+ * is stranded. That is the reported defect again, relocated from the timeout path to the interrupt
+ * path. Merely HAVING a listener suppresses the default disposition, and that is what buys `finally`
+ * its chance to run; reaping inside the handler covers the sliver where the signal lands after
+ * `spawnSync` returns but before `finally` executes.
+ *
+ * Deliberately never uninstalled. `spawnSync` blocks the event loop, so a signal taken DURING a check
+ * is dispatched to JS only after the call returns — removing the listener in a `finally` would drop
+ * that pending signal on the floor and swallow the user's Ctrl-C entirely. Left installed it is a
+ * no-op over an empty target set that re-raises to the default disposition, so behaviour with no check
+ * running is unchanged.
+ *
+ * Known cost, accepted: an interrupt taken during a bounded check is serviced when that check ends
+ * rather than instantly — bounded by the check's own timeout, which is the same ceiling this module
+ * already promises for how long a single check may block. A clean exit late beats a stranded tree now.
+ */
+function installInterruptReap(): void {
+  if (interruptReapInstalled) return;
+  interruptReapInstalled = true;
+  for (const signal of INTERRUPT_SIGNALS) {
+    process.once(signal, () => {
+      for (const pid of LIVE_REAP_TARGETS) reapDescendants(pid);
+      LIVE_REAP_TARGETS.clear();
+      // `once` has already detached this listener, so with nothing else listening the default
+      // disposition is restored and re-raising exits with the conventional 128+n. If the HOST
+      // installed its own handler it owns the shutdown — re-raising would re-enter its teardown.
+      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+    });
+  }
+}
 
 /**
  * Run a bounded check subprocess, return its stdout, NEVER throw — and never let a descendant outlive
@@ -474,11 +555,13 @@ const CAN_REAP_GROUP = process.platform !== 'win32';
  * forever burning a core. The verdict still failed closed, so nothing observable broke — which is
  * exactly why this leaked unnoticed across days of green runs.
  *
- * So: spawn detached (the child leads its own group) and SIGKILL the whole GROUP in a `finally`.
- * SIGKILL rather than SIGTERM because a subject stuck in a tight loop blocks the event loop, so a
- * JS-level signal handler could never run — only an uncatchable signal is guaranteed to land. The reap
- * is unconditional rather than timeout-only, so the invariant stays simple and testable: NO descendant
- * of a bounded check survives the call.
+ * So: `reapDescendants` in a `finally`, on every platform (see its comment for how each one reaches
+ * the subtree). SIGKILL rather than SIGTERM on POSIX because a subject stuck in a tight loop blocks the
+ * event loop, so a JS-level signal handler could never run — only an uncatchable signal is guaranteed
+ * to land; `taskkill /F` is unconditional in the same way. The reap is unconditional rather than
+ * timeout-only, so the invariant stays simple and testable: NO descendant of a bounded check survives
+ * the call — not when it times out, and (via `installInterruptReap`) not when the verifier is
+ * interrupted mid-check either.
  *
  * Rejected alternative: `--test-isolation=none` forks no worker, so the direct child is the hanging
  * process and the existing kill would reach it. Measured, it is strictly WORSE — the subject then runs
@@ -493,12 +576,20 @@ function runBoundedCapture(
   timeout: number,
 ): string {
   let pid: number | undefined;
+  installInterruptReap();
   try {
-    // The cast exists ONLY because @types/node omits `detached` from SpawnSyncOptions; libuv honors it
-    // for `spawnSync` exactly as for `spawn`. Verified on this runtime, not assumed: with `detached`
-    // the child reports `pgid === pid` (it leads its own group), without it the child inherits the
-    // caller's group — which is what makes `process.kill(-pid)` below address the subtree and not us.
-    const opts = {
+    // `detached` arrives via a SPREAD rather than a cast. @types/node omits it from SpawnSyncOptions,
+    // but excess-property checking does not apply through a spread, so the options stay an inline
+    // OBJECT LITERAL — which is what keeps `local/require-subprocess-timeout` able to see the
+    // `timeout:` key it exists to enforce. Hoisting these into a pre-built `opts` identifier (as an
+    // `as unknown as` cast forces) makes that rule skip this call site by design, silently retiring
+    // the DEFECT.UNBOUNDED-SUBPROCESS guard on the one file that most needs it.
+    //
+    // `spawnSync` honors `detached` exactly as `spawn` does — verified on this runtime, not assumed:
+    // with it the child reports `pgid === pid` (it leads its own group), without it the child inherits
+    // the caller's group, which is what makes the `-pid` reap address the subtree and not us.
+    const detachedOpt = CAN_REAP_GROUP ? { detached: true } : {};
+    const res = spawnSync(file, args, {
       cwd,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -506,10 +597,13 @@ function runBoundedCapture(
       env,
       timeout,
       maxBuffer: CHECK_MAX_BUFFER,
-      detached: CAN_REAP_GROUP,
-    } as unknown as SpawnSyncOptionsWithStringEncoding;
-    const res = spawnSync(file, args, opts);
+      ...detachedOpt,
+    });
     pid = res.pid;
+    // Only reachable AFTER the blocking call returns, so this never covers the interrupt window — the
+    // `finally` does the real work. It closes the sliver between here and there (see
+    // `installInterruptReap`).
+    if (typeof pid === 'number' && pid > 0) LIVE_REAP_TARGETS.add(pid);
     // A non-zero exit is NOT an error here: a RED proof run and a failing check both exit non-zero by
     // design, and `spawnSync` reports stdout either way. That makes the partial-output recovery the old
     // `catch (e) => e.stdout` blocks performed inherent rather than exceptional.
@@ -517,9 +611,14 @@ function runBoundedCapture(
   } catch {
     return ''; // spawn itself failed -> no output -> every caller's vacuity guard fails closed
   } finally {
-    if (CAN_REAP_GROUP && typeof pid === 'number' && pid > 0) {
-      try { process.kill(-pid, 'SIGKILL'); } catch { /* group already empty — nothing to reap */ }
-    }
+    reapDescendants(pid);
+    if (typeof pid === 'number') LIVE_REAP_TARGETS.delete(pid);
+    // Hand the loop the ONE turn it needs to DISPATCH a signal that arrived while `spawnSync` was
+    // blocking. Node unrefs its signal handles, so a process whose last act is a bounded check exits
+    // with that signal still queued and never delivered to JS — the interrupt would be swallowed
+    // outright and the run would report SUCCESS, which is worse than the delay it replaces. Measured
+    // both ways: without this turn the process exits 0, with it it terminates on the signal.
+    setImmediate(() => { /* the turn itself is the point */ });
   }
 }
 
