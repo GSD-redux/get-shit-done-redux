@@ -85,9 +85,19 @@ function isMissingPath(err) {
  * the tree (nothing to mirror, so the leaf is skipped). No sleep, no spin — a
  * timing-based wait here would be the flake this is fixing, not a fix for it.
  *
- * Returns false only when the path left the source tree entirely; the overlay
- * mirrors the tree, and a file that is no longer in it is not part of the
- * snapshot. Every other error propagates untouched.
+ * The retry itself can also lose the race — a second atomic replace landing in
+ * the same window makes the retry throw ENOENT too (e.g. two concurrent
+ * `build:hooks` runs). That is still just "the path is vanishing": the same
+ * conclusion the single-vanish case reaches, so it is likewise treated as
+ * skipped rather than left to escape as a bare uncaught ENOENT (#3108). There
+ * is still only ONE retry — a second retry would turn this into the sleep/spin
+ * loop the comment above already rejects.
+ *
+ * Returns false only when the path left the source tree entirely (on the
+ * first attempt OR the retry); the overlay mirrors the tree, and a file that
+ * is no longer in it is not part of the snapshot. Every other error — from
+ * EITHER attempt, non-ENOENT — propagates untouched; that invariant must hold
+ * for any future widening of this tolerance.
  *
  * @param {string} srcPath
  * @param {() => void} attempt
@@ -100,8 +110,13 @@ function placeVanishableLeaf(srcPath, attempt) {
   } catch (err) {
     if (!isMissingPath(err)) throw err;
     if (!fs.existsSync(srcPath)) return false;
-    attempt();
-    return true;
+    try {
+      attempt();
+      return true;
+    } catch (retryErr) {
+      if (!isMissingPath(retryErr)) throw retryErr;
+      return false;
+    }
   }
 }
 
@@ -208,7 +223,8 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
     // as nothing at all for a test that never touches it.
     console.warn(
       `buildOverlayRepo: ${skipped.length} source file(s) vanished mid-walk and were ` +
-      `omitted from the overlay (likely a concurrent atomic replace, e.g. hooks/dist):\n  ` +
+      `omitted from the overlay (likely a concurrent atomic replace, e.g. hooks/dist — ` +
+      `run \`npm run build:hooks\` to regenerate it):\n  ` +
       skipped.join('\n  '),
     );
   }
