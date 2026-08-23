@@ -641,6 +641,10 @@ describe('config-get --default flag (#1893)', () => {
         { numRuns: 60 },
       );
     });
+
+    test('absent git.protected_branches resolves the documented empty-list default', () => {
+      assert.equal(run('config-get', 'git.protected_branches'), '[]');
+    });
   });
 }
 
