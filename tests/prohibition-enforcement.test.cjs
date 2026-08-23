@@ -723,40 +723,61 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
   // (a JS-level signal handler still cannot run) but burns NO CPU, so this test adds no per-cell load
   // to the (OS x Node) matrix. The invariant under test is SURVIVAL of a descendant, never its CPU.
   const HANG_BOUND_MS = 3000; // ~37x the measured worker-startup-to-pidfile latency (81 ms, warm macOS)
+
+  /**
+   * Live means RUNNING, and a ZOMBIE is not running. `process.kill(pid, 0)` cannot tell them apart: a
+   * killed-but-unwaited child keeps its PID-table entry and answers signal 0 with success. That is not
+   * hypothetical here — after the group reap on Linux the worker sits in state `Z` with `kill(pid, 0)`
+   * reporting it alive, so a reap that had in fact worked read as "a descendant OUTLIVED the call".
+   * Where /proc exists, ask for the real state. macOS and Windows have no such limbo to confuse (an
+   * orphan is reaped promptly / there are no POSIX zombies), so signal 0 is accurate there.
+   *
+   * EPERM counts as running: the PID exists and belongs to someone else. That is the safe direction —
+   * it can only make a surviving orphan easier to detect, never easier to miss.
+   */
+  const isRunning = (pid) => {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+      return stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[0] !== 'Z';
+    } catch { /* no /proc entry: either not Linux, or the process is genuinely gone */ }
+    try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+  };
+  /** The PID the subject recorded, or undefined while it has not got far enough to record one. */
+  const recordedPid = (pidFile) => {
+    try {
+      const pid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
+      return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+    } catch { return undefined; }
+  };
+  /**
+   * A subject that records its PID, blocks forever, and — if it ever stops blocking — says so. The
+   * `unblocked` marker is what keeps "the worker is gone" honest: without it, a subject that failed to
+   * hang would produce the same green as a subject that hung and was correctly reaped.
+   */
+  const hangSrc = (pidFile, unblockedMarker) => "const fs = require('node:fs');\n"
+    + `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`
+    + "const { test } = require('node:test');\n"
+    + "test('hangs forever', () => {\n"
+    + "  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); }\n"
+    + `  finally { fs.writeFileSync(${JSON.stringify(unblockedMarker)}, 'stopped blocking'); }\n`
+    + "});\n";
+
   test('a HANGING node-test leaves NO orphaned descendant (B2 reaping, not just the verdict)', async (t) => {
     const { spawnSync } = require('node:child_process');
     const enforce = require(ENFORCEMENT_LIB);
     const dir = createTempDir('prohib-reap-');
-    const ctlPidFile = path.join(dir, 'control.pid');
-    const txPidFile = path.join(dir, 'treatment.pid');
-    // Records its own PID, THEN blocks forever. The write must come first: it is the only evidence
-    // that a worker ever existed, and after the reap there is nothing left to ask.
-    const hangSrc = (pidFile) => "const fs = require('node:fs');\n"
-      + `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`
-      + "const { test } = require('node:test');\n"
-      + "test('hangs forever', () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); });\n";
+    const ctl = { pid: path.join(dir, 'control.pid'), unblocked: path.join(dir, 'control.unblocked') };
+    const tx = { pid: path.join(dir, 'treatment.pid'), unblocked: path.join(dir, 'treatment.unblocked') };
     const ctlTarget = path.join(dir, 'hang-control.test.cjs');
     const txTarget = path.join(dir, 'hang-treatment.test.cjs');
-    fs.writeFileSync(ctlTarget, hangSrc(ctlPidFile));
-    fs.writeFileSync(txTarget, hangSrc(txPidFile));
+    fs.writeFileSync(ctlTarget, hangSrc(ctl.pid, ctl.unblocked));
+    fs.writeFileSync(txTarget, hangSrc(tx.pid, tx.unblocked));
 
-    /** The worker's own PID, or undefined while it has not got far enough to record one. */
-    const workerPid = (pidFile) => {
-      try {
-        const pid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
-        return Number.isInteger(pid) && pid > 0 ? pid : undefined;
-      } catch { return undefined; }
-    };
-    // EPERM means the PID exists but belongs to someone else — still ALIVE for our purposes, and the
-    // safe direction: it can only make a surviving orphan easier to detect, never easier to miss.
-    const alive = (pid) => {
-      try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
-    };
     // Belt and braces: this test deliberately creates hung processes, so it must never leak one itself
     // on any exit path (including a failed assertion above).
     t.after(() => {
-      for (const pidFile of [ctlPidFile, txPidFile]) {
-        const pid = workerPid(pidFile);
+      for (const arm of [ctl, tx]) {
+        const pid = recordedPid(arm.pid);
         if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
       }
       cleanup(dir);
@@ -773,19 +794,30 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     const ctlEnv = { ...process.env };
     delete ctlEnv.NODE_TEST_CONTEXT;
     delete ctlEnv.NODE_OPTIONS;
-    spawnSync(process.execPath, enforce.buildNodeTestArgs({ kind: 'node-test', target: ctlTarget }), {
+    const ctlRun = spawnSync(process.execPath, enforce.buildNodeTestArgs({ kind: 'node-test', target: ctlTarget }), {
       cwd: dir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: HANG_BOUND_MS, env: ctlEnv,
     });
     // Nothing kills the control's worker, so a slow start only delays the pidfile — poll for it rather
     // than sampling once and calling a cold runner a missing leak.
-    const ctlWorker = await waitFor(() => workerPid(ctlPidFile), {
+    const ctlWorker = await waitFor(() => recordedPid(ctl.pid), {
       timeoutMs: 5000,
-      message: 'CONTROL never reached its subject: no worker recorded a PID within the bound, so this '
-        + 'arm cannot show that an orphan was possible and the treatment below would pass vacuously.',
+      message: 'CONTROL never reached its subject: nothing recorded a PID within the bound, so this arm '
+        + 'cannot show that an orphan was possible and the treatment below would prove nothing.',
     });
-    assert.ok(alive(ctlWorker), `CONTROL stranded nothing (worker ${ctlWorker} already gone): the leak `
-      + 'is no longer reproducible this way — the runner may have stopped forking a per-file worker, or '
-      + 'this platform may now reap the subtree for us. Re-derive the control before trusting this test.');
+    // Three ways this arm can stop being a control, each with its own diagnosis. Collapsing them into
+    // one "the leak is not reproducible" message is what made the first version of this test lie about
+    // WHY it was unhappy.
+    assert.notEqual(ctlWorker, ctlRun.pid, 'CONTROL forked NO worker: the PID recorded by the subject is '
+      + 'the runner\'s own, so `--test-isolation=process` did not take effect here and the subject ran '
+      + 'in-process. There is no runner/worker split to leak on this host, which means this arm is not '
+      + 'exercising #3660 at all — investigate the isolation default before trusting either arm.');
+    assert.ok(!fs.existsSync(ctl.unblocked), 'CONTROL subject did not stay blocked: it left the '
+      + '`unblocked` marker, so the worker exited on its own rather than being stranded. The fixture — '
+      + 'not the reaping — is what changed; re-derive the hang before trusting this test.');
+    assert.ok(isRunning(ctlWorker), `CONTROL stranded nothing (worker ${ctlWorker} is not running): the `
+      + 'subject blocked and a worker was forked, yet the worker did not survive the bounded call — so '
+      + 'this host reaps the subtree for us and the treatment arm below would pass without the fix. '
+      + 'Re-derive the control before trusting this test.');
     try { process.kill(ctlWorker, 'SIGKILL'); } catch { /* already gone */ }
 
     // TREATMENT — the real code path, same hanging subject, same bound.
@@ -799,14 +831,16 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     // where the descriptor was rejected and no subprocess was ever spawned — so on its own it would let
     // "no orphan survived" pass over an empty process table. This asserts the treatment observed its
     // OWN worker: a worker existed, and (below) then did not. That pair is the actual invariant.
-    const txWorker = workerPid(txPidFile);
+    const txWorker = recordedPid(tx.pid);
     assert.ok(txWorker, 'TREATMENT spawned no worker at all: runProhibitionEnforcement returned non-green '
       + 'without ever reaching the subject, so the reap assertion below would hold over nothing. Fix the '
       + 'short-circuit (or the bound, if the worker is merely too slow to record a PID) — do not relax '
       + 'this assertion, it is the only thing standing between this test and passing always.');
+    assert.ok(!fs.existsSync(tx.unblocked), 'TREATMENT subject did not stay blocked, so its disappearance '
+      + 'says nothing about reaping — it exited on its own.');
     // SIGKILL delivery is immediate, but teardown/reparenting is not — poll rather than sample once.
     // On the pre-fix code this never goes false: the orphan blocks forever.
-    await waitFor(() => !alive(txWorker), {
+    await waitFor(() => !isRunning(txWorker), {
       timeoutMs: 5000,
       message: `a descendant of the bounded check (worker ${txWorker}) OUTLIVED it. The timeout killed `
         + 'the runner but not the worker executing the subject; that worker survives forever (PPID 1) '
@@ -841,11 +875,9 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     const { spawn } = require('node:child_process');
     const dir = createTempDir('prohib-interrupt-');
     const pidFile = path.join(dir, 'worker.pid');
+    const unblocked = path.join(dir, 'worker.unblocked');
     const target = path.join(dir, 'hang-interrupt.test.cjs');
-    fs.writeFileSync(target, "const fs = require('node:fs');\n"
-      + `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`
-      + "const { test } = require('node:test');\n"
-      + "test('hangs forever', () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); });\n");
+    fs.writeFileSync(target, hangSrc(pidFile, unblocked));
     // A verifier in its own process, because the thing under test is what a SIGNAL does to the process
     // running the check — not something the in-process API can be asked about.
     const verifier = path.join(dir, 'verifier.cjs');
@@ -854,15 +886,7 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
       + `{ kind: 'node-test', target: ${JSON.stringify(target)}, failFirst: true }, `
       + `{ cwd: ${JSON.stringify(dir)}, timeoutMs: ${HANG_BOUND_MS} });\n`);
 
-    const workerPid = () => {
-      try {
-        const pid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
-        return Number.isInteger(pid) && pid > 0 ? pid : undefined;
-      } catch { return undefined; }
-    };
-    const alive = (pid) => {
-      try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
-    };
+    const workerPid = () => recordedPid(pidFile);
     const child = spawn(process.execPath, [verifier], { cwd: dir, stdio: 'ignore' });
     const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })));
     t.after(async () => {
@@ -892,7 +916,9 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     assert.equal(child.signalCode, 'SIGINT', 'the verifier must still DIE from the interrupt: suppressing the '
       + 'default disposition is only meant to defer the exit long enough to reap, never to swallow the '
       + "user's Ctrl-C and let the run report success.");
-    await waitFor(() => !alive(worker), {
+    assert.ok(!fs.existsSync(unblocked), 'the interrupted subject did not stay blocked, so its '
+      + 'disappearance says nothing about reaping — it exited on its own.');
+    await waitFor(() => !isRunning(worker), {
       timeoutMs: 5000,
       message: `the interrupted check stranded its worker (pid ${worker}). The reap now depends on the `
         + 'verifier surviving the signal long enough to unwind its `finally` — if the handler stopped '
