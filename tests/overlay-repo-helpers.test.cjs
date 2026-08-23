@@ -21,12 +21,10 @@
  *     That export does not exist yet — requiring it is itself part of the RED
  *     state.
  *
- * Group 3 (the skipped-leaf warning naming `npm run build:hooks`) is SKIPPED
- * here: asserting on it would require either an expensive real
- * `buildOverlayRepo` race (not reproducible deterministically without the
- * `chmod`/source-grep tricks this repo bans) or reading overlay-repo.cjs as
- * text and matching against it, which `local/no-source-grep` forbids. See the
- * skip below.
+ * Group 3 (the skipped-leaf warning naming `npm run build:hooks`) asserts on
+ * the warning text directly, via `buildOverlayRepo`'s injectable `opts.warn`
+ * (defaulting to `console.warn`, byte-identical for every existing caller) —
+ * no TOCTOU race or source-grep needed.
  */
 
 const { describe, test } = require('node:test');
@@ -38,6 +36,8 @@ const fc = require('fast-check');
 
 const {
   placeVanishableLeaf,
+  linkOrCopyFile,
+  buildOverlayRepo,
 } = require('./helpers/overlay-repo.cjs');
 const { HOOKS_TO_COPY, HOOKS_SUBDIRS_TO_COPY } = require('../scripts/build-hooks.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -151,6 +151,67 @@ describe('placeVanishableLeaf: vanish tolerance', () => {
       assert.strictEqual(calls, 2);
     } finally {
       fs.existsSync = originalExistsSync;
+    }
+  });
+
+  // Regression pin for #3108's review finding: linkOrCopyFile's attempt can
+  // throw ENOENT because the DEST parent is missing (Windows MAX_PATH, a
+  // concurrently-removed dest subtree), which has nothing to do with the
+  // source tree. The tolerance must not swallow it just because it is an
+  // ENOENT — only a genuinely vanished SOURCE is tolerated.
+  test('a dest-side ENOENT is not mistaken for a vanished source', () => {
+    const srcPath = path.join(os.tmpdir(), 'gsd-3108-fixture-dest-side-enoent');
+    let calls = 0;
+    const attempt = () => {
+      calls += 1;
+      const err = new Error("ENOENT: no such file or directory, link '/dest/missing/parent/leaf'");
+      err.code = 'ENOENT';
+      throw err;
+    };
+    const originalExistsSync = fs.existsSync;
+    // Source is present throughout — the ENOENT is about the destination.
+    fs.existsSync = (p) => (p === srcPath ? true : originalExistsSync(p));
+    try {
+      assert.throws(() => placeVanishableLeaf(srcPath, attempt), /ENOENT/);
+      assert.strictEqual(calls, 2);
+    } finally {
+      fs.existsSync = originalExistsSync;
+    }
+  });
+
+  test('a real vanished source is still tolerated after the fix', () => {
+    const srcPath = path.join(os.tmpdir(), 'gsd-3108-fixture-real-double-vanish');
+    let calls = 0;
+    const attempt = () => {
+      calls += 1;
+      const err = new Error('ENOENT: no such file or directory');
+      err.code = 'ENOENT';
+      throw err;
+    };
+    const originalExistsSync = fs.existsSync;
+    // Source is genuinely gone at the re-check, both times.
+    fs.existsSync = (p) => (p === srcPath ? false : originalExistsSync(p));
+    try {
+      let placed;
+      assert.doesNotThrow(() => {
+        placed = placeVanishableLeaf(srcPath, attempt);
+      });
+      assert.strictEqual(placed, false);
+      assert.strictEqual(calls, 1);
+    } finally {
+      fs.existsSync = originalExistsSync;
+    }
+  });
+
+  test('linkOrCopyFile throws (not skips) when the source is real but the dest parent is missing', () => {
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3108-linkorcopy-'));
+    const src = path.join(tmpBase, 'real-source-leaf.txt');
+    const dest = path.join(tmpBase, 'missing-parent-dir', 'leaf.txt');
+    fs.writeFileSync(src, 'content\n');
+    try {
+      assert.throws(() => linkOrCopyFile(src, dest), /ENOENT/);
+    } finally {
+      cleanup(tmpBase);
     }
   });
 
@@ -377,6 +438,11 @@ describe('ensureHooksDist: build-seam wiring', () => {
   const { ensureHooksDist, HOOKS_DIST_DIR } = require('./helpers/hooks-dist.cjs');
   const processSeam = require('./helpers/process-seam.cjs');
 
+  // Replaces fs.existsSync/fs.readdirSync process-wide for the duration of
+  // `run`. Safe ONLY because this file's tests execute sequentially — adding
+  // `{ concurrency: true }` to this file (or running it alongside another
+  // suite in the same process) would let a concurrently-running test observe
+  // these faked responses and cross-contaminate unrelated assertions.
   function withFakeDistState({ stale }, run) {
     const originalExistsSync = fs.existsSync;
     const originalReaddirSync = fs.readdirSync;
@@ -458,21 +524,68 @@ describe('ensureHooksDist: build-seam wiring', () => {
 // ── Group 3: skipped-leaf warning text ──────────────────────────────────────
 
 describe('buildOverlayRepo: skipped-leaf warning', () => {
-  test('names the build:hooks remedy in its warning text', (t) => {
-    // Exercising this behaviorally would require reproducing a real TOCTOU
-    // race against buildOverlayRepo's live filesystem walk (no exported seam
-    // to inject the warning string directly), and reading overlay-repo.cjs as
-    // text to assert on its message is exactly what local/no-source-grep
-    // forbids. Skipped rather than written as an expensive/flaky or
-    // source-grep test — see the module doc above.
-    t.skip('no non-source-grep, non-flaky seam to assert the warning text against');
+  test('fires the build:hooks warning when a leaf vanishes mid-walk', () => {
+    // `opts.warn` (defaulting to console.warn) is a trivially injectable seam
+    // for this — no TOCTOU race or source-grep needed. Force a single real
+    // top-level source file (package.json) to appear to have genuinely
+    // vanished from the source tree: `fs.linkSync` ENOENTs for it on both the
+    // attempt and the retry, and `fs.existsSync` reports it as gone at the
+    // re-check, so `placeVanishableLeaf` reaches the tolerated "vanished mid-
+    // walk" branch and `buildOverlayRepo` records it in `skipped`.
+    //
+    // Monkeypatching `fs.linkSync`/`fs.existsSync` process-wide here is safe
+    // only because this file's tests run sequentially (node:test's default
+    // for this repo, never `{ concurrency: true }`) — see the same caveat on
+    // `withFakeDistState` above. Concurrency would let another in-flight test
+    // in this process observe the faked path.
+    const REPO_ROOT_PKG = path.join(__dirname, '..', 'package.json');
+    const originalExistsSync = fs.existsSync;
+    const originalLinkSync = fs.linkSync;
+    fs.existsSync = (p) => (p === REPO_ROOT_PKG ? false : originalExistsSync(p));
+    fs.linkSync = (src, dest) => {
+      if (src === REPO_ROOT_PKG) {
+        const err = new Error('ENOENT: no such file or directory');
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return originalLinkSync(src, dest);
+    };
+
+    const warnCalls = [];
+    let overlayPath;
+    try {
+      overlayPath = buildOverlayRepo({}, { warn: (msg) => warnCalls.push(msg) });
+    } finally {
+      fs.existsSync = originalExistsSync;
+      fs.linkSync = originalLinkSync;
+      if (overlayPath) cleanup(overlayPath);
+    }
+    assert.strictEqual(warnCalls.length, 1);
+    assert.match(warnCalls[0], /npm run build:hooks/);
+    assert.match(warnCalls[0], /package\.json/);
+  });
+
+  test('does not warn on a clean walk', () => {
+    const warnCalls = [];
+    const overlayPath = buildOverlayRepo(
+      { 'CONTRIBUTING.md': 'fixture override content\n' },
+      { warn: (msg) => warnCalls.push(msg) },
+    );
+    try {
+      assert.strictEqual(warnCalls.length, 0);
+    } finally {
+      cleanup(overlayPath);
+    }
   });
 });
 
 // ── Group 4: property coverage ──────────────────────────────────────────────
 
 describe('placeVanishableLeaf: property coverage', () => {
-  test('property: never throws ENOENT, and returns true iff the attempt ultimately succeeds', () => {
+  // Monkeypatches fs.existsSync process-wide for the duration of each fc run
+  // below — safe only because this file's tests execute sequentially; see
+  // the same caveat on withFakeDistState in Group 2b above.
+  test('property: an ENOENT is tolerated only when the source is confirmed gone', () => {
     fc.assert(
       fc.property(
         // vanishCount === 0 never consults existsSync at all (the first
@@ -505,36 +618,46 @@ describe('placeVanishableLeaf: property coverage', () => {
           // existsSync is consulted only when the first attempt threw
           // (vanishCount >= 1), gating whether the retry is even attempted.
           // For vanishCount === 1 it decides whether the retry succeeds.
-          // For vanishCount >= 2 the source is present-but-about-to-vanish
-          // again on the retry (modelling the double-vanish case) when the
-          // flag is true, or already gone (no retry attempted) when false —
-          // both reach `placed === false`, but the flag still changes the
-          // observed call count, so it is never a no-op here.
+          // For vanishCount >= 2 the retry ALSO throws ENOENT, and existsSync
+          // is consulted a SECOND time (post-fix) to decide whether that is a
+          // genuinely vanished source (tolerated, placed=false) or a dest-side
+          // ENOENT masquerading behind a source that is actually still there
+          // (must propagate, since only a confirmed-absent source is ever
+          // tolerated — see #3108's dest-side-ENOENT fix).
           const existsAnswer = presentAtFinalAttempt;
           const originalExistsSync = fs.existsSync;
           fs.existsSync = (p) => (p === srcPath ? existsAnswer : originalExistsSync(p));
           try {
-            let placed;
-            assert.doesNotThrow(() => {
-              placed = placeVanishableLeaf(srcPath, attempt);
-            }, 'placeVanishableLeaf must never let an ENOENT escape');
-
             if (vanishCount === 0) {
+              const placed = placeVanishableLeaf(srcPath, attempt);
               assert.strictEqual(placed, true);
               assert.strictEqual(calls, 1);
             } else if (vanishCount === 1 && presentAtFinalAttempt) {
+              const placed = placeVanishableLeaf(srcPath, attempt);
               assert.strictEqual(placed, true);
               assert.strictEqual(calls, 2);
+            } else if (vanishCount === 1 && !presentAtFinalAttempt) {
+              // Gone for good before the retry is ever attempted.
+              const placed = placeVanishableLeaf(srcPath, attempt);
+              assert.strictEqual(placed, false);
+              assert.strictEqual(calls, 1);
             } else if (presentAtFinalAttempt) {
               // vanishCount >= 2: the retry is attempted (existsSync said
-              // present) but vanishes again, so it still fails.
-              assert.strictEqual(placed, false);
+              // present at the first check) and throws ENOENT again, but the
+              // source is STILL reported present at the second check — this
+              // is the dest-side-ENOENT shape, so it must propagate, not be
+              // swallowed as a vanished source.
+              assert.throws(
+                () => placeVanishableLeaf(srcPath, attempt),
+                /ENOENT/,
+                'a dest-side ENOENT (source confirmed present) must propagate, not be tolerated',
+              );
               assert.strictEqual(calls, 2);
             } else {
-              // vanishCount === 1 && !presentAtFinalAttempt (gone for good
-              // before the retry), or vanishCount >= 2 && !presentAtFinalAttempt
-              // (existsSync already reports it gone, so the retry is never
-              // attempted).
+              // vanishCount >= 2 && !presentAtFinalAttempt: existsSync
+              // already reports the source gone on the FIRST check, so the
+              // retry is never even attempted.
+              const placed = placeVanishableLeaf(srcPath, attempt);
               assert.strictEqual(placed, false);
               assert.strictEqual(calls, 1);
             }

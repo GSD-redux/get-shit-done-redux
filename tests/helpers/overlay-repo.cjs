@@ -99,6 +99,15 @@ function isMissingPath(err) {
  * EITHER attempt, non-ENOENT — propagates untouched; that invariant must hold
  * for any future widening of this tolerance.
  *
+ * An ENOENT is only ever treated as "the source vanished" when `srcPath`
+ * itself is confirmed absent at the time the ENOENT is handled. `attempt`
+ * (e.g. `fs.linkSync(src, dest)`) can also throw ENOENT because the DEST
+ * parent directory is missing — a Windows MAX_PATH failure on a deep dest
+ * path, or a dest subtree removed by a concurrent cleanup, are both real —
+ * and that case has nothing to do with the source tree, so it is NOT
+ * tolerated here: it is rethrown untouched, on both the first attempt and
+ * the retry (#3108 review finding).
+ *
  * @param {string} srcPath
  * @param {() => void} attempt
  * @returns {boolean} whether the leaf was placed
@@ -115,7 +124,12 @@ function placeVanishableLeaf(srcPath, attempt) {
       return true;
     } catch (retryErr) {
       if (!isMissingPath(retryErr)) throw retryErr;
-      return false;
+      // A dest-side ENOENT (missing dest parent, etc.) is NOT a vanished
+      // source: only treat this as "vanished mid-walk" if the source is
+      // genuinely gone on re-check. Otherwise the error is about something
+      // else entirely and must propagate.
+      if (!fs.existsSync(srcPath)) return false;
+      throw retryErr;
     }
   }
 }
@@ -148,14 +162,18 @@ function linkOrCopyFile(src, dest) {
  * `fs.rmSync(..., {recursive:true, force:true})` it away.
  *
  * @param {{[relPath: string]: string}} fileOverrides
- * @param {{mode?: 'link'|'copy'}} [opts] - `mode` defaults to `'link'` so
- *   every pre-existing caller is unchanged. Pass `{mode: 'copy'}` when the
- *   overlay must survive a real `--write` generator run (see the module doc
- *   above) — every leaf file becomes a real independent inode, so no write
- *   inside the overlay can ever reach `REPO_ROOT`.
+ * @param {{mode?: 'link'|'copy', warn?: (msg: string) => void}} [opts] -
+ *   `mode` defaults to `'link'` so every pre-existing caller is unchanged.
+ *   Pass `{mode: 'copy'}` when the overlay must survive a real `--write`
+ *   generator run (see the module doc above) — every leaf file becomes a
+ *   real independent inode, so no write inside the overlay can ever reach
+ *   `REPO_ROOT`. `warn` defaults to `console.warn` (byte-identical to every
+ *   existing caller) and exists so a test can inject a spy to assert on the
+ *   skipped-leaf warning without capturing real console output.
  */
 function buildOverlayRepo(fileOverrides, opts = {}) {
   const mode = opts.mode || 'link';
+  const warn = opts.warn || console.warn;
   const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2930-overlay-'));
   const entries = Object.entries(fileOverrides).map(([relPath, content]) => ({
     parts: relPath.split('/'),
@@ -221,7 +239,7 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
     // exists to remove. But it must not be SILENT either — a dropped leaf can
     // surface later as a confusing "file missing" in an unrelated assertion, or
     // as nothing at all for a test that never touches it.
-    console.warn(
+    warn(
       `buildOverlayRepo: ${skipped.length} source file(s) vanished mid-walk and were ` +
       `omitted from the overlay (likely a concurrent atomic replace, e.g. hooks/dist — ` +
       `run \`npm run build:hooks\` to regenerate it):\n  ` +
