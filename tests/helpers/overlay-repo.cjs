@@ -99,37 +99,70 @@ function isMissingPath(err) {
  * EITHER attempt, non-ENOENT — propagates untouched; that invariant must hold
  * for any future widening of this tolerance.
  *
- * An ENOENT is only ever treated as "the source vanished" when `srcPath`
- * itself is confirmed absent at the time the ENOENT is handled. `attempt`
- * (e.g. `fs.linkSync(src, dest)`) can also throw ENOENT because the DEST
- * parent directory is missing — a Windows MAX_PATH failure on a deep dest
- * path, or a dest subtree removed by a concurrent cleanup, are both real —
- * and that case has nothing to do with the source tree, so it is NOT
- * tolerated here: it is rethrown untouched, on both the first attempt and
- * the retry (#3108 review finding).
+ * When no `destPath` is supplied, an ENOENT is tolerated as a vanished
+ * source: on the FIRST attempt's ENOENT, `srcPath` is re-checked with
+ * `fs.existsSync` to decide whether the retry is even worth attempting (gone
+ * already -> skip, no retry); if the retry's own attempt ALSO throws ENOENT,
+ * that is tolerated UNCONDITIONALLY — by the time a second atomic replace has
+ * landed in the same window there is nothing left to meaningfully re-check,
+ * and this is deliberately optimistic rather than throwing on the race this
+ * function exists to tolerate.
+ *
+ * Two discriminators that look like they should tell a vanished-source ENOENT
+ * apart from a dest-side one (a missing DEST parent directory, e.g. a Windows
+ * MAX_PATH failure or a concurrently-removed dest subtree) both fail, and
+ * must not be reached for again here:
+ *   - `fs.existsSync(srcPath)` re-checked at catch time: in the genuine
+ *     double-vanish race the source is being atomically REPLACED (e.g.
+ *     `hooks/dist`'s unlink+rename), so it can be present again by the time
+ *     the ENOENT is handled even though the ENOENT was genuinely
+ *     source-side. Gating the RETRY's ENOENT on it throws on exactly the
+ *     race this function exists to tolerate (#3108 regression).
+ *   - `err.path`: empirically, Node's `fs.linkSync` reports the SOURCE path
+ *     in `err.path` for BOTH a missing source and a missing dest parent
+ *     directory — it does not distinguish them either.
+ *
+ * The only discriminator that actually works is the DEST PARENT DIRECTORY,
+ * because `buildOverlayRepo` builds its own dest tree (`fs.mkdirSync(destDir,
+ * {recursive:true})` before every walk, into a private `mkdtempSync` root no
+ * other process touches) — so a missing dest parent is always a bug, never
+ * the atomic-replace race. Callers that know the dest path (`linkOrCopyFile`,
+ * the `copy`-mode branch in `place()`) pass it as `destPath`; when supplied,
+ * it REPLACES the source-existence check entirely (on both the first attempt
+ * and the retry): an ENOENT is tolerated as a vanished source only if the
+ * dest parent is confirmed present, and rethrown untouched if the dest
+ * parent is missing. Callers with no dest to check keep the source-only
+ * logic above, unchanged.
  *
  * @param {string} srcPath
  * @param {() => void} attempt
+ * @param {string} [destPath] - when supplied, an ENOENT (on either attempt)
+ *   is tolerated as a vanished source only if
+ *   `fs.existsSync(path.dirname(destPath))`; a missing dest parent rethrows
+ *   instead (see discriminator discussion above).
  * @returns {boolean} whether the leaf was placed
  */
-function placeVanishableLeaf(srcPath, attempt) {
+function placeVanishableLeaf(srcPath, attempt, destPath) {
+  function destParentPresent() {
+    return fs.existsSync(path.dirname(destPath));
+  }
   try {
     attempt();
     return true;
   } catch (err) {
     if (!isMissingPath(err)) throw err;
-    if (!fs.existsSync(srcPath)) return false;
+    if (destPath !== undefined) {
+      if (!destParentPresent()) throw err;
+    } else if (!fs.existsSync(srcPath)) {
+      return false;
+    }
     try {
       attempt();
       return true;
     } catch (retryErr) {
       if (!isMissingPath(retryErr)) throw retryErr;
-      // A dest-side ENOENT (missing dest parent, etc.) is NOT a vanished
-      // source: only treat this as "vanished mid-walk" if the source is
-      // genuinely gone on re-check. Otherwise the error is about something
-      // else entirely and must propagate.
-      if (!fs.existsSync(srcPath)) return false;
-      throw retryErr;
+      if (destPath !== undefined && !destParentPresent()) throw retryErr;
+      return false;
     }
   }
 }
@@ -140,17 +173,21 @@ function placeVanishableLeaf(srcPath, attempt) {
  *  Returns whether the leaf was placed; false means the source vanished
  *  mid-walk (see `placeVanishableLeaf`). */
 function linkOrCopyFile(src, dest) {
-  return placeVanishableLeaf(src, () => {
-    try {
-      fs.linkSync(src, dest);
-    } catch (err) {
-      if (err.code === 'EXDEV' || err.code === 'EPERM') {
-        fs.copyFileSync(src, dest);
-      } else {
-        throw err;
+  return placeVanishableLeaf(
+    src,
+    () => {
+      try {
+        fs.linkSync(src, dest);
+      } catch (err) {
+        if (err.code === 'EXDEV' || err.code === 'EPERM') {
+          fs.copyFileSync(src, dest);
+        } else {
+          throw err;
+        }
       }
-    }
-  });
+    },
+    dest,
+  );
 }
 
 /**
@@ -222,7 +259,11 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
         // Real independent inode — a write through this path in the overlay
         // can never alias back to REPO_ROOT's own tracked file (see
         // opts.mode doc above).
-        const placed = placeVanishableLeaf(srcPath, () => fs.copyFileSync(srcPath, destPath));
+        const placed = placeVanishableLeaf(
+          srcPath,
+          () => fs.copyFileSync(srcPath, destPath),
+          destPath,
+        );
         if (!placed) skipped.push(srcPath);
       } else {
         const placed = linkOrCopyFile(srcPath, destPath);

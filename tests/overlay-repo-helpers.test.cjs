@@ -157,25 +157,48 @@ describe('placeVanishableLeaf: vanish tolerance', () => {
   // Regression pin for #3108's review finding: linkOrCopyFile's attempt can
   // throw ENOENT because the DEST parent is missing (Windows MAX_PATH, a
   // concurrently-removed dest subtree), which has nothing to do with the
-  // source tree. The tolerance must not swallow it just because it is an
-  // ENOENT — only a genuinely vanished SOURCE is tolerated.
+  // source tree. `fs.existsSync(srcPath)` and `err.path` both fail to
+  // discriminate this from a genuine vanished-source ENOENT (see the doc
+  // comment on `placeVanishableLeaf` in tests/helpers/overlay-repo.cjs), so
+  // this is driven through `linkOrCopyFile` with a REAL source file and a
+  // dest whose parent directory does not exist — the actual mechanism,
+  // rather than a source-existence mock that cannot tell the two apart.
   test('a dest-side ENOENT is not mistaken for a vanished source', () => {
-    const srcPath = path.join(os.tmpdir(), 'gsd-3108-fixture-dest-side-enoent');
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3108-dest-side-'));
+    const src = path.join(tmpBase, 'real-source-leaf.txt');
+    const dest = path.join(tmpBase, 'missing-parent-dir', 'leaf.txt');
+    fs.writeFileSync(src, 'content\n');
+    try {
+      assert.throws(() => linkOrCopyFile(src, dest), /ENOENT/);
+    } finally {
+      cleanup(tmpBase);
+    }
+  });
+
+  // Pins that the guard keys ONLY on the dest parent, not on source
+  // existence: the dest parent is present, so an ENOENT on both the attempt
+  // and the retry is still treated as a vanished source (returns false),
+  // never a throw.
+  test('an ENOENT with the dest parent present is treated as a vanished source', () => {
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3108-dest-present-'));
+    const srcPath = path.join(os.tmpdir(), 'gsd-3108-fixture-dest-present-src');
+    const destPath = path.join(tmpBase, 'leaf.txt');
     let calls = 0;
     const attempt = () => {
       calls += 1;
-      const err = new Error("ENOENT: no such file or directory, link '/dest/missing/parent/leaf'");
+      const err = new Error('ENOENT: no such file or directory');
       err.code = 'ENOENT';
       throw err;
     };
-    const originalExistsSync = fs.existsSync;
-    // Source is present throughout — the ENOENT is about the destination.
-    fs.existsSync = (p) => (p === srcPath ? true : originalExistsSync(p));
     try {
-      assert.throws(() => placeVanishableLeaf(srcPath, attempt), /ENOENT/);
+      let placed;
+      assert.doesNotThrow(() => {
+        placed = placeVanishableLeaf(srcPath, attempt, destPath);
+      });
+      assert.strictEqual(placed, false);
       assert.strictEqual(calls, 2);
     } finally {
-      fs.existsSync = originalExistsSync;
+      cleanup(tmpBase);
     }
   });
 
@@ -643,15 +666,14 @@ describe('placeVanishableLeaf: property coverage', () => {
               assert.strictEqual(calls, 1);
             } else if (presentAtFinalAttempt) {
               // vanishCount >= 2: the retry is attempted (existsSync said
-              // present at the first check) and throws ENOENT again, but the
-              // source is STILL reported present at the second check — this
-              // is the dest-side-ENOENT shape, so it must propagate, not be
-              // swallowed as a vanished source.
-              assert.throws(
-                () => placeVanishableLeaf(srcPath, attempt),
-                /ENOENT/,
-                'a dest-side ENOENT (source confirmed present) must propagate, not be tolerated',
-              );
+              // present at the first check) and throws ENOENT again. With no
+              // destPath supplied, the retry's ENOENT is tolerated
+              // unconditionally (source existence is not re-consulted for
+              // the retry outcome — see the doc comment on
+              // placeVanishableLeaf): this is the double-vanish race the
+              // function exists to tolerate, so it is skipped, not thrown.
+              const placed = placeVanishableLeaf(srcPath, attempt);
+              assert.strictEqual(placed, false);
               assert.strictEqual(calls, 2);
             } else {
               // vanishCount >= 2 && !presentAtFinalAttempt: existsSync
