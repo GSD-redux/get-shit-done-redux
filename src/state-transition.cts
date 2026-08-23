@@ -1360,8 +1360,10 @@ function mutateCurrentPositionForAdvance(
 /**
  * Apply an `advancePlan` transition to STATE.md content.
  *
- * Parses Current Plan / Total Plans (legacy separate fields or compound
- * "Plan: X of Y" format), increments the plan number, updates body fields
+ * Parses Current Plan / Total Plans in any of three shapes — the legacy
+ * separate fields, the compound "Plan: X of Y", or the hybrid
+ * "Current Plan: X of Y" (legacy name, compound value, no Total Plans
+ * sibling) — increments the plan number, updates body fields
  * and the ## Current Position section. When currentPlan >= totalPlans,
  * takes the phase-complete branch (sets Status to "Phase complete — ready
  * for verification") instead of advancing.
@@ -1410,7 +1412,12 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     }
   }
 
-  // Parse plan number — legacy first, then compound.
+  // Parse plan number — legacy pair first, then the hybrid, then compound.
+  //
+  // Field NAME and value FORMAT are independent, so track them separately:
+  // `planSourceField` is where the value is written back, `planRawValue` is
+  // the compound string whose leading digits get incremented. Deriving the
+  // format from the name alone is what made the hybrid below unreadable.
   const legacyPlan = stateExtractField(content, 'Current Plan');
   const legacyTotal = stateExtractField(content, 'Total Plans in Phase');
   const planField = stateExtractField(content, 'Plan');
@@ -1418,15 +1425,31 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   let currentPlan: number;
   let totalPlans: number;
   let useCompoundFormat = false;
+  let planSourceField = 'Plan';
+  let planRawValue: string | null = null;
+
+  const legacyOfMatch = legacyPlan ? legacyPlan.match(/of\s+(\d+)/) : null;
 
   if (legacyPlan && legacyTotal) {
+    // Legacy pair wins whenever both fields are present, even if the Current
+    // Plan value also carries an "of N" — the explicit field is the intent.
     currentPlan = parseInt(legacyPlan, 10);
     totalPlans = parseInt(legacyTotal, 10);
+  } else if (legacyPlan && legacyOfMatch) {
+    // Hybrid: legacy field name, compound value, no Total Plans sibling.
+    // Written by hand (and by agents) often enough to be worth reading.
+    currentPlan = parseInt(legacyPlan, 10);
+    totalPlans = parseInt(legacyOfMatch[1], 10);
+    useCompoundFormat = true;
+    planSourceField = 'Current Plan';
+    planRawValue = legacyPlan;
   } else if (planField) {
     currentPlan = parseInt(planField, 10);
     const ofMatch = planField.match(/of\s+(\d+)/);
     totalPlans = ofMatch ? parseInt(ofMatch[1], 10) : NaN;
     useCompoundFormat = true;
+    planSourceField = 'Plan';
+    planRawValue = planField;
   } else {
     currentPlan = NaN;
     totalPlans = NaN;
@@ -1462,8 +1485,8 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   const newPlan = currentPlan + 1;
   let planDisplayValue: string;
   if (useCompoundFormat) {
-    planDisplayValue = (planField as string).replace(/^\d+/, String(newPlan));
-    body = stateReplaceField(body, 'Plan', planDisplayValue) || body;
+    planDisplayValue = (planRawValue as string).replace(/^\d+/, String(newPlan));
+    body = stateReplaceField(body, planSourceField, planDisplayValue) || body;
   } else {
     planDisplayValue = `${newPlan} of ${totalPlans}`;
     body = stateReplaceField(body, 'Current Plan', String(newPlan)) || body;

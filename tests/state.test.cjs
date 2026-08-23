@@ -1912,7 +1912,20 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
-    assert.ok(output.error.toLowerCase().includes('cannot parse'), 'error should mention Cannot parse');
+    // Assert on what makes the message actionable, not on one literal phrase:
+    // it must say the plan position could not be read AND name the shapes that
+    // would work. The previous assertion only checked for "cannot parse", which
+    // a message can satisfy while leaving the reader no idea what to write.
+    assert.ok(
+      /cannot read the plan position/i.test(output.error),
+      `error should say the plan position could not be read; got: ${output.error}`,
+    );
+    for (const shape of ['Total Plans in Phase', 'Plan: N of M', 'Current Plan: N of M']) {
+      assert.ok(
+        output.error.includes(shape),
+        `error should name the accepted shape ${JSON.stringify(shape)}; got: ${output.error}`,
+      );
+    }
   });
 
   test('advances plan in compound "Plan: X of Y" format', () => {

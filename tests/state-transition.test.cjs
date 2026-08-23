@@ -607,6 +607,70 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     assert.deepStrictEqual(result.updated, []);
   });
 
+  // Hybrid shape: the legacy field NAME carrying the compound VALUE, with no
+  // `Total Plans in Phase` sibling. Neither documented branch handled it —
+  // `legacyTotal` is null so the legacy branch fell through, and the compound
+  // branch reads the `Plan` field through a `^Plan:` line-anchored pattern
+  // that never matches `Current Plan:`. Both produced NaN, and the caller
+  // reported a parse failure against a file whose plan numbers are plainly
+  // readable.
+  //
+  // Not hypothetical: an agent wrote this exact shape unprompted, believing
+  // it was the parseable form, and every later run inherited it.
+  test('hybrid format: "Current Plan: 4 of 6" with no Total Plans sibling', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 4 of 6',
+      'Status: Executing Phase 7',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.error, undefined);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.current_plan, 5);
+    assert.strictEqual(result.data && result.data.total_plans, 6);
+  });
+
+  test('hybrid format: phase-complete branch still fires on the last plan', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 6 of 6',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, false);
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+  });
+
+  // The legacy pair must keep winning when both are present: a stray "of N"
+  // inside the Current Plan value must not override an explicit Total Plans.
+  test('legacy pair still takes precedence over an "of N" in Current Plan', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 2 of 99',
+      '**Total Plans in Phase:** 5',
+      '**Status:** Executing Phase 3',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.total_plans, 5);
+  });
+
   test('compound format: "Plan: 2 of 6" preserves compound shape', () => {
     const input = [
       '# Project State',
