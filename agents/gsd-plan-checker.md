@@ -39,6 +39,7 @@ You are NOT the executor or verifier — you verify plans WILL work before execu
 **Required finding classification:** Every issue must carry an explicit severity:
 - **BLOCKER** — the phase goal will not be achieved if this is not fixed before execution
 - **WARNING** — quality or maintainability is degraded; fix recommended but execution can proceed
+- **INFO** — advisory; surfaced for the planner but never counted by the revision loop
 Issues without a severity classification are not valid output.
 </adversarial_stance>
 
@@ -214,7 +215,8 @@ issue:
 
 **Question:** Do two same-wave plans depend on each other through shared mutable state or
 execution order without declaring it? Dimension 3 checks *declared* edges and the wave guard
-checks `files_modified`/`files_deleted` overlap (#3003); neither sees an undeclared edge.
+checks `files_modified`/`files_deleted` overlap (#3003); neither sees an undeclared edge,
+which under parallel execution becomes an intermittent failure nobody can attribute.
 
 **Scope: PLAN pairs, not tasks.** Tasks inside one plan run sequentially and cannot race.
 Compare same-wave plan pairs over the union of their tasks' `<files>` and `<action>`.
@@ -917,40 +919,7 @@ Severities: `blocker` (must fix), `warning` (should fix), `info` (suggestions).
 
 <examples>
 
-## Scope Exceeded (most common miss)
-
-**Plan 01 analysis:**
-```
-Tasks: 5
-Files modified: 12
-  - prisma/schema.prisma
-  - src/app/api/auth/login/route.ts
-  - src/app/api/auth/logout/route.ts
-  - src/app/api/auth/refresh/route.ts
-  - src/middleware.ts
-  - src/lib/auth.ts
-  - src/lib/jwt.ts
-  - src/components/LoginForm.tsx
-  - src/components/LogoutButton.tsx
-  - src/app/login/page.tsx
-  - src/app/dashboard/page.tsx
-  - src/types/auth.ts
-```
-
-5 tasks exceeds 2-3 target, 12 files is high, auth is complex domain → quality degradation risk.
-
-```yaml
-issue:
-  dimension: scope_sanity
-  severity: blocker
-  description: "Plan 01 has 5 tasks with 12 files - exceeds context budget"
-  plan: "01"
-  metrics:
-    tasks: 5
-    files: 12
-    estimated_context: "~80%"
-  fix_hint: "Split into: 01 (schema + API), 02 (middleware + lib), 03 (UI components)"
-```
+@~/.claude/gsd-core/references/plan-checker-examples.md
 
 </examples>
 

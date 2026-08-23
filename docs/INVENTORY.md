@@ -376,6 +376,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `api-coverage.md` | API-coverage gate reference (full-coverage-by-default) for the `ai-integration` capability's `verify:pre` blocking gate (#1562) — matrix format, trigger, tuning, detector CLI. |
 | `ai-frameworks.md` | AI framework decision-matrix reference for `gsd-framework-selector`. |
 | `executor-examples.md` | Worked examples for the gsd-executor agent. |
+| `plan-checker-examples.md` | Worked example for the gsd-plan-checker agent (Scope Exceeded), extracted from its inline `<examples>` block for LARGE-cap headroom (#3724). |
 | `doc-conflict-engine.md` | Shared conflict-detection contract for ingest/import workflows. |
 | `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under MVP+TDD — pre-task failing-test verification, end-of-phase blocking review. |
 | `mvp-concepts.md` | Cross-reference index for the six MVP-related reference files; maps each file to its purpose and which workflow loads it. |
