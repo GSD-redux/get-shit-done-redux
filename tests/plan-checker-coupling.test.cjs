@@ -166,11 +166,19 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
         new RegExp(`severity:\\s*${tier}`),
         `Dimension 3b's example issue must carry severity: ${tier} — the tier revision-loop.md exempts`
       );
-      assert.doesNotMatch(
-        span,
-        /severity:\s*warning/,
-        'Dimension 3b must not carry a warning-severity example — warning re-triggers the revision loop'
-      );
+      // The negative is derived too: every severity token in the span must BE the
+      // exempt tier. If revision-loop.md's exemption ever moves, this fails naming
+      // the real conflict instead of blaming the agent file with a stale hardcode.
+      const tiersInSpan = [...span.matchAll(/severity:\s*(\w+)/g)].map((m) => m[1].toLowerCase());
+      assert.ok(tiersInSpan.length > 0, 'Dimension 3b must carry at least one severity-tagged example');
+      for (const found of tiersInSpan) {
+        assert.strictEqual(
+          found,
+          tier,
+          `Dimension 3b carries severity: ${found}, but the only tier revision-loop.md exempts is ` +
+          `${tier} — a non-exempt tier re-arms the revision loop`
+        );
+      }
     });
 
     test('the sub-check forbids escalating to blocker', () => {
