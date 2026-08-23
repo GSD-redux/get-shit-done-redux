@@ -85,23 +85,85 @@ function isMissingPath(err) {
  * the tree (nothing to mirror, so the leaf is skipped). No sleep, no spin — a
  * timing-based wait here would be the flake this is fixing, not a fix for it.
  *
- * Returns false only when the path left the source tree entirely; the overlay
- * mirrors the tree, and a file that is no longer in it is not part of the
- * snapshot. Every other error propagates untouched.
+ * The retry itself can also lose the race — a second atomic replace landing in
+ * the same window makes the retry throw ENOENT too (e.g. two concurrent
+ * `build:hooks` runs). That is still just "the path is vanishing": the same
+ * conclusion the single-vanish case reaches, so it is likewise treated as
+ * skipped rather than left to escape as a bare uncaught ENOENT (#3108). There
+ * is still only ONE retry — a second retry would turn this into the sleep/spin
+ * loop the comment above already rejects.
+ *
+ * Returns false only when the path left the source tree entirely (on the
+ * first attempt OR the retry); the overlay mirrors the tree, and a file that
+ * is no longer in it is not part of the snapshot. Every other error — from
+ * EITHER attempt, non-ENOENT — propagates untouched; that invariant must hold
+ * for any future widening of this tolerance.
+ *
+ * When no `destPath` is supplied, an ENOENT is tolerated as a vanished
+ * source: on the FIRST attempt's ENOENT, `srcPath` is re-checked with
+ * `fs.existsSync` to decide whether the retry is even worth attempting (gone
+ * already -> skip, no retry); if the retry's own attempt ALSO throws ENOENT,
+ * that is tolerated UNCONDITIONALLY — by the time a second atomic replace has
+ * landed in the same window there is nothing left to meaningfully re-check,
+ * and this is deliberately optimistic rather than throwing on the race this
+ * function exists to tolerate.
+ *
+ * Two discriminators that look like they should tell a vanished-source ENOENT
+ * apart from a dest-side one (a missing DEST parent directory, e.g. a Windows
+ * MAX_PATH failure or a concurrently-removed dest subtree) both fail, and
+ * must not be reached for again here:
+ *   - `fs.existsSync(srcPath)` re-checked at catch time: in the genuine
+ *     double-vanish race the source is being atomically REPLACED (e.g.
+ *     `hooks/dist`'s unlink+rename), so it can be present again by the time
+ *     the ENOENT is handled even though the ENOENT was genuinely
+ *     source-side. Gating the RETRY's ENOENT on it throws on exactly the
+ *     race this function exists to tolerate (#3108 regression).
+ *   - `err.path`: empirically, Node's `fs.linkSync` reports the SOURCE path
+ *     in `err.path` for BOTH a missing source and a missing dest parent
+ *     directory — it does not distinguish them either.
+ *
+ * The only discriminator that actually works is the DEST PARENT DIRECTORY,
+ * because `buildOverlayRepo` builds its own dest tree (`fs.mkdirSync(destDir,
+ * {recursive:true})` before every walk, into a private `mkdtempSync` root no
+ * other process touches) — so a missing dest parent is always a bug, never
+ * the atomic-replace race. Callers that know the dest path (`linkOrCopyFile`,
+ * the `copy`-mode branch in `place()`) pass it as `destPath`; when supplied,
+ * it REPLACES the source-existence check entirely (on both the first attempt
+ * and the retry): an ENOENT is tolerated as a vanished source only if the
+ * dest parent is confirmed present, and rethrown untouched if the dest
+ * parent is missing. Callers with no dest to check keep the source-only
+ * logic above, unchanged.
  *
  * @param {string} srcPath
  * @param {() => void} attempt
+ * @param {string} [destPath] - when supplied, an ENOENT (on either attempt)
+ *   is tolerated as a vanished source only if
+ *   `fs.existsSync(path.dirname(destPath))`; a missing dest parent rethrows
+ *   instead (see discriminator discussion above).
  * @returns {boolean} whether the leaf was placed
  */
-function placeVanishableLeaf(srcPath, attempt) {
+function placeVanishableLeaf(srcPath, attempt, destPath) {
+  function destParentPresent() {
+    return fs.existsSync(path.dirname(destPath));
+  }
   try {
     attempt();
     return true;
   } catch (err) {
     if (!isMissingPath(err)) throw err;
-    if (!fs.existsSync(srcPath)) return false;
-    attempt();
-    return true;
+    if (destPath !== undefined) {
+      if (!destParentPresent()) throw err;
+    } else if (!fs.existsSync(srcPath)) {
+      return false;
+    }
+    try {
+      attempt();
+      return true;
+    } catch (retryErr) {
+      if (!isMissingPath(retryErr)) throw retryErr;
+      if (destPath !== undefined && !destParentPresent()) throw retryErr;
+      return false;
+    }
   }
 }
 
@@ -111,17 +173,21 @@ function placeVanishableLeaf(srcPath, attempt) {
  *  Returns whether the leaf was placed; false means the source vanished
  *  mid-walk (see `placeVanishableLeaf`). */
 function linkOrCopyFile(src, dest) {
-  return placeVanishableLeaf(src, () => {
-    try {
-      fs.linkSync(src, dest);
-    } catch (err) {
-      if (err.code === 'EXDEV' || err.code === 'EPERM') {
-        fs.copyFileSync(src, dest);
-      } else {
-        throw err;
+  return placeVanishableLeaf(
+    src,
+    () => {
+      try {
+        fs.linkSync(src, dest);
+      } catch (err) {
+        if (err.code === 'EXDEV' || err.code === 'EPERM') {
+          fs.copyFileSync(src, dest);
+        } else {
+          throw err;
+        }
       }
-    }
-  });
+    },
+    dest,
+  );
 }
 
 /**
@@ -133,14 +199,18 @@ function linkOrCopyFile(src, dest) {
  * `fs.rmSync(..., {recursive:true, force:true})` it away.
  *
  * @param {{[relPath: string]: string}} fileOverrides
- * @param {{mode?: 'link'|'copy'}} [opts] - `mode` defaults to `'link'` so
- *   every pre-existing caller is unchanged. Pass `{mode: 'copy'}` when the
- *   overlay must survive a real `--write` generator run (see the module doc
- *   above) — every leaf file becomes a real independent inode, so no write
- *   inside the overlay can ever reach `REPO_ROOT`.
+ * @param {{mode?: 'link'|'copy', warn?: (msg: string) => void}} [opts] -
+ *   `mode` defaults to `'link'` so every pre-existing caller is unchanged.
+ *   Pass `{mode: 'copy'}` when the overlay must survive a real `--write`
+ *   generator run (see the module doc above) — every leaf file becomes a
+ *   real independent inode, so no write inside the overlay can ever reach
+ *   `REPO_ROOT`. `warn` defaults to `console.warn` (byte-identical to every
+ *   existing caller) and exists so a test can inject a spy to assert on the
+ *   skipped-leaf warning without capturing real console output.
  */
 function buildOverlayRepo(fileOverrides, opts = {}) {
   const mode = opts.mode || 'link';
+  const warn = opts.warn || console.warn;
   const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2930-overlay-'));
   const entries = Object.entries(fileOverrides).map(([relPath, content]) => ({
     parts: relPath.split('/'),
@@ -189,7 +259,11 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
         // Real independent inode — a write through this path in the overlay
         // can never alias back to REPO_ROOT's own tracked file (see
         // opts.mode doc above).
-        const placed = placeVanishableLeaf(srcPath, () => fs.copyFileSync(srcPath, destPath));
+        const placed = placeVanishableLeaf(
+          srcPath,
+          () => fs.copyFileSync(srcPath, destPath),
+          destPath,
+        );
         if (!placed) skipped.push(srcPath);
       } else {
         const placed = linkOrCopyFile(srcPath, destPath);
@@ -206,9 +280,10 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
     // exists to remove. But it must not be SILENT either — a dropped leaf can
     // surface later as a confusing "file missing" in an unrelated assertion, or
     // as nothing at all for a test that never touches it.
-    console.warn(
+    warn(
       `buildOverlayRepo: ${skipped.length} source file(s) vanished mid-walk and were ` +
-      `omitted from the overlay (likely a concurrent atomic replace, e.g. hooks/dist):\n  ` +
+      `omitted from the overlay (likely a concurrent atomic replace, e.g. hooks/dist — ` +
+      `run \`npm run build:hooks\` to regenerate it):\n  ` +
       skipped.join('\n  '),
     );
   }
