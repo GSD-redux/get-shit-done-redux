@@ -158,11 +158,12 @@ For each task:
    - Commit (see task_commit_protocol)
    - Track completion + commit hash for Summary
 
-2. **If `type="tracer"`:** (the leading thin end-to-end slice — production-quality, never a throwaway)
-   - Execute and commit exactly like `type="auto"` (real implementation, real `<verify>`, atomic commit).
-   - **Then run the tracer feedback gate BEFORE any expansion task** — an early integration checkpoint on the proven slice:
-     - **Autonomous run (auto mode active — `AUTO_CHAIN` or `AUTO_CFG` is `"true"`, per `<auto_mode_detection>`):** re-run the tracer's `<verify>` end-to-end. If it **fails**, HALT and surface it (deviation Rule 1) — do NOT proceed to expansion tasks. Pouring more layers onto a broken foundation is exactly the failure this gate prevents. If it passes, log `⚡ Tracer verified end-to-end — expanding` and continue.
-     - **Interactive run (auto mode not active):** immediately after committing the tracer, STOP and return a `checkpoint:human-verify` for the tracer's `<verify>` (the working slice) using checkpoint_return_format, before any expansion task.
+2. **If `type="tracer"`:** (production-quality, never a throwaway)
+   - Execute and commit exactly like `type="auto"`.
+   - **Then run the tracer feedback gate BEFORE any expansion task** — an early integration checkpoint on the proven slice. In order (full chain: "Tracer feedback gate", checkpoints.md):
+     - **`gate="blocking-human"` → STOP**, return a `checkpoint:human-verify`. Every mode, auto included (golden rule 6).
+     - **Auto mode active** (`AUTO_CHAIN`/`AUTO_CFG` is `"true"`, per `<auto_mode_detection>`): re-run `<verify>` end-to-end. Fails → HALT, surface as deviation Rule 1, never expand — pouring more layers onto a broken foundation is exactly the failure this gate prevents. Passes → log `⚡ Tracer verified end-to-end — expanding`, continue.
+     - **Interactive:** per `HUMAN_VERIFY_MODE` — `end-of-phase` (default) + automated-only `<verify>` → re-run; fails → HALT as above, passes → continue, no checkpoint; else STOP → `checkpoint:human-verify` (#3299).
 
 3. **If `type="checkpoint:*"`:**
    - STOP immediately — return structured checkpoint message
@@ -306,6 +307,7 @@ Check if auto mode is active at executor start (chain flag or user preference):
 ```bash
 AUTO_CHAIN=$(gsd_run query config-get workflow._auto_chain_active 2>/dev/null || echo "false")
 AUTO_CFG=$(gsd_run query config-get workflow.auto_advance 2>/dev/null || echo "false")
+HUMAN_VERIFY_MODE=$(gsd_run query config-get workflow.human_verify_mode --default end-of-phase --raw 2>/dev/null || echo "end-of-phase")
 ```
 
 Auto mode is active if either `AUTO_CHAIN` or `AUTO_CFG` is `"true"`. Store the result for checkpoint handling below.
@@ -322,7 +324,7 @@ For full automation-first patterns, server lifecycle, CLI handling:
 
 **Quick reference:** Users NEVER run CLI commands. Users ONLY visit URLs, click UI, evaluate visuals, provide secrets. Claude does all automation.
 
-**Tracer feedback gate:** a `type="tracer"` task is followed by an early integration checkpoint on the proven slice (see `<execution_flow>` → `execute_tasks`) — in autonomous runs a failing tracer `<verify>` HALTS before any expansion task; in interactive runs the executor emits a `checkpoint:human-verify` for the tracer immediately after committing it.
+**Tracer feedback gate:** synthesized after a `type="tracer"` task; `gate="blocking-human"` STOPs in every mode. Branch in `<execution_flow>` → `execute_tasks`; full chain in checkpoints.md (#3299).
 
 ---
 

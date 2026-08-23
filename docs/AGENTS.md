@@ -221,7 +221,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Follows XML task instructions precisely
 - Atomic git commit per completed task
 - Handles task types: auto, tracer, checkpoint (human-verify, decision, human-action)
-- Tracer feedback gate: after a `tracer` slice, verifies it end-to-end before expansion tasks — autonomous runs halt on failure; interactive runs emit a human-verify checkpoint
+- Tracer feedback gate: after a `tracer` slice, verifies it end-to-end before expansion tasks — autonomous runs halt on failure; interactive runs honor `workflow.human_verify_mode` (under the `end-of-phase` default an automated-only `<verify>` continues with no checkpoint; otherwise a human-verify checkpoint is emitted, #3299)
 - Reports deviations from plan in SUMMARY.md
 - Invokes node repair on verification failure
 

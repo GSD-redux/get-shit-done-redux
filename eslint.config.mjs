@@ -82,6 +82,8 @@ export default tseslint.config(
       // lint the src/install-model-override-resolver.cts source, not this.
       'gsd-core/bin/lib/install-model-override-resolver.cjs',
       'gsd-core/bin/lib/install-engine.cjs',
+      // #3712: tsc-generated runtime artifact — lint src/real-home-guard.cts, not this.
+      'gsd-core/bin/lib/real-home-guard.cjs',
       // #2874 (epic #2866 Phase 5): tsc-generated runtime artifact — lint the
       // src/install-fs-adapter.cts source, not this.
       'gsd-core/bin/lib/install-fs-adapter.cjs',
