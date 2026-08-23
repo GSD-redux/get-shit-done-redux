@@ -1492,7 +1492,18 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     // padStart never truncates, so 09 -> 10 widens correctly.
     planDisplayValue = (planRawValue as string).replace(/^\d+/, (digits) =>
       String(newPlan).padStart(digits.length, '0'));
-    body = stateReplaceField(body, planSourceField, planDisplayValue) || body;
+    // Dispatch on the discriminator but pass a Title-Case LITERAL field name,
+    // never the variable. ADR-3408 §8.3(b): a literal cannot collide with a
+    // lowercase/snake_case frontmatter key, so it is safe regardless of how
+    // the content argument was derived. `body` here is in fact
+    // `stripFrontmatter(content)`, but the write-path drift guard does not do
+    // dataflow tracking (by design), and satisfying its invariant by
+    // construction is better than asking a reader to re-derive that it holds.
+    if (planSourceField === 'Current Plan') {
+      body = stateReplaceField(body, 'Current Plan', planDisplayValue) || body;
+    } else {
+      body = stateReplaceField(body, 'Plan', planDisplayValue) || body;
+    }
   } else {
     planDisplayValue = `${newPlan} of ${totalPlans}`;
     body = stateReplaceField(body, 'Current Plan', String(newPlan)) || body;
