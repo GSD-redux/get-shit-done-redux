@@ -269,6 +269,16 @@ describe('generateSlugInternal', () => {
   // title's meaning is preserved as ASCII. Latin-script output is byte-for-byte
   // unchanged (negative control below).
 
+  test('Latin diacritics decompose instead of truncating the word', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('Validação de Dados'), 'validacao-de-dados');
+    assert.strictEqual(coreUtils.generateSlugInternal('Autenticação Pessoal'), 'autenticacao-pessoal');
+    assert.strictEqual(coreUtils.generateSlugInternal('Übersicht für Kunden'), 'ubersicht-fur-kunden');
+  });
+
+  test('NFD strip does not alter the Cyrillic transliteration map', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('Жёлтый край'), 'zheltyy-kray');
+  });
+
   test('#2848 row 1 — Cyrillic title produces a non-empty transliterated slug', () => {
     // Russian "Проверка гипотезы" → "proverka gipotezy" → slug.
     const result = coreUtils.generateSlugInternal('Проверка гипотезы');

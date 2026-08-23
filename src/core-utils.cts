@@ -160,7 +160,11 @@ function transliterateForSlug(text: string): string {
       ? CYRILLIC_TRANSLITERATION[ch]
       : ch;
   }
-  return out;
+  // Latin diacritics (e.g. "validação") otherwise fall to the caller's
+  // `[^a-z0-9]+` strip and truncate the word ("valida-o" instead of
+  // "validacao"). Decompose (NFD) and drop combining marks AFTER the Cyrillic
+  // map so its mappings (ё→e, й→y, …) are unchanged.
+  return out.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
 // ─── Phase file helpers ──────────────────────────────────────────────────────

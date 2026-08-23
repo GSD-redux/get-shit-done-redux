@@ -175,7 +175,7 @@ function guardedGetRoadmapPhase(
 // below — factored out once so the slugification formula itself cannot drift.
 function slugifyPhaseName(phaseName: string | null): string | null {
   return phaseName
-    ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    ? phaseName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
     : null;
 }
 
@@ -1932,7 +1932,7 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
         phase_number: roadmapPhase['phase_number'],
         phase_name: phaseName,
         phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+          ? phaseName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
           : null,
         plans: [],
         summaries: [],
@@ -1954,7 +1954,7 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
         phase_number: roadmapPhase['phase_number'],
         phase_name: phaseName,
         phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+          ? phaseName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
           : null,
         plans: [],
         summaries: [],
@@ -3106,7 +3106,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
       const status = 'not_started';
       const phaseInfo: Record<string, unknown> = {
         number: num,
-        name: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+        name: name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
         directory: null,
         status,
         plan_count: 0,

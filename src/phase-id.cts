@@ -227,7 +227,7 @@ function getPhaseDirFromPhaseId(phaseId: unknown, phaseName: string | null | und
   const subParts = m[2].split('-').map(p => String(parseInt(p, 10)).padStart(2, '0'));
   const sub = subParts.join('-');
   const slug = phaseName
-    ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    ? phaseName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
     : '';
   const parts = [milestone, sub, slug].filter(Boolean);
   const base = parts.join('-');
@@ -377,7 +377,7 @@ function toDir(id: PhaseId, slug: string): string {
   const sub = id.subphase ? `.${id.subphase}` : '';
   // Slug guard: the slug becomes an on-disk path segment, so collapse it to a
   // safe lowercase token — never a path separator or `..` traversal.
-  const safeSlug = slug.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const safeSlug = slug.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   // A slug that sanitizes to nothing (e.g. '!!!') would otherwise emit a
   // dangling trailing hyphen.
   if (!safeSlug) {
