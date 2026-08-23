@@ -154,7 +154,9 @@ describe('placeVanishableLeaf: vanish tolerance', () => {
     }
   });
 
-  for (const code of ['EACCES', 'EMFILE', 'EPERM']) {
+  // EACCES is exercised standalone above; the sweep below only adds codes
+  // not already covered, so it does not re-test EACCES a second time.
+  for (const code of ['EMFILE', 'EPERM']) {
     test(`a non-ENOENT error (${code}) is never swallowed by the vanish tolerance`, () => {
       const attempt = () => {
         const err = new Error(`${code}: synthetic failure`);
@@ -194,7 +196,11 @@ describe('isHooksDistStale: extension-agnostic staleness predicate', () => {
     }
     if (includeSubdirs) {
       for (const name of HOOKS_SUBDIRS_TO_COPY) {
-        fs.mkdirSync(path.join(dir, name), { recursive: true });
+        const subdir = path.join(dir, name);
+        fs.mkdirSync(subdir, { recursive: true });
+        // A non-empty subdir — an empty dir does not count as "populated"
+        // (see the dedicated empty-subdir test below).
+        fs.writeFileSync(path.join(subdir, 'fixture-leaf.txt'), '// fixture\n');
       }
     }
     if (extra) {
@@ -291,6 +297,45 @@ describe('isHooksDistStale: extension-agnostic staleness predicate', () => {
     }
   });
 
+  // Deliverable — presence in the top-level readdir Set alone is not
+  // enough: an empty `lib/` (missing e.g. gsd-graphify-rebuild.sh) is the
+  // exact missing-file-class case the subdir check exists to catch, and a
+  // bare membership check cannot see it.
+  test('an empty lib subdirectory is not considered populated', () => {
+    const isHooksDistStale = loadPredicate();
+    const dir = mkTmpDir();
+    try {
+      writeExpectedSet(dir, { includeSubdirs: false });
+      for (const name of HOOKS_SUBDIRS_TO_COPY) {
+        fs.mkdirSync(path.join(dir, name), { recursive: true });
+      }
+      assert.strictEqual(isHooksDistStale(dir), true);
+    } finally {
+      rmTmpDir(dir);
+    }
+  });
+
+  // Deliverable — a stray regular FILE named `lib` also satisfies bare
+  // top-level Set membership; readdirSync on it must throw ENOTDIR, which
+  // is caught and treated as stale, not left to escape uncaught.
+  test('a regular file named lib is not considered populated', () => {
+    const isHooksDistStale = loadPredicate();
+    const dir = mkTmpDir();
+    try {
+      writeExpectedSet(dir, { includeSubdirs: false });
+      for (const name of HOOKS_SUBDIRS_TO_COPY) {
+        fs.writeFileSync(path.join(dir, name), 'i am a file, not a dir\n');
+      }
+      let stale;
+      assert.doesNotThrow(() => {
+        stale = isHooksDistStale(dir);
+      });
+      assert.strictEqual(stale, true);
+    } finally {
+      rmTmpDir(dir);
+    }
+  });
+
   // Deliverable — fails today: readdirSync throws ENOTDIR when `dir` is a
   // regular file, and isHooksDistStale lets that escape uncaught, failing
   // every suite's before() on a condition it cannot act on. Unreadable is
@@ -309,6 +354,103 @@ describe('isHooksDistStale: extension-agnostic staleness predicate', () => {
       assert.strictEqual(stale, true);
     } finally {
       rmTmpDir(dir);
+    }
+  });
+});
+
+// ── Group 2b: ensureHooksDist build-seam wiring ─────────────────────────────
+//
+// Group 2 above only exercises the pure predicate `isHooksDistStale` — none
+// of it calls `ensureHooksDist`, so restoring the OLD inline `.js`-count
+// check inside `ensureHooksDist` (while leaving `isHooksDistStale` exported
+// and correct) would keep every Group-2 test green. These two tests drive
+// `ensureHooksDist` itself and assert on the build seam, without running a
+// real `build-hooks.js` subprocess: `fs.existsSync`/`fs.readdirSync` are
+// monkeypatched (scoped to `HOOKS_DIST_DIR` only, restored in `finally`) to
+// fake staleness/freshness with ZERO mutation of the worktree's real
+// `hooks/dist`, and `processSeam.runNode` — the module OBJECT
+// `hooks-dist.cjs` now calls through (`processSeam.runNode(...)`) rather
+// than a destructured reference — is monkeypatched to observe whether the
+// build seam was invoked, without ever spawning `build-hooks.js`.
+
+describe('ensureHooksDist: build-seam wiring', () => {
+  const { ensureHooksDist, HOOKS_DIST_DIR } = require('./helpers/hooks-dist.cjs');
+  const processSeam = require('./helpers/process-seam.cjs');
+
+  function withFakeDistState({ stale }, run) {
+    const originalExistsSync = fs.existsSync;
+    const originalReaddirSync = fs.readdirSync;
+    if (stale) {
+      // Absent is the simplest, unambiguous stale signal — short-circuits
+      // isHooksDistStale before it ever calls readdirSync.
+      fs.existsSync = (p) => (p === HOOKS_DIST_DIR ? false : originalExistsSync(p));
+    } else {
+      fs.existsSync = (p) => (p === HOOKS_DIST_DIR ? true : originalExistsSync(p));
+      fs.readdirSync = (p, ...rest) => {
+        if (p === HOOKS_DIST_DIR) return [...HOOKS_TO_COPY, ...HOOKS_SUBDIRS_TO_COPY];
+        for (const name of HOOKS_SUBDIRS_TO_COPY) {
+          if (p === path.join(HOOKS_DIST_DIR, name)) return ['fixture-leaf.txt'];
+        }
+        return originalReaddirSync(p, ...rest);
+      };
+    }
+    try {
+      run();
+    } finally {
+      fs.existsSync = originalExistsSync;
+      fs.readdirSync = originalReaddirSync;
+    }
+  }
+
+  function fakeSuccessfulRun() {
+    return {
+      outcome: 'exited',
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      signal: null,
+      killed: false,
+      code: null,
+    };
+  }
+
+  test('ensureHooksDist runs the build when the dist is stale', () => {
+    const originalRunNode = processSeam.runNode;
+    let calls = 0;
+    processSeam.runNode = () => {
+      calls += 1;
+      return fakeSuccessfulRun();
+    };
+    try {
+      withFakeDistState({ stale: true }, () => {
+        ensureHooksDist();
+      });
+      assert.strictEqual(calls, 1);
+    } finally {
+      processSeam.runNode = originalRunNode;
+    }
+  });
+
+  // Deliverable — the discriminating case: a rewiring regression that drops
+  // (or bypasses) the `isHooksDistStale` guard and unconditionally invokes
+  // the build seam would pass the STALE test above but FAIL this one, since
+  // it would call the seam even against a fresh, fully-populated dist. The
+  // STALE test alone cannot catch that shape of revert; this one does.
+  test('ensureHooksDist does not run the build when the dist is complete', () => {
+    const originalRunNode = processSeam.runNode;
+    let calls = 0;
+    processSeam.runNode = () => {
+      calls += 1;
+      return fakeSuccessfulRun();
+    };
+    try {
+      withFakeDistState({ stale: false }, () => {
+        ensureHooksDist();
+      });
+      assert.strictEqual(calls, 0);
+    } finally {
+      processSeam.runNode = originalRunNode;
     }
   });
 });
@@ -333,9 +475,19 @@ describe('placeVanishableLeaf: property coverage', () => {
   test('property: never throws ENOENT, and returns true iff the attempt ultimately succeeds', () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 0, max: 3 }),
-        fc.boolean(),
-        (vanishCount, presentAtFinalAttempt) => {
+        // vanishCount === 0 never consults existsSync at all (the first
+        // attempt succeeds outright), so presentAtFinalAttempt can never
+        // change that case's outcome — the filter below drops the redundant
+        // half of those samples (both flag values reduce to one behavior)
+        // instead of letting them silently pad the run count. For every
+        // vanishCount >= 1, existsSync IS consulted and the flag is wired
+        // to change an observable outcome below (either `placed`, or —
+        // for vanishCount >= 2, where `placed` is false either way — the
+        // number of `attempt` calls), so no other combination is dropped.
+        fc.tuple(fc.integer({ min: 0, max: 3 }), fc.boolean()).filter(
+          ([vanishCount, presentAtFinalAttempt]) => vanishCount !== 0 || presentAtFinalAttempt === true,
+        ),
+        ([vanishCount, presentAtFinalAttempt]) => {
           const srcPath = path.join(os.tmpdir(), `gsd-3108-fc-fixture-${vanishCount}-${presentAtFinalAttempt}`);
           let calls = 0;
           // Throws ENOENT on every call up to and including `vanishCount`,
@@ -350,12 +502,15 @@ describe('placeVanishableLeaf: property coverage', () => {
               throw err;
             }
           };
-          // existsSync is consulted only when the first attempt threw. For
-          // vanishCount === 1 it decides whether the retry succeeds
-          // (presentAtFinalAttempt) or the leaf is genuinely gone. For
-          // vanishCount >= 2 the source is present but about to vanish
-          // again on the retry, modelling the double-vanish case.
-          const existsAnswer = vanishCount === 1 ? presentAtFinalAttempt : true;
+          // existsSync is consulted only when the first attempt threw
+          // (vanishCount >= 1), gating whether the retry is even attempted.
+          // For vanishCount === 1 it decides whether the retry succeeds.
+          // For vanishCount >= 2 the source is present-but-about-to-vanish
+          // again on the retry (modelling the double-vanish case) when the
+          // flag is true, or already gone (no retry attempted) when false —
+          // both reach `placed === false`, but the flag still changes the
+          // observed call count, so it is never a no-op here.
+          const existsAnswer = presentAtFinalAttempt;
           const originalExistsSync = fs.existsSync;
           fs.existsSync = (p) => (p === srcPath ? existsAnswer : originalExistsSync(p));
           try {
@@ -366,12 +521,22 @@ describe('placeVanishableLeaf: property coverage', () => {
 
             if (vanishCount === 0) {
               assert.strictEqual(placed, true);
+              assert.strictEqual(calls, 1);
             } else if (vanishCount === 1 && presentAtFinalAttempt) {
               assert.strictEqual(placed, true);
-            } else {
-              // vanishCount === 1 && !presentAtFinalAttempt (gone for good),
-              // or vanishCount >= 2 (vanishes again on the retry too).
+              assert.strictEqual(calls, 2);
+            } else if (presentAtFinalAttempt) {
+              // vanishCount >= 2: the retry is attempted (existsSync said
+              // present) but vanishes again, so it still fails.
               assert.strictEqual(placed, false);
+              assert.strictEqual(calls, 2);
+            } else {
+              // vanishCount === 1 && !presentAtFinalAttempt (gone for good
+              // before the retry), or vanishCount >= 2 && !presentAtFinalAttempt
+              // (existsSync already reports it gone, so the retry is never
+              // attempted).
+              assert.strictEqual(placed, false);
+              assert.strictEqual(calls, 1);
             }
           } finally {
             fs.existsSync = originalExistsSync;

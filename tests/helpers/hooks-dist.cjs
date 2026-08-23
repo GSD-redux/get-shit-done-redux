@@ -31,7 +31,12 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { runNode } = require('./process-seam.cjs');
+// Required as a module object (not destructured) so tests can monkeypatch
+// `processSeam.runNode` in place and have `ensureHooksDist` observe the
+// replacement — a destructured `const { runNode } = require(...)` would
+// bind a local reference at require-time that a later patch to the
+// process-seam module's exports could never reach.
+const processSeam = require('./process-seam.cjs');
 const { throwIfFailed } = require('./git-fixture.cjs');
 const { BUILD_TIMEOUT_MS } = require('./timeouts.cjs');
 const { HOOKS_TO_COPY, HOOKS_SUBDIRS_TO_COPY } = require('../../scripts/build-hooks.js');
@@ -46,12 +51,15 @@ const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
  * and `HOOKS_SUBDIRS_TO_COPY`, bare subdirectory names such as `lib`). A dist
  * with every top-level file present but no `lib/` (e.g. missing
  * `gsd-graphify-rebuild.sh`) is exactly the same blindness the old
- * `.js`-count heuristic had, one level down — so subdir entries are checked
- * against the same top-level readdir Set (they're bare directory names, no
- * slashes, so they slot straight into the existing membership check with no
- * extra `readdirSync` or `stat`). Extra/unexpected entries never count as
- * stale — this is a "is everything expected present" check, not an exact-set
- * check.
+ * `.js`-count heuristic had, one level down — so each subdir entry is first
+ * checked against the same top-level readdir Set, THEN additionally required
+ * to be a readable, non-empty directory (one extra `readdirSync` per subdir
+ * entry — there is exactly one, `lib` — never a per-expected-file
+ * `existsSync`/`statSync`). Presence alone is not enough: a stray regular
+ * file named `lib`, or an empty `lib/`, would otherwise read as fresh, which
+ * is the same blind spot one level down again. Extra/unexpected entries never
+ * count as stale — this is a "is everything expected present and populated"
+ * check, not an exact-set check.
  *
  * @param {string} dir
  * @returns {boolean}
@@ -72,12 +80,34 @@ function isHooksDistStale(dir) {
     return true;
   }
   if (HOOKS_TO_COPY.some((name) => !present.has(name))) return true;
-  return HOOKS_SUBDIRS_TO_COPY.some((name) => !present.has(name));
+  for (const name of HOOKS_SUBDIRS_TO_COPY) {
+    if (!present.has(name)) return true;
+    // Presence in the top-level Set only proves an entry named `lib`
+    // exists — not that it is a directory, nor that it is populated. A
+    // stray regular file named `lib`, or an empty `lib/` missing e.g.
+    // `gsd-graphify-rebuild.sh`, would otherwise read as fresh: exactly
+    // the blind spot the subdir check exists to close. One `readdirSync`
+    // per subdir entry (there is exactly one, `lib`) — no per-expected-file
+    // `existsSync`/`statSync`, keeping the added cost to one syscall total.
+    try {
+      if (fs.readdirSync(path.join(dir, name)).length === 0) return true;
+    } catch (e) {
+      // ENOTDIR (regular file), EACCES, or a race where it vanished —
+      // unreadable/unusable is indistinguishable from absent here, and
+      // treating it as stale is safe (idempotent rebuild) per the same
+      // posture as the top-level readdirSync catch above.
+      return true;
+    }
+  }
+  return false;
 }
 
 function ensureHooksDist() {
   if (isHooksDistStale(HOOKS_DIST_DIR)) {
-    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
+    throwIfFailed(
+      processSeam.runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+      `node ${BUILD_HOOKS_SCRIPT}`,
+    );
   }
 }
 
