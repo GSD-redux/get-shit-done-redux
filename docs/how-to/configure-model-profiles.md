@@ -228,6 +228,51 @@ Codex UI drives both rather than one following GSD and the other following your 
 > The installer prints a one-time notice when it drops a pin. If you were on a ChatGPT account, this
 > is the change that stops the 400s — nothing to do.
 
+### Allocating for execution-heavy workflows on Codex
+
+Execution and verification account for most of the model calls in a long GSD run — planning happens
+once per phase, execution happens per plan, and verification runs over everything produced. On
+2026-07-30 OpenAI cut GPT-5.6 Luna API pricing by 80% and Terra by 20%, and reduced how many credits
+both consume against Codex paid-plan quotas while leaving subscription prices and quota budgets
+unchanged. Sol was unchanged. That makes the cheaper models materially cheaper for exactly the
+high-volume half of a workflow.
+
+GSD does not add a routing surface for this — the levers below already express it, and
+[#2935](https://github.com/open-gsd/gsd-core/issues/2935) was closed as already-implemented on
+precisely that basis. Keep Sol where the reasoning is worth the spend, and put the volume on Terra
+or Luna:
+
+```json
+{
+  "runtime": "codex",
+  "model_overrides": {
+    "gsd-planner":   "gpt-5.6-sol",
+    "gsd-debugger":  "gpt-5.6-sol",
+    "gsd-executor":  "gpt-5.6-terra",
+    "gsd-verifier":  "gpt-5.6-luna"
+  }
+}
+```
+
+Prefer `models` when you want the split by *phase type* rather than by agent — it maps the six phase
+types at once and every agent carries a `phaseType`, so it survives the roster changing under you:
+
+```json
+{
+  "models": { "planning": "opus", "execution": "sonnet", "verification": "haiku" }
+}
+```
+
+Two things worth knowing before you tune this:
+
+- **Effort is a separate lever from model, and it is now per-model.** Dropping to Luna does not force
+  you to drop effort — Luna advertises everything up to `max`. See
+  [Configuration reference — effort](../CONFIGURATION.md#model-profiles) for the per-model table and
+  which levels clamp.
+- **These are cost/limit tradeoffs, not quality claims.** The 2026-07-30 change was a pricing and
+  credit-accounting change; it did not alter model quality. Sol remains the strongest model for
+  planning and hard debugging, which is why it stays there above.
+
 **If you want per-agent model IDs on any non-Claude runtime:**
 
 ```json

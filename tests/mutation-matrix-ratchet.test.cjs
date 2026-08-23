@@ -202,6 +202,7 @@ const RATCHET_BASELINE = {
   'planning-inspect':        56,  // CI run 32392791843: 57.03% (unit shard); ratchet candidate vs TARGET 80
   'plan-document':           75,  // CI run 32392791843: 76.58% (unit shard)
   'planning-command-router': 94,  // CI run 32392791843: 95.65% (unit shard); already exceeds TARGET 80
+  'model-catalog':           58,  // #3007: measured 59.62% in CI (248 killed / 168 survived); floor(59.62)-1
 };
 
 describe('mutation-matrix ratchet: floor equality enforcement', () => {
