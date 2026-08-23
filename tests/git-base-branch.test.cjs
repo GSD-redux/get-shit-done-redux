@@ -64,6 +64,21 @@ function addPlanning(dir) {
   fs.mkdirSync(path.join(dir, '.planning', 'phases'), { recursive: true });
 }
 
+/** Snapshot every file below .planning, including bytes and relative paths. */
+function snapshotPlanningTree(dir) {
+  const root = path.join(dir, '.planning');
+  const snapshot = new Map();
+  function visit(current) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else snapshot.set(path.relative(root, absolute), fs.readFileSync(absolute));
+    }
+  }
+  visit(root);
+  return snapshot;
+}
+
 /**
  * Write a gsd config.json with git.base_branch set.
  */
@@ -1158,6 +1173,7 @@ describe('#3648 Blocker 1: --is-protected is a QUERY and must not rewrite config
     const cfgPath = writeLegacyConfig(dir);
     fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), '\n.planning/\n');
     const before = fs.readFileSync(cfgPath);
+    const planningBefore = snapshotPlanningTree(dir);
 
     const match = runGsdTools(['query', 'git.base-branch', '--is-protected', 'develop'], dir);
     const control = runGsdTools(['query', 'git.base-branch', '--is-protected', 'topic/3648'], dir);
@@ -1173,6 +1189,10 @@ describe('#3648 Blocker 1: --is-protected is a QUERY and must not rewrite config
     assert.deepStrictEqual(
       fs.readFileSync(cfgPath), before,
       'a read-only predicate must leave .planning/config.json byte-identical',
+    );
+    assert.deepStrictEqual(
+      snapshotPlanningTree(dir), planningBefore,
+      'a read-only predicate must leave the entire .planning tree byte-identical',
     );
     const status = gitOrThrow(['status', '--porcelain'], { cwd: dir });
     assert.strictEqual(status, '', 'read-only predicate must not leave a sibling write');
