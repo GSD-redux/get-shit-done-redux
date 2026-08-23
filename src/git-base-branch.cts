@@ -79,20 +79,31 @@ function renderRejected(value: unknown): string {
   }
 }
 
-/**
- * Flat-then-nested lookup, mirroring `loadConfigResolved`'s own `get()`: a
- * top-level `base_branch` outranks `git.base_branch`, because
- * `normalizeLegacyKeys` normally hoists the flat key away and a flat key that
- * SURVIVED normalization is one the migration refused (a non-object `git`
- * section, #3760) — the user's only remaining expression of intent.
- */
-function readGitKey(config: Record<string, unknown>, field: string): unknown {
-  if (config[field] !== undefined) return config[field];
+/** Nested-only read of `git.<field>`, mirroring `loadConfigResolved`'s `getNested`. */
+function readGitNested(config: Record<string, unknown>, field: string): unknown {
   const git = config['git'];
   if (git !== null && typeof git === 'object' && !Array.isArray(git)) {
     return (git as Record<string, unknown>)[field];
   }
   return undefined;
+}
+
+/**
+ * Flat-then-nested read, mirroring `loadConfigResolved`'s own `get()`.
+ *
+ * Used for `base_branch` ONLY, and only because it HAS a legacy flat spelling:
+ * `normalizeLegacyKeys` normally hoists it away, so a flat key that SURVIVED
+ * normalization is one the migration refused (a non-object `git` section,
+ * #3760) and is the user's last remaining expression of intent.
+ *
+ * `protected_branches` deliberately does NOT use this. It is new in #3552 with
+ * no legacy form, so honouring a top-level spelling would invent an
+ * undocumented alias that silently outranks the canonical nested key
+ * (round-4 external review).
+ */
+function readGitKey(config: Record<string, unknown>, field: string): unknown {
+  if (config[field] !== undefined) return config[field];
+  return readGitNested(config, field);
 }
 
 /**
@@ -129,7 +140,7 @@ function readEffectiveGitConfig(
           const { parsed: normalized } = normalizeLegacyKeys(parsed as Record<string, unknown>);
           config = {
             base_branch: readGitKey(normalized, 'base_branch'),
-            protected_branches: readGitKey(normalized, 'protected_branches'),
+            protected_branches: readGitNested(normalized, 'protected_branches'),
           };
         }
       } catch { /* malformed direct edit contributes no policy values */ }

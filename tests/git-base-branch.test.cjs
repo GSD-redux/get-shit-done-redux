@@ -519,6 +519,11 @@ function writeProtectedBranchWarningScript(prefix, bash) {
     // explanations to stderr. Emitting one here is what makes a swallowed
     // `2>/dev/null` at the call site visible to a test.
     '  if [ -n "${DIAGNOSTIC_TEXT:-}" ]; then printf "%s\\n" "$DIAGNOSTIC_TEXT" >&2; fi',
+    // QUERY_EXIT lets a test make the query FAIL (gsd-tools missing, a crash, a
+    // non-zero exit). Defaults to 0, so every pre-existing caller of this
+    // harness is unaffected. Nothing is printed on stdout in that case —
+    // matching a real failed command substitution.
+    '  if [ "${QUERY_EXIT:-0}" != 0 ]; then return "${QUERY_EXIT}"; fi',
     '  printf "%s\\n" "$PROTECTED_RESULT"',
     '}',
     bash,
@@ -838,6 +843,65 @@ describe('#3552: configured protected branches', () => {
     }
   });
 
+  test('#3648 round-4: a FAILED query degrades visibly, and does not abort under set -e', (t) => {
+    // Found by the round-4 external review. `IS_PROTECTED=$(gsd_run ...)` had
+    // two problems when the query itself failed (gsd-tools absent, a crash, any
+    // non-zero exit): the substitution yielded an empty string, so `[ "$X" = true ]`
+    // was simply false and the workflow continued with NO warning and no trace —
+    // a silent fail-open in the guard whose whole purpose is to warn; and the
+    // bare assignment is the last command in its own right, so a non-zero exit
+    // aborted the step under `set -e` before any branch ran.
+    //
+    // The contract is neither fail-open nor fail-closed: it degrades VISIBLY.
+    // Claiming "protected" on no evidence would warn on every branch whenever
+    // gsd-tools is unavailable; claiming "not protected" is the silent hole.
+    const cases = [
+      ['execute-phase.md', 'handle_branching', 'gsd-3648-r4-execute-'],
+      ['ship.md', 'preflight_checks', 'gsd-3648-r4-ship-'],
+    ];
+
+    for (const [workflow, step, prefix] of cases) {
+      const bash = extractProtectedBranchWarningBash(workflow, step);
+      const { scriptDir, scriptPath } = writeProtectedBranchWarningScript(prefix, bash);
+      t.after(() => cleanup(scriptDir));
+
+      const baseEnv = {
+        ...process.env,
+        CURRENT_BRANCH_VALUE: 'topic/3648',
+        PROTECTED_RESULT: 'false',
+      };
+      const failed = runHook(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...baseEnv, QUERY_EXIT: '3' },
+      });
+      // Control: the SAME script with a working query must stay silent on a
+      // non-protected branch. Without it, an assertion that the failure warns
+      // could pass against a script that warns unconditionally.
+      const working = runHook(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...baseEnv, QUERY_EXIT: '0' },
+      });
+
+      // The harness runs under `set -eu`, so this also pins the set -e half.
+      assert.strictEqual(failed.exitCode, 0,
+        workflow + ' must survive a failed query under set -e: ' + failed.stderr);
+      assert.match(failed.stdout, /continued/,
+        workflow + ' must reach the end of the step');
+      assert.match(failed.stderr, /Could not determine whether/,
+        workflow + ' must say the check did not run, rather than pass silently');
+      assert.doesNotMatch(failed.stderr, /is a protected branch/,
+        'and must NOT assert protectedness it never established');
+
+      assert.strictEqual(working.exitCode, 0, working.stderr);
+      assert.doesNotMatch(working.stderr, /Could not determine whether/,
+        'a working query must not emit the degradation notice');
+      assert.doesNotMatch(working.stderr, /is a protected branch/,
+        'and must not warn about a branch that is not protected');
+      assert.notStrictEqual(failed.stderr, working.stderr,
+        'the two paths must be distinguishable');
+    }
+  });
+
   test('#3648 Minor 2: ship binds the predicate result instead of discarding it', (t) => {
     // ship.md's prose branches on protectedness twice ("warn - should be on a
     // feature branch", "if branching_strategy is none, offer to create a
@@ -921,10 +985,28 @@ describe('#3648 property: config-set validation and resolver filtering must agre
     fc.constant(undefined),
   );
 
+  /**
+   * `fc.array` never produces a HOLE, and a hole is exactly where the two
+   * surfaces disagreed: `.every()` skips holes, `for...of` yields `undefined`
+   * for them. The property passed only because the generator could not reach
+   * the case (round-4 external review). Punching holes into a generated array
+   * is what makes this axis falsifiable.
+   */
+  const withHoles = () => fc.tuple(
+    fc.array(entry(), { maxLength: 5 }),
+    fc.array(fc.nat({ max: 5 }), { maxLength: 3 }),
+  ).map(([values, holeIndices]) => {
+    const arr = values.slice();
+    for (const i of holeIndices) {
+      if (i < arr.length) delete arr[i];
+    }
+    return arr;
+  });
+
   test('accepted by config-set ⟺ the resolver rejects nothing from a non-empty list', () => {
     fc.assert(
       fc.property(
-        fc.oneof(fc.array(entry(), { maxLength: 6 }), entry()),
+        fc.oneof(fc.array(entry(), { maxLength: 6 }), withHoles(), entry()),
         (configured) => {
           const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/x', {
             loadConfig: () => ({ base_branch: 'main', protected_branches: configured }),
@@ -940,6 +1022,39 @@ describe('#3648 property: config-set validation and resolver filtering must agre
       ),
       { numRuns: 400 },
     );
+  });
+
+  test('a top-level `protected_branches` is NOT an alias for the canonical nested key', (t) => {
+    // Round-4 external review. `get(key, {section, field})` is flat-then-nested,
+    // which is back-compat for keys `normalizeLegacyKeys` migrates. Routing a
+    // BRAND-NEW key through it invents an undocumented top-level spelling that
+    // silently outranks `git.protected_branches`. `protected_branches` has no
+    // legacy form, so it resolves nested-only — in production and in the seam.
+    const dir = createGitRepo({ prefix: 'gsd-3648-flat-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ protected_branches: ['bogus'], git: { protected_branches: ['develop'] } }),
+    );
+
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    assert.deepStrictEqual(
+      configLoader.loadConfig(dir, { persist: false })['protected_branches'], ['develop'],
+      'the canonical nested key must win outright');
+
+    // Control: `base_branch` DOES keep flat-then-nested, because it has a legacy
+    // flat spelling #3760's refusal path can leave behind. Without this, the
+    // assertion above could pass against a loader that lost flat support wholesale.
+    const seam = gitBaseBranch.resolveProtectedBranchStatus(dir, 'develop', {
+      readFile: () => JSON.stringify({
+        git: 'not-an-object', base_branch: 'release', protected_branches: ['bogus'],
+      }),
+    });
+    assert.strictEqual(seam.baseBranch, 'release',
+      'a refused migration must still let the surviving flat base_branch through');
+    assert.deepStrictEqual(seam.protectedBranches, ['release'],
+      'while a top-level protected_branches contributes nothing');
   });
 
   test('every surviving name is trimmed, non-empty, and de-duplicated against the base', () => {
@@ -1057,6 +1172,38 @@ describe('#3648 Blocker 1: --is-protected is a QUERY and must not rewrite config
       'the same directory, without the option, must write — proving the two differ');
     assert.deepStrictEqual(quiet, loud,
       'resolution must be identical; only the write is suppressed');
+  });
+
+  test('persist survives the workstream fallback recursion', (t) => {
+    // `loadConfigResolved` re-enters ITSELF with `{ workstream: null }` when a
+    // workstream was requested but has no config.json of its own. That literal
+    // dropped every other option, so the recursive pass ran with the DEFAULT
+    // persistence and rewrote the root config — the predicate's `persist:false`
+    // was silently discarded for exactly the projects that use workstreams.
+    // Found by the round-4 external review.
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-ws-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    // The workstream directory exists but carries no config.json — the shape
+    // that forces the fallback. Without it the recursion never runs and this
+    // test degenerates into the non-workstream case above.
+    fs.mkdirSync(path.join(dir, '.planning', 'workstreams', 'alpha'), { recursive: true });
+    const cfgPath = writeLegacyConfig(dir);
+    const before = fs.readFileSync(cfgPath);
+
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    const quiet = configLoader.loadConfig(dir, { persist: false, workstream: 'alpha' });
+
+    assert.strictEqual(quiet['base_branch'], 'develop',
+      'positive control: the fallback really did resolve the root config');
+    assert.deepStrictEqual(fs.readFileSync(cfgPath), before,
+      'the recursive fallback pass must inherit persist:false');
+
+    const loud = configLoader.loadConfig(dir, { workstream: 'alpha' });
+    assert.notDeepStrictEqual(fs.readFileSync(cfgPath), before,
+      'negative control: the same fallback without the option must still write');
+    assert.deepStrictEqual(quiet, loud,
+      'and suppressing the write must not change what the fallback resolves');
   });
 });
 

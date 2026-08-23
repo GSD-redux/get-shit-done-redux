@@ -850,6 +850,25 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       return undefined;
     };
 
+    /**
+     * Nested-ONLY read — no top-level fallback (#3648).
+     *
+     * `get()`'s flat-then-nested order exists for keys that have a legacy flat
+     * spelling `normalizeLegacyKeys` migrates (`branching_strategy`,
+     * `base_branch`, …); for those, honouring the flat key is back-compat. A key
+     * introduced with no legacy form has nothing to be compatible WITH, so
+     * routing it through `get()` would invent an undocumented top-level alias
+     * that silently outranks the canonical nested key. Use this instead for new
+     * `<section>.<field>` keys (round-4 external review).
+     */
+    const getNested = (section: string, field: string): unknown => {
+      const sec = parsed[section];
+      if (sec !== null && typeof sec === 'object' && !Array.isArray(sec)) {
+        return (sec as Record<string, unknown>)[field];
+      }
+      return undefined;
+    };
+
     const parallelization = (() => {
       const val = get('parallelization');
       if (typeof val === 'boolean') return val;
@@ -868,7 +887,7 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       search_gitignored: get('search_gitignored', { section: 'planning', field: 'search_gitignored' }) ?? defaults.search_gitignored,
       branching_strategy: get('branching_strategy', { section: 'git', field: 'branching_strategy' }) ?? defaults.branching_strategy,
       base_branch: get('base_branch', { section: 'git', field: 'base_branch' }),
-      protected_branches: get('protected_branches', { section: 'git', field: 'protected_branches' }),
+      protected_branches: getNested('git', 'protected_branches'),
       phase_branch_template: get('phase_branch_template', { section: 'git', field: 'phase_branch_template' }) ?? defaults.phase_branch_template,
       milestone_branch_template: get('milestone_branch_template', { section: 'git', field: 'milestone_branch_template' }) ?? defaults.milestone_branch_template,
       quick_branch_template: get('quick_branch_template', { section: 'git', field: 'quick_branch_template' }) ?? defaults.quick_branch_template,
@@ -988,8 +1007,15 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
     // Fix 2: Early intercept — workstream requested but ws config.json absent (or dir absent)
     // AND root config was loaded. Covers BOTH "dir exists, no config.json" AND "dir absent".
     // This delivers the #1366 acceptance criterion: nonexistent GSD_WORKSTREAM yields root, degraded.
+    //
+    // Both fallback recursions below forward `options` and override ONLY `workstream`.
+    // A bare `{ workstream: null }` silently dropped every other option, so a caller's
+    // `persist: false` was discarded on exactly this path and the root config was
+    // rewritten by a read (#3648, found by external review). The explicit
+    // `workstream: null` still wins the `hasOwnProperty` check at the top of this
+    // function, so spreading cannot let `workstreamContext` reintroduce a workstream.
     if (wsRequested && rootParsed) {
-      const fb = loadConfigResolved(cwd, { workstream: null });
+      const fb = loadConfigResolved(cwd, { ...options, workstream: null });
       return fallback({ config: fb.config, source: 'root', degraded: true });
     }
 
@@ -998,7 +1024,7 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       if (rootParsed) {
         // Branch B: workstream requested but ws config.json absent; root config present.
         // (Only reached when wsRequested is false — e.g. ws='' with .planning/workstreams//config.json)
-        const fb = loadConfigResolved(cwd, { workstream: null });
+        const fb = loadConfigResolved(cwd, { ...options, workstream: null });
         return fallback({ config: fb.config, source: 'root', degraded: true });
       }
       // Branch C: .planning/ exists but no config.json and no root config — federated/builtin defaults
