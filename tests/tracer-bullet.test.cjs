@@ -475,13 +475,23 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
     // every marker after the deletion then lands alternately inside and outside a
     // phantom fence. Ask about a fence delimiter's position with
     // `isOperativePosition` instead, which INSERTS and therefore perturbs nothing.
-    for (const delimiter of ['```', '```xml', '```bash', '~~~', '````']) {
-      assert.ok(!candidateRe.test(delimiter),
-        `operativeLineIndexes: the candidate regex ${candidateRe} matches the fence delimiter `
-        + `${JSON.stringify(delimiter)}. Replacing a delimiter inverts fence parity for the rest of the `
-        + 'document and misclassifies LIVE fences downstream. Use isOperativePosition(md, idx).');
-    }
+    //
+    // Checked against the lines this regex ACTUALLY matches in THIS document, not
+    // against a sample of delimiter spellings. A fixed probe list was the first
+    // attempt and it is not the class: `~~~xml`, ```` ```json ````, longer tilde
+    // runs and info strings all walk straight past any list short enough to
+    // write down. Matching on the real data cannot go stale, and cannot pass a
+    // delimiter it has not thought of. (Codex review, round 9.)
     const lines = md.split(/\r?\n/);
+    for (const [i, line] of lines.entries()) {
+      if (candidateRe.test(line) && /^\s*(?:`{3,}|~{3,})/.test(line)) {
+        throw new Error(
+          `operativeLineIndexes: the candidate regex ${candidateRe} matches the fence delimiter `
+          + `${JSON.stringify(line)} at 0-based line ${i}. Replacing a delimiter inverts fence parity `
+          + 'for the rest of the document and misclassifies LIVE fences downstream. '
+          + 'Use isOperativePosition(md, idx).');
+      }
+    }
     const injected = new Set();
     const instrumented = lines
       .map((line, i) => {
@@ -555,8 +565,16 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
     // Position-liveness is not content-liveness: a same-line `<!-- ... -->`
     // wrapper comments the candidate's CONTENT while leaving the position outside
     // every span, so the probe alone would answer "live" for `<!-- ```xml -->`.
-    // Reject a line that is entirely comment here rather than relying on each
-    // caller's own shape test to happen to exclude it.
+    // Reject that here rather than relying on each caller's own shape test to
+    // happen to exclude it.
+    //
+    // The rule is the SCANNER's, not a tighter one of our own: it skips an entire
+    // line whose TRIMMED text starts with `<!--` — balanced or not — before it
+    // considers fences at all. Stripping the span and asking whether content
+    // survives would answer "live" for `<!-- closed --> real content`, which the
+    // scanner skips outright. Agreeing with it beats out-reasoning it.
+    // (Codex review, round 9.)
+    if (lines[idx].trimStart().startsWith('<!--')) return false;
     if (lines[idx].replace(/<!--[\s\S]*?-->/g, '').replace(/<!--[\s\S]*$/, '').trim() === '') return false;
     const probed = lines.slice(0, idx)
       .concat(indent + '- `GSDTEST.POSITION=' + idx + '`', lines.slice(idx))
@@ -641,6 +659,30 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
     assert.throws(() => operativeLineIndexes(md, FENCE), /matches the fence delimiter/,
       'a candidate regex matching a fence delimiter must be refused outright, not answered wrongly — '
       + 'this helper REPLACES the candidate, so removing one delimiter inverts parity downstream');
+
+    // The spellings that defeated the first attempt at this guard, which probed a
+    // fixed list of delimiter strings. Each is a real fence opener and none of
+    // them appears in any list short enough to write down — which is why the
+    // guard now matches the document's own lines instead. (Codex review, round 9.)
+    for (const [label, doc, re] of [
+      ['~~~xml', 'p\n~~~xml\n<a/>\n~~~\n', /^\s*~~~xml$/],
+      ['```json', 'p\n```json\n{}\n```\n', /^\s*```json$/],
+      ['~~~~ (4 tildes)', 'p\n~~~~\nx\n~~~~\n', /^\s*~~~~$/],
+      ['``` with info string', 'p\n```xml title=a\n<a/>\n```\n', /^\s*```xml\s.*$/],
+    ]) {
+      assert.throws(() => operativeLineIndexes(doc, re), /matches the fence delimiter/,
+        `${label}: the guard must cover the delimiter CLASS, not a sample of its spellings — a regex `
+        + 'it waves through reintroduces the exact parity inversion this row exists for');
+    }
+
+    // Codex review, round 9. `isOperativePosition` must agree with the scanner,
+    // which skips an ENTIRE line whose trimmed text starts with `<!--` before it
+    // looks at fences. Stripping the span and asking whether content survives
+    // answers "live" for a balanced comment followed by real content; the scanner
+    // does not parse that line at all.
+    assert.strictEqual(isOperativePosition('- `X.A=1`\n<!-- closed --> - `X.B=2`\n', 1), false,
+      'a line that STARTS with a comment opener is skipped wholesale by the scanner, balanced or not — '
+      + 'this probe must not claim it is live');
 
     assert.deepStrictEqual(
       [1, 5, 9, 11].map((i) => isOperativePosition(md, i)),
@@ -749,7 +791,14 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
   });
 
   test('every site reading the mode passes an explicit --default end-of-phase', () => {
-    const READ = /config-get workflow\.human_verify_mode --default end-of-phase/;
+    // Requires the ASSIGNMENT, not merely the command. Matching the config-get
+    // substring alone let `IGNORED_MODE=$(gsd_run query config-get ...)` keep this
+    // row green while nothing defines HUMAN_VERIFY_MODE — the gate then falls
+    // through to STOP and #3299 is back with the regression suite still passing.
+    // A test that survives the regression it exists to catch is not a test.
+    // The lookahead after `end-of-phase` closes the other half: the bare prefix
+    // also accepted `--default end-of-phase-wrong`. (Codex review, round 9.)
+    const READ = /^\s*HUMAN_VERIFY_MODE=\$\(gsd_run query config-get workflow\.human_verify_mode --default end-of-phase(?=\s|$)/;
     // NOT operativeLineIndexes here, deliberately. All three reads live inside a
     // ```bash fence, which is their correct executable form in these files, and
     // that selector excludes fenced lines by design — using it would assert the
