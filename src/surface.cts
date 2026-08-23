@@ -12,7 +12,7 @@
  *   readSurface(runtimeConfigDir)
  *   writeSurface(runtimeConfigDir, surfaceState)
  *   resolveSurface(runtimeConfigDir, manifest, clusterMap?, registry?)
- *   applySurface(runtimeConfigDir, layout, manifest, clusterMap?, registry?)
+ *   applySurface(runtimeConfigDir, layout, manifest, clusterMap?, registry?, opts?, deps?)
  *   listSurface(runtimeConfigDir, manifest, clusterMap?, registry?)
  *   pruneSkillDirs(skillsDir, retainedNames, prefix, manifest)
  *
@@ -34,6 +34,17 @@ import path from 'node:path';
 import { platformWriteSync, posixNormalize } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import installProfiles = require('./install-profiles.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import testHomeGuard = require('./test-home-guard.cjs');
+
+/**
+ * #3712 test seam, mirroring the `Deps` shape in src/test-home-guard.cts. Declared
+ * here rather than imported because that module uses `export =` on a value.
+ */
+type TestHomeGuardDeps = {
+  os?: { homedir(): string; userInfo(): { homedir: string } };
+  env?: Record<string, string | undefined>;
+};
 const {
   readActiveProfile,
   resolveProfile,
@@ -360,10 +371,16 @@ function resolveSurface(runtimeConfigDir: string, manifest: Map<string, string[]
  * Re-stage the active surface using the resolved layout.
  * Iterates layout.kinds and syncs each artifact kind to its destination.
  */
-function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<string, string[]> | object, clusterMap?: ClusterMap | Record<string, string[]>, registry?: { capabilityClusters?: Record<string, string[]>; profileMembership?: Record<string, { tier: string; profiles: string[] }> }, opts?: ApplySurfaceOptions): { name: string; skills: Set<string>; agents: Set<string> } {
+function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<string, string[]> | object, clusterMap?: ClusterMap | Record<string, string[]>, registry?: { capabilityClusters?: Record<string, string[]>; profileMembership?: Record<string, { tier: string; profiles: string[] }> }, opts?: ApplySurfaceOptions, deps: TestHomeGuardDeps = {}): { name: string; skills: Set<string>; agents: Set<string> } {
   if (path.resolve(runtimeConfigDir) !== path.resolve(layout.configDir)) {
     throw new TypeError('applySurface runtimeConfigDir must match layout.configDir');
   }
+  // #3712: the dest selection below prefers `kind.home` over layout.configDir and
+  // then hands it to the destructive _syncGsdDir, so surface apply is a third
+  // escape route into the developer's real home alongside install/uninstall.
+  testHomeGuard.assertTestHomeSandboxed('applySurface', layout.runtime, layout.kinds, {
+    os: deps.os, env: deps.env,
+  });
   const skillManifest = normalizeSkillManifest(layout.configDir, manifest);
   const resolved = resolveSurface(layout.configDir, skillManifest, clusterMap, registry);
   // Profile toggles must converge retired surfaces too. Once a kind disappears
