@@ -35,7 +35,7 @@ const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
 
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
-const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { GIT_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1174,7 +1174,13 @@ function runHandleBranchingStep(bash, cwd, branchName) {
   const script = `#!/usr/bin/env bash\nset -uo pipefail\nBRANCH_NAME="${branchName}"\n${bash}\n`;
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
   try {
-    const r = runHook(scriptPath, [], { interpreter: 'bash', cwd, env: GIT_ENV, timeoutMs: GIT_TIMEOUT_MS });
+    // Bash FAN-OUT (a sequence of git commands under one `bash` interpreter),
+    // not a single git plumbing call — the wrong class for `GIT_TIMEOUT_MS`.
+    // Same class as the observed CI failures in tests/quick-branching.test.cjs
+    // (PR #3787 run 32668773524) and tests/worktree-safety.test.cjs (`next`
+    // run 32608945654). See HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs
+    // for the class rationale.
+    const r = runHook(scriptPath, [], { interpreter: 'bash', cwd, env: GIT_ENV, timeoutMs: HOOK_FANOUT_TIMEOUT_MS });
     throwIfFailed(r, `runHandleBranchingStep: bash ${scriptPath}`);
     return r.stdout;
   } finally {

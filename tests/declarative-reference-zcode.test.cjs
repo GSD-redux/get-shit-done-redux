@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/reference/host-integration-capability-matrix.md is cited only in a comment; this file never reads it.
 // allow-test-rule: structural-regression-guard — AC2: assert no `runtime === 'zcode'` string-equality branch, no live `isZcode` read remains in bin/install.js, src/install-engine.cts, src/surface.cts, or src/runtime-artifact-conversion.cts — a source-text property, so source-grep is the faithful check (#2101)
 'use strict';
 

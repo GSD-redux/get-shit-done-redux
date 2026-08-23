@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/adr/0174-...md' and 'docs/' are synthetic fixture path/prefix values, never read as content.
 'use strict';
 
 const { describe, test } = require('node:test');
@@ -8,7 +9,7 @@ const fc = require('fast-check');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { stagedSourcePaths } = require('../scripts/lib/alias-drift-families.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -80,6 +81,13 @@ function runPreCommit(t, stagedLines) {
     `#!/usr/bin/env bash\nprintf 'call %s\\n' "$*" >> "$GSD_TEST_NPM_MARKER"\n`,
   );
 
+  // This IS the fan-out class HOOK_FANOUT_TIMEOUT_MS documents: the
+  // pre-commit hook runs under `bash` and shells out to `git diff`, `tr`,
+  // `grep`, and conditionally `npm` (which itself runs node). Same class as
+  // the observed CI failures in tests/quick-branching.test.cjs (PR #3787 run
+  // 32668773524) and tests/worktree-safety.test.cjs (`next` run
+  // 32608945654). See HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for
+  // the class rationale.
   const result = runHook(HOOK_PATH, [], {
     interpreter: 'bash',
     cwd: ROOT,
@@ -89,7 +97,7 @@ function runPreCommit(t, stagedLines) {
       NPM_OVERRIDE: mockNpm,
       GSD_TEST_NPM_MARKER: marker,
     },
-    timeoutMs: PROBE_TIMEOUT_MS,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
   });
 
   const npmCalls = fs.existsSync(marker)

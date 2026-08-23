@@ -417,9 +417,17 @@ jobs:
     # a 20-minute cap) on 05b170e44 and 18m14s (91%) on 81eeb8a53. The Windows
     # shards are slow for platform reasons — process spawn and filesystem cost,
     # not extra work — and this lane has already blown its cap twice before
-    # (#1051, #1212). 30 is ~1.5x the worst observed shard, restoring the
-    # headroom that #1212's sharding bought and this suite has since eaten.
-    timeout-minutes: 30
+    # (#1051, #1212).
+    # #3787: fresh measurement on windows-latest/24 shard 3/3 hit 26m18s (run
+    # 32614439702), so the 18m59s figure above is stale and the 30-minute cap
+    # only had ~1.14x headroom, in violation of this repo's own 1.5x rule
+    # (tests/ci-test-job-timeout-budget.test.cjs). 1.5x of 27m requires 41m
+    # minimum; 45 is used instead of the bare minimum because shard
+    # composition is unstable — adding one test file reshuffled 115 of 268
+    # unit files between shards — so the per-shard worst case moves run to
+    # run and a budget pinned to the exact minimum would be re-breached by
+    # the next file anyone adds.
+    timeout-minutes: 45
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
       # #2665: strict on Linux/macOS, report-only on Windows (see the `test` job note).

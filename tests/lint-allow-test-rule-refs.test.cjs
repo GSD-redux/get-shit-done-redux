@@ -1,5 +1,9 @@
 'use strict';
 
+// docs-guard-exempt: 'docs/readme.md' appears only inside literal fixture
+// `code` strings written to synthetic files and fed to the no-source-grep
+// lint under test — this file never itself reads a real docs/ file off disk.
+
 // Tests for scripts/lint-allow-test-rule-refs.cjs — the guard that (a)
 // ratchets exemption-marker comments on IDENTITY (uncited comments must
 // carry a tracking-issue ref or be grandfathered), (b) ratchets EFFECTIVE

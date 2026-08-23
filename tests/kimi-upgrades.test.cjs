@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/reference/host-integration-capability-matrix.md is cited only in a comment; never read.
 'use strict';
 
 /**

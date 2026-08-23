@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/readme.md' is a synthetic non-planning-path fixture, never read as content.
 'use strict';
 
 process.env.GSD_TEST_MODE = '1';

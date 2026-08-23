@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/ is explicitly named in this file's own comments as a directory it deliberately excludes from its RUNTIME_SURFACES scan.
 'use strict';
 
 // Repo-wide invariant scans.

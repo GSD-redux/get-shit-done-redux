@@ -1,4 +1,7 @@
 'use strict';
+// docs-guard-exempt: isDocsFile('docs/...') calls below spot-check a pure
+// path-classifier predicate with string literals — no real docs/ file is
+// ever read or asserted on for content.
 process.env.GSD_TEST_MODE = '1';
 
 const { test, describe } = require('node:test');

@@ -1505,8 +1505,7 @@ const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
 
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
-// The guard itself keeps its separately-justified 30000ms (see runGuard below).
-const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { GIT_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ---------------------------------------------------------------------------
 // Extract the cwd-drift guard bash block from execute-phase.md
@@ -1587,15 +1586,19 @@ function extractCwdGuardBash() {
  * Returns { status, stderr }.
  */
 function runGuard(guardBash, cwd) {
-  // 30000ms: previously UNBOUNDED (no `timeout` option was passed to
-  // spawnSync). This is the same execute-phase.md cwd-drift guard snippet
-  // exercised by tests/execute-phase-worktree-guard.test.cjs, which already
-  // bounds the identical guard at 30s (a handful of git plumbing calls
-  // against a small fixture repo) — matched here for consistency.
+  // Bash FAN-OUT: this is the same execute-phase.md cwd-drift guard snippet
+  // exercised by tests/execute-phase-worktree-guard.test.cjs — a sequence of
+  // git plumbing calls (rev-parse, log, status) under one `bash`
+  // interpreter, not a single git call. 30000ms was sized for the wrong
+  // class. Same class as the observed CI failures in
+  // tests/quick-branching.test.cjs (PR #3787 run 32668773524) and
+  // tests/worktree-safety.test.cjs (`next` run 32608945654). See
+  // HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the class
+  // rationale.
   const result = runHook('-c', [guardBash], {
     interpreter: 'bash',
     cwd,
-    timeoutMs: 30_000,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
   });
   return { status: result.exitCode, stderr: result.stderr || '' };
 }

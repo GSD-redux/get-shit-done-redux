@@ -1,3 +1,4 @@
+// docs-guard-exempt: codebuddy.ai/docs/... is an external URL and docs/adr/58-...md is a comment citation; neither is read.
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.

@@ -298,7 +298,7 @@ const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
 const { runNode, runHook } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { PROBE_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const HELPER_PATH = path.join(__dirname, '..', 'bin', 'lib', 'ui-safety-gate.cjs');
 const PLAN_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
@@ -578,11 +578,18 @@ describe('UI gate resolves the helper against RUNTIME_DIR, not the consuming rep
   ].join('\n');
 
   function runGateFrom(consumingDir, phaseSection) {
+    // Bash FAN-OUT: the snippet runs `git rev-parse`, a `for` loop probing
+    // multiple candidate paths, and `node` — the wrong class for
+    // `PROBE_TIMEOUT_MS` (a single short CLI probe). Same class as the
+    // observed CI failures in tests/quick-branching.test.cjs (PR #3787 run
+    // 32668773524) and tests/worktree-safety.test.cjs (`next` run
+    // 32608945654). See HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for
+    // the class rationale.
     const result = runHook('-c', [GATE_SNIPPET], {
       interpreter: 'bash',
       cwd: consumingDir,
       env: { ...process.env, RUNTIME_DIR: REPO_ROOT, PHASE_SECTION: phaseSection },
-      timeoutMs: PROBE_TIMEOUT_MS,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     });
     return toLegacyResult(result);
   }
@@ -622,12 +629,15 @@ describe('UI gate resolves the helper against RUNTIME_DIR, not the consuming rep
         path.join(installedLibDir, 'ui-safety-gate.cjs')
       );
 
+      // Same bash FAN-OUT class as runGateFrom above (git rev-parse + a
+      // candidate-path probe loop + node) — see HOOK_FANOUT_TIMEOUT_MS in
+      // ./helpers/timeouts.cjs.
       const res = toLegacyResult(
         runHook('-c', [GATE_SNIPPET], {
           interpreter: 'bash',
           cwd: consumingProject,
           env: { ...process.env, RUNTIME_DIR: fakeRuntime, PHASE_SECTION: 'Build the analytics dashboard' },
-          timeoutMs: PROBE_TIMEOUT_MS,
+          timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
         })
       );
       assert.strictEqual(res.status, 0, `bash failed: ${res.stderr}`);

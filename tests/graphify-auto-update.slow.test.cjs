@@ -15,7 +15,7 @@ const os = require('node:os');
 const { createTempProject, cleanup, runGsdTools, delay } = require('./helpers.cjs');
 const { runGit, runHook: seamRunHook } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { PROBE_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   graphifyStatus,
@@ -251,10 +251,14 @@ describe('auto-update', () => {
     const PATH = pathPrepend
       ? `${pathPrepend}${path.delimiter}${process.env.PATH || ''}`
       : process.env.PATH || '';
-    // 30000ms: already bounded pre-migration (unchanged) — this is the `slow`
-    // suite and the hook itself dispatches a detached graphify rebuild that
-    // some tests wait on separately; the hook's own synchronous return (gate
-    // checks + status-file write) is fast, so 30s stays generous headroom.
+    // Bash FAN-OUT: `gsd-graphify-update.sh` is a real hook shelling out to
+    // `git` and `graphify` (mocked here) under one `bash` interpreter — the
+    // wrong class for a plumbing-sized bound, even though the hook's own
+    // synchronous return (gate checks + status-file write) is fast. Same
+    // class as the observed CI failures in tests/quick-branching.test.cjs
+    // (PR #3787 run 32668773524) and tests/worktree-safety.test.cjs (`next`
+    // run 32608945654). See HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs
+    // for the class rationale.
     // Original invoked the hook with stdio: 'ignore' — the seam always
     // captures stdout/stderr instead, but every call site of this wrapper
     // below reads only `.status`; the captured output is simply unread.
@@ -268,7 +272,7 @@ describe('auto-update', () => {
         CI: '',
         ...env,
       },
-      timeoutMs: 30000,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     });
     return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
   }

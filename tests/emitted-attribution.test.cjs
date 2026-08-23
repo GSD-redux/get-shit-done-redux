@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/README.md' and 'docs/tests/...' are synthetic changedPaths/fixture-path strings, never read as content.
 'use strict';
 
 /**

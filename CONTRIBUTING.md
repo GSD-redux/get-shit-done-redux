@@ -1195,6 +1195,7 @@ The following checks run on every PR in addition to the test suite:
 |-----|----------------|-------------|
 | `Lint — ESLint` | No source-grep tests (see above), via the `local/no-source-grep` rule | Replace with `runGsdTools()` behavioral tests, or add `// allow-test-rule: <reason>` |
 | `Lint — cross-platform portability` | Windows-portability defects in tests, via `local/no-path-literal-in-assert` (more rules land per [ADR-1703](docs/adr/1703-portability-enforcement-architecture.md)) — e.g. a path-returning call asserted against a hardcoded `/`-literal | Normalize the actual: `String(pathFn(...)).replace(/\\/g, '/')`, or structure platform-specific code behind a `process.platform !== 'win32'` guard. **No `eslint-disable`** — see [cross-platform-portability-rules.md](docs/contributing/cross-platform-portability-rules.md) |
+| `lint-docs-guard-registration.cjs` (via `npm run lint:ci`) | A test that reads shipped `docs/` content must be registered so it runs on the PR that changes those docs — otherwise it can only fail after merge | Register it in `scripts/docs-guard-registry.cjs`, mapping the test to the docs paths it reads, or mark it `// docs-guard-exempt: <reason>` and list it in `scripts/lint-docs-guard-registration.exempt-baseline.cjs` — see [docs-guard-registration.md](docs/contributing/docs-guard-registration.md) |
 
 Run locally before pushing: `npm run lint` (or `npx eslint .`)
 

@@ -75,11 +75,14 @@ const LANE_COSTS = [
   },
   {
     job: 'test-full',
-    measuredMinutes: 19,
-    // Worst observed shard is `full test (windows-latest, 22, shard 3/3)`:
-    // 18m59s on 05b170e44 and 18m14s on 81eeb8a53. The Windows shards are slow
-    // for platform reasons, not extra work.
-    evidence: 'run 30650559192 — 18m59s, windows-22 shard 3/3',
+    measuredMinutes: 27,
+    // Lane moved from windows-22 to windows-latest/24 and is now sharded three
+    // ways. Worst observed shard is `full test (windows-latest, 24, shard
+    // 3/3)`: 26m18s on run 32614439702 (shard 2/3 23m36s, shard 1/3 19m22s),
+    // and 23m17s for shard 2/3 on run 32603886007. The previous 18m59s /
+    // windows-22 figure recorded here predated this cost and is stale — the
+    // lane is measurably slower now, not merely relabeled.
+    evidence: 'run 32614439702 — 26m18s, windows-latest/24 shard 3/3',
   },
   {
     job: 'coverage-gate',
