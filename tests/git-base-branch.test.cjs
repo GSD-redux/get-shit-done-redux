@@ -443,7 +443,7 @@ describe('#3057 B4: resolveBaseBranchDiagnostics — verified vs unverified last
     });
     assert.strictEqual(stdoutText, 'true\n',
       'an unverified answer must fail closed (report protected), not silently false');
-    assert.match(stderrText, /could not verify the base branch/);
+    assert.match(stderrText, /could not verify repository branch metadata/);
 
     // Negative control: a verified resolution for the same non-matching
     // branch must still cleanly report false — the fail-closed path must
@@ -798,6 +798,47 @@ describe('#3552: configured protected branches', () => {
 
     assert.notDeepStrictEqual(detachedDiagnostics, missingDiagnostics,
       'the two paths must be distinguishable — that is the whole point of the arm');
+
+    const unknownFlagDiagnostics = [];
+    assert.throws(
+      () => gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protectd', 'develop'], {
+        loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+        writeDiagnostic: (chunk) => unknownFlagDiagnostics.push(chunk),
+      }),
+      /unknown flag/i,
+      'a misspelled predicate flag must be rejected',
+    );
+
+    assert.throws(
+      () => gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop', 'extra'], {
+        loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      }),
+      /unexpected positional|exactly one|surplus/i,
+      'surplus predicate arguments must be rejected',
+    );
+  });
+
+  test('#3648 Minor F-1: nested and flat predicate reads stay aligned with the loader', () => {
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    const cases = [
+      { git: { base_branch: 'nested', protected_branches: ['develop'] }, base_branch: 'flat', protected_branches: ['bogus'] },
+      { git: { base_branch: 'nested' }, base_branch: 'flat' },
+      { git: 'not-an-object', base_branch: 'flat', protected_branches: ['bogus'] },
+    ];
+    for (const fixture of cases) {
+      const seam = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', {
+        readFile: () => JSON.stringify(fixture),
+      });
+      assert.strictEqual(
+        gitBaseBranch._readGitKey(fixture, 'base_branch'),
+        configLoader._getConfigValue(fixture, 'base_branch', { section: 'git', field: 'base_branch' }),
+      );
+      assert.strictEqual(
+        gitBaseBranch._readGitNested(fixture, 'protected_branches'),
+        configLoader._getConfigNested(fixture, 'git', 'protected_branches'),
+      );
+      assert.ok(seam);
+    }
   });
 
   test('#3648 Blocker 4: the predicate diagnostic reaches the user at both call sites', (t) => {
@@ -1115,6 +1156,7 @@ describe('#3648 Blocker 1: --is-protected is a QUERY and must not rewrite config
     t.after(() => cleanup(dir));
     addPlanning(dir);
     const cfgPath = writeLegacyConfig(dir);
+    fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), '\n.planning/\n');
     const before = fs.readFileSync(cfgPath);
 
     const match = runGsdTools(['query', 'git.base-branch', '--is-protected', 'develop'], dir);
@@ -1132,6 +1174,8 @@ describe('#3648 Blocker 1: --is-protected is a QUERY and must not rewrite config
       fs.readFileSync(cfgPath), before,
       'a read-only predicate must leave .planning/config.json byte-identical',
     );
+    const status = gitOrThrow(['status', '--porcelain'], { cwd: dir });
+    assert.strictEqual(status, '', 'read-only predicate must not leave a sibling write');
   });
 
   test('negative control: an ordinary persisting load DOES rewrite the same fixture', (t) => {

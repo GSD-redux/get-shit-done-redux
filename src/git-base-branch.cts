@@ -46,7 +46,12 @@ type LoadConfigFn = typeof loadConfigSeam;
 export interface BaseBranchDeps {
   /** Override the git runner (default: execGit from shell-command-projection) */
   execGit?: ExecGitFn;
-  /** Low-level config-file read seam for {@link readEffectiveGitConfig}'s test path (no production default) */
+  /**
+   * Test-only low-level config-file seam for {@link readEffectiveGitConfig}.
+   * When supplied without `loadConfig`, reads only `<cwd>/.planning/config.json`,
+   * applies legacy-key normalization in memory, and performs no merge, defaults,
+   * warning, or write-back. Production callers must use `loadConfig` instead.
+   */
   readFile?: (p: string) => string | null;
   /** Override effective configuration loading (default: config-loader.loadConfig) */
   loadConfig?: LoadConfigFn;
@@ -80,7 +85,7 @@ function renderRejected(value: unknown): string {
 }
 
 /** Nested-only read of `git.<field>`, mirroring `loadConfigResolved`'s `getNested`. */
-function readGitNested(config: Record<string, unknown>, field: string): unknown {
+export function _readGitNested(config: Record<string, unknown>, field: string): unknown {
   const git = config['git'];
   if (git !== null && typeof git === 'object' && !Array.isArray(git)) {
     return (git as Record<string, unknown>)[field];
@@ -101,9 +106,9 @@ function readGitNested(config: Record<string, unknown>, field: string): unknown 
  * undocumented alias that silently outranks the canonical nested key
  * (round-4 external review).
  */
-function readGitKey(config: Record<string, unknown>, field: string): unknown {
+export function _readGitKey(config: Record<string, unknown>, field: string): unknown {
   if (config[field] !== undefined) return config[field];
-  return readGitNested(config, field);
+  return _readGitNested(config, field);
 }
 
 /**
@@ -139,8 +144,8 @@ function readEffectiveGitConfig(
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           const { parsed: normalized } = normalizeLegacyKeys(parsed as Record<string, unknown>);
           config = {
-            base_branch: readGitKey(normalized, 'base_branch'),
-            protected_branches: readGitNested(normalized, 'protected_branches'),
+            base_branch: _readGitKey(normalized, 'base_branch'),
+            protected_branches: _readGitNested(normalized, 'protected_branches'),
           };
         }
       } catch { /* malformed direct edit contributes no policy values */ }
@@ -545,6 +550,7 @@ export function cmdGitBaseBranch(
   deps?: BaseBranchDeps
 ): string {
   if (args[0] === '--is-protected') {
+    if (args.length > 2) throw new Error('Unknown surplus positional argument for --is-protected');
     const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
     // `git branch --show-current` prints nothing on a detached HEAD, so the
     // call sites legitimately pass an explicit empty string: no protected
@@ -580,14 +586,15 @@ export function cmdGitBaseBranch(
     const rendered = String(status.verified ? status.isProtected : true);
     if (!status.verified) {
       writeDiagnostic(
-        `⚠ git-base-branch: --is-protected could not verify the base branch against this ` +
-        `repository — defaulting to protected (fail-closed). See #3057.\n`
+        `⚠ git-base-branch: --is-protected could not verify repository branch metadata; ` +
+        `defaulting to protected (fail-closed). See #3057.\n`
       );
     }
     const write = deps?.write ?? ((s: string) => process.stdout.write(s));
     write(rendered + '\n');
     return rendered;
   }
+  if (args.length > 0) throw new Error(`Unknown flag for git.base-branch: ${args[0]}`);
 
   const { branch, verified } = resolveBaseBranchDiagnostics(cwd, deps);
   if (!verified) {

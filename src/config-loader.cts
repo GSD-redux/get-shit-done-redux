@@ -103,6 +103,28 @@ function _getNestedConfigDefault(section: string, field: string): unknown {
   return undefined;
 }
 
+/** Shared flat-then-nested config lookup; exported for parity tests. */
+function _getConfigValue(
+  parsed: Record<string, unknown>,
+  key: string,
+  nested?: { section: string; field: string },
+): unknown {
+  if (parsed[key] !== undefined) return parsed[key];
+  if (nested && parsed[nested.section] && typeof parsed[nested.section] === 'object' && parsed[nested.section] !== null) {
+    return (parsed[nested.section] as Record<string, unknown>)[nested.field];
+  }
+  return undefined;
+}
+
+/** Shared nested-only config lookup; exported for parity tests. */
+function _getConfigNested(parsed: Record<string, unknown>, section: string, field: string): unknown {
+  const sec = parsed[section];
+  if (sec !== null && typeof sec === 'object' && !Array.isArray(sec)) {
+    return (sec as Record<string, unknown>)[field];
+  }
+  return undefined;
+}
+
 const CONFIG_DEFAULTS = {
   model_profile: _getConfigDefault('model_profile'),
   commit_docs: _getConfigDefault('commit_docs'),
@@ -839,16 +861,8 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
 
     _warnUnknownProfileOverrides(parsed, '.planning/config.json');
 
-    const get = (key: string, nested?: { section: string; field: string }): unknown => {
-      if (parsed[key] !== undefined) return parsed[key];
-      if (nested && parsed[nested.section] && typeof parsed[nested.section] === 'object' && parsed[nested.section] !== null) {
-        const sec = parsed[nested.section] as Record<string, unknown>;
-        if (sec[nested.field] !== undefined) {
-          return sec[nested.field];
-        }
-      }
-      return undefined;
-    };
+    const get = (key: string, nested?: { section: string; field: string }): unknown =>
+      _getConfigValue(parsed, key, nested);
 
     /**
      * Nested-ONLY read — no top-level fallback (#3648).
@@ -861,13 +875,8 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
      * that silently outranks the canonical nested key. Use this instead for new
      * `<section>.<field>` keys (round-4 external review).
      */
-    const getNested = (section: string, field: string): unknown => {
-      const sec = parsed[section];
-      if (sec !== null && typeof sec === 'object' && !Array.isArray(sec)) {
-        return (sec as Record<string, unknown>)[field];
-      }
-      return undefined;
-    };
+    const getNested = (section: string, field: string): unknown =>
+      _getConfigNested(parsed, section, field);
 
     const parallelization = (() => {
       const val = get('parallelization');
@@ -1117,6 +1126,8 @@ export = {
   CONFIG_DEFAULTS,
   _getConfigDefault,
   _getNestedConfigDefault,
+  _getConfigValue,
+  _getConfigNested,
   _deepMergeConfig,
   _warnedUnknownConfigKeys,
   _warnedShadowedGlobalKeys,
