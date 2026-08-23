@@ -700,7 +700,19 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   }, cwd, { divergedFields });
 
   if (!resultData || resultData['error']) {
-    output({ error: 'Cannot parse Current Plan or Total Plans in Phase from STATE.md' }, raw, undefined);
+    // Say which of the two things went wrong. This used to report a parse
+    // failure for ANY transition error, which sends a reader hunting the plan
+    // fields when the fields were never the problem.
+    if (!resultData) {
+      output({ error: 'advance-plan produced no result from STATE.md' }, raw, undefined);
+      return;
+    }
+    output({
+      error:
+        'Cannot read the plan position from STATE.md. Expected one of: ' +
+        '`Current Plan: N` with `Total Plans in Phase: M`, `Plan: N of M`, ' +
+        'or `Current Plan: N of M`.',
+    }, raw, undefined);
     return;
   }
 
