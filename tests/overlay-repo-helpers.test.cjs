@@ -39,7 +39,7 @@ const fc = require('fast-check');
 const {
   placeVanishableLeaf,
 } = require('./helpers/overlay-repo.cjs');
-const { HOOKS_TO_COPY } = require('../scripts/build-hooks.js');
+const { HOOKS_TO_COPY, HOOKS_SUBDIRS_TO_COPY } = require('../scripts/build-hooks.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 // ── Group 1: placeVanishableLeaf ────────────────────────────────────────────
@@ -186,11 +186,16 @@ describe('isHooksDistStale: extension-agnostic staleness predicate', () => {
     cleanup(dir);
   }
 
-  function writeExpectedSet(dir, { includeJs = true, includeSh = true, extra = false } = {}) {
+  function writeExpectedSet(dir, { includeJs = true, includeSh = true, extra = false, includeSubdirs = true } = {}) {
     for (const name of HOOKS_TO_COPY) {
       if (name.endsWith('.js') && !includeJs) continue;
       if (name.endsWith('.sh') && !includeSh) continue;
       fs.writeFileSync(path.join(dir, name), '// fixture\n');
+    }
+    if (includeSubdirs) {
+      for (const name of HOOKS_SUBDIRS_TO_COPY) {
+        fs.mkdirSync(path.join(dir, name), { recursive: true });
+      }
     }
     if (extra) {
       fs.writeFileSync(path.join(dir, 'zz-unexpected.txt'), 'not a hook\n');
@@ -255,6 +260,53 @@ describe('isHooksDistStale: extension-agnostic staleness predicate', () => {
     try {
       writeExpectedSet(dir, { extra: true });
       assert.strictEqual(isHooksDistStale(dir), false);
+    } finally {
+      rmTmpDir(dir);
+    }
+  });
+
+  // Deliverable — fails today: HOOKS_SUBDIRS_TO_COPY entries (e.g. `lib`,
+  // which carries gsd-graphify-rebuild.sh, #3579) are not checked at all, so
+  // a dist with every top-level file but no `lib/` reads as fully populated —
+  // the exact blindness the old `.js`-count predicate had, one level down.
+  test('a hooks/dist missing the lib subdirectory is not considered populated', () => {
+    const isHooksDistStale = loadPredicate();
+    const dir = mkTmpDir();
+    try {
+      writeExpectedSet(dir, { includeSubdirs: false });
+      assert.strictEqual(isHooksDistStale(dir), true);
+    } finally {
+      rmTmpDir(dir);
+    }
+  });
+
+  test('a complete hooks/dist including lib is not stale', () => {
+    const isHooksDistStale = loadPredicate();
+    const dir = mkTmpDir();
+    try {
+      writeExpectedSet(dir, { includeSubdirs: true });
+      assert.strictEqual(isHooksDistStale(dir), false);
+    } finally {
+      rmTmpDir(dir);
+    }
+  });
+
+  // Deliverable — fails today: readdirSync throws ENOTDIR when `dir` is a
+  // regular file, and isHooksDistStale lets that escape uncaught, failing
+  // every suite's before() on a condition it cannot act on. Unreadable is
+  // indistinguishable from unusable here; treating it as stale (safe,
+  // rebuild-triggering) is the correct outcome, not a throw.
+  test('a hooks/dist path that is a regular file is treated as stale, not thrown', () => {
+    const isHooksDistStale = loadPredicate();
+    const dir = mkTmpDir();
+    const filePath = path.join(dir, 'not-a-directory');
+    fs.writeFileSync(filePath, 'i am a file, not a dir\n');
+    try {
+      let stale;
+      assert.doesNotThrow(() => {
+        stale = isHooksDistStale(filePath);
+      });
+      assert.strictEqual(stale, true);
     } finally {
       rmTmpDir(dir);
     }

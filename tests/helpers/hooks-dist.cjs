@@ -34,7 +34,7 @@ const path = require('node:path');
 const { runNode } = require('./process-seam.cjs');
 const { throwIfFailed } = require('./git-fixture.cjs');
 const { BUILD_TIMEOUT_MS } = require('./timeouts.cjs');
-const { HOOKS_TO_COPY } = require('../../scripts/build-hooks.js');
+const { HOOKS_TO_COPY, HOOKS_SUBDIRS_TO_COPY } = require('../../scripts/build-hooks.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
@@ -42,8 +42,14 @@ const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
 /**
  * True when `dir` is missing, or missing any entry `scripts/build-hooks.js`
- * expects to have copied there (`HOOKS_TO_COPY`, bare top-level filenames).
- * Extra/unexpected entries (subdirectory output, hooks/lib) never count as
+ * expects to have copied there (`HOOKS_TO_COPY`, bare top-level filenames,
+ * and `HOOKS_SUBDIRS_TO_COPY`, bare subdirectory names such as `lib`). A dist
+ * with every top-level file present but no `lib/` (e.g. missing
+ * `gsd-graphify-rebuild.sh`) is exactly the same blindness the old
+ * `.js`-count heuristic had, one level down — so subdir entries are checked
+ * against the same top-level readdir Set (they're bare directory names, no
+ * slashes, so they slot straight into the existing membership check with no
+ * extra `readdirSync` or `stat`). Extra/unexpected entries never count as
  * stale — this is a "is everything expected present" check, not an exact-set
  * check.
  *
@@ -52,8 +58,21 @@ const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
  */
 function isHooksDistStale(dir) {
   if (!fs.existsSync(dir)) return true;
-  const present = new Set(fs.readdirSync(dir));
-  return HOOKS_TO_COPY.some((name) => !present.has(name));
+  let present;
+  try {
+    present = new Set(fs.readdirSync(dir));
+  } catch (e) {
+    // dir exists (existsSync passed above) but readdirSync still threw —
+    // e.g. dir is actually a regular file (ENOTDIR), unreadable (EACCES),
+    // or was removed in the race between the two calls. Unreadable is
+    // indistinguishable from unusable here, and treating it as stale is
+    // both safe (rebuilding is idempotent) and the likely remedy — whereas
+    // throwing would fail every suite's before() on a diagnosis it cannot
+    // act on.
+    return true;
+  }
+  if (HOOKS_TO_COPY.some((name) => !present.has(name))) return true;
+  return HOOKS_SUBDIRS_TO_COPY.some((name) => !present.has(name));
 }
 
 function ensureHooksDist() {
