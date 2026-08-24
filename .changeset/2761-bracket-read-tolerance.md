@@ -2,7 +2,7 @@
 type: Added
 pr: 2867
 ---
-**Bracket-style phase IDs (`[GSD.02] 05: Name`) are now recognized on the read path** — `roadmap`, `validate`, `verify` and `state` previously matched only the `Phase N:` spelling and the `NN-name` directory shape, so on a project with `phase_id_convention: "bracket"` every phase was invisible: counts fell back to the on-disk directory listing, `get-phase` reported not-found, every `GSD.02-05-slug` directory was reported malformed, and a completed milestone was warned to have unstarted phases. What changes:
+**Bracket-style phase IDs (`[GSD.02] 05: Name`) are now recognized on the read path** — `roadmap`, `validate` and `state` previously matched only the `Phase N:` spelling and the `NN-name` directory shape, so on a project with `phase_id_convention: "bracket"` every phase was invisible: counts fell back to the on-disk directory listing, `get-phase` reported not-found, every `GSD.02-05-slug` directory was reported malformed, and a completed milestone was warned to have unstarted phases. What changes:
 
 - Milestone scoping recognizes the ADR-canonical `## [GSD.02] Foundation` heading, including the version-less form (no `vN.N`, no status emoji), at any heading level through `###`, and across a milestone split over two headings in either order. A sibling milestone's phases and directories are excluded either way.
 - Phase directories resolve, so each bracket phase reports its real `disk_status`, `plan_count` and `summary_count` instead of `no_directory` and zeros, and `completed_phases`, `total_plans` and the progress percent count the whole milestone. `state sync` scopes its own disk scan the same way, so the percent it writes to STATE.md agrees with the read path.

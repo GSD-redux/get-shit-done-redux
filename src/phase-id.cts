@@ -223,7 +223,7 @@ const BRACKET_ID_SRC = `${BRACKET_PROJECT_CODE_SRC}\\.${BRACKET_MILESTONE_NUMERI
 //     `state`'s `isMilestoneBounded` both consume this.
 //
 //   * CAPTURING, over any milestone, putting the milestone digits in a group.
-//     `verify`'s `checkBracketCoherence` consumes this.
+//     `validate`'s `checkBracketCoherence` consumes this.
 //
 // The milestone argument is expected to be a safe integer — every caller
 // resolves it through `Number.isSafeInteger` first. A non-integer yields a
