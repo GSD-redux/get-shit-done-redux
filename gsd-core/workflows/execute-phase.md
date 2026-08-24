@@ -1432,10 +1432,12 @@ gsd_run query commit "docs(phase-{X}): complete phase execution" --files .planni
 </step>
 
 <step name="auto_copy_learnings">
-**Auto-copy phase learnings to global store (when enabled).**
+**Auto-extract and copy phase learnings to global store (when enabled).**
 
-This step runs AFTER phase completion and SUMMARY.md is written. It copies any LEARNINGS.md
-entries from the completed phase to the global learnings store at `~/.gsd/knowledge/`.
+This step runs AFTER phase completion and SUMMARY.md is written. It produces the phase's
+learnings artifact (the sole producer is otherwise the user-invoked
+`/gsd:extract-learnings`) and copies it to the global learnings store at
+`~/.gsd/knowledge/`.
 
 **Check config gate:**
 ```bash
@@ -1446,8 +1448,10 @@ GL_ENABLED=$(gsd_run query config-get features.global_learnings --raw 2>/dev/nul
 
 **If enabled:**
 
-1. Check if LEARNINGS.md exists in the phase directory (use the `phase_dir` value from init context)
-2. If found, copy to global store:
+1. Run the `extract-learnings` workflow for the JUST-COMPLETED phase (its
+   `write_learnings` step writes `{phase_dir}/{PADDED_PHASE}-LEARNINGS.md`). Extraction
+   failure must NOT block phase completion — report the failure and continue.
+2. Copy the phase artifact to the global store:
 ```bash
 gsd_run query learnings.copy 2>/dev/null || echo "⚠ Learnings copy failed — continuing"
 ```

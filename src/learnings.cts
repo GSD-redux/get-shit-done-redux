@@ -198,9 +198,47 @@ function learningsDelete(id: string, opts?: { storeDir?: string }): boolean {
   return true;
 }
 
+/**
+ * #3683 — resolve which learnings artifact a copy reads. The extractor writes
+ * phase-scoped `{PHASE_DIR}/{PADDED}-LEARNINGS.md`; the legacy shape is a
+ * project-root `LEARNINGS.md`. The MOST RECENT phase-scoped artifact wins (a
+ * gated completion copies the phase it just wrote); the project-root file is
+ * the fallback when no phase artifact exists. Returns null when neither shape
+ * is present.
+ */
+function resolveLearningsSource(planningDir: string): string | null {
+  let best: { p: string; m: number } | null = null;
+  const phasesDir = path.join(planningDir, 'phases');
+  if (fs.existsSync(phasesDir)) {
+    for (const entry of fs.readdirSync(phasesDir)) {
+      const phaseDir = path.join(phasesDir, entry);
+      let stat;
+      try {
+        stat = fs.statSync(phaseDir);
+      } catch {
+        continue;
+      }
+      if (!stat.isDirectory()) continue;
+      for (const f of fs.readdirSync(phaseDir)) {
+        if (!/-LEARNINGS\.md$/i.test(f)) continue;
+        const p = path.join(phaseDir, f);
+        try {
+          const m = fs.statSync(p).mtimeMs;
+          if (best === null || m > best.m) best = { p, m };
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
+  if (best !== null) return best.p;
+  const rootPath = path.join(planningDir, 'LEARNINGS.md');
+  return fs.existsSync(rootPath) ? rootPath : null;
+}
+
 function learningsCopyFromProject(planningDir: string, opts?: WriteOpts & { sourceProject?: string }): CopyResult {
-  const learningsPath = path.join(planningDir, 'LEARNINGS.md');
-  if (!fs.existsSync(learningsPath)) {
+  const learningsPath = resolveLearningsSource(planningDir);
+  if (learningsPath === null) {
     return { total: 0, created: 0, skipped: 0 };
   }
 

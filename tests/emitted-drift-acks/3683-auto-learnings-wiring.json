@@ -1,0 +1,7 @@
+{
+  "$comment": "Growth ack (#2914 fragment). Reason: #3683 wires gated learnings extraction into execute-phase.md's auto_copy_learnings step — when features.global_learnings is enabled the step now runs extract-learnings for the just-completed phase (non-fatal) before the copy; disabled runs are unchanged. +4 net lines (~350B) against the 96 KiB XL cap (92,594 after). templates/README.md and docs/FEATURES.md are outside the growth-ratchet dirs (templates/, docs/); their hash ripples are attributable to this diff.",
+  "version": 1,
+  "paths": {
+    "execute-phase.md": "gsd-core/workflows/execute-phase.md +4 lines: gated extract-learnings invocation in auto_copy_learnings (#3683)"
+  }
+}

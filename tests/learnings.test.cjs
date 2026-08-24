@@ -710,7 +710,7 @@ describe('#3683 learnings copy source resolution', () => {
 
 describe('#3683 completion wiring and registry pins', () => {
   const EXECUTE_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
-  const REGISTRY = path.join(__dirname, '..', 'templates', 'README.md');
+  const REGISTRY = path.join(__dirname, '..', 'gsd-core', 'templates', 'README.md');
   const FEATURES = path.join(__dirname, '..', 'docs', 'FEATURES.md');
 
   test('execute-phase completion wires gated extraction', () => {
