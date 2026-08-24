@@ -151,6 +151,11 @@
  *     leading `0`/`00.1` as milestone-0 sentinels, while a legacy-spelled bare
  *     zero token inside an opted-in bracket project is a real mid-migration
  *     phase. This is the state-counter twin of the roadmap-parser exemption.
+ *     The guard has no per-detector exemption scope: it ORs the enumeration
+ *     and sentinel detectors before consulting this function-only map. The
+ *     whole-function exemption is therefore accepted; it is bounded because
+ *     this counter performs no phases-directory `readdirSync` and needs the
+ *     exemption only for its intentional bare-token `999` sentinel literal.
  *   - `src/state.cts` `cmdStateValidate` ("Gate 1: Validate STATE.md against
  *     filesystem"): resolves ONE directory — the disk match for STATE.md's
  *     own `Current Phase` field — by prefix, a single-phase LOOKUP, not an
