@@ -2562,6 +2562,8 @@ capture_thought({
 
 Users who run a memory / knowledge-base MCP server (for example, ExoCortex-style servers, `claude-mem`, or `mem0`-style servers) can implement this tool name to have learnings routed into their knowledge base automatically with `project`, `phase`, and `source` metadata. Everyone else can use `/gsd-extract-learnings` without any extra setup — the `LEARNINGS.md` artifact is the feature.
 
+With `features.global_learnings: true`, phase completion runs the extraction for the just-completed phase automatically and copies the artifact to the global store at `~/.gsd/knowledge/` (#3683) — extraction and copy failures never block completion. With the gate off (the default), extraction stays fully manual.
+
 ---
 
 ### 114. Context-Window-Aware Prompt Thinning

@@ -921,7 +921,7 @@ Extrai padrões reutilizáveis, antipadrões e decisões arquiteturais do trabal
 | `--format` | Formato de saída: `markdown` (padrão), `json` |
 
 **Pré-requisitos:** A fase foi executada (arquivos SUMMARY.md existem)
-**Produz:** `.planning/learnings/{phase}-LEARNINGS.md`
+**Produz:** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **Extrai:**
 - Decisões arquiteturais e sua justificativa
