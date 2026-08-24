@@ -24,7 +24,6 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --default "" 2>/d
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
-
 <step name="preflight">
 Verify prerequisites:
 
@@ -351,7 +350,7 @@ AskUserQuestion:
 
 <step name="report">
 ```
-───────────────────────────────────────────────────────────────
+---
 
 ## Inbox Triage Complete
 
@@ -368,7 +367,7 @@ Next steps:
 - Merge ready PRs
 - Triage unclassified issues
 
-───────────────────────────────────────────────────────────────
+---
 ```
 </step>
 

@@ -42,12 +42,14 @@ Apply filter for LIST-OPEN (show only status=open or status=in_progress) or LIST
 Display:
 ```
 Context Threads
-─────────────────────────────────────────────────────────
+
+---
 slug                      status        updated      title
 auth-decision             open          2026-04-09   OAuth vs Session tokens
 db-schema-v2              in_progress   2026-04-07   Connection pool sizing
 frontend-build-tools      resolved      2026-04-01   Vite vs webpack
-─────────────────────────────────────────────────────────
+
+---
 3 threads (2 open/in_progress, 1 resolved)
 ```
 
@@ -96,7 +98,8 @@ When SUBCMD=status and SLUG is set (already sanitized):
 2. Read the file and display a summary:
    ```
    Thread: {SLUG}
-   ─────────────────────────────────────
+
+---
    Title:   {title from frontmatter or # heading}
    Status:  {status from frontmatter or ## Status heading}
    Updated: {updated from frontmatter}
@@ -107,7 +110,8 @@ When SUBCMD=status and SLUG is set (already sanitized):
 
    Next Steps:
    {content of ## Next Steps section}
-   ─────────────────────────────────────
+
+---
    Resume with: /gsd:thread {SLUG}
    Close with:  /gsd:thread close {SLUG}
    ```

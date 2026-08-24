@@ -21,9 +21,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 <step name="banner">
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SKETCHING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SKETCHING
 ```
 
 Parse `$ARGUMENTS` for:
@@ -272,9 +270,7 @@ open .planning/sketches/NNN-descriptive-name/index.html
 
 **e.** Present to the user with a checkpoint:
 
-╔══════════════════════════════════════════════════════════════╗
-║  CHECKPOINT: Verification Required                           ║
-╚══════════════════════════════════════════════════════════════╝
+### CHECKPOINT: Verification Required
 
 **Sketch {NNN}: {name}**
 
@@ -282,9 +278,9 @@ Open: `open .planning/sketches/NNN-name/index.html`
 
 Compare: {what to look for between variants}
 
-──────────────────────────────────────────────────────────────
-→ Which variant feels right? Or cherry-pick elements across variants.
-──────────────────────────────────────────────────────────────
+---
+
+**→ Which variant feels right? Or cherry-pick elements across variants.**
 
 **f.** Handle feedback:
 - **Pick a direction:** mark winner, move to next sketch
@@ -315,9 +311,7 @@ gsd_run query commit "docs(sketch-NNN): [winning direction] — [key visual insi
 After all sketches complete:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SKETCH COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SKETCH COMPLETE ✓
 
 ## Design Direction
 {what we landed on overall}
@@ -329,7 +323,7 @@ After all sketches complete:
 {anything unresolved or worth revisiting}
 ```
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up
 
@@ -337,14 +331,14 @@ After all sketches complete:
 
 `/gsd:sketch --wrap-up`
 
-───────────────────────────────────────────────────────────────
+---
 
 **Also available:**
 - `/gsd:sketch` — sketch more (or run with no argument for frontier mode)
 - `/gsd:plan-phase` — start building the real UI
 - `/gsd:spike` — spike technical feasibility of a design pattern
 
-───────────────────────────────────────────────────────────────
+---
 </step>
 
 </process>

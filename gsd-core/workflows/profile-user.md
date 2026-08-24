@@ -21,7 +21,6 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --default "" 2>/d
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
-
 ## 1. Initialize
 
 Parse flags from $ARGUMENTS:
@@ -36,7 +35,6 @@ PROFILE_PATH="$HOME/.claude/gsd-core/USER-PROFILE.md"
 ```
 
 **If profile exists AND --refresh NOT set AND --questionnaire NOT set:**
-
 
 **Text mode (`workflow.text_mode: true` in config or `--text` flag):** Set `TEXT_MODE=true` if `--text` is present in `$ARGUMENTS` OR `text_mode` from init JSON is `true`. When TEXT_MODE is active, replace every `AskUserQuestion` call with a plain-text numbered list and ask the user to type their choice number. This is required for non-Claude runtimes (OpenAI Codex, Gemini CLI, etc.) where `AskUserQuestion` is not available.
 Use AskUserQuestion:
@@ -72,9 +70,7 @@ Continue to step 2.
 Display consent screen:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD > PROFILE YOUR CODING STYLE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD > PROFILE YOUR CODING STYLE
 
 Claude starts every conversation generic. A profile teaches Claude
 how YOU actually work -- not how you think you work.
@@ -421,9 +417,7 @@ If nothing changed: Display "No changes detected -- your profile is already up t
 **Display final summary:**
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD > PROFILE COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD > PROFILE COMPLETE ✓
 
 Your profile:    $HOME/.claude/gsd-core/USER-PROFILE.md
 ```

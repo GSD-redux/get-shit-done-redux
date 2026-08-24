@@ -15,7 +15,6 @@ const {
   CHECKPOINT_FRAMES,
   CHECKPOINT_LANGUAGE_ALIASES,
   resolveCheckpointFrame,
-  checkpointBoxLine,
   parseDeferredItems,
 } = require('../gsd-core/bin/lib/uat.cjs');
 
@@ -932,12 +931,12 @@ describe('uat render-checkpoint', () => {
 
     assert.ok(japanese.includes('チェックポイント'));
     assert.ok(japanese.includes('`pass`'));
-    // Structural lines (borders, separators, Test N heading, expected content) are untouched.
-    assert.ok(japanese.includes('╔══════════════════════════════════════════════════════════════╗'));
-    assert.ok(japanese.includes('╚══════════════════════════════════════════════════════════════╝'));
-    assert.ok(japanese.includes('──────────────────────────────────────────────────────────────'));
+    // Structural lines (heading marker, separator, Test N heading, expected content) are untouched.
+    assert.ok(japanese.includes('### チェックポイント: 検証が必要です'));
+    assert.ok(japanese.includes('---'));
     assert.ok(japanese.includes('**Test 1: Sample**'));
     assert.ok(japanese.includes('Something happens.'));
+    assert.ok(!/[╔╗╚╝║]/.test(japanese), 'the box border must be gone (#3028)');
     assert.notStrictEqual(japanese, english);
   });
 
@@ -1116,91 +1115,73 @@ describe('uat render-checkpoint', () => {
     );
   });
 
-  // Regression: #2402 review medium finding — checkpointBoxLine() padded using
-  // JS string `.length` (UTF-16 code units), not display width. The property
-  // below supplies an independent, category-labelled cell-width oracle rather
-  // than copying the implementation's Unicode range logic.
-  describe('checkpoint banner padding uses terminal display width (#2402, #2530)', () => {
-    test('property: category-labelled strings are padded to a 62-cell interior', () => {
-      const oneCell = fc.constantFrom(
-        { text: 'a', width: 1 },
-        { text: '7', width: 1 },
-        { text: ' ', width: 1 },
-        { text: '\u093e', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN AA
-        { text: '\u093f', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN I
-        { text: '\u0949', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN CANDRA O
-      );
-      const zeroCell = fc.constantFrom(
-        { text: '\u0301', width: 0 }, // Mn: COMBINING ACUTE ACCENT
-        { text: '\u093c', width: 0 }, // Mn: DEVANAGARI SIGN NUKTA
-        { text: '\u20dd', width: 0 }, // Me: COMBINING ENCLOSING CIRCLE
-        { text: '\u200d', width: 0 }, // Cf: ZERO WIDTH JOINER
-        { text: '\u2066', width: 0 }, // Cf: LEFT-TO-RIGHT ISOLATE
-        { text: '\u2069', width: 0 }, // Cf: POP DIRECTIONAL ISOLATE
-      );
-      const twoCell = fc.constantFrom(
-        { text: '界', width: 2 },
-        { text: '語', width: 2 },
-        { text: '한', width: 2 },
-      );
+  // Regression: #3028 — the checkpoint renderer no longer draws a 64-column
+  // double-line box (checkpointBoxLine/displayWidth/isWideCodePoint/
+  // ZERO_WIDTH_MARK_RE/CHECKPOINT_BOX_WIDTH were removed from src/uat.cts).
+  // These cases now pin the heading form (`### {banner}`) directly instead of
+  // a padded box interior; the localized-language coverage that used to prove
+  // display-width-correct padding now proves the banner text is emitted
+  // intact, unpadded, and box-free.
+  describe('checkpoint banner renders as a heading, not a box (#2402, #2530, #3028)', () => {
+    test('exact rendered banner heading for Japanese/Chinese/Korean (regression pin)', () => {
+      const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
+      const japanese = buildCheckpoint(currentTest, 'Japanese');
+      const chinese = buildCheckpoint(currentTest, 'Chinese');
+      const korean = buildCheckpoint(currentTest, 'Korean');
 
-      fc.assert(fc.property(
-        fc.array(fc.oneof(oneCell, zeroCell, twoCell), { maxLength: 35 }),
-        (cells) => {
-          const text = cells.map((cell) => cell.text).join('');
-          const textWidth = cells.reduce((sum, cell) => sum + cell.width, 0);
-          const padding = ' '.repeat(Math.max(0, 60 - textWidth));
-          assert.strictEqual(
-            checkpointBoxLine(text),
-            `║  ${text}${padding}║`,
-          );
-        },
-      ));
-    });
+      assert.strictEqual(japanese.split('\n')[0], '### チェックポイント: 検証が必要です');
+      assert.strictEqual(chinese.split('\n')[0], '### 检查点：需要验证');
+      assert.strictEqual(korean.split('\n')[0], '### 체크포인트: 검증 필요');
 
-    test('padding boundary: width limit-1, limit, and limit+1', () => {
-      for (const width of [59, 60, 61]) {
-        const text = 'a'.repeat(width);
-        assert.strictEqual(
-          checkpointBoxLine(text),
-          `║  ${text}${' '.repeat(Math.max(0, 60 - width))}║`,
-          `unexpected rendering at text width ${width}`,
-        );
+      for (const output of [japanese, chinese, korean]) {
+        assert.ok(!/[╔╗╚╝║]/.test(output), 'the box border must be gone (#3028)');
       }
     });
 
-    test('exact rendered banner lines for Japanese/Chinese/Korean (regression pin)', () => {
+    test('exact rendered Hindi banner heading ignores combining-mark cell width (regression pin)', () => {
       const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
-      assert.strictEqual(
-        buildCheckpoint(currentTest, 'Japanese').split('\n')[1],
-        '║  チェックポイント: 検証が必要です                            ║',
-      );
-      assert.strictEqual(
-        buildCheckpoint(currentTest, 'Chinese').split('\n')[1],
-        '║  检查点：需要验证                                            ║',
-      );
-      assert.strictEqual(
-        buildCheckpoint(currentTest, 'Korean').split('\n')[1],
-        '║  체크포인트: 검증 필요                                       ║',
-      );
-    });
-
-    test('exact rendered Hindi banner line ignores combining-mark cell width (regression pin)', () => {
-      const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
-      assert.strictEqual(
-        buildCheckpoint(currentTest, 'Hindi').split('\n')[1],
-        `║  चेकपॉइंट: सत्यापन आवश्यक${' '.repeat(40)}║`,
-      );
+      const hindi = buildCheckpoint(currentTest, 'Hindi');
+      assert.strictEqual(hindi.split('\n')[0], '### चेकपॉइंट: सत्यापन आवश्यक');
+      assert.ok(!/[╔╗╚╝║]/.test(hindi), 'the box border must be gone (#3028)');
     });
 
     test('exact rendered Arabic frame is isolated inside the LTR checkpoint layout', () => {
       const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
       const arabic = buildCheckpoint(currentTest, 'Arabic');
+      // The one behavior the box removal must not disturb: the RTL banner and
+      // instruction text stay wrapped in directional isolates.
       assert.strictEqual(
-        arabic.split('\n')[1],
-        `║  \u2067نقطة تحقق: المراجعة مطلوبة\u2069${' '.repeat(34)}║`,
+        arabic.split('\n')[0],
+        `### ⁧نقطة تحقق: المراجعة مطلوبة⁩`,
       );
-      assert.ok(arabic.includes('\u2067اكتب `pass` أو صف المشكلة.\u2069'));
+      assert.ok(arabic.includes('⁧اكتب `pass` أو صف المشكلة.⁩'));
+      assert.ok(!/[╔╗╚╝║]/.test(arabic), 'the box border must be gone (#3028)');
+    });
+
+    test('emits an over-long banner intact (no box to overflow)', (t) => {
+      // Previously a banner exceeding the 64-column inner width produced a
+      // ragged, unpadded border. Now there is no border to overflow — the
+      // full heading text is emitted intact regardless of length. None of the
+      // shipped frames are long enough to exercise this, so a synthetic frame
+      // is registered on the exported (mutable) lookup tables for the
+      // duration of the test.
+      const longBanner = `${'X'.repeat(80)}: Verification required well beyond the old 64-column box width`;
+      const frameKey = '__test_overlong_frame__3028__';
+      const aliasKey = '__test_overlong_alias__3028__';
+      CHECKPOINT_FRAMES[frameKey] = {
+        banner: longBanner,
+        instruction: 'Type `pass` or describe what\'s wrong.',
+      };
+      CHECKPOINT_LANGUAGE_ALIASES[aliasKey] = frameKey;
+      t.after(() => {
+        delete CHECKPOINT_FRAMES[frameKey];
+        delete CHECKPOINT_LANGUAGE_ALIASES[aliasKey];
+      });
+      const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
+      const output = buildCheckpoint(currentTest, aliasKey);
+      assert.strictEqual(output.split('\n')[0], `### ${longBanner}`,
+        'an over-long banner must be emitted in full, not truncated or wrapped');
+      assert.ok(!/[╔╗╚╝║]/.test(output), 'no box characters should appear regardless of banner length');
     });
   });
 
@@ -1224,7 +1205,9 @@ awaiting: user response
     assert.strictEqual(result.success, true, `render-checkpoint failed: ${result.error}`);
     assert.ok(result.output.includes('**Test 2: Submit form validation**'));
     assert.ok(result.output.includes('Empty submit keeps controls visible.'));
-    assert.ok(result.output.includes("Type `pass` or describe what's wrong."));
+    // The instruction line renders as a bold line preceded by a `---` thematic
+    // break, not inside a box border (#3028).
+    assert.ok(result.output.includes("---\n\n**Type `pass` or describe what's wrong.**"));
   });
 
   test('strips protocol leak lines from current test copy', () => {
@@ -1440,14 +1423,14 @@ awaiting: user response
     assert.ok(result.output.includes('Verificación requerida'), 'banner should be in Spanish');
     assert.ok(result.output.includes('Escribe `pass`'), 'instruction line should be in Spanish');
 
-    // Structure/IDs stay untranslated: box borders, the Test N: name line, and the
-    // expected content are preserved verbatim.
-    assert.ok(result.output.includes('╔══════════════════════════════════════════════════════════════╗'));
-    assert.ok(result.output.includes('╚══════════════════════════════════════════════════════════════╝'));
-    assert.ok(result.output.includes('──────────────────────────────────────────────────────────────'));
+    // Structure/IDs stay untranslated: the heading marker, the `---` separator,
+    // the Test N: name line, and the expected content are preserved verbatim.
+    assert.ok(result.output.includes('### PUNTO DE CONTROL: Verificación requerida'));
+    assert.ok(result.output.includes('---'));
     assert.ok(result.output.includes('**Test 2: Submit form validation**'));
     assert.ok(result.output.includes('Empty submit keeps controls visible.'));
     assert.ok(result.output.includes('Validation error copy is shown.'));
+    assert.ok(!/[╔╗╚╝║]/.test(result.output), 'the box border must be gone (#3028)');
   });
 
   // Regression guard for the "unset ⇒ byte-identical English" acceptance criterion.
@@ -1471,17 +1454,15 @@ awaiting: user response
     assert.strictEqual(result.success, true, `render-checkpoint failed: ${result.error}`);
 
     const expected = [
-      '╔══════════════════════════════════════════════════════════════╗',
-      '║  CHECKPOINT: Verification Required                           ║',
-      '╚══════════════════════════════════════════════════════════════╝',
+      '### CHECKPOINT: Verification Required',
       '',
       '**Test 2: Submit form validation**',
       '',
       'Empty submit keeps controls visible.\nValidation error copy is shown.',
       '',
-      '──────────────────────────────────────────────────────────────',
-      'Type `pass` or describe what\'s wrong.',
-      '──────────────────────────────────────────────────────────────',
+      '---',
+      '',
+      '**Type `pass` or describe what\'s wrong.**',
     ].join('\n');
 
     assert.strictEqual(result.output, expected);

@@ -606,9 +606,7 @@ Write `~/.gsd/defaults.json` with:
 Display:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SETTINGS UPDATED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SETTINGS UPDATED
 
 | Setting              | Value |
 |----------------------|-------|

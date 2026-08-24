@@ -13,9 +13,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 <step name="banner">
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SPIKE WRAP-UP
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SPIKE WRAP-UP
 ```
 </step>
 
@@ -267,9 +265,7 @@ gsd_run query commit "docs(spike-wrap-up): package [N] spike findings into proje
 
 <step name="report">
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SPIKE WRAP-UP COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SPIKE WRAP-UP COMPLETE ✓
 
 **Processed:** {N} spikes
 **Feature areas:** {list}
@@ -287,7 +283,7 @@ The spike-findings skill will auto-load in future build conversations.
 
 After the summary, present next-step options:
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up
 
@@ -295,7 +291,7 @@ After the summary, present next-step options:
 
 `/gsd:spike` (run with no argument — its frontier mode analyzes the spike landscape and proposes integration and frontier spikes)
 
-───────────────────────────────────────────────────────────────
+---
 
 **Also available:**
 - `/gsd:plan-phase` — start planning the real implementation
@@ -303,7 +299,7 @@ After the summary, present next-step options:
 - `/gsd:explore` — continue exploring
 - Other
 
-───────────────────────────────────────────────────────────────
+---
 </step>
 
 </process>

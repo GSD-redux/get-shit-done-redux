@@ -106,9 +106,7 @@ Parse JSON for: `milestone_version`, `milestone_name`, `phase_count`, `completed
 Display startup banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTONOMOUS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTONOMOUS
 
  Milestone: {milestone_version} — {milestone_name}
  Phases: {phase_count} total, {completed_phases} complete
@@ -175,9 +173,7 @@ Exit cleanly.
 **If no incomplete phases remain:**
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTONOMOUS ▸ COMPLETE 🎉
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTONOMOUS ▸ COMPLETE 🎉
 
  All phases complete! Nothing left to do.
 ```
@@ -216,9 +212,7 @@ Extract `phase_name`, `goal`, `success_criteria` from each. Store for use in exe
 For the current phase, display the progress banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTONOMOUS ▸ Phase {N}/{T}: {Name} [████░░░░] {P}%
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTONOMOUS ▸ Phase {N}/{T}: {Name} [████░░░░] {P}%
 ```
 
 Where N is the ROADMAP phase number, T is the milestone `phase_count`, and P = completed milestone phases / T × 100. Use `phase_count`, not remaining phases: phase 63 in a 7-phase milestone is `Phase 63/7`, not `Phase 63/3`. If N > T, render `Phase {N} ({position}/{T})`. Use an 8-character bar with █ and ░.
@@ -594,9 +588,7 @@ Read and execute: `$HOME/.claude/gsd-core/references/autonomous-smart-discuss.md
 **If `TO_PHASE` is set and current phase number >= `TO_PHASE`:** The target phase has been reached. Do not iterate further. Display:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTONOMOUS ▸ --to ${TO_PHASE} REACHED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTONOMOUS ▸ --to ${TO_PHASE} REACHED
 
  Completed through phase ${TO_PHASE} as requested.
  Remaining phases were not executed.
@@ -646,9 +638,7 @@ If all phases complete, proceed to lifecycle step.
 **If `ONLY_PHASE` is set:** Skip lifecycle. A single phase does not trigger audit/complete/cleanup. Display:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTONOMOUS ▸ PHASE ${ONLY_PHASE} COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTONOMOUS ▸ PHASE ${ONLY_PHASE} COMPLETE ✓
 
  Phase ${ONLY_PHASE}: ${PHASE_NAME} — Done
  Mode: Single phase (--only)
@@ -664,9 +654,7 @@ Exit cleanly.
 Display lifecycle transition banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTONOMOUS ▸ LIFECYCLE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTONOMOUS ▸ LIFECYCLE
 
  All phases complete → Starting lifecycle: audit → complete → cleanup
  Milestone: {milestone_version} — {milestone_name}
@@ -755,9 +743,7 @@ Cleanup shows its own dry-run and asks user for approval internally — this is 
 Display final completion banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTONOMOUS ▸ COMPLETE 🎉
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTONOMOUS ▸ COMPLETE 🎉
 
  Milestone: {milestone_version} — {milestone_name}
  Status: Complete ✅
@@ -788,9 +774,7 @@ When any phase operation fails or a blocker is detected, present 3 options via A
 **On "Stop autonomous mode":** Display progress summary:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTONOMOUS ▸ STOPPED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTONOMOUS ▸ STOPPED
 
  Completed: {list of completed phases}
  Skipped: {list of skipped phases}

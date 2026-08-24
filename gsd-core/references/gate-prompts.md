@@ -2,7 +2,7 @@
 
 Reusable prompt patterns for structured gate checks in workflows and agents.
 
-**For checkpoint box format details, see `gsd-core/references/ui-brand.md`** -- checkpoint boxes use double-line border drawing with 62-character inner width.
+**For checkpoint format details, see `gsd-core/references/ui-brand.md`** -- a checkpoint is a `### CHECKPOINT: {Type}` heading followed by its content, then a `---` break and the bolded action prompt. Never a fixed-width drawn border: it wraps in a narrow pane.
 
 ## Rules
 

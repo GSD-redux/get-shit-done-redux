@@ -289,9 +289,7 @@ When `workflow.tdd_mode` is enabled, the execute-phase orchestrator inserts a co
 ### Review Checkpoint Format
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- TDD REVIEW — Phase {X}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### TDD REVIEW — Phase {X}
 
 TDD Plans: {count} | Gate violations: {count}
 

@@ -244,7 +244,7 @@ Output this markdown directly (not as a code block). Route based on status:
 
 All requirements covered. Cross-phase integration verified. E2E flows complete.
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -254,7 +254,7 @@ All requirements covered. Cross-phase integration verified. E2E flows complete.
 
 /gsd:complete-milestone {version}
 
-───────────────────────────────────────────────────────────────
+---
 
 ---
 
@@ -289,7 +289,7 @@ All requirements covered. Cross-phase integration verified. E2E flows complete.
 
 Phases needing validation: run `/gsd:validate-phase {N}` for each flagged phase.
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -310,13 +310,13 @@ For Nyquist-coverage gaps flagged in the table above, prefer running
 <N>` if SECURITY.md was flagged) before inserting a new closure phase —
 they may close the gap retroactively without a new phase.
 
-───────────────────────────────────────────────────────────────
+---
 
 **Also available:**
 - cat .planning/v{version}-MILESTONE-AUDIT.md — see full report
 - /gsd:complete-milestone {version} — proceed anyway (accept tech debt)
 
-───────────────────────────────────────────────────────────────
+---
 
 ---
 
@@ -338,7 +338,7 @@ All requirements met. No critical blockers. Accumulated tech debt needs review.
 
 ### Total: {N} items across {M} phases
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Options
 
@@ -356,7 +356,7 @@ Insert a closure phase using the standard chain:
 /gsd:plan-phase <N>
 /gsd:execute-phase <N>
 
-───────────────────────────────────────────────────────────────
+---
 </offer_next>
 
 <success_criteria>

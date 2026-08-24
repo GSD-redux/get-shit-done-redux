@@ -690,11 +690,11 @@ TOTAL=$(echo "$FRONTMATTER" | grep "total:" | head -1 | cut -d: -f2 | xargs)
 Display inline summary to user:
 
 ```
-═══════════════════════════════════════════════════════════════
+---
 
   Code Review Complete: Phase ${PHASE_NUMBER} (${PHASE_NAME})
 
-───────────────────────────────────────────────────────────────
+---
 
   Depth:           ${REVIEW_DEPTH} (${DEPTH_PROVENANCE})
   Files Reviewed:  ${FILES_REVIEWED}
@@ -703,10 +703,11 @@ Display inline summary to user:
     Critical:  ${CRITICAL}
     Warning:   ${WARNING}
     Info:      ${INFO}
-    ──────────
+
+---
     Total:     ${TOTAL}
 
-───────────────────────────────────────────────────────────────
+---
 ```
 
 If status is "clean":
@@ -735,7 +736,7 @@ grep -A 3 "^### CR-\|^### BL-\|^### WR-" "${REVIEW_PATH}" | head -n 12
 
 **Note on tests:** Automated tests for this command and workflow are planned for Phase 4 (Pipeline Integration & Testing, requirement INFR-03). Phase 2 focuses on correct implementation; Phase 4 adds regression coverage across platforms.
 
-═══════════════════════════════════════════════════════════════
+---
 </step>
 
 </process>

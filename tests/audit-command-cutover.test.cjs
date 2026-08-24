@@ -238,8 +238,8 @@ describe('audit cutover: output shape equivalence', () => {
       `audit-open must succeed. stderr: ${result.error}`);
     const lines = result.output.split('\n').map(l => l.trim()).filter(Boolean);
     assert.ok(
-      lines.includes('Milestone Close: Open Artifact Audit'),
-      `report title must appear as a standalone line; got: ${JSON.stringify(lines.slice(0, 5))}`,
+      lines.includes('### Milestone Close: Open Artifact Audit'),
+      `report title must appear as a standalone Markdown heading line; got: ${JSON.stringify(lines.slice(0, 5))}`,
     );
   });
 
@@ -481,7 +481,7 @@ describe('audit-open — does not crash with ReferenceError (#2659)', () => {
  *   2. Even after switching to `core.output(formatted, raw)`, the human-readable
  *      branch JSON-stringifies the formatted string because `core.output` only
  *      bypasses JSON encoding when called as `core.output(null, true, rawValue)`.
- *      Result: stdout contains `"━━━…\n  Milestone Close: …\n…"` (a JSON string
+ *      Result: stdout contains `"### Milestone Close: …\n…"` (a JSON string
  *      literal) instead of the rendered report.
  *
  * The shape assertions below catch both regressions structurally — never via
@@ -640,10 +640,10 @@ describe('audit-open — output shape (#2911)', () => {
 
     const lines = result.output.split('\n').map(l => l.trim()).filter(Boolean);
 
-    // The first non-empty line must be the divider character row, *not* a
-    // JSON-encoded string starting with a quote. If core.output JSON-stringified
+    // The first non-empty line must be the rendered Markdown heading row, *not*
+    // a JSON-encoded string starting with a quote. If core.output JSON-stringified
     // the formatted report, the entire payload sits on one line wrapped in
-    // double quotes ("━━━…\n…").
+    // double quotes ("### Milestone Close: …\n…").
     assert.ok(
       !result.output.startsWith('"'),
       'text-mode stdout must not begin with a JSON quote (would mean the report was JSON.stringified)'
@@ -655,8 +655,8 @@ describe('audit-open — output shape (#2911)', () => {
 
     // Section headers from formatAuditReport that must appear as standalone lines.
     assert.ok(
-      lines.includes('Milestone Close: Open Artifact Audit'),
-      `expected report title as a standalone line; got lines: ${JSON.stringify(lines.slice(0, 5))}`
+      lines.includes('### Milestone Close: Open Artifact Audit'),
+      `expected report title as a standalone Markdown heading line; got lines: ${JSON.stringify(lines.slice(0, 5))}`
     );
     assert.ok(
       lines.includes('All artifact types clear. Safe to proceed.'),

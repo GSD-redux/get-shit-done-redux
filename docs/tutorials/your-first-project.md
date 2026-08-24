@@ -441,17 +441,15 @@ deliverables into checkpoints. It presents one checkpoint at a time; the first
 one looks like this (the test wording depends on what was built):
 
 ```text
-╔══════════════════════════════════════════════════════════════╗
-║  CHECKPOINT: Verification Required                           ║
-╚══════════════════════════════════════════════════════════════╝
+### CHECKPOINT: Verification Required
 
 **Test 1: Add a to-do**
 
 Running `node todo.js add "buy milk"` creates a pending item without errors.
 
-──────────────────────────────────────────────────────────────
-Type `pass` or describe what's wrong.
-──────────────────────────────────────────────────────────────
+---
+
+**Type `pass` or describe what's wrong.**
 ```
 
 Type `pass` when reality matches, or describe what differs. GSD records the

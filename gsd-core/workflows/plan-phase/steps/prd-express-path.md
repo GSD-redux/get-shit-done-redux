@@ -13,9 +13,7 @@ fi
 
 2. Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► PRD EXPRESS PATH
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PRD EXPRESS PATH
 
 Using PRD: {PRD_FILE}
 Generating CONTEXT.md from requirements...

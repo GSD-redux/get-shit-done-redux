@@ -44,7 +44,8 @@ For each file found, parse frontmatter fields (`status`, `trigger`, `updated`) a
 
 ```
 Active Debug Sessions
-─────────────────────────────────────────────
+
+---
   #  Slug                    Status         Updated
   1  auth-token-null         investigating  2026-04-12
      hypothesis: JWT decode fails when token contains nested claims
@@ -53,7 +54,8 @@ Active Debug Sessions
   2  form-submit-500         fixing         2026-04-11
      hypothesis: Missing null check on req.body.user
      next: Verify fix passes regression test
-─────────────────────────────────────────────
+
+---
 Run `/gsd:debug continue <slug>` to resume a session.
 No sessions? `/gsd:debug <description>` to start.
 ```

@@ -54,9 +54,12 @@ Installed: 1.39.0
 Latest:    1.41.0
 
 ### What's New
-────────────────────────────────────────────────────────────
+
+---
+
 [changelog entries for 1.40.0 and 1.41.0]
-────────────────────────────────────────────────────────────
+
+---
 
 Proceed with update? [Yes, update now / No, cancel]
 ```

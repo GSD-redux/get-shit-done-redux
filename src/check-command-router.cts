@@ -890,7 +890,6 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   const violations = rows.filter(r => r.status === 'FAIL').length;
 
   // Build review table
-  const sep = '━'.repeat(53);
   const tableHeader = '| Plan | RED | GREEN | REFACTOR | Status |';
   const tableDivider = '|------|-----|-------|----------|--------|';
   const tableRows = rows.map(r =>
@@ -898,9 +897,7 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   );
 
   let table = [
-    sep,
-    ` TDD REVIEW — Phase ${phase}`,
-    sep,
+    `### TDD REVIEW — Phase ${phase}`,
     '',
     `TDD Plans: ${tddPlanFiles.length} | Gate violations: ${violations}`,
     '',
