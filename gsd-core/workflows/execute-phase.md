@@ -350,6 +350,15 @@ are done. Blocked-and-incomplete must never be reported as finished.
 
 ```bash
 VERIFY_STATUS=$(gsd_run query verification status "${PHASE_DIR}" --pick status)
+# #3684: "verified" and "marked complete" are different states. The roadmap's own
+# checkbox is the authoritative marked-complete signal — read it through
+# roadmap.analyze's roadmap_complete (the #2245-hardened phase boundary, #3537
+# padding-tolerant). NEVER a completion report field (roadmap_updated/state_updated):
+# #3685 shows those can report true for a write that changed nothing.
+ANALYZE=$(gsd_run query roadmap.analyze)
+if [[ "$ANALYZE" == @file:* ]]; then ANALYZE=$(cat "${ANALYZE#@file:}"); fi
+PHASE_MARKED=$(echo "$ANALYZE" | jq -r --arg p "${PHASE_NUMBER}" \
+  '.phases[] | select((.number // .phase_number | tostring) == $p) | .roadmap_complete' | head -1)
 ```
 
 Evaluate in this exact order — the first matching condition decides the outcome; do not evaluate
@@ -366,8 +375,20 @@ later conditions once one matches:
    → exit. Do not fall through to condition 3; this is not a completion state.
 3. **No filter is active, and every filtered plan was filtered by `has_summary` alone** (no
    blocked-plan skip occurred):
-   - **`VERIFY_STATUS` is anything other than `missing`**: the phase genuinely finished. Report
-     "No matching incomplete plans" → exit, unchanged.
+   - **`VERIFY_STATUS` is anything other than `missing`, and `PHASE_MARKED` is `true`**: the phase
+     genuinely finished. Report "No matching incomplete plans" → exit, unchanged.
+   - **`VERIFY_STATUS` is anything other than `missing`, and `PHASE_MARKED` is not `true`** — the
+     run died between `verify_phase_goal` and `update_roadmap` (#3684; the symmetric gap one step
+     past #2868): verification EXISTS — do not redo it, and do not redo the gates that already ran
+     (`aggregate_results`, `code_review_gate`, `close_parent_artifacts`, `regression_gate`,
+     `verify_phase_goal`). Report:
+     `"Phase {X} is verified but never marked complete — resuming at update_roadmap (#3684)."`
+     SKIP `cross_ai_delegation`, `execute_waves`, `checkpoint_handling` AND the upstream gates, and
+     continue directly at `update_roadmap`; from there the tail runs exactly as a normal
+     completion: `auto_copy_learnings` → `close_phase_todos` → `delegate_post_completion_to_transition`.
+     Re-running `update_roadmap` on an already-marked phase is safe (the completion regex requires
+     a literal unchecked `[ ]`, so it no-ops — pinned by test), but this branch only fires while
+     the marker is genuinely unticked, so the tail runs once.
    - **`VERIFY_STATUS == missing`**: the plans are all summarized but the run never reached the
      tail gates. Report:
      `"All {plan_count} plans are summarized but no VERIFICATION.md exists — resuming at the phase gates (#2868)."`
