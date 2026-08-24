@@ -303,6 +303,51 @@ When a change genuinely has no user-facing documentation impact (infrastructure 
 
 When unsure whether a change is user-facing, **update the docs**.
 
+### Adding a section to `docs/FEATURES.md`
+
+`docs/FEATURES.md` numbers each feature with a monotonically increasing integer (`### 164.`). That
+integer is the single most common source of merge conflicts in this repo — with several PRs in
+flight, everyone picks the same next number and everyone after the first has to renumber.
+
+**There are two conflict cells, not one.** The `### N.` heading, and the hand-maintained table of
+contents at the top of the file. Two PRs adding *differently numbered* features still collide on
+the TOC, so renumbering alone does not make you safe.
+
+**The rules:**
+
+1. **Allocate the number LAST.** Write the section body first; pick the integer immediately before
+   you open the PR, or immediately after your final rebase. A number chosen at branch time is
+   already stale.
+2. **Never pre-emptively renumber to dodge a conflict.** When you hit one, rebase, take
+   `max + 1` of what is now on `next`, and update the TOC in the same commit. Gaps are fine — 58 is
+   already missing and `#27b-existing-codebase-onboarding` is a live non-integer id, so the
+   sequence is not an invariant anyone depends on.
+3. **Fork contributors: you do not have to fight this.** If your PR conflicts only on the number or
+   the TOC, say so in a comment and leave it — a maintainer will assign the final number at merge.
+   Do not rebase repeatedly just to chase the counter.
+4. **Do not renumber someone else's section** to make room for yours. Take the next free integer
+   above the current maximum.
+
+**If you are an agent**, take an exclusive Fleet lease on the allocation before choosing a number,
+and include `docs/FEATURES.md` in your published `touched` set — a `touched` set of symbols alone
+leaves you invisible to a peer editing the same index:
+
+```
+fleet_acquire_lease({ repo_id, agent_id,
+  scope: ["docs/FEATURES.md::section-number-allocation"], ttl_seconds: 1800 })
+… allocate, write, commit …
+fleet_release_lease({ lease_id })
+```
+
+The lease serializes allocation between coordinating agents. It does not prevent a git conflict
+once two branches already carry adjacent text, and it cannot reach a fork PR.
+
+> **Planned durable fix.** This whole class disappears if `FEATURES.md` becomes generated from
+> per-feature fragments the way `CHANGELOG.md` is generated from `.changeset/` (three random words
+> per fragment, so concurrent PRs cannot collide) and the way `tests/emitted-drift-acks/` works
+> ([#2914](https://github.com/open-gsd/gsd-core/issues/2914)). Until that lands, the rules above are
+> the practice.
+
 ## Testing Standards
 
 All tests use Node.js built-in test runner (`node:test`) and assertion library (`node:assert`). **Do not use Jest, Mocha, Chai, or any external test framework.**
