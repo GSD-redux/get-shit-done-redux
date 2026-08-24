@@ -133,17 +133,13 @@ fi
 Present complete project status to user:
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║  PROJECT STATUS                                               ║
-╠══════════════════════════════════════════════════════════════╣
-║  Building: [one-liner from PROJECT.md "What This Is"]         ║
-║                                                               ║
-║  Phase: [X] of [Y] - [Phase name]                            ║
-║  Plan:  [A] of [B] - [Status]                                ║
-║  Progress: [██████░░░░] XX%                                  ║
-║                                                               ║
-║  Last activity: [date] - [what happened]                     ║
-╚══════════════════════════════════════════════════════════════╝
+### PROJECT STATUS
+
+Building: [one-liner from PROJECT.md "What This Is"]
+Phase: [X] of [Y] - [Phase name]
+Plan:  [A] of [B] - [Status]
+Progress: [██████░░░░] XX%
+Last activity: [date] - [what happened]
 
 [If incomplete work found:]
 ⚠️  Incomplete work detected:

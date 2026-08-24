@@ -571,7 +571,7 @@ Each dispatch is best-effort: if it errors, record a warning and continue — ne
 
 <step name="report">
 ```
-───────────────────────────────────────────────────────────────
+---
 
 ## ✓ Phase {X}: {Name} — Shipped
 
@@ -587,7 +587,7 @@ Next steps:
 - /gsd:complete-milestone (if last phase in milestone)
 - /gsd:progress (to see what's next)
 
-───────────────────────────────────────────────────────────────
+---
 ```
 </step>
 

@@ -19,9 +19,7 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --default "" 2>/d
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► IMPORT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► IMPORT
 ```
 
 </step>
@@ -57,9 +55,7 @@ test -f "{FILEPATH}" || echo "FILE_NOT_FOUND"
 If FILE_NOT_FOUND: display error and exit:
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║  ERROR                                                       ║
-╚══════════════════════════════════════════════════════════════╝
+### ERROR
 
 File not found: {FILEPATH}
 
@@ -251,9 +247,7 @@ gsd_run query commit "docs({phase}): import plan from {basename FILEPATH}" --fil
 
 Display completion:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► IMPORT COMPLETE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► IMPORT COMPLETE
 ```
 
 Show: plan filename written, phase directory, validation result, next steps.

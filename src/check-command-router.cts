@@ -50,6 +50,9 @@ const { scanPhasePlans } = planScanMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import verifyCommandGroundingMod = require('./verify-command-grounding.cjs');
+const { probePhaseVerifyCommands } = verifyCommandGroundingMod;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -887,7 +890,6 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   const violations = rows.filter(r => r.status === 'FAIL').length;
 
   // Build review table
-  const sep = '━'.repeat(53);
   const tableHeader = '| Plan | RED | GREEN | REFACTOR | Status |';
   const tableDivider = '|------|-----|-------|----------|--------|';
   const tableRows = rows.map(r =>
@@ -895,9 +897,7 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   );
 
   let table = [
-    sep,
-    ` TDD REVIEW — Phase ${phase}`,
-    sep,
+    `### TDD REVIEW — Phase ${phase}`,
     '',
     `TDD Plans: ${tddPlanFiles.length} | Gate violations: ${violations}`,
     '',
@@ -933,6 +933,72 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   // The review table is carried in `result.message` and `result.table` so
   // the host-loop dispatch's advisory branch can surface it.
   output(result, raw, undefined);
+}
+
+// ─── verify-command-paths (#2401) ──────────────────────────────────────────────
+
+/**
+ * verify-command-paths: probes every `<automated>` verify command declared in a
+ * phase's `-PLAN.md` files against the filesystem WITHOUT executing anything —
+ * see verify-command-grounding.cjs for the recognizer contract.
+ *
+ * Args: check verify-command-paths <phase>
+ * Invocable as: gsd_run check verify-command-paths <phase>
+ *
+ * When the phase cannot be resolved to a directory, this emits a non-throwing
+ * degraded JSON payload (status/commands/counts all zeroed, `readError`
+ * populated) rather than calling `error()` — the plan-checker parses this
+ * result and must be able to distinguish "nothing to report" from "could not
+ * look", which a non-zero exit / thrown error would collapse.
+ */
+function cmdVerifyCommandPaths(projectDir: string, args: string[], raw: boolean): void {
+  // args[0] = 'check', args[1] = 'verify-command-paths', args[2] = phase
+  const phase = args[2] || '';
+  if (!phase) {
+    output(
+      {
+        status: 'unresolvable',
+        commands: [],
+        counts: { blocker: 0, warning: 0, total: 0 },
+        readError: 'verify-command-paths requires a phase argument: check verify-command-paths <phase>',
+      },
+      raw,
+      undefined,
+    );
+    return;
+  }
+
+  let phaseDir = '';
+  try {
+    const result = findPhaseInternal(projectDir, phase);
+    if (result && typeof result === 'object') {
+      // findPhaseInternal returns { directory: '<relative-posix-path>', ... }
+      // directory is relative to cwd — resolve it to absolute.
+      const relDir = typeof result['directory'] === 'string' ? result['directory'] : '';
+      if (relDir) {
+        phaseDir = path.resolve(projectDir, relDir);
+      }
+    } else if (typeof result === 'string') {
+      phaseDir = result;
+    }
+  } catch { /* phase dir lookup failure → degraded payload below */ }
+
+  if (!phaseDir) {
+    output(
+      {
+        status: 'unresolvable',
+        commands: [],
+        counts: { blocker: 0, warning: 0, total: 0 },
+        readError: `could not resolve phase directory for phase ${phase}`,
+      },
+      raw,
+      undefined,
+    );
+    return;
+  }
+
+  const probed = probePhaseVerifyCommands({ phaseDir, projectRoot: projectDir });
+  output(probed, raw, undefined);
 }
 
 // ─── gap-analysis-plan-post ───────────────────────────────────────────────────
@@ -1522,6 +1588,12 @@ function routeCheckCommand({ args, cwd, raw }: RouteCheckCommandOptions): void {
     cmdGapAnalysisPlanPost(cwd, args, raw);
     return;
   }
+  if (subcommand === 'verify-command-paths') {
+    // Deterministic filesystem probe for <automated> verify commands (#2401) —
+    // never executes anything; see verify-command-grounding.cjs.
+    cmdVerifyCommandPaths(cwd, args, raw);
+    return;
+  }
   if (subcommand === 'api-coverage-verify-pre') {
     // ai-integration capability blocking gate at verify:pre (#1562). Dot-to-
     // hyphen normalization means query "api-coverage.verify-pre" routes here.
@@ -1568,7 +1640,7 @@ function routeCheckCommand({ args, cwd, raw }: RouteCheckCommandOptions): void {
     routeProhibitionEnforcement(args, raw);
     return;
   }
-  error('Unknown check subcommand. Available: api-coverage-verify-pre, auto-mode, decision-coverage-plan, decision-coverage-verify, gap-analysis-plan-post, predicate, prohibition-enforcement, tdd-review-checkpoint, ui-plan-gate, ui-safety-gate, verify-schema-drift, verify-codebase-drift', ERROR_REASON.SDK_UNKNOWN_COMMAND);
+  error('Unknown check subcommand. Available: api-coverage-verify-pre, auto-mode, decision-coverage-plan, decision-coverage-verify, gap-analysis-plan-post, predicate, prohibition-enforcement, tdd-review-checkpoint, ui-plan-gate, ui-safety-gate, verify-command-paths, verify-schema-drift, verify-codebase-drift', ERROR_REASON.SDK_UNKNOWN_COMMAND);
 }
 
 export = {
@@ -1578,6 +1650,7 @@ export = {
   computeUiPlanGate,
   computeUiSafetyGate,
   cmdGapAnalysisPlanPost,
+  cmdVerifyCommandPaths,
   cmdTddReviewCheckpoint,
   cmdCheckPredicate,
   buildPredicateDeps,

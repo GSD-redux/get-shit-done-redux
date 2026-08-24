@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/installer-migrations.md is cited only in comments as design rationale; never read.
 'use strict';
 
 /**

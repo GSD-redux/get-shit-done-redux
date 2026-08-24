@@ -7014,8 +7014,10 @@ const { cleanup, installSpawnEnv } = require('./helpers.cjs');
 const { runNode: seamRunNode, runHook: seamRunHook } = require('./helpers/process-seam.cjs');
 // Class-norm timeouts, not local literals (CONTRIBUTING: they live in
 // tests/helpers/timeouts.cjs). The install is the INSTALL class; the emitted
-// gate is a short CLI probe against a temp fixture, i.e. the PROBE class.
-const { INSTALL_TIMEOUT_MS, PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+// gate below is a bash FAN-OUT (the gate script's `gsd_run` shells out to
+// `node` multiple times), not a single CLI probe, so it takes
+// HOOK_FANOUT_TIMEOUT_MS rather than PROBE_TIMEOUT_MS.
+const { INSTALL_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const INSTALL = path.join(__dirname, '..', 'bin', 'install.js');
 
@@ -7218,13 +7220,20 @@ test('real install: cursor negotiates --worktree through its own emitted gate an
 
       // Seam again — `runHook` documents `interpreter: 'bash'` for a shell
       // script, so the gate is written to a file rather than passed as `-c`.
+      // This is a bash FAN-OUT: `gsd_run` shells out to `node` multiple times
+      // under one `bash` interpreter, the wrong class for `PROBE_TIMEOUT_MS`
+      // (a single short CLI probe). Same class as the observed CI failures in
+      // tests/quick-branching.test.cjs (PR #3787 run 32668773524) and
+      // tests/worktree-safety.test.cjs (`next` run 32608945654). See
+      // HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the class
+      // rationale.
       const gateScript = path.join(proj, 'run-gate.sh');
       fs.writeFileSync(gateScript, script);
       const run = seamRunHook(gateScript, [], {
         interpreter: 'bash',
         cwd: proj,
         env: hermeticEnv,
-        timeoutMs: PROBE_TIMEOUT_MS,
+        timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
       });
       assert.strictEqual(
         run.outcome, 'exited',

@@ -1,7 +1,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { TEST_GATE_REASON, classifyTestGateResult } = require('../scripts/test-failure-reasons.cjs');
+const { TEST_GATE_REASON, classifyTestGateResult } = require('../scripts/gsd-test-gate-reasons.cjs');
 
 describe('test failure reason classification', () => {
   test('classifies pass on exitCode 0', () => {

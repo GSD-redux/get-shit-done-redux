@@ -78,7 +78,6 @@ Continue (non-blocking).
 AI_SPEC_FILE=$(ls "${PHASE_DIR}"/*-AI-SPEC.md 2>/dev/null | head -1)
 ```
 
-
 **Text mode (`workflow.text_mode: true` in config or `--text` flag):** Set `TEXT_MODE=true` if `--text` is present in `$ARGUMENTS` OR `text_mode` from init JSON is `true`. When TEXT_MODE is active, replace every `AskUserQuestion` call with a plain-text numbered list and ask the user to type their choice number. This is required for non-Claude runtimes (OpenAI Codex, Gemini CLI, etc.) where `AskUserQuestion` is not available.
 **If exists:** Use AskUserQuestion:
 - header: "Existing AI-SPEC"
@@ -96,9 +95,7 @@ If "Update": continue to step 5.
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AI DESIGN CONTRACT — PHASE {N}: {name}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AI DESIGN CONTRACT — PHASE {N}: {name}
 
 ◆ Step 1/4 — Framework Selection...
 ```
@@ -265,9 +262,7 @@ gsd_run query commit "docs({phase_slug}): generate AI-SPEC.md — {primary_frame
 ## 12. Display Completion
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AI-SPEC COMPLETE — PHASE {N}: {name}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AI-SPEC COMPLETE — PHASE {N}: {name}
 
 ◆ Framework: {primary_framework}
 ◆ System Type: {system_type}

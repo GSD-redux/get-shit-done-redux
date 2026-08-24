@@ -6,6 +6,7 @@ Configuration options for `.planning/` directory behavior.
 ```json
 "planning": {
   "commit_docs": true,
+  "pr_strict": false,
   "search_gitignored": false
 },
 "git": {
@@ -27,6 +28,7 @@ Configuration options for `.planning/` directory behavior.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `commit_docs` | `true` | Whether to commit planning artifacts to git |
+| `pr_strict` | `false` | Filter mode for `/gsd:pr-branch`. `false` keeps structural planning state (STATE.md, ROADMAP.md, MILESTONES.md, PROJECT.md, REQUIREMENTS.md, milestones/) in the PR branch; `true` drops every `.planning/` path |
 | `search_gitignored` | `false` | Add `--no-ignore` to broad rg searches |
 | `git.branching_strategy` | `"none"` | Git branching approach: `"none"`, `"phase"`, or `"milestone"` |
 | `git.base_branch` | `null` (auto-detect) | Target branch for PRs and merges (e.g. `"master"`, `"develop"`). When `null`, auto-detects from `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"main"`. |
@@ -278,6 +280,7 @@ Set via `workflow.*` namespace in config.json (e.g., `"workflow": { "research": 
 | `workflow.inline_plan_threshold` | number | `2` | `0`–`10` | Plans with ≤N tasks execute inline instead of spawning a subagent |
 | `workflow.code_review` | boolean | `true` | `true`, `false` | Enable built-in code review step in the ship workflow |
 | `workflow.code_review_depth` | string | `"standard"` | `"quick"`, `"standard"`, `"deep"` | Depth level for code review analysis in the ship workflow |
+| `workflow.code_review_depth_overrides` | array | `[]` | Array of `{paths, depth}` rule objects | Ordered path-scoped depth rules for `/gsd:code-review` (#2554). Each rule's `paths` are matched against the review's changed-file set by whole-segment directory-path prefix (`src/auth` matches `src/auth/token.ts`, never `src/authfoo/x.ts`); matching is case-sensitive. Glob syntax (`*`, `?`) is a configuration error. One matched file escalates the entire review — depth is not applied per file. Resolution order: `--depth=` flag → strongest matching rule → `workflow.code_review_depth` → `standard`. A malformed rule halts the review with a typed error rather than falling back silently. |
 | `workflow._auto_chain_active` | boolean | `false` | `true`, `false` | Internal: tracks whether autonomous chaining is active |
 | `workflow.security_enforcement` | boolean | `true` | `true`, `false` | Enable threat-model-anchored security verification via `/gsd:secure-phase`. When `false`, security checks are skipped entirely |
 | `workflow.security_asvs_level` | number | `1` | `1`, `2`, `3` | OWASP ASVS verification level. Level 1 = opportunistic, Level 2 = standard, Level 3 = comprehensive. Scales both planner threat-disposition rigor (which threats must be mitigated vs. accepted) and auditor verification depth (grep-level → boundary-placement check → full data-flow trace). See `gsd-core/references/security-asvs-levels.md`. |

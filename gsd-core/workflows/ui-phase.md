@@ -115,9 +115,7 @@ If "Update": continue to step 5.
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► UI DESIGN CONTRACT — PHASE {N}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► UI DESIGN CONTRACT — PHASE {N}
 
 ◆ Spawning UI researcher... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -188,9 +186,7 @@ Display blocker details and options. Exit workflow.
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► VERIFYING UI-SPEC
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► VERIFYING UI-SPEC
 
 ◆ Spawning UI checker... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -202,7 +198,7 @@ Read ~/.claude/agents/gsd-ui-checker.md for instructions.
 
 <objective>
 Validate UI design contract for Phase {phase_number}: {phase_name}
-Check all 6 dimensions. Return APPROVED or BLOCKED.
+Check all 7 dimensions. Return APPROVED or BLOCKED.
 </objective>
 
 <required_reading>
@@ -423,16 +419,14 @@ STATE coverage and REFERENCES those rows rather than restating the copy (de-dup)
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► UI-SPEC READY ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► UI-SPEC READY ✓
 
 **Phase {N}: {Name}** — UI design contract approved
 
-Dimensions: 6/6 passed
+Dimensions: 7/7 passed
 {If any FLAGs: "Recommendations: {N} (non-blocking)"}
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -448,7 +442,7 @@ Dimensions: 6/6 passed
 
 (or `/gsd:plan-phase {N}` to skip discussion)
 
-───────────────────────────────────────────────────────────────
+---
 ```
 
 ## 11. Commit (if configured)
@@ -475,7 +469,7 @@ gsd_run query state.record-session \
 - [ ] gsd-ui-researcher spawned with correct context and file paths
 - [ ] UI-SPEC.md created in correct location
 - [ ] gsd-ui-checker spawned with UI-SPEC.md
-- [ ] All 6 dimensions evaluated
+- [ ] All 7 dimensions evaluated
 - [ ] Revision loop if BLOCKED (max 2 iterations)
 - [ ] Final status displayed with next steps
 - [ ] UI-SPEC.md committed (if commit_docs enabled)

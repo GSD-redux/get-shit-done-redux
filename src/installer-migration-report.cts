@@ -43,6 +43,9 @@ export const BUNDLED_GSD_HOOK_FILES: ReadonlySet<string> = Object.freeze(new Set
   'hooks/gsd-windsurf-pre-command.js',
   'hooks/gsd-ensure-canonical-path.js',
   'hooks/gsd-graphify-update.sh',
+  // #3662: portable node resolver staged into hooks/ (not itself a lifecycle
+  // hook — managed JS hook commands route through it under --portable-hooks).
+  'hooks/gsd-node-runner.sh',
   'hooks/gsd-phase-boundary.sh',
   'hooks/gsd-prompt-guard.js',
   'hooks/gsd-read-guard.js',

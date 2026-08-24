@@ -1,5 +1,11 @@
 'use strict';
 
+// Renamed (was `test-failure-reasons.cjs`): the old basename matched Node's
+// `test-*.EXT` test-collection pattern, so the remote push-gate runner
+// collected and executed this SOURCE file as a test while GitHub CI (which
+// globs only tests/**/*.test.cjs) never saw it — see
+// scripts/lint-source-test-name-collision.cjs.
+
 const TEST_GATE_REASON = Object.freeze({
   PASS: 'pass',
   TEST_FAILURE: 'test_failure',

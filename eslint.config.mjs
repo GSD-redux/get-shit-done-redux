@@ -82,6 +82,8 @@ export default tseslint.config(
       // lint the src/install-model-override-resolver.cts source, not this.
       'gsd-core/bin/lib/install-model-override-resolver.cjs',
       'gsd-core/bin/lib/install-engine.cjs',
+      // #3712: tsc-generated runtime artifact — lint src/real-home-guard.cts, not this.
+      'gsd-core/bin/lib/real-home-guard.cjs',
       // #2874 (epic #2866 Phase 5): tsc-generated runtime artifact — lint the
       // src/install-fs-adapter.cts source, not this.
       'gsd-core/bin/lib/install-fs-adapter.cjs',
@@ -99,6 +101,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/resolution.cjs',
       'gsd-core/bin/lib/unusable-input.cjs',
       'gsd-core/bin/lib/plan-drift-guard.cjs',
+      // #2401: tsc-generated runtime artifact — lint the src/verify-command-grounding.cts source.
+      'gsd-core/bin/lib/verify-command-grounding.cjs',
       'gsd-core/bin/lib/cli-exit.cjs',
       'gsd-core/bin/lib/external-job.cjs',
       'gsd-core/bin/lib/edge-probe.cjs',
@@ -107,6 +111,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/prohibition-enforcement.cjs',
       'gsd-core/bin/lib/ui-consideration-probe.cjs',
       'gsd-core/bin/lib/code-review-flags.cjs',
+      'gsd-core/bin/lib/code-review-depth.cjs',
       'gsd-core/bin/lib/context-utilization.cjs',
       'gsd-core/bin/lib/broken-windows.cjs',
       'gsd-core/bin/lib/complexity-trigger.cjs',
@@ -154,6 +159,12 @@ export default tseslint.config(
       'gsd-core/bin/lib/configuration.cjs',
       'gsd-core/bin/lib/state-document.cjs',
       'gsd-core/bin/lib/planning-snapshot.cjs',
+      // #2790: tsc-generated runtime artifacts — lint the src/*.cts sources
+      // (src/planning-inspect.cts, src/planning-command-router.cts,
+      // src/plan-document.cts), not these emitted .cjs files.
+      'gsd-core/bin/lib/planning-inspect.cjs',
+      'gsd-core/bin/lib/planning-command-router.cjs',
+      'gsd-core/bin/lib/plan-document.cjs',
       'gsd-core/bin/lib/pattern.cjs',
       'gsd-core/bin/lib/text-lines.cjs',
       'gsd-core/bin/lib/token-scanner.cjs',

@@ -614,7 +614,7 @@ const fs = require('fs');
 const path = require('path');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { createTempDir, cleanup, readFileNormalized } = require('./helpers.cjs');
 
@@ -711,7 +711,14 @@ function populateSandbox(includeHtml) {
  */
 function runBlock(block) {
   // The extracted block is a shell chain (&&, [ -f ] guards, ||) — it stays
-  // a `bash -c` invocation rather than being decomposed into argv.
+  // a `bash -c` invocation rather than being decomposed into argv. Bash
+  // FAN-OUT: the block spawns `graphify update .` (and further commands
+  // chained via && / ||) under one `bash` interpreter, not a single CLI
+  // probe — the wrong class for `PROBE_TIMEOUT_MS`. Same class as the
+  // observed CI failures in tests/quick-branching.test.cjs (PR #3787 run
+  // 32668773524) and tests/worktree-safety.test.cjs (`next` run
+  // 32608945654). See HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for
+  // the class rationale.
   const r = runHook('-c', [block], {
     interpreter: 'bash',
     cwd: sandbox,
@@ -720,7 +727,7 @@ function runBlock(block) {
       PATH: fakeBin + ':' + process.env.PATH,
       HOME: fakeHome,
     },
-    timeoutMs: PROBE_TIMEOUT_MS,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
   });
   return toLegacyResult(r);
 }

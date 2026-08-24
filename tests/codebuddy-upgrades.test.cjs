@@ -1,3 +1,4 @@
+// docs-guard-exempt: codebuddy.ai/docs/... is an external URL citation in a comment, not a repo path.
 'use strict';
 
 /**

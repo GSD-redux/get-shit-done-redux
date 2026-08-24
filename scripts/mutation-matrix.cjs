@@ -92,10 +92,16 @@ function readStdinSync() {
 // confirmed equivalent mutant is acceptable.
 //
 // HOW TO UPDATE:
-//   1. Run the per-module Stryker shard locally.
-//   2. Note the reported score.
-//   3. Set minScore = floor(score) - 1 (never lower than current value).
-//   4. Open a PR — the CI gate will enforce the new floor on every future run.
+//   1. The per-module Stryker shard CANNOT be run locally: Stryker's command
+//      runner invokes `node --test` once per mutant (see stryker.config.mjs),
+//      and this repo hard-blocks local `node --test` via
+//      .claude/hooks/block-local-node-test.sh. Push the branch instead and
+//      let CI run the shard for the changed module.
+//   2. Read the measured score from the CI shard's output.
+//   3. Set minScore = floor(measured) - 1 (never lower than current value)
+//      and update the matching RATCHET_BASELINE entry in the same diff.
+//   4. Open/update the PR — the CI gate will enforce the new floor on every
+//      future run.
 
 /** Long-run target for all modules (ADR-456). */
 const TARGET_MUTATION_SCORE = 80;
@@ -197,6 +203,98 @@ const COVERED = {
       'tests/core-utils.test.cjs',
     ],
     minScore: 75,  // measured 77.52% (2026-06-14, issue #1187); floor = 77 - 2
+  },
+  // planning-inspect / plan-document / planning-command-router: net-new modules
+  // added by #2790. Registered here so the Stryker gate stops SKIPPING them
+  // (previously has_work: "false" — ~1000 LOC entirely outside mutation scoring).
+  //
+  // WHY THESE SHARDS POINT AT tests/planning-inspect.unit.test.cjs, NOT
+  // tests/planning-inspect.test.cjs. CI evidence: two shards pointed at the
+  // integration file were CANCELLED at the workflow's 15-minute cap —
+  // "Mutation testing 4% (elapsed: ~3m, remaining: ~1h 19m) 27/640 tested".
+  // tests/planning-inspect.test.cjs is INTEGRATION-shaped (91 cases, most
+  // spawning a `gsd-tools` child process via `runGsdTools`); Stryker's command
+  // runner treats the whole `node --test <file>` invocation as ONE test costing
+  // whatever the slowest case costs (measured ~20s), and re-runs that entire
+  // file once per mutant — 640 mutants x 20s cannot finish in 15 minutes.
+  // tests/planning-inspect.unit.test.cjs is the dedicated, spawn-free,
+  // in-process mutation surface for exactly these three modules (measured
+  // locally: the whole file runs in well under a second) — the same shape
+  // every other entry in this registry already uses (*.property.test.cjs /
+  // *.unit.test.cjs). The integration suite is UNAFFECTED by this change: it
+  // keeps running in full in the normal (non-mutation) test job, and remains
+  // the source of truth for spawn-boundary/CLI-dispatch/read-only-proof
+  // behaviour that an in-process unit file cannot exercise.
+  //
+  // Measured CI scores (GitHub Actions run 32392791843, all three shards
+  // PASSED — not a local run; mutation shards run `node --test`, hard-blocked
+  // in this repo's local environment):
+  //   planning-command-router 95.65% → floor 94  (already exceeds TARGET_MUTATION_SCORE (80))
+  //   plan-document            76.58% → floor 75
+  //   planning-inspect         57.03% → floor 56  (well below TARGET (80) — ratchet
+  //     candidate; comfortably clears its own floor but has real room to grow.
+  //     Raise as its tests improve, never lower it.)
+  //
+  // All three shards point at tests/planning-inspect.unit.test.cjs (in-process,
+  // spawn-free, ~0.3s dry run), not tests/planning-inspect.test.cjs — that is
+  // what made measurement possible at all. The integration file spawns a
+  // subprocess per case via runGsdTools; Stryker's command runner treats the
+  // whole `node --test <file>` invocation as one test costing whatever the
+  // slowest case costs (measured ~20s), and re-runs that entire file once per
+  // mutant, so 640 mutants x 20s could not finish inside the 15-minute shard
+  // cap. The integration suite is unaffected by this change: it keeps running
+  // in full in the normal (non-mutation) test job.
+  'planning-inspect': {
+    cjs: 'gsd-core/bin/lib/planning-inspect.cjs',
+    tests: [
+      'tests/planning-inspect.unit.test.cjs',
+    ],
+    minScore: 56,
+  },
+  'plan-document': {
+    cjs: 'gsd-core/bin/lib/plan-document.cjs',
+    tests: [
+      'tests/planning-inspect.unit.test.cjs',
+    ],
+    minScore: 75,
+  },
+  'planning-command-router': {
+    cjs: 'gsd-core/bin/lib/planning-command-router.cjs',
+    tests: [
+      'tests/planning-inspect.unit.test.cjs',
+    ],
+    minScore: 94,
+  },
+  // model-catalog: net-new registration by #3007. The module was entirely
+  // outside mutation scoring (has_work: "false") before this entry, so the
+  // #3007 per-model Codex effort rewrite (renderEffortForRuntime's
+  // CODEX_MODEL_EFFORT lookup, the 'ultra' policy rejection, the ladder
+  // walk-up clamp) had zero mutation coverage.
+  //
+  // Same #2790 precedent as planning-inspect above: this shard points at a
+  // dedicated tests/model-catalog.unit.test.cjs, NOT tests/model-resolver.test.cjs
+  // — that integration file uses runGsdTools heavily and would hit the same
+  // 15-minute shard-cap cancellation #2790 documented (a `node --test <file>`
+  // invocation is ONE test costing whatever its slowest case costs, re-run
+  // per mutant). tests/model-catalog.unit.test.cjs is spawn-free, in-process,
+  // and runs in well under a second.
+  //
+  // Measured CI score (GitHub Actions run 32605073352, job 97108869486):
+  //   model-catalog 59.62% → floor 58  (248 killed, 168 survived, 0 timeouts,
+  //     0 errors; below TARGET_MUTATION_SCORE (80) — ratchet candidate like
+  //     planning-inspect (56): comfortably clears its own floor but has real
+  //     room to grow. Raise as its tests improve, never lower it.)
+  // Floor follows this file's documented rule, minScore = floor(measured) - 1,
+  // matching the sibling precedent exactly (57.03 → 56, 76.58 → 75, 95.65 → 94).
+  //
+  // The shard completed in 57 seconds — concrete evidence the spawn-free
+  // unit-file design above worked: the #2790 precedent's 15-minute shard-cap
+  // cancellations do not apply here, and for comparison the `frontmatter`
+  // shard in the same run took 9m46s.
+  'model-catalog': {
+    cjs: 'gsd-core/bin/lib/model-catalog.cjs',
+    tests: ['tests/model-catalog.unit.test.cjs'],
+    minScore: 58,
   },
 };
 

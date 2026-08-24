@@ -215,7 +215,15 @@ If your machine already uses `~/.agents/skills` and does not have `~/.config/age
 kimi --agent-file ~/.agents/agents/gsd.yaml
 ```
 
-Kimi also discovers user skills from the brand-specific `~/.kimi-code` directory. If your Kimi setup is already centered on `~/.kimi-code`, install there explicitly:
+> **If you are on Kimi Code, use `--kimi-code`, not `--kimi` with a redirected config dir.** Since 1.10.0 (#2755) Kimi Code is its own runtime with its own hooks root:
+>
+> ```bash
+> npx @opengsd/gsd-core@latest --kimi-code --global
+> ```
+>
+> `--config-dir` and `KIMI_CONFIG_DIR` select the *skills* root only. They do **not** move the native `config.toml` that carries GSD's `[[hooks]]` block — that root is chosen by the runtime (`~/.kimi` for `--kimi` via `KIMI_SHARE_DIR`, `~/.kimi-code` for `--kimi-code` via `KIMI_CODE_HOME`). Running `--kimi --config-dir ~/.kimi-code` therefore puts your skills under `~/.kimi-code` while the hooks still land in `~/.kimi` — the exact split that left orphaned hooks behind before 1.10.0. See [Migrating from `--kimi` to `--kimi-code`](../migration/kimi-to-kimi-code.md), which also covers reclaiming artifacts an older install already wrote.
+
+Kimi CLI also discovers user skills from the brand-specific `~/.kimi-code` directory. If you are genuinely on **Kimi CLI** and your setup is centered on `~/.kimi-code`, redirect its skills root explicitly:
 
 ```bash
 npx @opengsd/gsd-core@latest --kimi --global --config-dir ~/.kimi-code
@@ -514,6 +522,33 @@ WINDSURF_CONFIG_DIR=~/.codeium/windsurf-next npx @opengsd/gsd-core@latest --wind
 ```
 
 Select the corresponding stable runtime in the installer prompt. GSD does not enumerate prerelease editions as separate named runtimes — they are best-effort via this env-var mechanism and are not separately tested in release CI.
+
+---
+
+## Sharing one config root across environments
+
+When one config root (`~/.claude`, `~/.config/opencode`, …) is mounted or synced into
+machines with different Node.js layouts — a host plus Docker containers bind-mounting the
+same directory, or WSL and Windows sharing a drive — install with `--portable-hooks`
+(or `GSD_PORTABLE_HOOKS=1`):
+
+```bash
+npx @opengsd/gsd-core@latest --claude --global --portable-hooks
+```
+
+Hook script paths are emitted `$HOME`-relative, and every managed JavaScript hook command
+resolves its node binary at hook-fire time instead of depending on whichever machine ran
+the installer (#3662): portable installs route through a staged
+`hooks/gsd-node-runner.sh` resolver (the install-time node path first, then `command -v
+node`, then the well-known layouts); non-portable installs carry an equivalent inline
+fallback chain. The install-time path is always tried first, so GUI launches with a
+minimal `PATH` keep working, and a bare `node` lookup is never depended on. Re-running
+install or update from any of the environments converges stale runner paths — no mixed
+state where some hooks work in one environment and the rest in another.
+
+To pin down which node a given environment picks, run the resolver directly with
+`GSD_NODE_RUNNER_NO_FALLBACKS=1` (first-argument-only resolution) — it prints a stderr
+diagnostic and exits non-zero when nothing resolves.
 
 ---
 

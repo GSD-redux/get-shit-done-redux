@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/cli/... substrings are external antigravity.google URL citations in comments, not repo paths.
 'use strict';
 
 /**

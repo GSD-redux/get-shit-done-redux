@@ -46,6 +46,7 @@
     "context_coverage_gate": true,
     "code_review": true,
     "code_review_depth": "standard",
+    "code_review_depth_overrides": [],
     "code_review_command": null,
     "pattern_mapper": true,
     "plan_bounce": false,
@@ -60,6 +61,7 @@
   },
   "planning": {
     "commit_docs": true,
+    "pr_strict": false,
     "search_gitignored": false,
     "sub_repos": [],
     "granularity": "standard"

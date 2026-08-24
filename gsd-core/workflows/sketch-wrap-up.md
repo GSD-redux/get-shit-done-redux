@@ -13,9 +13,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 <step name="banner">
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SKETCH WRAP-UP
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SKETCH WRAP-UP
 ```
 </step>
 
@@ -55,17 +53,15 @@ Present each unprocessed sketch in ascending order. For each sketch, show:
 
 Then ask the user:
 
-╔══════════════════════════════════════════════════════════════╗
-║  CHECKPOINT: Decision Required                               ║
-╚══════════════════════════════════════════════════════════════╝
+### CHECKPOINT: Decision Required
 
 Sketch {NNN}: {name} — Winner: Variant {X}
 
 {key design decisions summary}
 
-──────────────────────────────────────────────────────────────
-→ Include / Exclude / Partial / Let me look at it
-──────────────────────────────────────────────────────────────
+---
+
+**→ Include / Exclude / Partial / Let me look at it**
 
 **If "Let me look at it":**
 1. Provide: `open .planning/sketches/NNN-name/index.html`
@@ -239,9 +235,7 @@ gsd_run query commit "docs(sketch-wrap-up): package [N] sketch findings into pro
 
 <step name="report">
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SKETCH WRAP-UP COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SKETCH WRAP-UP COMPLETE ✓
 
 **Curated:** {N} sketches ({included} included, {excluded} excluded)
 **Design areas:** {list}
@@ -252,7 +246,7 @@ gsd_run query commit "docs(sketch-wrap-up): package [N] sketch findings into pro
 The sketch-findings skill will auto-load when building the UI.
 ```
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up
 
@@ -260,7 +254,7 @@ The sketch-findings skill will auto-load when building the UI.
 
 `/gsd:sketch` (run with no argument — its frontier mode analyzes the sketch landscape and proposes consistency and frontier sketches)
 
-───────────────────────────────────────────────────────────────
+---
 
 **Also available:**
 - `/gsd:plan-phase` — start building the real UI
@@ -268,7 +262,7 @@ The sketch-findings skill will auto-load when building the UI.
 - `/gsd:sketch [idea]` — sketch a specific new design area
 - `/gsd:explore` — continue exploring
 
-───────────────────────────────────────────────────────────────
+---
 </step>
 
 </process>

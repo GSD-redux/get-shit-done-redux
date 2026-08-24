@@ -190,6 +190,8 @@ Every task has four required fields:
 
 **Nyquist Rule:** Every `<verify>` includes `<automated>`. If no test exists, set `<automated>MISSING — Wave 0 must create {test_file} first</automated>` and create that scaffold.
 
+**Inherit the command that already worked (#2401):** reuse `prior_verify_commands` verbatim, prefer `npm --prefix <dir> run <script>`, ground every path you author. @gsd-core/references/planner-verify-command-grounding.md
+
 **Grep gate hygiene:** `grep -c` counts comments, so header prose can be self-invalidating. Use `grep -v '^#' | grep -c token`. Bare `== 0` gates on unfiltered files are forbidden.
 
 <comment_text_discipline>
@@ -263,7 +265,7 @@ Exceptions where `tdd="true"` is not needed: `type="checkpoint:*"` tasks, config
   <name>End-to-end "[capability]" — one path only</name>
   <files>[one file per layer the phase touches]</files>
   <action>Wire ONE entry point through every layer to the far end of the stack. No other call sites, no batching. Real error handling on the single path.</action>
-  <verify>[a real, runnable END-TO-END check of the one path — not a per-layer unit test]</verify>
+  <verify><automated>[a real END-TO-END check of the one path — not a per-layer unit test]</automated></verify>
   <done>The single happy path works end-to-end and is committed.</done>
 </task>
 ```
@@ -746,12 +748,12 @@ for each plan in plan_order:
 # Implicit dependency: files_modified overlap forces a later wave.
 for each plan B in plan_order:
   for each earlier plan A where A != B:
-    if any file in B.files_modified is also in A.files_modified:
+    if any file in (B.files_modified + B.files_deleted) is also in (A.files_modified + A.files_deleted):
       B.wave = max(B.wave, A.wave + 1)
       waves[B.id] = B.wave
 ```
 
-**Rule:** Same-wave plans must have zero `files_modified` overlap. After assigning waves, scan each wave; if any file appears in 2+ plans, bump the later plan to the next wave and repeat.
+**Rule:** Same-wave plans must have zero `files_modified`/`files_deleted` overlap. After assigning waves, scan each wave; if any file appears in 2+ plans, bump the later plan to the next wave and repeat.
 </step>
 
 <step name="group_into_plans">

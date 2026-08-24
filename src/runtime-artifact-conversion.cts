@@ -3503,7 +3503,14 @@ function applyAgentFrontmatterExtensions(
   // effort key, so skipping injection is the whole job.
   if (universalEffort !== 'inherit') {
     const renderedEffort = _getGsdEffortCatalog().renderEffortForRuntime(runtime, universalEffort).value;
-    result = injectEffortFrontmatter(result, renderedEffort);
+    // #3007: `value` is `string | null` — a rejected/unrenderable level (e.g.
+    // 'ultra', or a catalog with no advertised level at or above the request)
+    // renders null. Same posture as the 'inherit' case above: omit the key
+    // entirely rather than writing a literal `effort: null`, so the host
+    // falls back to its own default instead of failing to parse.
+    if (renderedEffort !== null) {
+      result = injectEffortFrontmatter(result, renderedEffort);
+    }
   }
   const disallowedTools = READONLY_AGENT_DISALLOWED_TOOLS[agentName];
   if (disallowedTools) result = injectDisallowedToolsFrontmatter(result, disallowedTools);

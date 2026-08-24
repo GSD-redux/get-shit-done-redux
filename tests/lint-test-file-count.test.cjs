@@ -20,6 +20,7 @@ const {
   Verdict,
   evaluateLint,
   testEffectivePrefix,
+  _buildTestMap,
 } = require(LINT_SCRIPT);
 
 // ---------------------------------------------------------------------------
@@ -259,6 +260,42 @@ describe('evaluateLint — allowlist behaviour (identity-based)', () => {
     );
     assert.deepStrictEqual(result.novel, ['phase-brand-new.test.cjs']);
     assert.deepStrictEqual(result.stale, ['phase-regression.test.cjs']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// _buildTestMap — longest-prefix bucketing (order-independence)
+// ---------------------------------------------------------------------------
+
+describe('_buildTestMap — longest-prefix bucketing', () => {
+  // Regression for readdirSync-order-dependent bucketing: `verify.cjs` and
+  // `verify-command-grounding.cjs` are production modules where one name is a
+  // hyphen-extension of the other. fs.readdirSync order is not stable across
+  // platforms (e.g. Linux ext4 hash order vs macOS HFS+/APFS), so
+  // `prodPrefixes` (a Map built from readdirSync) can iterate in either
+  // order. A test file matching the longer, more specific prefix must always
+  // bucket there — never fall through to the shorter prefix — regardless of
+  // which key the Map visits first.
+  const testFile = makeFiles('verify-command-grounding', ['verify-command-grounding.test.cjs'])[0];
+
+  test('buckets to the longer prefix when the short prefix is visited first', () => {
+    const prodPrefixes = new Map([
+      ['verify', '/fake/src/verify.cjs'],
+      ['verify-command-grounding', '/fake/src/verify-command-grounding.cjs'],
+    ]);
+    const map = _buildTestMap(prodPrefixes, [testFile]);
+    assert.deepStrictEqual(map.get('verify-command-grounding'), [testFile]);
+    assert.deepStrictEqual(map.get('verify'), []);
+  });
+
+  test('buckets to the longer prefix when the long prefix is visited first', () => {
+    const prodPrefixes = new Map([
+      ['verify-command-grounding', '/fake/src/verify-command-grounding.cjs'],
+      ['verify', '/fake/src/verify.cjs'],
+    ]);
+    const map = _buildTestMap(prodPrefixes, [testFile]);
+    assert.deepStrictEqual(map.get('verify-command-grounding'), [testFile]);
+    assert.deepStrictEqual(map.get('verify'), []);
   });
 });
 

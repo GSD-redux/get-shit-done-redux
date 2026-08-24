@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/CONFIGURATION.md is cited only in a comment; never read.
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.

@@ -12,7 +12,8 @@
  *
  * Dependencies (leaf modules only):
  *   - node:fs / node:os / node:path (stdlib)
- *   - ./configuration.cjs    (normalizeLegacyKeys, CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS)
+ *   - ./configuration.cjs    (normalizeLegacyKeys, isConfigSection, CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS)
+ *   - ./unusable-input.cjs   (warnUnusableInput, UNUSABLE_REASON — #3760)
  *   - ./config-schema.cjs    (VALID_CONFIG_KEYS, DYNAMIC_KEY_PATTERNS)
  *   - ./planning-workspace.cjs (planningDir, planningRoot)
  *   - ./shell-command-projection.cjs (execGit, platformWriteSync, platformReadSync)
@@ -31,11 +32,17 @@ const { planningDir, planningRoot } = planningWorkspace;
 import coreUtilsModule = require('./core-utils.cjs');
 const { detectSubRepos } = coreUtilsModule;
 // ─── Configuration Module (generated CJS mirror) ────────────────────────────
-import { CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS, normalizeLegacyKeys } from './configuration.cjs';
+import { CONFIG_DEFAULTS as CANONICAL_CONFIG_DEFAULTS, normalizeLegacyKeys, isConfigSection } from './configuration.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configSchema = require('./config-schema.cjs');
 const { VALID_CONFIG_KEYS, DYNAMIC_KEY_PATTERNS, isCentralConfigKey: _isCentralConfigKeyFn } = configSchema;
 import { KNOWN_RUNTIMES, KNOWN_PROVIDERS, ADAPTIVE_TIER_VALUES } from './model-catalog.cjs';
+// #3760: the ADR-1411 out-of-band diagnostic seam. loadConfig returns `.config`
+// alone, so an in-band `skipped` record would be unreachable to nearly every
+// caller — "a reason no caller reads is an unreachable field" (ADR-1411).
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import unusableInputModule = require('./unusable-input.cjs');
+const { UNUSABLE_REASON: _UNUSABLE_REASON, warnUnusableInput: _warnUnusableInput } = unusableInputModule;
 // ─── Federated Config (ADR-857 phase 3b) ─────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import federatedConfigModule = require('./federated-config.cjs');
@@ -79,6 +86,7 @@ function _resetFederatedRegistryForTests(): void {
  *  - git.*               → flat git keys (branching_strategy, templates)
  *  - workflow.*          → flat names (research, verifier, …)
  *  - planning.sub_repos  → sub_repos
+ *  - planning.pr_strict  → pr_strict
  *  - planning.commit_docs / search_gitignored → top-level flat keys
  */
 
@@ -115,6 +123,7 @@ const CONFIG_DEFAULTS = {
   exa_search: _getConfigDefault('exa_search'),
   text_mode: _getNestedConfigDefault('workflow', 'text_mode'),
   sub_repos: _getNestedConfigDefault('planning', 'sub_repos'),
+  pr_strict: _getNestedConfigDefault('planning', 'pr_strict'),
   resolve_model_ids: _getConfigDefault('resolve_model_ids'),
   context_window: _getConfigDefault('context_window'),
   phase_naming: _getConfigDefault('phase_naming'),
@@ -678,13 +687,25 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       }
       if (rootRead.kind !== 'ok') throw new Error('root config absent or unusable');
       rootParsed = rootRead.data;
-      const { parsed: rootNormalized, normalizations: rootNorms } = normalizeLegacyKeys(rootParsed);
+      const { parsed: rootNormalized, normalizations: rootNorms, skipped: rootSkipped } = normalizeLegacyKeys(rootParsed);
+      if (rootSkipped.length > 0) {
+        _warnUnusableInput({ reason: _UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT, source: rootConfigPath });
+      }
       if (rootNorms.length > 0) {
         for (const norm of rootNorms as unknown as NormalizationEntry[]) {
           if (norm.requiresFilesystem && !(rootNormalized as ParsedConfig).planning?.['sub_repos']) {
             const detected = getDetectedSubRepos();
             if (detected.length > 0) {
-              if (!(rootNormalized as ParsedConfig).planning) (rootNormalized as ParsedConfig).planning = {};
+              // #3760: `if (!planning) planning = {}` treated a non-empty STRING as an
+              // already-present section, and the next line then assigned onto a
+              // primitive — a strict-mode TypeError the enclosing catch swallowed,
+              // discarding the user's whole config. `requiresFilesystem` now only
+              // reaches here when the section is absent or an object (configuration.cts
+              // block 3 refuses otherwise and reports it via `skipped`), so this
+              // narrowing chooses between merge and create and never discards.
+              if (!isConfigSection((rootNormalized as ParsedConfig).planning)) {
+                (rootNormalized as ParsedConfig).planning = {};
+              }
               (rootNormalized as ParsedConfig).planning!['sub_repos'] = detected;
               (rootNormalized as ParsedConfig).planning!['commit_docs'] = false;
             }
@@ -718,7 +739,10 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
 
     let configDirty = false;
     {
-      const { parsed: normalized, normalizations } = normalizeLegacyKeys(fileData);
+      const { parsed: normalized, normalizations, skipped } = normalizeLegacyKeys(fileData);
+      if (skipped.length > 0) {
+        _warnUnusableInput({ reason: _UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT, source: configPath });
+      }
       if (normalizations.length > 0) {
         Object.keys(fileData).forEach(k => delete (fileData as Record<string, unknown>)[k]);
         Object.assign(fileData, normalized);
@@ -727,7 +751,8 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
           if (norm.requiresFilesystem && !fileData.planning?.['sub_repos']) {
             const detected = getDetectedSubRepos();
             if (detected.length > 0) {
-              if (!fileData.planning) fileData.planning = {};
+              // #3760 — see the identical guard on the root-config path above.
+              if (!isConfigSection(fileData.planning)) fileData.planning = {};
               fileData.planning['sub_repos'] = detected;
               fileData.planning['commit_docs'] = false;
             }
@@ -742,7 +767,10 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       if (detected.length > 0) {
         const sorted = [...currentSubRepos].sort();
         if (JSON.stringify(sorted) !== JSON.stringify(detected)) {
-          if (!fileData.planning) fileData.planning = {};
+          // #3760 — reachable only when `planning` already yielded a non-empty
+          // sub_repos array, so it is an object here; the narrowing keeps the
+          // assignment total rather than relying on that from three frames away.
+          if (!isConfigSection(fileData.planning)) fileData.planning = {};
           fileData.planning['sub_repos'] = detected;
           configDirty = true;
         }
@@ -844,6 +872,7 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       _auto_chain_active: get('_auto_chain_active', { section: 'workflow', field: '_auto_chain_active' }) ?? false,
       mode: get('mode') ?? 'interactive',
       sub_repos: get('sub_repos', { section: 'planning', field: 'sub_repos' }) ?? defaults.sub_repos,
+      pr_strict: get('pr_strict', { section: 'planning', field: 'pr_strict' }) ?? defaults.pr_strict,
       resolve_model_ids: get('resolve_model_ids') ?? defaults.resolve_model_ids,
       context_window: get('context_window') ?? defaults.context_window,
       phase_naming: get('phase_naming') ?? defaults.phase_naming,

@@ -93,9 +93,7 @@ Wait for the user's response before continuing. Map the chosen number to the cor
 **Show the routing decision.**
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SMART ENTRY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SMART ENTRY
 
 **Situation:** {situation}
 **Routing to:** {chosen command}

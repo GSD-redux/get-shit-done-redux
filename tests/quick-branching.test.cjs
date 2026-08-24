@@ -21,6 +21,7 @@ const path = require('node:path');
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
 const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const QUICK_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md');
 
@@ -146,7 +147,14 @@ function runStep(bash, cwd, branchName) {
   const script = `#!/usr/bin/env bash\nset -uo pipefail\nbranch_name="${branchName}"\n${bash}\n`;
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
   try {
-    const r = runHook(scriptPath, [], { interpreter: 'bash', cwd, env: GIT_ENV, timeoutMs: GIT_TIMEOUT_MS });
+    // Step 2.5's script is a bash FAN-OUT (multiple git commands in sequence
+    // under one `bash` interpreter), not a single git plumbing call — the
+    // wrong class for GIT_TIMEOUT_MS. CI hit exactly this at 15000ms on PR
+    // #3787 run 32668773524 (`full test (windows-latest, 24, shard 3/3)`,
+    // `new quick-task branch branches off origin/main (#2916)`): SIGTERM,
+    // outcome=timed_out exitCode=null. See HOOK_FANOUT_TIMEOUT_MS in
+    // ./helpers/timeouts.cjs for the class rationale.
+    const r = runHook(scriptPath, [], { interpreter: 'bash', cwd, env: GIT_ENV, timeoutMs: HOOK_FANOUT_TIMEOUT_MS });
     throwIfFailed(r, `runStep: bash ${scriptPath}`);
     return r.stdout;
   } finally {

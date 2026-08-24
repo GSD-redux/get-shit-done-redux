@@ -20,12 +20,9 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --default "" 2>/d
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
-
 <step name="banner">
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SPIKING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SPIKING
 ```
 
 Parse `$ARGUMENTS` for:
@@ -175,15 +172,13 @@ Order by risk — most likely to kill the idea runs first.
 <step name="align">
 **If `QUICK_MODE` is true:** Skip.
 
-╔══════════════════════════════════════════════════════════════╗
-║  CHECKPOINT: Decision Required                               ║
-╚══════════════════════════════════════════════════════════════╝
+### CHECKPOINT: Decision Required
 
 {spike table from decompose step}
 
-──────────────────────────────────────────────────────────────
-→ Build all in this order, or adjust the list?
-──────────────────────────────────────────────────────────────
+---
+
+**→ Build all in this order, or adjust the list?**
 </step>
 
 <step name="research">
@@ -358,17 +353,15 @@ tags: [tag1, tag2]
 - Self-verifiable: run, iterate if findings warrant deeper investigation, update verdict
 - Needs human judgment: present checkpoint box:
 
-╔══════════════════════════════════════════════════════════════╗
-║  CHECKPOINT: Verification Required                           ║
-╚══════════════════════════════════════════════════════════════╝
+### CHECKPOINT: Verification Required
 
 **Spike {NNN}: {name}**
 **How to run:** {command}
 **What to expect:** {concrete outcomes}
 
-──────────────────────────────────────────────────────────────
-→ Does this match what you expected? Describe what you see.
-──────────────────────────────────────────────────────────────
+---
+
+**→ Does this match what you expected? Describe what you see.**
 
 **h.** Update `.planning/spikes/MANIFEST.md` with the spike's row, setting the Idea column to
 this spike's idea key.
@@ -390,16 +383,14 @@ Do not rush to a verdict. A spike that says "VALIDATED — it works" with no nua
 
 **k.** If core assumption invalidated:
 
-╔══════════════════════════════════════════════════════════════╗
-║  CHECKPOINT: Decision Required                               ║
-╚══════════════════════════════════════════════════════════════╝
+### CHECKPOINT: Decision Required
 
 Core assumption invalidated by Spike {NNN}.
 {what was invalidated and why}
 
-──────────────────────────────────────────────────────────────
-→ Continue with remaining spikes / Pivot approach / Abandon
-──────────────────────────────────────────────────────────────
+---
+
+**→ Continue with remaining spikes / Pivot approach / Abandon**
 </step>
 
 <step name="update_conventions">
@@ -435,9 +426,7 @@ gsd_run query commit "docs(spikes): update conventions" --files .planning/spikes
 
 <step name="report">
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SPIKE COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SPIKE COMPLETE ✓
 
 ## Verdicts
 
@@ -456,7 +445,7 @@ gsd_run query commit "docs(spikes): update conventions" --files .planning/spikes
 {what to use, avoid, watch out for}
 ```
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up
 
@@ -464,14 +453,14 @@ gsd_run query commit "docs(spikes): update conventions" --files .planning/spikes
 
 `/gsd:spike --wrap-up`
 
-───────────────────────────────────────────────────────────────
+---
 
 **Also available:**
 - `/gsd:spike` — spike more ideas (or run with no argument for frontier mode)
 - `/gsd:plan-phase` — start planning the real implementation
 - `/gsd:explore` — continue exploring the idea
 
-───────────────────────────────────────────────────────────────
+---
 </step>
 
 </process>

@@ -14,9 +14,7 @@ Scan a repo for mixed planning documents (ADR, PRD, SPEC, DOC), synthesize them 
 Display the stage banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► INGEST DOCS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► INGEST DOCS
 ```
 
 </step>
@@ -332,9 +330,7 @@ gsd_run commit \
 Display completion:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► INGEST DOCS COMPLETE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► INGEST DOCS COMPLETE
 ```
 
 Show:

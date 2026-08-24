@@ -1,6 +1,6 @@
 # ADR 443: Unified cross-provider effort controls and fast-mode-aware routing
 
-- **Status:** Proposed (2026-05-28)
+- **Status:** Accepted (2026-08-19)
 - **Date:** 2026-05-28
 - **Tracking issue:** [#443](https://github.com/open-gsd/get-shit-done-redux/issues/443)
 
@@ -36,6 +36,91 @@ The audit confirmed the cross-provider resolver/renderer/CLI machinery genuinely
 **This ADR therefore remains `Proposed`.** Decision item 6's condition is met (by #2296); Decision item 1's is not. The corpus rule for ratifying a stale `Proposed` requires the decided mechanism to demonstrably exist in the tree, and the invocation-override step still has no caller outside the CLI surface and tests. Status flips when item 1 gains a live caller and a test exercises that path through a workflow rather than through `gsd-tools` directly.
 
 **Boundary.** #2313 owns the static/install-time effort channel for Codex (`model_reasoning_effort` in generated `~/.codex/agents/<agent>.toml`, plus a sync path) and explicitly places orchestrator effort-override drift outside its scope. That is the static channel this ADR already ships; the work above is the invocation-time channel it does not.
+
+## Amendment (2026-08-19): Decision item 1 scoped to the operator surface; this ADR is ratified (#2475)
+
+Recorded as a dated section rather than by editing the amendment above or Decision item 1 itself, since ADRs here are append-only.
+
+**The remaining maintainer call has been made: unblock path (b), applied to Decision item 1 *only*.** The 2026-07-21 amendment above left this ADR `Proposed` on a single condition — that item 1's *orchestrator invocation override* (precedence step 1) gain a caller in shipped orchestration. It does not gain one. The scope is corrected instead.
+
+**Why the original (b) wording does not fit, and what replaces it.** The unblock condition offered (b) as *"if the ADR's intended scope is in fact limited to static install-time propagation, amend Decision items 1 and 6 to say so explicitly."* That sentence is now **false on both counts** and must not be adopted verbatim: item 6 has a live orchestration caller (#2296, `gsd-core/references/execute-phase-quota-recovery.md`, `@`-included into `execute-phase.md`), and #2481 delivered a live *invocation-time* channel in which the resolved cascade reaches a spawned host as an argv argument, gated by [ADR-1239](1239-gsd-embeddable-orchestration-engine.md)'s `effortSurface`. This ADR's scope is emphatically **not** limited to install-time propagation. What is narrowed is one precedence step, for a reason (b) did not anticipate.
+
+**What Decision item 1's invocation override is.** An **operator-facing surface**, not an orchestration channel. `gsd_run query resolve-execution <agent> --effort <level>` exists so a human — or an agent diagnosing routing — can ask *"what would this agent run at if effort were X?"* without mutating project or home configuration. That is its whole job, and it does it today. Shipped orchestration deliberately does **not** pass `--effort`: workflows resolve effort through precedence steps 2–5 (`effort.agent_overrides` → `effort.routing_tier_defaults` → `effort.default` → built-in), which is the configured, reviewable, per-project path. An override baked into a workflow would be an unconfigurable constant overriding the user's own configuration at the top of the cascade — the inverse of what step 1 is for.
+
+**Why no consumer was invented to satisfy the gate.** The unblock condition is a proxy for design maturity; wiring a caller purely to flip a status is the textbook case of a measure becoming a target, producing a number that looks better while the design gets worse. No user has asked for a per-invocation effort override, and #2475's actual complaint — reviewer CLIs silently inheriting a global effort default — is closed by the cascade→argv path, not by step 1. Adding an unrequested knob to ratify an ADR would also invert the very property [ADR-1239](1239-gsd-embeddable-orchestration-engine.md)'s `effortSurface` amendment claims for itself (*"a wired axis, not a declared-but-unconsumed one"*): a consumed-but-unrequested one is no better.
+
+**`--effort` is supported and is NOT deprecated.** Scoping it out of *orchestration* says nothing about its standing as a CLI flag. It ships, it is documented, it is covered by tests, and callers may rely on it. This paragraph exists so that a future reader — or a dead-code sweep — does not read "no orchestration caller" as "unused, remove it".
+
+**What is deliberately not built.** There is no per-run effort override for review lanes ("make *this* review cheap"). A user wanting that edits `effort.*`. Should a real need appear, it is a new enhancement to be judged on its merits — not a deferred obligation of this ADR, and not a request that was refused.
+
+**Status: `Proposed` → `Accepted`.** The corpus rule for ratifying a stale `Proposed` requires the decided mechanism to demonstrably exist in the tree. With item 1's decided scope narrowed to the operator surface, every Decision item now clears that bar: items 1–3 and 5 in the resolver, renderer, and `resolve-execution` output; item 4 in the static install-time propagation the 2026-07-17 audit confirmed end-to-end; item 6 in #2296's escalation caller; and the cascade's delivery to a spawned host in #2481's review-lane wiring.
+
+**The invariant this ratification rests on, and its guard.** Ratification is conditional on item 1 *staying* operator-only. `tests/effort-surface-axis.test.cjs` walks `gsd-core/workflows`, `gsd-core/references`, `agents`, and `commands` and fails if any of them invokes `resolve-execution … --effort` in either accepted shape (`--effort <level>` or `--effort=<level>`). That guard was widened in this change: it previously matched only the space-separated form, so `--effort=low` would have passed it silently. **Wiring an orchestration caller therefore requires amending this ADR first** — the guard is the enforcement of this decision, not a snapshot of a gap awaiting closure.
+
+**Boundary — unchanged.** [ADR-2313](2313-codex-passive-model-posture.md) still owns the static/install-time channel; [ADR-1239](1239-gsd-embeddable-orchestration-engine.md)'s `effortSurface` amendment still owns the invocation-time argv channel. This amendment changes neither, and changes no runtime behavior at all.
+
+## Amendment (#3007, 2026-08-22) — the Codex capability premise went stale
+
+**What changed underneath this ADR.** The Context section below records, as fact, that Codex's
+ladder is `minimal, low, medium, high, xhigh` and that it *"has `minimal`; no `max`"*, and Decision
+item 2 clamps `max → xhigh` on that basis. That was accurate when written. It is no longer:
+Codex's `ReasoningEffort` now accepts `none, minimal, low, medium, high, xhigh, max, ultra`, and
+capability is declared **per model** via `supported_reasoning_levels`, which Codex validates against
+(`validate_spawn_agent_reasoning_effort`) and exposes through `model/list`.
+
+Verified against Codex's own `codex-rs/models-manager/models.json`:
+
+| Model | `supported_reasoning_levels` | `default_reasoning_level` |
+|---|---|---|
+| `gpt-5.6-sol` | low, medium, high, xhigh, max, **ultra** | `low` |
+| `gpt-5.6-luna` | low, medium, high, xhigh, max | `medium` |
+
+**No Codex model advertises `minimal`** — the level this ADR called Codex-only.
+
+**What this amendment changes.** Decision item 2's per-runtime clamp table is superseded for Codex
+by a per-**model** advertised set, with the family baseline `low, medium, high, xhigh, max` for any
+model GSD does not know:
+
+| Universal level | Claude rendering | Codex rendering (was → now) |
+|---|---|---|
+| `minimal` | `low` (clamped) | `minimal` → **`low` (clamped)** |
+| `low`–`xhigh` | unchanged | unchanged |
+| `max` | `max` | `xhigh` (clamped) → **`max` (passes)** |
+| `ultra` | *not on the ladder* | **rejected, never clamped** |
+
+Two defects this corrects, both live on `next` before it:
+
+1. `max` was silently discarded for every Codex model, all of which advertise it.
+2. `providerPresets.openai.haiku.low` paired `gpt-5.6-luna` with `reasoning_effort: "minimal"` — a
+   level luna does not advertise, written into a document Codex itself validates.
+
+**Clamping becomes visible rather than silent.** `RenderedEffort` gains `requested` / `clamped` /
+`reason`, and `resolve-execution` surfaces them as the flat result keys `effort_requested`,
+`effort_clamped`, and `effort_clamp_reason` — siblings of the existing `effort_rendered`, not a
+nested `effort` object. The old table clamped correctly-but-invisibly, so a user asking for `max` on
+Codex had no way to learn they were getting `xhigh` — the failure mode Postel's robustness critique
+warns about, and the reason "be liberal" here has to mean "liberal and loud".
+
+**No model divergence is observable today.** All three shipped Codex models advertise the same
+usable set (`low`…`max`), and `ultra` — sol's only differentiator — is rejected for every model
+regardless. So today, the same requested level renders identically across `gpt-5.6-sol`,
+`gpt-5.6-terra`, and `gpt-5.6-luna`; the per-model table exists because Codex declares capability
+per model and the sets are free to diverge, not because a user can currently observe a difference.
+
+**`ultra` is refused, not laddered.** Codex's catalog describes it as *"Maximum reasoning with
+automatic task delegation"*, and at `ultra` Codex enters proactive multi-agent mode
+(`effective_multi_agent_mode` → `Proactive`), spawning sub-agents on its own initiative underneath
+GSD's orchestration ([#2167](https://github.com/open-gsd/gsd-core/issues/2167)). It is a mode
+switch, not a reasoning depth, so it is not added to the universal ladder — which stays
+provider-agnostic per Decision item 2 — and it is rejected for every model including `gpt-5.6-sol`,
+which advertises it. GSD is deliberately stricter than Codex here: Codex applies proactive mode only
+to V2 sessions and never to spawned sub-agents, but GSD writes effort at install time and cannot
+know the session source of a future invocation.
+
+**What this amendment does NOT change.** The universal ladder itself, the cascade, the resolver
+precedence, the two channel boundaries above, and Claude's rendering are all untouched. The
+per-model table is static and will go stale exactly as this premise did; runtime discovery via
+`model/list` is the known escape hatch and was deliberately deferred as the larger step.
 
 ## Context
 

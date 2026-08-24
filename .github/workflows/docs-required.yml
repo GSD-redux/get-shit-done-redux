@@ -15,6 +15,14 @@ permissions:
 jobs:
   docs-lint:
     runs-on: ubuntu-latest
+    # This job supplies the ALREADY-REQUIRED `docs-lint` context
+    # (.github/rulesets/main-protection.json) and runs `npm ci` plus every
+    # registered docs-guard test — all fork-PR-modifiable. Without a bound, a
+    # fork PR that hangs a registered test pins this required check for
+    # GitHub's 6h default, repeatably. The lane itself runs in ~210s; 15
+    # minutes matches test.yml's most common per-job timeout (5 of its 8 jobs
+    # use 15) while giving ~4x headroom.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
         with:
@@ -35,6 +43,15 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
         with:
           node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        # Needed for the docs-guard registry below: several registered tests
+        # (e.g. tests/capability-registry.test.cjs) require devDependencies
+        # such as fast-check that are not present without an install. The
+        # prior single-file `docs-parity-live-registry` step got away without
+        # this because that one test has no external deps; the full registry
+        # does not have that luxury.
+        run: npm ci
       - name: Run docs-required lint
         env:
           GITHUB_BASE_REF: ${{ github.base_ref }}
@@ -45,12 +62,122 @@ jobs:
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -q '^docs/'; then
+          if git -c core.quotepath=false diff --name-only "origin/${BASE_REF}...HEAD" | grep -q '^docs/'; then
             echo "docs_changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "docs_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Docs parity — live registry check
+      # This generalizes the former single-file `docs-parity-live-registry`
+      # check to the docs-guard registry (#3753), and then (#3753 follow-up)
+      # SELECTS only the guards that read the docs/ paths actually changed in
+      # this PR, instead of always running the entire registry — a one-line
+      # typo fix in an unrelated doc should not pay for tests/install.test.cjs
+      # (7840 lines) just because it reads docs/AGENTS.md. It lives in THIS
+      # job rather than a dedicated `paths:`-filtered workflow specifically
+      # because this job has no `paths:` filter and therefore ALWAYS reports
+      # a status, which is what lets it supply the already-required
+      # `docs-lint` context (.github/rulesets/main-protection.json). A
+      # `paths:`-filtered workflow never reports on a non-docs PR, so it can
+      # never be made a required context without hanging every non-docs PR
+      # forever — that was the fatal flaw in the dedicated
+      # `.github/workflows/docs-guards.yml` this replaces.
+      - name: Select docs guards for the changed docs/ paths
+        id: select-docs-guards
         if: steps.docs-changed.outputs.docs_changed == 'true'
-        run: node --test tests/docs-parity-live-registry.test.cjs
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Security follow-up FIX 5: destroy any FORCE-COMMITTED copy of
+          # these files before this step regenerates them. Both are
+          # gitignored, but gitignore does not stop `git add -f`; a fork PR
+          # that force-commits a malicious `.docs-guard-tests.txt` must not
+          # have that content survive into the run below.
+          rm -f .docs-guard-tests.txt .docs-changed-paths.txt
+
+          # Reuse the base ref already fetched above — no re-fetch.
+          git -c core.quotepath=false diff --name-only "origin/${BASE_REF}...HEAD" | grep '^docs/' > .docs-changed-paths.txt || true
+          node -e "
+          const fs = require('fs');
+          const { DOCS_GUARD_TESTS, assertNoSuiteCollision, DOCS_GUARD_TEST_FILES } = require('./scripts/docs-guard-registry.cjs');
+          const { selectDocsGuards } = require('./scripts/select-docs-guards.cjs');
+
+          // State (a) — a bad edit to the registry must never yield a green
+          // check that guarded nothing. This is distinct from state (b)
+          // below: an EMPTY/MALFORMED registry is always a hard failure,
+          // regardless of what changed.
+          if (typeof DOCS_GUARD_TESTS !== 'object' || DOCS_GUARD_TESTS === null || DOCS_GUARD_TEST_FILES.length === 0) {
+            console.error('::error::docs-guard-registry.cjs exported an empty or missing DOCS_GUARD_TESTS map — refusing to run a docs-guard job with zero tests');
+            process.exit(1);
+          }
+          // #3753 security follow-up FIX 3: a registry entry equal to a
+          // run-tests.cjs SUITES token (e.g. a typo'd 'all') would otherwise
+          // be silently treated as a suite selector by selectExplicitFiles
+          // (scripts/run-tests.cjs:651), running the ENTIRE suite inside this
+          // required job instead of erroring. Redundant with
+          // lint-docs-guard-registration.cjs's own check and
+          // docs-guard-registry.cjs's module-load-time self-check — enforced
+          // here too so this derivation step never depends on another
+          // consumer having already run.
+          assertNoSuiteCollision(DOCS_GUARD_TEST_FILES);
+
+          const changedDocsPaths = fs.readFileSync('.docs-changed-paths.txt', 'utf8')
+            .split('\n')
+            .map(s => s.trim())
+            .filter(Boolean);
+
+          const selected = selectDocsGuards(changedDocsPaths, DOCS_GUARD_TESTS);
+
+          console.log('changed docs/ paths:');
+          console.log(changedDocsPaths.map(p => '  ' + p).join('\n') || '  (none)');
+          console.log('selected docs-guard tests (' + selected.length + ' of ' + DOCS_GUARD_TEST_FILES.length + '):');
+          console.log(selected.map(f => '  ' + f).join('\n') || '  (none)');
+
+          if (selected.length === 0) {
+            // State (b) — docs/ changed, but no registered guard reads any
+            // of the changed paths. This is LEGITIMATE (e.g. a typo fix in a
+            // how-to guide no guard covers): exit 0 WITHOUT writing the
+            // selected-tests file, so the next step (gated on that file's
+            // presence) never invokes run-tests.cjs at all. Passing an empty
+            // list to \`run-tests.cjs --files-from\` would instead print
+            // 'no tests in suite \"all\"' and exit 0 — indistinguishable from
+            // a real pass, which is #3753's own failure mode one level down.
+            //
+            // UNREACHABLE with the current registry: six entries in
+            // DOCS_GUARD_TESTS carry the \`'*'\` sentinel (run on ANY docs/
+            // change), so selectDocsGuards() never returns an empty array for
+            // a non-empty changed-docs-paths list — this branch guards a
+            // FUTURE registry shape (one with no wildcard entries), not a
+            // live case today. Corollary: every docs PR today runs at least
+            // those six tree-walking guards, regardless of which docs/ file
+            // changed.
+            console.log('no registered docs-guard reads any changed docs/ path — nothing to run.');
+            process.exit(0);
+          }
+
+          fs.writeFileSync('.docs-guard-tests.txt', selected.join('\n') + '\n');
+          // Security follow-up FIX 5: gate the next step on an EXPLICIT step
+          // OUTPUT this step itself sets, not on hashFiles('.docs-guard-tests.txt')
+          // != ''. hashFiles only checks whether the file exists in the
+          // working tree with non-empty content — it cannot tell a file THIS
+          // STEP legitimately wrote from one a fork PR force-committed
+          // earlier in the same checkout (gitignored files are still
+          // addable with \`git add -f\`). An explicit output set only on this
+          // code path cannot be forged by a committed file.
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'selected=true\n');
+          "
+
+      - name: Run selected docs-guard tests
+        # Only runs when the selection step itself set selected=true — state
+        # (b) above (docs changed, nothing selected) intentionally skips this
+        # step rather than invoking run-tests.cjs with an empty/absent list.
+        # Gated on the step's own OUTPUT (set only on the code path that just
+        # wrote .docs-guard-tests.txt), not on hashFiles(...) != '' — a
+        # force-committed copy of that file cannot forge this output.
+        if: steps.docs-changed.outputs.docs_changed == 'true' && steps.select-docs-guards.outputs.selected == 'true'
+        run: |
+          if [ ! -s .docs-guard-tests.txt ]; then
+            echo "::error::selected docs-guard test list is empty — refusing to run a green check that ran zero tests" >&2
+            exit 1
+          fi
+          node scripts/run-tests.cjs --files-from .docs-guard-tests.txt

@@ -30,7 +30,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
+const { normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId, isSentinelPhaseDir } = phaseIdMod;
 import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
@@ -1198,7 +1198,11 @@ function cmdPhasesClear(cwd: string, raw: boolean, args: string[]): void {
     // divergence meant a `0-*` directory `roadmap analyze` preserves as a
     // sentinel was DELETED here. Routed through the canonical predicate so
     // every reader of "is this a sentinel phase" agrees by construction.
-    const dirs = entries.filter((e) => e.isDirectory() && !isSentinelPhaseId(e.name));
+    // #3639: the DIR-AWARE recognizer — the convention-less id predicate
+    // never saw bracket sentinel dirs (GSD.999-07-icebox), so they were
+    // counted for deletion here while the disk guards (post-#3639) preserve
+    // them; the destructive path must not be the one blind reader left.
+    const dirs = entries.filter((e) => e.isDirectory() && !isSentinelPhaseDir(e.name));
 
     if (dirs.length > 0 && !confirm) {
       error(

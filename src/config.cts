@@ -28,6 +28,13 @@ const { VALID_CONFIG_KEYS, isValidConfigKey, getCapabilityConfigSchema } = confi
 import { isSecretKey, maskSecret } from './secrets.cjs';
 import { normalizeConfiguredDefaultReviewers, INSTANCE_NAME_PATTERN, KNOWN_REVIEWER_SLUGS } from './review-reviewer-selection.cjs';
 import { migrateOnDisk } from './configuration.cjs';
+// #3760: the ADR-1411 out-of-band diagnostic. It lives here rather than inside
+// `migrateOnDisk` because `configuration.cjs` must stay loadable from an install
+// layout holding only itself plus its manifests (#3571) — see the note at the top
+// of configuration.cts.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import unusableInputModule = require('./unusable-input.cjs');
+const { UNUSABLE_REASON, warnUnusableInput } = unusableInputModule;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,6 +104,10 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   // Derived from the defaults manifest rather than restated, so the manifest
   // stays the single source of truth for the smart-zone budget (#2630).
   'workflow.smart_zone_tokens': CONFIG_DEFAULTS.smart_zone_tokens,
+  // #2971: /gsd:pr-branch reads this key directly; an absent key must resolve to the
+  // manifest default rather than "Key not found". Derived from the defaults manifest so
+  // the manifest stays the single source of truth.
+  'planning.pr_strict': CONFIG_DEFAULTS.pr_strict,
 };
 
 /**
@@ -1195,14 +1206,38 @@ function cmdMigrateConfig(cwd: string, raw: boolean): void {
   const ws = process.env['GSD_WORKSTREAM'] || null;
   const report = migrateOnDisk(cwd, ws || undefined);
 
+  // #3760: deduplicated on (path, reason), so a repeated invocation stays quiet.
+  if (report.skipped.length > 0) {
+    warnUnusableInput({
+      reason: UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT,
+      source: path.join(planningDir(cwd, ws || undefined), 'config.json'),
+    });
+  }
+
   if (raw) {
-    if (!report.migrated) {
+    // #3760: a refused migration is NOT an already-canonical config. Reporting
+    // "no legacy keys found" when a legacy key was found and declined would send
+    // the user away believing there is nothing to fix — and the thing to fix is
+    // the one thing only they can fix, by hand.
+    const declined = (report.skipped as Array<{ from: string; to: string; section: string; sectionType: string }>);
+    const declinedLines = declined.map(
+      s => `  ${s.from} → ${s.to}  SKIPPED: '${s.section}' holds a ${s.sectionType}, not an object`,
+    );
+    if (!report.migrated && declined.length === 0) {
       const msg = 'No legacy keys found — config is already canonical.';
       output(msg, true, msg);
+    } else if (!report.migrated) {
+      const lines = [
+        'Not migrated — every legacy key found was left in place:',
+        ...declinedLines,
+        'Fix the section by hand, then re-run. Nothing was written.',
+      ].join('\n');
+      output(lines, true, lines);
     } else {
       const lines = [
         `Migrated: ${String(report.wrote)}`,
         ...(report.normalizations as Array<{ from: string; to: string }>).map(n => `  ${n.from} → ${n.to}`),
+        ...declinedLines,
       ].join('\n');
       output(lines, true, lines);
     }

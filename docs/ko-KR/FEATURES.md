@@ -189,20 +189,21 @@
 **요구사항.**
 - REQ-UI-01: 기존 디자인 시스템 상태를 감지해야 합니다(shadcn components.json, Tailwind config, 토큰).
 - REQ-UI-02: 아직 답변되지 않은 설계 계약 질문만 물어봐야 합니다.
-- REQ-UI-03: 6개 차원에 대해 유효성을 검사해야 합니다(Copywriting, Visuals, Color, Typography, Spacing, Registry Safety).
+- REQ-UI-03: 7개 차원에 대해 유효성을 검사해야 합니다(Copywriting, Visuals, Color, Typography, Spacing, Registry Safety, Inventory Provenance).
 - REQ-UI-04: 유효성 검사가 BLOCKED를 반환하면 수정 루프에 진입해야 합니다(최대 2회 반복).
 - REQ-UI-05: `components.json`이 없는 React/Next.js/Vite 프로젝트에 shadcn 초기화를 제공해야 합니다.
 - REQ-UI-06: 서드파티 shadcn 레지스트리에 대한 레지스트리 안전 게이트를 적용해야 합니다.
 
 **생성 산출물.** `{padded_phase}-UI-SPEC.md` — 실행자가 사용하는 설계 계약
 
-**6가지 유효성 검사 차원.**
+**7가지 유효성 검사 차원.**
 1. **Copywriting** — CTA 레이블, 빈 상태, 오류 메시지
 2. **Visuals** — 초점, 시각적 계층구조, 아이콘 접근성
 3. **Color** — 강조색 사용 규율, 60/30/10 준수
 4. **Typography** — 글꼴 크기/굵기 제약 준수
 5. **Spacing** — 그리드 정렬, 토큰 일관성
 6. **Registry Safety** — 서드파티 컴포넌트 검사 요구사항
+7. **Inventory Provenance** — 컴포넌트 인벤토리가 설치된 디자인 시스템에서 열거된 것이어야 하며, 기억에 의존해 작성되지 않았을 것
 
 **shadcn 통합.**
 - React/Next.js/Vite 프로젝트에서 누락된 `components.json`을 감지합니다.

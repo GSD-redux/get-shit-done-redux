@@ -1,3 +1,4 @@
+// docs-guard-exempt: record.docs is a metadata field string comparison, not a real docs/ file read.
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 

@@ -151,9 +151,7 @@ If spike/sketch findings skills exist, read their SKILL.md files to inform the q
 **Display stage banner:**
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► QUESTIONING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► QUESTIONING
 ```
 
 **Open the conversation:**
@@ -700,9 +698,7 @@ Use AskUserQuestion:
 Display stage banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► RESEARCHING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► RESEARCHING
 
 Researching [domain] ecosystem...
 ```
@@ -942,9 +938,7 @@ This guarantees `gsd-roadmapper` (which lists SUMMARY.md as required reading) ne
 Display research complete banner and key findings:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► RESEARCH COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► RESEARCH COMPLETE ✓
 
 ## Key Findings
 
@@ -962,9 +956,7 @@ Files: `.planning/research/`
 Display stage banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► DEFINING REQUIREMENTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► DEFINING REQUIREMENTS
 ```
 
 **Load context:**
@@ -1131,9 +1123,7 @@ When `TEXT_MODE=true` (per the workflow's existing TEXT_MODE handling for non-Cl
 Display stage banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► CREATING ROADMAP
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► CREATING ROADMAP
 
 ◆ Spawning roadmapper... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -1300,9 +1290,7 @@ gsd_run query commit "docs: create roadmap ([N] phases)" --files .planning/ROADM
 Present completion summary:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► PROJECT INITIALIZED ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PROJECT INITIALIZED ✓
 
 **[Project Name]**
 
@@ -1321,9 +1309,7 @@ Present completion summary:
 **If auto mode:**
 
 ```
-╔══════════════════════════════════════════╗
-║  AUTO-ADVANCING → DISCUSS PHASE 1        ║
-╚══════════════════════════════════════════╝
+### AUTO-ADVANCING → DISCUSS PHASE 1
 ```
 
 Exit skill and invoke SlashCommand("/gsd:discuss-phase 1 --auto")
@@ -1340,7 +1326,7 @@ PHASE1_HAS_UI=$(echo "$PHASE1_SECTION" | grep -qi "UI hint.*yes" && echo "true" 
 **If Phase 1 has UI (`PHASE1_HAS_UI` is `true`):**
 
 ```
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -1356,13 +1342,13 @@ PHASE1_HAS_UI=$(echo "$PHASE1_SECTION" | grep -qi "UI hint.*yes" && echo "true" 
 - /gsd:ui-phase 1 — generate UI design contract (recommended for frontend phases)
 - /gsd:plan-phase 1 — skip discussion, plan directly
 
-───────────────────────────────────────────────────────────────
+---
 ```
 
 **If Phase 1 has no UI:**
 
 ```
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -1377,7 +1363,7 @@ PHASE1_HAS_UI=$(echo "$PHASE1_SECTION" | grep -qi "UI hint.*yes" && echo "true" 
 **Also available:**
 - /gsd:plan-phase 1 — skip discussion, plan directly
 
-───────────────────────────────────────────────────────────────
+---
 ```
 
 </process>

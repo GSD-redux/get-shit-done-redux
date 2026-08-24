@@ -240,6 +240,9 @@ See [Package Legitimacy Gate in the User Guide](USER-GUIDE.md#package-legitimacy
 **In-repo value citation:**
 For any in-repo *discrete value* the researcher reports — an enum, a schema or type union, an error code, a status constant, or a filesystem path — a `[VERIFIED: …]` tag requires that it opened the source-of-truth file with `Read` during the run and cited the path **and line range** (`[VERIFIED: src/types/order.ts:14-22]`). The values are quoted verbatim in RESEARCH.md beside the claim, and any value used in a code example must also appear in that quote; anything else stays `[ASSUMED]`. A codebase `grep`, training memory, or a web search do not earn the tag on their own. This stops a plausible-but-drifted enum from reaching PLAN.md — where the planner lifts it into the plan's `<interfaces>` context block and the executor trusts it as ground truth — and surfacing only as a mid-execution deviation at typecheck.
 
+**Absent-evidence citation:**
+A compatibility claim the researcher reports — "this library does not support that runtime version" — earns a `[VERIFIED: …]` tag only from *positive* evidence. Metadata that is simply **missing** (no `python_requires`, no `engines` field, no per-version classifier, no changelog entry, no matching row in a support matrix) does not qualify, however authoritative the registry or documentation consulted: an absence says nothing about the version you are ruling out *and* nothing about the version you are standardizing on, so the same evidence would "prove" both. The rule keys on the evidence rather than the wording, so rephrasing the claim positively ("supports only up to 3.13") changes nothing, and an absence is equally not evidence that the version *is* supported. A **present** constraint is the opposite case and still earns the tag — `requires-python = ">=3.9,<3.12"` is a declared exclusion — as does documentation stating the incompatibility affirmatively, which is `[CITED: …]`. What separates the two is whether the declaration bounds every value or only the ones it names: an explicit range or upper bound speaks about all versions, while an enumerated allow-list that stops short of the target (classifiers running `:: 3.9` through `:: 3.13` with no `:: 3.14`) stays silent about the target and remains a governed absence unless the project says the list is exhaustive. See [How-to: verify a dependency-compatibility claim](how-to/verify-a-dependency-compatibility-claim.md). The one route from an absence to `[VERIFIED]` is a positive falsification attempt: run it against the real target and paste the failing output. Everything short of that stays `[ASSUMED]`, which routes the claim through the usual confirmation checkpoint before it can lock a decision in CONTEXT.md — so a probe you cannot run in this environment costs a checkpoint, not a blocked plan.
+
 ```bash
 /gsd-plan-phase 1                              # Research + plan + verify phase 1
 /gsd-plan-phase 3 --skip-research              # Plan without research (familiar domain)
@@ -268,6 +271,19 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 | `--max-cycles N` | No | Override cycle cap (default 3) |
 
 **Exit behavior:** Loop exits when both `current_high` and `current_actionable` hit zero. Stall detection warns when the total unresolved review count is not decreasing across cycles. Escalation gate asks the user to proceed or review manually when `--max-cycles` is hit with HIGH or actionable non-HIGH concerns still open.
+
+**Consensus gate (2+ reviewers only).** When two or more reviewers actually run in a cycle, a HIGH raised by exactly one of them is weighed by what the claim asserts before it counts toward `current_high`:
+
+| Lone reviewer's HIGH asserts | Counts toward `current_high` when |
+|---|---|
+| **Existence** — a symbol, file, flag, commit or ID exists, is absent, or says something specific | source-grounding confirms it, **or** another reviewer raised the same concern |
+| **Judgment** — a design or correctness property (missing idempotency, a race, an absent rate limit) | always, **unless** that reviewer's section opens with an evidence-quality discount marker (`[reviewed-without-source-citations]`, `[reviewed-without-repo-access]`, or a diff-only lane) |
+
+Judgment-class findings are deliberately exempt from corroboration: reviewers catch materially different classes of issue, so requiring two of them to independently raise the same architectural concern would suppress exactly what a multi-reviewer setup exists to surface. A suppressed HIGH is still reported, tagged `(single-reviewer, unconfirmed)` — never dropped. If **every** reviewer in a cycle carries a discount marker the gate disengages entirely, so a cycle in which nothing was verified can never be counted as converged. `current_actionable` is unaffected.
+
+With a single reviewer configured — the common case — behavior is unchanged. See [reviewer instances](../gsd-core/references/reviewer-instances.md) for how this interacts with `review.reviewer_instances`.
+
+**What this gate does not do.** It weighs *evidence*, not correctness. A reviewer that cites source evidence anywhere in its review is never discount-marked, so a **judgment-class finding it invents still counts on its own** — the marker catches "cited nothing" and "had no repo access", not "drew the wrong conclusion from a real citation". That is the deliberate side of the trade: the alternative is requiring corroboration for design findings, which suppresses the genuine architectural concern only one reviewer noticed, and would make adding reviewers *weaken* the gate. Existence-class claims are the ones tightened here.
 
 ```bash
 /gsd-plan-review-convergence 3                    # Default reviewers, 3 cycles
@@ -649,6 +665,31 @@ node gsd-tools.cjs phase uat-passed 3                        # Evaluate UAT for 
 node gsd-tools.cjs phase uat-passed 3 --require-verification # Also require VERIFICATION.md
 node gsd-tools.cjs phase uat-passed 3 --raw                  # Machine-readable JSON output
 ```
+
+---
+
+### `planning inspect`
+
+Emit a read-only, schema-versioned JSON snapshot of the whole planning state —
+milestone identity, active phase/plan/status, per-phase verification, roadmap
+acceptance and UAT evidence (kept separate), requirement rows with mapped-phase
+traceability, plan and task rows with planned/changed file provenance, and
+independent `accepted_phases` / `completed_plans` fractions.
+
+For downstream tools that need planning state without re-parsing GSD's Markdown.
+Mutates nothing. Takes no arguments — a stray positional or unknown flag is a
+fail-loud usage error rather than a silently-ignored one.
+
+```bash
+node gsd-tools.cjs query planning inspect       # schema-v1 snapshot
+node gsd-tools.cjs query planning.inspect       # dotted canonical form, identical
+node gsd-tools.cjs query planning inspect --cwd /path/to/project
+```
+
+Check `schema_version` before reading any other field, and branch on each value's
+`scope` — `complete` with an empty value is a real answer, `unreadable` is not.
+Full field reference: [CLI Tools](CLI-TOOLS.md#planning-inspect). Integration
+walkthrough: [Consume the planning snapshot](how-to/consume-the-planning-snapshot.md).
 
 ---
 
@@ -1172,6 +1213,64 @@ Extract reusable patterns, anti-patterns, and architectural decisions from compl
 
 ---
 
+### `gsd-tools check verify-command-paths`
+
+Deterministic resolvability probe over a phase's `<automated>` verify commands (#2401). Run
+automatically by `/gsd-plan-phase` before the plan-check pass and handed to `gsd-plan-checker`;
+runnable by hand to see what the checker saw.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `N` | **Yes** | Phase number whose `-PLAN.md` files are probed |
+
+| Flag | Description |
+|------|-------------|
+| `--raw` | Emit the JSON payload with no surrounding prose |
+
+**Prerequisites:** none — an unresolvable phase degrades to a JSON payload with `readError` set
+rather than failing.
+**Produces:** JSON on stdout. Nothing is written to disk.
+
+**It never executes command text.** PLAN.md is LLM-authored, so the probe only resolves paths
+and stats directories; a `package.json` it finds is read for script *names* only.
+
+It grounds exactly two forms — a leading `cd <literal>` chain and `npm --prefix <literal>` —
+and refuses to guess at anything else. `pushd`, `make -C`, `yarn --cwd`, `pnpm -C`, and
+`cargo --manifest-path` are not recognized today and report `unresolvable`.
+
+Each row of `commands` carries `command`, `plan`, `task`, `status`, `severity`, `reason`,
+`form`, `rawTarget`, `target`, `manifest`, `script`, `sentinel`, and `base`. There is
+deliberately **no** `suggestion` field — the probe reports what failed to resolve and leaves
+the replacement to the planner.
+
+| `status` | Meaning |
+|---|---|
+| `ok` | Target resolved (a `reason` may still carry an advisory — see below) |
+| `broken` | Target does not resolve, or holds no required manifest — **blocker** |
+| `unresolvable` | The path could not be grounded (variable, glob, substitution, `~`) — warning |
+| `pending_creation` | An earlier task in this phase creates the target — not a finding |
+| `not_applicable` | No `cd`/`--prefix` to resolve, or a Nyquist `MISSING …` sentinel |
+
+| `reason` | `severity` | What it means |
+|---|---|---|
+| `missing_dir` | `blocker` | The resolved directory does not exist, or is not a directory |
+| `no_manifest` | `blocker` | The directory exists but holds no `package.json` / `Makefile` the command needs |
+| `dynamic_path` | `warning` | The path contains `$`, a backtick, `*`, `?`, or `~` — refused, not guessed |
+| `outside_root` | `warning` | A bare ancestor climb (`cd ../..`); the base differs under worktree execution |
+| `script_missing` | `warning` | `npm run <script>` names a script the manifest does not define — this phase may add it |
+| `manifest_unreadable` | `warning` | `package.json` is oversized, unparseable, or not a JSON object |
+| `null` | `none` | Nothing to report |
+
+A non-empty `readError` means the probe **could not look** — distinct from finding nothing.
+
+```bash
+gsd-tools check verify-command-paths 3 --raw    # probe phase 3's verify commands
+```
+
+See [Resolve verify-command path findings](how-to/resolve-verify-command-path-findings.md).
+
+---
+
 ## Workstream Management
 
 ### `/gsd-workstreams`
@@ -1504,7 +1603,7 @@ Review source files changed during a phase for bugs, security vulnerabilities, a
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `N` | **Yes** | Phase number whose changes to review (e.g., `2` or `02`) |
-| `--depth=quick\|standard\|deep` | No | Review depth level (overrides `workflow.code_review_depth` config). `quick`: pattern-matching only (~2 min). `standard`: per-file analysis with language-specific checks (~5–15 min, default). `deep`: cross-file analysis including import graphs and call chains (~15–30 min) |
+| `--depth=quick\|standard\|deep` | No | Review depth level. Overrides both `workflow.code_review_depth` and any matching `workflow.code_review_depth_overrides` path rule — the flag always wins. `quick`: pattern-matching only (~2 min). `standard`: per-file analysis with language-specific checks (~5–15 min, default). `deep`: cross-file analysis including import graphs and call chains (~15–30 min) |
 | `--files file1,file2,...` | No | Explicit comma-separated file list; skips SUMMARY/git scoping entirely |
 | `--fix` | No | Auto-fix issues after review — reads REVIEW.md, spawns fixer agent, commits each fix atomically |
 | `--fix --all` | No | Include Info findings in fix scope (default: Critical + Warning only) |
@@ -1637,6 +1736,10 @@ Create a clean PR branch by filtering out `.planning/` commits.
 | `target branch` | No | Base branch (default: `main`) |
 
 **Purpose:** Reviewers see only code changes, not GSD planning artifacts.
+
+**Prerequisites:** Clean working tree — uncommitted changes are rejected before the PR branch is created.
+
+**Filter mode:** Set by [`planning.pr_strict`](CONFIGURATION.md#planning-settings). Default (`false`) keeps structural planning state — `STATE.md`, `ROADMAP.md`, `MILESTONES.md`, `PROJECT.md`, `REQUIREMENTS.md`, `milestones/**` — and drops the transient subdirectories. Strict (`true`) drops every `.planning/` path. The active mode is printed in the run header and in the verification summary.
 
 ```bash
 /gsd-pr-branch                     # Filter against main

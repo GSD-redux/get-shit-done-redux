@@ -58,7 +58,7 @@ const path = require('node:path');
 
 const { createTempDir, cleanup, readWorkflowCombined } = require('./helpers.cjs');
 const { runHook, OUTCOME } = require('./helpers/process-seam.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const PLAN_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase.md');
@@ -209,7 +209,15 @@ describe('#3409 G1/G2 — plan-phase.md Walking Skeleton gate observes a real su
         MVP_MODE: 'true',
         padded_phase: '01',
       },
-      timeoutMs: PROBE_TIMEOUT_MS,
+      // Bash FAN-OUT: the sourced `_runtime-launcher.snippet.sh` preamble
+      // defines the real `gsd_run` function, which the extracted snippet
+      // then calls — a bash + node invocation, not a single CLI probe. Same
+      // class as the observed CI failures in
+      // tests/quick-branching.test.cjs (PR #3787 run 32668773524) and
+      // tests/worktree-safety.test.cjs (`next` run 32608945654). See
+      // HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the class
+      // rationale.
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     });
     assert.equal(result.outcome, OUTCOME.EXITED, `gate script did not exit cleanly: ${result.stderr}`);
     assert.equal(result.exitCode, 0, `gate script exited non-zero: ${result.stderr}`);
@@ -271,10 +279,13 @@ test('#3409 G3: an empty phase_req_ids falls back to TBD, not the empty string',
     block,
     'echo "GSD_TEST_PHASE_REQ_IDS=$PHASE_REQ_IDS"',
   ].join('\n');
+  // Bash FAN-OUT: same class as runWalkingSkeletonGate above — the sourced
+  // launcher's `gsd_run` shells out to node. See HOOK_FANOUT_TIMEOUT_MS in
+  // ./helpers/timeouts.cjs for the class rationale.
   const result = runBashScript(t, script, {
     cwd: root,
     env: { ...process.env, RUNTIME_DIR: REPO_ROOT, PHASE: '01' },
-    timeoutMs: PROBE_TIMEOUT_MS,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
   });
   assert.equal(result.outcome, OUTCOME.EXITED, `PHASE_REQ_IDS script did not exit cleanly: ${result.stderr}`);
   assert.equal(result.exitCode, 0, `PHASE_REQ_IDS script exited non-zero: ${result.stderr}`);

@@ -578,6 +578,102 @@ Pass `--json` to receive the typed IR directly (useful in scripts and test asser
 
 ---
 
+## Planning Snapshot Commands
+
+### `planning inspect`
+
+Emits a read-only, schema-versioned snapshot of everything `.planning/` knows,
+as one JSON document. It exists so a downstream tool — a harness UI, a
+mission-control view, a dashboard — can consume planning state without parsing
+`ROADMAP.md` / `REQUIREMENTS.md` / `*-PLAN.md` / `*-SUMMARY.md` a second time
+and drifting from gsd-core's own answers.
+
+```bash
+gsd-tools query planning inspect
+gsd-tools query planning.inspect     # dotted canonical form — identical output
+```
+
+**Takes no arguments.** A stray positional or an unrecognized flag is a
+fail-loud usage error, not a silently-ignored one: a caller who believed
+`--phase 3` was scoping the query would otherwise receive a whole-project
+snapshot presented as a scoped one.
+
+`planning inspect` writes nothing, anywhere. It is safe to run against a
+project mid-workflow.
+
+#### The schema contract
+
+```json
+{ "schema_version": 1, "...": "..." }
+```
+
+`schema_version` is the contract. **A consumer must reject any value other than
+the one it was written against** rather than best-effort-parsing a shape it does
+not know. Every top-level key is always present; a key is never omitted to
+signal absence, because omission is itself something callers come to depend on.
+
+| Key | What it carries |
+|-----|-----------------|
+| `schema_version` | Always `1` today |
+| `generated_from` | Resolved `cwd` and `.planning/` root (`null` when there is no planning root) |
+| `milestone` | `version`, `name`, and the `scope` of that answer |
+| `active` | `phase`, `plan`, and `status` — three distinct STATE.md facts, each scoped separately |
+| `phases[]` | Per phase: completion, verification, roadmap acceptance, UAT, plan and task rows |
+| `orphan_phase_dirs[]` | Directories under `phases/` that the current milestone window does not declare |
+| `requirements[]` | Requirement rows with mapped-phase traceability |
+| `progress` | `accepted_phases` and `completed_plans`, as independent fractions |
+| `diagnostics[]` | Coded reasons for every non-answer above |
+
+#### Three kinds of evidence, never folded together
+
+Each phase reports `verification`, `roadmap_acceptance`, and `uat` **side by
+side**. They are not combined into a single verdict, because they answer
+different questions and can legitimately disagree — a phase can pass
+verification while UAT items remain open.
+
+`roadmap_acceptance.checkbox` is reported with `authoritative: false`. A ticked
+ROADMAP checkbox is a human annotation with no machine authority: completion is
+derived from disk state (a passing `*-VERIFICATION.md`), and a stale tick never
+overrides it. See [Milestone window scope](#milestone-window-scope-roadmap-analyze).
+
+#### Unknown is a real answer; nothing is inferred
+
+Where the evidence is absent, or where two sources disagree, the value is `null`
+or `"unknown"` and a coded entry in `diagnostics[]` says why. It is never
+reconciled, guessed, or filled from a plausible default.
+
+The most common case is task-scoped file provenance. A `<task>` block declares
+the files it plans to touch, but `SUMMARY.md`'s `## Files Created/Modified`
+section describes the **whole plan**, not an individual task. Spreading that
+plan-level list across the plan's tasks would be inference, so instead:
+
+| `provenance` | Meaning |
+|---|---|
+| `task_scoped` | The summary attributed files to this specific task (via a deviation block naming `Found during: Task N`) |
+| `plan_scoped` | A summary exists, but only carries a plan-level file list — this task's changed files are unknown |
+| `absent` | No summary exists yet |
+
+When a task's planned and changed file sets both exist and disagree,
+`agreement` is `"conflicting"` and **both lists are emitted verbatim**.
+
+#### Percentages are withheld rather than guessed
+
+`progress.accepted_phases` and `progress.completed_plans` are independent
+fractions, each `{completed, total, percent, scope}`. `percent` is `null`
+whenever `scope` is anything other than `complete` — the same rule the roadmap
+and progress surfaces follow, for the same reason. See
+[A non-`COMPLETE` scope withholds the percentage entirely](#a-non-complete-scope-withholds-the-percentage-entirely-3217).
+
+`0` is a real answer under a `complete` scope and is never withheld.
+
+#### Large payloads
+
+Output over ~50 KB is written to a temp file and returned as
+`@file:<path>`, which `gsd-tools` resolves transparently before writing to
+stdout — the same channel `init` uses. Callers see JSON either way.
+
+---
+
 ## Template Commands
 
 Template selection and filling.
@@ -905,11 +1001,12 @@ node gsd-tools.cjs worktree base-check
 node gsd-tools.cjs worktree set-baseref
 ```
 
-**`worktree base-check`** reads `worktree.baseRef` from a three-layer cascade — `.claude/settings.local.json`, then `.claude/settings.json`, then the user/global `settings.json` under `CLAUDE_CONFIG_DIR` (or `~/.claude`) — and compares the current `HEAD` SHA against `origin/HEAD`. Project-level settings take precedence over the user/global layer, so a machine-wide `worktree.baseRef:"head"` set via `/config` is honored when no project override exists. The `shouldDegrade` field is `true` when the execute-phase orchestrator will fall back to sequential execution. Possible `reason` values:
+**`worktree base-check`** reads `worktree.baseRef` from a three-layer cascade — `.claude/settings.local.json`, then `.claude/settings.json`, then the user/global `settings.json` under `CLAUDE_CONFIG_DIR` (or `~/.claude`) — and compares the current `HEAD` SHA against `origin/HEAD`. Project-level settings take precedence over the user/global layer, so a machine-wide `worktree.baseRef:"head"` set via `/config` is honored when no project override exists. The `shouldDegrade` field is `true` when the execute-phase orchestrator will fall back to sequential execution. `--mode` declares who creates the isolated worktree (#3659): `harness-worktree` (the default — the runtime harness forks it and does **not** read project-settings `baseRef`, #48) or `orchestrator-worktree` (GSD itself runs `git worktree add` with an explicit start-point and honors `"head"`); invalid values fail closed with an error. Possible `reason` values:
 
 | `reason` | `shouldDegrade` | Meaning |
 |---|---|---|
-| `baseref-head` | `false` | `worktree.baseRef:"head"` is set; no mismatch possible |
+| `baseref-head` | `false` | `worktree.baseRef:"head"` is set and `--mode orchestrator-worktree` declares GSD-managed worktrees — the fork base is the orchestrator HEAD by construction |
+| `baseref-head-ignored-by-harness` | `true` | `worktree.baseRef:"head"` is set but HEAD differs from `origin/HEAD` in harness (default) mode — the harness does not read the setting (#48), so the run degrades to sequential (#3659) |
 | `head-matches-fork` | `false` | HEAD and `origin/HEAD` are the same commit |
 | `head-diverged-from-fork` | `true` | Branch is ahead of or diverged from `origin/HEAD` |
 | `fork-ref-unknown` | `true` | `origin/HEAD` could not be resolved |
@@ -947,6 +1044,27 @@ node gsd-tools.cjs worktree record-agent \
 **`worktree record-agent`** appends one `{agent_id, worktree_path, branch, expected_base}` entry to an already-initialized manifest, validating every field **at write time using the same rules the `cleanup-wave` reader enforces** — `--branch` must match the disposable `^(worktree-)?agent-[A-Za-z0-9._/-]+$` namespace (accepts both `agent-<id>` and legacy `worktree-agent-<id>`), and `--path`/`--branch`/`--base` must be non-empty. `--agent-id` is required (write-strict), even though the reader treats it as optional. A missing or garbled field — or a duplicate `(worktree_path, branch)` the reader would dedup away — fails loudly with a recovery hint and a non-zero exit **without** writing, instead of appending an under-populated or silently-dropped entry. Whitespace-only `--path`/`--base` are rejected (values are trimmed). The on-disk manifest shape is unchanged unless `--files` is supplied (see below); the reader still re-derives `allowed_bases`, and the orchestrator still initializes the empty `{orchestrator_root, worktrees: []}` shell inline before any agent is recorded.
 
 `--files` is optional (#2596). When supplied it records the plan's declared `files_modified` — the same whitespace-separated `PLAN_FILES` list the per-plan worktree gate already builds — as an extra `files_modified` array on the entry, and `cleanup-wave` then reports any path the branch committed outside it. A blank or omitted `--files` writes no field at all, leaving the 4-field on-disk shape untouched, and the scope check is simply skipped for that entry: an unrecorded scope means *unknown*, never *declares nothing*. Values are compared against a diff, never opened as paths and never passed to a shell.
+
+`--deletions` is optional (#3003). When supplied it records the plan's declared `files_deleted` — built by the per-plan worktree gate exactly like `PLAN_FILES`, from the plan's own frontmatter — as a `declared_deletions` array on the entry. It is the opt-in the deletions guard reads (see below). A blank or omitted `--deletions` writes no field, leaving the on-disk shape untouched and the guard's original unconditional block in force. Like `--files`, values are compared against a diff and never opened or passed to a shell.
+
+**Intentional deletions (gate, #3003)**
+
+`cleanup-wave` blocks the merge of any executor branch whose diff deletes a file — a net against a mass-deletion accident. A plan whose scope legitimately includes removing a file declares those paths in its `files_deleted` frontmatter, which reaches the entry as `declared_deletions`; the guard then blocks only the deletions **not** in that list.
+
+| Branch deletes | Entry declares | Result |
+|---|---|---|
+| nothing | — | merges |
+| `tests/a.ts` | *(no field)* | **blocked** — unchanged pre-#3003 behavior |
+| `tests/a.ts` | `["tests/a.ts"]` | merges |
+| `tests/a.ts`, `src/b.ts` | `["tests/a.ts"]` | **blocked**, and the block detail names only `src/b.ts` |
+| `tests/a.ts` | `["tests"]` | **blocked** — a directory does not authorize its children |
+| `tests/a.ts` | `["*.ts"]` | **blocked** — globs are literal paths here, matching nothing |
+
+Matching is **exact after normalization**: git's C-quoting is decoded, backslashes become forward slashes, and a leading `./` and any trailing `/` are stripped — on both sides. The decode matters more than it looks: with `core.quotepath` at its git default, a path like `tests/é.ts` is reported as the literal `"tests/\303\251.ts"`, which would never compare equal to the plainly-declared path, so a correctly declared deletion of any non-ASCII path would block forever with nothing pointing at the encoding. It is deliberately neither a prefix nor a glob match — either would let one declaration authorize a whole set of deletions, which is the accident the guard exists to catch. A declared path that was not in fact deleted is inert. A blocked entry still isolates: the rest of the wave proceeds (#2852). If the deletion check itself fails the entry blocks on `deletion_check_failed` and is never filtered — a broken check is not an authorization.
+
+A declared deletion is also treated as in-scope by the advisory below, so authorizing a removal does not then warn that the removed path was out of the declared scope. That is done by **subtracting** declared deletions from the advisory's findings, not by adding them to the declared scope it matches against — the advisory reads its scope list with prefix-and-glob semantics, so adding them would quietly give `declared_deletions` a second, wider matching rule than the table above, and `["*.md"]` would go from inert to silencing the advisory entirely. One field, one matching rule, on every surface. Subtraction also means the advisory's activation is unchanged: it still runs only when `files_modified` is recorded, so a plan that declares deletions alone stays as silent as it was before #3003.
+
+One limit worth knowing, shared with `--files` and failing closed: a declared path containing a **space** cannot be expressed, because the flag value is whitespace-separated — such a path splits into fragments, matches nothing, and the entry blocks. Flag values are also read positionally and never re-inspected for shape, so a malformed `--deletions --files src/a.ts` records the literal `--files` as the declaration; that is harmless (it is a path git never reports as deleted, so it authorizes nothing) and `--files` still resolves to `src/a.ts` on its own lookup.
 
 **Scope conformance at merge (advisory, #2596)**
 

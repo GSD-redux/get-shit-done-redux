@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/TESTING-SUITES.md is cited only in a header comment; never read.
 // allow-test-rule: pending-migration-to-typed-ir [#3090]
 // run-tests.cjs is a CLI test harness with no --json/structured output mode;
 // these tests regex/substring-match its human-readable stderr (usage errors,

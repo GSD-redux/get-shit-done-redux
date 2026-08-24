@@ -25,7 +25,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { PROBE_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 
@@ -322,10 +322,17 @@ describe('#3504: global-flag spellings of git add -f reach the shared classifier
   before(() => {
     const mk = (branch) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-workflow-guard-bypass-'));
+      // Bash FAN-OUT: three chained git commands under one `bash`
+      // interpreter, not a single git plumbing call — the wrong class for
+      // `PROBE_TIMEOUT_MS`. Same class as the observed CI failures in
+      // tests/quick-branching.test.cjs (PR #3787 run 32668773524) and
+      // tests/worktree-safety.test.cjs (`next` run 32608945654). See
+      // HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the class
+      // rationale.
       const initResult = runHookSeam(
         '-c',
         [`git init -q -b ${branch} && git config user.email t@t && git config user.name t`],
-        { interpreter: 'bash', cwd: dir, timeoutMs: PROBE_TIMEOUT_MS },
+        { interpreter: 'bash', cwd: dir, timeoutMs: HOOK_FANOUT_TIMEOUT_MS },
       );
       throwIfFailed(initResult, `bash -c <git init/config for ${branch} bypass fixture>`);
       return dir;

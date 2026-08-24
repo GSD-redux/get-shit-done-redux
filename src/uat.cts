@@ -81,6 +81,19 @@ interface CurrentTest {
 
 // ─── cmdAuditUat ─────────────────────────────────────────────────────────────
 
+/**
+ * Select the UAT documents belonging to ONE phase directory.
+ *
+ * Extracted (#2790) so `cmdAuditUat` and the read-only `planning.inspect` query
+ * cannot drift on which files count as this phase's UAT. `scopeToPhase` has no
+ * unfiltered fallback on purpose: a phase whose own UAT file is genuinely absent
+ * scopes to empty and contributes nothing, rather than picking up a stray
+ * cross-phase file (#3511).
+ */
+function selectPhaseUatFiles(files: string[], phaseDirName: string): string[] {
+  return scopeToPhase(files.filter((f) => f.includes('-UAT') && f.endsWith('.md')), phaseDirName);
+}
+
 function cmdAuditUat(cwd: string, raw: boolean): void {
   const phasesDir = path.join(planningDir(cwd), 'phases');
   const hasActivePhases = fs.existsSync(phasesDir);
@@ -139,7 +152,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // under this phase's audit-uat entry. A phase whose own UAT file is
     // genuinely absent scopes to empty and contributes nothing — correct, and
     // the reason scopeToPhase has no unfiltered fallback.
-    for (const file of scopeToPhase(files.filter(f => f.includes('-UAT') && f.endsWith('.md')), dir)) {
+    for (const file of selectPhaseUatFiles(files, dir)) {
       const uatFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(uatFilePath, 'utf-8');
       const items = parseUatItems(content);
@@ -408,8 +421,6 @@ interface CheckpointFrame {
   direction?: 'rtl';
 }
 
-const CHECKPOINT_BOX_WIDTH = 64; // total column width of the ╔══...╗ border, borders stay byte-identical
-
 const CHECKPOINT_FRAMES: Record<string, CheckpointFrame> = {
   english: {
     banner: 'CHECKPOINT: Verification Required',
@@ -516,56 +527,6 @@ function resolveCheckpointFrame(responseLanguage: string | undefined): Checkpoin
   return (key && CHECKPOINT_FRAMES[key]) || CHECKPOINT_FRAMES.english;
 }
 
-// Approximate terminal-cell width. East Asian Width W/F code points occupy two
-// cells, while Unicode combining marks occupy no additional cell beyond their
-// base character. Counting only W/F ranges is insufficient for scripts such as
-// Devanagari: Hindi vowel signs and viramas are combining marks, and treating
-// each as a full cell visibly shifts the checkpoint box's right border.
-function isWideCodePoint(codePoint: number): boolean {
-  return (
-    (codePoint >= 0x1100 && codePoint <= 0x115f) || // Hangul Jamo
-    codePoint === 0x2329 || codePoint === 0x232a ||
-    (codePoint >= 0x2e80 && codePoint <= 0x303e) || // CJK Radicals .. CJK Symbols and Punctuation
-    (codePoint >= 0x3041 && codePoint <= 0x33ff) || // Hiragana .. CJK Compatibility
-    (codePoint >= 0x3400 && codePoint <= 0x4dbf) || // CJK Unified Ideographs Extension A
-    (codePoint >= 0x4e00 && codePoint <= 0x9fff) || // CJK Unified Ideographs
-    (codePoint >= 0xa000 && codePoint <= 0xa4cf) || // Yi Syllables
-    (codePoint >= 0xac00 && codePoint <= 0xd7a3) || // Hangul Syllables
-    (codePoint >= 0xf900 && codePoint <= 0xfaff) || // CJK Compatibility Ideographs
-    (codePoint >= 0xfe30 && codePoint <= 0xfe4f) || // CJK Compatibility Forms
-    (codePoint >= 0xff00 && codePoint <= 0xff60) || // Fullwidth Forms
-    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-    (codePoint >= 0x20000 && codePoint <= 0x3fffd) // CJK Unified Ideographs Extension B+ / supplementary
-  );
-}
-
-// Non-spacing/enclosing marks and format controls occupy zero terminal cells.
-// Spacing combining marks (General_Category=Mc), such as Devanagari vowel
-// signs, still advance the cursor and must contribute one column.
-const ZERO_WIDTH_MARK_RE = /\p{gc=Mn}|\p{gc=Me}|\p{gc=Cf}/u;
-
-// Iterates by Unicode code point (not UTF-16 code unit) so astral characters
-// are measured once, not as two surrogate units.
-function displayWidth(text: string): number {
-  let width = 0;
-  for (const ch of text) {
-    if (ZERO_WIDTH_MARK_RE.test(ch)) continue;
-    width += isWideCodePoint(ch.codePointAt(0) as number) ? 2 : 1;
-  }
-  return width;
-}
-
-// Pads `text` into a `║  text…  ║` line matching CHECKPOINT_BOX_WIDTH. Content
-// that overflows the box (a longer translated string) is left unpadded rather
-// than truncated — a slightly ragged border beats losing text.
-function checkpointBoxLine(text: string): string {
-  const innerWidth = CHECKPOINT_BOX_WIDTH - 2;
-  const content = `  ${text}`;
-  const padLength = innerWidth - displayWidth(content);
-  const padded = padLength > 0 ? content + ' '.repeat(padLength) : content;
-  return `║${padded}║`;
-}
-
 const RTL_ISOLATE = '\u2067';
 const POP_DIRECTIONAL_ISOLATE = '\u2069';
 
@@ -580,17 +541,15 @@ function buildCheckpoint(currentTest: { number: number; name: string; expected: 
   const banner = isolateCheckpointFrameText(frame.banner, frame);
   const instruction = isolateCheckpointFrameText(frame.instruction, frame);
   return [
-    '╔══════════════════════════════════════════════════════════════╗',
-    checkpointBoxLine(banner),
-    '╚══════════════════════════════════════════════════════════════╝',
+    `### ${banner}`,
     '',
     `**Test ${currentTest.number}: ${currentTest.name}**`,
     '',
     currentTest.expected,
     '',
-    '──────────────────────────────────────────────────────────────',
-    instruction,
-    '──────────────────────────────────────────────────────────────',
+    '---',
+    '',
+    `**${instruction}**`,
   ].join('\n');
 }
 
@@ -1657,11 +1616,12 @@ export = {
   cmdAuditUat,
   cmdRenderCheckpoint,
   parseCurrentTest,
+  parseUatItems,
+  selectPhaseUatFiles,
   buildCheckpoint,
   CHECKPOINT_FRAMES,
   CHECKPOINT_LANGUAGE_ALIASES,
   resolveCheckpointFrame,
-  checkpointBoxLine,
   parseDeferredItems,
   parseDeferredItemsWithStatus,
   acknowledgeDeferredItem,

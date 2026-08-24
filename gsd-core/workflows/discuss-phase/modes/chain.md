@@ -48,9 +48,7 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 
    Banner:
    ```
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    GSD ► AUTO-ADVANCING TO PLAN
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTO-ADVANCING TO PLAN
 
    Context captured. Launching plan-phase...
    ```
@@ -69,9 +67,7 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 
    - **PHASE COMPLETE** → Full chain succeeded. Display:
      ```
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      GSD ► PHASE ${PHASE} COMPLETE
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PHASE ${PHASE} COMPLETE
 
      Auto-advance pipeline finished: discuss → plan → execute
 

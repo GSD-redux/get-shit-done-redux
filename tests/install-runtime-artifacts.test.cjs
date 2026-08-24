@@ -1,3 +1,4 @@
+// docs-guard-exempt: codebuddy.ai/docs/... is an external URL and docs/adr/58-...md is a comment citation; neither is read.
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
@@ -218,18 +219,11 @@ function readAllSkillMd(dir) {
 // write to (and an uninstall would mutate) the developer's REAL ~/.agents/skills.
 // Sandbox HOME/USERPROFILE to configDir before resolving the layout or invoking
 // install/uninstall so codex's resolved skills dir is configDir/.agents/skills.
-function sandboxHome(t, dir) {
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = dir;
-  process.env.USERPROFILE = dir;
-  t.after(() => {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-  });
-}
+//
+// #3712: promoted to tests/helpers.cjs, from the byte-identical copy that used to
+// live here. It now also sets the sandbox marker src/real-home-guard.cts needs to
+// stay permissive on hosts with no readable passwd entry.
+const { sandboxHome } = require('./helpers.cjs');
 
 describe('installRuntimeArtifacts — skills runtimes write gsd-prefixed skill dirs', () => {
   for (const runtime of SKILLS_RUNTIMES_LAYOUT) {
@@ -3834,7 +3828,10 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
       `gsd-planner.toml should have model_reasoning_effort = "low" from config override\nActual:\n${tomlContent.slice(0, 500)}`);
   });
 
-  test('Codex .toml clamps effort max → xhigh when agent_overrides.gsd-planner=max', () => {
+  // #3007: corrected — Codex's gpt-5.6-sol advertises 'max' in its own
+  // supported_reasoning_levels, so install-time rendering now passes 'max'
+  // through instead of clamping it to 'xhigh'.
+  test('Codex .toml renders effort max → max when agent_overrides.gsd-planner=max', () => {
     const projectDir = path.dirname(codexHome);
     // Overwrite config with max override. #3241: include an explicit
     // model_overrides pin (D1 removed the resolver-only auto-embed).
@@ -3860,11 +3857,11 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
     );
     assert.match(tomlContent, /^model\s*=\s*"gpt-5.6-sol"$/m,
       `gsd-planner.toml should pin Codex model when runtime:"codex" is configured\nActual:\n${tomlContent.slice(0, 500)}`);
-    // Codex does not support 'max' → clamped to 'xhigh'
-    assert.match(tomlContent, /^model_reasoning_effort\s*=\s*"xhigh"$/m,
-      `gsd-planner.toml should clamp max → xhigh for Codex\nActual:\n${tomlContent.slice(0, 500)}`);
-    assert.doesNotMatch(tomlContent, /model_reasoning_effort\s*=\s*"max"/,
-      'Codex .toml must never contain model_reasoning_effort = "max"');
+    // gpt-5.6-sol advertises 'max' -> renders through unchanged, no clamp.
+    assert.match(tomlContent, /^model_reasoning_effort\s*=\s*"max"$/m,
+      `gsd-planner.toml should render max for Codex on a model that advertises it\nActual:\n${tomlContent.slice(0, 500)}`);
+    assert.doesNotMatch(tomlContent, /model_reasoning_effort\s*=\s*"xhigh"/,
+      'Codex .toml must not clamp "max" down to "xhigh" for a model that advertises max');
   });
 });
 
@@ -5090,13 +5087,20 @@ describe('Bug #2911: migrateLegacyDevPreferencesToSkill honors the skills-kind h
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
+    // #3712: record WHICH home this sandboxed to. src/real-home-guard.cts fails
+    // closed on hosts with no readable passwd entry, and this is what proves a
+    // genuinely-sandboxed caller there. Without it these calls would be refused.
+    const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
+    process.env.GSD_TEST_HOME_SANDBOX = fakeHome;
     try {
       return fn();
     } finally {
       if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
       if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+      if (savedMarker === undefined) delete process.env.GSD_TEST_HOME_SANDBOX;
+      else process.env.GSD_TEST_HOME_SANDBOX = savedMarker;
     }
   }
 

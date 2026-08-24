@@ -37,11 +37,13 @@ Render the seeds as a table, sorted by `seed_id` (already sorted by the tool). T
 
 ```
 Seeds
-─────────────────────────────────────────────────────────────────────
+
+---
 ID        Status     Scope    Trigger                  Title
 SEED-001  dormant    large    when websockets land     Real-time collaboration
 SEED-006  triggered  medium   MILE-04 planning         Remove legacy auth crates
-─────────────────────────────────────────────────────────────────────
+
+---
 <count> seeds  (<summary rendered as "N status" pairs, e.g. "1 dormant, 1 triggered">)
 ```
 

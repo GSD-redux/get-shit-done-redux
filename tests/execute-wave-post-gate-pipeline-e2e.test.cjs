@@ -628,10 +628,17 @@ describe('F. Real registry execute:wave:post shape — guard against accidental 
       `ui.safety-gate onError must be 'halt'; got ${uiGate.onError}`);
   });
 
-  test('[happy] real registry: execute:wave:post has no steps and 2 contributions (external-job executor + mempalace capture-problems)', () => {
+  test('[happy] real registry: execute:wave:post has exactly 1 step (#2856 live-dom-uat gsd-dom-verifier, onError:skip) and 2 contributions (external-job executor + mempalace capture-problems)', () => {
     const point = realRegistry.byLoopPoint['execute:wave:post'];
-    assert.strictEqual(point.steps.length, 0,
-      `execute:wave:post steps must be empty; got ${point.steps.length}`);
+    assert.strictEqual(point.steps.length, 1,
+      `execute:wave:post must have exactly 1 step; got ${point.steps.length}`);
+    const [step] = point.steps;
+    assert.strictEqual(step.capId, 'live-dom-uat',
+      `execute:wave:post step capId must be 'live-dom-uat'; got ${step.capId}`);
+    assert.deepStrictEqual(step.ref, { agent: 'gsd-dom-verifier' },
+      `execute:wave:post step ref must be { agent: 'gsd-dom-verifier' }; got ${JSON.stringify(step.ref)}`);
+    assert.strictEqual(step.onError, 'skip',
+      `execute:wave:post step onError must be 'skip'; got ${step.onError}`);
     // #2285: claude-orchestration's dispatch-backend-selector contribution moved
     // from execute:wave:post to execute:wave:pre — wave:post fires AFTER the
     // wave already dispatched inline, too late to select a dispatch backend.
