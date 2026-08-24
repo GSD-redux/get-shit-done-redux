@@ -180,4 +180,69 @@ function isGitSubcommand(cmd, sub) {
   return tokens[subIdx] === sub;
 }
 
-module.exports = { isGitSubcommand, tokenize, extractBranchArgument, skipToSubcommand };
+/**
+ * First line of a `-m` message argument, resolving the command-substituted
+ * heredoc form to the heredoc BODY's first line.
+ *
+ * @param {string} arg
+ * @returns {string}
+ */
+function firstLineOfMessageArg(arg) {
+  const lines = String(arg).split('\n');
+  // `$(cat <<'EOF'` / `$(cat <<-"EOF"` / `$(cat << EOF` — the opener is the
+  // whole first line, so the real subject is the line after it. Matching the
+  // heredoc OPERATOR rather than the `cat` is deliberate: the operator is what
+  // makes the rest of the token a body, and `$(/bin/cat <<'EOF'` is the same
+  // shape. A `-m` argument that merely CONTAINS `<<` further along its first
+  // line is not this form and is left alone.
+  if (/<<-?[ \t]*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1[ \t]*\)?[ \t]*$/.test(lines[0])) {
+    return lines.length > 1 ? lines[1] : '';
+  }
+  return lines[0];
+}
+
+/**
+ * Extract the commit SUBJECT — the first line of the `-m` message — from a
+ * git command line. Returns null when the command carries no `-m <message>`
+ * pair, which callers must distinguish from an EMPTY subject: the former means
+ * "nothing to validate", the latter is a message that fails validation.
+ *
+ * Token-walk rather than regex, for the same reason `isGitSubcommand` exists.
+ * The bash regex this replaces — `-m[[:space:]]+"([^"]+)"` in
+ * gsd-validate-commit.sh — matched ACROSS NEWLINES, because bash `[^"]`
+ * includes them. Against Claude Code's documented commit idiom:
+ *
+ *     git commit -m "$(cat <<'EOF'
+ *     feat(auth): add login flow
+ *     EOF
+ *     )"
+ *
+ * it captured the entire span from the quote after `-m` to the final quote at
+ * `)"`, so `head -1` yielded the literal `$(cat <<'EOF'` as the subject — which
+ * can never satisfy Conventional Commits. Every heredoc-form commit was blocked,
+ * conforming or not (#3802). The shared scanner already returns that span as ONE
+ * token, so all that remains is resolving the heredoc body.
+ *
+ * Only the separated `-m <msg>` form is recognised, matching the regex it
+ * replaces: a glued `-mfeat: x` or `--message=...` yielded no match before and
+ * still yields null, so this fix changes no behavior beyond the heredoc form.
+ *
+ * @param {string} cmd
+ * @returns {string | null}
+ */
+function extractCommitSubject(cmd) {
+  if (!cmd) return null;
+  const tokens = tokenizeShellLike(cmd);
+  // Start at the subcommand, so a `-m` appearing among git's own global options
+  // — or inside an env-prefix assignment — cannot be mistaken for the message.
+  const start = skipToSubcommand(tokens);
+  if (start === -1) return null;
+  for (let i = start; i < tokens.length; i++) {
+    if (tokens[i] === '-m') {
+      return i + 1 < tokens.length ? firstLineOfMessageArg(tokens[i + 1]) : null;
+    }
+  }
+  return null;
+}
+
+module.exports = { isGitSubcommand, tokenize, extractBranchArgument, skipToSubcommand, extractCommitSubject };

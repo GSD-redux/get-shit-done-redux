@@ -336,6 +336,98 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
       `expected typed code: 'CONVENTIONAL_COMMITS_VIOLATION', got: ${JSON.stringify(parsed)}`);
   });
 
+  // #3802 — the heredoc `-m` form. Claude Code's own documented commit idiom is
+  //
+  //     git commit -m "$(cat <<'EOF'
+  //     feat(auth): add login flow
+  //     EOF
+  //     )"
+  //
+  // The extraction regex this replaced — `-m[[:space:]]+"([^"]+)"` — matched
+  // ACROSS NEWLINES, because bash `[^"]` includes them. It captured the whole
+  // span from the quote after `-m` to the final quote at `)"`, so `head -1`
+  // yielded the literal `$(cat <<'EOF'` as the subject. That can never satisfy
+  // Conventional Commits, so EVERY heredoc-form commit was blocked — conforming
+  // or not. Both directions are pinned: a conforming body must pass, and a
+  // non-conforming one must still be blocked, so the fix cannot become a blanket
+  // "skip validation whenever a heredoc is present".
+  const heredoc = (body, tag = "<<'EOF'", close = 'EOF') =>
+    `git commit -m "$(cat ${tag}\n${body}\n${close}\n)"`;
+
+  test('validate-commit allows a CONFORMING heredoc-form message', () => {
+    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
+    const result = spawnHook(hookPath, {
+      input: JSON.stringify({ tool_input: { command: heredoc('feat(auth): add login flow') } }),
+      encoding: 'utf-8',
+      cwd: tmpDir,
+    });
+    assert.strictEqual(result.status, 0,
+      `a conforming heredoc message must pass; got ${result.status}. This is the reported defect: `
+      + `the subject read as the literal $(cat <<'EOF' opener. stdout: ${result.stdout}`);
+  });
+
+  test('validate-commit still BLOCKS a non-conforming heredoc-form message', () => {
+    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
+    const result = spawnHook(hookPath, {
+      input: JSON.stringify({ tool_input: { command: heredoc('wibble wobble no type here') } }),
+      encoding: 'utf-8',
+      cwd: tmpDir,
+    });
+    assert.strictEqual(result.status, 2,
+      'resolving the heredoc body must not become a blanket exemption for the whole form');
+    assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+  });
+
+  test('validate-commit measures subject length against the RESOLVED heredoc subject', () => {
+    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
+    // Conventional-Commits-VALID but over 72 chars, so only the length check can
+    // reject it — proving the length gate sees the real subject, not the opener.
+    const result = spawnHook(hookPath, {
+      input: JSON.stringify({ tool_input: { command: heredoc(`feat(auth): ${'x'.repeat(80)}`) } }),
+      encoding: 'utf-8',
+      cwd: tmpDir,
+    });
+    assert.strictEqual(result.status, 2, 'an over-length resolved subject must still be blocked');
+    assert.strictEqual(JSON.parse(result.stdout).code, 'COMMIT_SUBJECT_TOO_LONG',
+      'must fail on LENGTH, not format — a format failure here would mean the opener was still '
+      + 'being read as the subject');
+  });
+
+  test('validate-commit resolves the other heredoc opener spellings', () => {
+    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
+    for (const [label, cmd] of [
+      ['<<-"TAG"', heredoc('fix(api): correct status code', '<<-"MSG"', 'MSG')],
+      ['bare <<TAG', heredoc('chore: bump deps', '<<EOF', 'EOF')],
+      ['multi-line body', heredoc('feat(auth): add login flow\n\nBody paragraph.')],
+    ]) {
+      const result = spawnHook(hookPath, {
+        input: JSON.stringify({ tool_input: { command: cmd } }),
+        encoding: 'utf-8',
+        cwd: tmpDir,
+      });
+      assert.strictEqual(result.status, 0,
+        `${label}: a conforming message in this heredoc spelling must pass; got ${result.status}`);
+    }
+  });
+
+  test('validate-commit reads the message through the token walk, not a raw scan', () => {
+    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
+    // Forms the replaced regex never handled, because it scanned the raw string
+    // instead of walking tokens from the subcommand.
+    for (const [label, cmd, want] of [
+      ['-C path + heredoc', `git -C /tmp/x commit -m "$(cat <<'EOF'\nfix(core): patch it\nEOF\n)"`, 0],
+      ['env-prefix + heredoc', `GIT_AUTHOR_NAME=x git commit -m "$(cat <<'EOF'\nfix(core): patch it\nEOF\n)"`, 0],
+      ['non-commit subcommand', 'git status -m "wibble wobble"', 0],
+    ]) {
+      const result = spawnHook(hookPath, {
+        input: JSON.stringify({ tool_input: { command: cmd } }),
+        encoding: 'utf-8',
+        cwd: tmpDir,
+      });
+      assert.strictEqual(result.status, want, `${label}: expected ${want}, got ${result.status}`);
+    }
+  });
+
   test('validate-commit allows non-commit commands', () => {
     const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
     const input = JSON.stringify({
