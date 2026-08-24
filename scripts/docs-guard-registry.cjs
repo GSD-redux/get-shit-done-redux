@@ -335,6 +335,10 @@ const DOCS_GUARD_TESTS = {
   ],
   'tests/progress-forensic.test.cjs': ['docs/COMMANDS.md'],
   'tests/repo-layout.test.cjs': ['docs/contributing/bootstrap.md'],
+  // Reads REQ-LANG-04 and runs every form it offers an author through the
+  // matcher that enforces it, so a reword of the requirement alone is exactly
+  // the change this guard must run on (#2529).
+  'tests/response-language-coverage.test.cjs': ['docs/FEATURES.md'],
   'tests/reversibility-tagging.test.cjs': ['docs/reference/plan-md.md'],
   'tests/reviewer-docs-parity.test.cjs': [
     'docs/COMMANDS.md',
