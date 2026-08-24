@@ -389,6 +389,13 @@ ALLOWED=$((PLANNING_TOTAL - FORBIDDEN))
 TOTAL_FILES=$(echo "$DIFF_PATHS" | grep -c . || true)
 PR_COMMITS=$(git rev-list --count "$TARGET".."$PR_BRANCH")
 
+# #3679: a DELETED planning path is never legitimate — this workflow only ever
+# excludes content a cherry-picked commit ADDED; pre-existing target-tracked
+# planning files must survive byte-identical. Name-only counting cannot see
+# status (a deleted structural/allowed path verifies clean there), so gate on
+# deletions explicitly, across every planning category.
+PLANNING_DELETIONS=$(git diff --name-status "$TARGET".."$PR_BRANCH" | grep "^D" | grep -c "\.planning/" || true)
+
 # Default mode preserves anything under .planning/ that is neither transient nor
 # structural — config.json, intel/, workstreams/. That is deliberate and unchanged, but it
 # must not be silent: report it so the user can choose strict mode knowingly.
@@ -398,6 +405,12 @@ OTHER=$(echo "$DIFF_PATHS" | grep "^\.planning/" | grep -Ev "$FORBIDDEN_RE" | gr
 `$FORBIDDEN` is the pass/fail number — it must be `0`. A non-zero value means the filter
 did not do what this mode promised; report it and do not tell the user to push.
 
+`$PLANNING_DELETIONS` is a second hard gate (#3679) — it must also be `0`. A non-zero
+value means the PR branch would DELETE planning files the target branch tracks
+(`git diff --name-status "$TARGET".."$PR_BRANCH" | grep "^D" | grep "\.planning/"` lists
+them). That is data loss, not filtering — report it, do not tell the user to push, and
+rebuild the branch.
+
 Display results:
 ```
 ✅ PR branch created: {PR_BRANCH}
@@ -406,6 +419,7 @@ Original: {AHEAD} commits, {ORIGINAL_FILES} files
 PR branch: {PR_COMMITS} commits, {TOTAL_FILES} files
 Mode: {PR_MODE}
 Planning paths in diff: {PLANNING_TOTAL} (allowed {ALLOWED}, forbidden {FORBIDDEN} — must be 0)
+Planning deletions: {PLANNING_DELETIONS} (must be 0 — #3679)
 
 Next steps:
   git push origin {PR_BRANCH}
