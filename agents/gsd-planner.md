@@ -181,6 +181,7 @@ Every task has four required fields:
 ```xml
 <verify>
   <automated>pytest tests/test_module.py::test_behavior -x</automated>
+  <fails_when>non-zero exit, or "0 passed" in the summary line</fails_when>
 </verify>
 ```
 
@@ -189,6 +190,8 @@ Every task has four required fields:
 - Simple format also accepted: `npm test` passes, `curl -X POST /api/auth/login` returns 200
 
 **Nyquist Rule:** Every `<verify>` includes `<automated>`. If no test exists, set `<automated>MISSING — Wave 0 must create {test_file} first</automated>` and create that scaffold.
+
+**Failing-direction Rule (#3172):** Every runnable `<automated>` carries a `<fails_when>` sibling naming what output constitutes failure — an exit code, a string in the output, a missing line. A command with no expressible failure mode is not an acceptance test. Name an observable signal, never the word "failure"; `TBD`/`N/A`/`none` are rejected. The `MISSING` sentinel is exempt. Rules + worked examples: @gsd-core/references/planner-failing-direction.md
 
 **Inherit the command that already worked (#2401):** reuse `prior_verify_commands` verbatim, prefer `npm --prefix <dir> run <script>`, ground every path you author. @gsd-core/references/planner-verify-command-grounding.md
 

@@ -100,8 +100,12 @@ function statuses(entries) {
   return entries.map((e) => e.status);
 }
 
+/**
+ * Fixture matching the real `.planning/phases/<dir>/` layout findPhaseInternal
+ * resolves against.
+ */
 function writePhase(root, phaseName, plans) {
-  const phaseDir = path.join(root, '.planning', phaseName);
+  const phaseDir = path.join(root, '.planning', 'phases', phaseName);
   fs.mkdirSync(phaseDir, { recursive: true });
   for (const [file, body] of Object.entries(plans)) {
     fs.writeFileSync(path.join(phaseDir, file), body, 'utf8');
@@ -478,20 +482,21 @@ describe('the #2401 path probe is not disturbed (Hyrum consequences)', () => {
 describe('gsd-tools check verify-failure-directions', () => {
   test('row 26 — the check arm emits the probe JSON', () => {
     const root = fs.mkdtempSync(path.join(ROOT, 'cli-'));
-    writePhase(root, 'phase-1', {
+    writePhase(root, '01-test-phase', {
       '01-01-PLAN.md': taskWith([{ automated: 'npm test' }]),
     });
-    const res = runGsdTools(['check', 'verify-failure-directions', '1', '--raw'], { cwd: root });
-    assert.equal(res.status, 0, res.stderr);
-    const parsed = JSON.parse(res.stdout);
+    const result = runGsdTools(['check', 'verify-failure-directions', '1', '--raw'], root);
+    assert.ok(result.success, `check verify-failure-directions should succeed. stderr: ${result.error}`);
+    const parsed = JSON.parse(result.output);
     assert.equal(parsed.counts.blocker, 1);
     assert.equal(parsed.commands[0].status, 'missing');
   });
 
   test('row 27 — the check arm degrades when the phase argument is absent', () => {
     const root = fs.mkdtempSync(path.join(ROOT, 'cli-noarg-'));
-    const res = runGsdTools(['check', 'verify-failure-directions', '--raw'], { cwd: root });
-    const parsed = JSON.parse(res.stdout);
+    fs.mkdirSync(path.join(root, '.planning', 'phases'), { recursive: true });
+    const result = runGsdTools(['check', 'verify-failure-directions', '--raw'], root);
+    const parsed = JSON.parse(result.output);
     assert.ok(parsed.readError, 'expected a populated readError');
     assert.match(parsed.readError, /phase/i);
     assert.deepEqual(parsed.commands, []);
