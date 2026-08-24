@@ -45,7 +45,7 @@ Parse the first token of $ARGUMENTS:
 - If it is `--integrations`: strip the flag, execute settings-integrations workflow
 - If it starts with `--profile`: extract the profile name (remainder after `--profile`), then:
   1. Verify `gsd-tools` is on PATH via `command -v gsd-tools`; if absent, emit the install hint `Install GSD via 'npm i -g @opengsd/gsd-core'` and stop.
-  2. Run: `gsd-tools query config-set-model-profile <profile-name> --raw` and display the output verbatim.
+  2. Run: `gsd_run query config-set-model-profile <profile-name> --raw` and display the output verbatim.
 - Otherwise: execute settings workflow (no argument needed)
 </context>
 

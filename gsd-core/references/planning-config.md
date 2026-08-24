@@ -63,15 +63,15 @@ Configuration options for `.planning/` directory behavior.
 
 ```bash
 # Commit with automatic commit_docs + gitignore checks:
-gsd-tools query commit "docs: update state" --files .planning/STATE.md
+gsd_run query commit "docs: update state" --files .planning/STATE.md
 
 # Load config via state load (returns JSON):
-INIT=$(gsd-tools query state.load)
+INIT=$(gsd_run query state.load)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 # commit_docs is available in the JSON output
 
 # Or use init commands which include commit_docs:
-INIT=$(gsd-tools query init.execute-phase "1")
+INIT=$(gsd_run query init.execute-phase "1")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 # commit_docs is included in all init command outputs
 ```
@@ -83,7 +83,7 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 **Commit via CLI (handles checks automatically):**
 
 ```bash
-gsd-tools query commit "docs: update state" --files .planning/STATE.md
+gsd_run query commit "docs: update state" --files .planning/STATE.md
 ```
 
 The CLI checks `commit_docs` config and gitignore status internally — no manual conditionals needed.
@@ -171,14 +171,14 @@ To use uncommitted mode:
 
 Use `init execute-phase` which returns all config as JSON:
 ```bash
-INIT=$(gsd-tools query init.execute-phase "1")
+INIT=$(gsd_run query init.execute-phase "1")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 # JSON output includes: branching_strategy, phase_branch_template, milestone_branch_template
 ```
 
 Or use `state load` for the config values:
 ```bash
-INIT=$(gsd-tools query state.load)
+INIT=$(gsd_run query state.load)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 # Parse branching_strategy, phase_branch_template, milestone_branch_template from JSON
 ```

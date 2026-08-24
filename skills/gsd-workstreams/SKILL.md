@@ -35,30 +35,30 @@ If no subcommand given, default to `list`.
 ## Step 2: Execute Operation
 
 ### list
-Run: `gsd-tools query workstream.list --raw --cwd "$CWD"`
+Run: `gsd_run query workstream.list --raw --cwd "$CWD"`
 Display the workstreams in a table format showing name, status, current phase, and progress.
 
 ### create
-Run: `gsd-tools query workstream.create <name> --raw --cwd "$CWD"`
+Run: `gsd_run query workstream.create <name> --raw --cwd "$CWD"`
 After creation, display the new workstream path and suggest next steps:
 - `/gsd-new-milestone --ws <name>` to set up the milestone
 
 ### status
-Run: `gsd-tools query workstream.status <name> --raw --cwd "$CWD"`
+Run: `gsd_run query workstream.status <name> --raw --cwd "$CWD"`
 Display detailed phase breakdown and state information.
 
 ### switch
-Run: `gsd-tools query workstream.set <name> --raw --cwd "$CWD"`
+Run: `gsd_run query workstream.set <name> --raw --cwd "$CWD"`
 Also set `GSD_WORKSTREAM` for the current session when the runtime supports it.
 If the runtime exposes a session identifier, GSD also stores the active workstream
 session-locally so concurrent sessions do not overwrite each other.
 
 ### progress
-Run: `gsd-tools query workstream.progress --raw --cwd "$CWD"`
+Run: `gsd_run query workstream.progress --raw --cwd "$CWD"`
 Display a progress overview across all workstreams.
 
 ### complete
-Run: `gsd-tools query workstream.complete <name> --raw --cwd "$CWD"`
+Run: `gsd_run query workstream.complete <name> --raw --cwd "$CWD"`
 Archive the workstream to milestones/.
 
 ### resume
