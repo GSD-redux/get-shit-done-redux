@@ -101,12 +101,26 @@ describe('reviewer config federation — provenance actually moved (#2797)', () 
     assert.equal(configSchema.isCentralConfigKey('review.max_prompt_tokens_per_reviewer'), true);
   });
 
-  test('a lane with no model flag and no host owns no config keys', () => {
+  test('a lane with no model flag and no host owns no MODEL or HOST key (#3691 narrows #2797)', () => {
     // Absent-safe (ADR-2782 D4): qwen, cursor and coderabbit take neither a model
-    // argument nor a host, so they declare nothing. That is not a coverage hole.
-    const owners = Object.values(registry.configSchema || {}).map((e) => e && e.owner);
-    for (const laneId of ['qwen', 'cursor', 'coderabbit']) {
-      assert.equal(owners.includes(laneId), false, `${laneId} must declare no config keys`);
+    // argument nor a host. Under #2797 that meant "declares nothing" — the only
+    // way a lane owned a config key was via a model flag or a host. #3691 gave
+    // every CLI lane a `review.max_prompt_tokens_per_reviewer.<slug>` key, a
+    // third legitimate reason to own a key, so qwen/cursor/coderabbit now
+    // legitimately own their own budget key. The part of the #2797 invariant
+    // that still holds — a lane must never own a MODEL or HOST key, or another
+    // lane's budget key, it has no use for — is what this asserts directly.
+    for (const [key, entry] of Object.entries(registry.configSchema || {})) {
+      const owner = entry && entry.owner;
+      if (!['qwen', 'cursor', 'coderabbit'].includes(owner)) continue;
+      assert.ok(
+        !key.startsWith('review.models.') && !key.endsWith('_host'),
+        `${owner} must not own a model or host key, but owns "${key}"`,
+      );
+      assert.equal(
+        key, `review.max_prompt_tokens_per_reviewer.${owner}`,
+        `${owner} must own no key other than its own budget key, but owns "${key}"`,
+      );
     }
   });
 });

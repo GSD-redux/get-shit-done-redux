@@ -244,6 +244,7 @@ Generated from `CONFIG_DEFAULTS` (configuration.cjs) and `VALID_CONFIG_KEYS` (co
 | `resolve_model_ids` | boolean\|string | `false` | `false`, `true`, `"omit"` | Map model aliases to full Claude IDs; `"omit"` returns empty string |
 | `context` | string\|null | `null` | `"dev"`, `"research"`, `"review"` | Execution context profile that adjusts agent behavior: `"dev"` for development tasks, `"research"` for investigation/exploration, `"review"` for code review workflows |
 | `review.models.<cli>` | string\|null | `null` | Any model ID string | Per-CLI model override for /gsd:review (e.g., `review.models.gemini`). Falls back to CLI default when null. |
+| `review.max_prompt_tokens` | number\|null | `null` | Any positive integer, or `null` | Central, cross-lane default cap (in estimated tokens) on the assembled review prompt; `null` means no trim. A per-lane `review.max_prompt_tokens_per_reviewer.<slug>` value overrides it for that lane: `-1` means unset (inherits this global default), `0` means "do not trim that lane" (not unset — it is an explicit, standing opt-out). _Alias:_ `max_prompt_tokens` is the flat-key form used in `CONFIG_DEFAULTS`; `review.max_prompt_tokens` is the canonical namespaced form. |
 
 ### Workflow Fields
 
