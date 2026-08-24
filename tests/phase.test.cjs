@@ -3334,7 +3334,7 @@ describe('phase complete canonical verification gate (#1522)', () => {
 // #3685: cmdPhaseComplete's roadmap_updated/state_updated flags were computed
 // via fs.existsSync(roadmapPath) / fs.existsSync(statePath) — true whenever
 // the file merely EXISTS, even when the transaction rewrote nothing. The
-// sibling requirements_updated (line ~2951 in src/phase.cts) already honours
+// sibling requirements_updated (line ~2951 in src/phase.cts) already honors
 // the correct contract: true only when that file's content actually changed
 // in the transaction. Clock is pinned (GSD_TEST_MODE + GSD_NOW_MS) because
 // syncStateFrontmatter stamps a millisecond-resolution `last_updated:` field
@@ -3395,6 +3395,7 @@ describe('phase complete write-flag content-change contract (#3685)', () => {
       parsed2.state_updated, false,
       'fs.existsSync() reported true here, masking the no-op (#3685)',
     );
+    const roadmapAfter2 = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
 
     // Stability across repeats: the flag must not alternate true/false on
     // successive no-op runs — pin a THIRD call to the same behavior.
@@ -3402,7 +3403,6 @@ describe('phase complete write-flag content-change contract (#3685)', () => {
     assert.ok(run3.success, `third phase complete failed: ${run3.error}`);
     const stateAfter3 = fs.readFileSync(statePath, 'utf-8');
     const roadmapAfter3 = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
-    const roadmapAfter2 = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
     assert.equal(stateAfter3, stateAfter2, 'STATE.md must remain byte-identical on a third no-op run');
     assert.equal(roadmapAfter3, roadmapAfter2, 'ROADMAP.md must remain byte-identical on a third no-op run');
     const parsed3 = JSON.parse(run3.output);

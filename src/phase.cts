@@ -2222,6 +2222,12 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     ? (phaseInfo['summaries'] as string[]).length
     : 0;
   let requirementsUpdated = false;
+  // #3685: mirror requirementsUpdated's diff-tracking contract at the
+  // writes.push({filePath, before, after}) sites below, rather than
+  // reporting via fs.existsSync (which is true whenever the file merely
+  // exists, not when the transaction actually wrote a change).
+  let roadmapUpdated = false;
+  let stateUpdated = false;
 
   const warnings: string[] = [];
   // ADR-3408 §8.5 / D2 (#3374): "liberal but visible" — when the write-seam
@@ -2632,6 +2638,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           before: originalRoadmapContent,
           after: roadmapContent,
         });
+        roadmapUpdated = roadmapContent !== originalRoadmapContent;
 
         const reqPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
         if (fs.existsSync(reqPath)) {
@@ -3205,6 +3212,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         }
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
+        stateUpdated = stateContent !== originalStateContent;
       }
 
       writePlanningFileSet(writes);
@@ -3271,8 +3279,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     next_phase_name: nextPhaseName,
     is_last_phase: isLastPhase,
     date: today,
-    roadmap_updated: fs.existsSync(roadmapPath),
-    state_updated: fs.existsSync(statePath),
+    roadmap_updated: roadmapUpdated,
+    state_updated: stateUpdated,
     requirements_updated: requirementsUpdated,
     auto_pruned: autoPruned,
     warnings,
