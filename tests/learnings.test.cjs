@@ -627,3 +627,138 @@ describe('learnings dedupe scaling (#306)', () => {
     assert.strictEqual(all.length, 1);
   });
 });
+
+// ─── #3683 — phase-scoped learnings source (path agreement + gated wiring) ──
+//
+// The extractor writes {PHASE_DIR}/{PADDED}-LEARNINGS.md; the copy command read
+// only <root>/LEARNINGS.md (project root), so learnings.copy ALWAYS no-oped —
+// the global-learnings store stayed empty even after manual extraction. The
+// copy must discover the most recent phase-scoped artifact; the project-root
+// path remains the fallback (legacy shape). Pins also cover the gated
+// completion wiring in execute-phase.md and the registry/docs agreement.
+
+describe('#3683 learnings copy source resolution', () => {
+  let storeDir;
+  let projectDir;
+
+  beforeEach(() => {
+    storeDir = makeTempDir();
+    projectDir = makeTempDir();
+  });
+  afterEach(() => {
+    cleanupDir(storeDir);
+    cleanupDir(projectDir);
+  });
+
+  function writePhaseLearnings(phaseSlug, ageMinutes) {
+    const phaseDir = path.join(projectDir, 'phases', phaseSlug);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    const file = path.join(phaseDir, `${phaseSlug}-LEARNINGS.md`);
+    fs.writeFileSync(file, `# Learnings\n\n## ${phaseSlug} Lesson\nBody for ${phaseSlug}.\n`, 'utf-8');
+    const when = new Date(Date.now() - ageMinutes * 60 * 1000);
+    fs.utimesSync(file, when, when);
+    return file;
+  }
+
+  test('learnings copy reads the phase-scoped artifact', () => {
+    writePhaseLearnings('1.0-discovery', 30);
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 1, `phase-scoped artifact must be the copy source: ${JSON.stringify(result)}`);
+    const all = learningsList({ storeDir });
+    assert.ok(all.some((r) => r.learning.includes('1.0-discovery Lesson')));
+  });
+
+  test('learnings copy still reads the project-root artifact', () => {
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), '# L\n\n## Root Lesson\nBody.\n', 'utf-8');
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 1);
+    assert.ok(learningsList({ storeDir }).some((r) => r.learning.includes('Root Lesson')));
+  });
+
+  test('phase-scoped wins when both exist', () => {
+    writePhaseLearnings('2.0-build', 10);
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), '# L\n\n## Root Lesson\nBody.\n', 'utf-8');
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 1);
+    assert.ok(
+      learningsList({ storeDir }).some((r) => r.learning.includes('2.0-build Lesson')),
+      'the most recent phase artifact must win over the project-root file',
+    );
+  });
+
+  test('learnings copy no-ops with no artifact', () => {
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.deepStrictEqual(result, { total: 0, created: 0, skipped: 0 });
+  });
+
+  test('learnings copy picks the most recent phase artifact', () => {
+    writePhaseLearnings('1.0-discovery', 240); // older
+    writePhaseLearnings('3.0-hardening', 5);   // newer
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 1);
+    assert.ok(learningsList({ storeDir }).some((r) => r.learning.includes('3.0-hardening Lesson')));
+  });
+
+  test('malformed artifact yields no entries', () => {
+    const phaseDir = path.join(projectDir, 'phases', '1.0-x');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '1.0-x-LEARNINGS.md'), 'no sections at all\n', 'utf-8');
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 0);
+  });
+});
+
+describe('#3683 completion wiring and registry pins', () => {
+  const EXECUTE_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
+  const REGISTRY = path.join(__dirname, '..', 'templates', 'README.md');
+  const FEATURES = path.join(__dirname, '..', 'docs', 'FEATURES.md');
+
+  test('execute-phase completion wires gated extraction', () => {
+    // allow-test-rule: source-text-is-the-product (#3683) — the workflow text IS
+    // the runtime contract; the wiring, its gate, and its non-fatal clause are
+    // prose/bash instructions no CLI surface can enumerate.
+    const content = fs.readFileSync(EXECUTE_PHASE, 'utf-8');
+    const stepStart = content.indexOf('<step name="auto_copy_learnings">');
+    assert.ok(stepStart !== -1, 'auto_copy_learnings step must exist');
+    const stepEnd = content.indexOf('</step>', stepStart);
+    const step = content.slice(stepStart, stepEnd);
+    assert.ok(
+      /extract-learnings|extract_learnings/.test(step),
+      'the gated step must invoke the extraction producer for the completed phase',
+    );
+    assert.ok(
+      /must NOT block phase completion|does not block phase completion|non-fatal/i.test(step),
+      'extraction failure must be explicitly non-fatal',
+    );
+    // Gate-first ordering: the disabled skip must precede the extraction wiring
+    // so disabled runs stay byte-identical.
+    const gateIdx = step.indexOf('GL_ENABLED');
+    const extractIdx = step.search(/extract-learnings|extract_learnings/);
+    assert.ok(gateIdx !== -1 && extractIdx !== -1 && gateIdx < extractIdx, 'gate check must precede extraction');
+  });
+
+  test('registry producer attribution is gated', () => {
+    // allow-test-rule: source-text-is-the-product (#3683) — the canonical
+    // artifact registry is a shipped text contract.
+    const registry = fs.readFileSync(REGISTRY, 'utf-8');
+    const splitLines = require('../gsd-core/bin/lib/text-lines.cjs').splitLines;
+    const row = splitLines(registry).find((l) => l.includes('LEARNINGS.md'));
+    assert.ok(row, 'registry must carry a LEARNINGS.md row');
+    assert.ok(
+      /global_learnings|gated/i.test(row),
+      `producer attribution must state the gate: ${row}`,
+    );
+  });
+
+  test('features doc agrees with the registry', () => {
+    // allow-test-rule: source-text-is-the-product (#3683)
+    const features = fs.readFileSync(FEATURES, 'utf-8');
+    const idx = features.indexOf('extract-learnings');
+    assert.ok(idx !== -1, 'FEATURES.md must mention extract-learnings');
+    const window = features.slice(Math.max(0, idx - 400), idx + 400);
+    assert.ok(
+      /global_learnings|automatically/i.test(window),
+      'the learnings feature section must acknowledge the gated automatic path',
+    );
+  });
+});
