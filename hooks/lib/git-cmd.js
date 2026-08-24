@@ -196,8 +196,8 @@ function isGitSubcommand(cmd, sub) {
  * blocked. Reported in review of #3802.
  *
  * The defect this DOES fix: `gsd-validate-commit.sh` captured the message with
- * `-m[[:space:]]+"([^"]+)"`, and bash `[^"]` matches newlines, so Claude Code's
- * documented idiom
+ * `-m[[:space:]]+"([^"]+)"`, and bash `[^"]` matches newlines, so the widely
+ * used agent-authored commit idiom
  *
  *     git commit -m "$(cat <<'EOF'
  *     feat(auth): add login flow
