@@ -1026,12 +1026,13 @@ describe('execute-phase workflow: #3684 verified-unmarked resume', () => {
     fs.writeFileSync(path.join(phaseDir, '01-alpha-VERIFICATION.md'), [
       '---', 'status: passed', '---', '', '# Verification', '', 'PASS',
     ].join('\n'));
+    // Heading-shaped ROADMAP (analyze's parser keys on "### Phase N:" under
+    // a sections heading); the checkbox line carries the marked-complete
+    // marker roadmap_complete reads (- [x]/**Phase 1** vs - [ ]).
     fs.writeFileSync(path.join(proj, '.planning', 'ROADMAP.md'), [
-      '# Project Roadmap', '', '## Milestone 1', '',
+      '# Roadmap v1.0', '', '## Phases', '',
+      '### Phase 1: Alpha', '**Goal:** First phase', '',
       `- [${ticked ? 'x' : ' '}] **Phase 1: Alpha** - First phase`, '',
-      '## Progress', '',
-      '| Phase | Status | Completed |', '|-------|--------|------------|',
-      '| 1 | ${ticked ? "Complete" : "In Progress"} | |', '',
     ].join('\n'));
     return { proj, phaseDir };
   }
@@ -1062,11 +1063,11 @@ describe('execute-phase workflow: #3684 verified-unmarked resume', () => {
 
   test('phase.complete is idempotent on the already-complete fixture', (t) => {
     const { proj } = buildStrandedFixture(t, { ticked: false });
-    const first = runGsdTools(['phase', 'complete', '1', '--json'], proj);
+    const first = runGsdTools('phase complete 1', proj);
     assert.ok(first.success, `first completion should succeed: ${first.error}`);
     const roadmapAfterFirst = fs.readFileSync(path.join(proj, '.planning', 'ROADMAP.md'), 'utf-8');
     assert.ok(/\[x\]/.test(roadmapAfterFirst), 'first completion ticks the checkbox');
-    const second = runGsdTools(['phase', 'complete', '1', '--json'], proj);
+    const second = runGsdTools('phase complete 1', proj);
     assert.ok(second.success, 'second completion should succeed (no-op)');
     const roadmapAfterSecond = fs.readFileSync(path.join(proj, '.planning', 'ROADMAP.md'), 'utf-8');
     assert.equal(roadmapAfterSecond, roadmapAfterFirst, 'second run must leave ROADMAP byte-identical (criterion 3)');
