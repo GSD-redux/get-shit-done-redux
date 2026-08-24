@@ -730,9 +730,10 @@ describe('#3683 learnings copy source resolution', () => {
     const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
     assert.strictEqual(result.created, 3, 'each ### item must become one learning');
     const all = learningsList({ storeDir });
-    assert.ok(all.some((r) => r.learning.includes('Use SQLite over Postgres')));
-    assert.ok(all.some((r) => r.learning.includes('Pin the runner image')));
-    assert.ok(all.some((r) => r.learning.includes('npm dedupe changed lockfile')));
+    // ### item TITLES land in context; their BODIES land in learning.
+    assert.ok(all.some((r) => r.context === 'Use SQLite over Postgres' && r.learning.includes('Zero-ops')));
+    assert.ok(all.some((r) => r.context === 'Pin the runner image' && r.learning.includes('Reproducible')));
+    assert.ok(all.some((r) => r.context === 'npm dedupe changed lockfile' && r.learning.includes('audit')));
     for (const r of all) {
       assert.ok(r.learning.length < 200, 'entries must be item-scoped, not category blobs');
     }
