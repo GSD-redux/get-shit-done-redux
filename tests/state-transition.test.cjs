@@ -637,6 +637,26 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     assert.strictEqual(result.data && result.data.total_plans, 6);
   });
 
+  // AC1: the hybrid must write back to the SAME field with padding preserved,
+  // not merely report the right numbers in `data`.
+  test('hybrid format: writes back to Current Plan with padding preserved', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 04 of 06',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '05 of 06');
+    // and the compound field name was NOT introduced as a side effect
+    assert.ok(!/^Plan:/m.test(result.content), 'must not add a separate Plan: field');
+  });
+
   test('hybrid format: phase-complete branch still fires on the last plan', () => {
     const input = [
       '# Project State',
@@ -691,6 +711,24 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     ].join('\n');
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
     assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 6');
+  });
+
+  // AC6: the shared field reader must NOT be loosened to make the hybrid work.
+  // Reading the hybrid is the transition's job; `stateExtractField('Plan')` is
+  // line-anchored (`^Plan:`) and has 13+ callers, so teaching it to match a
+  // field name that merely ENDS in "Plan" would be the wrong fix and would
+  // silently change what those callers read. This test fails if anyone tries it.
+  test('shared reader stays anchored: "Plan" does not match "Current Plan:"', () => {
+    const content = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 04 of 06',
+      '',
+    ].join('\n');
+    assert.strictEqual(stateExtractField(content, 'Plan'), null);
+    assert.strictEqual(stateExtractField(content, 'Current Plan'), '04 of 06');
   });
 
   // The legacy pair must keep winning when both are present: a stray "of N"
