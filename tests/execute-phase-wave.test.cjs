@@ -974,9 +974,12 @@ describe('execute-phase workflow: #3684 verified-unmarked resume', () => {
       /roadmap_complete/.test(step),
       'the finished branch must read roadmap_complete — the authoritative checkbox state',
     );
+    // Report fields may be NAMED in the prohibition prose — what is
+    // forbidden is reading them as the signal (a command/jq consumption).
+    const branchBash = step.split('\n').filter((l) => /jq|gsd_run|pick/.test(l)).join('\n');
     assert.ok(
-      !/roadmap_updated|state_updated/.test(step),
-      'completion report fields must never be the already-complete signal (#3685)',
+      !/roadmap_updated|state_updated/.test(branchBash),
+      'completion report fields must never be READ as the already-complete signal (#3685)',
     );
   });
 
@@ -1004,7 +1007,7 @@ describe('execute-phase workflow: #3684 verified-unmarked resume', () => {
       'the genuinely-finished clean exit text stays',
     );
     assert.ok(
-      /VERIFY_STATUS` == `missing`/.test(step),
+      /`VERIFY_STATUS == missing`/.test(step),
       'the #2868 missing-verification branch stays',
     );
     assert.ok(
@@ -1039,7 +1042,7 @@ describe('execute-phase workflow: #3684 verified-unmarked resume', () => {
 
   test('routing queries yield passed + unmarked on the stranded fixture', (t) => {
     const { proj } = buildStrandedFixture(t, { ticked: false });
-    const verify = runGsdTools(['verification', 'status', '--pick', 'status', '--json'], path.join(proj, '.planning', 'phases', '01-alpha'));
+    const verify = runGsdTools(['verification', 'status', '--pick', 'status'], path.join(proj, '.planning', 'phases', '01-alpha'));
     const analyze = runGsdTools(['roadmap.analyze', '--json'], proj);
     assert.ok(analyze.success, `roadmap.analyze should succeed: ${analyze.error}`);
     const phases = JSON.parse(analyze.output).phases || [];
