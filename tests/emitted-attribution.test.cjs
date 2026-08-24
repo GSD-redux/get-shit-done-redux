@@ -78,6 +78,10 @@ const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-pr
 const {
   validateAckText,
   assertAbsentOnNext,
+  assertNoAllSpentFragments,
+  ackProse,
+  ackEntries,
+  ACK_INVISIBLE,
   MAX_ACK_FRAGMENTS: MAX_ACK_FRAGMENTS_LINT,
 } = require('../scripts/lint-emitted-drift-ack.cjs');
 const {
@@ -934,9 +938,18 @@ test('assertAbsentOnNext fails when the file is present with entries, naming the
   assert.match(r.message, /git rm tests\/emitted-drift-ack\.json/, 'the remedy must be named, not just the problem');
   assert.match(
     r.message, /tests\/emitted-drift-acks\//,
-    '#2914: the message must explain that acks now go in per-PR fragments, and that a '
-    + 'persisting fragment (unlike this legacy file) is harmless',
+    '#2914: the message must explain that acks now go in per-PR fragments',
   );
+  // #3078 removed the premise this used to assert: a persisting fragment is NOT harmless
+  // just because it does not share a FILE with another PR — fragments share a PATH KEY
+  // SPACE, and a duplicate path across two sources is a hard failure in main(), so a
+  // fully-spent fragment left behind still owns keys it can no longer gate.
+  assert.doesNotMatch(
+    r.message, /cannot conflict with any other PR/,
+    '#3078: this premise was false and has been removed — a fragment cannot MERGE-CONFLICT '
+    + 'with another PR\'s fragment, but it can still collide on a path key',
+  );
+  assert.match(r.message, /#3078/);
 });
 
 test('assertAbsentOnNext fed from a real next-like tree: absent passes, present fails (regression, #2914)', () => {
@@ -956,6 +969,508 @@ test('assertAbsentOnNext fed from a real next-like tree: absent passes, present 
   const r = assertAbsentOnNext(fs.existsSync(ackPath));
   assert.ok(!r.ok, 'a tree carrying the file, however well-formed, must fail');
   assert.match(r.message, /exists on next/);
+});
+
+// ─── guard-no-ack-on-next: fully-spent FRAGMENTS are guarded on inertness (#3078) ──
+//
+// #2914 exempted the fragment directory from `assertAbsentOnNext` on the premise that
+// a persistent fragment "cannot conflict with any other PR". That premise is false:
+// fragments do not share a FILE, but they do share a PATH KEY SPACE, and a duplicate
+// path declared by two sources is a hard failure in `main()` below. So a merged,
+// fully-spent fragment still OWNS its path keys, and the next PR that grows one of
+// those paths can declare it neither there (spent — `parseAck`'s `isSpent`/`prose`
+// contract) nor in its own fragment (a cross-source duplicate). Unlike the legacy
+// file, PRESENCE alone is not the failure here — a fragment landed by the very push
+// being guarded is the healthy case for every ack-carrying PR. The failure is
+// INERTNESS: every surviving entry's prose already matches the base ref's copy, so
+// the fragment can no longer clear a delta for anyone.
+
+const doc = (paths) => JSON.stringify({ version: ACK_VERSION, paths });
+const frag = (name, current, base) => ({ name, currentRaw: current, baseRaw: base });
+
+// ── A. assertNoAllSpentFragments — the pure lifecycle rule ──────────────────
+
+test('ackEntries: a literal "null" document is unreadable, distinct from an entryless object document', () => {
+  // The distinction assertNoAllSpentFragments's "literal null" test above depends on:
+  // an entryless OBJECT document is a genuine empty entry set (`new Map()`), while the
+  // TEXT "null" parses to the JS value `null`, fails isPlainObject, and returns the
+  // "cannot trust this document" sentinel instead.
+  assert.deepEqual(ackEntries('{}'), new Map());
+  assert.deepEqual(ackEntries('{"version":1,"paths":{}}'), new Map());
+  assert.equal(ackEntries('null'), null);
+  assert.equal(ackEntries(null) instanceof Map, true, 'an ABSENT fragment (raw === null) is a genuine empty entry set');
+  assert.deepEqual(ackEntries(null), new Map());
+});
+
+test('assertNoAllSpentFragments: zero fragments is ok, vacuously', () => {
+  const r = assertNoAllSpentFragments([]);
+  assert.ok(r.ok);
+  assert.match(r.message, /no all-spent fragment survives/);
+  assert.deepEqual(r.sweepable, []);
+});
+
+test('assertNoAllSpentFragments: a fragment absent at the base is live — the healthy shape of every fresh PR', () => {
+  // A fragment landed by the very push being guarded is the NORMAL case for every
+  // ack-carrying PR. Reporting it would red `next` on every such merge.
+  const r = assertNoAllSpentFragments([
+    frag('a.json', doc({ 'x.md': { reason: 'why' } }), null),
+  ]);
+  assert.ok(r.ok);
+  assert.deepEqual(r.sweepable, []);
+});
+
+test('assertNoAllSpentFragments: a fully-spent fragment is reported, naming the file, "all spent", and the exact git rm remedy (n=1, n=3)', () => {
+  for (const entries of [
+    { 'x.md': { reason: 'why' } },
+    { 'a.md': { reason: 'a' }, 'b.md': { reason: 'b' }, 'c.md': { reason: 'c' } },
+  ]) {
+    const raw = doc(entries);
+    const r = assertNoAllSpentFragments([frag('spent.json', raw, raw)]);
+    assert.ok(!r.ok, `${Object.keys(entries).length} entr(y/ies) must still be reported all-spent`);
+    assert.match(r.message, /spent\.json/);
+    assert.match(r.message, /all spent/);
+    assert.match(r.message, new RegExp(escapeRegex(`git rm ${ACK_DIR_REPO_PATH}/spent.json`)));
+    assert.deepEqual(r.sweepable, ['spent.json']);
+  }
+});
+
+test('assertNoAllSpentFragments: a partially spent fragment (one entry new) is left alone', () => {
+  // Named explicitly as a must-not-change: appending a new entry beside an
+  // already-spent one must not get swept out from under the live one.
+  const r = assertNoAllSpentFragments([
+    frag(
+      'mixed.json',
+      doc({ x: { reason: 'x-reason' }, y: { reason: 'y-reason' } }),
+      doc({ x: { reason: 'x-reason' } }),
+    ),
+  ]);
+  assert.ok(r.ok);
+  assert.deepEqual(r.sweepable, []);
+});
+
+test('assertNoAllSpentFragments: re-arming by appending genuinely new prose keeps working (#2639, #2993)', () => {
+  const r = assertNoAllSpentFragments([
+    frag('r.json', doc({ x: { reason: 'a brand new explanation' } }), doc({ x: { reason: 'the original explanation' } })),
+  ]);
+  assert.ok(r.ok, 're-arming by appending genuinely new prose must not be swept');
+});
+
+test('assertNoAllSpentFragments: a zero-information reword never looks like a re-arm — doubled whitespace, leading/trailing whitespace, CRLF vs LF', () => {
+  const cases = [
+    ['doubled internal whitespace', 'the  original explanation', 'the original explanation'],
+    ['leading/trailing whitespace', '  the original explanation  ', 'the original explanation'],
+    ['CRLF vs LF inside the reason', 'the original\r\nexplanation', 'the original\nexplanation'],
+  ];
+  for (const [label, current, base] of cases) {
+    const r = assertNoAllSpentFragments([
+      frag('r.json', doc({ x: { reason: current } }), doc({ x: { reason: base } })),
+    ]);
+    assert.ok(!r.ok, `${label}: a zero-information reword must still read as spent`);
+    assert.deepEqual(r.sweepable, ['r.json'], label);
+  }
+});
+
+test('assertNoAllSpentFragments: each invisible codepoint alone must not re-arm a spent entry', () => {
+  const codepoints = [0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF];
+  for (const cp of codepoints) {
+    const base = 'the original explanation';
+    const current = `the${String.fromCodePoint(cp)} original explanation`;
+    const r = assertNoAllSpentFragments([
+      frag('r.json', doc({ x: { reason: current } }), doc({ x: { reason: base } })),
+    ]);
+    assert.ok(!r.ok, `U+${cp.toString(16).toUpperCase()} alone must not re-arm a spent entry`);
+  }
+});
+
+test('assertNoAllSpentFragments: every SURVIVING entry is spent, even after one entry is dropped', () => {
+  const base = doc({ x: { reason: 'x-reason' }, y: { reason: 'y-reason' } });
+  const current = doc({ x: { reason: 'x-reason' } });
+  const r = assertNoAllSpentFragments([frag('drop.json', current, base)]);
+  assert.ok(!r.ok);
+  assert.deepEqual(r.sweepable, ['drop.json']);
+});
+
+test('assertNoAllSpentFragments: disjoint key sets between current and base is not spent', () => {
+  const r = assertNoAllSpentFragments([
+    frag('disjoint.json', doc({ x: { reason: 'x' } }), doc({ y: { reason: 'y' } })),
+  ]);
+  assert.ok(r.ok);
+});
+
+test('assertNoAllSpentFragments: an entryless-but-parseable-object document is vacuously all-spent (n=0 boundary)', () => {
+  // Vacuously all-spent: `[...new Map()].every(...)` is true, so an object document
+  // declaring zero entries is swept for the same reason validateAckText refuses to let
+  // one be committed — it acknowledges nothing.
+  for (const raw of ['{}', '{"version":1}', '{"version":1,"paths":{}}']) {
+    const r = assertNoAllSpentFragments([frag('empty.json', raw, raw)]);
+    assert.ok(!r.ok, `${raw} must be swept`);
+    assert.deepEqual(r.sweepable, ['empty.json'], raw);
+  }
+});
+
+test('assertNoAllSpentFragments: a document of literally "null" is UNREADABLE here, not entryless, so it is left alone', () => {
+  // Distinct from the object-shaped entryless case above: `ackEntries` parses the text
+  // "null" to the JS value `null`, which fails `isPlainObject` and returns `null`
+  // (its "cannot trust this document" sentinel) — NOT `new Map()`. So this fragment is
+  // skipped by assertNoAllSpentFragments entirely, same as any other unreadable
+  // document (see the next test) — it is never counted as vacuously spent, unlike
+  // validateAckText's POLICY layer, which does reject "null" (present-but-entryless).
+  // The two surfaces are allowed to differ here: this guard owns LIFECYCLE, not shape.
+  const r = assertNoAllSpentFragments([frag('literal-null.json', 'null', 'null')]);
+  assert.ok(r.ok, 'a literal "null" document must not be swept by this guard');
+  assert.deepEqual(r.sweepable, []);
+});
+
+test('assertNoAllSpentFragments: a document it cannot trust to answer the question is left alone, never swept', () => {
+  // validateAckText / lint:ci owns SHAPE; this guard owns LIFECYCLE. Sweeping a
+  // fragment on the strength of a parse failure would delete an acknowledgment for
+  // the wrong reason.
+  const validBase = doc({ x: { reason: 'x' } });
+  for (const currentRaw of ['{ not json', '[]', '42', '{"paths":[]}', '{"paths":{"x":42}}']) {
+    const r = assertNoAllSpentFragments([frag('bad.json', currentRaw, validBase)]);
+    assert.ok(r.ok, `unreadable current ${currentRaw} must not be swept`);
+    assert.deepEqual(r.sweepable, []);
+  }
+
+  const r2 = assertNoAllSpentFragments([frag('bad-base.json', validBase, '{ not json')]);
+  assert.ok(r2.ok, 'an unreadable base must not be swept either');
+  assert.deepEqual(r2.sweepable, []);
+});
+
+test('assertNoAllSpentFragments: naming ONLY the inert fragments makes the remedy safe to apply blindly', () => {
+  const spentA = doc({ a: { reason: 'a' } });
+  const spentB = doc({ b: { reason: 'b' } });
+  const live = doc({ c: { reason: 'c-new' } });
+  const liveBase = doc({ c: { reason: 'c-old' } });
+  const r = assertNoAllSpentFragments([
+    frag('spent-a.json', spentA, spentA),
+    frag('spent-b.json', spentB, spentB),
+    frag('live-c.json', live, liveBase),
+  ]);
+  assert.ok(!r.ok);
+  assert.deepEqual([...r.sweepable].sort(), ['spent-a.json', 'spent-b.json']);
+  assert.doesNotMatch(r.message, /live-c\.json/);
+});
+
+test('assertNoAllSpentFragments: a __proto__ key is never mistaken for a spent entry, and Object.prototype stays untouched', () => {
+  // A `[key]` computed property, never a literal `{ __proto__: ... }` — the literal
+  // form is special-cased by JS to SET THE PROTOTYPE rather than create an own
+  // property, which would make `paths` serialize as `{}` and this test vacuous.
+  const key = '__proto__';
+  const raw = JSON.stringify({ version: ACK_VERSION, paths: { [key]: { reason: 'hostile' } } });
+  const parsedPaths = JSON.parse(raw).paths;
+  assert.deepEqual(Object.keys(parsedPaths), ['__proto__'], 'JSON.parse must create a genuine own key');
+  const r = assertNoAllSpentFragments([frag('proto.json', raw, raw)]);
+  assert.ok(r.ok, '__proto__ makes the document unreadable to ackEntries, so it must never be swept');
+  assert.deepEqual(r.sweepable, []);
+  assert.equal(({}).reason, undefined, 'Object.prototype must stay untouched throughout');
+});
+
+test('assertNoAllSpentFragments: a bare-string reason and an object-shaped reason are compared on prose alone', () => {
+  const bare = doc({ x: 'why' });
+  const bareR = assertNoAllSpentFragments([frag('bare.json', bare, bare)]);
+  assert.ok(!bareR.ok, 'a bare-string reason on both sides must still be recognized as spent');
+
+  const objCurrent = doc({ x: { reason: 'why' } });
+  const bareBase = doc({ x: 'why' });
+  const shapeR = assertNoAllSpentFragments([frag('shape.json', objCurrent, bareBase)]);
+  assert.ok(!shapeR.ok, 'a shape change alone must not re-arm — parseAck accepts both shapes');
+});
+
+test('assertNoAllSpentFragments: a decorative "runtime" field beside an unchanged reason does not re-arm (runtime is deliberately not compared)', () => {
+  const base = doc({ x: { reason: 'why' } });
+  const current = doc({ x: { reason: 'why', runtime: 'claude' } });
+  const r = assertNoAllSpentFragments([frag('runtime.json', current, base)]);
+  assert.ok(!r.ok, 'runtime carries no explanation and must not re-arm a byte-identical reason');
+});
+
+// ── B. prose parity with the gate (the generative-fix-divergence gate) ──────
+//
+// `scripts/` ships in the npm package and `tests/` does not, so `ackProse` MUST
+// duplicate `emitted-diff.cjs`'s `prose()`. This section is the parity assertion
+// that fails when they diverge.
+
+test('ackProse strips every codepoint the gate\'s own ACK_INVISIBLE declares', () => {
+  const codepoints = [0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF];
+  for (const cp of codepoints) {
+    const hex = cp.toString(16).toUpperCase().padStart(4, '0');
+    assert.ok(
+      ACK_INVISIBLE.source.includes(`\\u${hex}`),
+      `ACK_INVISIBLE must declare U+${hex} — adding a codepoint to the gate's INVISIBLE and `
+      + 'forgetting this file is what this row exists to catch',
+    );
+    assert.equal(
+      ackProse(`a${String.fromCodePoint(cp)}b`), 'ab',
+      `ackProse must strip U+${hex}`,
+    );
+  }
+});
+
+test('ackProse and the sweep guard agree on what counts as "the same explanation, reworded"', () => {
+  const corpus = [
+    ['identical', 'same words', 'same words', true],
+    ['doubled space', 'same  words', 'same words', true],
+    ['leading/trailing space', '  same words  ', 'same words', true],
+    ['CRLF vs LF', 'same\r\nwords', 'same\nwords', true],
+    ['NBSP vs space', 'same words', 'same words', true],
+    ['ideographic space vs space', 'same　words', 'same words', true],
+    ['EM SPACE vs space', 'same words', 'same words', true],
+    ['zero-width inserted', 'same​words', 'samewords', true],
+    ['genuinely different words', 'same words', 'different words', false],
+  ];
+
+  for (const [label, a, b, expectedSameProse] of corpus) {
+    assert.equal(
+      ackProse(a) === ackProse(b), expectedSameProse,
+      `${label}: ackProse must agree it is${expectedSameProse ? '' : ' NOT'} the same explanation`,
+    );
+
+    const gate = assertNoAllSpentFragments([
+      frag('r.json', doc({ x: { reason: a } }), doc({ x: { reason: b } })),
+    ]);
+    assert.equal(
+      !gate.ok, expectedSameProse,
+      `${label}: a divergence here means the sweep guard and the gate disagree about what `
+      + 're-arms an ack',
+    );
+  }
+});
+
+test('property: ackProse is invariant under expanding existing whitespace and inserting invisible codepoints, seeded (#3078)', () => {
+  const invisibleChars = [0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF].map((cp) => String.fromCodePoint(cp));
+  const word = fc.string({ minLength: 1, maxLength: 8 }).filter((s) => !/\s/.test(s));
+
+  fc.assert(
+    fc.property(
+      fc.array(word, { minLength: 1, maxLength: 6 }),
+      fc.constantFrom(' ', '\t', '\n', '\r\n', '  ', ' ', '　'),
+      fc.array(fc.constantFrom(...invisibleChars), { minLength: 0, maxLength: 6 }),
+      (parts, whitespaceRun, invisibles) => {
+        const base = parts.join(' ');
+        // Every existing single space widened to a longer whitespace RUN — never
+        // introduces whitespace where none existed, so the collapsed result cannot
+        // change.
+        const expanded = parts.join(whitespaceRun);
+        // Invisible codepoints inserted anywhere are stripped outright, never
+        // collapsed to a space, so they never introduce a new word boundary.
+        const withInvisibles = invisibles.reduce((s, ch) => ch + s, base);
+        assert.equal(ackProse(expanded), ackProse(base));
+        assert.equal(ackProse(withInvisibles), ackProse(base));
+        assert.equal(ackProse(`  ${base}  `), ackProse(base));
+      },
+    ),
+    { seed: 3078, numRuns: 200 },
+  );
+});
+
+// ── C. --guard-next wiring against a REAL git repository ────────────────────
+//
+// The pure function above is fed hand-built strings; this section proves the
+// WIRING — real commits, real `git show` reads — because a guard that resolves no
+// base passes vacuously, and that is exactly how the legacy half went blind.
+
+function makeGuardNextRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-guard-next-repo-'));
+  const runGit = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', timeout: 15000 });
+  runGit(['init', '-q', '-b', 'next']);
+  function commit(msg) {
+    runGit(['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'add', '-A']);
+    runGit(['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-q', '-m', msg]);
+    return runGit(['rev-parse', 'HEAD']).trim();
+  }
+  function writeFrag(name, obj) {
+    const fragDir = path.join(dir, ...ACK_DIR_REPO_PATH.split('/'));
+    fs.mkdirSync(fragDir, { recursive: true });
+    fs.writeFileSync(path.join(fragDir, name), JSON.stringify(obj));
+  }
+  return { dir, commit, writeFrag };
+}
+
+function readFragAtCommit(dir, sha, name) {
+  try {
+    return execFileSync(
+      'git', ['show', `${sha}:${ACK_DIR_REPO_PATH}/${name}`],
+      { cwd: dir, encoding: 'utf8', timeout: 15000 },
+    );
+  } catch {
+    return null; // absent at that commit
+  }
+}
+
+test('C1: real repo — a fragment added in commit 2 vs commit 1 (root, no fragment) is live', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    fs.writeFileSync(path.join(repo.dir, 'README.md'), 'root\n');
+    const c1 = repo.commit('root');
+    repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+    repo.commit('add fragment');
+
+    const r = assertNoAllSpentFragments([
+      frag('a.json', readFragAtCommit(repo.dir, 'HEAD', 'a.json'), readFragAtCommit(repo.dir, c1, 'a.json')),
+    ]);
+    assert.ok(r.ok, 'a fragment absent at the base is live');
+  } finally {
+    cleanup(repo.dir);
+  }
+});
+
+test('C2: real repo — an unrelated file change leaves an unchanged fragment fully spent', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+    const c2 = repo.commit('add fragment');
+    fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+    repo.commit('unrelated change');
+
+    const r = assertNoAllSpentFragments([
+      frag('a.json', readFragAtCommit(repo.dir, 'HEAD', 'a.json'), readFragAtCommit(repo.dir, c2, 'a.json')),
+    ]);
+    assert.ok(!r.ok, 'unchanged fragment against its own prior commit is fully spent');
+  } finally {
+    cleanup(repo.dir);
+  }
+});
+
+test('C3: real repo — appending prose to the owning entry re-arms it', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'the original explanation' } } });
+    const c2 = repo.commit('add fragment');
+    repo.writeFrag('a.json', {
+      version: ACK_VERSION,
+      paths: { 'x.md': { reason: 'the original explanation, now covering a new ripple too' } },
+    });
+    repo.commit('reword');
+
+    const r = assertNoAllSpentFragments([
+      frag('a.json', readFragAtCommit(repo.dir, 'HEAD', 'a.json'), readFragAtCommit(repo.dir, c2, 'a.json')),
+    ]);
+    assert.ok(r.ok, 'genuinely new prose re-arms the entry');
+  } finally {
+    cleanup(repo.dir);
+  }
+});
+
+test('C4: real repo — a fragment at the ROOT commit compared against a null base is live', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+    repo.commit('root with fragment');
+
+    const r = assertNoAllSpentFragments([
+      frag('a.json', readFragAtCommit(repo.dir, 'HEAD', 'a.json'), null),
+    ]);
+    assert.ok(r.ok, 'a root commit has no base — resolveBaseRef returns null and nothing can be spent against it');
+  } finally {
+    cleanup(repo.dir);
+  }
+});
+
+// ── D. the collision shape end-to-end — the issue's own regression criterion ─
+//
+// #3078 "Done when": a merged, fully-spent fragment must not silently occupy a path
+// key it can no longer gate. All three arms below must hold together: (1) a
+// cross-source duplicate is a hard failure naming the remedy, (2) leaving the
+// owning entry untouched is spent and gates nothing, (3) appending prose re-arms
+// it, and (4) once the spent owner is swept, a new fragment can declare the path
+// cleanly.
+
+test('D1/D2: two fragments naming the same path is a hard failure, naming both files, git rm, re-arms, and APPEND', () => {
+  const scriptPath = path.join(REPO_ROOT, 'scripts', 'lint-emitted-drift-ack.cjs');
+  const fragDir = path.join(REPO_ROOT, ...ACK_DIR_REPO_PATH.split('/'));
+  const nameA = 'zzz-3078-test-collision-a.json';
+  const nameB = 'zzz-3078-test-collision-b.json';
+  const pathA = path.join(fragDir, nameA);
+  const pathB = path.join(fragDir, nameB);
+  const collisionKey = 'zzz-3078-test-collision-path.md';
+
+  try {
+    // The fragment directory does not necessarily exist yet — #2914's directory is
+    // created on first use, and `listFragmentFiles` treats an absent one as zero
+    // fragments, so a clean checkout may not have it.
+    fs.mkdirSync(fragDir, { recursive: true });
+    fs.writeFileSync(pathA, JSON.stringify({ version: ACK_VERSION, paths: { [collisionKey]: { reason: 'a' } } }));
+    fs.writeFileSync(pathB, JSON.stringify({ version: ACK_VERSION, paths: { [collisionKey]: { reason: 'b' } } }));
+
+    let stderr = '';
+    let threw = false;
+    try {
+      execFileSync(process.execPath, [scriptPath], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 15000 });
+    } catch (err) {
+      threw = true;
+      stderr = err.stderr || '';
+    }
+    assert.ok(threw, 'a cross-source duplicate must exit non-zero');
+    assert.match(stderr, new RegExp(`duplicate ack for "${escapeRegex(collisionKey)}"`));
+    assert.match(stderr, new RegExp(escapeRegex(nameA)));
+    assert.match(stderr, new RegExp(escapeRegex(nameB)));
+    assert.match(stderr, /git rm /);
+    assert.match(stderr, /re-arms/);
+    assert.match(stderr, /APPEND/);
+  } finally {
+    // Must NOT survive the test — a real duplicate left behind would red the repo's
+    // own lint:ci the next time anyone runs it. cleanup() cannot be used here: it
+    // refuses any path outside the known OS temp roots, and these fixtures are
+    // deliberately created inside the real repo's tests/emitted-drift-acks/.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- not a temp dir; cleaning up files created inside the real repo tree
+    fs.rmSync(pathA, { force: true });
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- not a temp dir; cleaning up files created inside the real repo tree
+    fs.rmSync(pathB, { force: true });
+  }
+});
+
+test('D3: leaving the owning fragment entry untouched is spent and gates nothing', () => {
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb' }),
+    changedPaths: [],
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'already explained' } } },
+    baseAck: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'already explained' } } },
+  });
+  assert.deepEqual(r.spentAcks, [WORKFLOW_KEY]);
+  assert.equal(r.acked.length, 0, 'a spent entry must not clear the new delta');
+  assert.deepEqual(r.unattributable.map((u) => u.rel), [WORKFLOW_KEY]);
+});
+
+test('D4: appending prose to the owning fragment entry re-arms it — #2639/#2993 ship depending on this route', () => {
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb' }),
+    changedPaths: [],
+    ack: {
+      version: ACK_VERSION,
+      paths: { [WORKFLOW_KEY]: { reason: 'already explained, and now this NEW ripple too' } },
+    },
+    baseAck: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'already explained' } } },
+  });
+  assert.deepEqual(r.spentAcks, []);
+  assert.equal(r.acked.length, 1, '#2639/#2993 ship depending on this re-arm route continuing to work');
+  assert.equal(r.unattributable.length, 0);
+});
+
+test('D5: once the spent owner is swept, declaring the same path in a new fragment is clean', () => {
+  // Before the sweep: the owning fragment is fully spent (assertNoAllSpentFragments
+  // names it) but still present — this is the #3078 hazard.
+  const spentDoc = doc({ [WORKFLOW_KEY]: { reason: 'already explained' } });
+  const before = assertNoAllSpentFragments([frag('owner.json', spentDoc, spentDoc)]);
+  assert.ok(!before.ok);
+  assert.deepEqual(before.sweepable, ['owner.json']);
+
+  // After the sweep (fragment deleted, per the remedy): a NEW fragment can declare
+  // the same path with zero collision, exercised through the real duplicate-detection
+  // path (mergeAckSources), not just the pure sweep guard above.
+  const { merged, errors } = mergeAckSources([
+    {
+      source: 'tests/emitted-drift-acks/new.json',
+      doc: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'a fresh explanation' } } },
+    },
+  ]);
+  assert.deepEqual(errors, [], 'no duplicate arises once the spent owner is gone');
+  assert.ok(merged.paths[WORKFLOW_KEY]);
+
+  const parsed = parseAck(merged);
+  assert.equal(parsed.entries.size, 1);
+  assert.deepEqual(parsed.errors, []);
 });
 
 // ─── Per-PR ack fragments: mergeAckSources + readAckSources (#2914) ──────────
@@ -1273,66 +1788,50 @@ test('listAckFragmentFilesAtRef: exactly MAX_ACK_FRAGMENTS entries passes, one o
   );
 });
 
-test('the migrated fragment physically lives at ACK_DIR/0000-legacy-migration.json on this checkout', () => {
-  // `includes`, not `deepEqual`, on purpose: other PRs merging their own fragments over
-  // time must not make this permanent regression test fail — it only pins THIS
-  // fragment's continued existence at the real, non-injected path.
-  const fragmentPath = path.join(ACK_DIR, '0000-legacy-migration.json');
-  assert.ok(fs.existsSync(fragmentPath), 'the migration must have landed at the real fragment directory path');
-  assert.ok(listAckFragmentFiles(ACK_DIR).includes('0000-legacy-migration.json'));
-});
+// ─── The migration pin is gone: #3078 emptied the directory it protected (#3078) ──
+// #2914 migrated the legacy shared file's 35 entries into the legacy-migration bucket
+// fragment and this file pinned that fragment's continued existence, on the premise
+// that a fragment left on `next` is inert-but-harmless. #3078 removed that premise:
+// fragments don't share a file, but they DO share a path key space, so a fully-spent
+// fragment owns keys it can no longer gate, and the next PR to grow one of those paths
+// is hard-blocked. `--guard-next` now sweeps all-spent fragments, and the whole
+// directory was emptied — the legacy-migration bucket included. The maintainer's
+// decision on #3078 states plainly it was never permanent.
+//
+// The three tests that pinned it are gone rather than adapted: each asserted the
+// presence of a specific merged fragment, which is exactly the state the guard now
+// forbids. What they protected is covered instead by the fragment-lifecycle section
+// (`assertNoAllSpentFragments`) added by #3078, and #2733's own control-flow
+// protection lives in `tests/spec-phase-probe-reachability.test.cjs`, which never
+// depended on the ack. The #2733 spec-phase.md byte-delta entry (31987 -> 31997) is
+// spent by construction: `next`'s published emitted baseline has carried the
+// post-#2733 bytes since that PR merged, so `sizeBaseline === sizeCurrent` and there
+// is no growth left for it to clear.
 
-test('the migrated legacy fragment still clears the real #2733 spec-phase.md growth (#2914 migration)', () => {
-  // The whole point of MIGRATING rather than deleting: no acknowledgment is lost, only
-  // relocated. This pins the migrated fragment's spec-phase.md entry to the exact
-  // growth #2733 introduced (31987 -> 31997 bytes), so a regression here would have
-  // reproduced the ratchet failure a real verification run already caught once.
-  const fragmentPath = path.join(REPO_ROOT, 'tests', 'emitted-drift-acks', '0000-legacy-migration.json');
-  const doc = JSON.parse(fs.readFileSync(fragmentPath, 'utf8'));
-  const entry = doc.paths['spec-phase.md'];
-  assert.ok(entry, 'the migrated fragment must still carry the spec-phase.md entry from #2733');
-  assert.match(entry.reason, /31987 -> 31997/, 'the exact byte delta must survive the migration');
+test('an empty fragment directory is the healthy steady state, end to end (#3078)', () => {
+  // Absent directory is zero fragments, not a fault.
+  const missingDir = path.join(REPO_ROOT, 'tests', 'no-such-emitted-drift-acks-dir');
+  assert.deepEqual(listAckFragmentFiles(missingDir), []);
 
-  // Isolated to JUST this one entry, not the whole 35-entry document: the migrated
-  // fragment carries 34 OTHER already-spent entries for OTHER paths, which this
-  // minimal repro's baseline/current never touches — including the full document here
-  // would report those 34 as freshly-stale (nothing in THIS synthetic diff consumes
-  // them), which is a fact about this test's narrow fixture, not about the migration.
+  // On THIS checkout, ACK_DIR may or may not exist — other PRs merge fragments over
+  // time, so this must not become a new pin either way. Assert the invariant that
+  // holds regardless.
+  assert.ok(Array.isArray(listAckFragmentFiles(ACK_DIR)));
+  assert.ok(assertNoAllSpentFragments([]).ok);
+
+  // The deadlock-avoidance path the empty state now takes every day: a tree carrying
+  // no ack never consults the base, which is what keeps a repair PR landable — and is
+  // now the steady state rather than the exception.
   const r = diffEmitted({
     baseline: mf({}),
     current: mf({}),
     changedPaths: [],
-    sizeBaseline: { 'spec-phase.md': 31987 },
-    sizeCurrent: { 'spec-phase.md': 31997 },
-    ack: { version: ACK_VERSION, paths: { 'spec-phase.md': entry } },
+    ack: null,
     baseAck: null,
   });
-  assert.equal(r.grown.length, 1);
-  assert.equal(r.grown[0].acked, true, 'the migrated entry must still clear the growth it was written for');
+  assert.ok(r.ok);
   assert.deepEqual(r.staleAcks, []);
-  assert.ok(r.ok);
-});
-
-test('the full migrated document is safe to land: every entry is SPENT against the legacy file at base, none stale', () => {
-  // The actual migration PR's real shape: `next` still carries the legacy file with
-  // these SAME 35 entries (until this PR removes it), so every entry in the new
-  // fragment is already "spent" (base already explains it) rather than "live" — this
-  // PR introduces no NEW ripple of its own, it only relocates old acknowledgments.
-  // Getting this wrong (e.g. losing a reason's exact text in the move) would turn a
-  // spent entry into a freshly-unexplained "stale" one and red this very migration PR.
-  const fragmentPath = path.join(REPO_ROOT, 'tests', 'emitted-drift-acks', '0000-legacy-migration.json');
-  const doc = JSON.parse(fs.readFileSync(fragmentPath, 'utf8'));
-
-  const r = diffEmitted({
-    baseline: mf({}),
-    current: mf({}),
-    changedPaths: [],
-    ack: doc,
-    baseAck: doc, // the legacy file at `next` HEAD, byte-identical, before this PR removes it
-  });
-  assert.deepEqual(r.staleAcks, [], 'nothing in the migrated document should read as freshly unexplained');
-  assert.equal(r.spentAcks.length, Object.keys(doc.paths).length, 'every migrated entry must be recognized as already spent');
-  assert.ok(r.ok);
+  assert.deepEqual(r.spentAcks, []);
 });
 
 // ─── readAckFileAtRef: the base-side reader (#2789) ──────────────────────────

@@ -838,6 +838,14 @@ jobs:
     timeout-minutes: 1
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # #3078: the fragment half of the guard compares each surviving fragment against
+          # its copy at HEAD^ — "the state of next before this push". At the default depth
+          # of 1 that commit is not fetched, `git rev-parse HEAD^` fails, and every
+          # fragment reads as brand-new, so the job would pass vacuously. Which is exactly
+          # how the legacy-file half spent months guarding a file that had not existed
+          # since #2914.
+          fetch-depth: 2
 
-      - name: Assert tests/emitted-drift-ack.json is absent
+      - name: Assert no spent ack survives on next (legacy file and fragments)
         run: node scripts/lint-emitted-drift-ack.cjs --guard-next

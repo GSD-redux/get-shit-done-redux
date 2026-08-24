@@ -1012,22 +1012,42 @@ file every such PR touches guarantees a merge conflict between any two of them (
 conflicting PRs in one open queue collided on this file and nothing else), and it means
 spent, already-merged entries pile up on `next`. A fragment per PR — the same shape
 `.changeset/` already uses for the identical problem — means two PRs can never conflict on
-this seam again, and a fragment left on `next` after merge is inert rather than a shared
-cell. Two ack sources (two fragments, or a fragment and the legacy file) may **never** name
-the same path; that is a hard, loudly-reported error, not a silent last-wins.
+this seam again. Two ack sources (two fragments, or a fragment and the legacy file) may
+**never** name the same path; that is a hard, loudly-reported error, not a silent
+last-wins.
 
-`tests/emitted-drift-ack.json` (the legacy single file, specifically — NOT the fragment
-directory) must never persist on `next` (#2914): every entry is scoped to the diff that
-introduced it, so once merged it is, by definition, already at the base — spent and inert,
-regardless of shape, and its persistence is what makes it a shared merge-conflict cell. A
-fragment persisting on `next` is harmless, since fragments are independently named and
-cannot conflict with anything, so this guard is deliberately scoped to the legacy file
-alone. This is enforced only on `next` itself, by the `guard-no-ack-on-next` job in
+**When two sources collide (#3078).** The error names both resolutions, because which one
+applies depends on the fragment that already owns the path. If the owning fragment is
+already **merged**, its entry is spent — it is at the base, so it gates nothing — and the
+answer is to delete it (`git rm tests/emitted-drift-acks/<owner>.json`) and keep your own.
+If it is still **live** on your branch, append your explanation to its existing entry
+instead; that re-arms it, and re-arming deliberately costs an actual new sentence, because
+the reason is the whole artifact a reviewer reads. Never rename the path to dodge the
+error, and never declare it twice.
+
+**Neither ack source may persist on `next`, and a fragment is not exempt (#3078).**
+`tests/emitted-drift-ack.json`, the legacy single file, must never survive there at all:
+every entry is scoped to the diff that introduced it, so once merged it is by definition
+already at the base — spent and inert, regardless of shape — and its persistence is what
+makes it a shared merge-conflict cell. A **fragment** is judged on a different rule but the
+same law. #2914 originally exempted the fragment directory on the premise that a persisting
+fragment is harmless, since fragments are independently named and cannot conflict. That
+premise was wrong: fragments do not share a *file*, but they do share a *path key space*,
+and a path claimed by two sources is the hard error above. So a fully-spent fragment left on
+`next` owns keys it can no longer gate, and the next PR that grows one of those paths can
+declare it neither there (spent) nor in its own fragment (duplicate) — the exact wall #2914
+removed for the legacy file, one level down. A fragment is therefore swept once **every**
+entry in it is spent; a **partially** spent one is left alone, which is what keeps the
+re-arm-by-appending route above working. Both rules are enforced only on `next` itself, by
+the `guard-no-ack-on-next` job in
 `.github/workflows/test.yml` (push-to-`next` trigger,
 `scripts/lint-emitted-drift-ack.cjs --guard-next`), never as a PR-lane check — a PR-lane
 "base ack must be absent" check would red every open PR the moment one landed (the #2768
-shape #2789 exists to prevent). If you ever see the legacy file present on `next`, delete
-it; do not try to make it well-formed.
+shape #2789 exists to prevent), which means the job alerts **after** the merge and cannot
+stop the offending PR — that is why the collision error above has to teach the resolution
+too. If you ever see the legacy file present on `next`, delete it; do not try to make it
+well-formed. If the job names a spent fragment, run the `git rm` it prints — that is the
+whole remedy, and there is nothing to regenerate.
 
 `npm run regen:derived` still exists for the artifacts that ARE committed and derived —
 `sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
