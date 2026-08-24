@@ -64,7 +64,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 import frontmatterMod = require('./frontmatter.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- state.cjs is an export= CommonJS module
 import stateMod = require('./state.cjs');
-import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync } from './shell-command-projection.cjs';
+import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, contentChangedAfterNormalize } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
 import { transitionCore } from './state-transition.cjs';
@@ -1919,7 +1919,14 @@ function updateRoadmapAfterPhaseRemoval(
     }
 
     platformWriteSync(roadmapPath, content);
-    return content !== originalContent;
+    // #3685 / #3691: compare NORMALIZED bytes (what platformWriteSync actually
+    // persists), not the raw pre-normalize `content` string, against the raw
+    // pre-mutation `originalContent` read above — a raw `!==` here reports a
+    // false `true` whenever this transform's regenerated output takes a
+    // different-but-equivalent shape than the already-normalized on-disk
+    // original (same normalization-order artifact #3685 fixed at
+    // cmdMilestoneComplete; see contentChangedAfterNormalize's own doc).
+    return contentChangedAfterNormalize(roadmapPath, originalContent, content);
   });
 }
 
@@ -2699,7 +2706,12 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           before: originalRoadmapContent,
           after: roadmapContent,
         });
-        roadmapUpdated = roadmapContent !== originalRoadmapContent;
+        // #3685 / #3691: normalize both sides before comparing — see
+        // contentChangedAfterNormalize's doc (shell-command-projection.cts).
+        // A raw `!==` here false-positives whenever this phase-complete
+        // roadmap mutation regenerates a section in a different-but-
+        // equivalent raw shape than the already-normalized on-disk original.
+        roadmapUpdated = contentChangedAfterNormalize(roadmapPath, originalRoadmapContent, roadmapContent);
 
         const reqPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
         if (fs.existsSync(reqPath)) {
@@ -3016,7 +3028,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           // diff-tracking pattern used for the ROADMAP write above. A phase
           // whose citations match nothing (ghost REQ-IDs only) must report
           // `false`, not a bare "the file was present" `true`.
-          requirementsUpdated = reqContent !== originalReqContent;
+          // #3685 / #3691: normalize both sides before comparing — same
+          // false-positive shape as the sibling roadmapUpdated/stateUpdated
+          // flags in this same transaction; all three must agree by
+          // construction (see contentChangedAfterNormalize's doc).
+          requirementsUpdated = contentChangedAfterNormalize(reqPath, originalReqContent, reqContent);
         }
       }
 
@@ -3273,7 +3289,12 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         }
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
-        stateUpdated = stateContent !== originalStateContent;
+        // #3685 / #3691: normalize both sides before comparing (same
+        // transitionCore-regenerated-section artifact cmdMilestoneComplete
+        // hit — see contentChangedAfterNormalize's doc). Reported "not
+        // exposed" by a previous agent; the reviewer disproved that by
+        // inspection and this branch closes it.
+        stateUpdated = contentChangedAfterNormalize(statePath, originalStateContent, stateContent);
       }
 
       anyPlanningWrite = writePlanningFileSet(writes) > 0;

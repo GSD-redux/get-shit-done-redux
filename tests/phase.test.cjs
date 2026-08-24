@@ -3257,9 +3257,19 @@ Plans:
     // updateRoadmapAfterPhaseRemoval's section-delete/renumber/row-delete
     // passes are all no-matches, so `content` never diverges from
     // `originalContent`.
+    //
+    // The fixture is written in ALREADY-NORMALIZED form (a blank line after
+    // the `###` heading) so the byte-identity assertion below compares a
+    // normalized pre-image against a normalized post-image. A hand-authored
+    // fixture that skips that blank line is NOT in the shape
+    // platformWriteSync's own normalizer produces, so writing it back
+    // through the same normalizing write path gains the blank line even
+    // though no phase data changed — that's the writer's own formatting
+    // pass reformatting an un-normalized input, not a real content change,
+    // and asserting byte-identity against such a fixture is unsound.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
-      `# Roadmap\n\n### Phase 1: Foundation\n**Goal:** Setup\n\n## Progress\n\n| Phase | Status |\n|-------|--------|\n| 1 | Done |\n`,
+      `# Roadmap\n\n### Phase 1: Foundation\n\n**Goal:** Setup\n\n## Progress\n\n| Phase | Status |\n|-------|--------|\n| 1 | Done |\n`,
     );
     fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
     const roadmapBefore = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');

@@ -14,7 +14,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 import frontmatterMod = require('./frontmatter.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- state.cjs is an export= CommonJS module
 import stateMod = require('./state.cjs');
-import { platformWriteSync, platformReadSync, platformEnsureDir, execGit, retryRenameSync } from './shell-command-projection.cjs';
+import { platformWriteSync, platformReadSync, platformEnsureDir, execGit, retryRenameSync, contentChangedAfterNormalize } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
 import { transitionCore } from './state-transition.cjs';
@@ -1092,7 +1092,7 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         },
       );
       platformWriteSync(statePath, finalContent);
-      // #3685: compare the ACTUAL post-write disk bytes, not the pre-normalize
+      // #3685 / #3691: compare NORMALIZED bytes, not the pre-normalize
       // `finalContent` string, against the pre-normalize `originalStateContent`
       // read above. `platformWriteSync` runs Markdown normalization (blank-line
       // insertion around headings/fences/lists) before persisting — the
@@ -1102,11 +1102,14 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       // the already-normalized on-disk original even though the write
       // converges to byte-identical content. Comparing pre-normalize strings
       // (mirroring cmdPhaseComplete's shape verbatim) was verified live to
-      // report `true` on three consecutive byte-identical writes — reading
-      // back what actually landed on disk is the only comparison immune to
-      // that normalization-order artifact.
-      const stateAfterWrite = fs.readFileSync(statePath, 'utf-8');
-      stateUpdated = stateAfterWrite !== originalStateContent;
+      // report `true` on three consecutive byte-identical writes.
+      // `contentChangedAfterNormalize` runs BOTH sides through the exact same
+      // normalizer `platformWriteSync` used to persist (no extra disk I/O,
+      // and immune by construction to this ordering artifact) — this used to
+      // re-read the file to get the same answer; #3691 hoisted that seam so
+      // this site, `updateRoadmapAfterPhaseRemoval`, and `cmdPhaseComplete`'s
+      // roadmap/state/requirements flags all agree by construction.
+      stateUpdated = contentChangedAfterNormalize(statePath, originalStateContent, finalContent);
       for (const field of divergedFields) {
         preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });
       }

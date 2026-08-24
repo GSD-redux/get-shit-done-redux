@@ -1174,6 +1174,24 @@ export function normalizeContent(filePath: string, content: string, opts: { enco
   return { content: normalized, encoding };
 }
 
+/**
+ * True iff persisting `after` via `platformWriteSync` would land different
+ * on-disk bytes than `before` already has (or would have, normalized the
+ * same way). `platformWriteSync` runs Markdown normalization (CRLF strip,
+ * blank-line-run collapse, single trailing newline) before writing, so a
+ * caller comparing raw pre-normalize strings (`after !== before`) can report
+ * `true` even when the persisted bytes are byte-identical — e.g. a
+ * transform that regenerates a section fresh on every call, including a
+ * genuine no-op re-run, in a different-but-equivalent raw shape than the
+ * already-normalized on-disk original (#3685 / #3691). Any "did this write
+ * change the file?" flag MUST go through this seam (or an equivalent
+ * post-write re-read of the actual on-disk bytes) instead of a raw `!==` —
+ * do not simplify this back to a direct string comparison.
+ */
+export function contentChangedAfterNormalize(filePath: string, before: string, after: string): boolean {
+  return normalizeContent(filePath, after).content !== normalizeContent(filePath, before).content;
+}
+
 // Rename errnos that are transient on Windows: a concurrent reader (or an AV
 // scanner / indexer) holding the target open makes renameSync fail briefly.
 // Same idiom as capability-ledger.cts / capability-consent.cts.
