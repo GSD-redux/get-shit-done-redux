@@ -62,6 +62,7 @@ process.stdin.on('end', () => {
 
     const tmpDir = os.tmpdir();
     const warnPath = path.join(tmpDir, `claude-ctx-${sessionId}-warned.json`);
+    const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
 
     // #3709: a compaction RESTARTS the context lifecycle — usage drops back to
     // Normal and the next climb is a fresh cycle — so the warn sentinel must not
@@ -86,6 +87,15 @@ process.stdin.on('end', () => {
     // itself from consuming a debounce slot — observed in the issue as
     // callsSinceWarn advancing 0 -> 1 on the PreCompact call.
     //
+    // KNOWN, and deliberate: PreCompact fires BEFORE the compaction, so an
+    // aborted or failed compaction leaves the state cleared while the context is
+    // still genuinely critical. The effects are mild and arguably right — one
+    // extra immediate CRITICAL, and criticalRecorded re-armed so a later, more
+    // current breadcrumb can replace the old one. Making the reset conditional
+    // would mean deferring it to SessionStart with source "compact", which is a
+    // different hook event and new wiring; out of scope for this fix, and stated
+    // rather than left silent (review of #3709).
+    //
     // Ahead of the `context_warnings: false` exit because this is CLEANUP, not a
     // warning: state that must not outlive a compaction should not outlive it just
     // because warnings happen to be off right now. Config is re-read per invocation,
@@ -93,12 +103,34 @@ process.stdin.on('end', () => {
     // otherwise resurrect the stale sentinel and the original bug with it. Clearing
     // here cannot emit anything, so the disabled contract is untouched.
     if (readEventName(data) === 'PreCompact') {
-      try {
-        fs.unlinkSync(warnPath);
-      } catch (e) {
-        // Absent is the common case (no warning fired this cycle) and is a
-        // success, not a failure. Any other error is swallowed too: a compaction
-        // must never be blocked by this hook.
+      // BOTH files, not just the sentinel. Clearing the sentinel alone trades a
+      // warning that never fires for one that fires when it must not: the
+      // statusline bridge still holds the PRE-compaction reading, and
+      // STALE_SECONDS is 60, so for up to a minute it still reads fresh and still
+      // says the context is exhausted. With the sentinel gone, firstWarn is true,
+      // so the next PostToolUse emits a spurious CRITICAL immediately after the
+      // compaction that FREED the context — and flips criticalRecorded, spawning
+      // a false "context exhaustion" breadcrumb. That is the same breadcrumb
+      // inaccuracy #3709 exists to fix, re-entered from the other side. Reported
+      // in review of #3709.
+      //
+      // Removing the bridge is not a loss of data: the statusline owns that file
+      // and rewrites it on every render, and its absence is already the
+      // "no reading yet" state a fresh session starts in, which exits silently.
+      // A compaction invalidates the warning state AND the reading that produced
+      // it, so both go.
+      for (const [stale, neutral] of [[warnPath, '{}'], [metricsPath, '{"timestamp":0}']]) {
+        try {
+          fs.unlinkSync(stale);
+        } catch (e) {
+          if (e && e.code === 'ENOENT') continue;   // already absent — that IS the reset
+          // Windows can hold a handle (EPERM/EBUSY), and a failed unlink would
+          // leave the original bug silently intact, indistinguishable from
+          // success. Neutralise in place instead: an empty sentinel carries no
+          // lastLevel or criticalRecorded, and a timestamp-0 bridge is
+          // unconditionally stale, so both reach the state the reset wants.
+          try { fs.writeFileSync(stale, neutral); } catch (e2) { /* give up, never throw */ }
+        }
       }
       process.exit(0);
     }
@@ -116,8 +148,6 @@ process.stdin.on('end', () => {
     } catch (e) {
       // Missing or unparseable config → proceed with defaults (context warnings enabled)
     }
-
-    const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
 
     // If no metrics file, this is a subagent or fresh session -- exit silently.
     // Collapsed existsSync+readFileSync: ENOENT → exit 0 (identical to old !existsSync branch),

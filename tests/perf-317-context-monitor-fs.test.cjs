@@ -8,6 +8,13 @@
  *   1. metrics file (early-exit path when absent)
  *   2. config.json (defaults when absent)
  *   3. warn sentinel (first-warn vs debounce)
+ *
+ * This file has since become the home for context-monitor behaviour generally,
+ * folded in rather than split into per-bug files, per the repo convention:
+ *   - #2289 — output-envelope allowlist; side effects still run on silent events
+ *   - #1974 — one-time critical-session breadcrumb
+ *   - #3709 — PreCompact clears the warn sentinel AND the metrics bridge
+ * Extend this list when folding in the next one.
  */
 
 'use strict';
@@ -1199,15 +1206,24 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     return {
       warnPath,
       // Drive one hook invocation at a given remaining%, WITHOUT touching the
-      // sentinel — that is the state under test. `metrics: false` omits the
-      // bridge file entirely, which is how a real PreCompact arrives.
+      // sentinel — that is the state under test. `metrics` selects how the
+      // statusline bridge is presented:
+      //   true    — write a fresh reading (the default)
+      //   false   — no bridge at all, how a real PreCompact arrives
+      //   'keep'  — leave whatever is already there, STALE. This is the shape the
+      //             Major 1 rows need: after a compaction the bridge still holds
+      //             the pre-compaction reading until the statusline next renders.
+      //             Using `false` there would delete the very thing under test and
+      //             the row would pass for the wrong reason.
       //
       // Returns the EXIT CODE as well as stdout. An earlier version swallowed the
       // exit status, which made `assert.doesNotThrow` vacuous: a hook that exited
       // 1 on an ENOENT unlink would still have passed, because the assertion only
-      // saw the helper's own catch (Codex review).
+      // saw the helper's own catch.
       call(event, remaining, { metrics = true } = {}) {
-        if (metrics) {
+        if (metrics === 'keep') {
+          // leave the bridge exactly as the previous call left it
+        } else if (metrics) {
           fs.writeFileSync(metricsPath, JSON.stringify({
             session_id: id,
             remaining_percentage: remaining,
@@ -1231,6 +1247,9 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       warn() {
         try { return JSON.parse(fs.readFileSync(warnPath, 'utf8')); } catch { return null; }
       },
+      metrics() {
+        try { return JSON.parse(fs.readFileSync(metricsPath, 'utf8')); } catch { return null; }
+      },
       seed(data) { fs.writeFileSync(warnPath, JSON.stringify(data)); },
     };
   }
@@ -1249,14 +1268,14 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     assert.strictEqual(s.warn(), null, 'precondition: no sentinel');
     // Asserted on the EXIT CODE, not on "did not throw". The driver catches every
     // child failure, so doesNotThrow would hold even for a hook that exited 1 on
-    // the ENOENT unlink — the row would have proved nothing (Codex review).
+    // the ENOENT unlink — the row would have proved nothing.
     assert.strictEqual(s.call('PreCompact', 20).exitCode, 0,
       'the common case is no warning having fired this cycle; an absent sentinel is success, and a '
       + 'compaction must never be failed by this hook');
     assert.strictEqual(s.warn(), null, 'and it stays absent');
   });
 
-  // Codex review: every other row writes a fresh metrics file, so the reset could
+  // Review of #3709: every other row writes a fresh metrics file, so the reset could
   // be moved BELOW the metrics read, the stale check or the healthy-threshold exit
   // and all of them would stay green — while a real PreCompact, which carries no
   // fresh metrics and follows a recovery to healthy usage, silently kept its
@@ -1282,7 +1301,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       + 'would never run — which is exactly the state the issue reported in a live session');
   });
 
-  // Codex review: the config gate is an early exit that sits ABOVE the reset's
+  // Review of #3709: the config gate is an early exit that sits ABOVE the reset's
   // original position, so a session that disabled warnings, compacted, and then
   // re-enabled them resurrected the stale sentinel and the bug with it. Config is
   // re-read per invocation, so that sequence is supported, not hypothetical.
@@ -1336,6 +1355,41 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       + 'keeps describing the earlier near-miss instead of the exhaustion that ended the session');
   });
 
+  // Review of #3709, Major 1. Every row above writes a FRESH metrics file before
+  // each call, which is precisely the shape real life does not guarantee. The
+  // statusline owns the bridge and rewrites it on render; between the compaction
+  // and that next render the bridge still holds the PRE-compaction reading, and
+  // STALE_SECONDS is 60, so it still reads fresh and still says "exhausted".
+  //
+  // Clearing only the sentinel turned that window into a spurious CRITICAL fired
+  // immediately after the compaction that freed the context — and a FALSE
+  // exhaustion breadcrumb, the same inaccuracy #3709 exists to fix, from the
+  // other side. So the compaction clears the reading as well as the state.
+  test('Major 1: a PreCompact leaves no stale reading for the next tool use', (t) => {
+    const s = makeSession(t, { gsdActive: true });
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    s.call('PreCompact', 20);
+    // 'keep', NOT false: the defect is a bridge that is still THERE and still
+    // reads fresh. Deleting it would make the row pass on the ENOENT early-exit
+    // instead of on the fix — vacuous, and it was, until a mutation showed it.
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'the next tool use after a compaction must not warn off a pre-compaction reading — the '
+      + 'context was just FREED, so telling the agent to stop is exactly backwards');
+    assert.strictEqual(s.warn(), null,
+      'and criticalRecorded must not be re-armed off that stale reading, or the session records a '
+      + 'context-exhaustion breadcrumb for an exhaustion that did not happen');
+  });
+
+  test('Major 1: the compaction clears the metrics bridge itself', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    s.call('PreCompact', 20);
+    assert.strictEqual(s.metrics(), null,
+      'the bridge holds the reading that produced the warning state; a compaction invalidates '
+      + 'both, and the statusline rewrites it on the next render');
+  });
+
   test('AC5 (non-vacuity): a NON-compaction lifecycle event does NOT clear the sentinel', (t) => {
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
@@ -1349,8 +1403,13 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'warning' });
     s.call('PreCompact', 20);
-    assert.strictEqual(s.warn(), null,
-      'the whole side-effect pipeline used to run for PreCompact, advancing callsSinceWarn 0 -> 1 '
-      + 'and eating a slot from the very cycle the compact was supposed to reset');
+    // Asserted at the OBSERVABLE consequence rather than on the sentinel being
+    // absent, which AC1 already covers: the whole side-effect pipeline used to
+    // run for PreCompact, advancing callsSinceWarn 0 -> 1 and eating a slot from
+    // the very cycle the compaction was supposed to restart. If a slot were
+    // still consumed, this first post-compaction warning would be debounced.
+    const { stdout } = s.call('PostToolUse', 30);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'the cycle after a compaction starts fresh, so its first warning fires immediately');
   });
 });
