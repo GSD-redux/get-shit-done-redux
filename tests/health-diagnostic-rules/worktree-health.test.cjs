@@ -559,16 +559,35 @@ describe('W027 — #3663 isActiveWorktreePath casing/separator normalization', (
     );
   });
 
+  test('isActiveWorktreePath keeps the segment boundary under win32 folding', () => {
+    assert.equal(
+      worktreeHealth.isActiveWorktreePath('C:\\Repos\\p\\wt-alphabeta', 'C:\\Repos\\p\\wt-alpha', 'win32'),
+      false,
+      'a sibling worktree whose name extends another (wt-alphabeta vs wt-alpha) must not prefix-match',
+    );
+  });
+
+  test('isActiveWorktreePath treats a drive root as the ancestor it is', () => {
+    // 'C:/' strips to 'c:'; the + '/' guard makes the comparison
+    // startsWith('c:/') — the drive root contains everything on it, which is
+    // correct ancestor semantics (and unreachable via git worktree list).
+    assert.equal(worktreeHealth.isActiveWorktreePath('C:\\Repos\\p\\wt', 'C:/', 'win32'), true);
+    assert.equal(worktreeHealth.isActiveWorktreePath('/srv/app', '/', 'linux'), true);
+  });
+
   test('W027 still fires for differently-cased paths on posix (case-sensitive pin)', (t) => {
     const cwd = createTempDir('gsd-3663-w027-posix-case-');
     t.after(() => cleanup(cwd));
     fs.mkdirSync(planningDirOf(cwd), { recursive: true });
 
-    // A stale finding whose path differs from snapshot.cwd only by one
-    // letter's casing. On POSIX those are two different directories, so the
+    // A stale finding whose path differs from snapshot.cwd ONLY by casing.
+    // The variant flips a letter of the FIXED fixture prefix — deriving it
+    // from the random mkdtemp suffix would flake (1/62 the suffix is already
+    // 'X') or pass vacuously (60/62 it differs by a different character, not
+    // case). On POSIX the two spellings are different directories, so the
     // stale finding MUST still be reported — folding here would be a
     // criterion-2 regression.
-    const stalePath = `${cwd.slice(0, -1)}X`;
+    const stalePath = cwd.replace('gsd-3663-w027-posix-case-', 'gsd-3663-w027-posix-Case-');
     fs.mkdirSync(stalePath, { recursive: true });
     fs.utimesSync(stalePath, new Date(), new Date(Date.now() - 2 * 60 * 60 * 1000));
     mockGitWorktreeListOk(t, buildPorcelain(['/fake/main-repo', stalePath]));

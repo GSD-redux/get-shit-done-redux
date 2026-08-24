@@ -57,6 +57,21 @@ export function posixNormalize(p: string): string {
 }
 
 /**
+ * #3663 — comparison key for a path that must equal another path regardless
+ * of spelling: separator form (forward slashes via posixNormalize), relative
+ * segments and trailing separators (path.resolve + strip), and — ONLY on
+ * win32's case-insensitive filesystem — letter casing. POSIX stays
+ * case-sensitive: differently-cased paths are genuinely different
+ * directories there. This module owns the platform-conditional fold so the
+ * policy lives at the seam instead of accreting per-call-site copies (the
+ * class init.cts's normalizeForCompare/toComparableRaw predate).
+ */
+export function toComparablePathKey(p: string, platform: string = process.platform): string {
+  const normalized = posixNormalize(path.resolve(p)).replace(/\/+$/g, '');
+  return platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+/**
  * Return true when a managed hook command must be prefixed with PowerShell's
  * call operator so a quoted executable token is invokable by the target
  * runtime/shell combination.
