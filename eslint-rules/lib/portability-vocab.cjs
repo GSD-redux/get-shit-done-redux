@@ -60,6 +60,8 @@ const PATH_RETURNING_FNS = [
   // #2088 (ADR-1239 upgrade 3): resolves the on-disk skills-install dir honoring
   // a skills-kind `home` override (e.g. Codex → $HOME/.agents/skills).
   '_resolveSkillsRootDir',
+  // #3664: shared kind-destination resolver (skills/agents/kimi-agents kinds).
+  '_kindDestDir',
   'getGlobalSkillDir',
   'getGlobalSkillDisplayPath',
   'resolveSkillsBaseFromDescriptor',

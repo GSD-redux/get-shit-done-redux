@@ -670,6 +670,53 @@ function _resolveScopeSafe(id, runtime) {
 }
 
 /**
+ * Resolve a layout kind's on-disk destination directory. Shared by the
+ * skills-root resolution above and the #3664 warning below so the
+ * home-override + destSubpath join exists once (#3659-class re-encoding guard).
+ */
+function _kindDestDir(layout, kindName, targetDir) {
+  const kind = layout.kinds.find((k) => k.kind === kindName);
+  if (!kind) return null;
+  return path.join(kind.home || targetDir, kind.destSubpath);
+}
+
+/**
+ * #3664 — warn (never refuse) when `--config-dir` points the install at a
+ * directory whose agent destination already holds FOREIGN (non-GSD) agent
+ * files — the fingerprint of another harness's config home (e.g. ~/.junie,
+ * ~/.factory) or a hand-curated agents dir. GSD emits the selected runtime's
+ * artifacts verbatim: tool IDs (`Skill`) and MCP grants (`mcp__server__tool`)
+ * that are inert or invalid in a foreign harness surface only at dispatch
+ * time, months later. Warn-and-proceed is the issue-sanctioned option (b):
+ * a fresh custom dir (the documented brand-specific-dir use), a gsd-only dir
+ * (updates, the --all shared dir — including kimi's root `gsd.md`, which is
+ * GSD-owned despite the bare `gsd` stem), and the no-flag default-home path
+ * (users keep personal agents in ~/.claude/agents) all stay silent. Degrades
+ * silently on any resolution failure — the warn path never blocks install.
+ */
+function warnIfForeignAgentDest(runtime, targetDir, scope, explicitConfigDir) {
+  if (explicitConfigDir !== true) return;
+  try {
+    const layout = resolveRuntimeArtifactLayout(runtime, targetDir, scope);
+    // kimi's global agents kind is `kimi-agents` (#2095 EoS), every other
+    // runtime's is `agents`.
+    const agentsDir = _kindDestDir(layout, 'agents', targetDir)
+      || _kindDestDir(layout, 'kimi-agents', targetDir);
+    if (!agentsDir) return;
+    if (!fs.existsSync(agentsDir) || !fs.statSync(agentsDir).isDirectory()) return;
+    const foreign = fs
+      .readdirSync(agentsDir)
+      .filter((f) => f.endsWith('.md') && !f.startsWith('gsd-') && f !== 'gsd.md');
+    if (foreign.length === 0) return;
+    console.log(
+      `  ${yellow}⚠${reset} ${bold}${targetDir}${reset} already contains ${foreign.length} non-GSD agent file(s) — this may be another harness's config home. GSD emits artifacts shaped for ${runtime}: tool IDs and MCP grants may be inert or invalid for whatever harness reads this directory (#3664).`
+    );
+  } catch (_) {
+    /* never block install on the warning path */
+  }
+}
+
+/**
  * Resolve the ACTUAL on-disk skills-install directory for a runtime, honoring a
  * skills-kind `home` override (ADR-1239 upgrade 3 / #2088: e.g. Codex skills ->
  * $HOME/.agents/skills instead of the runtime's configDir). Descriptor-driven
@@ -679,8 +726,8 @@ function _resolveScopeSafe(id, runtime) {
 function _resolveSkillsRootDir(runtime, targetDir, scope) {
   try {
     const layout = resolveRuntimeArtifactLayout(runtime, targetDir, scope);
-    const skillsKind = layout.kinds.find((k) => k.kind === 'skills');
-    if (skillsKind) return path.join(skillsKind.home || targetDir, skillsKind.destSubpath);
+    const skillsDir = _kindDestDir(layout, 'skills', targetDir);
+    if (skillsDir) return skillsDir;
   } catch (_e) { /* fall through to the configDir default */ }
   return path.join(targetDir, 'skills');
 }
@@ -10219,6 +10266,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       ? process.cwd()
       : path.join(process.cwd(), dirName);
 
+  // #3664: a --config-dir destination holding foreign agent files gets an
+  // explicit install-time warning — never a silent Claude-shaped emit.
+  if (isGlobal) {
+    warnIfForeignAgentDest(runtime, targetDir, _installScopeId, Boolean(explicitConfigDir));
+  }
+
   // #2875 (#1874-F19 anti-inertness, test-matrix C7): recover any user
   // artifact orphaned by a PRIOR install run that died between staging and
   // its own restore/discard, BEFORE this run's own preserve step stages
@@ -13567,6 +13620,8 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
 module.exports = {
     // #3677 — hyphen-namespace normalization seam for agent bodies
     shouldNormalizeHyphenNamespaceInAgentBody,
+    // #3664: --config-dir foreign-agent-destination warning (warn-and-proceed)
+    warnIfForeignAgentDest,
     normalizeAgentBodyForRuntime,
     yamlIdentifier,
     getCodexSkillAdapterHeader,

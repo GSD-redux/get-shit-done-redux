@@ -50,6 +50,8 @@ const INSTALL_JS_PATH_HELPERS = [
   // #2088 (ADR-1239 upgrade 3): resolves the skills-install dir honoring a
   // skills-kind `home` override (e.g. Codex → $HOME/.agents/skills).
   '_resolveSkillsRootDir',
+  // #3664: shared kind-destination resolver (skills/agents/kimi-agents kinds).
+  '_kindDestDir',
 ];
 
 describe('portability-vocab drift guard', () => {

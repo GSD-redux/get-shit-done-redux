@@ -6,6 +6,7 @@
  * regressions file for the installer module cluster.
  *
  * Defects covered:
+ *   #3664         — --config-dir foreign-agent destination warning (warn-and-proceed)
  *   #3664 Defect #1 — stale skills/gsd/gsd-<stem>/ dirs on Hermes upgrade
  *   #3664 Defect #2 — --hermes --profile=core falls through to wrong path
  *   #2973 M1–M3    — dev-preferences migration at profile=core for hermes/qwen/claude
@@ -20,6 +21,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const {
@@ -53,7 +55,6 @@ const {
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
-const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const HOOKS_SRC = path.join(__dirname, '..', 'hooks');
 const REAL_COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
 const MANIFEST = loadSkillsManifest(REAL_COMMANDS_DIR);
@@ -1683,5 +1684,167 @@ describe('#3329 regression: stale managed .sh hook commands are reconciled on in
 
     assert.strictEqual(changed, false, 'a null expected command must disable rewriting for that hook');
     assert.strictEqual(settings.hooks.SessionStart[0].hooks[0].command, original);
+  });
+});
+
+// ─── #3664 — config-dir foreign-agent destination warning ───────────────────
+//
+// --config-dir aimed at a directory that is not a supported runtime's config
+// home must never be a SILENT success: the installer emits the selected
+// runtime's artifacts verbatim (Claude-only Skill tool IDs, mcp__server__tool
+// grants), which are inert or invalid in a foreign harness and surface only
+// at dispatch time. Warn-and-proceed when the destination already holds
+// foreign (non-GSD) agent files; fresh custom dirs, gsd-only dirs (updates,
+// the --all shared dir), the no-flag default-home path, and test temp dirs
+// stay silent. Folded into this suite per the lint-test-file-count cap
+// (primary + one integration per production module).
+
+const installerMod = require('../bin/install.js');
+
+function capturedLogs(t, fn) {
+  const lines = [];
+  const mock = t.mock.method(console, 'log', (...args) => {
+    lines.push(args.join(' '));
+  });
+  const result = fn();
+  mock.mock.restore();
+  return { lines, result };
+}
+
+function makeForeignDest(t, name, agentFiles) {
+  const dest = createTempDir(`gsd-3664-${name}-`);
+  const agentsDir = path.join(dest, 'agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const file of agentFiles) {
+    fs.writeFileSync(path.join(agentsDir, file), '---\ntools: Read\n---\nbody\n');
+  }
+  t.after(() => cleanup(dest));
+  return { dest, agentsDir };
+}
+
+describe('#3664 — config-dir foreign-agent destination warning', () => {
+  test('warns when the destination holds foreign agent files', (t) => {
+    const { dest } = makeForeignDest(t, 'foreign', ['junie-guide.md']);
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
+    );
+    const warning = lines.find((l) => l.includes('(#3664)'));
+    assert.ok(warning, `expected a #3664 warning, got: ${lines.join(' | ') || '(none)'}`);
+    assert.ok(warning.includes('claude'), `warning must name the selected runtime: ${warning}`);
+    assert.ok(
+      /tool IDs and MCP grants may (be inert|not apply)/.test(warning),
+      `warning must name the tool/MCP risk: ${warning}`,
+    );
+  });
+
+  test('installer warns and proceeds on a foreign-agent destination', (t) => {
+    const home = createTempDir('gsd-3664-e2e-home-');
+    t.after(() => cleanup(home));
+    const dest = createTempDir('gsd-3664-e2e-dest-');
+    t.after(() => cleanup(dest));
+    fs.mkdirSync(path.join(dest, 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(dest, 'agents', 'junie-guide.md'), '---\ntools: Read\n---\nbody\n');
+
+    const result = runNode(
+      [path.join(__dirname, '..', 'bin', 'install.js'), '--claude', '--global', '--config-dir', dest],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          GSD_HOME: home,
+          CI: '1',
+        },
+        timeoutMs: INSTALL_TIMEOUT_MS,
+      },
+    );
+    assert.equal(result.exitCode, 0, `warn-and-proceed must exit 0; stderr: ${result.stderr.slice(0, 500)}`);
+    assert.ok(
+      result.stdout.includes('(#3664)'),
+      `stdout must carry the #3664 warning: ${result.stdout.slice(-800)}`,
+    );
+    const emitted = fs.existsSync(path.join(dest, 'agents'))
+      ? fs.readdirSync(path.join(dest, 'agents')).filter((f) => /^gsd-.*\.md$/.test(f))
+      : [];
+    assert.ok(emitted.length > 0, 'install must still emit the gsd-* agents');
+    assert.ok(fs.existsSync(path.join(dest, 'agents', 'junie-guide.md')));
+  });
+
+  test('silent on a fresh custom dir', (t) => {
+    const { dest } = makeForeignDest(t, 'fresh', []);
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
+    );
+    assert.ok(!lines.some((l) => l.includes('(#3664)')), `fresh dir must be silent: ${lines.join(' | ')}`);
+  });
+
+  test('silent on a gsd-only agents dir', (t) => {
+    const { dest } = makeForeignDest(t, 'gsdonly', ['gsd-executor.md', 'gsd-verifier.md']);
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
+    );
+    assert.ok(!lines.some((l) => l.includes('(#3664)')), `gsd-only dir must be silent: ${lines.join(' | ')}`);
+  });
+
+  test('silent when the config-dir flag was not passed', (t) => {
+    const { dest } = makeForeignDest(t, 'noflag', ['personal-agent.md']);
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', false),
+    );
+    assert.ok(!lines.some((l) => l.includes('(#3664)')), `no-flag path must be silent: ${lines.join(' | ')}`);
+  });
+
+  test('warns on mixed gsd and personal agents', (t) => {
+    const { dest } = makeForeignDest(t, 'mixed', ['gsd-executor.md', 'my-own-agent.md']);
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
+    );
+    const warning = lines.find((l) => l.includes('(#3664)'));
+    assert.ok(warning, 'mixed dir with a foreign agent must warn');
+    assert.ok(warning.includes('contains 1 non-GSD agent file'), `warning reports the foreign count: ${warning}`);
+  });
+
+  test('ignores non-markdown files', (t) => {
+    const { dest, agentsDir } = makeForeignDest(t, 'nonmd', []);
+    fs.writeFileSync(path.join(agentsDir, 'notes.txt'), 'not an agent');
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
+    );
+    assert.ok(!lines.some((l) => l.includes('(#3664)')), `non-agent files are not harness evidence: ${lines.join(' | ')}`);
+  });
+
+  test('warns for the kimi runtime (kimi-agents kind)', (t) => {
+    const { dest } = makeForeignDest(t, 'kimi-foreign', ['junie-guide.md']);
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('kimi', dest, 'global', true),
+    );
+    assert.ok(
+      lines.some((l) => l.includes('(#3664)') && l.includes('kimi')),
+      `kimi's kimi-agents kind must take the gate: ${lines.join(' | ')}`,
+    );
+  });
+
+  test('silent on kimi\'s own gsd.md in a shared multi-runtime dir', (t) => {
+    // kimi's root agent is agents/gsd.md — a bare stem, no gsd- prefix. A
+    // shared --all dir accumulates it alongside gsd-*.md; none of it is
+    // foreign, so every runtime's install into that dir must stay silent.
+    const { dest } = makeForeignDest(t, 'shared-kimi', ['gsd-executor.md', 'gsd.md']);
+    const { lines } = capturedLogs(t, () => {
+      installerMod.warnIfForeignAgentDest('kimi', dest, 'global', true);
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true);
+    });
+    assert.ok(
+      !lines.some((l) => l.includes('(#3664)')),
+      `GSD-owned gsd.md must not read as a foreign agent: ${lines.join(' | ')}`,
+    );
+  });
+
+  test('degrades silently when the layout cannot resolve', (t) => {
+    const dest = createTempDir('gsd-3664-unknown-');
+    t.after(() => cleanup(dest));
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('not-a-registered-runtime', dest, 'global', true),
+    );
+    assert.ok(!lines.some((l) => l.includes('(#3664)')), `unresolvable layout must degrade silently: ${lines.join(' | ')}`);
   });
 });
