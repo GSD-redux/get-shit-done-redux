@@ -40,6 +40,7 @@ const {
   markWaived,
   markFixed,
   openCount,
+  cmdWindowsAppend,
 } = brokenWindowsLib;
 
 // ---------------------------------------------------------------------------
@@ -1393,6 +1394,71 @@ describe('#3689: windows ledger table-vs-JSON drift guard', () => {
       'trailing prose above and including the fenced JSON array must survive byte-for-byte',
     );
   });
+
+  test('windows append tolerates a description containing a newline (#3689)', (t) => {
+    const tmp = createTempDir('bw-3689-newline-desc-');
+    t.after(() => cleanup(tmp));
+    // validateDescription (src/broken-windows.cts:198) rejects only empty
+    // strings and 4-backtick runs, not \n — and renderTable's cell() escapes
+    // `\` and `|` but not newlines, so this row physically spans two file
+    // lines. A `|`-prefix scan of the pre-fence text stops dead at that
+    // continuation line; the header-anchored fix must not.
+    const r1 = runGsdTools(
+      ['windows', 'append', '--kind', 'deviation', '--phase', '1', '--description', 'line one\nline two', '--file', 'a/one.sh'],
+      tmp,
+    );
+    assert.ok(r1.success, `seed append with newline description failed: ${r1.error || ''}`);
+
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'deviation', '--phase', '2', '--description', 'second entry', '--file', 'b/two.sh'],
+      tmp,
+    );
+    assert.equal(
+      res.success,
+      true,
+      `append must succeed on a ledger whose only row has an embedded newline, not brick with windows_ledger_table_drift: ${res.error || ''}`,
+    );
+    const obj = JSON.parse(res.output);
+    assert.equal(obj.ledger.total_count, 2);
+    assert.equal(obj.ledger.entries[0].description, 'line one\nline two');
+    assert.equal(obj.ledger.entries[1].description, 'second entry');
+  });
+
+  test('windows append still detects drift on a ledger whose description contains a newline (#3689)', (t) => {
+    const tmp = createTempDir('bw-3689-newline-desc-drift-');
+    t.after(() => cleanup(tmp));
+    const r1 = runGsdTools(
+      ['windows', 'append', '--kind', 'deviation', '--phase', '1', '--description', 'line one\nline two', '--file', 'a/one.sh'],
+      tmp,
+    );
+    assert.ok(r1.success, `seed append 1 failed: ${r1.error || ''}`);
+    const r2 = runGsdTools(
+      ['windows', 'append', '--kind', 'deviation', '--phase', '2', '--description', 'second entry', '--file', 'b/two.sh'],
+      tmp,
+    );
+    assert.ok(r2.success, `seed append 2 failed: ${r2.error || ''}`);
+
+    // Hand-edit a DIFFERENT row's (row 2, single-line) status cell. Proves the
+    // wider header-anchored region does not blind the guard: row 1's embedded
+    // newline must not swallow row 2's drift.
+    const pristine = readLedgerFile(tmp);
+    const drifted = flipTableStatus(pristine, 2, 'open', 'fixed');
+    writeLedgerFile(tmp, drifted);
+    const before = readLedgerFile(tmp);
+
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'deviation', '--phase', '3', '--description', 'third entry', '--file', 'c/three.sh'],
+      tmp,
+      { GSD_JSON_ERRORS: '1' },
+    );
+
+    assert.equal(res.success, false, 'append must still detect drift on row 2 even though row 1 spans multiple physical lines');
+    const parsed = JSON.parse(res.error);
+    assert.equal(parsed.ok, false, `structured error must carry ok:false: ${res.error}`);
+    assert.equal(parsed.reason, 'windows_ledger_table_drift', `expected typed drift reason, got: ${res.error}`);
+    assert.match(parsed.message, /\b2\b/, 'failure message must name the drifted row id (2)');
+    assert.equal(readLedgerFile(tmp), before, 'the file must be byte-identical to the pre-image after a refusal');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1417,13 +1483,20 @@ describe('#3689 property: table region extraction round-trip', () => {
   const arbPropKind = fc.constantFrom(
     'stub', 'todo', 'fixme', 'skipped-test', 'lint-warning', 'unmet-truth', 'unrun-verify', 'deviation',
   );
+  // #3689: descriptions CAN contain an embedded newline — validateDescription
+  // rejects only empty strings and 4-backtick runs (src/broken-windows.cts:198)
+  // — which is exactly why the prior `|`-prefix table-region scan could brick
+  // a clean ledger. Strip only `\r` (CRLF-normalize) so `\n` survives into the
+  // generated description and this property exercises the multi-physical-line
+  // row case the header-anchored fix must round-trip.
   const arbPropDescription = fc.oneof(
     fc.constant(''),
     fc.string({ maxLength: 40 }),
     fc.constant('has | a pipe'),
     fc.constant('has \\ a backslash'),
     fc.constant('both \\| combined'),
-  ).map((s) => s.replace(/[\r\n]/g, ' '));
+    fc.constant('line one\nline two'),
+  ).map((s) => s.replace(/\r/g, ''));
 
   const arbPropEntry = fc.record({
     id: fc.integer({ min: 1, max: 500 }),
@@ -1468,5 +1541,74 @@ describe('#3689 property: table region extraction round-trip', () => {
       const expected = brokenWindowsLib.renderTable(entries);
       assert.equal(extracted, expected, 'extracted table region must match renderTable(entries) exactly');
     }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1950-H2 / #3689 review finding: writeLedgerAtomic's pre-image read must
+// not treat every fs error as "no ledger yet". A bare catch there would let
+// EACCES/EIO/etc. fall through as if the file were absent, silently skipping
+// the drift guard and overwriting an unreadable pre-image — a guard that can
+// be bypassed by making the file unreadable is not a guard. This had no
+// coverage.
+//
+// Injection method: monkeypatch `fs.readFileSync` and restore it in a
+// `finally` (CONTRIBUTING.md fault-injection convention; mirrors
+// tests/verify-command-grounding.test.cjs "row 24 — unreadable phase
+// degrades, never throws"). `fs.chmodSync(path, 0o000)` is not used: root
+// (how CI/Docker run) bypasses mode bits entirely, so that approach would
+// pass with zero real coverage. This must go in-process (not through
+// runGsdTools) because a monkeypatch in the parent process is invisible to a
+// child process.
+// ---------------------------------------------------------------------------
+
+describe('#1950-H2 / #3689: writeLedgerAtomic pre-image read failure', () => {
+  test('windows append refuses when the pre-image is unreadable rather than silently overwriting it (#1950-H2 + #3689)', (t) => {
+    const tmp = createTempDir('bw-3689-unreadable-preimage-');
+    t.after(() => cleanup(tmp));
+
+    // Seed a real, on-disk ledger via a genuine (unmocked) append. The
+    // branch under test is reached only when readFileSync throws something
+    // OTHER than ENOENT, which requires a pre-image to actually exist.
+    cmdWindowsAppend(tmp, ['--kind', 'stub', '--phase', '1', '--description', 'seed entry'], {});
+    const ledgerPath = path.join(tmp, '.planning', LEDGER_FILE_NAME);
+    assert.ok(fs.existsSync(ledgerPath), 'guard: seed append must have written a ledger file');
+    const pristine = fs.readFileSync(ledgerPath, 'utf8');
+
+    const originalReadFileSync = fs.readFileSync;
+    let caught;
+    try {
+      fs.readFileSync = (p, ...rest) => {
+        if (typeof p === 'string' && path.resolve(p) === path.resolve(ledgerPath)) {
+          throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        }
+        return originalReadFileSync.call(fs, p, ...rest);
+      };
+
+      try {
+        cmdWindowsAppend(tmp, ['--kind', 'stub', '--phase', '2', '--description', 'second entry'], {});
+      } catch (e) {
+        caught = e;
+      }
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+
+    assert.ok(caught, 'an unreadable pre-image must throw, not proceed to overwrite the file');
+    assert.ok(caught instanceof WindowsError, 'must surface as a typed WindowsError, not a bare fs error');
+    assert.equal(caught.reason, REASON.WINDOWS_LEDGER_MALFORMED);
+    assert.match(caught.message, /EACCES/, 'message must name the errno that made the pre-image unreadable');
+    assert.ok(
+      caught.message.includes(ledgerPath),
+      `message must name the unreadable path (${ledgerPath}): ${caught.message}`,
+    );
+
+    // Fail-closed: the on-disk ledger must be byte-identical to the
+    // pre-image seeded above — no partial or silent overwrite occurred.
+    assert.equal(
+      fs.readFileSync(ledgerPath, 'utf8'),
+      pristine,
+      'an unreadable pre-image must not be overwritten',
+    );
   });
 });

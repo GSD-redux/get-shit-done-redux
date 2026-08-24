@@ -383,6 +383,15 @@ const JSON_FENCE_OPEN = '````json';
 const JSON_FENCE_CLOSE = '````';
 const FORBIDDEN_BACKTICK_RUN = '````';
 
+/**
+ * #3689: the ledger table's fixed header row literal. `renderTable` emits it
+ * on both the empty and non-empty branches; `extractTableRegion` anchors on
+ * it to bound the table region. Hoisted to one constant so the two surfaces
+ * cannot drift (see "Generative Fix Divergence" — CONTRIBUTING.md).
+ */
+const TABLE_HEADER_LINE =
+  '| id | phase | kind | file | line | description | status | reason | recorded_at | resolved_at |';
+
 // Reader-side fence tolerance (#3657): CommonMark formatters (Prettier et al.)
 // normalize the written 4-backtick fence down to the shortest legal width (3)
 // whenever the block body holds no backtick run — and a canonical-JSON ledger
@@ -693,13 +702,13 @@ export function renderLedger(ledger: Ledger): string {
 export function renderTable(entries: WindowEntry[]): string {
   if (entries.length === 0) {
     return [
-      '| id | phase | kind | file | line | description | status | reason | recorded_at | resolved_at |',
+      TABLE_HEADER_LINE,
       '|----|-------|------|------|------|-------------|--------|--------|-------------|-------------|',
       '| _(none)_ |  |  |  |  | _No windows recorded._ |  |  |  |  |',
     ].join('\n');
   }
   const rows = [
-    '| id | phase | kind | file | line | description | status | reason | recorded_at | resolved_at |',
+    TABLE_HEADER_LINE,
     '|----|-------|------|------|------|-------------|--------|--------|-------------|-------------|',
   ];
   for (const e of entries) {
@@ -733,11 +742,25 @@ export function renderTable(entries: WindowEntry[]): string {
  * Locates the JSON block with the same tolerant `locateJsonBlock` helper the
  * rest of the module uses (#3657), so a formatter-normalized 3-backtick
  * fence still resolves. Everything before the opening fence line, with
- * trailing blank lines dropped, is scanned backward for the trailing
- * contiguous run of `|`-prefixed lines — the header prose `renderLedger`
- * emits (`# Broken Windows Ledger`, `>` lines) never starts with `|`, so the
- * run cannot over-reach into it. Returns null when the JSON block cannot be
- * located or no such run exists.
+ * trailing blank lines dropped, is the candidate region.
+ *
+ * #3689: the region is bounded by finding the LAST occurrence of the fixed
+ * `TABLE_HEADER_LINE` literal (anchored at a line start) within that
+ * candidate text, then taking everything from there through its end — NOT
+ * by scanning backward for a contiguous run of `|`-prefixed lines. A `|`
+ * prefix scan cannot bound the region: `validateDescription` rejects only
+ * empty strings and 4-backtick runs, so a description may contain a raw
+ * `\n`, and `renderTable`'s `cell()` escapes `\` and `|` but not newlines.
+ * Such a description renders a row that physically spans multiple file
+ * lines, and the continuation line does not start with `|` — a prefix scan
+ * either truncates the table or, when the row's tail is the last pre-fence
+ * line, returns null immediately, bricking every subsequent write with
+ * `WINDOWS_LEDGER_TABLE_DRIFT` on a ledger nobody hand-edited. Anchoring on
+ * the header instead includes any such row whole, so `renderTable`
+ * regenerates byte-identical text for it and the drift comparison passes.
+ *
+ * Returns null when the JSON block cannot be located, or no header line is
+ * present.
  *
  * `expectedTotal` (#3689 review finding 2) is threaded straight into
  * `locateJsonBlock` so callers with trailing prose can disambiguate the real
@@ -753,20 +776,32 @@ export function extractTableRegion(raw: string, expectedTotal?: number): string 
   // line; walk back to the start of that line.
   const fenceLineStart = raw.lastIndexOf('\n', span.span.bodyStart - 1) + 1;
   const before = raw.slice(0, fenceLineStart).replace(/\r\n/g, '\n');
-  const lines = before.split('\n');
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
-    lines.pop();
+  let trimmedEnd = before.length;
+  while (trimmedEnd > 0 && before[trimmedEnd - 1] === '\n') {
+    trimmedEnd--;
   }
-  const tableLines: string[] = [];
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].startsWith('|')) {
-      tableLines.unshift(lines[i]);
-    } else {
+  const candidate = before.slice(0, trimmedEnd);
+  // Find the LAST occurrence of TABLE_HEADER_LINE anchored at a line start —
+  // a plain string scan rather than a regex, since the module is a leaf
+  // (imports only node:fs/node:path) and cannot pull in the shared
+  // escapeRegex() helper for a one-off fixed-literal search.
+  let headerIndex = -1;
+  let searchFrom = candidate.length;
+  for (;;) {
+    const idx = candidate.lastIndexOf(TABLE_HEADER_LINE, searchFrom);
+    if (idx === -1) break;
+    const atLineStart = idx === 0 || candidate[idx - 1] === '\n';
+    const atLineEnd =
+      idx + TABLE_HEADER_LINE.length === candidate.length ||
+      candidate[idx + TABLE_HEADER_LINE.length] === '\n';
+    if (atLineStart && atLineEnd) {
+      headerIndex = idx;
       break;
     }
+    searchFrom = idx - 1;
   }
-  if (tableLines.length === 0) return null;
-  return tableLines.join('\n');
+  if (headerIndex === -1) return null;
+  return candidate.slice(headerIndex);
 }
 
 /**
