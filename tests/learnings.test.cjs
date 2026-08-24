@@ -714,9 +714,6 @@ describe('#3683 completion wiring and registry pins', () => {
   const FEATURES = path.join(__dirname, '..', 'docs', 'FEATURES.md');
 
   test('execute-phase completion wires gated extraction', () => {
-    // allow-test-rule: source-text-is-the-product (#3683) — the workflow text IS
-    // the runtime contract; the wiring, its gate, and its non-fatal clause are
-    // prose/bash instructions no CLI surface can enumerate.
     const content = fs.readFileSync(EXECUTE_PHASE, 'utf-8');
     const stepStart = content.indexOf('<step name="auto_copy_learnings">');
     assert.ok(stepStart !== -1, 'auto_copy_learnings step must exist');
@@ -738,8 +735,6 @@ describe('#3683 completion wiring and registry pins', () => {
   });
 
   test('registry producer attribution is gated', () => {
-    // allow-test-rule: source-text-is-the-product (#3683) — the canonical
-    // artifact registry is a shipped text contract.
     const registry = fs.readFileSync(REGISTRY, 'utf-8');
     const splitLines = require('../gsd-core/bin/lib/text-lines.cjs').splitLines;
     const row = splitLines(registry).find((l) => l.includes('LEARNINGS.md'));
@@ -751,7 +746,6 @@ describe('#3683 completion wiring and registry pins', () => {
   });
 
   test('features doc agrees with the registry', () => {
-    // allow-test-rule: source-text-is-the-product (#3683)
     const features = fs.readFileSync(FEATURES, 'utf-8');
     const idx = features.indexOf('extract-learnings');
     assert.ok(idx !== -1, 'FEATURES.md must mention extract-learnings');
