@@ -798,6 +798,12 @@ export function extractTableRegion(raw: string, expectedTotal?: number): string 
       headerIndex = idx;
       break;
     }
+    // #3689: lastIndexOf clamps a negative position into [0, length] per
+    // spec, so `searchFrom = -1` would re-search from 0 and re-find the same
+    // rejected match at idx===0 forever. Stop explicitly once there is
+    // nowhere left to search — this makes the bound strictly decrease each
+    // iteration, so the loop terminates within candidate.length steps.
+    if (idx === 0) break;
     searchFrom = idx - 1;
   }
   if (headerIndex === -1) return null;

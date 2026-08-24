@@ -1459,6 +1459,24 @@ describe('#3689: windows ledger table-vs-JSON drift guard', () => {
     assert.match(parsed.message, /\b2\b/, 'failure message must name the drifted row id (2)');
     assert.equal(readLedgerFile(tmp), before, 'the file must be byte-identical to the pre-image after a refusal');
   });
+
+  test('extractTableRegion terminates when the header literal starts the candidate region (#3689)', () => {
+    // #3689: the backward header search's fallback bound `searchFrom = idx - 1`
+    // becomes -1 when the ONLY candidate match sits at index 0 and fails the
+    // atLineEnd check. String.prototype.lastIndexOf clamps a negative position
+    // to 0 per spec, so the next iteration re-finds the same rejected match at
+    // idx 0 forever — a candidate that STARTS with the header literal followed
+    // by a non-newline character reproduces this exactly. This must return
+    // promptly (a regression here hangs the test process, not fail it).
+    const TABLE_HEADER_LINE =
+      '| id | phase | kind | file | line | description | status | reason | recorded_at | resolved_at |';
+    const raw = `${TABLE_HEADER_LINE}X\n\`\`\`\`json\n[]\n\`\`\`\`\n`;
+    const result = brokenWindowsLib.extractTableRegion(raw);
+    // No line-anchored header match exists (the only occurrence is followed by
+    // "X", not a newline/EOF), so the corrected backward search must exhaust
+    // its bound and report "no header found" rather than hang.
+    assert.equal(result, null, 'extractTableRegion must return null when no line-anchored header match exists');
+  });
 });
 
 // ---------------------------------------------------------------------------
