@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "pr-branch.md": {
-      "reason": "#2971: +5729 bytes vs next. Adds the planning.pr_strict filter mode and repairs two verified defects in the same cherry-pick loop. The growth is four things, none of them prose padding: (1) the canonical TRANSIENT_DIRS/STRUCTURAL_RE declarations plus their per-mode FILTER_PATHS/FORBIDDEN_RE projections, which replace two duplicated hardcoded lists so create_pr_branch and verify can no longer disagree about what the filter promised; (2) a rewritten create_pr_branch loop — the old `git rm -r --cached` staged a DELETION of any .planning/ path the target branch already tracked, and left the picked file untracked on disk so a later commit touching that path aborted with \"untracked working tree files would be overwritten\" and every remaining commit was dropped, both reproduced against real git before the fix; the replacement forces filtered paths back to HEAD in index and worktree, halts on a conflict outside the filter instead of improvising, and skips a commit left empty by filtering; (3) a mode-derived verify step plus the advisory line naming the .planning/ paths default mode deliberately keeps, so correcting the assertion does not trade a permanently-wrong signal for silence; (4) a clean-working-tree precondition, required because the corrected filter now removes files from the working tree. Comments carry the why for each, because every one of them is a place a future edit would otherwise reintroduce the defect."
-    }
-  }
-}

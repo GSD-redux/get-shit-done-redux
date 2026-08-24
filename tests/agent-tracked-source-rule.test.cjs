@@ -79,20 +79,15 @@ describe('#3645 — agents write only git-tracked source paths', () => {
       'the rule belongs in the spawn contract, not the frozen agent file (#3645)');
   });
 
-  test('growth ack recorded for the grown shipped files (#3645)', () => {
-    const acksDir = path.join(__dirname, 'emitted-drift-acks');
-    const readAck = (name) => fs.readFileSync(path.join(acksDir, name), 'utf8');
-    const mine = fs.readdirSync(acksDir).find((f) => f.includes('3645'));
-    assert.ok(mine, 'an emitted-drift-acks fragment for #3645 must exist');
-    const mineSrc = readAck(mine);
-    assert.ok(mineSrc.includes('"gsd-pattern-mapper.md"'),
-      'the #3645 fragment must acknowledge the grown mapper by its ack key');
-    assert.ok(!mineSrc.includes('"gsd-planner.md"'),
-      'gsd-planner.md is unchanged — no ack entry for it');
-    // plan-phase.md's growth ack lives in the 3409 fragment (two ack sources
-    // may never name the same path — the merge precedent).
-    const planPhaseAck = readAck('3409-unreachable-guard-arms.json');
-    assert.ok(planPhaseAck.includes('"plan-phase.md"') && planPhaseAck.includes('#3645 append'),
-      'the plan-phase.md growth reason must be appended to the 3409 fragment (#3645)');
-  });
+  // A prior version of this suite pinned the EXISTENCE and CONTENTS of the `3645` and
+  // `3409` emitted-drift-acks fragments. An ack is scoped to the diff that introduced
+  // it (#2789's ack-lifecycle law): once #3645 merged and its growth is in `next`'s
+  // baseline, neither fragment gates anything — both are spent, and #3078's
+  // `guard-no-ack-on-next` sweeps them. A test may therefore never pin a fragment's
+  // existence or its prose; a fragment that is correctly swept would fail the pinning
+  // test for a reason that has nothing to do with the behavior it was meant to protect.
+  // #3645's actual protection is the two behavioral tests above — the mapper emitting
+  // only tracked analog paths, and the frozen planner file staying untouched — which
+  // this change leaves exactly as they were. The growth itself is protected by `next`'s
+  // emitted baseline (the differential attribution check), not by the spent fragment.
 });

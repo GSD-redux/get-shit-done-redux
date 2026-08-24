@@ -55,6 +55,7 @@
     "review.default_reviewers",
     "review.max_prompt_tokens",
     "review.max_prompt_tokens_per_reviewer",
+    "review.parallel_lanes",
     "workflow.cross_ai_execution",
     "workflow.cross_ai_command",
     "workflow.cross_ai_timeout",

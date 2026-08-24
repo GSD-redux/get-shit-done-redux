@@ -635,7 +635,7 @@ All tests passed. Phase {phase} marked complete.
 <step name="scan_phase_artifacts">
 Run phase artifact scan to surface any open items before marking phase verified:
 
-`audit-open` is CJS-only until registered on `gsd-tools.cjs query`:
+`audit-open` is CJS-only until registered on `gsd_run query`:
 
 ```bash
 gsd_run query audit-open --json

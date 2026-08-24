@@ -85,7 +85,8 @@ GSD stores project settings in `.planning/config.json`. Created during `/gsd-new
   "review": {
     "default_reviewers": null,
     "reviewer_instances": {},
-    "models": {}
+    "models": {},
+    "parallel_lanes": false
   },
   "parallelization": {
     "enabled": true,
@@ -292,6 +293,45 @@ Example:
   }
 }
 ```
+
+### Parallel reviewer lanes for `/gsd-review` (#3034)
+
+By default `/gsd-review` invokes reviewer lanes one at a time. That is deliberate: concurrent
+invocation can trip provider rate limits, and a lane dropped to a rate limit is a review that
+silently lost an opinion. A pass with several reviewers therefore costs roughly the sum of their
+runtimes.
+
+The lanes within one review pass have no data dependency on one another — they all inspect the
+same immutable plan snapshot. If your providers can accept concurrent requests (independent
+accounts, generous quota, or local model servers), you can opt in:
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `review.parallel_lanes` | boolean | `false` | When `true`, dispatch independent selected reviewer lanes concurrently within a single `/gsd-review` pass. All lanes are joined before `REVIEWS.md` and consensus are rendered. |
+
+```bash
+gsd config-set review.parallel_lanes true
+/gsd-plan-review-convergence 3 --all
+```
+
+```json
+{
+  "review": {
+    "parallel_lanes": true
+  }
+}
+```
+
+**What this does not change.** Convergence cycles stay sequential — `review → replan → re-review`
+has a real data dependency, so enabling this speeds up each pass, not the number of passes.
+Per-lane timeouts, prompt budgets, diagnostic stubs, explicit-lane failure, trust/egress checks and
+result-file layout are all unchanged.
+
+**Before you enable it.** Every selected lane dispatches at once — there is no concurrency bound.
+Selecting eleven lanes issues eleven concurrent requests. Two reviewer instances backed by the same
+adapter (see below) also dispatch concurrently against that one provider, which is the most likely
+way to hit a limit. If a lane does get rate-limited it fails the way any other failing lane does:
+a diagnostic stub with captured stderr, never a silently dropped review.
 
 ### Reviewer instances for `/gsd-review` (#1517)
 
@@ -1204,6 +1244,7 @@ Configure per-CLI model selection for `/gsd-review`. When set, overrides the CLI
 | `review.default_reviewers` | string[] \| null | (all detected reviewers) | Default reviewer subset for no-flag `/gsd-review`. Example: `["gemini","codex"]`. May include configured `review.reviewer_instances` names. Explicit flags and `--all` override this setting. |
 | `review.max_prompt_tokens` | number\|null | null | Default maximum estimated tokens for the assembled review prompt. When set, the prompt is deterministically trimmed before being sent to each reviewer. Per-reviewer overrides via `review.max_prompt_tokens_per_reviewer` take precedence. null = no trim (current behavior). |
 | `review.max_prompt_tokens_per_reviewer` | object | {} | Per-reviewer token budget overrides. Keys are reviewer slugs. Only lanes that declare a budget key accept one — today `ollama`, `lm_studio` and `llama_cpp`, the local model servers this exists for. Values override `review.max_prompt_tokens` for that reviewer. A per-lane value of `0` disables trimming for that lane specifically. |
+| `review.parallel_lanes` | boolean | `false` | Dispatch independent reviewer lanes concurrently within a single `/gsd-review` pass. Default `false` keeps the sequential dispatch that protects against provider rate limits. Opt in only when your providers can accept concurrent requests. Convergence cycles stay sequential either way. |
 | `review.ollama_host` | string | `http://localhost:11434` | Base URL of the Ollama server. Override when running Ollama on a non-default port or remote host: `gsd config-set review.ollama_host http://192.168.1.10:11434` |
 | `review.lm_studio_host` | string | `http://localhost:1234` | Base URL of the LM Studio local server. Override when using a non-default port. |
 | `review.llama_cpp_host` | string | `http://localhost:8080` | Base URL of the llama.cpp server (`llama-server`). Override when using a non-default port. |

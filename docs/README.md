@@ -36,6 +36,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Plan a phase](how-to/plan-a-phase.md) — run research, decompose work, and verify plan quality
 - [Verify a dependency-compatibility claim](how-to/verify-a-dependency-compatibility-claim.md) — act on a compatibility claim the researcher left `[ASSUMED]`, and tell "nothing declared" apart from "a constraint is declared" and "the lookup failed"
 - [Execute a phase](how-to/execute-a-phase.md) — run plans in parallel waves with fresh-context subagents
+- [Enable parallel reviewer lanes](how-to/enable-parallel-reviewer-lanes.md) — cut a multi-reviewer `/gsd-review` pass toward its slowest lane, and tell a rate-limited lane apart from one that was never selected
 - [Verify and ship](how-to/verify-and-ship.md) — walk through completed work, diagnose failures, and create the PR
 - [Catch complexity before it compounds](how-to/act-on-a-refactor-proposal.md) — enable the post-execute refactor hook, read a proposal's score vs. anchor delta, and accept or decline it
 - [Run phases autonomously](how-to/run-phases-autonomously.md) — use autonomous mode for unattended phase execution

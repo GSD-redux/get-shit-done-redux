@@ -32,11 +32,45 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const ACK_VERSION = 1;
 const ACK_REPO_PATH = 'tests/emitted-drift-ack.json';
 const ACK_DIR_REPO_PATH = 'tests/emitted-drift-acks';
 const REPO_ROOT = path.join(__dirname, '..');
+
+/**
+ * Upper bound on any one git call made by the `--guard-next` lane (#3078).
+ *
+ * Every subprocess this repo spawns is bounded (CLAUDE.md -> KNOWN DEFECTS, "Unbounded
+ * Subprocesses": 5-30s for git). The guard reads one directory listing plus one blob per
+ * surviving fragment, all against local objects, so 15s is generous — but an unbounded
+ * `execFileSync` on a wedged git is an indefinite hang in a job whose whole timeout
+ * budget is one minute.
+ */
+const GIT_TIMEOUT_MS = 15_000;
+
+/**
+ * Characters that render as nothing: soft hyphen, the zero-width family, word joiner,
+ * BOM. Stripped before ack reasons are compared, so an invisible edit cannot make a spent
+ * acknowledgment look re-armed.
+ *
+ * DUPLICATED from `INVISIBLE` in `tests/helpers/emitted-diff.cjs`, for the same reason
+ * every other constant here is duplicated rather than required: `scripts/` ships in the
+ * npm package and `tests/` does not, so the require would be MODULE_NOT_FOUND once
+ * published (see this file's top-of-file comment). The two are held together by the
+ * prose-parity test in `tests/emitted-attribution.test.cjs`, which enumerates the gate's
+ * own codepoints and fails if this list stops covering them.
+ *
+ * Spelled as codepoints on purpose — a literal character class here would itself be
+ * invisible in review, which is the exact failure being defended against.
+ */
+const ACK_INVISIBLE = new RegExp(
+  `[${[0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF]
+    .map((c) => `\\u${c.toString(16).toUpperCase().padStart(4, '0')}`)
+    .join('')}]`,
+  'g',
+);
 
 /**
  * Upper bound on how many fragment files `listFragmentFiles` may return in one
@@ -216,6 +250,132 @@ function declaredKeys(raw) {
 }
 
 /**
+ * Normalize an ack reason to the prose a reviewer actually reads.
+ *
+ * Mirrors the gate's own `prose()` inside `diffEmitted` (`tests/helpers/emitted-diff.cjs`)
+ * exactly: strip invisibles, collapse internal whitespace, trim. Re-arming a spent ack is
+ * legitimate — it is how a contributor says "this is a NEW ripple, and here is why" — but
+ * it must cost an ACTUAL explanation, so a doubled space, a CRLF, or a U+200B may never
+ * make a spent entry look live. Bounded by the parity test named on ACK_INVISIBLE.
+ */
+function ackProse(reason) {
+  return reason.replace(ACK_INVISIBLE, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The declared entries of one ack document as `path key -> normalized prose`, or `null`
+ * when the document cannot be trusted to answer the question.
+ *
+ * `null` is NOT "no entries" — it is "do not draw a conclusion from this file". A document
+ * that will not parse, is not an object, has a non-object `paths`, carries a reasonless or
+ * non-string entry, or names a RESERVED_ACK_KEY cannot be shown to be spent, and the
+ * conservative direction here is to leave it alone: `validateAckText` (run by `lint:ci`,
+ * pre-merge) owns SHAPE and already blocks such a document from reaching the base, while
+ * this guard owns LIFECYCLE. Sweeping a file we could not read would delete an
+ * acknowledgment on the strength of a parse failure.
+ *
+ * An ABSENT document (`raw === null`) is a genuine empty entry set — the fragment simply
+ * did not exist at that ref, so nothing it declares now has a counterpart there.
+ */
+function ackEntries(raw) {
+  if (raw === null) return new Map();
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(doc)) return null;
+  const paths = doc.paths;
+  if (paths === undefined) return new Map();
+  if (!isPlainObject(paths)) return null;
+
+  const entries = new Map();
+  for (const [rel, value] of Object.entries(paths)) {
+    if (RESERVED_ACK_KEYS.has(rel)) return null;
+    const reason = isPlainObject(value) ? value.reason : value;
+    if (typeof reason !== 'string') return null;
+    entries.set(rel, ackProse(reason));
+  }
+  return entries;
+}
+
+/**
+ * assertNoAllSpentFragments — the fragment half of the `next`-lane guard (#3078).
+ *
+ * #2914 split the single shared ack file into per-PR fragments and deliberately exempted
+ * the fragment directory from `assertAbsentOnNext`, on the premise that a persistent
+ * fragment "cannot conflict with any other PR". That premise does not hold. Fragments do
+ * not share a FILE, but they do share a PATH KEY SPACE, and `main()` below treats a path
+ * claimed by two sources as a hard failure. So a merged fragment is not harmless: every
+ * entry it leaves on `next` is spent by definition — its prose is already at the base, so
+ * it gates nothing — while still owning its key, and the next PR that grows the same
+ * workflow can declare it neither in the owning fragment (spent) nor in its own
+ * (duplicate). That is the exact failure #2914 fixed for the legacy file, reintroduced one
+ * level down. Measured on `next` when this landed: 45 fragments owning 403 paths.
+ *
+ * Unlike the legacy file, PRESENCE alone is not the failure — a fragment landed by the
+ * very push being guarded is the healthy case for every ack-carrying PR. The failure is
+ * INERTNESS: every surviving entry's prose already matches the copy at the base ref, so
+ * the fragment can no longer clear a delta for anyone. A PARTIALLY spent fragment is left
+ * alone; only an entirely inert one is cruft. That distinction is why the base side is
+ * required, and it is what keeps the re-arm-by-appending route working (#2639, #2993).
+ *
+ * An ENTRYLESS document is vacuously all-spent and swept for the same reason
+ * `validateAckText` refuses to let one be committed: it acknowledges nothing.
+ *
+ * Pure — no fs, no git, no clock. `main()` does the reading.
+ *
+ * @param {Array<{name: string, currentRaw: string|null, baseRaw: string|null}>} fragments
+ * @returns {{ ok: boolean, message: string, sweepable: string[] }}
+ */
+function assertNoAllSpentFragments(fragments) {
+  const sweepable = [];
+
+  for (const { name, currentRaw, baseRaw } of fragments) {
+    const current = ackEntries(currentRaw);
+    if (current === null) continue; // unreadable — `validateAckText` owns that verdict
+    const base = ackEntries(baseRaw);
+    if (base === null) continue;
+
+    const allSpent = [...current].every(([rel, prose]) => base.get(rel) === prose);
+    if (allSpent) sweepable.push({ name, entries: current.size });
+  }
+
+  if (sweepable.length === 0) {
+    return {
+      ok: true,
+      message: `ok guard-no-ack-on-next: no all-spent fragment survives in ${ACK_DIR_REPO_PATH}/`,
+      sweepable: [],
+    };
+  }
+
+  const lines = sweepable.map(
+    ({ name, entries }) => `  - ${ACK_DIR_REPO_PATH}/${name} (${entries} entr${entries === 1 ? 'y' : 'ies'}, all spent)`
+      + `\n    remedy: git rm ${ACK_DIR_REPO_PATH}/${name}`,
+  );
+
+  return {
+    ok: false,
+    sweepable: sweepable.map(({ name }) => name),
+    message: [
+      `guard-no-ack-on-next: ${sweepable.length} fully-spent ack fragment(s) survive on next.`,
+      '',
+      ...lines,
+      '',
+      'Every entry in these fragments is already at the base, so each is spent and gates '
+      + 'nothing (#2789) — but it still OWNS its path keys. The next PR that grows one of '
+      + 'those paths can declare it neither here (spent) nor in its own fragment (a '
+      + 'duplicate ack is a hard failure), so a spent fragment left behind is a wall, not '
+      + 'harmless cruft (#3078).',
+      '',
+      'A partially spent fragment is deliberately NOT reported: only an entirely inert one '
+      + 'is swept, so appending prose to a live entry to re-arm it keeps working.',
+    ].join('\n'),
+  };
+}
+
+/**
  * assertAbsentOnNext — the `next`-lane guard (#2914), invoked only by the
  * `guard-no-ack-on-next` workflow job on push to `next`, never in `lint:ci`.
  *
@@ -230,6 +390,12 @@ function declaredKeys(raw) {
  * shape #2789 exists to prevent (a spent-but-present base ack would red every open PR the
  * instant one landed). It is safe only because it runs on `next` itself, asserting a fact
  * about `next`'s own tree, never about any PR's diff against it.
+ *
+ * Scoped to the LEGACY FILE ONLY — the fragment directory is guarded by
+ * `assertNoAllSpentFragments` above, on a stricter-to-state but weaker-to-apply rule
+ * (inertness, not presence). #3078 corrected the original premise that a persisting
+ * fragment "cannot conflict with any other PR": fragments share a path key space even
+ * though they do not share a file.
  *
  * @param {boolean} present  whether ACK_REPO_PATH exists in the tree being checked
  * @returns {{ ok: boolean, message: string }}
@@ -248,9 +414,10 @@ function assertAbsentOnNext(present) {
       + 'whether it is otherwise well-formed.',
       '',
       '#2914: acks now go in per-PR fragments under tests/emitted-drift-acks/, one file per '
-      + 'PR, never this single shared file -- a persistent fragment there is harmless (every '
-      + 'fragment is independently named, so it cannot conflict with any other PR), which is '
-      + 'why only THIS legacy file is guarded here, never the fragment directory.',
+      + 'PR, never this single shared file. A fragment cannot MERGE-CONFLICT with another '
+      + "PR's fragment, but it does own its path keys, so a fully-spent one left on next "
+      + 'still blocks the next PR that grows the same path (#3078) -- fragments are guarded '
+      + 'separately, on inertness rather than on presence.',
       '',
       'CONTRIBUTING.md: "When you remove the last entry from tests/emitted-drift-ack.json, '
       + 'delete the file too -- its presence is the alarm."',
@@ -260,13 +427,123 @@ function assertAbsentOnNext(present) {
   };
 }
 
+/**
+ * Every git call declares the SPECIFIC directory it operates on as safe, mirroring
+ * `safeDirArgs` in `tests/helpers/emitted-runtime.cjs` (#2767): a checkout mounted at a
+ * path owned by a different uid makes git refuse EVERY operation there with "detected
+ * dubious ownership", and this guard's whole value is that it fails LOUDLY on a real
+ * fault rather than degrading to "no base, nothing spent". Never the `*` wildcard, which
+ * would mark every repository on the machine safe. Duplicated rather than imported for
+ * the reason stated at the top of this file: `scripts/` ships in the npm package and
+ * `tests/` does not.
+ */
+function git(args, { cwd = REPO_ROOT } = {}) {
+  return execFileSync('git', ['-c', `safe.directory=${path.resolve(cwd)}`, ...args], {
+    cwd,
+    encoding: 'utf8',
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+/**
+ * The LOCAL/MANUAL fallback for "the commit `next` was at BEFORE this push" — `HEAD^`,
+ * or `null` on a root commit. Correct only when the push it is standing in for carries
+ * exactly one commit.
+ *
+ * CI never relies on this: it passes the authoritative pre-push tip explicitly via
+ * `--base-ref` (`github.event.before`, wired in `.github/workflows/test.yml`), because
+ * the default branch's ruleset allows REBASE merges
+ * (`.github/rulesets/main-protection.json`, `allowed_merge_methods`), so a single push
+ * event can land N commits at once. `HEAD^` steps back exactly one commit — for a
+ * 2-commit rebase-merge whose first commit adds a fragment and whose second is
+ * unrelated, `HEAD^` would land on the first commit, read the fragment as already
+ * present there, and demand `git rm` on the very push that introduced it (#3078). This
+ * function exists purely as the manual-run / single-commit-push fallback.
+ *
+ * Two steps on purpose. `HEAD` is resolved first, which proves git runs and the working
+ * directory is a readable repository; only then is a failure to resolve `HEAD^` read as
+ * "this commit has no parent". A single blanket try/catch would collapse "git is broken"
+ * into "there is no base", and a guard with no base sweeps nothing — it would pass
+ * vacuously, which is precisely how the legacy-file job spent months guarding a file that
+ * had not existed since #2914 (#3078).
+ */
+function resolveBaseRef({ cwd = REPO_ROOT, run = git } = {}) {
+  run(['rev-parse', '--verify', 'HEAD'], { cwd });
+  try {
+    return run(['rev-parse', '--verify', 'HEAD^'], { cwd }).trim();
+  } catch {
+    return null; // root commit — nothing can be spent against it
+  }
+}
+
+/**
+ * Raw text of one ack fragment AT `base`, or `null` when it is simply not there.
+ *
+ * Mirrors `readAckFileAtRef` in `tests/helpers/emitted-runtime.cjs` (duplicated across the
+ * ships/does-not-ship line, as everything else here is): `git show` alone cannot tell a
+ * bogus ref from an absent path — both say "does not exist in" — so absence is established
+ * with `ls-tree`, which exits 0 with empty output when the path is not there and non-zero
+ * on a real fault. A genuine git failure THROWS rather than degrading to `null`, because
+ * "could not read the base" read as "absent at the base" would make every fragment look
+ * brand-new and silently disarm the sweep.
+ */
+function readFragmentAtRef(base, name, { cwd = REPO_ROOT, run = git } = {}) {
+  const repoPath = `${ACK_DIR_REPO_PATH}/${name}`;
+  const listing = run(['ls-tree', '--name-only', base, '--', repoPath], { cwd });
+  if (listing.trim() === '') return null;
+  return run(['show', `${base}:${repoPath}`], { cwd });
+}
+
+/**
+ * A base ref must not begin with `-`: `execFileSync`'s array form stops shell
+ * metacharacters but not git's own option parsing, and `git show` honors diff options
+ * including `--output=<file>`, which WRITES. Same guard, same reason, as
+ * `readAckFileAtRef`'s.
+ */
+function assertUsableBaseRef(ref) {
+  if (typeof ref !== 'string' || ref === '' || ref.startsWith('-')) {
+    throw new Error(
+      `lint-emitted-drift-ack: refusing to read fragments at ${JSON.stringify(ref)} — a base `
+      + 'ref must be a non-empty string that does not begin with "-", which git would parse '
+      + 'as an option.',
+    );
+  }
+  return ref;
+}
+
 function main() {
   const legacyFile = path.join(REPO_ROOT, ...ACK_REPO_PATH.split('/'));
 
   if (process.argv.includes('--guard-next')) {
-    const result = assertAbsentOnNext(fs.existsSync(legacyFile));
-    console.log(result.message);
-    if (!result.ok) process.exitCode = 1;
+    const legacy = assertAbsentOnNext(fs.existsSync(legacyFile));
+    console.log(legacy.message);
+
+    // The fragment half (#3078). CI always passes `--base-ref` (the pre-push tip of
+    // `next`, `github.event.before`), because the default branch allows REBASE merges
+    // and one push can carry N commits — `HEAD^` alone is not "the state of next before
+    // this push" in that case. `resolveBaseRef()`'s `HEAD^` is only the fallback for a
+    // manual run or a single-commit push, where the two agree. NOTE the job's checkout
+    // must fetch at least depth 2 for the `HEAD^` fallback to resolve at all, and must
+    // separately fetch the `--base-ref` commit itself, or every fragment reads as
+    // brand-new.
+    const baseFlag = process.argv.indexOf('--base-ref');
+    const baseRef = baseFlag === -1
+      ? resolveBaseRef()
+      : assertUsableBaseRef(process.argv[baseFlag + 1]);
+
+    const dir = path.join(REPO_ROOT, ...ACK_DIR_REPO_PATH.split('/'));
+    const fragments = listFragmentFiles(dir).map((name) => ({
+      name,
+      currentRaw: readIfPresent(path.join(dir, name)),
+      baseRaw: baseRef === null ? null : readFragmentAtRef(baseRef, name),
+    }));
+
+    const sweep = assertNoAllSpentFragments(fragments);
+    console.log(sweep.message);
+
+    if (!legacy.ok || !sweep.ok) process.exitCode = 1;
     return;
   }
 
@@ -301,7 +578,12 @@ function main() {
           problems.push(
             `duplicate ack for "${key}": declared in both ${owner.get(key)} and ${label}. `
             + 'Two ack sources (fragments, or a fragment and the legacy file) may never '
-            + 'name the same path — rename or merge them.',
+            + 'name the same path. Resolve it one of two ways, depending on the owner: if '
+            + `${owner.get(key)} is already merged, its entry is SPENT and gates nothing — `
+            + `delete it (git rm ${owner.get(key)}) and keep your own. If it is still live `
+            + 'on this branch, APPEND your explanation to its existing entry instead, which '
+            + 're-arms it — re-arming deliberately costs actual new prose. Do not rename '
+            + 'the path to dodge this.',
           );
           continue;
         }
@@ -335,10 +617,19 @@ if (require.main === module) main();
 module.exports = {
   validateAckText,
   assertAbsentOnNext,
+  assertNoAllSpentFragments,
+  ackProse,
+  ackEntries,
   declaredKeys,
   listFragmentFiles,
   ACK_VERSION,
   ACK_REPO_PATH,
   ACK_DIR_REPO_PATH,
+  ACK_INVISIBLE,
   MAX_ACK_FRAGMENTS,
+  git,
+  resolveBaseRef,
+  readFragmentAtRef,
+  assertUsableBaseRef,
+  GIT_TIMEOUT_MS,
 };

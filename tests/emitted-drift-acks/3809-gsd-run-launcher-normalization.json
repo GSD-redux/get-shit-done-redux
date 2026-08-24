@@ -1,0 +1,9 @@
+{
+  "$comment": "Growth ack (#2914 fragment). Reason: #3809 routes every command-position shim reference in runtime-loaded markdown through the canonical gsd_run launcher. The substitution SHRANK 19 emitted files; this is the only one that grew. Its line 65 is a descriptive comment inside a fenced block, and rewriting it to name a command at all would place a gsd_run token ahead of the file's canonical preamble at line 158, which runtime-launcher-parity's (B-agents) arm correctly rejects. The comment therefore names no command and explains where the config is actually loaded instead, costing 3 bytes. gsd-research-synthesizer.md 13847 -> 13850 LF bytes (+3).",
+  "version": 1,
+  "paths": {
+    "gsd-research-synthesizer.md": {
+      "reason": "descriptive comment reworded to name no command, so the file's first gsd_run token stays behind its canonical preamble (runtime-launcher-parity B-agents); +3 bytes"
+    }
+  }
+}

@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "quick.md": {
-      "reason": "#3606: the execute:post consumer gains generic step dispatch (deferral to loop-hook-dispatch.md) before the code-review specialization, so refactor-trigger's ref.command step and any other registered execute:post steps actually run on /gsd:quick runs instead of being filtered out by the one-skill narrow. Deliberate growth, not converter drift. #3659 appends --mode \"$ISOLATION\" to both #1941 base-check calls (+40B): the isolation mode now gates the baseref-head suppress \u2014 the runtime harness does not read project-settings baseRef (#48), so harness mode must compare instead of suppressing. Deliberate growth."
-    }
-  }
-}

@@ -142,15 +142,24 @@ The differential attribution check reports the file and the byte delta. To resol
    section and `CONTEXT.md`'s `### Emitted Artifact Provenance` entry. Name the
    fragment for your issue or PR (something nobody else is using) — the failure
    output prints a minimal valid document you can paste. This is deliberately a
-   per-PR fragment, not one shared file: fragments can never conflict across
-   PRs, and a fragment appearing in your diff *is* the visible signal. If the
-   failure instead names a path a merged PR already acknowledged (a **spent**
-   entry sitting in an existing fragment), reword that fragment's `reason` in
-   place to explain the new ripple — do not add a duplicate entry for the same
-   path; two ack sources naming the same path is a hard, loudly-reported error.
+   per-PR fragment, not one shared file: two fragments can never *merge-conflict*
+   with each other, and a fragment appearing in your diff *is* the visible signal.
+   They do, however, share a path key space. If the failure instead names a path a
+   merged PR already acknowledged (a **spent** entry sitting in an existing
+   fragment), you have two routes and the error text names both: `git rm` that
+   fragment if every entry in it is spent — it gates nothing and only holds the
+   keys — or, if it is still live, reword/extend its `reason` in place to explain
+   the new ripple. Either way, do not add a duplicate entry for the same path; two
+   ack sources naming the same path is a hard, loudly-reported error.
    The legacy single `tests/emitted-drift-ack.json` is still read and unioned
    in for branches that carry it, but new acknowledgments never go there.
-3. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
+3. **Delete your fragment once it has merged (#3078).** A fragment on `next` is
+   spent by definition — its prose is already at the base, so it can no longer
+   clear anything — while still owning its path keys, which walls off the next PR
+   that grows one of them. The `guard-no-ack-on-next` job reds `next` and prints
+   the exact `git rm` for every fully-spent fragment. A *partially* spent fragment
+   is deliberately left alone.
+4. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
    is incidental: for a workflow, move per-mode bodies to
    `workflows/<name>/modes/`, templates to `workflows/<name>/templates/`, and
    shared prose to `gsd-core/references/`; for an agent, lift shared boilerplate

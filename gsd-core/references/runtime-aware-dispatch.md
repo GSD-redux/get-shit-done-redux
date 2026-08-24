@@ -19,7 +19,7 @@ preserves named-dispatch behavior on older GSD installs that lack the query.
 
 The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3 / #2510) regardless of the
 resolved type — on non-Claude runtimes with no `agent_skills` config,
-`gsd-tools query agent-skills <role>` returns the installed agent prompt as
+`gsd_run query agent-skills <role>` returns the installed agent prompt as
 the block. So a coder dispatch with the planner persona injected gives kimi-code
 the planner's behavior in the coder built-in's process.
 

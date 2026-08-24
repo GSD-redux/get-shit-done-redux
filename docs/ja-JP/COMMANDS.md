@@ -219,7 +219,7 @@ WebSearch から取得したパッケージは `[ASSUMED]`（`[VERIFIED]` では
 |-----------------|----------|-------------|
 | `N` | **Yes** | 計画およびレビューするフェーズ番号 |
 | レビュアーフラグ | No | すべてのレビュアーレーンフラグをそのまま渡す: `--gemini`、`--claude`、`--codex`、`--coderabbit`、`--opencode`、`--qwen`、`--cursor`、`--agy` / `--antigravity`、`--ollama`、`--lm-studio`、`--llama-cpp`、`--kimi-code` |
-| `--all` | No | 設定済みのすべてのレビュアーを並列で実行 |
+| `--all` | No | 設定済みのすべてのレビュアーを実行。レーンはデフォルトでは**順次**ディスパッチされます。`review.parallel_lanes` を `true` にすると、1 回のレビューパス内で並行してディスパッチされます |
 | `--max-cycles N` | No | サイクル上限を上書き（デフォルト3） |
 
 **終了動作:** HIGH カウントがゼロになるとループが終了します。HIGH カウントがサイクル間で減少しない場合はストール検出が警告します。`--max-cycles` に達しても HIGH 懸念が残っている場合、エスカレーションゲートがユーザーに続行するか手動でレビューするかを確認します。
@@ -918,7 +918,7 @@ GSD の保証付きでアドホックタスクを実行します。
 | `--format` | 出力フォーマット: `markdown`（デフォルト）、`json` |
 
 **前提条件:** フェーズが実行済みであること（SUMMARY.md ファイルが存在すること）
-**生成物:** `.planning/learnings/{phase}-LEARNINGS.md`
+**生成物:** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **抽出内容:**
 - アーキテクチャ上の決定とその根拠

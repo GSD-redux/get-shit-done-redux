@@ -44,11 +44,11 @@ If missing both ROADMAP.md and PROJECT.md: suggest `/gsd:new-project`.
 </step>
 
 <step name="load">
-**Use structured extraction from `gsd-tools.cjs query` (or legacy gsd-tools.cjs):**
+**Use structured extraction from `gsd_run query`:**
 
 Instead of reading full files, use targeted tools to get only the data needed for the report:
-- `ROADMAP=$(gsd-tools.cjs query roadmap.analyze)`
-- `STATE=$(gsd-tools.cjs query state-snapshot)`
+- `ROADMAP=$(gsd_run query roadmap.analyze)`
+- `STATE=$(gsd_run query state-snapshot)`
 
 This minimizes orchestrator context usage.
 </step>
@@ -96,7 +96,7 @@ Use this instead of manually reading/parsing ROADMAP.md.
 > blocks are a secondary config aid that may be significantly stale — do NOT use the
 > CLAUDE.md project description as a source for any progress report field.
 
-**Generate progress bar from `gsd-tools.cjs query progress` / `progress.json`, then present rich status report:**
+**Generate progress bar from `gsd_run query progress` / `progress.json`, then present rich status report:**
 
 ```bash
 # Get formatted progress bar
