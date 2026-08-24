@@ -1428,7 +1428,8 @@ describe('#3679 — pr-branch pre-existing planning content + verify deletion ga
     fs.writeFileSync(path.join(repo, 'infra', 'script2.sh'), 'more\n');
     fs.writeFileSync(path.join(repo, '.planning', 'phases', '2.0-SUMMARY.md'), 'summary\n');
     g(['add', '-A']);
-    const hash = g(['commit', '-qm', 'mixed: code + new transient']).trim();
+    g(['commit', '-qm', 'mixed: code + new transient']);
+    const hash = g(['rev-parse', 'HEAD']).trim();
 
     // Execute the shipped create_pr_branch loop verbatim (default-mode paths).
     const createBash = extractStepBash('create_pr_branch');
@@ -1472,7 +1473,8 @@ describe('#3679 — pr-branch pre-existing planning content + verify deletion ga
     g(['checkout', '-qb', 'feature']);
     fs.writeFileSync(path.join(repo, 'infra', 'script2.sh'), 'more\n');
     g(['add', '-A']);
-    const hash = g(['commit', '-qm', 'pure code']).trim();
+    g(['commit', '-qm', 'pure code']);
+    const hash = g(['rev-parse', 'HEAD']).trim();
 
     const createBash = extractStepBash('create_pr_branch');
     const script = [
@@ -1492,5 +1494,6 @@ describe('#3679 — pr-branch pre-existing planning content + verify deletion ga
     assert.equal(r.exitCode, 0, `create loop must succeed: ${r.stderr.slice(0, 400)}`);
     const status = g(['diff', '--name-status', 'main..feature-pr']);
     assert.equal((status.match(/^D/gm) || []).length, 0, `no deletions allowed: ${status}`);
+    assert.ok(status.includes('script2.sh'), 'code change must be present');
   });
 });
