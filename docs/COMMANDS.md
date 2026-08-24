@@ -2121,6 +2121,46 @@ node gsd-tools.cjs state complete-phase --phase 3
 
 ---
 
+### `runtime-identity`
+
+Report the package coordinates of the `gsd-tools` that is executing. Used by the runtime
+launcher preamble to confirm a shipped workflow reached this package's tool rather than a
+different package that also provides a `gsd-tools` binary.
+
+**Prerequisites:** none — it reads no project state and needs no resolvable project root
+**Produces:** a JSON identity payload on stdout
+
+```bash
+node gsd-tools.cjs runtime-identity
+```
+
+```json
+{
+  "packageName": "@opengsd/gsd-core",
+  "version": "1.12.0"
+}
+```
+
+| Field | Type | Value |
+|---|---|---|
+| `packageName` | string | Always `@opengsd/gsd-core`. Baked at build time from `package.json`, so it survives an installed tree that carries no real `package.json`. |
+| `version` | string | The installed host version. Falls back to `0.0.0` when neither `gsd-core/VERSION` nor a runtime-root `package.json` is readable. |
+
+`--raw` emits the same payload on a single line.
+
+The payload is additive-only: consumers must ignore unrecognized keys. `version` is
+reported but is **not** asserted by the launcher check — identity alone determines whether
+the check passes, so a `0.0.0` development tree still verifies.
+
+This is a **manual diagnostic**. Nothing invokes it automatically; the launcher prevents the
+package-collision failure structurally instead, by resolving `gsd_run` rather than `gsd-tools`
+on `PATH`.
+
+See [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) for using it,
+and [Runtime identity](FEATURES.md#runtime-identity) for the rationale.
+
+---
+
 ## Community Commands
 
 ### Community Hooks

@@ -1,0 +1,186 @@
+/**
+ * Runtime identity — prove which package's `gsd-tools` actually executed (#3146).
+ *
+ * The predecessor package `get-shit-done-cc` publishes a colliding `gsd-tools`
+ * bin (verified 2026-08-24 against 1.42.3: `bin.gsd-tools -> bin/gsd-sdk.js`),
+ * and exposes verbs of the same name with different semantics. #3129 is the
+ * worked example: `phases.clear` archives here and **deletes** there, and the
+ * output is success-shaped either way, so 43 phase directories went missing
+ * with no warning.
+ *
+ * That collision is now prevented in the resolver rather than detected here:
+ * the launcher's PATH branch resolves `gsd_run`, which only this package
+ * publishes and which self-locates to its sibling shim, so a foreign binary is
+ * unreachable from PATH. This module backs the `runtime-identity` verb, a
+ * MANUAL diagnostic for answering "which tool am I actually running?" — it is
+ * not an automatic gate, and nothing calls it on the hot path.
+ *
+ * Parsing is deliberately STRICT. The whole value of the check is telling "us"
+ * from "not us"; a lenient parse that accepts the predecessor's usage text as
+ * close-enough would reproduce the exact silent success #3129 already produced.
+ * Liberality is spent on visibility instead — distinct reason codes, each
+ * naming what actually happened.
+ */
+
+import { packageName } from './package-identity.cjs';
+import { readHostVersion } from './capability-loader.cjs';
+
+/** The package name a legitimate GSD runtime reports. Baked at build time (#498). */
+export const EXPECTED_PACKAGE_NAME: string = packageName;
+
+/**
+ * Why an identity probe did or did not verify.
+ *
+ * `no_identity_verb` and `unparseable` are kept apart on purpose: the first
+ * means "something else answered" (a foreign binary that has no such verb), the
+ * second means "we got an answer we cannot trust". They point at different
+ * remedies, and collapsing them is what makes a diagnostic useless.
+ */
+export type IdentityReason =
+  | 'ok'
+  | 'identity_mismatch'
+  | 'no_identity_verb'
+  | 'unparseable'
+  | 'probe_failed';
+
+/** Raw result of running `<resolved gsd-tools> runtime-identity`. */
+export interface IdentityProbe {
+  stdout: string;
+  exitCode: number | null;
+  /** The child could not be spawned at all (ENOENT, not executable). */
+  spawnFailed?: boolean;
+  /** The child exceeded its timeout and was killed. */
+  timedOut?: boolean;
+}
+
+export interface IdentityVerdict {
+  reason: IdentityReason;
+  expected: string;
+  /** The packageName the probe reported, when it reported a usable one. */
+  actual?: string;
+  version?: string;
+  /** Human-readable evidence for the warning text. Never a full dump. */
+  detail?: string;
+}
+
+/** The documented payload shape. Minimal on purpose — see Hyrum's Law note in 40-design.md. */
+export interface IdentityPayload {
+  packageName: string;
+  version: string;
+}
+
+/** Cap on echoed probe output so a warning can never dump a whole usage screen. */
+const EVIDENCE_MAX_CHARS = 200;
+
+function excerpt(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > EVIDENCE_MAX_CHARS ? `${flat.slice(0, EVIDENCE_MAX_CHARS)}…` : flat;
+}
+
+/**
+ * Pure classifier: probe result -> verdict. Total — never throws, for any input.
+ *
+ * Non-object JSON (`0`, `"str"`, `[]`, `null`, `true`) is `unparseable`, not
+ * `ok` and not a crash: `JSON.parse` accepts all of them, so a naive truthiness
+ * check would let `[]` through as a verified identity.
+ */
+export function classifyIdentityProbe(
+  probe: IdentityProbe,
+  expected: string = EXPECTED_PACKAGE_NAME,
+): IdentityVerdict {
+  if (probe.spawnFailed || probe.timedOut) {
+    return {
+      reason: 'probe_failed',
+      expected,
+      detail: probe.timedOut ? 'identity probe timed out' : 'identity probe could not be spawned',
+    };
+  }
+
+  // A non-zero exit is what a binary without this verb does. The predecessor
+  // prints its usage screen and exits 1; treat that as "something else
+  // answered", never as a parse problem.
+  if (probe.exitCode !== 0) {
+    return {
+      reason: 'no_identity_verb',
+      expected,
+      detail: `exit ${String(probe.exitCode)}: ${excerpt(probe.stdout)}`,
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(probe.stdout) as unknown;
+  } catch {
+    return { reason: 'unparseable', expected, detail: excerpt(probe.stdout) };
+  }
+
+  // Arrays are objects to typeof; null is too. Both must be rejected.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { reason: 'unparseable', expected, detail: excerpt(probe.stdout) };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const actual = record.packageName;
+  if (typeof actual !== 'string' || actual.length === 0) {
+    return { reason: 'unparseable', expected, detail: 'payload has no usable packageName' };
+  }
+
+  const version = typeof record.version === 'string' ? record.version : undefined;
+  if (actual !== expected) {
+    return { reason: 'identity_mismatch', expected, actual, version };
+  }
+
+  // Unknown keys are ignored so a future payload addition cannot fail an older check.
+  return { reason: 'ok', expected, actual, version };
+}
+
+export interface PayloadDeps {
+  /** Injectable for tests; defaults to the shipped host-version reader. */
+  readVersion?: () => string;
+  /** Injectable for tests; defaults to the build-time baked package name. */
+  readPackageName?: () => string;
+}
+
+/**
+ * Build this runtime's identity payload.
+ *
+ * Version is REPORTED but not asserted in the warn phase, so a dev tree
+ * reporting readHostVersion()'s fail-closed `0.0.0` still verifies. Carrying it
+ * now means the hard-fail phase can gate on compatibility without a payload
+ * change (and therefore without a second round of Hyrum's-Law exposure).
+ */
+export function buildIdentityPayload(deps: PayloadDeps = {}): IdentityPayload {
+  const readVersion = deps.readVersion ?? ((): string => readHostVersion());
+  const readName = deps.readPackageName ?? ((): string => EXPECTED_PACKAGE_NAME);
+  return { packageName: readName(), version: readVersion() };
+}
+
+/** Render a verdict as the one-line actionable warning the preamble prints. */
+export function explainVerdict(verdict: IdentityVerdict, resolvedPath: string): string {
+  const head = `WARNING: "${resolvedPath}" did not report a ${verdict.expected} identity.`;
+  const why: Record<IdentityReason, string> = {
+    ok: 'identity verified',
+    identity_mismatch: `it reported "${verdict.actual ?? '(unknown)'}" instead`,
+    no_identity_verb:
+      'it does not implement the runtime-identity verb — either a different package, or a gsd-core predating the verb',
+    unparseable: 'its response could not be parsed as an identity payload',
+    probe_failed: 'the identity probe could not be run',
+  };
+  const tail =
+    'A workflow shipped by this package may be running against a different tool. ' +
+    'See docs/how-to/diagnose-a-foreign-gsd-tools.md';
+  const evidence = verdict.detail ? ` (${verdict.detail})` : '';
+  return `${head} Reason: ${why[verdict.reason]}${evidence}. ${tail}`;
+}
+
+/**
+ * CLI arm for `gsd-tools runtime-identity`.
+ *
+ * Kept on the CJS fast path for the same reason as `current-timestamp`: it is a
+ * pure local read, and the launcher preamble spawns it once per workflow run,
+ * so SDK bridge startup would be a per-run tax on every workflow.
+ */
+export function cmdRuntimeIdentity(raw: boolean = false, deps: PayloadDeps = {}): void {
+  const payload = buildIdentityPayload(deps);
+  process.stdout.write(`${JSON.stringify(payload, null, raw ? 0 : 2)}\n`);
+}
