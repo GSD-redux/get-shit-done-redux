@@ -123,15 +123,27 @@ interface HarvestOptions {
 // ─── Extraction ───────────────────────────────────────────────────────────────
 
 const TASK_NAME_RE = /<name>([\s\S]*?)<\/name>/;
-const AUTOMATED_BLOCK_RE = /<automated[^>]{0,200}>([\s\S]*?)<\/automated>/g;
+/**
+ * The body cannot cross a subsequent `<automated>` opener (negative lookahead
+ * `(?!<automated\b)` gates each consumed char), mirroring the stop-at-next-open
+ * shape `extractTaggedBlocks`/`stripTaggedBlocks` already use. This is what
+ * makes a scan over an unclosed opener LINEAR instead of quadratic: the lazy
+ * `[\s\S]*?` body used to scan all the way to EOF hunting a closing tag that
+ * never comes (measured: k=40000 unclosed openers, ~1.5s). `MAX_BLOCK_WALK`
+ * below bounds matched-block COUNT, not scan cost — it does nothing for a scan
+ * that matches nothing, which is exactly the case this shape fixes.
+ */
+const AUTOMATED_BLOCK_RE = /<automated[^>]{0,200}>((?:(?!<automated\b)[\s\S])*?)<\/automated>/g;
 
 /**
- * Bounds walking pathological input (e.g. hundreds of unclosed `<automated>`
- * openers). `extractTaggedBlocks`/`stripTaggedBlocks` (task-block grammar
- * owner, `./markdown-sectionizer.cjs`) already use a ReDoS-safe
- * stop-at-next-open pattern with no separate iteration cap of their own — a
- * document full of unclosed `<task>` openers never matches, so their walk is
- * a single linear scan regardless. This guard only bounds the `<automated>`
+ * Bounds the NUMBER of matched `<automated>` blocks walked (e.g. hundreds of
+ * legitimately closed blocks in one document), not the cost of scanning
+ * pathological unclosed input — that cost is now bounded by the non-crossing
+ * body in `AUTOMATED_BLOCK_RE`/`VERIFY_TOKEN_RE` themselves (a failed scan is
+ * linear, so no separate iteration cap is needed to keep it cheap).
+ * `extractTaggedBlocks`/`stripTaggedBlocks` (task-block grammar owner,
+ * `./markdown-sectionizer.cjs`) already use the same non-crossing shape with
+ * no iteration cap of their own. This guard only bounds the `<automated>`
  * scan this module still runs directly, matching the pre-existing behavior.
  */
 const MAX_BLOCK_WALK = 20000;
@@ -202,6 +214,253 @@ function extractAutomatedCommands(planText: unknown): AutomatedCommand[] {
   return out;
 }
 
+// ─── Failing direction (#3172) ─────────────────────────────────────────────────
+
+type FailingDirectionStatus = 'ok' | 'missing' | 'empty' | 'placeholder' | 'sentinel' | 'orphan';
+type FailingDirectionSeverity = 'blocker' | 'warning' | 'none';
+
+interface ResolvedFailingDirection {
+  command: string;
+  statement: string | null;
+  status: FailingDirectionStatus;
+  severity: FailingDirectionSeverity;
+}
+
+interface FailingDirectionEntry extends ResolvedFailingDirection {
+  plan: string;
+  task: string;
+}
+
+interface FailingDirectionCounts {
+  blocker: number;
+  warning: number;
+  total: number;
+}
+
+interface ProbePhaseFailingResult {
+  status: 'ok' | 'blocked' | 'unresolvable';
+  commands: FailingDirectionEntry[];
+  counts: FailingDirectionCounts;
+  readError: string | null;
+}
+
+interface ProbePhaseFailingOptions {
+  phaseDir: string;
+}
+
+/**
+ * Ordered alternation with a backreference so `<automated>` and `<fails_when>`
+ * are recovered in a SINGLE document-order pass — the pairing walk needs
+ * their relative positions, which two independent scans would discard.
+ *
+ * The body cannot cross a subsequent `<automated>` or `<fails_when>` opener
+ * (negative lookahead `(?!<(?:automated|fails_when)\b)`), the same
+ * non-crossing shape as `AUTOMATED_BLOCK_RE` above. This is what keeps a scan
+ * over an unclosed opener LINEAR (verified: k=10000/20000/40000 unclosed
+ * openers all complete in ~0ms); `MAX_BLOCK_WALK` bounds matched-block COUNT,
+ * not scan cost.
+ */
+const VERIFY_TOKEN_RE = /<(automated|fails_when)[^>]{0,200}>((?:(?!<(?:automated|fails_when)\b)[\s\S])*?)<\/\1>/g;
+const PLACEHOLDER_STATEMENTS = new Set(['tbd', 'todo', 'n/a', 'na', 'none', 'unknown', 'tba', '?', '-']);
+
+/**
+ * Judge one `<automated>` command's stated failing direction. Pure, total,
+ * and never throws for any input shape — order of checks is load-bearing
+ * (#3172 review): the sentinel exemption (step 3) must run BEFORE the
+ * statement-presence check (step 4), because the Nyquist Wave-0 sentinel is
+ * not a runnable command and so has no failure mode to state, even when a
+ * statement happens to follow it in the plan text.
+ */
+function resolveFailingDirection(command: unknown, statement: unknown): ResolvedFailingDirection {
+  const cmd = typeof command === 'string' ? command.trim() : '';
+
+  if (cmd === '') {
+    return {
+      command: '',
+      statement: typeof statement === 'string' ? statement : null,
+      status: 'orphan',
+      severity: 'warning',
+    };
+  }
+
+  if (MISSING_SENTINEL_RE.test(cmd)) {
+    return {
+      command: cmd,
+      statement: typeof statement === 'string' ? statement.trim() : null,
+      status: 'sentinel',
+      severity: 'none',
+    };
+  }
+
+  if (typeof statement !== 'string') {
+    return { command: cmd, statement: null, status: 'missing', severity: 'blocker' };
+  }
+
+  const trimmed = statement.trim();
+  if (trimmed === '') {
+    return { command: cmd, statement, status: 'empty', severity: 'blocker' };
+  }
+
+  // Whole-value match only — never a substring test. "TBD in the harness
+  // output" is real prose and must pass (#3172 review Finding).
+  if (PLACEHOLDER_STATEMENTS.has(trimmed.toLowerCase())) {
+    return { command: cmd, statement: trimmed, status: 'placeholder', severity: 'blocker' };
+  }
+
+  return { command: cmd, statement: trimmed, status: 'ok', severity: 'none' };
+}
+
+/**
+ * Scan one text unit's `<automated>`/`<fails_when>` tokens in document order,
+ * binding each `<fails_when>` to the nearest PRECEDING `<automated>` (first
+ * statement wins; a redundant trailing statement adds no row) and emitting an
+ * `orphan` row for a `<fails_when>` with no pending command. Shares `guard`
+ * across every text unit in one `extractFailingDirections` call, mirroring
+ * `extractAutomatedFromText`'s MAX_BLOCK_WALK bound and zero-length-match
+ * advance. Returns `false` when the bound was hit; `true` otherwise.
+ */
+function extractFailingFromText(
+  text: string,
+  task: string,
+  out: FailingDirectionEntry[],
+  guard: { n: number },
+): boolean {
+  VERIFY_TOKEN_RE.lastIndex = 0;
+  let pending: FailingDirectionEntry | null = null;
+  let bound = false;
+  let match: RegExpExecArray | null;
+  while ((match = VERIFY_TOKEN_RE.exec(text)) !== null) {
+    const kind = match[1];
+    const body = match[2] ?? '';
+
+    if (kind === 'automated') {
+      const trimmedCommand = body.trim();
+      if (trimmedCommand !== '') {
+        const entry: FailingDirectionEntry = { ...resolveFailingDirection(trimmedCommand, undefined), plan: '', task };
+        out.push(entry);
+        pending = entry;
+        bound = false;
+      }
+    } else {
+      // kind === 'fails_when'
+      if (pending === null) {
+        const entry: FailingDirectionEntry = { ...resolveFailingDirection('', body), plan: '', task };
+        out.push(entry);
+      } else if (!bound) {
+        const resolved = resolveFailingDirection(pending.command, body);
+        pending.statement = resolved.statement;
+        pending.status = resolved.status;
+        pending.severity = resolved.severity;
+        bound = true;
+      }
+      // already bound → redundant trailing statement, ignored (first-wins).
+    }
+
+    if (match.index === VERIFY_TOKEN_RE.lastIndex) VERIFY_TOKEN_RE.lastIndex += 1;
+    guard.n += 1;
+    if (guard.n > MAX_BLOCK_WALK) return false;
+  }
+  return true;
+}
+
+/**
+ * Extract every `<automated>`/`<fails_when>` pairing verdict from PLAN.md
+ * text. Never throws; a non-string or blank plan yields `[]`. `plan` is left
+ * `''`, mirroring `extractAutomatedCommands` — callers set it from the
+ * filename they read.
+ *
+ * Walks the SAME text units, in the SAME order, as `extractAutomatedCommands`
+ * (every `<task>` body first in document order, then the task-stripped
+ * remainder as a final unit with task `''`) so pairing never crosses a task
+ * boundary, and shares ONE `{n:0}` guard across every unit so
+ * `MAX_BLOCK_WALK` bounds the whole document.
+ */
+function extractFailingDirections(planText: unknown): FailingDirectionEntry[] {
+  if (typeof planText !== 'string' || planText.length === 0) return [];
+
+  const out: FailingDirectionEntry[] = [];
+  const guard = { n: 0 };
+
+  const taskBodies = extractTaggedBlocks(planText, 'task', true);
+  for (const body of taskBodies) {
+    const nameMatch = TASK_NAME_RE.exec(body);
+    const task = nameMatch ? nameMatch[1].trim() : '';
+    if (!extractFailingFromText(body, task, out, guard)) return out;
+  }
+
+  const remainder = stripTaggedBlocks(planText, 'task', true);
+  extractFailingFromText(remainder, '', out, guard);
+
+  return out;
+}
+
+/**
+ * Probe every `<automated>` command's stated failing direction across a
+ * phase directory's `-PLAN.md` files. Never throws — a read failure degrades
+ * to `readError` with the offending file skipped, and an empty result with a
+ * populated `readError` means "could not look", which must never render as
+ * "nothing to report".
+ */
+function probePhaseFailingDirections(options: ProbePhaseFailingOptions): ProbePhaseFailingResult {
+  const { phaseDir } = options;
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(phaseDir);
+  } catch (err) {
+    return {
+      status: 'unresolvable',
+      commands: [],
+      counts: { blocker: 0, warning: 0, total: 0 },
+      readError: toMessage(err),
+    };
+  }
+
+  const planFiles = entries.filter(f => PLAN_FILE_RE.test(f)).sort();
+  const commands: FailingDirectionEntry[] = [];
+  const readErrors: string[] = [];
+
+  for (const file of planFiles) {
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(phaseDir, file), 'utf-8');
+    } catch (err) {
+      readErrors.push(toMessage(err));
+      continue;
+    }
+
+    for (const entry of extractFailingDirections(text)) {
+      commands.push({ ...entry, plan: file });
+    }
+  }
+
+  const counts: FailingDirectionCounts = { blocker: 0, warning: 0, total: commands.length };
+  for (const c of commands) {
+    if (c.severity === 'blocker') counts.blocker += 1;
+    else if (c.severity === 'warning') counts.warning += 1;
+  }
+
+  const readError = readErrors.length > 0 ? readErrors.join('; ') : null;
+
+  // A populated readError can never yield 'ok' — "could not look" must never
+  // render as "nothing to report" (#3172 review self-finding: with the old
+  // `commands.length === 0 && readError !== null` precedence, a phase where
+  // one plan read fine with zero blockers and a SECOND plan failed to read
+  // fell through to 'ok' because commands.length > 0). 'blocked' keeps
+  // precedence over 'unresolvable' because a proven blocker is the stronger
+  // signal.
+  let status: 'ok' | 'blocked' | 'unresolvable';
+  if (counts.blocker > 0) {
+    status = 'blocked';
+  } else if (readError !== null) {
+    status = 'unresolvable';
+  } else {
+    status = 'ok';
+  }
+
+  return { status, commands, counts, readError };
+}
+
 // ─── Resolution ───────────────────────────────────────────────────────────────
 
 /**
@@ -234,7 +493,17 @@ const PREFIX_FLAG_STRIP_RE = /(?:^|\s)--prefix(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/g
 const NEEDS_NPM_RE = /^(npm|npx|pnpm|yarn|bun)\b/;
 const NEEDS_MAKE_RE = /^make\b/;
 const NPM_RUN_SCRIPT_RE = /\bnpm\s+run\s+([\w:@./-]+)/;
-const MISSING_SENTINEL_RE = /^MISSING\b/;
+/**
+ * The `\s|$` anchor (not `\b`) is load-bearing: `\b` also matches an env-var
+ * assignment prefix such as `MISSING=1 cmd` (`=` is a non-word char, so `\b`
+ * sits happily before it) — and that IS a real runnable command, not the
+ * Nyquist Wave-0 sentinel. #3172 wires this constant into a BLOCKING gate
+ * (`resolveFailingDirection`), so a benign #2401 false-positive on the `\b`
+ * form becomes a real gate bypass: `MISSING=true npm test` would be reported
+ * `status:'sentinel', severity:'none'` instead of `missing`/`blocker`
+ * (#3172 review).
+ */
+const MISSING_SENTINEL_RE = /^MISSING(?:\s|$)/;
 const MAX_MANIFEST_BYTES = 512 * 1024;
 
 function emptyResult(base: string): ResolvedVerifyCommand {
@@ -751,4 +1020,7 @@ export = {
   resolveVerifyCommandTarget,
   probePhaseVerifyCommands,
   harvestPriorVerifyCommands,
+  resolveFailingDirection,
+  extractFailingDirections,
+  probePhaseFailingDirections,
 };

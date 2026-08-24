@@ -766,6 +766,31 @@ inherited paths: fix a mirror path, never inherit. Submodule files: check
 from within the submodule.
 </tracked_source_paths>
 
+<failing_direction_contract>
+**Stated failing direction (#3172):** Every runnable `<automated>` verify command
+you write MUST be followed by a `<fails_when>` sibling naming what output
+constitutes failure — an exit code, a string in the output, a missing line. A
+command with no expressible failure mode is not an acceptance test.
+
+```xml
+<verify>
+  <automated>npm --prefix apps/api test -- auth.spec.ts</automated>
+  <fails_when>non-zero exit, or "0 passed" in the summary line</fails_when>
+</verify>
+```
+
+One statement per runnable command, placed immediately after it: within a task
+each `<fails_when>` binds to the nearest preceding `<automated>`, and the first
+statement after a command is the binding one. Name an OBSERVABLE signal, never
+the word "failure" — `non-zero exit` is complete, `the command fails` is a
+restatement. `TBD`/`TODO`/`N/A`/`none`/`unknown`/`?`/`-` are rejected outright as
+whole values. The `MISSING — Wave 0 …` sentinel is exempt: it is not runnable, so
+it has no failure mode to state. Ask yourself: if this command were silently
+doing nothing, what in its output would tell me? If you cannot answer, fix the
+command — do not invent a statement for it.
+Rules + worked examples: @gsd-core/references/planner-failing-direction.md
+</failing_direction_contract>
+
 **Project instructions:** Read ./CLAUDE.md or ./.claude/CLAUDE.md if either exists — follow project-specific guidelines
 **Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, plans should account for project skill rules
 
@@ -991,13 +1016,17 @@ Display banner:
 ◆ Spawning plan checker... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
 
-**Verify-command path probe (#2401).** Before spawning, run the deterministic resolvability
-probe and hand its JSON to the checker. It never executes command text and never prescribes a
-replacement path — it reports which `<automated>` targets resolve, which do not, and which it
-refused to guess at. Handing it over is what stops the checker hand-reasoning the filesystem.
+**Verify-command probes (#2401, #3172).** Before spawning, run both deterministic probes and
+hand their JSON to the checker. The first resolves each `<automated>` command's target; the
+second reports which runnable commands carry a `<fails_when>` statement naming their failure
+signal. Neither executes command text, and neither prescribes a replacement — the first reports
+which `<automated>` targets resolve, which do not, and which it refused to guess at; the second
+reports which commands state a failure signal and never authors one. Handing both over is what
+stops the checker hand-reasoning the filesystem or the plans.
 
 ```bash
 VERIFY_PATHS=$(gsd_run check verify-command-paths "${PHASE}" --raw)
+FAILING_DIRECTIONS=$(gsd_run check verify-failure-directions "${PHASE}" --raw)
 ```
 
 Checker prompt:
@@ -1031,6 +1060,18 @@ replacement path.
 {VERIFY_PATHS}
 ```
 </verify_command_path_probe>
+
+<failing_direction_probe>
+**Deterministic failing-direction probe (#3172)** — already run; do NOT re-derive these verdicts
+by re-reading the plans yourself. Act on `severity` per check 8f: `blocker` → BLOCKER,
+`warning` → WARNING, `none` → silent. `status: sentinel` is a Wave-0 `MISSING` placeholder and is
+not a finding. A non-empty `readError` means the probe could not look — a WARNING, not a pass.
+Quote the command that has no stated failure mode; never author the statement for the planner.
+
+```json
+{FAILING_DIRECTIONS}
+```
+</failing_direction_probe>
 
 <review_incorporation_verification>
 **If Mode is reviews:** Read REVIEWS.md and verify each current actionable review finding is visible in executable PLAN.md content or explicitly deferred/rejected in the relevant PLAN.md. A finding remains actionable if it requires a concrete plan task, `<action>`, `<acceptance_criteria>`, `<verify>`, `must_haves`, threat-model item, stale-path correction, or execution contract change before /gsd:execute-phase runs.
