@@ -70,6 +70,10 @@ export const REASON = Object.freeze({
   WINDOWS_INVALID_ID: 'windows_invalid_id',
   WINDOWS_APPEND_MISSING_FIELD: 'windows_append_missing_field',
   WINDOWS_USAGE: 'windows_usage',
+  // #3689: the rendered markdown table disagreed with the fenced JSON (the
+  // sole source of truth) at the pre-write seam — refuse rather than silently
+  // reconcile by overwriting the operator's hand-edit or dropping a row.
+  WINDOWS_LEDGER_TABLE_DRIFT: 'windows_ledger_table_drift',
 });
 
 /** Allowed window kinds. Aligned with the issue's enumerated sources. */
@@ -686,7 +690,7 @@ export function renderLedger(ledger: Ledger): string {
   return [fm, header, table, '', jsonBlock].join('\n');
 }
 
-function renderTable(entries: WindowEntry[]): string {
+export function renderTable(entries: WindowEntry[]): string {
   if (entries.length === 0) {
     return [
       '| id | phase | kind | file | line | description | status | reason | recorded_at | resolved_at |',
@@ -718,6 +722,83 @@ function renderTable(entries: WindowEntry[]): string {
     );
   }
   return rows.join('\n');
+}
+
+/**
+ * #3689: extract the exact markdown table region a rendered ledger emits —
+ * the text `renderTable` produced, byte-for-byte — from a raw ledger file.
+ * Used by `writeLedgerAtomic`'s drift guard to compare the on-disk table
+ * against `renderTable(<on-disk JSON entries>)` without a table parser.
+ *
+ * Locates the JSON block with the same tolerant `locateJsonBlock` helper the
+ * rest of the module uses (#3657), so a formatter-normalized 3-backtick
+ * fence still resolves. Everything before the opening fence line, with
+ * trailing blank lines dropped, is scanned backward for the trailing
+ * contiguous run of `|`-prefixed lines — the header prose `renderLedger`
+ * emits (`# Broken Windows Ledger`, `>` lines) never starts with `|`, so the
+ * run cannot over-reach into it. Returns null when the JSON block cannot be
+ * located or no such run exists.
+ *
+ * `expectedTotal` (#3689 review finding 2) is threaded straight into
+ * `locateJsonBlock` so callers with trailing prose can disambiguate the real
+ * ledger block from an unrelated fenced JSON array a user pasted below the
+ * closing fence — without it, `locateJsonBlock`'s no-hint fallback picks the
+ * LATEST array-shaped span, which is the prose block, not the ledger, and
+ * every drift comparison then binds to the wrong table/JSON pairing.
+ */
+export function extractTableRegion(raw: string, expectedTotal?: number): string | null {
+  const span = locateJsonBlock(raw, expectedTotal);
+  if (!span.ok) return null;
+  // bodyStart sits right before the newline (or CR) ending the opening fence
+  // line; walk back to the start of that line.
+  const fenceLineStart = raw.lastIndexOf('\n', span.span.bodyStart - 1) + 1;
+  const before = raw.slice(0, fenceLineStart).replace(/\r\n/g, '\n');
+  const lines = before.split('\n');
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+    lines.pop();
+  }
+  const tableLines: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].startsWith('|')) {
+      tableLines.unshift(lines[i]);
+    } else {
+      break;
+    }
+  }
+  if (tableLines.length === 0) return null;
+  return tableLines.join('\n');
+}
+
+/**
+ * #3689: diff two `renderTable` outputs by row id (the first cell of each
+ * data row), skipping the header + separator lines (always exactly two).
+ * A row whose line text differs between the two tables, or that is present
+ * in only one of them, contributes its id to the result — this is what lets
+ * the drift-guard error message name the specific drifted/table-only row(s)
+ * rather than just saying "the table disagrees".
+ */
+function diffTableRowIds(expectedTable: string, actualTable: string): string[] {
+  const rowId = (line: string): string => (line.split('|')[1] ?? '').trim();
+  const dataRows = (table: string): Map<string, string> => {
+    const lines = table.split('\n');
+    const map = new Map<string, string>();
+    for (let i = 2; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.startsWith('|')) continue;
+      map.set(rowId(line), line);
+    }
+    return map;
+  };
+  const expectedRows = dataRows(expectedTable);
+  const actualRows = dataRows(actualTable);
+  const ids = new Set<string>();
+  for (const [id, line] of expectedRows) {
+    if (actualRows.get(id) !== line) ids.add(id);
+  }
+  for (const id of actualRows.keys()) {
+    if (!expectedRows.has(id)) ids.add(id);
+  }
+  return Array.from(ids).sort();
 }
 
 // ─── I/O entry points ──────────────────────────────────────────────────────
@@ -805,8 +886,33 @@ function writeLedgerAtomic(cwd: string, ledger: Ledger): void {
   // trailing prose that users may have written below the closing fence.
   // Without this, every append/waive/fixed silently destroys that prose.
   let trailingProse = '';
+  // #3689: read the pre-image once into `existing` outside the catch, rather
+  // than doing every subsequent step inside a bare try/catch, so that a
+  // WindowsError thrown by the drift guard below propagates instead of being
+  // swallowed by the ENOENT handler meant only for "no ledger yet".
+  let existing: string | null = null;
   try {
-    const existing = fs.readFileSync(p, 'utf8');
+    existing = fs.readFileSync(p, 'utf8');
+  } catch (e: unknown) {
+    // #1950-H2 / #3689: ENOENT is the only "no ledger yet" case — mirror
+    // readLedgerOrNull's discipline exactly. A bare catch here would let
+    // EACCES/EIO/ENOTDIR/etc. fall through as "no pre-image", silently
+    // skipping BOTH the #2893 prose preservation and the drift guard below
+    // and proceeding to overwrite an unreadable file — a guard bypassable by
+    // making the pre-image unreadable is not a guard.
+    const code = (e && typeof e === 'object' && 'code' in e)
+      ? String((e as { code?: unknown }).code)
+      : '';
+    if (code !== 'ENOENT') {
+      throw new WindowsError(
+        REASON.WINDOWS_LEDGER_MALFORMED,
+        `Could not read ledger at ${p} (${code || 'unknown fs error'}): ${(e as Error).message}.`,
+      );
+    }
+    // File doesn't exist yet (first write) — no prose to preserve, and
+    // nothing on disk to disagree with, so the drift guard below is skipped.
+  }
+  if (existing !== null) {
     // #2893: search for the CLOSING fence starting AFTER the opening fence.
     // The span is located with the same tolerant + disambiguated fence rules
     // parseJsonBlock uses (#3657), so a formatter-normalized 3-backtick ledger
@@ -818,8 +924,71 @@ function writeLedgerAtomic(cwd: string, ledger: Ledger): void {
       // Drop leading newlines; keep the rest as prose.
       trailingProse = afterFence.replace(/^(?:\r?\n)+/, '');
     }
-  } catch {
-    // File doesn't exist yet (first write) — no prose to preserve.
+
+    // #3689 review finding 2: refuse the write if the on-disk table has
+    // drifted from the on-disk JSON — the source of truth — BEFORE anything
+    // is regenerated. Baseline is the ON-DISK entries, not `ledger` (already
+    // the post-mutation state: an appended entry or a changed status);
+    // comparing against `ledger` would report drift on every legitimate
+    // write. expectedTotal MUST be derived from the PRE-IMAGE's own
+    // frontmatter (not `ledger.total_count`, which is post-mutation): #2893
+    // exists precisely because operators may paste prose below the closing
+    // fence, and that prose can itself contain a fenced JSON array of a
+    // different length. Without a pre-image-derived hint,
+    // locateJsonBlock's no-hint fallback binds to the LATEST array-shaped
+    // span — the prose block, not the ledger — and both the entries baseline
+    // and the table extraction below would then compare against the wrong
+    // block, refusing every subsequent write as "drift" on a ledger that
+    // never drifted. If the pre-image frontmatter cannot be parsed
+    // unambiguously, that is itself the ambiguous case — fail closed rather
+    // than falling back to the no-hint scan.
+    let preImageExpectedTotal: number;
+    try {
+      const preFm = parseFrontmatterStrict(existing);
+      if (typeof preFm.total_count !== 'number' || !Number.isInteger(preFm.total_count)) {
+        throw new WindowsError(
+          REASON.WINDOWS_LEDGER_MALFORMED,
+          `Ledger frontmatter total_count in ${p} is not an integer; refusing to write — ` +
+            'the ledger JSON block cannot be identified unambiguously.',
+        );
+      }
+      preImageExpectedTotal = preFm.total_count;
+    } catch (e) {
+      if (e instanceof WindowsError) throw e;
+      throw new WindowsError(
+        REASON.WINDOWS_LEDGER_MALFORMED,
+        `Ledger frontmatter in ${p} could not be parsed (${(e as Error).message}); refusing ` +
+          'to write — the ledger JSON block cannot be identified unambiguously.',
+      );
+    }
+    const onDiskEntries = parseJsonBlock(existing, preImageExpectedTotal);
+    const expectedTable = renderTable(onDiskEntries);
+    const actualTable = extractTableRegion(existing, preImageExpectedTotal);
+    if (actualTable === null) {
+      throw new WindowsError(
+        REASON.WINDOWS_LEDGER_TABLE_DRIFT,
+        `Ledger table region could not be located in ${p}; refusing to write. Edit the ` +
+          'fenced JSON block directly — the sole source of truth — or delete the corrupted ' +
+          'table region and let gsd-tools regenerate it; never hand-edit the rendered table.',
+      );
+    }
+    if (actualTable !== expectedTable) {
+      const driftedIds = diffTableRowIds(expectedTable, actualTable);
+      // #3689 review finding 3: a header/separator-only drift (e.g. a
+      // hand-edited column name or mangled separator) produces no data-row
+      // diffs, so driftedIds is empty — naming nothing would read "...for
+      // row id(s): .". Say what actually differs instead.
+      const driftDescription = driftedIds.length > 0
+        ? `for row id(s): ${driftedIds.join(', ')}`
+        : "in its header or separator row (no data row differs from the expected rendering)";
+      throw new WindowsError(
+        REASON.WINDOWS_LEDGER_TABLE_DRIFT,
+        `Ledger table in ${p} disagrees with the fenced JSON entries (the sole source of ` +
+          `truth) ${driftDescription}. Edit the fenced JSON block ` +
+          'directly, or discard the table edit and re-run the command so gsd-tools ' +
+          'regenerates the table; never hand-edit the rendered table.',
+      );
+    }
   }
 
   const rendered = renderLedger(ledger);

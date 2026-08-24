@@ -1350,6 +1350,33 @@ describe('#3689: windows ledger table-vs-JSON drift guard', () => {
     assert.equal(res.success, true, `append must succeed against the empty-ledger placeholder table: ${res.error || ''}`);
     assert.equal(JSON.parse(res.output).entry.id, 1);
   });
+
+  test('windows append tolerates trailing prose that itself contains a fenced JSON array (#2893 + #3689)', (t) => {
+    const pristine = seedPristineLedger(t);
+    const tmp = createTempDir('bw-3689-prose-jsonarray-');
+    t.after(() => cleanup(tmp));
+    // The pristine ledger has 2 entries. The trailing prose's fenced JSON
+    // array below has a DIFFERENT length (3) than the real entries list, so
+    // a wrong binding (matching the prose block instead of the ledger block)
+    // is unambiguous: it would make onDiskEntries.length disagree with the
+    // real 2-entry table, tripping the drift guard on a ledger that never
+    // drifted.
+    const withProse = `${pristine}Operator notes below the ledger.\n\n` +
+      '```json\n[{"note": "a"}, {"note": "b"}, {"note": "c"}]\n```\n';
+    writeLedgerFile(tmp, withProse);
+
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'deviation', '--phase', '3', '--description', 'third entry', '--file', 'c/three.sh'],
+      tmp,
+      { GSD_JSON_ERRORS: '1' },
+    );
+
+    assert.equal(res.success, true, `append must succeed — the ledger table agrees with the real JSON entries, not the unrelated prose array: ${res.error || ''}`);
+    const obj = JSON.parse(res.output);
+    assert.equal(obj.entry.description, 'third entry');
+    assert.equal(obj.ledger.total_count, 3);
+    assert.ok(readLedgerFile(tmp).includes('third entry'), 'new entry must be present in the written ledger');
+  });
 });
 
 // ---------------------------------------------------------------------------
