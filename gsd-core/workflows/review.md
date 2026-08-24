@@ -404,9 +404,7 @@ blocked, not silently redirected** (ADR-2782 D5).
 
 Display progress:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► CROSS-AI REVIEW — Phase {N}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► CROSS-AI REVIEW — Phase {N}
 
 ◆ Reviewing with {CLI}... done ✓
 ◆ Reviewing with {CLI}... done ✓
@@ -507,9 +505,7 @@ gsd_run query commit "docs: cross-AI review for phase {N}" --files {phase_dir}/{
 Display summary:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► REVIEW COMPLETE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► REVIEW COMPLETE
 
 Phase {N} reviewed by {count} AI systems.
 

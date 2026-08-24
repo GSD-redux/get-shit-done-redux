@@ -747,9 +747,7 @@ Never write a tier the user explicitly chose to keep; the existing value must su
 Display:
 
 ```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► ADVANCED SETTINGS UPDATED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► ADVANCED SETTINGS UPDATED
 
 | Setting                                    | Value |
 |--------------------------------------------|-------|

@@ -649,9 +649,12 @@ Parse the JSON output. For the CURRENT PHASE ONLY, surface:
 If any are found, display:
 ```
 Phase {N} Artifact Check
-─────────────────────────────────────────────────
+
+---
+
 {list each item with status and file path}
-─────────────────────────────────────────────────
+
+---
 These items are open. Proceed anyway? [Y/n]
 ```
 
@@ -687,9 +690,7 @@ Diagnosis runs automatically - no user prompt. Parallel agents investigate simul
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► PLANNING FIXES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PLANNING FIXES
 
 ◆ Spawning planner for gap closure... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -754,9 +755,7 @@ On return:
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► VERIFYING FIX PLANS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► VERIFYING FIX PLANS
 
 ◆ Spawning plan checker... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -860,9 +859,7 @@ Wait for user response.
 **Present completion and next steps:**
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► FIXES READY ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► FIXES READY ✓
 
 **Phase {X}: {Name}** — {N} gap(s) diagnosed, {M} fix plan(s) created
 
@@ -873,7 +870,7 @@ Wait for user response.
 
 Plans verified and ready for execution.
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -881,7 +878,7 @@ Plans verified and ready for execution.
 
 `/clear` then `/gsd:execute-phase {phase} --gaps-only`
 
-───────────────────────────────────────────────────────────────
+---
 ```
 </step>
 

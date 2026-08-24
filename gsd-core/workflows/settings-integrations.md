@@ -302,9 +302,7 @@ Display the masked confirmation table. **No plaintext API keys appear in this
 output under any circumstance.**
 
 ```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► INTEGRATIONS UPDATED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► INTEGRATIONS UPDATED
 
 Search Integrations
 | Field              | Value             |

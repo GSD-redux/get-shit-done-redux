@@ -1330,11 +1330,8 @@ function auditOpenArtifacts(cwd: string): AuditResult {
 function formatAuditReport(auditResult: AuditResult): string {
   const { counts, items, has_open_items, acknowledged } = auditResult;
   const lines: string[] = [];
-  const hr = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
 
-  lines.push(hr);
-  lines.push('  Milestone Close: Open Artifact Audit');
-  lines.push(hr);
+  lines.push('### Milestone Close: Open Artifact Audit');
 
   // WARNING 3 (#3458 follow-up review): the acknowledged tally previously
   // existed only in `--json` output — the human report could not tell
@@ -1343,12 +1340,12 @@ function formatAuditReport(auditResult: AuditResult): string {
   if (!has_open_items) {
     lines.push('');
     if (acknowledged.total > 0) {
-      lines.push(`  All artifact types clear (${acknowledged.total} previously acknowledged item${acknowledged.total !== 1 ? 's' : ''} still suppressed).`);
+      lines.push(`All artifact types clear (${acknowledged.total} previously acknowledged item${acknowledged.total !== 1 ? 's' : ''} still suppressed).`);
     } else {
-      lines.push('  All artifact types clear. Safe to proceed.');
+      lines.push('All artifact types clear. Safe to proceed.');
     }
     lines.push('');
-    lines.push(hr);
+    lines.push('---');
     return lines.join('\n');
   }
 
@@ -1459,12 +1456,12 @@ function formatAuditReport(auditResult: AuditResult): string {
   }
 
   lines.push('');
-  lines.push(hr);
-  lines.push(`  ${counts.total} item${counts.total !== 1 ? 's' : ''} require decisions before close.`);
+  lines.push('---');
+  lines.push('');
+  lines.push(`**${counts.total} item${counts.total !== 1 ? 's' : ''} require decisions before close.**`);
   if (acknowledged.total > 0) {
-    lines.push(`  ${acknowledged.total} previously acknowledged item${acknowledged.total !== 1 ? 's' : ''} also suppressed above the ${counts.total} open item${counts.total !== 1 ? 's' : ''}.`);
+    lines.push(`${acknowledged.total} previously acknowledged item${acknowledged.total !== 1 ? 's' : ''} also suppressed above the ${counts.total} open item${counts.total !== 1 ? 's' : ''}.`);
   }
-  lines.push(hr);
 
   return lines.join('\n');
 }

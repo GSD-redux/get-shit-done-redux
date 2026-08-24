@@ -15,14 +15,11 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --default "" 2>/d
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
-
 <step name="banner" priority="first">
 Display the stage banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► UNDO
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► UNDO
 ```
 </step>
 
@@ -69,7 +66,6 @@ Recent GSD commits:
   2. def5678 docs(03-02): complete plan summary
   3. ghi9012 fix(02-03): correct validation logic
 ```
-
 
 **Text mode (`workflow.text_mode: true` in config or `--text` flag):** Set `TEXT_MODE=true` if `--text` is present in `$ARGUMENTS` OR `text_mode` from init JSON is `true`. When TEXT_MODE is active, replace every `AskUserQuestion` call with a plain-text numbered list and ask the user to type their choice number. This is required for non-Claude runtimes (OpenAI Codex, Gemini CLI, etc.) where `AskUserQuestion` is not available.
 Use AskUserQuestion to ask:
@@ -237,9 +233,7 @@ If any revert fails (merge conflict or error):
    ```
 3. Display:
    ```
-   ╔══════════════════════════════════════════════════════════════╗
-   ║  ERROR                                                       ║
-   ╚══════════════════════════════════════════════════════════════╝
+### ERROR
 
    Revert failed on commit ${HASH}.
    Likely cause: merge conflict with subsequent changes.
@@ -271,9 +265,7 @@ git commit -m "revert: undo ${N} selected commits — ${REVERT_REASON}"
 Display the completion banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► UNDO COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► UNDO COMPLETE ✓
 ```
 
 Show summary:
@@ -284,7 +276,7 @@ Show summary:
 
 Show next steps:
 ```
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -294,13 +286,13 @@ Show next steps:
 
 /gsd:progress
 
-───────────────────────────────────────────────────────────────
+---
 
 **Also available:**
 - `/gsd:execute-phase ${PHASE}` — re-execute if needed
 - `/gsd:undo --last 1` — undo the revert itself if something went wrong
 
-───────────────────────────────────────────────────────────────
+---
 ```
 </step>
 

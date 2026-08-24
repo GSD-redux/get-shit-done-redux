@@ -2,9 +2,7 @@
 
 Display banner:
 ```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTO-ADVANCING TO PLAN
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTO-ADVANCING TO PLAN
 
 Context captured (assumptions mode). Launching plan-phase...
 ```

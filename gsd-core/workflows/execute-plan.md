@@ -333,7 +333,7 @@ Canonical per-task commit rules live in **`agents/gsd-executor.md`** (`<task_com
 <step name="checkpoint_protocol">
 On `type="checkpoint:*"`: automate everything possible first. Checkpoints are for verification/decisions only.
 
-Display: `CHECKPOINT: [Type]` box → Progress {X}/{Y} → Task name → type-specific content → `YOUR ACTION: [signal]`
+Display: `### CHECKPOINT: [Type]` heading → Progress {X}/{Y} → Task name → type-specific content → `---` → `**YOUR ACTION: [signal]**`
 
 | Type | Content | Resume signal |
 |------|---------|---------------|

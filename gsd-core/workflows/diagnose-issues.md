@@ -258,9 +258,7 @@ gsd_run query commit "docs({phase_num}): add root causes from diagnosis" --files
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► DIAGNOSIS COMPLETE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► DIAGNOSIS COMPLETE
 
 | Gap (Truth) | Root Cause | Files |
 |-------------|------------|-------|

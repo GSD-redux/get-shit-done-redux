@@ -13,9 +13,7 @@ affect the core planning pipeline.
 Display the stage banner:
 
 ```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► ULTRAPLAN PHASE  ⚠ BETA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► ULTRAPLAN PHASE  ⚠ BETA
 Ultraplan is in research preview (Claude Code v2.1.91+).
 Use /gsd:plan-phase for stable local planning.
 ```
@@ -44,9 +42,7 @@ fi
 If the output is empty or unset, display the following error and exit:
 
 ```text
-╔══════════════════════════════════════════════════════════════╗
-║  RUNTIME ERROR                                               ║
-╚══════════════════════════════════════════════════════════════╝
+### RUNTIME ERROR
 
 /gsd:ultraplan-phase requires Claude Code.
 ultraplan is not available in this runtime.
@@ -159,9 +155,7 @@ Display the return-path instructions **before** triggering ultraplan so they are
 in the terminal scroll-back after ultraplan launches:
 
 ```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- WHEN THE PLAN IS READY — WHAT TO DO
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### WHEN THE PLAN IS READY — WHAT TO DO
 
 When ◆ ultraplan ready appears in your terminal:
 
@@ -176,9 +170,7 @@ When ◆ ultraplan ready appears in your terminal:
 /gsd:import will run conflict detection, convert to GSD format,
 validate via plan-checker, update ROADMAP.md, and commit.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Launching ultraplan for Phase {N}: {phase_name}...
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### Launching ultraplan for Phase {N}: {phase_name}...
 ```
 
 </step>

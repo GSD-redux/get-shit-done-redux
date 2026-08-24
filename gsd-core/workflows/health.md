@@ -14,7 +14,6 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --default "" 2>/d
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
-
 <step name="parse_args">
 **Parse arguments:**
 
@@ -136,9 +135,7 @@ If the check prints, append it to the Warnings section of the report as `[W025]`
 **Format and display results:**
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD Health Check
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD Health Check
 
 Status: HEALTHY | DEGRADED | BROKEN
 Errors: N | Warnings: N | Info: N

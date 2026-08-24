@@ -337,9 +337,7 @@ If user selects "Skip research": skip to step 6.
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► RESEARCHING PHASE {X}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► RESEARCHING PHASE {X}
 
 ◆ Spawning researcher... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -434,9 +432,7 @@ Resolve active contribution hooks from `PLAN_PRE_HOOKS_JSON` where `kind == "con
 Display banner:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► SECURITY THREAT MODEL REQUIRED (ASVS L{SECURITY_ASVS})
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► SECURITY THREAT MODEL REQUIRED (ASVS L{SECURITY_ASVS})
 
 Each PLAN.md must include a <threat_model> block.
 Block on: {SECURITY_BLOCK} severity threats.
@@ -522,7 +518,8 @@ Output this markdown directly (not as a code block):
 ## ⚠ UI-SPEC.md missing for Phase {N}
 ▶ Recommended next step:
 `/gsd:ui-phase {N} ${GSD_WS}` — generate UI design contract before planning
-───────────────────────────────────────────────
+
+---
 Also available:
 - `/gsd:plan-phase {N} --skip-ui ${GSD_WS}` — plan without UI-SPEC (not recommended for frontend phases)
 ```
@@ -618,9 +615,7 @@ Pattern mapper activation is owned by the `pattern-mapper` capability's `plan:pr
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► PATTERN MAPPING PHASE {X}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PATTERN MAPPING PHASE {X}
 
 ◆ Spawning pattern mapper... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -690,9 +685,7 @@ independent of the teams-status guard above, AC2).
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► PLANNING PHASE {X}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PLANNING PHASE {X}
 
 ◆ Spawning planner... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -993,9 +986,7 @@ Use AskUserQuestion for each gap (or batch if multiple gaps).
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► VERIFYING PLANS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► VERIFYING PLANS
 
 ◆ Spawning plan checker... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -1222,9 +1213,7 @@ BOUNCE_SCRIPT=$(gsd_run query config-get workflow.plan_bounce_script --raw 2>/de
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► BOUNCING PLANS (External Refinement)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► BOUNCING PLANS (External Refinement)
 
 Script: ${BOUNCE_SCRIPT}
 Max passes: ${BOUNCE_PASSES}
@@ -1498,9 +1487,7 @@ fi
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► AUTO-ADVANCING TO EXECUTE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► AUTO-ADVANCING TO EXECUTE
 
 Plans ready. Launching execute-phase...
 ```
@@ -1515,9 +1502,7 @@ The `--no-transition` flag tells execute-phase to return status after verificati
 **Handle execute-phase return:**
 - **PHASE COMPLETE** → Display final summary:
   ```
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   GSD ► PHASE ${PHASE} COMPLETE ✓
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PHASE ${PHASE} COMPLETE ✓
 
   Auto-advance pipeline finished.
 
@@ -1541,9 +1526,7 @@ Output this markdown directly (not as a code block):
 
 `${GAPS_EXEC_FLAG}` projects the just-completed planning mode onto the follow-up execute command (#3297): it expands to `--gaps-only` for a `--gaps` planning run (so the handoff points at execute-phase's gap-closure scope — only the newly created `gap_closure: true` plans — not the whole phase) and to empty for a standard or `--reviews` run (whole-phase scope, unchanged). Substitute it verbatim; when empty, collapse the extra space.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► PHASE {X} PLANNED ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PHASE {X} PLANNED ✓
 
 **Phase {X}: {Name}** — {N} plan(s) in {M} wave(s)
 
@@ -1555,7 +1538,7 @@ Output this markdown directly (not as a code block):
 Research: {Completed | Used existing | Skipped}
 Verification: {Passed | Passed with override | Skipped}
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -1565,7 +1548,7 @@ Verification: {Passed | Passed with override | Skipped}
 
 /gsd:execute-phase {X} ${GAPS_EXEC_FLAG} ${GSD_WS}
 
-───────────────────────────────────────────────────────────────
+---
 
 **Also available:**
 - cat .planning/phases/{phase-dir}/*-PLAN.md — review plans
@@ -1573,7 +1556,7 @@ Verification: {Passed | Passed with override | Skipped}
 - /gsd:review --phase {X} --all — peer review plans with external AIs
 - /gsd:plan-phase {X} --reviews — replan incorporating review feedback
 
-───────────────────────────────────────────────────────────────
+---
 </offer_next>
 
 <windows_troubleshooting>

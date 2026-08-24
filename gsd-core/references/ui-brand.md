@@ -2,14 +2,36 @@
 
 Visual patterns for user-facing GSD output. Orchestrators @-reference this file.
 
+## Separators and Banners
+
+**Never emit a fixed-width run of box-drawing characters.** A run of `━`, `─` or
+`═` is ordinary text to the host that renders your output. In a narrower pane it
+wraps, leaving orphan glyphs on a second line and coming apart from the heading it
+was meant to frame. Markdown adapts to the available width; a 53-character rule
+does not.
+
+Three forms, and nothing else:
+
+| Need | Emit |
+|---|---|
+| A titled section — stage, phase, checkpoint, completion, error | `### {TITLE}` (ATX heading) |
+| A break between two sections | `---` on its own line, **with a blank line above and below** |
+| A framed panel of rows | `### {TITLE}` followed by the rows as plain lines |
+
+**A stage banner is a heading alone — do not put a `---` above it.** An ATX
+heading already separates. A `---` placed directly under a line of text is parsed
+as a setext heading underline for that line, not as a thematic break, so the rule
+silently swallows the line above it. The blank line in the `---` form above is
+what prevents that, and a heading needs no rule at all.
+
+---
+
 ## Stage Banners
 
 Use for major workflow transitions.
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► {STAGE NAME}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► {STAGE NAME}
 ```
 
 **Stage names (uppercase):**
@@ -25,20 +47,18 @@ Use for major workflow transitions.
 
 ---
 
-## Checkpoint Boxes
+## Checkpoint Panels
 
-User action required. 62-character width.
+User action required.
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║  CHECKPOINT: {Type}                                          ║
-╚══════════════════════════════════════════════════════════════╝
+### CHECKPOINT: {Type}
 
 {Content}
 
-──────────────────────────────────────────────────────────────
-→ {ACTION PROMPT}
-──────────────────────────────────────────────────────────────
+---
+
+**→ {ACTION PROMPT}**
 ```
 
 **Types:**
@@ -60,6 +80,9 @@ User action required. 62-character width.
 🎉 Milestone complete (only in banner)
 ```
 
+Status symbols are single characters, not runs — they do not wrap and are
+unaffected by the separator rule above.
+
 ---
 
 ## Progress Display
@@ -78,6 +101,9 @@ Tasks: 2/4 complete
 ```
 Plans: 3/5 complete
 ```
+
+The bar itself is a fixed 10-cell gauge, not a separator; it is intentionally
+fixed-width and stays as it is.
 
 ---
 
@@ -104,7 +130,7 @@ Plans: 3/5 complete
 Always at end of major completions.
 
 ```
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up
 
@@ -114,23 +140,19 @@ Always at end of major completions.
 
 `{copy-paste command}`
 
-───────────────────────────────────────────────────────────────
+---
 
 **Also available:**
 - `/gsd-alternative-1` — description
 - `/gsd-alternative-2` — description
-
-───────────────────────────────────────────────────────────────
 ```
 
 ---
 
-## Error Box
+## Error Panel
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║  ERROR                                                       ║
-╚══════════════════════════════════════════════════════════════╝
+### ERROR
 
 {Error description}
 
@@ -149,14 +171,21 @@ Always at end of major completions.
 | 3     | ○      | 0/2   | 0%       |
 ```
 
+Table rules use ASCII `-`, never box-drawing characters.
+
 ---
 
 ## Anti-Patterns
 
-- Varying box/banner widths
-- Mixing banner styles (`===`, `---`, `***`)
+- Fixed-width runs of `━`, `─` or `═` as separators — they wrap in a narrow pane
+- Box panels drawn with double-line box characters (U+2554, U+2557, U+255A, U+255D, U+2551, U+2560, U+2563) — the borders wrap independently of their contents. They are named here by code point rather than shown, because the guard below rejects the characters themselves anywhere in shipped content.
+- A `---` directly under a line of text with no blank line between (that is a setext heading, not a break)
+- Boxing a heading between two rules — the heading is the separator
+- Mixing banner styles (`===`, `***`)
 - Skipping `GSD ►` prefix in banners
 - Random emoji (`🚀`, `✨`, `💫`)
 - Missing Next Up block after completions
+
+Enforced by `tests/responsive-separators.test.cjs`.
 
 </ui_patterns>

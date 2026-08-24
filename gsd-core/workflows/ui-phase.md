@@ -115,9 +115,7 @@ If "Update": continue to step 5.
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► UI DESIGN CONTRACT — PHASE {N}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► UI DESIGN CONTRACT — PHASE {N}
 
 ◆ Spawning UI researcher... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -188,9 +186,7 @@ Display blocker details and options. Exit workflow.
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► VERIFYING UI-SPEC
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► VERIFYING UI-SPEC
 
 ◆ Spawning UI checker... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -423,16 +419,14 @@ STATE coverage and REFERENCES those rows rather than restating the copy (de-dup)
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► UI-SPEC READY ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► UI-SPEC READY ✓
 
 **Phase {N}: {Name}** — UI design contract approved
 
 Dimensions: 7/7 passed
 {If any FLAGs: "Recommendations: {N} (non-blocking)"}
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -448,7 +442,7 @@ Dimensions: 7/7 passed
 
 (or `/gsd:plan-phase {N}` to skip discussion)
 
-───────────────────────────────────────────────────────────────
+---
 ```
 
 ## 11. Commit (if configured)

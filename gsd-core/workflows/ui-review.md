@@ -33,9 +33,7 @@ UI_AUDITOR_MODEL=$(gsd_run query resolve-model gsd-ui-auditor --raw)
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► UI AUDIT — PHASE {N}: {name}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► UI AUDIT — PHASE {N}: {name}
 ```
 
 ## 1. Detect Input State
@@ -127,9 +125,7 @@ Agent(
 Display score summary:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► UI AUDIT COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► UI AUDIT COMPLETE ✓
 
 **Phase {N}: {Name}** — Overall: {score}/24
 
@@ -149,7 +145,7 @@ Top fixes:
 
 Full review: {path to UI-REVIEW.md}
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next
 
@@ -157,7 +153,7 @@ Full review: {path to UI-REVIEW.md}
 
 - `/gsd:verify-work {N}` — UAT testing before phase completion
 
-───────────────────────────────────────────────────────────────
+---
 ```
 
 ## Automated UI Verification (when Playwright-MCP is available)

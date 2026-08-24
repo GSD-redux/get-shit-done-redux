@@ -65,63 +65,49 @@ Display banner based on active flags:
 
 If `$FULL_MODE` (all phases enabled — `--full` or all granular flags):
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► QUICK TASK (FULL)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► QUICK TASK (FULL)
 
 ◆ Discussion + research + plan checking + verification enabled
 ```
 
 If `$DISCUSS_MODE` and `$VALIDATE_MODE` (no research):
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► QUICK TASK (DISCUSS + VALIDATE)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► QUICK TASK (DISCUSS + VALIDATE)
 
 ◆ Discussion + plan checking + verification enabled
 ```
 
 If `$DISCUSS_MODE` and `$RESEARCH_MODE` (no validate):
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► QUICK TASK (DISCUSS + RESEARCH)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► QUICK TASK (DISCUSS + RESEARCH)
 
 ◆ Discussion + research enabled
 ```
 
 If `$RESEARCH_MODE` and `$VALIDATE_MODE` (no discuss):
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► QUICK TASK (RESEARCH + VALIDATE)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► QUICK TASK (RESEARCH + VALIDATE)
 
 ◆ Research + plan checking + verification enabled
 ```
 
 If `$DISCUSS_MODE` only:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► QUICK TASK (DISCUSS)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► QUICK TASK (DISCUSS)
 
 ◆ Discussion phase enabled — surfacing gray areas before planning
 ```
 
 If `$RESEARCH_MODE` only:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► QUICK TASK (RESEARCH)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► QUICK TASK (RESEARCH)
 
 ◆ Research phase enabled — investigating approaches before planning
 ```
 
 If `$VALIDATE_MODE` only:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► QUICK TASK (VALIDATE)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► QUICK TASK (VALIDATE)
 
 ◆ Plan checking + verification enabled
 ```

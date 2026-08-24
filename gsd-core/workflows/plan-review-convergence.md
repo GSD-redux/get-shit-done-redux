@@ -134,9 +134,7 @@ PHASE_INFO=$(gsd_run roadmap get-phase "${PHASE}")
 Display startup banner:
 
 ```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► PLAN CONVERGENCE — Phase {phase_number}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PLAN CONVERGENCE — Phase {phase_number}
 
  Reviewers: {REVIEWER_DISPLAY}
  Max cycles: {MAX_CYCLES}
@@ -400,9 +398,7 @@ gsd_run state planned-phase --phase "${PHASE}" --name "${phase_name}" --plans "$
 
 Display:
 ```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► CONVERGENCE COMPLETE ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► CONVERGENCE COMPLETE ✓
 
  Phase {phase_number} converged in {cycle} cycle(s).
  No HIGH concerns remaining.
