@@ -310,25 +310,24 @@ const COVERED = {
   // inside the 15-minute shard cap. tests/state-contract.unit.test.cjs is
   // spawn-free and in-process.
   //
-  // minScore of 50 is the ratchet's minimum permitted floor — the bound
-  // enforced by tests/mutation-matrix-ratchet.test.cjs's minScore range check
-  // (50-100 inclusive) — and is the initial floor for a newly-registered
-  // module whose score has not yet been measured on CI. Registering at the
-  // floor is deliberate: it makes the shard RUN and REPORT, where leaving the
-  // module out of COVERED makes the gate skip it silently (has_work: "false"),
-  // the exact failure mode #2790 and #3007 above were added to fix. This PR's
-  // shard run measures the real score before merge, and the floor is then
-  // ratcheted up to floor(measured) - 1, the same post-hoc calibration path
-  // the model-catalog entry above documents. A measured score below 50 reds
-  // the shard and blocks the merge — the gate working as designed. The floor
-  // MUST come from a CI shard, never a local run: local runs count timeouts
-  // as kills and inflate scores badly (this file already records
+  // Measured CI score (GitHub Actions run 32769289750, job 97565813640,
+  // `Stryker (state-contract)`, PASSED in 2m23s):
+  //   state-contract 66.25% → floor 65  (below TARGET_MUTATION_SCORE (80) —
+  //     ratchet candidate like planning-inspect (56) and model-catalog (58):
+  //     comfortably clears its own floor but has real room to grow. Raise as
+  //     its tests improve, never lower it.)
+  // Floor follows this file's documented rule, minScore = floor(measured) - 1,
+  // matching the sibling precedent exactly (57.03 → 56, 76.58 → 75,
+  // 95.65 → 94, 59.62 → 58, 66.25 → 65).
+  //
+  // The floor MUST come from a CI shard, never a local run: local runs count
+  // timeouts as kills and inflate scores badly (this file already records
   // prompt-budget 99.6% local vs 68.33% CI, and config-schema 69.7% local vs
   // 54.55% CI).
   'state-contract': {
     cjs: 'gsd-core/bin/lib/state-contract.cjs',
     tests: ['tests/state-contract.unit.test.cjs'],
-    minScore: 50,
+    minScore: 65,
   },
 };
 
