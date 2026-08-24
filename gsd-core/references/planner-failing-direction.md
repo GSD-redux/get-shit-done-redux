@@ -1,6 +1,10 @@
 # Stated Failing Direction (#3172)
 
-> Reference file for gsd-planner agent. Loaded on-demand via `@` reference.
+> Reference file for the gsd-planner agent. Loaded on-demand via `@` reference from the
+> `<failing_direction_contract>` block of the planner spawn prompt in
+> `gsd-core/workflows/plan-phase.md` — NOT from `agents/gsd-planner.md`, which is frozen
+> under a 49152-LF-char cap, so planner-side rules are projected onto its spawn contract
+> (the #3297 / #3645 precedent).
 
 **Every runnable `<automated>` command needs a `<fails_when>` sibling naming what output
 constitutes failure.** A command with no expressible failure mode is not an acceptance test.

@@ -766,6 +766,31 @@ inherited paths: fix a mirror path, never inherit. Submodule files: check
 from within the submodule.
 </tracked_source_paths>
 
+<failing_direction_contract>
+**Stated failing direction (#3172):** Every runnable `<automated>` verify command
+you write MUST be followed by a `<fails_when>` sibling naming what output
+constitutes failure — an exit code, a string in the output, a missing line. A
+command with no expressible failure mode is not an acceptance test.
+
+```xml
+<verify>
+  <automated>npm --prefix apps/api test -- auth.spec.ts</automated>
+  <fails_when>non-zero exit, or "0 passed" in the summary line</fails_when>
+</verify>
+```
+
+One statement per runnable command, placed immediately after it: within a task
+each `<fails_when>` binds to the nearest preceding `<automated>`, and the first
+statement after a command is the binding one. Name an OBSERVABLE signal, never
+the word "failure" — `non-zero exit` is complete, `the command fails` is a
+restatement. `TBD`/`TODO`/`N/A`/`none`/`unknown`/`?`/`-` are rejected outright as
+whole values. The `MISSING — Wave 0 …` sentinel is exempt: it is not runnable, so
+it has no failure mode to state. Ask yourself: if this command were silently
+doing nothing, what in its output would tell me? If you cannot answer, fix the
+command — do not invent a statement for it.
+Rules + worked examples: @gsd-core/references/planner-failing-direction.md
+</failing_direction_contract>
+
 **Project instructions:** Read ./CLAUDE.md or ./.claude/CLAUDE.md if either exists — follow project-specific guidelines
 **Project skills:** Check .claude/skills/ or .agents/skills/ directory (if either exists) — read SKILL.md files, plans should account for project skill rules
 

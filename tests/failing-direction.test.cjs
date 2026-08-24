@@ -553,12 +553,34 @@ describe('the plan-authoring contract text (#3172)', () => {
   const repoRoot = path.join(__dirname, '..');
   const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 
-  test('row 30 — the planner contract requires a failing direction', () => {
-    const planner = read('agents/gsd-planner.md');
-    assert.match(planner, /fails_when/);
-    assert.match(planner, /planner-failing-direction\.md/);
-    // The reference the planner points at must exist and name the element.
+  test('row 30 — the planner spawn contract requires a failing direction', () => {
+    // #3172's planner-side rule is projected onto the spawn contract, not
+    // written into the agent file — see row 30b. Assert the block exists and
+    // governs what it must.
+    const block = read('gsd-core/workflows/plan-phase.md')
+      .split('<failing_direction_contract>')[1]
+      ?.split('</failing_direction_contract>')[0];
+    assert.ok(block, 'plan-phase.md must carry the <failing_direction_contract> block in the planner spawn prompt (#3172)');
+    assert.match(block, /<fails_when>/);
+    assert.match(block, /planner-failing-direction\.md/);
+    // The rule is worthless if it does not name the sentinel exemption and
+    // the placeholder rejection — those are the two edges a planner gets wrong.
+    assert.match(block, /MISSING/);
+    assert.match(block, /TBD/);
+    // The reference the contract points at must exist and name the element.
     assert.match(read('gsd-core/references/planner-failing-direction.md'), /<fails_when>/);
+  });
+
+  test('row 30b — the frozen planner agent file is untouched by #3172', () => {
+    // agents/gsd-planner.md is pinned under a 49152-LF-char cap by four
+    // suites; #3297/#3645 established that a planner-side rule goes in the
+    // spawn contract instead. Guard the freeze in both directions: the cap
+    // itself, and the absence of this issue's rule from the agent file.
+    const src = read('agents/gsd-planner.md');
+    const lf = src.replace(/\r\n/g, '\n').length;
+    assert.ok(lf < 49152, `gsd-planner.md is ${lf} LF chars — must stay < 49152 (#3172 keeps the planner frozen; the rule lives in plan-phase.md's spawn contract)`);
+    assert.ok(!src.includes('fails_when'),
+      'the failing-direction rule belongs in the spawn contract, not the frozen agent file (#3172)');
   });
 
   test('row 31 — the extracted Nyquist detail survives the move', () => {
