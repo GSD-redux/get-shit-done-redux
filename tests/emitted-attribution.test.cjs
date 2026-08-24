@@ -1590,25 +1590,63 @@ test('assertUsableBaseRef: rejects an option-shaped ref, an empty string, null, 
   assert.equal(assertUsableBaseRef(sha), sha, 'a normal 40-hex sha must be returned unchanged');
 });
 
-test('E2E: --guard-next --base-ref runs the real script as a subprocess against this checkout, and rejects an option-shaped --base-ref', () => {
+test('E2E: --guard-next --base-ref runs the real script as a subprocess against this checkout, deriving its expected outcome from the live fragment inventory', () => {
+  // Passing THIS checkout's own HEAD as --base-ref is the deliberate degenerate case: with
+  // a clean tree, the working-tree copy of every fragment in tests/emitted-drift-acks/
+  // equals its committed copy at HEAD, so "spent" is trivially true for every fragment
+  // that happens to exist right now. That degeneracy is exactly what makes the expected
+  // exit code and output DERIVABLE from the inventory at runtime rather than a number
+  // hand-picked when the directory happened to be empty (#3078 regression: it was empty
+  // when this test was written, then a fragment was restored and the hardcoded
+  // exit-0/count-2 expectation went stale). Whether the directory holds zero fragments or
+  // N, the assertion below is the correct one either way.
   const scriptPath = path.join(REPO_ROOT, 'scripts', 'lint-emitted-drift-ack.cjs');
   const head = gitIn(REPO_ROOT, ['rev-parse', 'HEAD']).trim();
+  const { listFragmentFiles } = require('../scripts/lint-emitted-drift-ack.cjs');
+  const fragDir = path.join(REPO_ROOT, 'tests', 'emitted-drift-acks');
+  const fragments = listFragmentFiles(fragDir);
 
-  // The script resolves its OWN REPO_ROOT from __dirname/.., so it always reads THIS
-  // checkout's fragment directory regardless of the subprocess cwd — these assertions
-  // hold whether or not tests/emitted-drift-acks/ exists here.
-  const out = execFileSync(
-    process.execPath,
-    [scriptPath, '--guard-next', '--base-ref', head],
-    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30000 },
-  );
+  let status = 0;
+  let out = '';
+  try {
+    out = execFileSync(
+      process.execPath,
+      [scriptPath, '--guard-next', '--base-ref', head],
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30000 },
+    );
+  } catch (err) {
+    status = err.status;
+    out = (err.stdout || '') + (err.stderr || '');
+  }
+
+  // The legacy-file half is independent of the fragment inventory and always reports ok
+  // on this checkout (the legacy file was deleted by #2914) — this is the "legacy-file
+  // line" half of --guard-next's two halves.
   assert.equal(
-    out.split('\n').filter((l) => l.startsWith('ok guard-no-ack-on-next:')).length, 2,
-    'both the legacy-file guard and the fragment sweep must print their own ok line',
+    out.split('\n').filter((l) => l.startsWith('ok guard-no-ack-on-next:')).length >= 1, true,
+    'the legacy-file guard must print its own ok line regardless of fragment state',
   );
 
+  if (fragments.length === 0) {
+    assert.equal(status, 0, 'zero fragments: the guard must exit 0');
+    assert.match(out, /no all-spent fragment survives/, 'the fragment-sweep half must also print its ok line');
+  } else {
+    assert.notEqual(status, 0, `${fragments.length} fragment(s) at HEAD are trivially all-spent against themselves`);
+    assert.match(out, new RegExp(`${fragments.length} fully-spent ack fragment\\(s\\) survive on next`));
+    for (const name of fragments) {
+      assert.ok(out.includes(name), `sweep output must name ${name}`);
+      assert.match(
+        out, new RegExp(`git rm[^\\n]*${escapeRegex(name)}`),
+        `sweep output must print a git rm remedy line for ${name}`,
+      );
+    }
+  }
+});
+
+test('E2E: --guard-next rejects an option-shaped --base-ref', () => {
   // main()'s argv parsing is the only thing this exercises that the unit tests above
   // cannot: an option-shaped --base-ref must be rejected, not silently accepted.
+  const scriptPath = path.join(REPO_ROOT, 'scripts', 'lint-emitted-drift-ack.cjs');
   let threw = false;
   let status;
   let stderr = '';
