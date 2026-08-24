@@ -935,6 +935,30 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   output(result, raw, undefined);
 }
 
+/**
+ * Resolve a phase argument to an absolute phase directory, or '' when it
+ * cannot be resolved. Shared by every `check` arm that probes a phase's
+ * PLAN.md files, so the two never drift (DEFECT.GENERATIVE-FIX-DIVERGENCE).
+ * Never throws — the callers emit a degraded JSON payload instead, because
+ * a consumer must be able to tell "nothing to report" from "could not look".
+ */
+function resolvePhaseDirOrEmpty(projectDir: string, phase: string): string {
+  try {
+    const result = findPhaseInternal(projectDir, phase);
+    if (result && typeof result === 'object') {
+      // findPhaseInternal returns { directory: '<relative-posix-path>', ... }
+      // directory is relative to cwd — resolve it to absolute.
+      const relDir = typeof result['directory'] === 'string' ? result['directory'] : '';
+      if (relDir) {
+        return path.resolve(projectDir, relDir);
+      }
+    } else if (typeof result === 'string') {
+      return result;
+    }
+  } catch { /* phase dir lookup failure → caller emits degraded payload */ }
+  return '';
+}
+
 // ─── verify-command-paths (#2401) ──────────────────────────────────────────────
 
 /**
@@ -968,20 +992,7 @@ function cmdVerifyCommandPaths(projectDir: string, args: string[], raw: boolean)
     return;
   }
 
-  let phaseDir = '';
-  try {
-    const result = findPhaseInternal(projectDir, phase);
-    if (result && typeof result === 'object') {
-      // findPhaseInternal returns { directory: '<relative-posix-path>', ... }
-      // directory is relative to cwd — resolve it to absolute.
-      const relDir = typeof result['directory'] === 'string' ? result['directory'] : '';
-      if (relDir) {
-        phaseDir = path.resolve(projectDir, relDir);
-      }
-    } else if (typeof result === 'string') {
-      phaseDir = result;
-    }
-  } catch { /* phase dir lookup failure → degraded payload below */ }
+  const phaseDir = resolvePhaseDirOrEmpty(projectDir, phase);
 
   if (!phaseDir) {
     output(
@@ -1034,20 +1045,7 @@ function cmdVerifyFailureDirections(projectDir: string, args: string[], raw: boo
     return;
   }
 
-  let phaseDir = '';
-  try {
-    const result = findPhaseInternal(projectDir, phase);
-    if (result && typeof result === 'object') {
-      // findPhaseInternal returns { directory: '<relative-posix-path>', ... }
-      // directory is relative to cwd — resolve it to absolute.
-      const relDir = typeof result['directory'] === 'string' ? result['directory'] : '';
-      if (relDir) {
-        phaseDir = path.resolve(projectDir, relDir);
-      }
-    } else if (typeof result === 'string') {
-      phaseDir = result;
-    }
-  } catch { /* phase dir lookup failure → degraded payload below */ }
+  const phaseDir = resolvePhaseDirOrEmpty(projectDir, phase);
 
   if (!phaseDir) {
     output(

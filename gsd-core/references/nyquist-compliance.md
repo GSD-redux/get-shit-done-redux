@@ -1,9 +1,12 @@
 # Dimension 8 — Nyquist Compliance (checks 8a–8e)
 
 > Reference file for gsd-plan-checker agent. Loaded on-demand via `@` reference.
-> Extracted verbatim from `agents/gsd-plan-checker.md` in #3172 to stay under the
-> agent's LARGE size cap. Check 8f (stated failing direction) lives in its own
-> reference: @gsd-core/references/failing-direction.md
+> Extracted from `agents/gsd-plan-checker.md` in #3172 to stay under the agent's
+> LARGE size cap. Checks 8a-8e are moved unchanged; the only edit is to the
+> Dimension 8 Output table, which gains a `Failing Direction` column and a
+> stated/runnable tally so check 8f's result is reported alongside them.
+> Check 8f itself lives in its own reference:
+> @gsd-core/references/failing-direction.md
 
 **Skip if:** `workflow.nyquist_validation` is explicitly set to `false` in config.json
 (absent key = enabled), phase has no RESEARCH.md, or RESEARCH.md has no "Validation

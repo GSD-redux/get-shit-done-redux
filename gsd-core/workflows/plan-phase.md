@@ -994,9 +994,10 @@ Display banner:
 **Verify-command probes (#2401, #3172).** Before spawning, run both deterministic probes and
 hand their JSON to the checker. The first resolves each `<automated>` command's target; the
 second reports which runnable commands carry a `<fails_when>` statement naming their failure
-signal. Neither executes command text. It never executes command text and never prescribes a
-replacement path — it reports which `<automated>` targets resolve, which do not, and which it
-refused to guess at. Handing it over is what stops the checker hand-reasoning the filesystem.
+signal. Neither executes command text, and neither prescribes a replacement — the first reports
+which `<automated>` targets resolve, which do not, and which it refused to guess at; the second
+reports which commands state a failure signal and never authors one. Handing both over is what
+stops the checker hand-reasoning the filesystem or the plans.
 
 ```bash
 VERIFY_PATHS=$(gsd_run check verify-command-paths "${PHASE}" --raw)

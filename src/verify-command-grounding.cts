@@ -123,15 +123,27 @@ interface HarvestOptions {
 // ─── Extraction ───────────────────────────────────────────────────────────────
 
 const TASK_NAME_RE = /<name>([\s\S]*?)<\/name>/;
-const AUTOMATED_BLOCK_RE = /<automated[^>]{0,200}>([\s\S]*?)<\/automated>/g;
+/**
+ * The body cannot cross a subsequent `<automated>` opener (negative lookahead
+ * `(?!<automated\b)` gates each consumed char), mirroring the stop-at-next-open
+ * shape `extractTaggedBlocks`/`stripTaggedBlocks` already use. This is what
+ * makes a scan over an unclosed opener LINEAR instead of quadratic: the lazy
+ * `[\s\S]*?` body used to scan all the way to EOF hunting a closing tag that
+ * never comes (measured: k=40000 unclosed openers, ~1.5s). `MAX_BLOCK_WALK`
+ * below bounds matched-block COUNT, not scan cost — it does nothing for a scan
+ * that matches nothing, which is exactly the case this shape fixes.
+ */
+const AUTOMATED_BLOCK_RE = /<automated[^>]{0,200}>((?:(?!<automated\b)[\s\S])*?)<\/automated>/g;
 
 /**
- * Bounds walking pathological input (e.g. hundreds of unclosed `<automated>`
- * openers). `extractTaggedBlocks`/`stripTaggedBlocks` (task-block grammar
- * owner, `./markdown-sectionizer.cjs`) already use a ReDoS-safe
- * stop-at-next-open pattern with no separate iteration cap of their own — a
- * document full of unclosed `<task>` openers never matches, so their walk is
- * a single linear scan regardless. This guard only bounds the `<automated>`
+ * Bounds the NUMBER of matched `<automated>` blocks walked (e.g. hundreds of
+ * legitimately closed blocks in one document), not the cost of scanning
+ * pathological unclosed input — that cost is now bounded by the non-crossing
+ * body in `AUTOMATED_BLOCK_RE`/`VERIFY_TOKEN_RE` themselves (a failed scan is
+ * linear, so no separate iteration cap is needed to keep it cheap).
+ * `extractTaggedBlocks`/`stripTaggedBlocks` (task-block grammar owner,
+ * `./markdown-sectionizer.cjs`) already use the same non-crossing shape with
+ * no iteration cap of their own. This guard only bounds the `<automated>`
  * scan this module still runs directly, matching the pre-existing behavior.
  */
 const MAX_BLOCK_WALK = 20000;
@@ -240,8 +252,15 @@ interface ProbePhaseFailingOptions {
  * Ordered alternation with a backreference so `<automated>` and `<fails_when>`
  * are recovered in a SINGLE document-order pass — the pairing walk needs
  * their relative positions, which two independent scans would discard.
+ *
+ * The body cannot cross a subsequent `<automated>` or `<fails_when>` opener
+ * (negative lookahead `(?!<(?:automated|fails_when)\b)`), the same
+ * non-crossing shape as `AUTOMATED_BLOCK_RE` above. This is what keeps a scan
+ * over an unclosed opener LINEAR (verified: k=10000/20000/40000 unclosed
+ * openers all complete in ~0ms); `MAX_BLOCK_WALK` bounds matched-block COUNT,
+ * not scan cost.
  */
-const VERIFY_TOKEN_RE = /<(automated|fails_when)[^>]{0,200}>([\s\S]*?)<\/\1>/g;
+const VERIFY_TOKEN_RE = /<(automated|fails_when)[^>]{0,200}>((?:(?!<(?:automated|fails_when)\b)[\s\S])*?)<\/\1>/g;
 const PLACEHOLDER_STATEMENTS = new Set(['tbd', 'todo', 'n/a', 'na', 'none', 'unknown', 'tba', '?', '-']);
 
 /**
@@ -423,11 +442,18 @@ function probePhaseFailingDirections(options: ProbePhaseFailingOptions): ProbePh
 
   const readError = readErrors.length > 0 ? readErrors.join('; ') : null;
 
+  // A populated readError can never yield 'ok' — "could not look" must never
+  // render as "nothing to report" (#3172 review self-finding: with the old
+  // `commands.length === 0 && readError !== null` precedence, a phase where
+  // one plan read fine with zero blockers and a SECOND plan failed to read
+  // fell through to 'ok' because commands.length > 0). 'blocked' keeps
+  // precedence over 'unresolvable' because a proven blocker is the stronger
+  // signal.
   let status: 'ok' | 'blocked' | 'unresolvable';
-  if (commands.length === 0 && readError !== null) {
-    status = 'unresolvable';
-  } else if (counts.blocker > 0) {
+  if (counts.blocker > 0) {
     status = 'blocked';
+  } else if (readError !== null) {
+    status = 'unresolvable';
   } else {
     status = 'ok';
   }
@@ -467,7 +493,17 @@ const PREFIX_FLAG_STRIP_RE = /(?:^|\s)--prefix(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/g
 const NEEDS_NPM_RE = /^(npm|npx|pnpm|yarn|bun)\b/;
 const NEEDS_MAKE_RE = /^make\b/;
 const NPM_RUN_SCRIPT_RE = /\bnpm\s+run\s+([\w:@./-]+)/;
-const MISSING_SENTINEL_RE = /^MISSING\b/;
+/**
+ * The `\s|$` anchor (not `\b`) is load-bearing: `\b` also matches an env-var
+ * assignment prefix such as `MISSING=1 cmd` (`=` is a non-word char, so `\b`
+ * sits happily before it) — and that IS a real runnable command, not the
+ * Nyquist Wave-0 sentinel. #3172 wires this constant into a BLOCKING gate
+ * (`resolveFailingDirection`), so a benign #2401 false-positive on the `\b`
+ * form becomes a real gate bypass: `MISSING=true npm test` would be reported
+ * `status:'sentinel', severity:'none'` instead of `missing`/`blocker`
+ * (#3172 review).
+ */
+const MISSING_SENTINEL_RE = /^MISSING(?:\s|$)/;
 const MAX_MANIFEST_BYTES = 512 * 1024;
 
 function emptyResult(base: string): ResolvedVerifyCommand {

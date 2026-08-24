@@ -175,6 +175,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Reads PROJECT.md, REQUIREMENTS.md, CONTEXT.md, RESEARCH.md
 - Creates 2-3 atomic task plans sized for single context windows
 - Uses XML structure with `<task>` elements
+- Emits a `<fails_when>` sibling for every runnable `<automated>` verify command, naming what output constitutes failure (#3172)
 - Includes `read_first` and `acceptance_criteria` sections
 - Groups plans into dependency waves
 - Performs reachability check to validate plan steps reference accessible files and APIs (v1.32)
@@ -255,14 +256,14 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 | 7 | Context compliance (when CONTEXT.md exists) |
 | 7b | Scope reduction detection |
 | 7c | Architectural tier compliance (when RESEARCH.md defines a responsibility map) |
-| 8 | Nyquist compliance (when enabled) |
+| 8 | Nyquist compliance (when enabled) — checks 8a-8e cover automated-verify presence, feedback latency, sampling continuity and Wave 0 completeness; check 8f blocks a runnable `<automated>` command with no stated `<fails_when>` failing direction (#3172) |
 | 9 | Cross-plan data contracts |
 | 10 | CLAUDE.md compliance |
 | 11 | Research resolution |
 | 12 | Pattern compliance |
 
-Two further dimensions carry no number: **Verify Command Format Sanity** and
-**Numeric/Factual Claim Authority**.
+Three further dimensions carry no number: **Verify Command Format Sanity**,
+**Verify Command Path Resolvability**, and **Numeric/Factual Claim Authority**.
 
 ---
 

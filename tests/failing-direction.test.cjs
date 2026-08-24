@@ -280,9 +280,32 @@ describe('extractFailingDirections — pairing', () => {
   });
 
   test('row 22 — bounded walk on pathological unclosed tags', () => {
-    const md = '<automated>'.repeat(30000) + '<fails_when>'.repeat(30000);
+    // The non-crossing body (`(?!<(?:automated|fails_when)\b)`) is what keeps
+    // this LINEAR rather than quadratic; the repeat count was reduced from
+    // 30000 to 5000 (#3172 review Fix 2) — the quadratic blowup this probed
+    // for is fixed, so 30000 only burns suite time now.
+    const md = '<automated>'.repeat(5000) + '<fails_when>'.repeat(5000);
     const out = extractFailingDirections(md);
     assert.ok(Array.isArray(out));
+  });
+
+  // #3172 review Fix 2: the non-crossing body must not let an unclosed
+  // opener swallow a later well-formed block.
+  test('row 36 — an unclosed automated opener does not swallow a later block', () => {
+    // Both the unclosed opener and the well-formed pair sit in the SAME task
+    // body, so a single VERIFY_TOKEN_RE scan must not let the unclosed
+    // opener's lazy body cross the later `<automated>` and consume it.
+    const md = [
+      '<task><name>t</name>',
+      '<verify><automated>',
+      '<verify><automated>npm test</automated></verify>',
+      '<fails_when>non-zero exit</fails_when>',
+      '</task>',
+    ].join('\n');
+    const out = extractFailingDirections(md);
+    const recovered = out.find((e) => e.command === 'npm test');
+    assert.ok(recovered, 'expected the well-formed command to be recovered');
+    assert.equal(recovered.status, 'ok');
   });
 
   test('row 14 — an empty automated body is not a failing-direction finding', () => {
@@ -386,6 +409,29 @@ describe('resolveFailingDirection — statement verdicts', () => {
       const r = resolveFailingDirection(bad, bad);
       assert.ok(KNOWN_STATUSES.has(r.status), `status for ${JSON.stringify(bad)}`);
       assert.ok(KNOWN_SEVERITIES.has(r.severity), `severity for ${JSON.stringify(bad)}`);
+    }
+  });
+
+  // #3172 review finding: a blocking gate must not be bypassed by a command
+  // that merely starts with the letters MISSING — the pre-fix `\b` anchor
+  // also matched an env-var assignment prefix (`=` is a non-word char).
+  test('row 34 — an env-var assignment prefixed MISSING= is judged, not exempted', () => {
+    const r = resolveFailingDirection('MISSING=true npm test && echo done', undefined);
+    assert.equal(r.status, 'missing');
+    assert.equal(r.severity, 'blocker');
+    for (const cmd of ['MISSING_FOO=1 npm test', 'MISSINGLY npm test']) {
+      const r2 = resolveFailingDirection(cmd, undefined);
+      assert.equal(r2.status, 'missing', `command ${JSON.stringify(cmd)}`);
+    }
+  });
+
+  // Negative-space partner of row 34 — the tightening must not break the
+  // exemption it exists to preserve.
+  test('row 35 — the real Wave-0 sentinel forms stay exempt', () => {
+    for (const cmd of ['MISSING', 'MISSING — Wave 0 must create tests/x.test.ts']) {
+      const r = resolveFailingDirection(cmd, undefined);
+      assert.equal(r.status, 'sentinel', `command ${JSON.stringify(cmd)}`);
+      assert.equal(r.severity, 'none', `command ${JSON.stringify(cmd)}`);
     }
   });
 });

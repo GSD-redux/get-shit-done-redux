@@ -507,6 +507,7 @@ their skip condition and the Dimension 8 output table: @gsd-core/references/nyqu
 Each runnable `<automated>` command needs a `<fails_when>` sibling naming what output constitutes
 failure. Consume the supplied `{FAILING_DIRECTIONS}` probe, never re-derive it:
 @gsd-core/references/failing-direction.md
+
 ## Dimension 9: Cross-Plan Data Contracts
 
 **Question:** When plans share data pipelines, are their transformations compatible?
