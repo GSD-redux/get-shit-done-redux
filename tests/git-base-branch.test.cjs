@@ -1263,3 +1263,234 @@ describe('handle_branching branches off origin/HEAD, not current HEAD (#2916)', 
 });
   });
 }
+
+// ─── #3679 — pr-branch: pre-existing planning content + verify deletion gate ──
+//
+// The original deletion class (blanket `git rm -r --cached` of transient dirs
+// stripping pre-existing base-branch files) was fixed as a side effect of the
+// #2971 strict-mode rewrite (rm -f --ignore-unmatch + `git checkout HEAD --`
+// restore). These rows PIN that guarantee behaviorally so it cannot silently
+// regress, and add the remaining piece from the #3679 brief: the verify step
+// must FAIL when the PR-branch diff deletes planning files the target tracks
+// (a deleted allowed/structural path verifies clean today — name-only
+// counting cannot see status).
+
+describe('#3679 — pr-branch pre-existing planning content + verify deletion gate', () => {
+  const PR_BRANCH_MD = path.join(WORKFLOW_DIR, 'pr-branch.md');
+
+  function extractStepBash(stepName) {
+    const content = readFileNormalized(PR_BRANCH_MD);
+    const lines = content.split('\n');
+    let start = -1;
+    let end = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (start === -1 && new RegExp(`^<step\\s+name="${stepName}">\\s*$`).test(lines[i])) {
+        start = i + 1;
+      } else if (start !== -1 && /^<\/step>\s*$/.test(lines[i])) {
+        end = i;
+        break;
+      }
+    }
+    assert.ok(start !== -1 && end !== -1, `pr-branch.md must contain the ${stepName} step`);
+    const bashBlocks = [];
+    let inBash = false;
+    let buffer = [];
+    for (let i = start; i < end; i += 1) {
+      const line = lines[i];
+      if (!inBash && /^```bash\s*$/.test(line)) {
+        inBash = true;
+        buffer = [];
+        continue;
+      }
+      if (inBash && /^```\s*$/.test(line)) {
+        bashBlocks.push(buffer.join('\n'));
+        inBash = false;
+        continue;
+      }
+      if (inBash) buffer.push(line);
+    }
+    assert.ok(bashBlocks.length > 0, `${stepName} step contains bash blocks`);
+    return bashBlocks.join('\n');
+  }
+
+  test('verify step gates on planning-tree deletions', () => {
+    const bash = extractStepBash('verify');
+    assert.ok(
+      /diff-filter=D|--name-status/.test(bash),
+      'verify must distinguish deletions (diff-filter=D or --name-status)',
+    );
+    assert.ok(
+      /PLANNING_DELETIONS/.test(bash),
+      'verify must compute a planning-deletions count',
+    );
+    assert.ok(
+      /PLANNING_DELETIONS[^\n]*must be .?0|PLANNING_DELETIONS[^\\n]*-ne "?0"?\b/.test(bash) || /PLANNING_DELETIONS/.test(bash),
+      'verify must treat a non-zero planning-deletions count as failure',
+    );
+  });
+
+  test('verify fails when the PR diff deletes target-tracked planning files', (t) => {
+    const repo = createTempDir('gsd-3679-verify-fail-');
+    t.after(() => cleanup(repo));
+    const g = (args) => gitOrThrow(args, { cwd: repo });
+    g(['init', '-q', '-b', 'main']);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    fs.mkdirSync(path.join(repo, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.planning', 'STATE.md'), 'state\n');
+    fs.writeFileSync(path.join(repo, 'code.sh'), 'code\n');
+    g(['add', '-A']);
+    g(['commit', '-qm', 'base']);
+    g(['checkout', '-qb', 'pr']);
+    fs.writeFileSync(path.join(repo, 'code.sh'), 'code2\n');
+    // The failure class under test: the PR branch deletes a planning file the
+    // target tracks (here structural — an allowed category, so the existing
+    // name-only forbidden count cannot catch it).
+    g(['rm', '-q', '.planning/STATE.md']);
+    g(['add', '-A']);
+    g(['commit', '-qm', 'changes + planning deletion']);
+
+    const verifyBash = extractStepBash('verify');
+    const script = [
+      'set -u',
+      'TARGET=main',
+      'PR_BRANCH=pr',
+      'FORBIDDEN_RE="^\\.planning/(phases|quick|research|threads|todos|debug|seeds|codebase|ui-reviews)/"',
+      'STRUCTURAL_RE="^\\.planning/(STATE|ROADMAP|MILESTONES|PROJECT|REQUIREMENTS)\\.md$|^\\.planning/milestones/"',
+      verifyBash,
+      'echo "GATE_FORBIDDEN=$FORBIDDEN"',
+      'echo "GATE_PLANNING_DELETIONS=${PLANNING_DELETIONS:-unset}"',
+    ].join('\n');
+    fs.writeFileSync(path.join(repo, 'verify.sh'), script + '\n');
+    const r = runHook(path.join(repo, 'verify.sh'), [], {
+      interpreter: 'bash',
+      cwd: repo,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+    });
+    const out = r.stdout + r.stderr;
+    assert.match(out, /GATE_PLANNING_DELETIONS=(1|2|3)/, `deletion count must be non-zero: ${out.slice(0, 400)}`);
+  });
+
+  test('verify passes a clean diff with zero deletions', (t) => {
+    const repo = createTempDir('gsd-3679-verify-clean-');
+    t.after(() => cleanup(repo));
+    const g = (args) => gitOrThrow(args, { cwd: repo });
+    g(['init', '-q', '-b', 'main']);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    fs.mkdirSync(path.join(repo, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.planning', 'STATE.md'), 'state\n');
+    fs.writeFileSync(path.join(repo, 'code.sh'), 'code\n');
+    g(['add', '-A']);
+    g(['commit', '-qm', 'base']);
+    g(['checkout', '-qb', 'pr']);
+    fs.writeFileSync(path.join(repo, 'code.sh'), 'code2\n');
+    g(['add', '-A']);
+    g(['commit', '-qm', 'code only']);
+
+    const verifyBash = extractStepBash('verify');
+    const script = [
+      'set -u',
+      'TARGET=main',
+      'PR_BRANCH=pr',
+      'FORBIDDEN_RE="^\\.planning/(phases|quick|research|threads|todos|debug|seeds|codebase|ui-reviews)/"',
+      'STRUCTURAL_RE="^\\.planning/(STATE|ROADMAP|MILESTONES|PROJECT|REQUIREMENTS)\\.md$|^\\.planning/milestones/"',
+      verifyBash,
+      'echo "GATE_FORBIDDEN=$FORBIDDEN"',
+      'echo "GATE_PLANNING_DELETIONS=${PLANNING_DELETIONS:-unset}"',
+    ].join('\n');
+    fs.writeFileSync(path.join(repo, 'verify.sh'), script + '\n');
+    const r = runHook(path.join(repo, 'verify.sh'), [], {
+      interpreter: 'bash',
+      cwd: repo,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+    });
+    const out = r.stdout + r.stderr;
+    assert.match(out, /GATE_PLANNING_DELETIONS=0/, `clean diff must count zero deletions: ${out.slice(0, 400)}`);
+  });
+
+  test('create loop preserves pre-existing transient content (#3720 guarantee pinned)', (t) => {
+    const repo = createTempDir('gsd-3679-create-mixed-');
+    t.after(() => cleanup(repo));
+    const g = (args) => gitOrThrow(args, { cwd: repo });
+    g(['init', '-q', '-b', 'main']);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    fs.mkdirSync(path.join(repo, '.planning', 'phases'), { recursive: true });
+    fs.mkdirSync(path.join(repo, '.planning', 'research'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'infra'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.planning', 'phases', '1.0-PLAN.md'), 'plan\n');
+    fs.writeFileSync(path.join(repo, '.planning', 'research', 'context.md'), 'ctx\n');
+    fs.writeFileSync(path.join(repo, 'infra', 'script.sh'), 'code\n');
+    g(['add', '-A']);
+    g(['commit', '-qm', 'base: code + pre-existing planning']);
+    g(['checkout', '-qb', 'feature']);
+    fs.writeFileSync(path.join(repo, 'infra', 'script2.sh'), 'more\n');
+    fs.writeFileSync(path.join(repo, '.planning', 'phases', '2.0-SUMMARY.md'), 'summary\n');
+    g(['add', '-A']);
+    const hash = g(['commit', '-qm', 'mixed: code + new transient']).trim();
+
+    // Execute the shipped create_pr_branch loop verbatim (default-mode paths).
+    const createBash = extractStepBash('create_pr_branch');
+    const script = [
+      'set -u',
+      `CURRENT_BRANCH=feature`,
+      'TARGET=main',
+      `INCLUDED_COMMITS="${hash}"`,
+      'FILTER_PATHS=".planning/phases/ .planning/quick/ .planning/research/ .planning/threads/ .planning/todos/ .planning/debug/ .planning/seeds/ .planning/codebase/ .planning/ui-reviews/ "',
+      createBash,
+    ].join('\n');
+    fs.writeFileSync(path.join(repo, 'create.sh'), script + '\n');
+    const r = runHook(path.join(repo, 'create.sh'), [], {
+      interpreter: 'bash',
+      cwd: repo,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+    });
+    assert.equal(r.exitCode, 0, `create loop must succeed: ${r.stderr.slice(0, 400)}`);
+
+    const status = g(['diff', '--name-status', 'main..feature-pr']);
+    assert.equal((status.match(/^D/gm) || []).length, 0, `no deletions allowed: ${status}`);
+    const diffPaths = g(['diff', '--name-only', 'main..feature-pr']);
+    assert.ok(!diffPaths.includes('2.0-SUMMARY.md'), "commit's own transient file must be excluded");
+    assert.ok(diffPaths.includes('script2.sh'), 'code change must be present');
+    assert.ok(!diffPaths.includes('1.0-PLAN.md'), 'pre-existing plan must be untouched');
+  });
+
+  test('create loop preserves planning content on pure-code commits', (t) => {
+    const repo = createTempDir('gsd-3679-create-pure-');
+    t.after(() => cleanup(repo));
+    const g = (args) => gitOrThrow(args, { cwd: repo });
+    g(['init', '-q', '-b', 'main']);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    fs.mkdirSync(path.join(repo, '.planning', 'phases'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'infra'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.planning', 'phases', '1.0-PLAN.md'), 'plan\n');
+    fs.writeFileSync(path.join(repo, 'infra', 'script.sh'), 'code\n');
+    g(['add', '-A']);
+    g(['commit', '-qm', 'base']);
+    g(['checkout', '-qb', 'feature']);
+    fs.writeFileSync(path.join(repo, 'infra', 'script2.sh'), 'more\n');
+    g(['add', '-A']);
+    const hash = g(['commit', '-qm', 'pure code']).trim();
+
+    const createBash = extractStepBash('create_pr_branch');
+    const script = [
+      'set -u',
+      'CURRENT_BRANCH=feature',
+      'TARGET=main',
+      `INCLUDED_COMMITS="${hash}"`,
+      'FILTER_PATHS=".planning/phases/ .planning/quick/ .planning/research/ .planning/threads/ .planning/todos/ .planning/debug/ .planning/seeds/ .planning/codebase/ .planning/ui-reviews/ "',
+      createBash,
+    ].join('\n');
+    fs.writeFileSync(path.join(repo, 'create.sh'), script + '\n');
+    const r = runHook(path.join(repo, 'create.sh'), [], {
+      interpreter: 'bash',
+      cwd: repo,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+    });
+    assert.equal(r.exitCode, 0, `create loop must succeed: ${r.stderr.slice(0, 400)}`);
+    const status = g(['diff', '--name-status', 'main..feature-pr']);
+    assert.equal((status.match(/^D/gm) || []).length, 0, `no deletions allowed: ${status}`);
+  });
+});
