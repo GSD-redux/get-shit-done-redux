@@ -576,6 +576,14 @@ describe('W027 — #3663 isActiveWorktreePath casing/separator normalization', (
   });
 
   test('W027 still fires for differently-cased paths on posix (case-sensitive pin)', (t) => {
+    // POSIX-only by definition: on win32 the #3663 fix correctly FOLDS the
+    // casing, so the differently-cased path IS the active worktree and must
+    // NOT be flagged — that win32 behavior is pinned by the predicate rows
+    // above (isActiveWorktreePath … 'win32').
+    if (process.platform === 'win32') {
+      t.skip('win32 folds casing by design (#3663); the posix case-sensitivity pin has no meaning there');
+      return;
+    }
     const cwd = createTempDir('gsd-3663-w027-posix-case-');
     t.after(() => cleanup(cwd));
     fs.mkdirSync(planningDirOf(cwd), { recursive: true });
