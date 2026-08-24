@@ -28,9 +28,9 @@ const CRITICAL_THRESHOLD = 25; // remaining_percentage <= 25%
 const STALE_SECONDS = 60;      // ignore metrics older than 60s
 const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
 
-// One reading of the lifecycle event name, shared by the #3709 PreCompact reset
-// and the #2289 output-envelope allowlist. Kept as a single helper so the two
-// cannot drift into disagreeing about what counts as "no event name".
+// One DEFINITION of what counts as a lifecycle event name, shared by the #3709
+// PreCompact reset and the #2289 output-envelope allowlist. Two call sites, one
+// rule — so the two cannot drift into disagreeing about what "no event name" is.
 function readEventName(data) {
   return (data && data.hook_event_name && data.hook_event_name.trim()) || "";
 }
@@ -60,22 +60,7 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Check if context warnings are disabled via config.
-    // Collapsed existsSync+readFileSync into a single read guarded by try/catch
-    // (ENOENT or parse error → use defaults, same as old "planningDir absent" branch).
-    const cwd = data.cwd || process.cwd();
-    try {
-      const configPath = path.join(cwd, '.planning', 'config.json');
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (config.hooks?.context_warnings === false) {
-        process.exit(0);
-      }
-    } catch (e) {
-      // Missing or unparseable config → proceed with defaults (context warnings enabled)
-    }
-
     const tmpDir = os.tmpdir();
-    const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
     const warnPath = path.join(tmpDir, `claude-ctx-${sessionId}-warned.json`);
 
     // #3709: a compaction RESTARTS the context lifecycle — usage drops back to
@@ -93,12 +78,20 @@ process.stdin.on('end', () => {
     // sticky, so the #1974 /gsd:resume-work breadcrumb would keep describing the
     // earlier near-miss rather than the exhaustion that actually ended the run.
     //
-    // Handled HERE, ahead of the metrics read, deliberately: a PreCompact payload
+    // Handled HERE — ahead of BOTH the config check and the metrics read —
+    // deliberately. Ahead of the metrics read because a PreCompact payload
     // carries no fresh metrics, and a post-compaction reading is healthy again, so
     // the ENOENT / stale / above-threshold branches below all exit first and the
     // sentinel would never be cleared. Returning early also stops the compaction
     // itself from consuming a debounce slot — observed in the issue as
     // callsSinceWarn advancing 0 -> 1 on the PreCompact call.
+    //
+    // Ahead of the `context_warnings: false` exit because this is CLEANUP, not a
+    // warning: state that must not outlive a compaction should not outlive it just
+    // because warnings happen to be off right now. Config is re-read per invocation,
+    // so a session that disables warnings, compacts, then re-enables them would
+    // otherwise resurrect the stale sentinel and the original bug with it. Clearing
+    // here cannot emit anything, so the disabled contract is untouched.
     if (readEventName(data) === 'PreCompact') {
       try {
         fs.unlinkSync(warnPath);
@@ -109,6 +102,22 @@ process.stdin.on('end', () => {
       }
       process.exit(0);
     }
+
+    // Check if context warnings are disabled via config.
+    // Collapsed existsSync+readFileSync into a single read guarded by try/catch
+    // (ENOENT or parse error → use defaults, same as old "planningDir absent" branch).
+    const cwd = data.cwd || process.cwd();
+    try {
+      const configPath = path.join(cwd, '.planning', 'config.json');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (config.hooks?.context_warnings === false) {
+        process.exit(0);
+      }
+    } catch (e) {
+      // Missing or unparseable config → proceed with defaults (context warnings enabled)
+    }
+
+    const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
 
     // If no metrics file, this is a subagent or fresh session -- exit silently.
     // Collapsed existsSync+readFileSync: ENOENT → exit 0 (identical to old !existsSync branch),

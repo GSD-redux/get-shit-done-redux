@@ -1174,7 +1174,7 @@ describe('#2289 context-monitor: side effects still fire on silent events (no ou
 describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
   const HOOK = path.join(__dirname, '..', 'hooks', 'gsd-context-monitor.js');
 
-  function makeSession(t, { gsdActive = false } = {}) {
+  function makeSession(t, { gsdActive = false, contextWarnings = null } = {}) {
     const dir = os.tmpdir();
     const id = `fix-3709-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const metricsPath = path.join(dir, `claude-ctx-${id}.json`);
@@ -1185,6 +1185,10 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       projDir = fs.mkdtempSync(path.join(dir, 'fix-3709-proj-'));
       fs.mkdirSync(path.join(projDir, '.planning'), { recursive: true });
       fs.writeFileSync(path.join(projDir, '.planning', 'STATE.md'), '# State\n');
+      if (contextWarnings !== null) {
+        fs.writeFileSync(path.join(projDir, '.planning', 'config.json'),
+          JSON.stringify({ hooks: { context_warnings: contextWarnings } }));
+      }
       cwd = projDir;
     }
     t.after(() => {
@@ -1195,23 +1199,34 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     return {
       warnPath,
       // Drive one hook invocation at a given remaining%, WITHOUT touching the
-      // sentinel — that is the state under test.
-      call(event, remaining) {
-        fs.writeFileSync(metricsPath, JSON.stringify({
-          session_id: id,
-          remaining_percentage: remaining,
-          used_pct: 100 - remaining,
-          timestamp: Math.floor(Date.now() / 1000),
-        }));
+      // sentinel — that is the state under test. `metrics: false` omits the
+      // bridge file entirely, which is how a real PreCompact arrives.
+      //
+      // Returns the EXIT CODE as well as stdout. An earlier version swallowed the
+      // exit status, which made `assert.doesNotThrow` vacuous: a hook that exited
+      // 1 on an ENOENT unlink would still have passed, because the assertion only
+      // saw the helper's own catch (Codex review).
+      call(event, remaining, { metrics = true } = {}) {
+        if (metrics) {
+          fs.writeFileSync(metricsPath, JSON.stringify({
+            session_id: id,
+            remaining_percentage: remaining,
+            used_pct: 100 - remaining,
+            timestamp: Math.floor(Date.now() / 1000),
+          }));
+        } else {
+          try { fs.unlinkSync(metricsPath); } catch { /* already absent */ }
+        }
         let stdout = '';
+        let exitCode = 0;
         try {
           stdout = execFileSync(process.execPath, [HOOK], {
             input: JSON.stringify({ session_id: id, cwd, hook_event_name: event }),
             encoding: 'utf8',
             timeout: 8000,
           });
-        } catch (e) { stdout = e.stdout || ''; }
-        return stdout;
+        } catch (e) { stdout = e.stdout || ''; exitCode = e.status ?? 1; }
+        return { stdout: String(stdout), exitCode };
       },
       warn() {
         try { return JSON.parse(fs.readFileSync(warnPath, 'utf8')); } catch { return null; }
@@ -1232,17 +1247,60 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
   test('AC1: PreCompact is tolerant of the sentinel already being absent', (t) => {
     const s = makeSession(t);
     assert.strictEqual(s.warn(), null, 'precondition: no sentinel');
-    assert.doesNotThrow(() => s.call('PreCompact', 20),
-      'the common case is no warning having fired this cycle; absence is success, not failure');
+    // Asserted on the EXIT CODE, not on "did not throw". The driver catches every
+    // child failure, so doesNotThrow would hold even for a hook that exited 1 on
+    // the ENOENT unlink — the row would have proved nothing (Codex review).
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0,
+      'the common case is no warning having fired this cycle; an absent sentinel is success, and a '
+      + 'compaction must never be failed by this hook');
     assert.strictEqual(s.warn(), null, 'and it stays absent');
+  });
+
+  // Codex review: every other row writes a fresh metrics file, so the reset could
+  // be moved BELOW the metrics read, the stale check or the healthy-threshold exit
+  // and all of them would stay green — while a real PreCompact, which carries no
+  // fresh metrics and follows a recovery to healthy usage, silently kept its
+  // sentinel. These two rows pin the placement itself.
+  test('placement: the reset fires with NO metrics file at all', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const r = s.call('PreCompact', 20, { metrics: false });
+    assert.strictEqual(r.exitCode, 0, 'a PreCompact without metrics must still exit cleanly');
+    assert.strictEqual(s.warn(), null,
+      'a real PreCompact carries no bridge metrics — if the reset sat below the metrics read, the '
+      + 'ENOENT branch would exit first and the sentinel would survive every genuine compaction');
+  });
+
+  test('placement: the reset fires when usage has recovered to healthy', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    // 80% remaining is above the WARNING threshold — the shape right after a
+    // compaction, and an early `process.exit(0)` for every path below the reset.
+    assert.strictEqual(s.call('PreCompact', 80).exitCode, 0);
+    assert.strictEqual(s.warn(), null,
+      'post-compaction usage is healthy again, so a reset placed below the above-threshold exit '
+      + 'would never run — which is exactly the state the issue reported in a live session');
+  });
+
+  // Codex review: the config gate is an early exit that sits ABOVE the reset's
+  // original position, so a session that disabled warnings, compacted, and then
+  // re-enabled them resurrected the stale sentinel and the bug with it. Config is
+  // re-read per invocation, so that sequence is supported, not hypothetical.
+  test('placement: the reset fires even when context warnings are disabled', (t) => {
+    const s = makeSession(t, { gsdActive: true, contextWarnings: false });
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
+    assert.strictEqual(s.warn(), null,
+      'clearing the sentinel is CLEANUP, not a warning — state that must not outlive a compaction '
+      + 'should not outlive it merely because warnings are switched off for now');
   });
 
   test('AC2: after a compaction the first WARNING fires immediately, not debounced', (t) => {
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
     s.call('PreCompact', 20);
-    const out = s.call('PostToolUse', 30);
-    assert.match(out, /CONTEXT WARNING/,
+    const { stdout } = s.call('PostToolUse', 30);
+    assert.match(stdout, /CONTEXT WARNING/,
       'The context-monitor reference states "First warning always fires immediately". Before the fix '
       + 'this was silently debounced: the surviving sentinel made it look like a repeat warning');
   });
@@ -1253,8 +1311,8 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     s.call('PreCompact', 20);
     s.call('PostToolUse', 30);
     assert.strictEqual(s.warn().lastLevel, 'warning', 'the fresh cycle recorded a WARNING');
-    const out = s.call('PostToolUse', 20);
-    assert.match(out, /CONTEXT CRITICAL/,
+    const { stdout } = s.call('PostToolUse', 20);
+    assert.match(stdout, /CONTEXT CRITICAL/,
       'The context-monitor reference states "Severity escalation (WARNING -> CRITICAL) bypasses '
       + 'debounce". That bypass is `lastLevel === "warning"`, unreachable while a stale sentinel lives');
   });
@@ -1281,8 +1339,8 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
   test('AC5 (non-vacuity): a NON-compaction lifecycle event does NOT clear the sentinel', (t) => {
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
-    const out = s.call('Stop', 20);
-    assert.strictEqual(out, '', 'Stop stays silent (#2289)');
+    const { stdout } = s.call('Stop', 20);
+    assert.strictEqual(stdout, '', 'Stop stays silent (#2289)');
     assert.ok(s.warn(), 'Stop must NOT clear the sentinel — if this fails the reset is firing for '
       + 'every event, not just PreCompact, and the debounce is gone entirely');
   });
