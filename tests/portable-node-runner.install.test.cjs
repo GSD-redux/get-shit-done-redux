@@ -102,13 +102,17 @@ const RUN_TIMEOUT_MS = 20000;
 // POSIX lanes; win32 lanes prove the structural projection (see the win32
 // describe below) — Git Bash availability is not guaranteed on every runner.
 function skipOnWin32(t, reason) {
-  if (process.platform === 'win32') t.skip(reason);
+  if (process.platform === 'win32') {
+    t.skip(reason);
+    return true;
+  }
+  return false;
 }
 
 describe('#3662 runtime-resolving managed hook runners', () => {
   describe('emitted commands resolve node at run time (criteria 1+2)', () => {
     test('portable hook command resolves node when baked path is absent', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below');
+      if (skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below')) return;
       const { home, configDir } = makeHookTree(t, 'portable-run');
       withHome(t, home);
       const emitted = hooksSurface.buildHookCommand(configDir, 'gsd-statusline.js', {
@@ -129,7 +133,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
     });
 
     test('plain hook command resolves node when baked path is absent', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below');
+      if (skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below')) return;
       const { home, configDir } = makeHookTree(t, 'plain-run');
       withHome(t, home);
       const emitted = hooksSurface.buildHookCommand(configDir, 'gsd-statusline.js', {
@@ -149,7 +153,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
     });
 
     test('chain prefers the baked absolute runner first', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below');
+      if (skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below')) return;
       const { home, configDir } = makeHookTree(t, 'chain-order');
       withHome(t, home);
       const stub = makeNodeStub(t, 'chain-order');
@@ -170,7 +174,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
     });
 
     test('resolver prefers its first argument', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below');
+      if (skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below')) return;
       const { home, configDir } = makeHookTree(t, 'resolver-order');
       withHome(t, home);
       const stub = makeNodeStub(t, 'resolver-order');
@@ -192,7 +196,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
     });
 
     test('chain resolves with the real execPath under a minimal PATH', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below');
+      if (skipOnWin32(t, 'POSIX sh execution lane; win32 structural coverage below')) return;
       const { home, configDir } = makeHookTree(t, 'minimal-path');
       withHome(t, home);
       const emitted = hooksSurface.buildHookCommand(configDir, 'gsd-statusline.js', {
@@ -388,7 +392,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
     });
 
     test('resolver fails visibly when no node can be found', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane');
+      if (skipOnWin32(t, 'POSIX sh execution lane')) return;
       const { home, configDir } = makeHookTree(t, 'resolver-none');
       const resolver = path.join(configDir, 'hooks', RESOLVER_HOOK);
       assert.ok(fs.existsSync(resolver), 'resolver not staged into fixture');
@@ -418,16 +422,20 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       const plain = hooksSurface.buildHookCommand(configDir, 'gsd-session-state.sh', {
         runtime: 'claude',
       });
-      assert.equal(plain, `bash ${JSON.stringify(path.join(configDir, 'hooks', 'gsd-session-state.sh').replace(/\\/g, '/'))}`);
+      // The runner token is resolveBashRunner's platform answer — literal
+      // `bash` on POSIX, the discovered absolute Git-Bash path on win32
+      // (#580) — the pre-#3662 .sh shape, byte for byte.
+      const shRunner = hooksSurface.resolveBashRunner({ platform: process.platform }) || 'bash';
+      assert.equal(plain, `${shRunner} ${JSON.stringify(path.join(configDir, 'hooks', 'gsd-session-state.sh').replace(/\\/g, '/'))}`);
       const portable = hooksSurface.buildHookCommand(configDir, 'gsd-session-state.sh', {
         portableHooks: true,
         runtime: 'claude',
       });
-      assert.equal(portable, `bash "$HOME/.claude/hooks/gsd-session-state.sh"`);
+      assert.equal(portable, `${shRunner} "$HOME/.claude/hooks/gsd-session-state.sh"`);
     });
 
     test('chain embeds shell-hostile baked paths safely', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane');
+      if (skipOnWin32(t, 'POSIX sh execution lane')) return;
       const { home, configDir } = makeHookTree(t, 'hostile-path');
       withHome(t, home);
       const hostileDir = createTempDir('gsd3662-hostile');
@@ -454,7 +462,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
     });
 
     test('chain stays valid sh when no candidate resolves', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane');
+      if (skipOnWin32(t, 'POSIX sh execution lane')) return;
       const { home, configDir } = makeHookTree(t, 'sh-valid');
       withHome(t, home);
       const emitted = hooksSurface.buildHookCommand(configDir, 'gsd-statusline.js', {
@@ -517,7 +525,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
 
   describe('kimi config.toml surface', () => {
     test('kimi toml hook commands resolve node at run time', (t) => {
-      skipOnWin32(t, 'POSIX sh execution lane');
+      if (skipOnWin32(t, 'POSIX sh execution lane')) return;
       const { home, configDir } = makeHookTree(t, 'kimi-run');
       withHome(t, home);
       const block = hooksSurface.buildKimiHooksTomlBlock(configDir, {
