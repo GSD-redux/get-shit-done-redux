@@ -35,7 +35,8 @@
  * gsd-core/bin/lib/health-diagnostic-rules/worktree-health.cjs (gitignored).
  */
 
-import path from 'node:path';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import shellCmdProjection = require('../shell-command-projection.cjs');
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- type-only; erased at compile time, no runtime require emitted
 import type planningSnapshotMod = require('../planning-snapshot.cjs');
@@ -141,15 +142,35 @@ function checkW017(snapshot: PlanningSnapshot): Diagnostic[] {
 // (with the real path) lives in `message`; `remedy.args.command` stays a
 // static `<path>` template, mirroring the split the brief specifies.
 
+// ─── #3663 — path-comparison provenance helper ─────────────────────────────
+//
+// snapshot.cwd is raw process-cwd-derived — path.resolve() normalizes
+// separators and relative segments but NOT casing, and a process launched via
+// a differently-cased path echoes that spelling back. finding.path is
+// `git worktree list`-derived, which self-normalizes to the canonical
+// on-disk casing (forward slashes). Comparing those two spellings strictly
+// misclassifies the ACTIVE worktree as stale on win32 — so the comparison
+// folds case ONLY on win32 (case-insensitive filesystem, via the Shell
+// Command Projection seam's toComparablePathKey — the platform-conditional
+// fold policy lives there, not per call site) and stays case-sensitive on
+// POSIX, where differently-cased paths are genuinely different directories.
+// No realpath resolution — that would change symlink matching behavior.
+function isActiveWorktreePath(
+  activeCwd: string,
+  worktreePath: string,
+  platform: string = process.platform,
+): boolean {
+  const active = shellCmdProjection.toComparablePathKey(activeCwd, platform);
+  const worktree = shellCmdProjection.toComparablePathKey(worktreePath, platform);
+  return active === worktree || active.startsWith(worktree + '/');
+}
+
 function checkW027(snapshot: PlanningSnapshot): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const activeCwd = snapshot.cwd;
   for (const finding of snapshot.worktreeHealth.value) {
     if (finding.kind !== 'stale') continue;
-    const normalizedWorktree = path.resolve(finding.path);
-    const isActiveWorktree =
-      activeCwd === normalizedWorktree || activeCwd.startsWith(normalizedWorktree + path.sep);
-    if (isActiveWorktree) continue;
+    if (isActiveWorktreePath(activeCwd, finding.path)) continue;
     diagnostics.push({
       code: 'W027',
       severity: SEVERITY.WARNING,
@@ -194,4 +215,4 @@ const RULES: Rule[] = [
   },
 ];
 
-export = { RULES };
+export = { RULES, isActiveWorktreePath };
