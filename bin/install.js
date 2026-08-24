@@ -670,6 +670,39 @@ function _resolveScopeSafe(id, runtime) {
 }
 
 /**
+ * #3664 — warn (never refuse) when `--config-dir` points the install at a
+ * directory whose agent destination already holds FOREIGN (non-GSD) agent
+ * files — the fingerprint of another harness's config home (e.g. ~/.junie,
+ * ~/.factory) or a hand-curated agents dir. GSD emits the selected runtime's
+ * artifacts verbatim: tool IDs (`Skill`) and MCP grants (`mcp__server__tool`)
+ * that are inert or invalid in a foreign harness surface only at dispatch
+ * time, months later. Warn-and-proceed is the issue-sanctioned option (b):
+ * a fresh custom dir (the documented brand-specific-dir use), a gsd-only dir
+ * (updates, the --all shared dir), and the no-flag default-home path (users
+ * keep personal agents in ~/.claude/agents) all stay silent. Degrades
+ * silently on any resolution failure — the warn path never blocks install.
+ */
+function warnIfForeignAgentDest(runtime, targetDir, scope, opts) {
+  if (!opts || opts.explicitConfigDir !== true) return;
+  try {
+    const layout = resolveRuntimeArtifactLayout(runtime, targetDir, scope);
+    const agentsKind = layout.kinds.find((k) => k.kind === 'agents');
+    if (!agentsKind) return;
+    const agentsDir = path.join(agentsKind.home || targetDir, agentsKind.destSubpath);
+    if (!fs.existsSync(agentsDir) || !fs.statSync(agentsDir).isDirectory()) return;
+    const foreign = fs
+      .readdirSync(agentsDir)
+      .filter((f) => f.endsWith('.md') && !/^gsd-/.test(f));
+    if (foreign.length === 0) return;
+    console.log(
+      `  ${yellow}⚠${reset} ${bold}${targetDir}${reset} already contains ${foreign.length} non-GSD agent file(s) — this may be another harness's config home. GSD emits artifacts shaped for ${runtime}: tool IDs and MCP grants may be inert or invalid for whatever harness reads this directory (#3664).`
+    );
+  } catch (_) {
+    /* never block install on the warning path */
+  }
+}
+
+/**
  * Resolve the ACTUAL on-disk skills-install directory for a runtime, honoring a
  * skills-kind `home` override (ADR-1239 upgrade 3 / #2088: e.g. Codex skills ->
  * $HOME/.agents/skills instead of the runtime's configDir). Descriptor-driven
@@ -10219,6 +10252,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       ? process.cwd()
       : path.join(process.cwd(), dirName);
 
+  // #3664: a --config-dir destination holding foreign agent files gets an
+  // explicit install-time warning — never a silent Claude-shaped emit.
+  if (isGlobal) {
+    warnIfForeignAgentDest(runtime, targetDir, _installScopeId, { explicitConfigDir: Boolean(explicitConfigDir) });
+  }
+
   // #2875 (#1874-F19 anti-inertness, test-matrix C7): recover any user
   // artifact orphaned by a PRIOR install run that died between staging and
   // its own restore/discard, BEFORE this run's own preserve step stages
@@ -13567,6 +13606,8 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
 module.exports = {
     // #3677 — hyphen-namespace normalization seam for agent bodies
     shouldNormalizeHyphenNamespaceInAgentBody,
+    // #3664: --config-dir foreign-agent-destination warning (warn-and-proceed)
+    warnIfForeignAgentDest,
     normalizeAgentBodyForRuntime,
     yamlIdentifier,
     getCodexSkillAdapterHeader,

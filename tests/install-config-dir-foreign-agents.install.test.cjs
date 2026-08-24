@@ -26,7 +26,6 @@ const { runNode } = require('./helpers/process-seam.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const installer = require('../bin/install.js');
-const { resolveScope } = require('../gsd-core/bin/lib/install-scope.cjs');
 
 const INSTALLER_ENTRY = path.join(__dirname, '..', 'bin', 'install.js');
 
@@ -54,9 +53,8 @@ function makeDest(t, name, agentFiles) {
 describe('#3664 — config-dir foreign-agent destination warning', () => {
   test('warns when the destination holds foreign agent files', (t) => {
     const { dest } = makeDest(t, 'foreign', ['junie-guide.md']);
-    const scope = resolveScope({ id: 'global', runtime: 'claude' });
     const { lines } = capturedLogs(t, () =>
-      installer.warnIfForeignAgentDest('claude', dest, scope, { explicitConfigDir: true }),
+      installer.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
     );
     const warning = lines.find((l) => l.includes('(#3664)'));
     assert.ok(warning, `expected a #3664 warning, got: ${lines.join(' | ') || '(none)'}`);
@@ -104,9 +102,8 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
 
   test('silent on a fresh custom dir', (t) => {
     const { dest, agentsDir } = makeDest(t, 'fresh', []);
-    const scope = resolveScope({ id: 'global', runtime: 'claude' });
     const { lines } = capturedLogs(t, () =>
-      installer.warnIfForeignAgentDest('claude', dest, scope, { explicitConfigDir: true }),
+      installer.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `fresh dir must be silent: ${lines.join(' | ')}`);
     assert.ok(fs.existsSync(agentsDir));
@@ -114,9 +111,8 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
 
   test('silent on a gsd-only agents dir', (t) => {
     const { dest } = makeDest(t, 'gsdonly', ['gsd-executor.md', 'gsd-verifier.md']);
-    const scope = resolveScope({ id: 'global', runtime: 'claude' });
     const { lines } = capturedLogs(t, () =>
-      installer.warnIfForeignAgentDest('claude', dest, scope, { explicitConfigDir: true }),
+      installer.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `gsd-only dir must be silent: ${lines.join(' | ')}`);
   });
@@ -125,18 +121,16 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
     // A default-home install with the user's personal agents present is the
     // NORMAL Claude case — the gate is scoped to the --config-dir flag.
     const { dest } = makeDest(t, 'noflag', ['personal-agent.md']);
-    const scope = resolveScope({ id: 'global', runtime: 'claude' });
     const { lines } = capturedLogs(t, () =>
-      installer.warnIfForeignAgentDest('claude', dest, scope, { explicitConfigDir: false }),
+      installer.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: false }),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `no-flag path must be silent: ${lines.join(' | ')}`);
   });
 
   test('warns on mixed gsd and personal agents', (t) => {
     const { dest } = makeDest(t, 'mixed', ['gsd-executor.md', 'my-own-agent.md']);
-    const scope = resolveScope({ id: 'global', runtime: 'claude' });
     const { lines } = capturedLogs(t, () =>
-      installer.warnIfForeignAgentDest('claude', dest, scope, { explicitConfigDir: true }),
+      installer.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
     );
     const warning = lines.find((l) => l.includes('(#3664)'));
     assert.ok(warning, 'mixed dir with a foreign agent must warn');
@@ -146,9 +140,8 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
   test('ignores non-markdown files', (t) => {
     const { dest } = makeDest(t, 'nonmd', []);
     fs.writeFileSync(path.join(dest, 'agents', 'notes.txt'), 'not an agent');
-    const scope = resolveScope({ id: 'global', runtime: 'claude' });
     const { lines } = capturedLogs(t, () =>
-      installer.warnIfForeignAgentDest('claude', dest, scope, { explicitConfigDir: true }),
+      installer.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `non-agent files are not harness evidence: ${lines.join(' | ')}`);
   });
@@ -157,7 +150,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
     const dest = createTempDir('gsd-3664-unknown-');
     t.after(() => cleanup(dest));
     const { lines } = capturedLogs(t, () =>
-      installer.warnIfForeignAgentDest('not-a-registered-runtime', dest, null, { explicitConfigDir: true }),
+      installer.warnIfForeignAgentDest('not-a-registered-runtime', dest, 'global', { explicitConfigDir: true }),
     );
     assert.ok(
       !lines.some((l) => l.includes('(#3664)')),
