@@ -350,6 +350,10 @@ are done. Blocked-and-incomplete must never be reported as finished.
 
 ```bash
 VERIFY_STATUS=$(gsd_run query verification status "${PHASE_DIR}" --pick status)
+# #3684: checkbox = marked-complete; report fields can claim a no-op write (#3685).
+ANALYZE=$(gsd_run query roadmap.analyze)
+if [[ "$ANALYZE" == @file:* ]]; then ANALYZE=$(cat "${ANALYZE#@file:}"); fi
+PHASE_MARKED=$(echo "$ANALYZE"|jq -r --arg p "$PHASE_NUMBER" 'def n:sub("^0+(?=[0-9])";"");.phases[]|select(((.number//.phase_number|tostring|n))==($p|n))|.roadmap_complete'|head -1)
 ```
 
 Evaluate in this exact order — the first matching condition decides the outcome; do not evaluate
@@ -366,8 +370,6 @@ later conditions once one matches:
    → exit. Do not fall through to condition 3; this is not a completion state.
 3. **No filter is active, and every filtered plan was filtered by `has_summary` alone** (no
    blocked-plan skip occurred):
-   - **`VERIFY_STATUS` is anything other than `missing`**: the phase genuinely finished. Report
-     "No matching incomplete plans" → exit, unchanged.
    - **`VERIFY_STATUS == missing`**: the plans are all summarized but the run never reached the
      tail gates. Report:
      `"All {plan_count} plans are summarized but no VERIFICATION.md exists — resuming at the phase gates (#2868)."`
@@ -382,6 +384,13 @@ later conditions once one matches:
      skip `aggregate_results`, `code_review_gate` or `regression_gate` on this path — the manual
      workaround this replaces skipped all three, and that gap is the reason this route exists
      rather than telling users to spawn the verifier by hand.
+   - **`VERIFY_STATUS` ≠ `missing` + `PHASE_MARKED` is `true`**: genuinely finished.
+     Report "No matching incomplete plans" → exit, unchanged.
+   - **`VERIFY_STATUS` ≠ `missing` + `PHASE_MARKED` not `true`** — the run died between
+     `verify_phase_goal` and `update_roadmap` (#3684): verification EXISTS — do not redo
+     it or the gates already run. Report `"Phase {X} is verified but never marked
+     complete — resuming at update_roadmap (#3684)."` and continue directly at
+     `update_roadmap`; the tail steps then run in their normal order.
 
 Report:
 ```
@@ -422,7 +431,7 @@ CROSS_AI_TIMEOUT=$(gsd_run query config-get workflow.cross_ai_timeout 2>/dev/nul
 **If no plans are marked for cross-AI:** Skip to execute_waves.
 
 **If plans are marked but `cross_ai_command` is empty:** Error — tell user to set
-`workflow.cross_ai_command` via `gsd-tools.cjs query config-set workflow.cross_ai_command "<command>"`.
+`workflow.cross_ai_command` via `gsd_run query config-set workflow.cross_ai_command "<command>"`.
 
 **For each cross-AI plan (sequentially):**
 
@@ -1521,7 +1530,7 @@ For 1M+ context models, consider:
 </context_efficiency>
 
 <failure_handling>
-- **Quota / rate-limit (any runtime — #3095):** Agent return body contains a sentinel like `usage limit`, `rate limit`, `429`, `too many requests`, `RESOURCE_EXHAUSTED`, `usage_limit_reached`. Route via `gsd-tools.cjs query agent.classify-failure` → `class: "quota-exceeded"`. Do not offer retry-now; the right action is wait-for-reset and resume.
+- **Quota / rate-limit (any runtime — #3095):** Agent return body contains a sentinel like `usage limit`, `rate limit`, `429`, `too many requests`, `RESOURCE_EXHAUSTED`, `usage_limit_reached`. Route via `gsd_run query agent.classify-failure` → `class: "quota-exceeded"`. Do not offer retry-now; the right action is wait-for-reset and resume.
 - **classifyHandoffIfNeeded false failure:** Agent reports "failed" but error is `classifyHandoffIfNeeded is not defined` → Claude Code bug, not GSD. Spot-check (SUMMARY exists, commits present) → if pass, treat as success
 - **Agent fails mid-plan:** Missing SUMMARY.md → report, ask user how to proceed
 - **Dependency chain breaks:** Wave 1 fails → Wave 2 dependents likely fail → user chooses attempt or skip

@@ -131,7 +131,7 @@ Resolve before transition. Review: `/gsd:audit-uat`
 ```
 
 This preliminary check blocks obviously unresolved verification early, ahead
-of the authoritative gate below. `gsd-tools.cjs query phase.complete` (in
+of the authoritative gate below. `gsd_run query phase.complete` (in
 `update_roadmap_and_state`) remains the authoritative stale-aware gate and
 fail-closes unless canonical verification status is `passed`.
 
@@ -197,7 +197,7 @@ If found, delete them — phase is complete, handoffs are stale.
 
 <step name="update_roadmap_and_state">
 
-**Delegate ROADMAP.md and STATE.md updates to `gsd-tools.cjs query phase.complete`:**
+**Delegate ROADMAP.md and STATE.md updates to `gsd_run query phase.complete`:**
 
 ```bash
 TRANSITION=$(gsd_run query phase.complete "${current_phase}")
@@ -333,7 +333,7 @@ This step is fully delegated to `graduation.md`. It handles guard checks (featur
 
 <step name="update_current_position_after_transition">
 
-**Note:** Basic position updates (Current Phase, Status, Current Plan, Last Activity) were already handled by `gsd-tools.cjs query phase.complete` in the update_roadmap_and_state step.
+**Note:** Basic position updates (Current Phase, Status, Current Plan, Last Activity) were already handled by `gsd_run query phase.complete` in the update_roadmap_and_state step.
 
 Verify the updates are correct by reading STATE.md. If the progress bar needs updating, use:
 
@@ -437,7 +437,7 @@ Resume file: None
 
 **MANDATORY: Verify milestone status before presenting next steps.**
 
-**Use the transition result from `gsd-tools.cjs query phase.complete`:**
+**Use the transition result from `gsd_run query phase.complete`:**
 
 The `is_last_phase` field from the phase complete result tells you directly:
 - `is_last_phase: false` → More phases remain → Go to **Route A**

@@ -943,3 +943,242 @@ describe('issue #3210: execute-phase auto-mode carve-out exempts precondition-un
     );
   });
 });
+
+// ─── #3684 — verified-but-never-marked-complete resume ───────────────────────
+//
+// #2868 covered stranding BEFORE verification; the symmetric gap one step later
+// (VERIFICATION.md written, run died before update_roadmap) made condition 3's
+// "genuinely finished" bullet exit cleanly forever — the phase stays verified on
+// disk but permanently unticked, with update_roadmap / auto_copy_learnings /
+// close_phase_todos / the transition handoff never running. The fix: that branch
+// reads the ROADMAP's own completion marker (roadmap.analyze's roadmap_complete —
+// the #2245-hardened, #3537-padding-tolerant read; NEVER a completion report
+// field, which #3685 shows can claim a write that didn't happen) and resumes at
+// update_roadmap when the marker is unticked, without redoing verification.
+
+describe('execute-phase workflow: #3684 verified-unmarked resume', () => {
+  function stepText() {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const start = content.indexOf('<step name="discover_and_group_plans">');
+    const end = content.indexOf('</step>', start);
+    return content.slice(start, end);
+  }
+
+  test('condition 3 reads the roadmap marker, not VERIFY_STATUS alone', () => {
+    const step = stepText();
+    assert.ok(
+      /roadmap\.analyze/.test(step),
+      'the finished branch must query roadmap.analyze for the completion marker',
+    );
+    assert.ok(
+      /roadmap_complete/.test(step),
+      'the finished branch must read roadmap_complete — the authoritative checkbox state',
+    );
+    // Report fields may be NAMED in the prohibition prose — what is
+    // forbidden is reading them as the signal (a command/jq consumption).
+    const branchBash = step.split('\n').filter((l) => /jq|gsd_run|pick/.test(l)).join('\n');
+    assert.ok(
+      !/roadmap_updated|state_updated/.test(branchBash),
+      'completion report fields must never be READ as the already-complete signal (#3685)',
+    );
+  });
+
+  test('verified-unmarked resume continues at update_roadmap', () => {
+    const step = stepText();
+    const branch = step.slice(step.indexOf('VERIFY_STATUS` ≠ `missing` + `PHASE_MARKED` not `true`'));
+    assert.ok(
+      branch.includes('update_roadmap'),
+      'the unmarked-resume branch must continue at update_roadmap',
+    );
+    assert.ok(
+      /not.*redo|do not redo|without redoing|verification already|already exists/i.test(branch),
+      'the branch must state verification is not redone',
+    );
+    assert.ok(
+      branch.includes('#3684'),
+      'the branch must cite #3684',
+    );
+  });
+
+  test('genuinely-finished exit and the 2868 branch are unchanged', () => {
+    const step = stepText();
+    assert.ok(
+      step.includes('"No matching incomplete plans"'),
+      'the genuinely-finished clean exit text stays',
+    );
+    assert.ok(
+      /`VERIFY_STATUS == missing`/.test(step),
+      'the #2868 missing-verification branch stays',
+    );
+    assert.ok(
+      step.includes('resuming at the phase gates (#2868)'),
+      'the #2868 resume message stays byte-recognizable',
+    );
+  });
+
+  function buildStrandedFixture(t, { ticked }) {
+    const proj = createTempProject('gsd-3684-');
+    t.after(() => cleanup(proj));
+    const phaseDir = path.join(proj, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'P001-PLAN.md'), [
+      '---', 'wave: 1', 'objective: Do the thing', 'autonomous: true', 'depends_on: []', '---', '',
+      '# Plan 001', '', '<objective>Do the thing</objective>', '', '<task>Do it</task>',
+    ].join('\n'));
+    fs.writeFileSync(path.join(phaseDir, 'P001-SUMMARY.md'), '# Summary\nDone.\n');
+    fs.writeFileSync(path.join(phaseDir, '01-alpha-VERIFICATION.md'), [
+      '---', 'status: passed', '---', '', '# Verification', '', 'PASS',
+    ].join('\n'));
+    // Heading-shaped ROADMAP (analyze's parser keys on "### Phase N:" under
+    // a sections heading); the checkbox line carries the marked-complete
+    // marker roadmap_complete reads (- [x]/**Phase 1** vs - [ ]).
+    fs.writeFileSync(path.join(proj, '.planning', 'ROADMAP.md'), [
+      '# Roadmap v1.0', '', '## Phases', '',
+      '### Phase 1: Alpha', '**Goal:** First phase', '',
+      `- [${ticked ? 'x' : ' '}] **Phase 1: Alpha** - First phase`, '',
+    ].join('\n'));
+    return { proj, phaseDir };
+  }
+
+  test('routing queries yield passed + unmarked on the stranded fixture', (t) => {
+    const { proj } = buildStrandedFixture(t, { ticked: false });
+    const verify = runGsdTools(`verification status ${path.join(proj, '.planning', 'phases', '01-alpha')} --pick status`, proj);
+    const analyze = runGsdTools(['roadmap.analyze', '--json'], proj);
+    assert.ok(analyze.success, `roadmap.analyze should succeed: ${analyze.error}`);
+    const phases = JSON.parse(analyze.output).phases || [];
+    const p1 = phases.find((p) => String(p.number) === '1');
+    assert.ok(p1, `phase 1 should appear in analyze output: ${JSON.stringify(phases)}`);
+    assert.equal(p1.roadmap_complete, false, 'unticked checkbox must read as not complete');
+    // The step's decision inputs: VERIFY_STATUS != missing AND !PHASE_MARKED →
+    // the #3684 resume route, not the finished exit.
+    assert.ok(verify.success, `verification status query should succeed: ${verify.error}`);
+    assert.notEqual(String(verify.output).trim(), 'missing', 'the stranded fixture has a verification artifact');
+  });
+
+  test('routing queries yield marked after completion', (t) => {
+    const { proj } = buildStrandedFixture(t, { ticked: true });
+    const analyze = runGsdTools(['roadmap.analyze', '--json'], proj);
+    const phases = JSON.parse(analyze.output).phases || [];
+    const p1 = phases.find((p) => String(p.number) === '1');
+    assert.ok(p1, 'phase 1 should appear');
+    assert.equal(p1.roadmap_complete, true, 'ticked checkbox must read as complete');
+  });
+
+  test('phase.complete is idempotent on the already-complete fixture', (t) => {
+    const { proj } = buildStrandedFixture(t, { ticked: false });
+    const first = runGsdTools('phase complete 1', proj);
+    assert.ok(first.success, `first completion should succeed: ${first.error}`);
+    const roadmapAfterFirst = fs.readFileSync(path.join(proj, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.ok(/\[x\]/.test(roadmapAfterFirst), 'first completion ticks the checkbox');
+    const second = runGsdTools('phase complete 1', proj);
+    assert.ok(second.success, 'second completion should succeed (no-op)');
+    const roadmapAfterSecond = fs.readFileSync(path.join(proj, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.equal(roadmapAfterSecond, roadmapAfterFirst, 'second run must leave ROADMAP byte-identical (criterion 3)');
+  });
+});
+
+describe('execute-phase workflow: #3684 review findings — join normalization', () => {
+  const WORKFLOW_JQ_RE = /PHASE_MARKED=\$\(echo "\$ANALYZE"\|jq -r --arg p "\$PHASE_NUMBER" '([^']+)'\|head -1\)/;
+
+  function extractWorkflowJq() {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const m = content.match(WORKFLOW_JQ_RE);
+    assert.ok(m, 'the workflow must carry the PHASE_MARKED jq line');
+    return m[1];
+  }
+
+  test('the join key is padding-normalized on both sides (drifted shapes route correctly)', (t) => {
+    // The join must tolerate the real-world drift every other resolver in the
+    // pipeline tolerates (#3537/#3572/#2528): directory token "01" vs ROADMAP
+    // heading "1" and vice versa. An exact-string compare misroutes a
+    // verified AND ticked phase into the resume branch forever — the same
+    // "permanently stuck" shape #3684 exists to fix, one level up.
+    const jqFilter = extractWorkflowJq();
+    assert.ok(
+      /sub\("\^0\+\(\?=\[0-9\]\)";""\)/.test(jqFilter),
+      `the jq must strip leading zeros on both sides: ${jqFilter}`,
+    );
+
+    const proj = createTempProject('gsd-3684-pad-');
+    t.after(() => cleanup(proj));
+    const phaseDir = path.join(proj, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'P001-SUMMARY.md'), '# Summary\n');
+    // Heading UNPADDED while the directory token is PADDED — the drifted shape.
+    fs.writeFileSync(path.join(proj, '.planning', 'ROADMAP.md'), [
+      '# Roadmap v1.0', '', '## Phases', '',
+      '### Phase 1: Alpha', '**Goal:** g', '',
+      '- [x] **Phase 1: Alpha** - done', '',
+    ].join('\n'));
+
+    const analyze = runGsdTools('roadmap.analyze --json', proj);
+    assert.ok(analyze.success, `roadmap.analyze should succeed: ${analyze.error}`);
+    // Evaluate the extracted filter's join semantics via a node mirror of
+    // `sub("^0+(?=[0-9])";"")` — the bench hosts no jq binary, so the
+    // filter string itself is pinned structurally above and its normalization
+    // semantics are replayed here against real analyze output.
+    const stripPad = (s) => String(s).replace(/^0+(?=[0-9])/, '');
+    const phases = JSON.parse(analyze.output).phases || [];
+    const evalJoin = (p) => {
+      const hit = phases.find((ph) => stripPad(ph.number ?? ph.phase_number) === stripPad(p));
+      return hit ? String(hit.roadmap_complete) : '';
+    };
+    // $p as init derives it (directory token "01") and the unpadded form —
+    // both must find the ticked phase under the unpadded heading.
+    for (const p of ['01', '1']) {
+      assert.equal(evalJoin(p), 'true', `padded $p=${p} must match the unpadded heading`);
+    }
+  });
+
+  test('idempotency row carries STATE.md and tolerates only the last_updated delta', (t) => {
+    // Criterion 3 says "no observable change to roadmap OR tracked progress
+    // state". The ROADMAP half is byte-identity; the STATE half legitimately
+    // touches only last_updated (the transition runs unconditionally — the
+    // triage's own empirical finding). Assert both halves explicitly.
+    const proj = createTempProject('gsd-3684-state-');
+    t.after(() => cleanup(proj));
+    const phaseDir = path.join(proj, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'P001-PLAN.md'), [
+      '---', 'wave: 1', 'objective: x', 'autonomous: true', 'depends_on: []', '---', '', '# P', '',
+      '<objective>x</objective>', '', '<task>t</task>',
+    ].join('\n'));
+    fs.writeFileSync(path.join(phaseDir, 'P001-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(path.join(phaseDir, '01-alpha-VERIFICATION.md'), '---\nstatus: passed\n---\n');
+    fs.writeFileSync(path.join(proj, '.planning', 'ROADMAP.md'), [
+      '# Roadmap v1.0', '', '## Phases', '',
+      '### Phase 1: Alpha', '**Goal:** g', '',
+      '- [ ] **Phase 1: Alpha** - todo', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(proj, '.planning', 'STATE.md'), [
+      '---', 'current_phase: 1', 'current_phase_name: Alpha', 'status: executing', '',
+      'last_updated: 2026-01-01', '---', '', '# STATE', '',
+    ].join('\n'));
+
+    const first = runGsdTools('phase complete 1', proj);
+    assert.ok(first.success, `first completion should succeed: ${first.error}`);
+    const roadmap1 = fs.readFileSync(path.join(proj, '.planning', 'ROADMAP.md'), 'utf-8');
+    const state1 = fs.readFileSync(path.join(proj, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/\[x\]/.test(roadmap1), 'first completion ticks the checkbox');
+
+    const second = runGsdTools('phase complete 1', proj);
+    assert.ok(second.success, 'second completion should succeed');
+    const roadmap2 = fs.readFileSync(path.join(proj, '.planning', 'ROADMAP.md'), 'utf-8');
+    const state2 = fs.readFileSync(path.join(proj, '.planning', 'STATE.md'), 'utf-8');
+    assert.equal(roadmap2, roadmap1, 'ROADMAP byte-identical on re-run');
+    // Characterized delta (empirically pinned): a re-run never rewrites or
+    // removes existing STATE content — it may only refresh the last_updated
+    // stamp and ADD metrics keys the first run withheld (percent: the #3318
+    // withhold lifts once the scope reads complete). Assert state2 is an
+    // ordered superset of state1 modulo the stamp.
+    const keep = (s) => s.split('\n').filter((l) => !/^last_updated:/.test(l));
+    const lines1 = keep(state1);
+    const lines2 = keep(state2);
+    let i2 = 0;
+    for (const line of lines1) {
+      const at = lines2.indexOf(line, i2);
+      assert.ok(at !== -1, `re-run must not rewrite STATE content; missing after ${i2}: ${line}`);
+      i2 = at + 1;
+    }
+  });
+});

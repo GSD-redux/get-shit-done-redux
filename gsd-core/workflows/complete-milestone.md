@@ -61,7 +61,7 @@ These items are open. Choose an action:
 ```
 
 If user chooses [A] (Acknowledge):
-1. Re-run `gsd-tools.cjs query audit-open --json` to get structured data.
+1. Re-run `gsd_run query audit-open --json` to get structured data.
 2. Acknowledge every open item through the `audit-open acknowledge` CLI writer — this is what actually suppresses each item starting at the NEXT `audit-open` scan; the STATE.md table in step 3 is a disclosure record only, it is no longer the suppression mechanism. Every acknowledge call's exit status is accumulated (`ACK_FAILURES`); the step HALTS before closing if any failed — a refusal (`unsupported_heading_shape`, `ambiguous`, `not_found`, missing file, etc.) must never be silently discarded and let the close proceed as if everything were suppressed. `AUDIT_JSON` uses the same `@file:` large-payload sentinel handling `INIT_MANAGER` uses in `verify_readiness` below — `io.output` swaps any JSON payload over 50000 chars for a `@file:<path>` marker, and feeding that literal string to `jq` would silently make every loop body below iterate zero times:
    ```bash
    AUDIT_JSON=$(gsd_run query audit-open --json)
@@ -162,8 +162,8 @@ If user chooses [A] (Acknowledge):
      exit 1
    fi
    ```
-   `todos` is the only category the scanner caps (5 entries per scan, with a remainder count for the rest). Re-run `gsd-tools.cjs query audit-open --json` (through the same `@file:` handling above) and repeat the `todos` block until it reports no `todos` items — every other category always returns its full open set in one pass.
-3. Re-run `gsd-tools.cjs query audit-open --json` once more and write the items just acknowledged as new rows to STATE.md under `## Deferred Items` — append to the existing table (creating the section if absent) rather than overwriting it, preserving rows recorded at earlier milestone closes:
+   `todos` is the only category the scanner caps (5 entries per scan, with a remainder count for the rest). Re-run `gsd_run query audit-open --json` (through the same `@file:` handling above) and repeat the `todos` block until it reports no `todos` items — every other category always returns its full open set in one pass.
+3. Re-run `gsd_run query audit-open --json` once more and write the items just acknowledged as new rows to STATE.md under `## Deferred Items` — append to the existing table (creating the section if absent) rather than overwriting it, preserving rows recorded at earlier milestone closes:
    ```markdown
    ## Deferred Items
 
@@ -189,7 +189,7 @@ Acknowledging is verdict-preserving and self-invalidating: it never rewrites the
 
 If output shows all clear (no open items): set `closeout_type=verified_closeout`. If the audit JSON's `acknowledged.total` is `0`, print `All artifact types clear.` and proceed. Otherwise the close is clean only because `{acknowledged.total}` item(s) acknowledged at an earlier milestone close are still being suppressed, not because everything was fixed this time — print `All artifact types clear ({acknowledged.total} previously acknowledged item(s) still suppressed — see STATE.md Deferred Items).` and record `Known verification overrides: 0 newly acknowledged, {acknowledged.total} carried forward from a prior close (see STATE.md Deferred Items)` in the MILESTONES.md entry before proceeding.
 
-SECURITY: Audit JSON output is structured data from the `audit-open` query handler (same JSON contract as legacy `gsd-tools.cjs audit-open`) — validated and sanitized at source. The `audit-open acknowledge` writer is the only path that sets the `audit_acknowledged` suppression marker — it snapshots each artifact's current state itself from the identifiers passed on the command line, so this workflow never hand-authors the marker. When writing the STATE.md disclosure table, item identifiers, statuses, and deferred-item text are sanitized via `sanitizeForDisplay()` before inclusion. Never inject raw user-supplied content into STATE.md without sanitization.
+SECURITY: Audit JSON output is structured data from the `audit-open` query handler (same JSON contract as legacy `gsd_run audit-open`) — validated and sanitized at source. The `audit-open acknowledge` writer is the only path that sets the `audit_acknowledged` suppression marker — it snapshots each artifact's current state itself from the identifiers passed on the command line, so this workflow never hand-authors the marker. When writing the STATE.md disclosure table, item identifiers, statuses, and deferred-item text are sanitized via `sanitizeForDisplay()` before inclusion. Never inject raw user-supplied content into STATE.md without sanitization.
 </step>
 
 <step name="verify_readiness">
@@ -353,7 +353,7 @@ Key accomplishments for this milestone:
 
 <step name="create_milestone_entry">
 
-**Note:** MILESTONES.md entry is now created automatically by `gsd-tools.cjs query milestone.complete` in the archive_milestone step. The entry includes version, date, phase/plan/task counts, and accomplishments extracted from SUMMARY.md files.
+**Note:** MILESTONES.md entry is now created automatically by `gsd_run query milestone.complete` in the archive_milestone step. The entry includes version, date, phase/plan/task counts, and accomplishments extracted from SUMMARY.md files.
 
 If additional details are needed (e.g., user-provided "Delivered" summary, git range, LOC stats), add them manually after the CLI creates the base entry.
 
@@ -517,7 +517,7 @@ AskUserQuestion: "Archive completed quick tasks into this milestone too?" with o
 
 If "Yes": set `ARCHIVE_QUICK_FLAG="--archive-quick"`. If "Skip" (or `.planning/quick/` is empty): set `ARCHIVE_QUICK_FLAG=""`.
 
-**Delegate archival to `gsd-tools.cjs query milestone.complete`:**
+**Delegate archival to `gsd_run query milestone.complete`:**
 
 ```bash
 ARCHIVE=$(gsd_run query milestone.complete "v[X.Y]" --name "[Milestone Name]" $ARCHIVE_QUICK_FLAG)
