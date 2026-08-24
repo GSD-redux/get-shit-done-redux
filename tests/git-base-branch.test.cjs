@@ -1376,7 +1376,7 @@ describe('#3679 — pr-branch pre-existing planning content + verify deletion ga
       timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     });
     const out = r.stdout + r.stderr;
-    assert.match(out, /GATE_PLANNING_DELETIONS=(1|2|3)/, `deletion count must be non-zero: ${out.slice(0, 400)}`);
+    assert.match(out, /GATE_PLANNING_DELETIONS=1/, `deletion count must be non-zero: ${out.slice(0, 400)}`);
   });
 
   test('verify passes a clean diff with zero deletions', (t) => {
@@ -1429,6 +1429,10 @@ describe('#3679 — pr-branch pre-existing planning content + verify deletion ga
     fs.mkdirSync(path.join(repo, 'infra'), { recursive: true });
     fs.writeFileSync(path.join(repo, '.planning', 'phases', '1.0-PLAN.md'), 'plan\n');
     fs.writeFileSync(path.join(repo, '.planning', 'research', 'context.md'), 'ctx\n');
+    // Structural planning state on the TARGET (criterion 3): must survive the
+    // create loop byte-identical alongside the transient content.
+    fs.writeFileSync(path.join(repo, '.planning', 'STATE.md'), 'state\n');
+    fs.writeFileSync(path.join(repo, '.planning', 'ROADMAP.md'), 'roadmap\n');
     fs.writeFileSync(path.join(repo, 'infra', 'script.sh'), 'code\n');
     g(['add', '-A']);
     g(['commit', '-qm', 'base: code + pre-existing planning']);
@@ -1463,6 +1467,8 @@ describe('#3679 — pr-branch pre-existing planning content + verify deletion ga
     assert.ok(!diffPaths.includes('2.0-SUMMARY.md'), "commit's own transient file must be excluded");
     assert.ok(diffPaths.includes('script2.sh'), 'code change must be present');
     assert.ok(!diffPaths.includes('1.0-PLAN.md'), 'pre-existing plan must be untouched');
+    assert.ok(!diffPaths.includes('STATE.md'), 'structural STATE.md must survive (criterion 3)');
+    assert.ok(!diffPaths.includes('ROADMAP.md'), 'structural ROADMAP.md must survive (criterion 3)');
   });
 
   test('create loop preserves planning content on pure-code commits', (t) => {

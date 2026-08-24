@@ -394,7 +394,7 @@ PR_COMMITS=$(git rev-list --count "$TARGET".."$PR_BRANCH")
 # planning files must survive byte-identical. Name-only counting cannot see
 # status (a deleted structural/allowed path verifies clean there), so gate on
 # deletions explicitly, across every planning category.
-PLANNING_DELETIONS=$(git diff --name-status "$TARGET".."$PR_BRANCH" | grep "^D" | grep -c "\.planning/" || true)
+PLANNING_DELETIONS=$(git diff --name-status --no-renames "$TARGET".."$PR_BRANCH" | grep "^D" | grep -c "\.planning/" || true)
 
 # Default mode preserves anything under .planning/ that is neither transient nor
 # structural — config.json, intel/, workstreams/. That is deliberate and unchanged, but it
@@ -407,7 +407,7 @@ did not do what this mode promised; report it and do not tell the user to push.
 
 `$PLANNING_DELETIONS` is a second hard gate (#3679) — it must also be `0`. A non-zero
 value means the PR branch would DELETE planning files the target branch tracks
-(`git diff --name-status "$TARGET".."$PR_BRANCH" | grep "^D" | grep "\.planning/"` lists
+(`git diff --name-status --no-renames "$TARGET".."$PR_BRANCH" | grep "^D" | grep "\.planning/"` lists
 them). That is data loss, not filtering — report it, do not tell the user to push, and
 rebuild the branch.
 
