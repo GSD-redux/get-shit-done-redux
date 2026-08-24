@@ -1076,3 +1076,103 @@ describe('execute-phase workflow: #3684 verified-unmarked resume', () => {
     assert.equal(roadmapAfterSecond, roadmapAfterFirst, 'second run must leave ROADMAP byte-identical (criterion 3)');
   });
 });
+
+describe('execute-phase workflow: #3684 review findings — join normalization', () => {
+  const WORKFLOW_JQ_RE = /PHASE_MARKED=\$\(echo "\$ANALYZE"\|jq -r --arg p "\$PHASE_NUMBER" '([^']+)'\|head -1\)/;
+
+  function extractWorkflowJq() {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const m = content.match(WORKFLOW_JQ_RE);
+    assert.ok(m, 'the workflow must carry the PHASE_MARKED jq line');
+    return m[1];
+  }
+
+  test('the join key is padding-normalized on both sides (drifted shapes route correctly)', (t) => {
+    // The join must tolerate the real-world drift every other resolver in the
+    // pipeline tolerates (#3537/#3572/#2528): directory token "01" vs ROADMAP
+    // heading "1" and vice versa. An exact-string compare misroutes a
+    // verified AND ticked phase into the resume branch forever — the same
+    // "permanently stuck" shape #3684 exists to fix, one level up.
+    const jqFilter = extractWorkflowJq();
+    assert.ok(
+      /sub\("\^0\+\(\?=\[0-9\]\)";""\)/.test(jqFilter),
+      `the jq must strip leading zeros on both sides: ${jqFilter}`,
+    );
+
+    const proj = createTempProject('gsd-3684-pad-');
+    t.after(() => cleanup(proj));
+    const phaseDir = path.join(proj, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'P001-SUMMARY.md'), '# Summary\n');
+    // Heading UNPADDED while the directory token is PADDED — the drifted shape.
+    fs.writeFileSync(path.join(proj, '.planning', 'ROADMAP.md'), [
+      '# Roadmap v1.0', '', '## Phases', '',
+      '### Phase 1: Alpha', '**Goal:** g', '',
+      '- [x] **Phase 1: Alpha** - done', '',
+    ].join('\n'));
+
+    const analyze = runGsdTools('roadmap.analyze --json', proj);
+    assert.ok(analyze.success, `roadmap.analyze should succeed: ${analyze.error}`);
+    // Run the workflow's EXACT jq with $p as init derives it (directory
+    // token "01") — must still find the ticked phase 1.
+    for (const p of ['01', '1']) {
+      const marked = runJqFilter(jqFilter, JSON.parse(analyze.output), p);
+      assert.equal(marked, 'true', `padded $p=${p} must match the unpadded heading`);
+    }
+  });
+
+  function runJqFilter(filter, analyzeJson, p) {
+    // Execute the extracted jq via jq itself (the runtime the workflow uses).
+    const { spawnSync } = require('node:child_process');
+    const r = spawnSync('jq', ['-r', '--arg', 'p', p, filter], {
+      input: JSON.stringify(analyzeJson),
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    assert.equal(r.status, 0, `jq failed: ${r.stderr}`);
+    return String(r.stdout).trim().split('\n')[0];
+  }
+
+  test('idempotency row carries STATE.md and tolerates only the last_updated delta', (t) => {
+    // Criterion 3 says "no observable change to roadmap OR tracked progress
+    // state". The ROADMAP half is byte-identity; the STATE half legitimately
+    // touches only last_updated (the transition runs unconditionally — the
+    // triage's own empirical finding). Assert both halves explicitly.
+    const proj = createTempProject('gsd-3684-state-');
+    t.after(() => cleanup(proj));
+    const phaseDir = path.join(proj, '.planning', 'phases', '01-alpha');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'P001-PLAN.md'), [
+      '---', 'wave: 1', 'objective: x', 'autonomous: true', 'depends_on: []', '---', '', '# P', '',
+      '<objective>x</objective>', '', '<task>t</task>',
+    ].join('\n'));
+    fs.writeFileSync(path.join(phaseDir, 'P001-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(path.join(phaseDir, '01-alpha-VERIFICATION.md'), '---\nstatus: passed\n---\n');
+    fs.writeFileSync(path.join(proj, '.planning', 'ROADMAP.md'), [
+      '# Roadmap v1.0', '', '## Phases', '',
+      '### Phase 1: Alpha', '**Goal:** g', '',
+      '- [ ] **Phase 1: Alpha** - todo', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(proj, '.planning', 'STATE.md'), [
+      '---', 'current_phase: 1', 'current_phase_name: Alpha', 'status: executing', '',
+      'last_updated: 2026-01-01', '---', '', '# STATE', '',
+    ].join('\n'));
+
+    const first = runGsdTools('phase complete 1', proj);
+    assert.ok(first.success, `first completion should succeed: ${first.error}`);
+    const roadmap1 = fs.readFileSync(path.join(proj, '.planning', 'ROADMAP.md'), 'utf-8');
+    const state1 = fs.readFileSync(path.join(proj, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/\[x\]/.test(roadmap1), 'first completion ticks the checkbox');
+
+    const second = runGsdTools('phase complete 1', proj);
+    assert.ok(second.success, 'second completion should succeed');
+    const roadmap2 = fs.readFileSync(path.join(proj, '.planning', 'ROADMAP.md'), 'utf-8');
+    const state2 = fs.readFileSync(path.join(proj, '.planning', 'STATE.md'), 'utf-8');
+    assert.equal(roadmap2, roadmap1, 'ROADMAP byte-identical on re-run');
+    const stripStamp = (s) => s.replace(/^last_updated:.*$/m, '');
+    assert.equal(
+      stripStamp(state2), stripStamp(state1),
+      'STATE.md unchanged except the last_updated stamp (the documented transition delta)',
+    );
+  });
+});
