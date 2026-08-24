@@ -699,6 +699,45 @@ describe('#3683 learnings copy source resolution', () => {
     assert.ok(learningsList({ storeDir }).some((r) => r.learning.includes('3.0-hardening Lesson')));
   });
 
+  test('extractor-shaped artifact copies per-item entries, not category blobs', () => {
+    // The real producer writes ## category sections containing ### items
+    // (extract-learnings.md write_learnings). The copy must store each ###
+    // item as its own learning — aggregating a category into one mega-entry
+    // defeats the store's relevance contract (learnings.max_inject).
+    const phaseDir = path.join(projectDir, 'phases', '4.0-real');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '4.0-real-LEARNINGS.md'),
+      [
+        '# Phase 4 Learnings',
+        '',
+        '## Decisions',
+        '',
+        '### Use SQLite over Postgres',
+        'Zero-ops for single-node deployments.',
+        '',
+        '### Pin the runner image',
+        'Reproducible CI beats newest-libraries.',
+        '',
+        '## Surprises',
+        '',
+        '### npm dedupe changed lockfile',
+        'Expected; audit after upgrades.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 3, 'each ### item must become one learning');
+    const all = learningsList({ storeDir });
+    assert.ok(all.some((r) => r.learning.includes('Use SQLite over Postgres')));
+    assert.ok(all.some((r) => r.learning.includes('Pin the runner image')));
+    assert.ok(all.some((r) => r.learning.includes('npm dedupe changed lockfile')));
+    for (const r of all) {
+      assert.ok(r.learning.length < 200, 'entries must be item-scoped, not category blobs');
+    }
+  });
+
   test('malformed artifact yields no entries', () => {
     const phaseDir = path.join(projectDir, 'phases', '1.0-x');
     fs.mkdirSync(phaseDir, { recursive: true });
@@ -730,7 +769,7 @@ describe('#3683 completion wiring and registry pins', () => {
     // Gate-first ordering: the disabled skip must precede the extraction wiring
     // so disabled runs stay byte-identical.
     const gateIdx = step.indexOf('GL_ENABLED');
-    const extractIdx = step.search(/extract-learnings|extract_learnings/);
+    const extractIdx = step.search(/Run the .extract[-_]learnings. workflow/);
     assert.ok(gateIdx !== -1 && extractIdx !== -1 && gateIdx < extractIdx, 'gate check must precede extraction');
   });
 
@@ -747,11 +786,13 @@ describe('#3683 completion wiring and registry pins', () => {
 
   test('features doc agrees with the registry', () => {
     const features = fs.readFileSync(FEATURES, 'utf-8');
-    const idx = features.indexOf('extract-learnings');
-    assert.ok(idx !== -1, 'FEATURES.md must mention extract-learnings');
-    const window = features.slice(Math.max(0, idx - 400), idx + 400);
+    // Anchor on the SECTION HEADING — the TOC also mentions extract-learnings
+    // ~2400 chars earlier and its window contains neither keyword.
+    const heading = features.search(/##+\s*\d*\d*\.?\s*Extract Learnings/i);
+    assert.ok(heading !== -1, 'FEATURES.md must have an Extract Learnings section');
+    const section = features.slice(heading, heading + 4000);
     assert.ok(
-      /global_learnings|automatically/i.test(window),
+      /global_learnings|automatically/i.test(section),
       'the learnings feature section must acknowledge the gated automatic path',
     );
   });

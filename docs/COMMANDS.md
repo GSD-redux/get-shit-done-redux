@@ -1197,7 +1197,7 @@ Extract reusable patterns, anti-patterns, and architectural decisions from compl
 | `--format` | Output format: `markdown` (default), `json` |
 
 **Prerequisites:** Phase has been executed (SUMMARY.md files exist)
-**Produces:** `.planning/learnings/{phase}-LEARNINGS.md`
+**Produces:** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **Extracts:**
 - Architectural decisions and their rationale
