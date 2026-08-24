@@ -209,8 +209,14 @@ const STUB_PREAMBLE = [
   '    if ! in_list "$slug" "$STUB_SILENT"; then',
   '      printf \'{"slug":"%s","pad":"%s"}\\n\' "$slug" "$pad"',
   '    fi',
-  '    touch "$RUN_DIR/done-$slug"',
+  // #3689: the done-file is a cross-process happens-before edge — a
+  // dependent lane unblocks the instant this file appears (wait_for_file
+  // above just polls for its existence), so everything a dependent may
+  // observe (the "end:$slug" trace line) must be written BEFORE the file
+  // that releases it. touch-then-echo let a descheduled upstream lose the
+  // race to its own dependent, inverting the #3034 completion-order trace.
   '    echo "end:$slug" >> "$TRACE"',
+  '    touch "$RUN_DIR/done-$slug"',
   '    if in_list "$slug" "$STUB_FAIL"; then',
   '      return 1',
   '    fi',

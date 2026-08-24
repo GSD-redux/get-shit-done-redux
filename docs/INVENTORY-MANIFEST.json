@@ -503,6 +503,7 @@
       "spec-section.cjs",
       "stale-bake-guard.cjs",
       "state-command-router.cjs",
+      "state-contract.cjs",
       "state-document.cjs",
       "state-io.cjs",
       "state-transition.cjs",

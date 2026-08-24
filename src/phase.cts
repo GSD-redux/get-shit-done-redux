@@ -21,6 +21,9 @@ import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 import ioMod = require('./io.cjs');
 const { output, error, ERROR_REASON } = ioMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import stateContract = require('./state-contract.cjs');
+const { publishStateContract } = stateContract;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
@@ -1151,6 +1154,18 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
   if (titleWarning) result['warning'] = titleWarning;
 
   output(result, raw, result['padded']);
+  // #3227 (design doc §40 row 26 / "Not-corruption" rule): every
+  // `publishStateContract` call site in this file is audited so a refreshed
+  // state.json `updated_at` always means something on disk actually moved —
+  // a stale-but-refreshed timestamp is worse than no refresh, because it
+  // reads as fresh to a downstream watcher. This site is unconditional
+  // because every reachable path either exits via `error()` (process.exit,
+  // never reaches here) or falls through to the unconditional
+  // `platformEnsureDir`/`platformWriteSync` pair above that always creates
+  // the phase directory and rewrites ROADMAP.md — there is no code path that
+  // reaches this line without having just written to disk. Best-effort —
+  // cannot throw, cannot change this command's exit code or output.
+  publishStateContract(cwd);
 }
 
 function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): void {
@@ -1238,6 +1253,11 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
     return added;
   });
   output({ phases: results, count: results.length }, raw);
+  // #3227: unconditional here because `platformWriteSync(roadmapPath, rawContent)`
+  // above always rewrites ROADMAP.md for every description in the batch before
+  // this line is reached; the only refusal path is the `error('ROADMAP.md not
+  // found')` above, which terminates the process and never reaches here.
+  publishStateContract(cwd);
 }
 
 function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, raw: boolean): void {
@@ -1431,6 +1451,11 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
   };
 
   output(result, raw, decimalPhase);
+  // #3227: unconditional here because `platformWriteSync(roadmapPath, updatedContent)`
+  // above always rewrites ROADMAP.md with the inserted phase before this line is
+  // reached; every refusal along the way (bad args, missing ROADMAP.md, unresolved
+  // target bullet/header) exits via `error()`, which terminates the process.
+  publishStateContract(cwd);
 }
 
 interface RenameDirInfo {
@@ -2110,6 +2135,12 @@ function cmdPhaseRemove(
     },
     raw,
   );
+  // #3227: unconditional here because `updateRoadmapAfterPhaseRemoval` above
+  // always rewrites ROADMAP.md before this line is reached; every refusal path
+  // (bad target, missing ROADMAP.md, --force-required, renumber failure) exits
+  // via `error()`, and the ambiguous-match case exits via an earlier `return`
+  // before any file is touched.
+  publishStateContract(cwd);
 }
 
 interface WriteSpec {
@@ -2118,7 +2149,14 @@ interface WriteSpec {
   after: string;
 }
 
-function writePlanningFileSet(writes: WriteSpec[]): void {
+/**
+ * #3227: returns the count of writes actually applied (entries whose
+ * `before` differed from `after` and were therefore written to disk) — the
+ * caller (`cmdPhaseComplete`) uses this as its publish-gate signal, since a
+ * re-run against an already-completed phase can produce a `writes[]` array
+ * where every entry is byte-identical to what's already on disk.
+ */
+function writePlanningFileSet(writes: WriteSpec[]): number {
   const applied: WriteSpec[] = [];
   try {
     for (const write of writes) {
@@ -2145,6 +2183,7 @@ function writePlanningFileSet(writes: WriteSpec[]): void {
     }
     throw err;
   }
+  return applied.length;
 }
 
 function phaseDisplayNameFromRoadmap(roadmapContent: string | null, phaseNum: string | null): string | null {
@@ -2222,6 +2261,12 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     ? (phaseInfo['summaries'] as string[]).length
     : 0;
   let requirementsUpdated = false;
+  // #3685: mirror requirementsUpdated's diff-tracking contract at the
+  // writes.push({filePath, before, after}) sites below, rather than
+  // reporting via fs.existsSync (which is true whenever the file merely
+  // exists, not when the transaction actually wrote a change).
+  let roadmapUpdated = false;
+  let stateUpdated = false;
 
   const warnings: string[] = [];
   // ADR-3408 §8.5 / D2 (#3374): "liberal but visible" — when the write-seam
@@ -2414,6 +2459,15 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   // warnings[] entry below (same parity pattern as
   // verification_stale_check_indeterminate).
   let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
+
+  // #3227: set inside `runPhaseCompleteTransaction` below from
+  // `writePlanningFileSet`'s applied-count return — the transaction always
+  // RUNS (verification passed, the lock was taken, `writes[]` was built),
+  // but a re-run against a phase whose ROADMAP/STATE bytes already reflect
+  // completion produces a `writes[]` where every entry is byte-identical to
+  // disk, so `writePlanningFileSet` applies none of them. That must not
+  // still refresh state.json's `updated_at` (design doc §40 row 26).
+  let anyPlanningWrite = false;
 
   const verificationBlocked = withPlanningLock(cwd, () => {
     // #3311: completing a phase while a live milestone claim (phase + session)
@@ -2632,6 +2686,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           before: originalRoadmapContent,
           after: roadmapContent,
         });
+        roadmapUpdated = roadmapContent !== originalRoadmapContent;
 
         const reqPath = path.join(planningDir(cwd), 'REQUIREMENTS.md');
         if (fs.existsSync(reqPath)) {
@@ -3205,9 +3260,10 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         }
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
+        stateUpdated = stateContent !== originalStateContent;
       }
 
-      writePlanningFileSet(writes);
+      anyPlanningWrite = writePlanningFileSet(writes) > 0;
     };
 
     if (fs.existsSync(statePath)) {
@@ -3271,8 +3327,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     next_phase_name: nextPhaseName,
     is_last_phase: isLastPhase,
     date: today,
-    roadmap_updated: fs.existsSync(roadmapPath),
-    state_updated: fs.existsSync(statePath),
+    roadmap_updated: roadmapUpdated,
+    state_updated: stateUpdated,
     requirements_updated: requirementsUpdated,
     auto_pruned: autoPruned,
     warnings,
@@ -3283,6 +3339,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   };
 
   output(result, raw);
+  // #3227: gate on `anyPlanningWrite` (whether `writePlanningFileSet`
+  // actually wrote anything), not on reaching this line — reaching here only
+  // means verification passed and the transaction ran, not that ROADMAP.md
+  // or STATE.md bytes changed (see the `anyPlanningWrite` declaration above).
+  if (anyPlanningWrite) publishStateContract(cwd);
 }
 
 function cmdPhaseUatPassed(

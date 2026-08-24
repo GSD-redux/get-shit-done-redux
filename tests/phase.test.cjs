@@ -3181,6 +3181,7 @@ Plans:
       path.join(tmpDir, '.planning', 'STATE.md'),
       `---\ngsd_state_version: 1.0\ncurrent_phase: 1\nprogress:\n  total_phases: 2\n  completed_phases: 0\n  percent: 0\n---\n\n# State\n\nTotal Phases: 2\n`,
     );
+    const beforeState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
 
     const result = runGsdTools('phase remove 2', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -3188,6 +3189,9 @@ Plans:
     assert.strictEqual(out.state_updated, true, 'state_updated must be true when STATE.md content changed');
     // Body 'Total Phases:' must be decremented from 2 to 1.
     const afterState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    // #3685: earn the `true` above — assert the file's content actually
+    // differs from the pre-call snapshot, not merely that it exists.
+    assert.notEqual(afterState, beforeState, '#3685: STATE.md content must actually change when state_updated is true');
     const bodyMatch = afterState.match(/^Total Phases:\s*(\d+)/m);
     assert.ok(bodyMatch, 'body must have Total Phases field after remove');
     assert.strictEqual(bodyMatch[1], '1', `body 'Total Phases:' must be 1 after removing one of 2 phases; got ${bodyMatch[1]}`);
@@ -3324,6 +3328,132 @@ describe('phase complete canonical verification gate (#1522)', () => {
     assert.match(errorPayload.message, /\/gsd-verify-work 0?1/);
     assert.equal(fs.readFileSync(roadmapPath, 'utf-8'), beforeRoadmap);
     assert.equal(fs.readFileSync(statePath, 'utf-8'), beforeState);
+  });
+});
+
+// #3685: cmdPhaseComplete's roadmap_updated/state_updated flags were computed
+// via fs.existsSync(roadmapPath) / fs.existsSync(statePath) — true whenever
+// the file merely EXISTS, even when the transaction rewrote nothing. The
+// sibling requirements_updated (line ~2951 in src/phase.cts) already honors
+// the correct contract: true only when that file's content actually changed
+// in the transaction. Clock is pinned (GSD_TEST_MODE + GSD_NOW_MS) because
+// syncStateFrontmatter stamps a millisecond-resolution `last_updated:` field
+// on every STATE.md write pass — an unpinned second run would genuinely
+// differ by that timestamp alone, masking the no-op these tests need to
+// observe (see .gsd/bug/fix-3685-phase-complete-write-flags/repro-pinned.cjs
+// for the standalone reproduction).
+describe('phase complete write-flag content-change contract (#3685)', () => {
+  let tmpDir;
+  const PINNED_CLOCK_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: '1750000000000' };
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('roadmap_updated is false when the transaction rewrites nothing (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+
+    const run1 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run1.success, `first phase complete failed: ${run1.error}`);
+    const roadmapAfter1 = fs.readFileSync(roadmapPath, 'utf-8');
+
+    // Second call: phase 1 is already complete, so this is a genuine no-op
+    // against ROADMAP.md. Re-write the passed marker first so the #1522
+    // verification gate does not itself refuse the second call.
+    const run2 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run2.success, `second phase complete failed: ${run2.error}`);
+    const roadmapAfter2 = fs.readFileSync(roadmapPath, 'utf-8');
+
+    assert.equal(roadmapAfter2, roadmapAfter1, 'ROADMAP.md must be byte-identical across the no-op second run');
+    const parsed2 = JSON.parse(run2.output);
+    assert.strictEqual(
+      parsed2.roadmap_updated, false,
+      'fs.existsSync() reported true here, masking the no-op (#3685)',
+    );
+  });
+
+  test('state_updated is false when the transaction rewrites nothing (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+    const run1 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run1.success, `first phase complete failed: ${run1.error}`);
+    const stateAfter1 = fs.readFileSync(statePath, 'utf-8');
+
+    const run2 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run2.success, `second phase complete failed: ${run2.error}`);
+    const stateAfter2 = fs.readFileSync(statePath, 'utf-8');
+
+    assert.equal(stateAfter2, stateAfter1, 'STATE.md must be byte-identical across the no-op second run');
+    const parsed2 = JSON.parse(run2.output);
+    assert.strictEqual(
+      parsed2.state_updated, false,
+      'fs.existsSync() reported true here, masking the no-op (#3685)',
+    );
+    const roadmapAfter2 = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+
+    // Stability across repeats: the flag must not alternate true/false on
+    // successive no-op runs — pin a THIRD call to the same behavior.
+    const run3 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run3.success, `third phase complete failed: ${run3.error}`);
+    const stateAfter3 = fs.readFileSync(statePath, 'utf-8');
+    const roadmapAfter3 = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.equal(stateAfter3, stateAfter2, 'STATE.md must remain byte-identical on a third no-op run');
+    assert.equal(roadmapAfter3, roadmapAfter2, 'ROADMAP.md must remain byte-identical on a third no-op run');
+    const parsed3 = JSON.parse(run3.output);
+    assert.strictEqual(parsed3.roadmap_updated, false, 'roadmap_updated must stay false, not alternate, on repeat no-ops (#3685)');
+    assert.strictEqual(parsed3.state_updated, false, 'state_updated must stay false, not alternate, on repeat no-ops (#3685)');
+  });
+
+  test('both write flags are true when the transaction genuinely rewrites (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const roadmapBefore = fs.readFileSync(roadmapPath, 'utf-8');
+    const stateBefore = fs.readFileSync(statePath, 'utf-8');
+
+    const result = runGsdTools(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(result.success, `phase complete failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    const roadmapAfter = fs.readFileSync(roadmapPath, 'utf-8');
+    const stateAfter = fs.readFileSync(statePath, 'utf-8');
+
+    assert.notEqual(roadmapAfter, roadmapBefore, 'precondition: ROADMAP.md content must actually change');
+    assert.strictEqual(parsed.roadmap_updated, true, 'roadmap_updated must be true for a genuine rewrite');
+    assert.notEqual(stateAfter, stateBefore, 'precondition: STATE.md content must actually change');
+    assert.strictEqual(parsed.state_updated, true, 'state_updated must be true for a genuine rewrite');
+  });
+
+  test('roadmap_updated stays false when ROADMAP.md is absent (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    // Deletes a single fixture FILE inside tmpDir (not the temp dir itself);
+    // helpers.cleanup() is a directory-removal helper and cannot be used here.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- single-file delete, not a directory
+    fs.rmSync(path.join(tmpDir, '.planning', 'ROADMAP.md'));
+
+    const result = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(result.success, `phase complete failed without ROADMAP.md: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.roadmap_updated, false, 'roadmap_updated must be false when ROADMAP.md does not exist (#3685)');
+  });
+
+  test('state_updated stays false when STATE.md is absent (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    // Deletes a single fixture FILE inside tmpDir (not the temp dir itself);
+    // helpers.cleanup() is a directory-removal helper and cannot be used here.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- single-file delete, not a directory
+    fs.rmSync(path.join(tmpDir, '.planning', 'STATE.md'));
+
+    const result = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(result.success, `phase complete failed without STATE.md: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.state_updated, false, 'state_updated must be false when STATE.md does not exist (#3685)');
   });
 });
 
@@ -6612,12 +6742,17 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
     test('full consistency check: all STATE.md fields are coherent after phase.complete', () => {
       setupPhase3517Project(tmpDir);
       const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+      const stateBefore = fs.readFileSync(statePath, 'utf8');
 
       const r = runSdkQuery(['phase.complete', '5'], tmpDir);
       assert.ok(r.success, `call failed: ${r.error}`);
       assert.equal(r.data?.state_updated, true, 'state_updated must be true');
 
       const state = fs.readFileSync(statePath, 'utf8');
+      // #3685: earn the `true` above — assert STATE.md's content actually
+      // changed, not merely that it exists (which is all the pre-fix
+      // existsSync-based flag proved).
+      assert.notEqual(state, stateBefore, '#3685: STATE.md content must actually change when state_updated is true');
 
       const fm = extractFrontmatter(state);
       assert.equal(
@@ -11132,10 +11267,15 @@ describe('#2572: phase complete warns when a SUMMARY claims files that never lan
   test('#2572-2: the advisory is ADVISORY — completion still succeeds and reports the phase complete', () => {
     const { tmpDir } = build2572SummaryArtifactFixture();
     try {
+      const stateBefore = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
       const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
       const parsed = JSON.parse(output);
       assert.strictEqual(parsed.completed_phase, '1', '#2572-2 FAILED: completion must not be blocked by the advisory');
       assert.strictEqual(parsed.state_updated, true, '#2572-2 FAILED: STATE.md must still be written');
+      // #3685: earn the `true` above — assert STATE.md's content actually
+      // differs from the pre-call snapshot.
+      const stateAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.notEqual(stateAfter, stateBefore, '#3685: STATE.md content must actually change when state_updated is true');
     } finally {
       cleanup(tmpDir);
     }
@@ -11879,11 +12019,15 @@ describe('bug #3572: phase remove must not corrupt STATE.md into two frontmatter
     // targetDir !== null, and the body lacks Total Phases/of-N — the trigger.
     let r = runGsdTools('phase insert 1 "Inserted probe"', tmpDir);
     assert.ok(r.success, `phase insert failed: ${r.error}`);
+    const stateBeforeRemove = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     r = runGsdTools('phase remove 1.1', tmpDir);
     assert.ok(r.success, `phase remove failed: ${r.error}`);
     assert.strictEqual(JSON.parse(r.output).state_updated, true, 'the #2640 resync must still happen');
 
     const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    // #3685: earn the `true` above — assert STATE.md's content actually
+    // differs from the snapshot taken immediately before the remove call.
+    assert.notEqual(after, stateBeforeRemove, '#3685: STATE.md content must actually change when state_updated is true');
     assert.ok(after.startsWith('---\n') || after.startsWith('---\r\n'), 'file must still OPEN with the frontmatter fence');
     assert.strictEqual(fenceLineCount(after), 2, `exactly one frontmatter block (2 fence lines); got ${fenceLineCount(after)}:\n${after.slice(0, 400)}`);
     assert.strictEqual((after.match(/gsd_state_version/g) || []).length, 1, 'exactly one gsd_state_version — no second derived block');
