@@ -918,7 +918,7 @@ ROADMAP.md 中阶段的 CRUD 操作 — 通过单一合并命令添加、插入�
 | `--format` | 输出格式：`markdown`（默认）、`json` |
 
 **前提条件：** 阶段已被执行（SUMMARY.md 文件已存在）
-**产出：** `.planning/learnings/{phase}-LEARNINGS.md`
+**产出：** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **提取内容：**
 - 架构决策及其依据

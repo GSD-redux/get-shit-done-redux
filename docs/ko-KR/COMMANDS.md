@@ -924,7 +924,7 @@ GSD 보장을 통해 애드혹 작업을 실행합니다.
 | `--format` | 출력 형식: `markdown` (기본값), `json` |
 
 **전제 조건:** 단계가 실행됨 (SUMMARY.md 파일 존재)
-**생성 결과:** `.planning/learnings/{phase}-LEARNINGS.md`
+**생성 결과:** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **추출 내용:**
 - 아키텍처 결정 및 근거
