@@ -37,17 +37,27 @@ const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
 const ROUTER_PATH = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
-// #3809 widened this from agents/ + workflows/ to every runtime-loaded markdown
-// surface. references/ and commands/ were carrying 47 bare calls the whole time —
-// the guard simply never looked at them. skills/ is deliberately absent: it is
-// generated from commands/ by scripts/gen-plugin-skills.cjs and pinned by
-// lint:generated-sync, so guarding the source is guarding both, and scanning the
-// generated mirror too would double-report every future offender.
+// #3809 widened this from agents/ + workflows/ to include gsd-core/references/,
+// which was carrying 37 bare calls the guard simply never looked at.
+//
+// commands/ is deliberately NOT here, and that is a finding rather than an
+// oversight. Its files cannot use the shared launcher the way workflows and agents
+// do: tests/graphify-visualization.test.cjs extracts individual Step-3 shell chains
+// and runs them standalone, so each fenced block needs its OWN preamble —
+// graphify.md carries five on purpose, and collapsing them to one produces
+// `gsd_run: command not found` (exit 127). tests/gsd-tools-path-refs.test.cjs
+// (#1766) separately pins commands/gsd/workstreams.md to the literal string
+// `gsd-tools query workstream.list`. Bringing commands/ under this guard therefore
+// needs those two contracts reconciled first; it is not a scan-set widening.
+//
+// skills/ is absent for a different reason: it is generated from commands/ by
+// scripts/gen-plugin-skills.cjs and pinned by lint:generated-sync, so guarding the
+// source guards both, and scanning the generated mirror would double-report every
+// future offender.
 const SCAN_DIRS = [
   'agents',
   path.join('gsd-core', 'workflows'),
   path.join('gsd-core', 'references'),
-  'commands',
 ];
 
 // Derive the verb set the bare-call guard matches against. Most top-level
@@ -98,16 +108,6 @@ const PROSE_ALLOWLIST = [
   { file: 'agents/gsd-roadmapper.md', line: 642, reason: 'parenthetical "e.g." naming SDK queries a user *could* run; not an agent instruction' },
   { file: 'agents/gsd-intel-updater.md', line: 40, reason: 'cross-platform note names the `gsd-tools intel <subcommand>` CLI surface descriptively ("CLI invocations go through..."); not an agent instruction' },
   { file: 'gsd-core/workflows/execute-plan.md', line: 415, reason: 'describes the downstream SDK validation step (`validated downstream by ...`); names the mechanism, does not instruct the agent to type it' },
-  { file: 'commands/gsd/autonomous.md', line: 45, reason: 'names the init commands the WORKFLOW runs internally ("resolved inside the workflow using..."); descriptive, not an instruction to the reader' },
-  { file: 'commands/gsd/code-review.md', line: 44, reason: 'names how context files are resolved inside the workflow; descriptive' },
-  { file: 'commands/gsd/config.md', line: 30, reason: 'flag-reference table cell naming the equivalent CLI surface; not command position' },
-  { file: 'commands/gsd/execute-phase.md', line: 59, reason: 'names how context files are resolved inside the workflow; descriptive' },
-  { file: 'commands/gsd/graphify.md', line: 183, reason: 'explains where MVP-mode rendering gets its data ("resolved via ..."); descriptive' },
-  { file: 'commands/gsd/health.md', line: 15, reason: 'describes what the --context check reads; descriptive' },
-  { file: 'commands/gsd/manager.md', line: 36, reason: 'names the init commands the workflow runs internally; descriptive' },
-  { file: 'commands/gsd/next.md', line: 15, reason: 'describes how the router reads state ("It reads project + workflow state via ..."); descriptive' },
-  { file: 'commands/gsd/quick.md', line: 178, reason: 'security note naming the read path for status fields; descriptive' },
-  { file: 'commands/gsd/workstreams.md', line: 69, reason: 'instructs formatting of the output OF that command, not running it; descriptive' },
 ];
 
 // Resolver-snippet definition lines / probes that must never be flagged. A line

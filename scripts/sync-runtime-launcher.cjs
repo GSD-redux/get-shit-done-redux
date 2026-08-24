@@ -2,8 +2,8 @@
 /**
  * sync-runtime-launcher.cjs
  *
- * Idempotent transform: for every gsd-core/workflows/*.md (and subdirs),
- * every agents/*.md, AND every commands/ (recursive) *.md, rewrite all bash/sh/shell fenced blocks to:
+ * Idempotent transform: for every gsd-core/workflows/*.md (and subdirs)
+ * AND every agents/*.md, rewrite all bash/sh/shell fenced blocks to:
  *   1. Strip ALL old resolver forms from every bash block (GSD_TOOLS=,
  *      GSD_SDK=, the if/elif/else/fi resolver, _GSD_SHIM_NAME=, and any
  *      previously-inserted gsd_run preamble).
@@ -23,7 +23,6 @@ const { escapeRegex: escapeRegExp } = require('../gsd-core/bin/lib/pattern.cjs')
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const AGENTS_DIR = path.join(__dirname, '..', 'agents');
-const COMMANDS_DIR = path.join(__dirname, '..', 'commands');
 const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
 
 // Read canonical preamble (full content of snippet file)
@@ -421,23 +420,6 @@ function main() {
       fs.writeFileSync(f, result, 'utf8');
       transformedCount++;
       console.log(`transformed (agent): ${path.relative(AGENTS_DIR, f)}`);
-    } else {
-      unchangedCount++;
-    }
-  }
-
-  // Process command files. commands/gsd/*.md are runtime-loaded the same way
-  // workflows and agents are, and until #3809 their preambles were hand-pasted
-  // copies this script never reached — graphify.md carried five. Propagating
-  // here makes _runtime-launcher.snippet.sh the single source for them too.
-  const commandFiles = collectFiles(COMMANDS_DIR);
-  for (const f of commandFiles) {
-    const content = fs.readFileSync(f, 'utf8');
-    const result = transformFile(content, preamble);
-    if (result !== null) {
-      fs.writeFileSync(f, result, 'utf8');
-      transformedCount++;
-      console.log(`transformed (command): ${path.relative(COMMANDS_DIR, f)}`);
     } else {
       unchangedCount++;
     }

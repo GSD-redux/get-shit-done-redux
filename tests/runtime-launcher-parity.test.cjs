@@ -36,7 +36,6 @@ const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const AGENTS_DIR = path.join(__dirname, '..', 'agents');
-const COMMANDS_DIR = path.join(__dirname, '..', 'commands');
 const SNIPPET_FILE = path.join(WORKFLOWS_DIR, '_runtime-launcher.snippet.sh');
 
 /**
@@ -148,27 +147,6 @@ function collectAgentFiles() {
     }
   }
   walk(AGENTS_DIR);
-  return results;
-}
-
-/**
- * Collect all command .md files recursively under COMMANDS_DIR.
- * commands/ came under launcher propagation in #3809 — before that its preambles
- * were hand-pasted and unchecked (graphify.md carried five copies).
- */
-function collectCommandFiles() {
-  const results = [];
-  function walk(dir) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        results.push(full);
-      }
-    }
-  }
-  walk(COMMANDS_DIR);
   return results;
 }
 
@@ -794,70 +772,6 @@ describe('runtime-launcher-parity — agents (#1041)', () => {
       violations,
       [],
       'Agent files with gsd_run calls have wrong preamble count or ordering:\n' +
-        violations.join('\n---\n'),
-    );
-  });
-
-  // ─── (B-commands) Exactly ONE canonical preamble per using command file ────
-  test('(B-commands) each command .md using gsd_run contains exactly ONE canonical preamble, before the first gsd_run call', () => {
-    const preamble = expectedPreamble();
-    const preambleStr = preamble.join('\n');
-    const files = collectCommandFiles();
-    assert.ok(files.length > 0, 'expected at least one command .md file');
-
-    const violations = [];
-
-    for (const f of files) {
-      const rel = path.relative(COMMANDS_DIR, f);
-      const content = fs.readFileSync(f, 'utf8');
-      const blocks = extractShellBlocks(content);
-
-      // Collect all block lines in document order for flat analysis
-      const allBlockLines = [];
-      for (const blk of blocks) {
-        allBlockLines.push(...blk.lines);
-      }
-
-      // Does this file use gsd_run at all?
-      const fileHasGsdRun = allBlockLines.some((l) => /\bgsd_run\b/.test(l));
-      if (!fileHasGsdRun) continue; // commands without gsd_run are not checked
-
-      // Count preamble occurrences across all shell content of this file
-      const allContent = allBlockLines.join('\n');
-      let preambleCount = 0;
-      let searchPos = 0;
-      while (true) {
-        const idx = allContent.indexOf(preambleStr, searchPos);
-        if (idx === -1) break;
-        preambleCount++;
-        searchPos = idx + preambleStr.length;
-      }
-
-      if (preambleCount !== 1) {
-        violations.push(
-          `${rel}: expected exactly 1 canonical preamble occurrence in bash blocks, found ${preambleCount}. ` +
-            `Run \`node scripts/sync-runtime-launcher.cjs\` to fix.`,
-        );
-        continue;
-      }
-
-      // Verify preamble appears BEFORE the first gsd_run call (in document order)
-      const preamblePos = allContent.indexOf(preambleStr);
-      const firstGsdRunPos = allContent.search(/\bgsd_run\b/);
-
-      // The first gsd_run WITHIN the preamble itself (the function definition) is fine.
-      // Simple check: preamble starts at or before the first gsd_run occurrence.
-      if (preamblePos > firstGsdRunPos) {
-        violations.push(
-          `${rel}: preamble appears AFTER the first gsd_run reference — it must precede all gsd_run calls.`,
-        );
-      }
-    }
-
-    assert.deepStrictEqual(
-      violations,
-      [],
-      'Command files with gsd_run calls have wrong preamble count or ordering:\n' +
         violations.join('\n---\n'),
     );
   });
