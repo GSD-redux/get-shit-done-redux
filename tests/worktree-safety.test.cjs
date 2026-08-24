@@ -4359,6 +4359,10 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const ROOT = path.join(__dirname, '..');
+// Seeded fast-check convention: the shared setup helper, NOT 'fast-check'
+// directly, so numRuns/seed are configured globally before any fc.assert().
+// Required by RULESET.TESTS.property-based-testing for the parser added below.
+const fc = require('./helpers/fast-check-setup.cjs');
 const { isGitSubcommand, tokenize, extractBranchArgument, resolveCommitSubject } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
 
 // ── tokenize ─────────────────────────────────────────────────────────────────
@@ -4500,10 +4504,6 @@ describe('git-cmd.js resolveCommitSubject', () => {
       'the <<- form strips the tab first, so the terminator still matches');
   });
 
-  test('a heredoc opener with no body at all resolves to empty', () => {
-    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'"), '');
-  });
-
   // The security half. Recognition is anchored at BOTH ends and requires a
   // command substitution, so a message that merely contains — or ENDS IN —
   // `<<WORD` is not an opener.
@@ -4519,6 +4519,77 @@ describe('git-cmd.js resolveCommitSubject', () => {
       'fix(parser): preserve literal <<EOF');
     assert.strictEqual(resolveCommitSubject('fix(parser): handle a << b shifts'),
       'fix(parser): handle a << b shifts');
+  });
+
+  test('MAJOR 3: a TRUNCATED capture is not resolved at all', () => {
+    // The `-m` capture stops at the first `"`, so a message containing one
+    // arrives here without its tail — and without its terminator. Resolving
+    // anyway hands the length gate a PREFIX of the real subject and lets an
+    // over-long message through: an enforcement hole that did not exist before
+    // this fix. Falling back to the opener fails the format gate, which is what
+    // this whole form did before the fix (review of #3802).
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: aaaa"), "$(cat <<'EOF'",
+      'the subject line runs to the end of a truncated capture, so it cannot be measured');
+    // Truncation is only fatal to the line it lands IN: a captured line is
+    // complete exactly when another line follows it. A quote further down the
+    // BODY leaves the subject intact and measurable, so blocking it would be a
+    // false positive the blunt version of this guard would have introduced.
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: short\nbody with a "), 'feat: short',
+      'a complete subject line stays measurable even when the capture truncates later');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'"), "$(cat <<'EOF'",
+      'an opener with no body at all is likewise unresolvable');
+  });
+
+  test('MINOR 1: leading blank body lines are skipped, as git does', () => {
+    // git's default cleanup=whitespace strips leading blank lines, so the real
+    // subject is the first NON-empty line. Taking lines[1] blindly returned ''
+    // and falsely blocked a conforming commit — the defect class #3802 reports.
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\n\nfeat: after blank\nEOF\n)"),
+      'feat: after blank');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\n\n\n  \nfeat: after several\nEOF\n)"),
+      'feat: after several');
+  });
+
+  test('a backslash-escaped delimiter is the same delimiter', () => {
+    assert.strictEqual(resolveCommitSubject('$(cat <<\\EOF\nfix: backslash tag\nEOF\n)'),
+      'fix: backslash tag');
+  });
+
+  // RULESET.TESTS.property-based-testing — this is a parser/transformation on a
+  // hook path, so the invariants are asserted over generated input rather than
+  // examples alone. Seeded setup helper, not `fast-check` directly, so numRuns
+  // and seed are configured before any fc.assert (repo convention).
+  test('property: total — never throws, always returns a string', () => {
+    // Totality is a SECURITY property here, not tidiness: this runs inside a
+    // PreToolUse hook whose caller treats a failed extraction as "nothing to
+    // validate", so an exception fails OPEN.
+    fc.assert(fc.property(fc.string({ maxLength: 400 }), (input) => {
+      const out = resolveCommitSubject(input);
+      assert.strictEqual(typeof out, 'string');
+    }));
+    for (const odd of [null, undefined, '', '\n', '\n\n\n', '$(cat <<', '$(cat <<-']) {
+      assert.strictEqual(typeof resolveCommitSubject(odd), 'string', JSON.stringify(odd));
+    }
+  });
+
+  test('property: idempotent — resolving a resolved subject changes nothing', () => {
+    fc.assert(fc.property(fc.string({ maxLength: 400 }), (input) => {
+      const once = resolveCommitSubject(input);
+      assert.strictEqual(resolveCommitSubject(once), once);
+    }));
+  });
+
+  test('property: the result is always a single line drawn from the input', () => {
+    // The subject is a LINE, never a synthesised string: whatever comes back must
+    // be one of the input's own lines. A resolver that concatenated or trimmed
+    // would satisfy the two properties above but not this one.
+    fc.assert(fc.property(fc.string({ maxLength: 400 }), (input) => {
+      const out = resolveCommitSubject(input);
+      assert.ok(!out.includes('\n'), 'a subject is one line');
+      const lines = String(input).split('\n');
+      assert.ok(lines.includes(out) || lines.some((l) => l.replace(/^\t+/, '') === out) || out === '',
+        `result ${JSON.stringify(out)} is not a line of the input`);
+    }));
   });
 
   test('ordinary messages pass through as their first line', () => {

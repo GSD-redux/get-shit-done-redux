@@ -220,19 +220,43 @@ function isGitSubcommand(cmd, sub) {
  */
 function resolveCommitSubject(messageArg) {
   const lines = String(messageArg == null ? '' : messageArg).split('\n');
-  const opener = /^\$\(\s*(?:\S*\/)?cat\s+<<(-?)\s*(?:'([^']+)'|"([^"]+)"|([^\s'"();|&<>]+))\s*$/
+  const opener = /^\$\(\s*(?:\S*\/)?cat\s+<<(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))\s*$/
     .exec(lines[0]);
   if (!opener) return lines[0];
 
   // `<<-` strips leading TABS from every body line, including the terminator.
   const stripTabs = opener[1] === '-';
   const delimiter = opener[2] || opener[3] || opener[4];
-  if (lines.length < 2) return '';
+  const body = lines.slice(1).map((l) => (stripTabs ? l.replace(/^\t+/, '') : l));
 
-  const body = stripTabs ? lines[1].replace(/^\t+/, '') : lines[1];
-  // An immediately-following terminator means the message is EMPTY, not that the
-  // delimiter is the subject.
-  return body === delimiter ? '' : body;
+  // TRUNCATION GUARD. The capture that produced this argument stops at the first
+  // `"`, so a message containing one arrives here missing its tail — and its
+  // terminator. Resolving anyway would hand the length gate a PREFIX of the real
+  // subject and let an over-long message through, an enforcement hole that did
+  // not exist before this fix (review of #3802). A body with no terminator is
+  // therefore not resolved at all: returning the opener line fails the format
+  // gate, which is exactly what this whole form did before the fix. The fix
+  // applies where the capture is complete and changes nothing where it is not.
+  const end = body.indexOf(delimiter);
+
+  // git's default `cleanup=whitespace` strips leading blank lines, so the subject
+  // is the first NON-EMPTY body line, not blindly the first one. Taking lines[1]
+  // returned '' for a body that starts blank and falsely blocked a conforming
+  // commit — the very defect class #3802 reports (review of #3802).
+  const scan = end === -1 ? body : body.slice(0, end);
+  const idx = scan.findIndex((l) => l.trim() !== '');
+  if (idx === -1) return end === -1 ? lines[0] : '';
+
+  // Truncation is only fatal to the line it lands IN. A captured line is complete
+  // exactly when another line follows it, because the capture kept its newline.
+  // So an unterminated body whose subject line is followed by more text is still
+  // measurable; only a subject line that runs to the end of a truncated capture
+  // is not, and that one falls back to the opener — which fails the format gate,
+  // exactly as this whole form did before the fix. Without this, the length gate
+  // measured a PREFIX of the real subject and let an over-long message through
+  // (review of #3802).
+  if (end === -1 && idx >= body.length - 1) return lines[0];
+  return scan[idx];
 }
 
 module.exports = { isGitSubcommand, tokenize, extractBranchArgument, skipToSubcommand, resolveCommitSubject };

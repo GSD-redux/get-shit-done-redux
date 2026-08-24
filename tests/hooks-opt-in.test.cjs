@@ -368,12 +368,45 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
   });
 
   test('validate-commit measures subject length against the RESOLVED heredoc subject', () => {
-    // Conventional-Commits-VALID but over 72 chars, so only the length check can
-    // reject it — proving the length gate sees the real subject, not the opener.
-    const result = runHookCmd(heredoc(`feat(auth): ${'x'.repeat(80)}`));
-    assert.strictEqual(result.status, 2, 'an over-length resolved subject must still be blocked');
-    assert.strictEqual(JSON.parse(result.stdout).code, 'COMMIT_SUBJECT_TOO_LONG',
-      'must fail on LENGTH, not format — a format failure would mean the opener was still the subject');
+    // RULESET.TESTS.boundary-coverage: N at {limit-1, limit, limit+1}, not merely
+    // "very long". The limit is 72, and the gate is `> 72`, so 72 must PASS and
+    // 73 must block. A trivially-oversized subject alone would not show which
+    // side of the comparison the code sits on.
+    const at = (n) => {
+      const prefix = 'feat(auth): ';
+      return `${prefix}${'x'.repeat(n - prefix.length)}`;
+    };
+    for (const [n, want] of [[71, 0], [72, 0], [73, 2]]) {
+      const subject = at(n);
+      assert.strictEqual(subject.length, n, `fixture built wrong: ${subject.length} != ${n}`);
+      const result = runHookCmd(heredoc(subject));
+      assert.strictEqual(result.status, want,
+        `resolved heredoc subject of ${n} chars: expected exit ${want}, got ${result.status}`);
+      if (want === 2) {
+        assert.strictEqual(JSON.parse(result.stdout).code, 'COMMIT_SUBJECT_TOO_LONG',
+          'must fail on LENGTH, not format — a format failure would mean the opener was still '
+          + 'being read as the subject');
+      }
+    }
+  });
+
+  test('validate-commit does not resolve a TRUNCATED capture past its own limit', () => {
+    // Review of #3802, Major 3. An embedded `"` truncates the `-m` capture, so the
+    // resolver would otherwise measure a PREFIX of the real subject and let an
+    // over-long message through — an enforcement hole that did not exist before
+    // this fix. git's real subject here is 100+ chars; the captured prefix is 10.
+    const result = runHookCmd(`git commit -m "$(cat <<'EOF'\nfeat: aaaa" ${'z'.repeat(90)}\nEOF\n)"`);
+    assert.strictEqual(result.status, 2,
+      'a capture with no terminator cannot be measured, so it must fall back to the pre-fix '
+      + 'behaviour (blocked) rather than resolving to a prefix that slips under the length gate');
+  });
+
+  test('validate-commit skips leading blank lines in the heredoc body, as git does', () => {
+    // Review of #3802, Minor 1. git's default cleanup=whitespace strips leading
+    // blank lines, so this commit's real subject is conforming — blocking it is
+    // the same false-positive class #3802 reports.
+    assert.strictEqual(runHookCmd(heredoc('\nfeat(auth): real subject after a blank line')).status, 0,
+      'the subject is the first NON-empty body line');
   });
 
   test('validate-commit resolves the other heredoc opener spellings, both directions', () => {
