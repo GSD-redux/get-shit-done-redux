@@ -1705,15 +1705,23 @@ function findDataRowLine(sectionText: string, dataRowIndex: number): string | nu
   return null;
 }
 
+// #3685: mirror requirementsUpdated's diff-tracking contract — the caller
+// (cmdPhaseRemove) used to report `roadmap_updated: true` unconditionally,
+// hardcoded regardless of whether this transform actually changed
+// ROADMAP.md's content. Returning a real before/after comparison here lets
+// the caller report accurately, the same fix #3685 applied to
+// `cmdPhaseComplete` and #2640/#2974 already applied to this same function's
+// sibling `stateUpdated` flag a few lines below in `cmdPhaseRemove`.
 function updateRoadmapAfterPhaseRemoval(
   roadmapPath: string,
   targetPhase: string,
   isDecimal: boolean,
   removedInt: number,
   cwd: string,
-): void {
-  withPlanningLock(cwd, () => {
-    let content = fs.readFileSync(roadmapPath, 'utf-8');
+): boolean {
+  return withPlanningLock(cwd, () => {
+    const originalContent = fs.readFileSync(roadmapPath, 'utf-8');
+    let content = originalContent;
     const escaped = escapeRegex(targetPhase);
     // #3572: ROADMAP headings and rows carry the normalized (zero-padded) form
     // of a decimal id — `phase insert 1` writes `### Phase 01.1:` while the
@@ -1911,6 +1919,7 @@ function updateRoadmapAfterPhaseRemoval(
     }
 
     platformWriteSync(roadmapPath, content);
+    return content !== originalContent;
   });
 }
 
@@ -2038,7 +2047,7 @@ function cmdPhaseRemove(
     error(`Failed to renumber phase directories after removing phase ${targetPhase}: ${msg}`);
   }
 
-  updateRoadmapAfterPhaseRemoval(
+  const roadmapUpdated = updateRoadmapAfterPhaseRemoval(
     roadmapPath,
     targetPhase,
     isDecimal,
@@ -2130,7 +2139,11 @@ function cmdPhaseRemove(
       renamed_directories: renamedDirs,
       renamed_files: renamedFiles,
       renamed_file_collisions: renamedFileCollisions,
-      roadmap_updated: true,
+      // #3685: mirror requirementsUpdated's diff-tracking contract — true only
+      // when updateRoadmapAfterPhaseRemoval's content diff detected a real
+      // change, not hardcoded regardless of whether ROADMAP.md's content
+      // actually changed.
+      roadmap_updated: roadmapUpdated,
       state_updated: stateUpdated,
     },
     raw,

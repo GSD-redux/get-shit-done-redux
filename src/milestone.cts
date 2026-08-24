@@ -925,6 +925,13 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   const accomplishmentsList = accomplishments.map((a) => `- ${a}`).join('\n');
   const milestoneEntry = `## ${version} ${milestoneName} (Shipped: ${today})\n\n**Phases completed:** ${phaseCount} phases, ${totalPlans} plans, ${totalTasks} tasks\n\n**Key accomplishments:**\n${accomplishmentsList || '- (none recorded)'}\n\n---\n\n`;
 
+  // #3685: mirror requirementsUpdated's diff-tracking contract — the result
+  // below used to report `milestones_updated: true` hardcoded, never
+  // consulting whether the MILESTONES.md write actually changed anything.
+  // Captured before the write branches below so the after-comparison reports
+  // a real content diff instead of an assumed one.
+  const milestonesBefore = fs.existsSync(milestonesPath) ? fs.readFileSync(milestonesPath, 'utf-8') : null;
+
   if (fs.existsSync(milestonesPath)) {
     const existing = fs.readFileSync(milestonesPath, 'utf-8');
     if (!existing.trim()) {
@@ -951,6 +958,11 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   } else {
     platformWriteSync(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
   }
+
+  // #3685: real content diff, not the hardcoded `true` this used to report —
+  // see the `milestonesBefore` capture above.
+  const milestonesAfter = fs.existsSync(milestonesPath) ? fs.readFileSync(milestonesPath, 'utf-8') : null;
+  const milestonesUpdated = milestonesAfter !== milestonesBefore;
 
   // #2142 BLOCKER 2 (review): opt-in quick-task archival. This call MUST sit
   // immediately adjacent to the STATE.md write block directly below it, with
@@ -992,6 +1004,13 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   // taken). `resync: true` mirrors `cmdPhaseComplete`'s posture (progress
   // recomputed from disk; only the preserve-when-unchanged deltas apply) —
   // milestone completion is the same kind of lifecycle transition.
+  // #3685: mirror requirementsUpdated's diff-tracking contract — this used to
+  // report `state_updated: fs.existsSync(statePath)`, true even on a no-op
+  // transaction. Declared here beside `stateUpdated`'s sibling flags and
+  // defaulted to `false` so the "STATE.md absent" case keeps today's answer
+  // (existsSync also returns false there) reached via a real content
+  // comparison instead.
+  let stateUpdated = false;
   if (fs.existsSync(statePath)) {
     withStateLock(statePath, () => {
       const originalStateContent = platformReadSync(statePath) || '';
@@ -1073,6 +1092,21 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         },
       );
       platformWriteSync(statePath, finalContent);
+      // #3685: compare the ACTUAL post-write disk bytes, not the pre-normalize
+      // `finalContent` string, against the pre-normalize `originalStateContent`
+      // read above. `platformWriteSync` runs Markdown normalization (blank-line
+      // insertion around headings/fences/lists) before persisting — the
+      // transition core (`transitionCore`'s `## Current Position` section
+      // reset) regenerates that section fresh on every call, including on a
+      // genuine no-op re-run, and its raw un-normalized output differs from
+      // the already-normalized on-disk original even though the write
+      // converges to byte-identical content. Comparing pre-normalize strings
+      // (mirroring cmdPhaseComplete's shape verbatim) was verified live to
+      // report `true` on three consecutive byte-identical writes — reading
+      // back what actually landed on disk is the only comparison immune to
+      // that normalization-order artifact.
+      const stateAfterWrite = fs.readFileSync(statePath, 'utf-8');
+      stateUpdated = stateAfterWrite !== originalStateContent;
       for (const field of divergedFields) {
         preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });
       }
@@ -1151,8 +1185,11 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       phases_archive_skip_reason: phasesArchiveSkipReason,
       quick: !!quickArchiveResult && quickArchiveResult.archived > 0,
     },
-    milestones_updated: true,
-    state_updated: fs.existsSync(statePath),
+    // #3685: mirror requirementsUpdated's diff-tracking contract — both flags
+    // now report a real before/after content diff instead of the previous
+    // hardcoded `true` (milestones_updated) / bare fs.existsSync (state_updated).
+    milestones_updated: milestonesUpdated,
+    state_updated: stateUpdated,
     preservation_warnings: preservationWarnings,
   };
 

@@ -3244,6 +3244,55 @@ Plans:
     const out = JSON.parse(result.output);
     assert.strictEqual(out.state_updated, false, 'state_updated must be false when no STATE.md exists');
   });
+
+  // #3685: roadmap_updated used to be reported as a hardcoded `true` —
+  // #2640/#2974 already fixed this call site's sibling `state_updated` flag
+  // to reflect a real content diff (via readModifyWriteStateMd's returned
+  // boolean); roadmap_updated is now fixed the same way, via
+  // updateRoadmapAfterPhaseRemoval's own before/after content comparison.
+  test('roadmap_updated is false when ROADMAP.md comes out byte-identical (#3685)', () => {
+    // Target phase number appears nowhere in ROADMAP.md (no heading, no
+    // dependency reference, no progress-table row, and higher than every
+    // existing phase number so no renumbering fires) and has no directory —
+    // updateRoadmapAfterPhaseRemoval's section-delete/renumber/row-delete
+    // passes are all no-matches, so `content` never diverges from
+    // `originalContent`.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: Foundation\n**Goal:** Setup\n\n## Progress\n\n| Phase | Status |\n|-------|--------|\n| 1 | Done |\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
+    const roadmapBefore = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+
+    const result = runGsdTools('phase remove 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.equal(roadmapAfter, roadmapBefore, 'ROADMAP.md must be byte-identical when the removed phase is absent from it');
+    const out = JSON.parse(result.output);
+    assert.strictEqual(
+      out.roadmap_updated, false,
+      'roadmap_updated was hardcoded true here, masking the no-op (#3685)',
+    );
+  });
+
+  test('roadmap_updated is true and ROADMAP.md content actually changes on a genuine removal (#3685)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: Foundation\n**Goal:** Setup\n\n### Phase 2: Auth\n**Goal:** Authentication\n\n## Progress\n\n| Phase | Status |\n|-------|--------|\n| 1 | Done |\n| 2 | Planned |\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-auth'), { recursive: true });
+    const roadmapBefore = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+
+    const result = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.notEqual(roadmapAfter, roadmapBefore, 'precondition: ROADMAP.md content must actually change');
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.roadmap_updated, true, 'roadmap_updated must be true for a genuine removal');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
