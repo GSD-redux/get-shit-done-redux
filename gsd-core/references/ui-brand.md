@@ -15,14 +15,29 @@ Three forms, and nothing else:
 | Need | Emit |
 |---|---|
 | A titled section — stage, phase, checkpoint, completion, error | `### {TITLE}` (ATX heading) |
-| A break between two sections | `---` on its own line, **with a blank line above and below** |
+| A break between two sections | `---` on its own line, **with a blank line above it** |
 | A framed panel of rows | `### {TITLE}` followed by the rows as plain lines |
 
+**The blank line above `---` is load-bearing, not cosmetic.** A `---` placed
+directly under a line of text is parsed as a setext heading underline for that
+line, not as a thematic break — the rule silently swallows the line above it. A
+blank line is what makes it a thematic break. (A blank line *after* `---` is
+optional: a thematic break is a leaf block, so whatever follows starts a new
+block either way. Add one where it reads better.)
+
 **A stage banner is a heading alone — do not put a `---` above it.** An ATX
-heading already separates. A `---` placed directly under a line of text is parsed
-as a setext heading underline for that line, not as a thematic break, so the rule
-silently swallows the line above it. The blank line in the `---` form above is
-what prevents that, and a heading needs no rule at all.
+heading already separates, and it cannot be misparsed the way a bare `---` can.
+
+### Why this is unconditional, not per-runtime
+
+The alternative considered was a `rendersMarkdown` capability key, keeping
+line-art for terminal-oriented runtimes and Markdown for Markdown hosts. It was
+rejected: it needs a new descriptor key across every runtime plus the resolver,
+and it leaves two output conventions to keep in sync forever — the divergence
+class this repo already has a defect entry for. A heading and a thematic break
+carry the same structure in a plain terminal that a rule pair did, without
+committing to a width, so the second convention buys nothing. If a runtime ever
+turns up that genuinely needs line-art, add the key then, against that evidence.
 
 ---
 
@@ -179,7 +194,7 @@ Table rules use ASCII `-`, never box-drawing characters.
 
 - Fixed-width runs of `━`, `─` or `═` as separators — they wrap in a narrow pane
 - Box panels drawn with double-line box characters (U+2554, U+2557, U+255A, U+255D, U+2551, U+2560, U+2563) — the borders wrap independently of their contents. They are named here by code point rather than shown, because the guard below rejects the characters themselves anywhere in shipped content.
-- A `---` directly under a line of text with no blank line between (that is a setext heading, not a break)
+- A `---` directly under a line of text with no blank line between — that is a setext heading underline, not a break, and it swallows the line above
 - Boxing a heading between two rules — the heading is the separator
 - Mixing banner styles (`===`, `***`)
 - Skipping `GSD ►` prefix in banners
