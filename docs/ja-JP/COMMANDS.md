@@ -918,7 +918,7 @@ GSD の保証付きでアドホックタスクを実行します。
 | `--format` | 出力フォーマット: `markdown`（デフォルト）、`json` |
 
 **前提条件:** フェーズが実行済みであること（SUMMARY.md ファイルが存在すること）
-**生成物:** `.planning/learnings/{phase}-LEARNINGS.md`
+**生成物:** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **抽出内容:**
 - アーキテクチャ上の決定とその根拠

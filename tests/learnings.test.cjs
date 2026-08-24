@@ -627,3 +627,174 @@ describe('learnings dedupe scaling (#306)', () => {
     assert.strictEqual(all.length, 1);
   });
 });
+
+// ─── #3683 — phase-scoped learnings source (path agreement + gated wiring) ──
+//
+// The extractor writes {PHASE_DIR}/{PADDED}-LEARNINGS.md; the copy command read
+// only <root>/LEARNINGS.md (project root), so learnings.copy ALWAYS no-oped —
+// the global-learnings store stayed empty even after manual extraction. The
+// copy must discover the most recent phase-scoped artifact; the project-root
+// path remains the fallback (legacy shape). Pins also cover the gated
+// completion wiring in execute-phase.md and the registry/docs agreement.
+
+describe('#3683 learnings copy source resolution', () => {
+  let storeDir;
+  let projectDir;
+
+  beforeEach(() => {
+    storeDir = makeTempDir();
+    projectDir = makeTempDir();
+  });
+  afterEach(() => {
+    cleanupDir(storeDir);
+    cleanupDir(projectDir);
+  });
+
+  function writePhaseLearnings(phaseSlug, ageMinutes) {
+    const phaseDir = path.join(projectDir, 'phases', phaseSlug);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    const file = path.join(phaseDir, `${phaseSlug}-LEARNINGS.md`);
+    fs.writeFileSync(file, `# Learnings\n\n## ${phaseSlug} Lesson\nBody for ${phaseSlug}.\n`, 'utf-8');
+    const when = new Date(Date.now() - ageMinutes * 60 * 1000);
+    fs.utimesSync(file, when, when);
+    return file;
+  }
+
+  test('learnings copy reads the phase-scoped artifact', () => {
+    writePhaseLearnings('1.0-discovery', 30);
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 1, `phase-scoped artifact must be the copy source: ${JSON.stringify(result)}`);
+    const all = learningsList({ storeDir });
+    assert.ok(all.some((r) => r.learning.includes('Body for 1.0-discovery')), 'item body must land in learning');
+  });
+
+  test('learnings copy still reads the project-root artifact', () => {
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), '# L\n\n## Root Lesson\nBody.\n', 'utf-8');
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 1);
+    assert.ok(learningsList({ storeDir }).some((r) => r.context === 'Root Lesson'), 'section title lands in context');
+  });
+
+  test('phase-scoped wins when both exist', () => {
+    writePhaseLearnings('2.0-build', 10);
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), '# L\n\n## Root Lesson\nBody.\n', 'utf-8');
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 1);
+    assert.ok(
+      learningsList({ storeDir }).some((r) => r.learning.includes('Body for 2.0-build')),
+      'the most recent phase artifact must win over the project-root file',
+    );
+  });
+
+  test('learnings copy no-ops with no artifact', () => {
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.deepStrictEqual(result, { total: 0, created: 0, skipped: 0 });
+  });
+
+  test('learnings copy picks the most recent phase artifact', () => {
+    writePhaseLearnings('1.0-discovery', 240); // older
+    writePhaseLearnings('3.0-hardening', 5);   // newer
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 1);
+    assert.ok(learningsList({ storeDir }).some((r) => r.learning.includes('Body for 3.0-hardening')));
+  });
+
+  test('extractor-shaped artifact copies per-item entries, not category blobs', () => {
+    // The real producer writes ## category sections containing ### items
+    // (extract-learnings.md write_learnings). The copy must store each ###
+    // item as its own learning — aggregating a category into one mega-entry
+    // defeats the store's relevance contract (learnings.max_inject).
+    const phaseDir = path.join(projectDir, 'phases', '4.0-real');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '4.0-real-LEARNINGS.md'),
+      [
+        '# Phase 4 Learnings',
+        '',
+        '## Decisions',
+        '',
+        '### Use SQLite over Postgres',
+        'Zero-ops for single-node deployments.',
+        '',
+        '### Pin the runner image',
+        'Reproducible CI beats newest-libraries.',
+        '',
+        '## Surprises',
+        '',
+        '### npm dedupe changed lockfile',
+        'Expected; audit after upgrades.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 3, 'each ### item must become one learning');
+    const all = learningsList({ storeDir });
+    // ### item TITLES land in context; their BODIES land in learning.
+    assert.ok(all.some((r) => r.context === 'Use SQLite over Postgres' && r.learning.includes('Zero-ops')));
+    assert.ok(all.some((r) => r.context === 'Pin the runner image' && r.learning.includes('Reproducible')));
+    assert.ok(all.some((r) => r.context === 'npm dedupe changed lockfile' && r.learning.includes('audit')));
+    for (const r of all) {
+      assert.ok(r.learning.length < 200, 'entries must be item-scoped, not category blobs');
+    }
+  });
+
+  test('malformed artifact yields no entries', () => {
+    const phaseDir = path.join(projectDir, 'phases', '1.0-x');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '1.0-x-LEARNINGS.md'), 'no sections at all\n', 'utf-8');
+    const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    assert.strictEqual(result.created, 0);
+  });
+});
+
+describe('#3683 completion wiring and registry pins', () => {
+  const EXECUTE_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
+  const REGISTRY = path.join(__dirname, '..', 'gsd-core', 'templates', 'README.md');
+  const FEATURES = path.join(__dirname, '..', 'docs', 'FEATURES.md');
+
+  test('execute-phase completion wires gated extraction', () => {
+    const content = fs.readFileSync(EXECUTE_PHASE, 'utf-8');
+    const stepStart = content.indexOf('<step name="auto_copy_learnings">');
+    assert.ok(stepStart !== -1, 'auto_copy_learnings step must exist');
+    const stepEnd = content.indexOf('</step>', stepStart);
+    const step = content.slice(stepStart, stepEnd);
+    assert.ok(
+      /extract-learnings|extract_learnings/.test(step),
+      'the gated step must invoke the extraction producer for the completed phase',
+    );
+    assert.ok(
+      /must NOT block phase completion|does not block phase completion|non-fatal/i.test(step),
+      'extraction failure must be explicitly non-fatal',
+    );
+    // Gate-first ordering: the disabled skip must precede the extraction wiring
+    // so disabled runs stay byte-identical.
+    const gateIdx = step.indexOf('GL_ENABLED');
+    const extractIdx = step.search(/Run the .extract[-_]learnings. workflow/);
+    assert.ok(gateIdx !== -1 && extractIdx !== -1 && gateIdx < extractIdx, 'gate check must precede extraction');
+  });
+
+  test('registry producer attribution is gated', () => {
+    const registry = fs.readFileSync(REGISTRY, 'utf-8');
+    const splitLines = require('../gsd-core/bin/lib/text-lines.cjs').splitLines;
+    const row = splitLines(registry).find((l) => l.includes('LEARNINGS.md'));
+    assert.ok(row, 'registry must carry a LEARNINGS.md row');
+    assert.ok(
+      /global_learnings|gated/i.test(row),
+      `producer attribution must state the gate: ${row}`,
+    );
+  });
+
+  test('features doc agrees with the registry', () => {
+    const features = fs.readFileSync(FEATURES, 'utf-8');
+    // Anchor on the SECTION HEADING — the TOC also mentions extract-learnings
+    // ~2400 chars earlier and its window contains neither keyword.
+    const heading = features.search(/##+\s*\d*\d*\.?\s*Extract Learnings/i);
+    assert.ok(heading !== -1, 'FEATURES.md must have an Extract Learnings section');
+    const section = features.slice(heading, heading + 4000);
+    assert.ok(
+      /global_learnings|automatically/i.test(section),
+      'the learnings feature section must acknowledge the gated automatic path',
+    );
+  });
+});

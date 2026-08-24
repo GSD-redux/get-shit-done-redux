@@ -161,6 +161,10 @@ const DOCS_GUARD_TESTS = {
   // fixture ADRs throughout) and separately reads docs/contributor-standards.md.
   'tests/adr-index-gate.test.cjs': ['docs/adr/', 'docs/contributor-standards.md'],
   'tests/agent-classification-parity.test.cjs': ['docs/AGENTS.md', 'docs/INVENTORY.md'],
+  // #3683: pins the learnings feature section's agreement with the canonical
+  // artifact registry (reads docs/FEATURES.md around the extract-learnings
+  // entry).
+  'tests/learnings.test.cjs': ['docs/FEATURES.md'],
   'tests/analyze-dependencies.test.cjs': ['docs/COMMANDS.md'],
   'tests/autonomous-converge.test.cjs': [
     'docs/COMMANDS.md',

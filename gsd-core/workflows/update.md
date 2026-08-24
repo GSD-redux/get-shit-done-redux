@@ -296,8 +296,8 @@ installer does not know about and will delete during the wipe.
 **Do not use bash path-stripping (`${filepath#$RUNTIME_DIR/}`) or `node -e require()`
 inline** — those patterns fail when `$RUNTIME_DIR` is unset and the stripped
 relative path may not match manifest key format, which causes CUSTOM_COUNT=0
-even when custom files exist (bug #1997). Use `gsd-tools.cjs query detect-custom-files`
-or the bundled `gsd-tools.cjs detect-custom-files` path — both resolve paths
+even when custom files exist (bug #1997). Use `gsd_run query detect-custom-files`
+or the bundled `gsd_run detect-custom-files` path — both resolve paths
 reliably with Node.js `path.relative()`.
 
 First, resolve the config directory (`RUNTIME_DIR`) from the install scope
