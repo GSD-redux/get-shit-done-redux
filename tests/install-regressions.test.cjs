@@ -6,6 +6,7 @@
  * regressions file for the installer module cluster.
  *
  * Defects covered:
+ *   #3664         — --config-dir foreign-agent destination warning (warn-and-proceed)
  *   #3664 Defect #1 — stale skills/gsd/gsd-<stem>/ dirs on Hermes upgrade
  *   #3664 Defect #2 — --hermes --profile=core falls through to wrong path
  *   #2973 M1–M3    — dev-preferences migration at profile=core for hermes/qwen/claude
@@ -1752,7 +1753,6 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
           HOME: home,
           USERPROFILE: home,
           GSD_HOME: home,
-          GSD_TEST_MODE: '1',
           CI: '1',
         },
         timeoutMs: INSTALL_TIMEOUT_MS,
@@ -1801,7 +1801,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
     );
     const warning = lines.find((l) => l.includes('(#3664)'));
     assert.ok(warning, 'mixed dir with a foreign agent must warn');
-    assert.ok(warning.includes('1'), `warning reports the foreign count: ${warning}`);
+    assert.ok(warning.includes('contains 1 non-GSD agent file'), `warning reports the foreign count: ${warning}`);
   });
 
   test('ignores non-markdown files', (t) => {
@@ -1811,6 +1811,32 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
       installerMod.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `non-agent files are not harness evidence: ${lines.join(' | ')}`);
+  });
+
+  test('warns for the kimi runtime (kimi-agents kind)', (t) => {
+    const { dest } = makeForeignDest(t, 'kimi-foreign', ['junie-guide.md']);
+    const { lines } = capturedLogs(t, () =>
+      installerMod.warnIfForeignAgentDest('kimi', dest, 'global', true),
+    );
+    assert.ok(
+      lines.some((l) => l.includes('(#3664)') && l.includes('kimi')),
+      `kimi's kimi-agents kind must take the gate: ${lines.join(' | ')}`,
+    );
+  });
+
+  test('silent on kimi\'s own gsd.md in a shared multi-runtime dir', (t) => {
+    // kimi's root agent is agents/gsd.md — a bare stem, no gsd- prefix. A
+    // shared --all dir accumulates it alongside gsd-*.md; none of it is
+    // foreign, so every runtime's install into that dir must stay silent.
+    const { dest } = makeForeignDest(t, 'shared-kimi', ['gsd-executor.md', 'gsd.md']);
+    const { lines } = capturedLogs(t, () => {
+      installerMod.warnIfForeignAgentDest('kimi', dest, 'global', true);
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true);
+    });
+    assert.ok(
+      !lines.some((l) => l.includes('(#3664)')),
+      `GSD-owned gsd.md must not read as a foreign agent: ${lines.join(' | ')}`,
+    );
   });
 
   test('degrades silently when the layout cannot resolve', (t) => {
