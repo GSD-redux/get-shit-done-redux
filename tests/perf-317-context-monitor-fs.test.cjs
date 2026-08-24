@@ -1156,3 +1156,143 @@ describe('#2289 context-monitor: side effects still fire on silent events (no ou
 });
   });
 }
+
+/**
+ * #3709 — the warn sentinel must not survive a compaction.
+ *
+ * The hook was already wired to PreCompact (#772), but read the event only at
+ * the END, to pick an output envelope. So `lastLevel` stayed pinned at
+ * 'critical' for the rest of the session and two DOCUMENTED behaviours died:
+ * "First warning always fires immediately" and "Severity escalation
+ * (WARNING -> CRITICAL) bypasses debounce" (the context-monitor reference,
+ * "Debounce" section) — the latter computed as `lastLevel === 'warning'`, which can never be true again.
+ *
+ * These rows drive a SEQUENCE against one session id, because the defect is
+ * about state carried ACROSS calls. The helpers above deliberately delete the
+ * sentinel after every invocation, so this block needs its own driver.
+ */
+describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
+  const HOOK = path.join(__dirname, '..', 'hooks', 'gsd-context-monitor.js');
+
+  function makeSession(t, { gsdActive = false } = {}) {
+    const dir = os.tmpdir();
+    const id = `fix-3709-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const metricsPath = path.join(dir, `claude-ctx-${id}.json`);
+    const warnPath = path.join(dir, `claude-ctx-${id}-warned.json`);
+    let cwd = dir;
+    let projDir = null;
+    if (gsdActive) {
+      projDir = fs.mkdtempSync(path.join(dir, 'fix-3709-proj-'));
+      fs.mkdirSync(path.join(projDir, '.planning'), { recursive: true });
+      fs.writeFileSync(path.join(projDir, '.planning', 'STATE.md'), '# State\n');
+      cwd = projDir;
+    }
+    t.after(() => {
+      for (const p of [metricsPath, warnPath]) { try { fs.unlinkSync(p); } catch { /* absent */ } }
+      if (projDir) { try { cleanup(projDir); } catch { /* best effort */ } }
+    });
+
+    return {
+      warnPath,
+      // Drive one hook invocation at a given remaining%, WITHOUT touching the
+      // sentinel — that is the state under test.
+      call(event, remaining) {
+        fs.writeFileSync(metricsPath, JSON.stringify({
+          session_id: id,
+          remaining_percentage: remaining,
+          used_pct: 100 - remaining,
+          timestamp: Math.floor(Date.now() / 1000),
+        }));
+        let stdout = '';
+        try {
+          stdout = execFileSync(process.execPath, [HOOK], {
+            input: JSON.stringify({ session_id: id, cwd, hook_event_name: event }),
+            encoding: 'utf8',
+            timeout: 8000,
+          });
+        } catch (e) { stdout = e.stdout || ''; }
+        return stdout;
+      },
+      warn() {
+        try { return JSON.parse(fs.readFileSync(warnPath, 'utf8')); } catch { return null; }
+      },
+      seed(data) { fs.writeFileSync(warnPath, JSON.stringify(data)); },
+    };
+  }
+
+  test('AC1: a PreCompact event clears a sentinel pinned at critical', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    s.call('PreCompact', 20);
+    assert.strictEqual(s.warn(), null,
+      'the sentinel must be GONE after a compaction — a compact restarts the context lifecycle, '
+      + 'so carrying lastLevel:critical across it disables escalation for the rest of the session');
+  });
+
+  test('AC1: PreCompact is tolerant of the sentinel already being absent', (t) => {
+    const s = makeSession(t);
+    assert.strictEqual(s.warn(), null, 'precondition: no sentinel');
+    assert.doesNotThrow(() => s.call('PreCompact', 20),
+      'the common case is no warning having fired this cycle; absence is success, not failure');
+    assert.strictEqual(s.warn(), null, 'and it stays absent');
+  });
+
+  test('AC2: after a compaction the first WARNING fires immediately, not debounced', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    s.call('PreCompact', 20);
+    const out = s.call('PostToolUse', 30);
+    assert.match(out, /CONTEXT WARNING/,
+      'The context-monitor reference states "First warning always fires immediately". Before the fix '
+      + 'this was silently debounced: the surviving sentinel made it look like a repeat warning');
+  });
+
+  test('AC3: after a compaction a WARNING -> CRITICAL escalation bypasses debounce', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    s.call('PreCompact', 20);
+    s.call('PostToolUse', 30);
+    assert.strictEqual(s.warn().lastLevel, 'warning', 'the fresh cycle recorded a WARNING');
+    const out = s.call('PostToolUse', 20);
+    assert.match(out, /CONTEXT CRITICAL/,
+      'The context-monitor reference states "Severity escalation (WARNING -> CRITICAL) bypasses '
+      + 'debounce". That bypass is `lastLevel === "warning"`, unreachable while a stale sentinel lives');
+  });
+
+  test('AC4: after a compaction the critical-session breadcrumb can be recorded again', (t) => {
+    const s = makeSession(t, { gsdActive: true });
+    // A distinguishing marker, because asserting `criticalRecorded === true` alone
+    // is VACUOUS here — the stale sentinel already carries true, so the row would
+    // pass with or without the fix. The marker can only survive by the sentinel
+    // surviving, so its absence is what proves the state was REBUILT rather than
+    // carried across the compaction.
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true, staleProbe: 'pre-compact' });
+    s.call('PreCompact', 20);
+    s.call('PostToolUse', 20);
+    const after = s.warn();
+    assert.strictEqual(after.staleProbe, undefined,
+      'the post-compaction sentinel must be a NEW file — any field carried over means the pre-compact '
+      + 'state survived, and with it the sticky criticalRecorded guard');
+    assert.strictEqual(after.criticalRecorded, true,
+      'criticalRecorded is equally sticky: without the reset the #1974 /gsd:resume-work breadcrumb '
+      + 'keeps describing the earlier near-miss instead of the exhaustion that ended the session');
+  });
+
+  test('AC5 (non-vacuity): a NON-compaction lifecycle event does NOT clear the sentinel', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const out = s.call('Stop', 20);
+    assert.strictEqual(out, '', 'Stop stays silent (#2289)');
+    assert.ok(s.warn(), 'Stop must NOT clear the sentinel — if this fails the reset is firing for '
+      + 'every event, not just PreCompact, and the debounce is gone entirely');
+  });
+
+  test('PreCompact does not consume a debounce slot', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'warning' });
+    s.call('PreCompact', 20);
+    assert.strictEqual(s.warn(), null,
+      'the whole side-effect pipeline used to run for PreCompact, advancing callsSinceWarn 0 -> 1 '
+      + 'and eating a slot from the very cycle the compact was supposed to reset');
+  });
+});

@@ -27,6 +27,11 @@ To avoid spamming the agent with repeated warnings:
 - First warning always fires immediately
 - Subsequent warnings require 5 tool uses between them
 - Severity escalation (WARNING -> CRITICAL) bypasses debounce
+- A context compaction (`PreCompact`) resets this state, so the cycle after a
+  compact behaves like a fresh session: its first warning fires immediately and
+  its WARNING -> CRITICAL escalation bypasses debounce again. Without the reset
+  both rules above would be dead for the rest of the session once a CRITICAL had
+  fired, since the escalation test is "the previous level was WARNING" (#3709).
 
 ## Architecture
 

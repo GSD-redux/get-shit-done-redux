@@ -28,6 +28,13 @@ const CRITICAL_THRESHOLD = 25; // remaining_percentage <= 25%
 const STALE_SECONDS = 60;      // ignore metrics older than 60s
 const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
 
+// One reading of the lifecycle event name, shared by the #3709 PreCompact reset
+// and the #2289 output-envelope allowlist. Kept as a single helper so the two
+// cannot drift into disagreeing about what counts as "no event name".
+function readEventName(data) {
+  return (data && data.hook_event_name && data.hook_event_name.trim()) || "";
+}
+
 let input = '';
 // Timeout guard: if stdin doesn't close within 10s (e.g. pipe issues on
 // Windows/Git Bash, or slow Claude Code piping during large outputs),
@@ -69,6 +76,39 @@ process.stdin.on('end', () => {
 
     const tmpDir = os.tmpdir();
     const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
+    const warnPath = path.join(tmpDir, `claude-ctx-${sessionId}-warned.json`);
+
+    // #3709: a compaction RESTARTS the context lifecycle — usage drops back to
+    // Normal and the next climb is a fresh cycle — so the warn sentinel must not
+    // survive it. The hook was already wired to PreCompact (#772), but the event
+    // was only read at the very END, and solely to pick the output envelope.
+    //
+    // Left in place, `lastLevel` stays pinned at 'critical' for the rest of the
+    // session and two documented behaviours die (docs/context-monitor.md):
+    // "First warning always fires immediately" — the first warning of the new
+    // cycle is debounced instead; and "Severity escalation (WARNING -> CRITICAL)
+    // bypasses debounce" — computed as `lastLevel === 'warning'`, which can never
+    // be true again, so every later CRITICAL waits out the full debounce, exactly
+    // when an immediate warning matters most. `criticalRecorded` is equally
+    // sticky, so the #1974 /gsd:resume-work breadcrumb would keep describing the
+    // earlier near-miss rather than the exhaustion that actually ended the run.
+    //
+    // Handled HERE, ahead of the metrics read, deliberately: a PreCompact payload
+    // carries no fresh metrics, and a post-compaction reading is healthy again, so
+    // the ENOENT / stale / above-threshold branches below all exit first and the
+    // sentinel would never be cleared. Returning early also stops the compaction
+    // itself from consuming a debounce slot — observed in the issue as
+    // callsSinceWarn advancing 0 -> 1 on the PreCompact call.
+    if (readEventName(data) === 'PreCompact') {
+      try {
+        fs.unlinkSync(warnPath);
+      } catch (e) {
+        // Absent is the common case (no warning fired this cycle) and is a
+        // success, not a failure. Any other error is swallowed too: a compaction
+        // must never be blocked by this hook.
+      }
+      process.exit(0);
+    }
 
     // If no metrics file, this is a subagent or fresh session -- exit silently.
     // Collapsed existsSync+readFileSync: ENOENT → exit 0 (identical to old !existsSync branch),
@@ -96,8 +136,8 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Debounce: check if we warned recently
-    const warnPath = path.join(tmpDir, `claude-ctx-${sessionId}-warned.json`);
+    // Debounce: check if we warned recently. `warnPath` is resolved above, next to
+    // metricsPath, because the PreCompact reset needs it before this point.
     let warnData = { callsSinceWarn: 0, lastLevel: null };
     let firstWarn = true;
 
@@ -191,7 +231,7 @@ process.stdin.on('end', () => {
     // not enough — a missing name would still fall through to the injection path.
     // All side effects above (debounce counter, one-time critical-session
     // recording) have already run regardless of whether output is emitted.
-    const eventName = (data.hook_event_name && data.hook_event_name.trim()) || "";
+    const eventName = readEventName(data);
     // Preserve the pre-#2289 Gemini fallback: a missing event name under a
     // Gemini-dialect runtime (GEMINI_API_KEY set) still means AfterTool, so its
     // advisory output is unchanged. A missing name on any other host is silent.
