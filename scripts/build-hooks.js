@@ -71,6 +71,11 @@ const HOOKS_TO_COPY = [
   'gsd-session-state.sh',
   'gsd-validate-commit.sh',
   'gsd-phase-boundary.sh',
+  // Portable node resolver (#3662). Not a registered hook itself: managed JS
+  // hook commands under --portable-hooks route through it (bash <resolver>
+  // <baked-node> <script>) so node resolves at hook-fire time in every
+  // environment sharing the config root. Staged verbatim — no templating.
+  'gsd-node-runner.sh',
   // Graphify auto-update hook (#3347 / PR #3557 / #3579). Opt-in via
   // .planning/config.json graphify.auto_update; off by default.
   'gsd-graphify-update.sh'

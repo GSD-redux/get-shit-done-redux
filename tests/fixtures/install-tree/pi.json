@@ -352,6 +352,7 @@
   "gsd-hooks/gsd-cursor-subagent-stop.js",
   "gsd-hooks/gsd-ensure-canonical-path.js",
   "gsd-hooks/gsd-graphify-update.sh",
+  "gsd-hooks/gsd-node-runner.sh",
   "gsd-hooks/gsd-phase-boundary.sh",
   "gsd-hooks/gsd-prompt-guard.js",
   "gsd-hooks/gsd-read-guard.js",

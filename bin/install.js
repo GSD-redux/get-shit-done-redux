@@ -1152,6 +1152,10 @@ if (hasHelp) {
 // had no internal caller and no export consumer for it — hooksSurface owns
 // the single implementation now, used internally by resolveNodeRunner there.)
 const resolveNodeRunner = hooksSurface.resolveNodeRunner;
+// #3662: the runtime-resolving runner token for managed JS hooks — the baked
+// absolute node path tried FIRST, then `command -v node`, then well-known
+// layouts, resolved by the shell at hook-fire time instead of bake time.
+const buildNodeRunnerChainToken = hooksSurface.buildNodeRunnerChainToken;
 const resolveBashRunner = hooksSurface.resolveBashRunner;
 // referencesHook: pure predicate over hook entry objects, shared between
 // install() and finishInstall() (ADR-857 phase 5f-1b).
@@ -12368,13 +12372,16 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     return;
   }
   const settings = validateHookFields(cleanupOrphanedHooks(rawSettings));
-  // #3002 CR: rewrite legacy `node .../gsd-*.js` command strings carried over
-  // from pre-#2979 installs to use the absolute node binary path. Without this,
-  // existing managed hook entries stay bare-`node`-prefixed across reinstalls
-  // and remain broken under GUI/minimal-PATH runtimes.
-  const settingsRunner = resolveNodeRunner();
+  // #3002 CR / #3662: rewrite legacy `node .../gsd-*.js` command strings (pre-
+  // #2979 installs) AND entries baked with another environment's absolute node
+  // path onto the runtime-resolving runner. Without this, existing managed
+  // hook entries stay bare-`node`-prefixed or foreign-absolute across
+  // reinstalls and remain broken under GUI/minimal-PATH runtimes and shared
+  // config roots — the #3662 mixed state where no environment can run all
+  // hooks.
+  const settingsRunner = buildNodeRunnerChainToken();
   if (settingsRunner && rewriteLegacyManagedNodeHookCommands(settings, settingsRunner, { platform: process.platform, runtime })) {
-    console.log(`  ${green}✓${reset} Rewrote legacy bare-node managed-hook commands to absolute path (#2979)`);
+    console.log(`  ${green}✓${reset} Rewrote legacy managed-hook commands to the runtime-resolving node runner (#2979/#3662)`);
   }
   // Local installs anchor hook paths so they resolve regardless of cwd (#1906).
   // Claude Code sets $CLAUDE_PROJECT_DIR; Antigravity does not — and on
@@ -12385,12 +12392,14 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   // check inside projectLocalHookPrefix.
   const localPrefix = projectLocalHookPrefix({ runtime, dirName, hookPathStyle: _hostBehaviors(runtime).hookPathStyle });
   const hookOpts = { portableHooks: hasPortableHooks, runtime };
-  // #2979: local-install hook commands also use the absolute node path so
-  // GUI/minimal-PATH runtimes can resolve them. Bare `node` fails when the
-  // host launches the runtime with a stripped PATH (Finder/Antigravity/etc).
-  const localNodeRunner = resolveNodeRunner();
+  // #2979: local-install hook commands also use a runner GUI/minimal-PATH
+  // runtimes can resolve. Bare `node` fails when the host launches the
+  // runtime with a stripped PATH (Finder/Antigravity/etc) — #3662 replaces
+  // the baked absolute path with the runtime-resolving chain (baked path
+  // first, so the minimal-PATH guarantee is unchanged).
+  const localNodeRunner = buildNodeRunnerChainToken();
   const localBashRunner = resolveBashRunner({ platform: process.platform });
-  // If we cannot resolve an absolute node path AND this is a local install,
+  // If we cannot resolve a node runner AND this is a local install,
   // skip managed-hook registration. Returning null from buildHookCommand on
   // global installs has the same effect. Better to skip than to emit a bare
   // `node` command that recreates the #2979 failure.

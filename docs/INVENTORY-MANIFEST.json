@@ -550,6 +550,7 @@
       "gsd-cursor-subagent-stop.js",
       "gsd-ensure-canonical-path.js",
       "gsd-graphify-update.sh",
+      "gsd-node-runner.sh",
       "gsd-phase-boundary.sh",
       "gsd-prompt-guard.js",
       "gsd-read-guard.js",

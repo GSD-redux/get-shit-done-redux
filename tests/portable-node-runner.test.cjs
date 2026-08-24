@@ -60,10 +60,14 @@ function makeHookTree(t, homeDirName) {
 
 function withHome(t, home) {
   const origHome = process.env.HOME;
+  const origProfile = process.env.USERPROFILE;
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   t.after(() => {
     if (origHome === undefined) delete process.env.HOME;
     else process.env.HOME = origHome;
+    if (origProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = origProfile;
   });
 }
 
@@ -254,7 +258,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       };
     }
 
-    test('update converges the mixed-state foreign runners from the issue', (t) => {
+    test('update converges the mixed-state foreign runners from the issue', () => {
       const settings = settingsWith([
         `"${FOREIGN_NODE}" "/home/u/.claude/hooks/gsd-write-guard.js"`,
         `"/usr/bin/node" "/home/u/.claude/hooks/gsd-read-guard.js"`,
@@ -277,7 +281,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       }
     });
 
-    test('rewriter converges the three guard hooks', (t) => {
+    test('rewriter converges the three guard hooks', () => {
       const settings = settingsWith(
         GUARD_HOOKS.map((hook) => `"${FOREIGN_NODE}" "/home/u/.claude/hooks/${hook}"`),
       );
@@ -295,7 +299,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       }
     });
 
-    test('user and args-form entries are never rewritten', (t) => {
+    test('user and args-form entries are never rewritten', () => {
       const userCommand = `"/usr/bin/node" "/home/u/own-tools/not-gsd.js"`;
       const argsFormCommand = `"${FOREIGN_NODE}" "/home/u/.claude/hooks/gsd-statusline.js"`;
       const settings = {
@@ -319,7 +323,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       assert.equal(settings.hooks.PreToolUse[0].hooks[1].command, argsFormCommand);
     });
 
-    test('unmanaged basenames are not converged', (t) => {
+    test('unmanaged basenames are not converged', () => {
       const command = `"${FOREIGN_NODE}" "/home/u/.claude/hooks/my-own-hook.js"`;
       const settings = settingsWith([command]);
       const changed = hooksSurface.rewriteLegacyManagedNodeHookCommands(
@@ -331,7 +335,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, command);
     });
 
-    test('legacy bare-node entries are still converged', (t) => {
+    test('legacy bare-node entries are still converged', () => {
       const settings = settingsWith([`node "/home/u/.claude/hooks/gsd-statusline.js"`]);
       const changed = hooksSurface.rewriteLegacyManagedNodeHookCommands(
         settings,
@@ -345,7 +349,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       );
     });
 
-    test('rewriter is idempotent and leaves resolving shapes alone', (t) => {
+    test('rewriter is idempotent and leaves resolving shapes alone', () => {
       const chainCommand = `"$(for n in ${FOREIGN_NODE} "$(command -v node)" /usr/local/bin/node /usr/bin/node; do [ -x "$n" ] && printf '%s' "$n" && break; done)" "/home/u/.claude/hooks/gsd-statusline.js"`;
       const resolverCommand = `bash "/home/u/.claude/hooks/${RESOLVER_HOOK}" "${FOREIGN_NODE}" "/home/u/.claude/hooks/gsd-statusline.js"`;
       const settings = settingsWith([chainCommand, resolverCommand]);
@@ -361,7 +365,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
   });
 
   describe('resolver script (hooks/gsd-node-runner.sh)', () => {
-    test('installer stages the node resolver script', (t) => {
+    test('installer stages the node resolver script', () => {
       const repoResolver = path.join(REPO_ROOT, 'hooks', RESOLVER_HOOK);
       assert.ok(fs.existsSync(repoResolver), `${RESOLVER_HOOK} missing from hooks/`);
       assert.ok(
@@ -468,7 +472,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       assert.equal(result.exitCode, 0, `bash -n rejected the emitted command (${foreign}): ${result.stderr}`);
     });
 
-    test('win32 projection keeps forward-slash paths in the chain', (t) => {
+    test('win32 projection keeps forward-slash paths in the chain', () => {
       const emitted = hooksSurface.buildHookCommand('C:\\Users\\u\\.claude', 'gsd-statusline.js', {
         runtime: 'claude',
         platform: 'win32',
