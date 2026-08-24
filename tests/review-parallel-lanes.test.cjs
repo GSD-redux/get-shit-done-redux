@@ -420,6 +420,20 @@ describe('#3034 empty selection', () => {
   });
 });
 
+describe('#3034 duplicate slug in the selection', () => {
+  test('duplicateSlugDispatchesOnceAndWritesOneLine', (t) => {
+    // A slug repeated in SELECTED_REVIEWERS would otherwise put two
+    // concurrent background jobs on the same `>`-truncated per-slug result
+    // file, corrupting whichever one finishes last. DISPATCH_SLUGS
+    // de-duplicates before dispatch, so codex must run exactly once.
+    const result = runDispatch(t, { selected: 'codex,gemini,codex', parallel: 'true' });
+    assert.equal(result.outcome, 'exited');
+    assert.equal(result.trace.filter((l) => l === 'start:codex').length, 1);
+    assert.equal(result.trace.filter((l) => l === 'end:codex').length, 1);
+    assert.deepEqual(slugOrder(result.lines), ['codex', 'gemini']);
+  });
+});
+
 // ─── #11/#12 — lane failure does not abort siblings ────────────────────────
 
 describe('#3034 lane failure does not abort sibling lanes', () => {

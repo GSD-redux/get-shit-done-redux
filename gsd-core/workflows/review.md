@@ -380,6 +380,10 @@ gsd_run query review-lane plan \
 # interleave — and write_reviews parses this JSONL to render the models:/model_sources: frontmatter,
 # so a torn line is a broken REVIEWS.md, not a cosmetic log defect.
 run_review_lane() {
+  # `local` is hygiene, not a live fix: each `&`-dispatched call already forks its own subshell, so
+  # concurrent lanes cannot share these today. Scoped anyway so the isolation is a property of this
+  # function rather than of the dispatch mechanism happening to fork.
+  local SLUG LANE_BUDGET PROMPT_ARG TRIMMED
   SLUG="$1"
   # Per-lane prompt budget. The lane declares its own `promptBudgetKey`; `plan` resolved it,
   # applying #2797's sentinel rule (-1 = unset → fall back to the global budget; 0 legitimately
@@ -412,7 +416,25 @@ run_review_lane() {
     > "$RUN_DIR/gsd-review-lane-result-$SLUG.json"
 }
 
+# Split ONCE, de-duplicated, and reuse for both loops below. Two reasons, and the second is
+# load-bearing: a slug repeated in SELECTED_REVIEWERS would put TWO concurrent background jobs on
+# `> "$RUN_DIR/gsd-review-lane-result-$SLUG.json"` — the same file, both truncating. The shared-append
+# form this replaced could not corrupt itself that way, so de-duping is what keeps the concurrent
+# path no worse than the sequential one. Selection de-dupes today (the roster is a Set;
+# review.default_reviewers normalizes lowercase-unique), but reachability analysis is not a contract
+# and the next caller should not have to redo it.
+#
+# A plain string accumulator, not an array: zsh and bash disagree on array indexing and this block
+# runs under both (see the nullglob/NULL_GLOB pairing above).
+DISPATCH_SLUGS=""
 for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+  case " $DISPATCH_SLUGS " in
+    *" $SLUG "*) continue ;;
+  esac
+  DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
+done
+
+for SLUG in $DISPATCH_SLUGS; do
   if [ "$PARALLEL_LANES" = "true" ]; then
     run_review_lane "$SLUG" &
   else
@@ -430,7 +452,7 @@ wait
 # produces is byte-identical to the one a sequential run produces. This is post-join and therefore
 # single-threaded, so `>>` here is safe. A lane that was budget-skipped, or that never started,
 # leaves no result file and correctly contributes no line.
-for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+for SLUG in $DISPATCH_SLUGS; do
   LANE_RESULT="$RUN_DIR/gsd-review-lane-result-$SLUG.json"
   if [ -f "$LANE_RESULT" ]; then
     cat "$LANE_RESULT" >> "$RUN_DIR/gsd-review-lane-results.jsonl"
