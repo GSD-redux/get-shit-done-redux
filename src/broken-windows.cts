@@ -70,6 +70,8 @@ export const REASON = Object.freeze({
   WINDOWS_INVALID_ID: 'windows_invalid_id',
   WINDOWS_APPEND_MISSING_FIELD: 'windows_append_missing_field',
   WINDOWS_USAGE: 'windows_usage',
+  WINDOWS_LEDGER_LOCKED: 'windows_ledger_locked',
+  WINDOWS_WRITE_LOST: 'windows_write_lost',
 });
 
 /** Allowed window kinds. Aligned with the issue's enumerated sources. */
@@ -795,6 +797,100 @@ function renameWithRetry(tmp: string, target: string): void {
   throw lastErr;
 }
 
+/**
+ * Ledger mutation lock (issue #3780).
+ *
+ * `writeLedgerAtomic` makes each individual rewrite all-or-nothing, but the
+ * command paths do read -> compute -> rewrite as three uncoordinated steps.
+ * Two concurrent writers each hold the same snapshot, each render a complete
+ * ledger missing the other's entry, and the second rename silently discards
+ * the first — the loser cannot know it lost. The original acceptance of that
+ * race (review L2 on #1950) was explicitly conditioned on a single executor
+ * writing per phase, with the trigger "document if the executor ever gains
+ * parallel wave-level append". That condition no longer holds.
+ *
+ * The lock serializes the whole critical section so every append lands, rather
+ * than making losers fail. Held across read+compute+write, never across an
+ * `emit`. Lock acquisition is `wx` open, which is atomic on POSIX and Windows.
+ *
+ * Kept deliberately dumb: a sync busy-wait in the same style as
+ * `renameWithRetry`, because this is a synchronous CLI path with no event loop
+ * to yield to. A crashed holder is recovered via the staleness sweep so a dead
+ * process can never wedge the ledger permanently.
+ */
+const LOCK_MAX_WAIT_MS = 5000;
+const LOCK_POLL_MS = 20;
+const LOCK_STALE_MS = 30_000;
+
+function lockPath(cwd: string): string {
+  return `${ledgerPath(cwd)}.lock`;
+}
+
+/** Remove a lock whose holder is gone or which is older than LOCK_STALE_MS. */
+function clearStaleLock(lock: string): void {
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(lock);
+  } catch {
+    return; // Released while we looked — nothing to clear.
+  }
+  if (Date.now() - st.mtimeMs < LOCK_STALE_MS) return;
+  // Best-effort: if another process wins the unlink race, its lock stands and
+  // we simply keep waiting.
+  try { fs.unlinkSync(lock); } catch { /* best-effort */ }
+}
+
+function acquireLedgerLock(cwd: string): string {
+  ensurePlanningDir(cwd);
+  const lock = lockPath(cwd);
+  const deadline = Date.now() + LOCK_MAX_WAIT_MS;
+
+  for (;;) {
+    try {
+      const fd = fs.openSync(lock, 'wx');
+      try {
+        fs.writeFileSync(fd, `${process.pid}\n${new Date().toISOString()}\n`, 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      return lock;
+    } catch (err: unknown) {
+      const code = (err && typeof err === 'object' && 'code' in err)
+        ? String((err as { code?: unknown }).code)
+        : '';
+      if (code !== 'EEXIST') throw err;
+
+      clearStaleLock(lock);
+      if (Date.now() >= deadline) {
+        throw new WindowsError(
+          REASON.WINDOWS_LEDGER_LOCKED,
+          `Could not acquire the ledger lock at ${lock} within ${LOCK_MAX_WAIT_MS}ms. `
+          + 'Another windows command is mutating the ledger. Retry; if this persists, '
+          + 'no process holds it and the file can be removed by hand.',
+        );
+      }
+      const until = Date.now() + LOCK_POLL_MS;
+      while (Date.now() < until) {
+        // Busy-wait — synchronous CLI path, same rationale as renameWithRetry.
+      }
+    }
+  }
+}
+
+function releaseLedgerLock(lock: string): void {
+  try { fs.unlinkSync(lock); } catch { /* best-effort: already gone */ }
+}
+
+/** Run `fn` with the ledger mutation lock held. Always releases. */
+function withLedgerLock<T>(cwd: string, fn: () => T): T {
+  const lock = acquireLedgerLock(cwd);
+  try {
+    return fn();
+  } finally {
+    releaseLedgerLock(lock);
+  }
+}
+
 function writeLedgerAtomic(cwd: string, ledger: Ledger): void {
   ensurePlanningDir(cwd);
   const p = ledgerPath(cwd);
@@ -873,27 +969,62 @@ export function cmdWindowsAppend(
     required: ['--kind', '--phase', '--description'],
   });
 
-  let ledger: Ledger;
-  try {
-    ledger = readLedgerOrNull(cwd) ?? emptyLedger(nowIso());
-  } catch (e) {
-    if (e instanceof WindowsError) throw e;
-    throw new WindowsError(REASON.WINDOWS_LEDGER_MALFORMED, (e as Error).message);
-  }
+  // #3780: read -> compute -> write is one critical section. `emit` stays
+  // outside it so no lock is held across process output.
+  const result = withLedgerLock(cwd, () => {
+    let ledger: Ledger;
+    try {
+      ledger = readLedgerOrNull(cwd) ?? emptyLedger(nowIso());
+    } catch (e) {
+      if (e instanceof WindowsError) throw e;
+      throw new WindowsError(REASON.WINDOWS_LEDGER_MALFORMED, (e as Error).message);
+    }
 
-  const result = appendWindow(
-    ledger,
-    {
-      kind: parsed.values['--kind'] as WindowKind,
-      phase: parsed.values['--phase'] ?? '',
-      file: parsed.values['--file'] ?? '',
-      line: parsed.values['--line'] == null ? null : Number(parsed.values['--line']),
-      description: parsed.values['--description'] ?? '',
-    },
-    { now: nowIso() },
-  );
-  writeLedgerAtomic(cwd, result.ledger);
+    const appended = appendWindow(
+      ledger,
+      {
+        kind: parsed.values['--kind'] as WindowKind,
+        phase: parsed.values['--phase'] ?? '',
+        file: parsed.values['--file'] ?? '',
+        line: parsed.values['--line'] == null ? null : Number(parsed.values['--line']),
+        description: parsed.values['--description'] ?? '',
+      },
+      { now: nowIso() },
+    );
+    writeLedgerAtomic(cwd, appended.ledger);
+    assertEntryLanded(cwd, appended.entry.id);
+    return appended;
+  });
   emit({ ok: true, ledger: result.ledger, entry: result.entry });
+}
+
+/**
+ * Re-read the ledger and confirm `id` is present (#3780).
+ *
+ * The lock is what prevents lost writes; this is the belt to its braces. The
+ * contract this enforces is the one the issue names: an append either lands
+ * durably or reports failure — never a success response for an entry absent
+ * from the ledger it claims to have written. If a future change weakens the
+ * serialization, callers get a structured error instead of a false green, and
+ * the ship gate stops trusting an undercounted ledger.
+ */
+function assertEntryLanded(cwd: string, id: number): void {
+  let persisted: Ledger | null;
+  try {
+    persisted = readLedgerOrNull(cwd);
+  } catch (e) {
+    throw new WindowsError(
+      REASON.WINDOWS_WRITE_LOST,
+      `Wrote window ${id} but could not re-read the ledger to confirm it: ${(e as Error).message}.`,
+    );
+  }
+  if (!persisted || !persisted.entries.some((e) => e.id === id)) {
+    throw new WindowsError(
+      REASON.WINDOWS_WRITE_LOST,
+      `Wrote window ${id} but it is absent from the ledger on re-read — the write was lost. `
+      + 'Retry the append; do not treat this run as recorded.',
+    );
+  }
 }
 
 /** `gsd-tools windows waive <id> "<reason>"`. */
@@ -909,16 +1040,21 @@ export function cmdWindowsWaive(
 
   const id = parseIdOrThrow(idStr);
 
-  let ledger: Ledger;
-  try {
-    ledger = readLedgerOrNull(cwd) ?? emptyLedger(nowIso());
-  } catch (e) {
-    if (e instanceof WindowsError) throw e;
-    throw new WindowsError(REASON.WINDOWS_LEDGER_MALFORMED, (e as Error).message);
-  }
+  // #3780: waive shares append's read-modify-write shape and the same writer,
+  // so it takes the same lock — otherwise a concurrent append would still lose.
+  const updated = withLedgerLock(cwd, () => {
+    let ledger: Ledger;
+    try {
+      ledger = readLedgerOrNull(cwd) ?? emptyLedger(nowIso());
+    } catch (e) {
+      if (e instanceof WindowsError) throw e;
+      throw new WindowsError(REASON.WINDOWS_LEDGER_MALFORMED, (e as Error).message);
+    }
 
-  const updated = markWaived(ledger, id, reason ?? '', { now: nowIso() });
-  writeLedgerAtomic(cwd, updated);
+    const next = markWaived(ledger, id, reason ?? '', { now: nowIso() });
+    writeLedgerAtomic(cwd, next);
+    return next;
+  });
   emit({ ok: true, ledger: updated });
 }
 
@@ -932,16 +1068,20 @@ export function cmdWindowsMarkFixed(
   const { positionals } = parseArgs(args, { flags: [], required: [], positionals: 1 });
   const id = parseIdOrThrow(positionals[0]);
 
-  let ledger: Ledger;
-  try {
-    ledger = readLedgerOrNull(cwd) ?? emptyLedger(nowIso());
-  } catch (e) {
-    if (e instanceof WindowsError) throw e;
-    throw new WindowsError(REASON.WINDOWS_LEDGER_MALFORMED, (e as Error).message);
-  }
+  // #3780: same read-modify-write shape and writer as append/waive.
+  const updated = withLedgerLock(cwd, () => {
+    let ledger: Ledger;
+    try {
+      ledger = readLedgerOrNull(cwd) ?? emptyLedger(nowIso());
+    } catch (e) {
+      if (e instanceof WindowsError) throw e;
+      throw new WindowsError(REASON.WINDOWS_LEDGER_MALFORMED, (e as Error).message);
+    }
 
-  const updated = markFixed(ledger, id, { now: nowIso() });
-  writeLedgerAtomic(cwd, updated);
+    const next = markFixed(ledger, id, { now: nowIso() });
+    writeLedgerAtomic(cwd, next);
+    return next;
+  });
   emit({ ok: true, ledger: updated });
 }
 
