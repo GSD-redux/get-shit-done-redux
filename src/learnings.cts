@@ -18,6 +18,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseLocator = require('./phase-locator.cjs');
 import os from 'node:os';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
@@ -209,21 +212,13 @@ function learningsDelete(id: string, opts?: { storeDir?: string }): boolean {
 function resolveLearningsSource(planningDir: string): string | null {
   let best: { p: string; m: number } | null = null;
   const phasesDir = path.join(planningDir, 'phases');
-  let phaseEntries: string[];
-  try {
-    phaseEntries = fs.readdirSync(phasesDir);
-  } catch {
-    phaseEntries = [];
-  }
-  for (const entry of phaseEntries) {
+  // Phase enumeration routes through the sanctioned seam (the #3185 drift
+  // guard rejects ad-hoc re-derivations): no cwd → every phase dir in the
+  // tree, sentinel dirs excluded, unreadable phases dir already degraded to
+  // an empty list by the locator itself.
+  const { value: phaseDirNames } = phaseLocator.listMilestonePhaseDirs(phasesDir);
+  for (const entry of phaseDirNames) {
     const phaseDir = path.join(phasesDir, entry);
-    let stat;
-    try {
-      stat = fs.statSync(phaseDir);
-    } catch {
-      continue;
-    }
-    if (!stat.isDirectory()) continue;
     let files: string[];
     try {
       files = fs.readdirSync(phaseDir);

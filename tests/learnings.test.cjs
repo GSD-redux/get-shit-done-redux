@@ -665,14 +665,14 @@ describe('#3683 learnings copy source resolution', () => {
     const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
     assert.strictEqual(result.created, 1, `phase-scoped artifact must be the copy source: ${JSON.stringify(result)}`);
     const all = learningsList({ storeDir });
-    assert.ok(all.some((r) => r.learning.includes('1.0-discovery Lesson')));
+    assert.ok(all.some((r) => r.learning.includes('Body for 1.0-discovery')), 'item body must land in learning');
   });
 
   test('learnings copy still reads the project-root artifact', () => {
     fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), '# L\n\n## Root Lesson\nBody.\n', 'utf-8');
     const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
     assert.strictEqual(result.created, 1);
-    assert.ok(learningsList({ storeDir }).some((r) => r.learning.includes('Root Lesson')));
+    assert.ok(learningsList({ storeDir }).some((r) => r.context === 'Root Lesson'), 'section title lands in context');
   });
 
   test('phase-scoped wins when both exist', () => {
@@ -681,7 +681,7 @@ describe('#3683 learnings copy source resolution', () => {
     const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
     assert.strictEqual(result.created, 1);
     assert.ok(
-      learningsList({ storeDir }).some((r) => r.learning.includes('2.0-build Lesson')),
+      learningsList({ storeDir }).some((r) => r.learning.includes('Body for 2.0-build')),
       'the most recent phase artifact must win over the project-root file',
     );
   });
@@ -696,7 +696,7 @@ describe('#3683 learnings copy source resolution', () => {
     writePhaseLearnings('3.0-hardening', 5);   // newer
     const result = learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
     assert.strictEqual(result.created, 1);
-    assert.ok(learningsList({ storeDir }).some((r) => r.learning.includes('3.0-hardening Lesson')));
+    assert.ok(learningsList({ storeDir }).some((r) => r.learning.includes('Body for 3.0-hardening')));
   });
 
   test('extractor-shaped artifact copies per-item entries, not category blobs', () => {
