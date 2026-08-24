@@ -43,7 +43,7 @@ Exit.
 </step>
 
 <step name="add_phase">
-**Delegate the phase addition to `gsd-tools.cjs query phase.add`:**
+**Delegate the phase addition to `gsd_run query phase.add`:**
 
 ```bash
 RESULT=$(gsd_run query phase.add "${description}")
@@ -107,7 +107,7 @@ Roadmap updated: .planning/ROADMAP.md
 </process>
 
 <success_criteria>
-- [ ] `gsd-tools.cjs query phase.add` executed successfully
+- [ ] `gsd_run query phase.add` executed successfully
 - [ ] Phase directory created
 - [ ] Roadmap updated with new phase entry
 - [ ] STATE.md updated with roadmap evolution note

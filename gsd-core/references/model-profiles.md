@@ -228,7 +228,7 @@ the next spawn. `effort` (claude runtime) has its own cascade
 install time into the `effort:` frontmatter key of
 `~/.claude/agents/gsd-*.md` — Claude Code's Agent tool has no per-spawn
 effort parameter, so per-agent frontmatter is the only channel. An effort
-config change has no effect until `node gsd-tools.cjs effort sync --apply`
+config change has no effect until `gsd_run effort sync --apply`
 re-syncs the agent files. Codex agents instead pin
 `model_reasoning_effort` in `~/.codex/agents/*.toml` at install time.
 

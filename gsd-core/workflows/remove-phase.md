@@ -78,7 +78,7 @@ Wait for confirmation.
 </step>
 
 <step name="execute_removal">
-**Delegate the entire removal operation to `gsd-tools.cjs query phase.remove`:**
+**Delegate the entire removal operation to `gsd_run query phase.remove`:**
 
 ```bash
 RESULT=$(gsd_run query phase.remove "${target}")
@@ -141,7 +141,7 @@ Would you like to:
 
 - Don't remove completed phases (have SUMMARY.md files) without --force
 - Don't remove current or past phases
-- Don't manually renumber — use `gsd-tools.cjs query phase.remove` which handles all renumbering
+- Don't manually renumber — use `gsd_run query phase.remove` which handles all renumbering
 - Don't add "removed phase" notes to STATE.md — git commit is the record
 - Don't modify completed phase directories
 </anti_patterns>
@@ -150,7 +150,7 @@ Would you like to:
 Phase removal is complete when:
 
 - [ ] Target phase validated as future/unstarted
-- [ ] `gsd-tools.cjs query phase.remove` executed successfully
+- [ ] `gsd_run query phase.remove` executed successfully
 - [ ] Changes committed with descriptive message
 - [ ] User informed of changes
 </success_criteria>

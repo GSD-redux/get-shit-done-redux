@@ -47,7 +47,7 @@ Exit.
 </step>
 
 <step name="insert_phase">
-**Delegate the phase insertion to `gsd-tools.cjs query phase.insert`:**
+**Delegate the phase insertion to `gsd_run query phase.insert`:**
 
 ```bash
 RESULT=$(gsd_run query phase.insert "${after_phase}" "${description}")
@@ -143,10 +143,10 @@ Project state updated: .planning/STATE.md
 <success_criteria>
 Phase insertion is complete when:
 
-- [ ] `gsd-tools.cjs query phase.insert` executed successfully
+- [ ] `gsd_run query phase.insert` executed successfully
 - [ ] Phase directory created
 - [ ] Roadmap updated with new phase entry (includes "(INSERTED)" marker)
-- [ ] `gsd-tools.cjs query state.add-roadmap-evolution ...` returned `{ added: true }` or `{ added: false, reason: "duplicate" }`
-- [ ] `gsd-tools.cjs query state.patch` returned matched next-phase pointer field(s)
+- [ ] `gsd_run query state.add-roadmap-evolution ...` returned `{ added: true }` or `{ added: false, reason: "duplicate" }`
+- [ ] `gsd_run query state.patch` returned matched next-phase pointer field(s)
 - [ ] User informed of next steps and dependency implications
 </success_criteria>

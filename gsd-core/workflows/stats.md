@@ -53,7 +53,7 @@ If no `.planning/` directory exists, inform the user to run `/gsd:new-project` f
 </step>
 
 <step name="mvp_summary">
-**MVP phase summary.** Read all phases via `gsd-tools.cjs query roadmap.analyze` (Phase 1's `cmdRoadmapAnalyze` surfaces a `mode` field per phase). Count phases by mode:
+**MVP phase summary.** Read all phases via `gsd_run query roadmap.analyze` (Phase 1's `cmdRoadmapAnalyze` surfaces a `mode` field per phase). Count phases by mode:
 
 ```bash
 ANALYZE=$(gsd_run query roadmap.analyze)

@@ -434,7 +434,7 @@ AskUserQuestion([
 
 If "Other (Group B or custom)" is selected, prompt the user to enter the runtime name as a free-text string.
 If the selected runtime differs from the stored `runtime` key, update `runtime` via
-`gsd-tools.cjs query config-set runtime <value>` before proceeding to Step C.
+`gsd_run query config-set runtime <value>` before proceeding to Step C.
 
 **Step C — Configure tier overrides for the selected runtime:**
 
@@ -494,7 +494,7 @@ change.
 Merge the new settings into the existing config at `$GSD_CONFIG_PATH`. This merge is the
 core correctness invariant: **preserve every unrelated key** — do not clobber siblings.
 
-Apply each selected value via `gsd-tools.cjs query config-set <key> <value>` so the central
+Apply each selected value via `gsd_run query config-set <key> <value>` so the central
 validator (`isValidConfigKey`) accepts the write and the deep-merge preserves unrelated
 keys and sibling sub-objects.
 
@@ -567,7 +567,7 @@ anything not listed in Sections 1–8 MUST survive the update):
 ```
 
 Never emit a full overwrite of the file that omits keys the user did not touch. Always
-route each write through `gsd-tools.cjs query config-set` so sibling preservation is handled by
+route each write through `gsd_run query config-set` so sibling preservation is handled by
 the central setter.
 </step>
 
@@ -807,7 +807,7 @@ UI/AI phase gates), use /gsd:settings.
 - [ ] Numeric inputs validated — non-numeric rejected and re-prompted
 - [ ] Branch-template inputs validated — non-default must contain a placeholder
 - [ ] Null-allowed fields accept an empty input as a clear
-- [ ] Writes routed through `gsd-tools.cjs query config-set` so unrelated keys are preserved
+- [ ] Writes routed through `gsd_run query config-set` so unrelated keys are preserved
 - [ ] Section 7 shows current runtime and built-in tier table
 - [ ] Group B runtimes display "(no built-in default — your runtime handles model selection)"
 - [ ] Override set/clear/keep paths all work correctly for each tier

@@ -68,7 +68,7 @@ const SHIM_RE = new RegExp(
 // (`phase.add`, `audit-open`, `detect-custom-files`) is subcommand-shaped and never a
 // word in a sentence. This is what keeps "…the <shim> file lives in bin" unflagged
 // while still catching a verb nobody has added yet.
-const BARE_VERBS = new Set(['query', 'commit']);
+const BARE_VERBS = new Set(['query', 'commit', 'effort']);
 
 /**
  * Subcommand tokens invoked on the bare shim in one line of markdown.
@@ -82,8 +82,10 @@ function findShimInvocations(line) {
   let m;
   SHIM_RE.lastIndex = 0;
   while ((m = SHIM_RE.exec(line)) !== null) {
-    // `node <path>/<shim> <verb>` is a real, resolvable invocation.
-    if (/\bnode[ \t]+["']?$/.test(line.slice(0, m.index))) continue;
+    // `node <path>/<shim> <verb>` is resolvable and fine. `node <shim> <verb>` is NOT —
+    // node resolves a bare filename against cwd, so it fails exactly like the bare form.
+    // The exemption therefore requires a real path separator before the shim.
+    if (/\bnode[ \t]+["']?[^ \t"']*[/\\]$/.test(line.slice(0, m.index))) continue;
     const token = m[1];
     if (BARE_VERBS.has(token) || token.includes('-') || token.includes('.')) {
       found.push(token);
@@ -190,6 +192,13 @@ describe('#3809 — what counts as a bare shim invocation', () => {
       assert.deepEqual(findShimInvocations(line), []);
     });
   }
+
+  // `node <shim>` with no directory is NOT exempt: node resolves a bare filename
+  // against cwd, so it fails exactly like the bare form (found at
+  // gsd-core/references/model-profiles.md:231).
+  test('flags a node-prefixed shim that carries no path', () => {
+    assert.deepEqual(findShimInvocations(`\`node ${SHIM} effort sync --apply\``), ['effort']);
+  });
 
   // Boundary: the separator between the filename and the subcommand.
   test('zero separating spaces is not an invocation (limit-1)', () => {
