@@ -55,9 +55,18 @@ const DEAD_SDK_REF = /sdk\/(?:src|dist|handlers)\//;
 
 // Built at runtime so this line is not itself an invocation the guard would flag.
 const SHIM = ['gsd-tools', '.cjs'].join('');
+
+// The pattern is spelled out rather than escaped from SHIM at build time. A
+// `SHIM.replace(/\./g, '\\.')` here is a hand-rolled escaper: it handles the dot and
+// nothing else, which CodeQL flags as js/incomplete-sanitization (it does not escape
+// backslashes) and which local/no-adhoc-regex-escape bans outright — the canonical
+// escaper lives in src/pattern.cts. Since SHIM is a compile-time constant whose only
+// metacharacter is the dot, the honest fix is to carry no escaping logic at all.
+// SHIM_PATTERN and SHIM are pinned to each other by a test below so they cannot drift.
+const SHIM_PATTERN = 'gsd-tools\\.cjs';
 const SHIM_RE = new RegExp(
   // not preceded by a path separator, word char, or hyphen (excludes `<dir>/<shim>`)
-  `(?<![\\w./\\\\-])${SHIM.replace(/\./g, '\\.')}` +
+  `(?<![\\w./\\\\-])${SHIM_PATTERN}` +
     // at least one space or tab, then the following token
     '[ \\t]+([a-z][a-z0-9.-]*)',
   'g',
@@ -283,6 +292,14 @@ describe('#3809 — what counts as a bare shim invocation', () => {
 });
 
 describe('#3809 — the verb roster is derived, not copied', () => {
+  test('SHIM_PATTERN matches SHIM exactly, so the two cannot drift', () => {
+    assert.equal(new RegExp(`^${SHIM_PATTERN}$`).test(SHIM), true,
+      `SHIM_PATTERN (${SHIM_PATTERN}) no longer matches SHIM (${SHIM})`);
+    // And prove the pattern's dot is escaped rather than a wildcard.
+    assert.equal(new RegExp(`^${SHIM_PATTERN}$`).test('gsd-toolsXcjs'), false,
+      'the dot in SHIM_PATTERN must be escaped, not a wildcard');
+  });
+
   test('covers every command gsd-tools.cjs actually dispatches', () => {
     const { HOST_COMMAND_ROUTERS } = require('../gsd-core/bin/gsd-tools.cjs');
     const missing = Object.keys(HOST_COMMAND_ROUTERS).filter((v) => !cliVerbs().has(v));
