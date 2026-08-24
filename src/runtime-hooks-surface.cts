@@ -55,15 +55,17 @@ const {
   projectCodexHookTomlCommand,
   shellHookOmitsBashRunner,
   escapeTomlDoubleQuotedString,
+  escapePosixDoubleQuoted,
 } = shellCmdProjection as {
   isManagedHookBasename: (scriptPath: string, opts?: { surface?: string }) => boolean;
   isManagedHookCommand: (cmd: string | null | undefined, opts?: { surface?: string; includeLegacyAliases?: boolean; configDir?: string }) => boolean;
-  projectLegacySettingsHookCommand: (opts: { absoluteRunner: string; scriptPath: string; scriptToken: string; runtime: string; platform: string }) => string | null;
+  projectLegacySettingsHookCommand: (opts: { runnerToken: string; scriptPath: string; scriptToken: string; runtime: string; platform: string }) => string | null;
   projectManagedHookCommand: (opts: { absoluteRunner: string; scriptPath: string; runtime: string; platform: string; hookShell?: string }) => string | null;
   projectPortableHookBaseDir: (opts: { configDir: string; homeDir: string }) => string;
   projectCodexHookTomlCommand: (opts: { absoluteRunner: string; scriptPath: string; platform: string }) => string;
   shellHookOmitsBashRunner: (opts: { platform: string; runtime: string; isShellHook: boolean }) => boolean;
   escapeTomlDoubleQuotedString: (value: unknown) => string;
+  escapePosixDoubleQuoted: (value: unknown) => string;
 };
 
 // ---------------------------------------------------------------------------
@@ -380,6 +382,12 @@ function parseTomlValue(text: string, i: number): { value: unknown; end: number 
 interface NodeNormOpts {
   env?: NodeJS.ProcessEnv;
   existsSync?: (p: string) => boolean;
+  /**
+   * #3662: the process path to normalize instead of `process.execPath`.
+   * Production callers omit it; tests use it to simulate an install baked by
+   * a different environment (a foreign absolute node path).
+   */
+  execPath?: string;
 }
 
 function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
@@ -455,11 +463,76 @@ function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
 }
 
 function resolveNodeRunner(opts?: NodeNormOpts): string | null {
-  const execPath = typeof process.execPath === 'string' ? process.execPath : '';
+  const execPath = (opts && opts.execPath) || (typeof process.execPath === 'string' ? process.execPath : '');
   if (!execPath) return null;
   const stablePath = normalizeNodePath(execPath, opts);
   return JSON.stringify(shellCmdProjection.posixNormalize(stablePath));
 }
+
+/**
+ * #3662 — the runtime-resolving node runner token for managed JS hooks.
+ *
+ * A bake-time absolute runner (`resolveNodeRunner`) only works in the
+ * environment that ran the installer; a config root shared across
+ * environments (the `--portable-hooks` scenario, or any settings.json under a
+ * mounted `$HOME`) carries a path that 404s with exit 127 everywhere else.
+ * This token is a POSIX `sh` command substitution that resolves node at
+ * hook-fire time, trying IN ORDER:
+ *
+ *   1. the baked installer path (absolute — keeps the #2979/#3002/#3017/#3022
+ *      minimal-PATH guarantee: where the baked path exists it still wins,
+ *      under any PATH, GUI launch included);
+ *   2. `command -v node` (quoted — one word even with spaces in the result);
+ *   3. the well-known stable layouts (`/usr/local/bin/node`, `/usr/bin/node`).
+ *
+ * The FIRST executable candidate wins; if none resolves the substitution
+ * yields an empty word and the hook fails exactly as a stale absolute path
+ * does today — no bare `node` token is ever emitted or depended on.
+ *
+ * One shape for every platform: emitted hook commands execute via POSIX `sh`
+ * (Claude-on-win32 runs Git Bash per #166/#580; `hookCommandNeedsPowerShellCallOperator`
+ * is an unused opt-in), and the baked path is posixNormalize'd before escaping
+ * (escapePosixDoubleQuoted — the Shell Command Projection seam owns quoting).
+ * The portable resolver script (hooks/gsd-node-runner.sh) resolves through a
+ * SUPERSET of this candidate list — keep the two lists consistent.
+ */
+function buildNodeRunnerChainToken(opts?: NodeNormOpts): string | null {
+  const execPath = (opts && opts.execPath) || (typeof process.execPath === 'string' ? process.execPath : '');
+  if (!execPath) return null;
+  const stablePath = shellCmdProjection.posixNormalize(normalizeNodePath(execPath, opts));
+  const baked = escapePosixDoubleQuoted(stablePath);
+  // Absolute candidates only (leading / or a win32 drive letter): a relative
+  // `command -v node` hit (legal under a relative PATH entry) must never
+  // promote repo-cwd content into the runner slot. The gate uses parameter
+  // expansion + [ ] — deliberately NO `case` (its `)` terminates the command
+  // substitution under macOS's stock bash 3.2 /bin/sh, breaking the hook).
+  // \${…} below stays a literal shell parameter expansion, not TS interpolation.
+  return `"$(for n in "${baked}" "$(command -v node)" /usr/local/bin/node /usr/bin/node; do [ -x "$n" ] && { [ "\${n#/}" != "$n" ] || [ "\${n#?:}" != "$n" ]; } && printf '%s' "$n" && break; done)"`;
+}
+
+/**
+ * #3662 — the install-time node path as a shell-safe QUOTED token, carrying
+ * the same double-quote escaping as the chain token (`escapePosixDoubleQuoted`
+ * — $ ` " \), NOT bare JSON quoting. The portable resolver's first argument
+ * is executed by the host shell before the resolver sees argv, so a path
+ * containing shell metacharacters must arrive escaped.
+ */
+function buildBakedNodeToken(opts?: NodeNormOpts): string | null {
+  const execPath = (opts && opts.execPath) || (typeof process.execPath === 'string' ? process.execPath : '');
+  if (!execPath) return null;
+  const stablePath = shellCmdProjection.posixNormalize(normalizeNodePath(execPath, opts));
+  return `"${escapePosixDoubleQuoted(stablePath)}"`;
+}
+
+/**
+ * #3662 — basename of the portable node resolver staged into the install's
+ * hooks/ directory. Under `--portable-hooks`, managed JS hook commands route
+ * through it (`bash "<hooks>/gsd-node-runner.sh" "<baked-node>" "<script>.js"`)
+ * so the SAME staged file works for every install: the install-time node path
+ * travels as the resolver's first argument (tried first — the minimal-PATH
+ * guarantee), ahead of `command -v node` and the well-known fallback list.
+ */
+const NODE_RUNNER_RESOLVER_HOOK = 'gsd-node-runner.sh';
 
 interface BashRunnerOpts {
   platform?: string;
@@ -516,8 +589,14 @@ interface RewriteOpts {
   runtime?: string;
 }
 
-function rewriteLegacyManagedNodeHookCommands(settings: Settings, absoluteRunner: string, opts?: RewriteOpts): boolean {
-  if (!settings || !settings.hooks || !absoluteRunner) return false;
+// #3662 — recognize the two runtime-resolving command shapes the installer
+// emits, so the rewriter never churns (or un-does) an entry that already
+// works in every environment sharing the config root.
+const CHAIN_RUNNER_COMMAND = /^"\$\(for n in [\s\S]*?printf '%s' "\$n" && break; done\)"\s+\S/;
+const RESOLVER_RUNNER_COMMAND = /^(?:"[^"]*bash(\.exe)?"|bash)\s+"[^"]*gsd-node-runner\.sh"\s+"[^"]*"\s+\S/;
+
+function rewriteLegacyManagedNodeHookCommands(settings: Settings, runnerToken: string, opts?: RewriteOpts): boolean {
+  if (!settings || !settings.hooks || !runnerToken) return false;
   if (!opts) opts = {};
   const platform = opts.platform || process.platform;
   let changed = false;
@@ -533,20 +612,23 @@ function rewriteLegacyManagedNodeHookCommands(settings: Settings, absoluteRunner
         if (hadPowerShellCallOperator) {
           trimmed = trimmed.replace(/^&\s+/, '').trim();
         }
+        if (CHAIN_RUNNER_COMMAND.test(trimmed) || RESOLVER_RUNNER_COMMAND.test(trimmed)) continue;
+
         const m = trimmed.match(/^node\s+("([^"]+)"|'([^']+)'|(\S+))\s*$/) ||
                   trimmed.match(/^("([^"]+)"|'([^']+)'|(\S+))\s+("([^"]+)"|'([^']+)'|(\S+))\s*$/);
         if (!m) continue;
 
-        let _runnerToken: string, scriptToken: string, scriptPath: string;
+        let scriptToken: string, scriptPath: string;
         if (/^node\s+/.test(trimmed)) {
-          _runnerToken = 'node';
           scriptToken = m[1];
           scriptPath = m[2] || m[3] || m[4] || '';
         } else {
-          _runnerToken = m[1];
-          const runnerPath = shellCmdProjection.posixNormalize(m[2] || m[3] || m[4] || '');
-          const stableRunner = normalizeNodePath(runnerPath);
-          if (stableRunner === runnerPath && platform !== 'win32') continue;
+          // #3662: the pre-fix two-token shape baked an absolute node path at
+          // install time. A foreign-but-stable runner (valid in the
+          // environment that wrote it, absent here) used to be SKIPPED — the
+          // exact mechanism behind the mixed state where no environment can
+          // run all hooks. Every two-token managed entry now re-projects onto
+          // the runtime-resolving runner, whatever environment baked it.
           scriptToken = m[5];
           scriptPath = m[6] || m[7] || m[8] || '';
         }
@@ -554,7 +636,7 @@ function rewriteLegacyManagedNodeHookCommands(settings: Settings, absoluteRunner
         if (!isManagedHookBasename(scriptPath, { surface: 'settings-json' })) continue;
 
         const projectedCommand = projectLegacySettingsHookCommand({
-          absoluteRunner,
+          runnerToken,
           scriptPath,
           scriptToken,
           runtime: opts.runtime || 'generic',
@@ -1035,28 +1117,77 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
     return JSON.stringify(shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName);
   }
 
-  const nodeRunner = resolveNodeRunner();
-  const runner = isShellHook ? resolveBashRunner(opts) : nodeRunner;
-  if (runner === null) return null;
+  // .sh hooks keep the pre-#3662 shape everywhere: the bash runner resolves
+  // at install time like today, and `bash` itself is a PATH-stable binary
+  // (the absolute Git-Bash discovery covers win32 — #580/#3393).
+  if (isShellHook) {
+    const runner = resolveBashRunner(opts);
+    if (runner === null) return null;
 
-  if (opts.portableHooks) {
-    const portableBaseDir = projectPortableHookBaseDir({
-      configDir,
-      homeDir: os.homedir(),
-    });
+    if (opts.portableHooks) {
+      const portableBaseDir = projectPortableHookBaseDir({
+        configDir,
+        homeDir: os.homedir(),
+      });
+      return projectManagedHookCommand({
+        absoluteRunner: runner,
+        scriptPath: `${portableBaseDir}/hooks/${hookName}`,
+        runtime: opts.runtime || 'generic',
+        platform,
+        hookShell,
+      });
+    }
+
+    const hooksPath = shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName;
     return projectManagedHookCommand({
       absoluteRunner: runner,
-      scriptPath: `${portableBaseDir}/hooks/${hookName}`,
-      runtime: opts.runtime || 'generic',
+      scriptPath: hooksPath,
+      runtime,
       platform,
       hookShell,
     });
   }
 
+  // JS hooks (#3662): the node runner is resolved at hook-fire time, never
+  // baked as a bare absolute path — an install-environment absolute path is
+  // exactly what breaks with exit 127 when the config root is shared across
+  // environments with different node layouts.
+
+  if (opts.portableHooks) {
+    // Portable installs route through the staged resolver: the baked absolute
+    // path travels as the resolver's FIRST argument (tried first, so the
+    // minimal-PATH guarantee holds), then `command -v node`, then the
+    // well-known list — one staged file, no per-install templating. The
+    // token is shell-escaped like the chain (the host shell expands the
+    // argument before bash sees argv), not merely JSON-quoted.
+    const bakedToken = buildBakedNodeToken(opts);
+    if (bakedToken === null) return null;
+    const portableBaseDir = projectPortableHookBaseDir({
+      configDir,
+      homeDir: os.homedir(),
+    });
+    // Absolute Git-Bash discovery on win32 when available (#580); `bash` on
+    // PATH otherwise — the same assumption .sh hooks already make.
+    const resolverRunner = resolveBashRunner(opts) || 'bash';
+    return shellCmdProjection.projectShellCommandText({
+      runnerToken: resolverRunner,
+      argTokens: [
+        JSON.stringify(`${portableBaseDir}/hooks/${NODE_RUNNER_RESOLVER_HOOK}`),
+        bakedToken,
+        JSON.stringify(`${portableBaseDir}/hooks/${hookName}`),
+      ],
+      runtime,
+      platform,
+      hookShell,
+    });
+  }
+
+  const chainRunner = buildNodeRunnerChainToken(opts);
+  if (chainRunner === null) return null;
   const hooksPath = shellCmdProjection.posixNormalize(configDir) + '/hooks/' + hookName;
-  return projectManagedHookCommand({
-    absoluteRunner: runner,
-    scriptPath: hooksPath,
+  return shellCmdProjection.projectShellCommandText({
+    runnerToken: chainRunner,
+    argTokens: [JSON.stringify(hooksPath)],
     runtime,
     platform,
     hookShell,
@@ -2671,7 +2802,9 @@ export = {
   reconcileManagedShellHookCommands,
   normalizeNodePath,
   resolveNodeRunner,
+  buildNodeRunnerChainToken,
   resolveBashRunner,
+  NODE_RUNNER_RESOLVER_HOOK,
 
   // Atomic write seam (shared with bin/install.js so all writes participate
   // in install.js's _cleanTmpFiles() scoped temp-cleanup).
