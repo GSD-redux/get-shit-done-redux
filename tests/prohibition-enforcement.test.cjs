@@ -722,7 +722,14 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
   // The subject hangs in `Atomics.wait`, not `while (true) {}`: it blocks the event loop just as hard
   // (a JS-level signal handler still cannot run) but burns NO CPU, so this test adds no per-cell load
   // to the (OS x Node) matrix. The invariant under test is SURVIVAL of a descendant, never its CPU.
-  const HANG_BOUND_MS = 3000; // ~37x the measured worker-startup-to-pidfile latency (81 ms, warm macOS)
+  /**
+   * The TREATMENT's bound, and the only duration left in this test that the code under test observes.
+   * It is not a synchronisation primitive: the scenario requires `runProhibitionEnforcement` to hit
+   * its own timeout, so a bound has to exist, and this one is sized as headroom for worker startup
+   * (~81 ms warm) rather than as a wait for anything. The CONTROL used to carry a bound too, and that
+   * one WAS a synchronisation primitive — it is gone; see the handshake below.
+   */
+  const TREATMENT_BOUND_MS = 8000;
 
   /**
    * Live means RUNNING, and a ZOMBIE is not running. `process.kill(pid, 0)` cannot tell them apart: a
@@ -732,15 +739,16 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
    * Where /proc exists, ask for the real state. macOS and Windows have no such limbo to confuse (an
    * orphan is reaped promptly / there are no POSIX zombies), so signal 0 is accurate there.
    *
-   * EPERM counts as running: the PID exists and belongs to someone else. That is the safe direction —
-   * it can only make a surviving orphan easier to detect, never easier to miss.
+   * EPERM means the PID exists but is NOT OURS, which means it is not our worker: the only way a PID
+   * we spawned stops being ours is that it died and the number was recycled. Reporting that as
+   * "running" would make the treatment arm spuriously red for a process it never created.
    */
   const isRunning = (pid) => {
     try {
       const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
       return stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[0] !== 'Z';
     } catch { /* no /proc entry: either not Linux, or the process is genuinely gone */ }
-    try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+    try { process.kill(pid, 0); return true; } catch { return false; }
   };
   /** The PID the subject recorded, or undefined while it has not got far enough to record one. */
   const recordedPid = (pidFile) => {
@@ -755,15 +763,23 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
    * hang would produce the same green as a subject that hung and was correctly reaped.
    */
   const hangSrc = (pidFile, unblockedMarker) => "const fs = require('node:fs');\n"
-    + `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`
     + "const { test } = require('node:test');\n"
     + "test('hangs forever', () => {\n"
+    // The PID is recorded INSIDE the test body, as the last statement before the block — deliberately
+    // not at module load. That placement is the whole handshake. A PID written at load time says only
+    // that a worker STARTED, and a worker that has started but not yet blocked still has a live event
+    // loop, so killing the runner at that moment takes the worker down with it instead of stranding
+    // it. Measured both ways on macOS: recorded at load, the control stranded nothing and failed in
+    // ~118 ms; recorded here, it strands every time. It is also the likeliest reading of the CI
+    // failure that sent this test back — a loaded cell where the worker had not reached the block by
+    // the time the old fixed bound expired.
+    + `  fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`
     + "  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); }\n"
     + `  finally { fs.writeFileSync(${JSON.stringify(unblockedMarker)}, 'stopped blocking'); }\n`
     + "});\n";
 
   test('a HANGING node-test leaves NO orphaned descendant (B2 reaping, not just the verdict)', async (t) => {
-    const { spawnSync } = require('node:child_process');
+    const { spawn } = require('node:child_process');
     const enforce = require(ENFORCEMENT_LIB);
     const dir = createTempDir('prohib-reap-');
     const ctl = { pid: path.join(dir, 'control.pid'), unblocked: path.join(dir, 'control.unblocked') };
@@ -778,7 +794,7 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     t.after(() => {
       for (const arm of [ctl, tx]) {
         const pid = recordedPid(arm.pid);
-        if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+        if (pid && isRunning(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* raced us */ } }
       }
       cleanup(dir);
     });
@@ -794,20 +810,52 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     const ctlEnv = { ...process.env };
     delete ctlEnv.NODE_TEST_CONTEXT;
     delete ctlEnv.NODE_OPTIONS;
-    const ctlRun = spawnSync(process.execPath, enforce.buildNodeTestArgs({ kind: 'node-test', target: ctlTarget }), {
-      cwd: dir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: HANG_BOUND_MS, env: ctlEnv,
+    const ctlRunner = spawn(process.execPath, enforce.buildNodeTestArgs({ kind: 'node-test', target: ctlTarget }), {
+      cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: ctlEnv,
     });
-    // Nothing kills the control's worker, so a slow start only delays the pidfile — poll for it rather
-    // than sampling once and calling a cold runner a missing leak.
+    // Keep the pipe shape of the real call site (a pipe that fills would change how the child behaves)
+    // while discarding the bytes — nothing here reads the runner's TAP.
+    ctlRunner.stdout.resume();
+    ctlRunner.stderr.resume();
+    const ctlRunnerExit = new Promise((resolve) => ctlRunner.on('exit', resolve));
+
+    // THE HANDSHAKE. This arm rests on one premise — a worker exists and is blocked at the moment the
+    // runner dies — and the previous revision enforced it with a fixed 3 s bound sized from an 81 ms
+    // measurement on a warm laptop. CI called that bluff: the arm ran to its bound, looked afterwards,
+    // and found the worker gone on LINUX, the platform where the reap is correct. A duration was
+    // standing in for a signal. The subject now announces itself from the statement before it blocks,
+    // and the runner is killed at that instant — so the premise holds by construction and no
+    // wall-clock sits in the control path at all.
+    //
+    // The timeout below is a FAILURE CEILING, not a wait: it elapses only if the worker never arrives,
+    // which is a broken test rather than a slow one.
     const ctlWorker = await waitFor(() => recordedPid(ctl.pid), {
-      timeoutMs: 5000,
-      message: 'CONTROL never reached its subject: nothing recorded a PID within the bound, so this arm '
-        + 'cannot show that an orphan was possible and the treatment below would prove nothing.',
+      timeoutMs: 30_000,
+      message: 'CONTROL never reached its subject: nothing recorded a PID at all, so this arm cannot '
+        + 'show that an orphan was possible and the treatment below would prove nothing.',
     });
+    // SIGKILL, and the choice is load-bearing rather than incidental. What strands the worker is the
+    // runner dying WITHOUT completing its own teardown — `node --test` reaps its workers on the way
+    // out, so any death it can clean up after is not the defect. Measured, one variable at a time,
+    // killing at the handshake:
+    //
+    //   runner killed with SIGTERM, pipes still read   -> worker NOT stranded (runner cleaned up)
+    //   runner killed with SIGTERM, pipes torn down    -> worker stranded
+    //   runner killed with SIGKILL                     -> worker stranded
+    //
+    // The real pre-fix path is the middle row: `spawnSync`'s bound signals the runner and tears the
+    // pipes down as it returns, so the runner never finishes shutting down. SIGKILL reaches the same
+    // state by the shortest route and, being uncatchable, reaches it EVERY time — there is no graceful
+    // path left to race. It is also the stricter control: a fix that survives a runner given no chance
+    // to clean up survives the milder case by construction. What is NOT a valid control is a plain
+    // SIGTERM with the pipes still attached — that lets the runner do the reaping itself, and the arm
+    // would then be measuring `node --test`'s teardown instead of ours.
+    ctlRunner.kill('SIGKILL');
+    await ctlRunnerExit;
     // Three ways this arm can stop being a control, each with its own diagnosis. Collapsing them into
     // one "the leak is not reproducible" message is what made the first version of this test lie about
     // WHY it was unhappy.
-    assert.notEqual(ctlWorker, ctlRun.pid, 'CONTROL forked NO worker: the PID recorded by the subject is '
+    assert.notEqual(ctlWorker, ctlRunner.pid, 'CONTROL forked NO worker: the PID recorded by the subject is '
       + 'the runner\'s own, so `--test-isolation=process` did not take effect here and the subject ran '
       + 'in-process. There is no runner/worker split to leak on this host, which means this arm is not '
       + 'exercising #3660 at all — investigate the isolation default before trusting either arm.');
@@ -818,13 +866,13 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
       + 'subject blocked and a worker was forked, yet the worker did not survive the bounded call — so '
       + 'this host reaps the subtree for us and the treatment arm below would pass without the fix. '
       + 'Re-derive the control before trusting this test.');
-    try { process.kill(ctlWorker, 'SIGKILL'); } catch { /* already gone */ }
+    process.kill(ctlWorker, 'SIGKILL'); // asserted running one line above
 
     // TREATMENT — the real code path, same hanging subject, same bound.
     const result = enforce.runProhibitionEnforcement(
       TEST_TIER,
       { kind: 'node-test', target: txTarget, failFirst: true },
-      { cwd: dir, timeoutMs: HANG_BOUND_MS },
+      { cwd: dir, timeoutMs: TREATMENT_BOUND_MS },
     );
     assert.notEqual(result.status, 'green', 'a hung check must still fail closed');
     // LIVENESS FIRST. `notEqual(status, 'green')` is satisfied by any non-green outcome, including one
@@ -884,14 +932,14 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     fs.writeFileSync(verifier, `const enforce = require(${JSON.stringify(ENFORCEMENT_LIB)});\n`
       + `enforce.runProhibitionEnforcement(${JSON.stringify(TEST_TIER)}, `
       + `{ kind: 'node-test', target: ${JSON.stringify(target)}, failFirst: true }, `
-      + `{ cwd: ${JSON.stringify(dir)}, timeoutMs: ${HANG_BOUND_MS} });\n`);
+      + `{ cwd: ${JSON.stringify(dir)}, timeoutMs: ${TREATMENT_BOUND_MS} });\n`);
 
     const workerPid = () => recordedPid(pidFile);
     const child = spawn(process.execPath, [verifier], { cwd: dir, stdio: 'ignore' });
     const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })));
     t.after(async () => {
       const pid = workerPid();
-      if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+      if (pid && isRunning(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* raced us */ } }
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await exited;
       cleanup(dir);
@@ -909,7 +957,7 @@ describe('prohibition-enforcement REAL runner end-to-end (#1259)', () => {
     // but it waits BOUNDED. An unbounded `await exited` would turn "the verifier neither died nor
     // finished" into a silently wedged shard instead of a red test with a reason.
     await waitFor(() => child.exitCode !== null || child.signalCode !== null, {
-      timeoutMs: HANG_BOUND_MS + 10_000,
+      timeoutMs: TREATMENT_BOUND_MS + 10_000,
       message: 'the verifier neither exited nor died after SIGINT — it is wedged well past the bound '
         + 'its own check promised, so the interrupt path is blocking rather than deferring.',
     });

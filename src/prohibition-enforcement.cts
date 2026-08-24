@@ -526,22 +526,33 @@ let interruptReapInstalled = false;
  * running is unchanged.
  *
  * Known cost, accepted: an interrupt taken during a bounded check is serviced when that check ends
- * rather than instantly — bounded by the check's own timeout, which is the same ceiling this module
- * already promises for how long a single check may block. A clean exit late beats a stranded tree now.
+ * rather than instantly. The ceiling is NOT one check's timeout — a verdict sequences several, so the
+ * worst case is their sum (3x NODE_TEST_TIMEOUT_MS, 2x ESLINT_TIMEOUT_MS). That is still the same
+ * ceiling this module already promises for how long a verdict may block, and a clean exit late beats
+ * a stranded tree now — but it is minutes, not seconds, and should not be described as one bound.
  */
 function installInterruptReap(): void {
   if (interruptReapInstalled) return;
   interruptReapInstalled = true;
-  for (const signal of INTERRUPT_SIGNALS) {
+  const arm = (signal: NodeJS.Signals): void => {
     process.once(signal, () => {
       for (const pid of LIVE_REAP_TARGETS) reapDescendants(pid);
       LIVE_REAP_TARGETS.clear();
       // `once` has already detached this listener, so with nothing else listening the default
-      // disposition is restored and re-raising exits with the conventional 128+n. If the HOST
-      // installed its own handler it owns the shutdown — re-raising would re-enter its teardown.
-      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+      // disposition is restored and re-raising exits with the conventional 128+n.
+      if (process.listenerCount(signal) === 0) {
+        process.kill(process.pid, signal);
+        return;
+      }
+      // The HOST installed its own handler, so it owns the shutdown and may legitimately carry on —
+      // re-raising would re-enter its teardown. But `once` has detached us, so without re-arming
+      // THIS signal the module would sit permanently unprotected: every later bounded check would
+      // run with no interrupt reap and nothing would say so. Re-arm only the signal that fired; the
+      // others are still attached and re-installing them would stack duplicate listeners.
+      arm(signal);
     });
-  }
+  };
+  for (const signal of INTERRUPT_SIGNALS) arm(signal);
 }
 
 /**
@@ -558,10 +569,10 @@ function installInterruptReap(): void {
  * So: `reapDescendants` in a `finally`, on every platform (see its comment for how each one reaches
  * the subtree). SIGKILL rather than SIGTERM on POSIX because a subject stuck in a tight loop blocks the
  * event loop, so a JS-level signal handler could never run — only an uncatchable signal is guaranteed
- * to land; `taskkill /F` is unconditional in the same way. The reap is unconditional rather than
- * timeout-only, so the invariant stays simple and testable: NO descendant of a bounded check survives
- * the call — not when it times out, and (via `installInterruptReap`) not when the verifier is
- * interrupted mid-check either.
+ * to land. The reap fires on every path where the child did NOT exit on its own — timeout, spawn
+ * error, interrupt — which keeps the invariant testable: NO descendant of a bounded check survives the
+ * call. A child that exited on its own is the one case skipped, because `spawnSync` has already waited
+ * on it and there is nothing below it left to kill (see `reapNeeded`).
  *
  * Rejected alternative: `--test-isolation=none` forks no worker, so the direct child is the hanging
  * process and the existing kill would reach it. Measured, it is strictly WORSE — the subject then runs
@@ -576,6 +587,8 @@ function runBoundedCapture(
   timeout: number,
 ): string {
   let pid: number | undefined;
+  // Default true: if `spawnSync` throws outright we do not know what it left behind, so reap.
+  let reapNeeded = true;
   installInterruptReap();
   try {
     // `detached` arrives via a SPREAD rather than a cast. @types/node omits it from SpawnSyncOptions,
@@ -600,10 +613,17 @@ function runBoundedCapture(
       ...detachedOpt,
     });
     pid = res.pid;
+    // A child that exited ON ITS OWN — a real status, no spawn error, not killed at the bound — has
+    // already been waited on by `spawnSync`, and `node --test` does not return before its workers do,
+    // so there is nothing left below it to reap. Skipping the kill there closes the one window in
+    // which `-pid` could name a STRANGER'S group: the pgid-non-reuse rule protects us only while our
+    // group still has members, and the recycled-PID case is by definition the case where it does not.
+    // Low probability, uncatchable consequence, and the reap it skips had no work to do.
+    reapNeeded = res.status === null || Boolean(res.error);
     // Only reachable AFTER the blocking call returns, so this never covers the interrupt window — the
     // `finally` does the real work. It closes the sliver between here and there (see
     // `installInterruptReap`).
-    if (typeof pid === 'number' && pid > 0) LIVE_REAP_TARGETS.add(pid);
+    if (reapNeeded && typeof pid === 'number' && pid > 0) LIVE_REAP_TARGETS.add(pid);
     // A non-zero exit is NOT an error here: a RED proof run and a failing check both exit non-zero by
     // design, and `spawnSync` reports stdout either way. That makes the partial-output recovery the old
     // `catch (e) => e.stdout` blocks performed inherent rather than exceptional.
@@ -611,7 +631,7 @@ function runBoundedCapture(
   } catch {
     return ''; // spawn itself failed -> no output -> every caller's vacuity guard fails closed
   } finally {
-    reapDescendants(pid);
+    if (reapNeeded) reapDescendants(pid);
     if (typeof pid === 'number') LIVE_REAP_TARGETS.delete(pid);
     // Hand the loop the ONE turn it needs to DISPATCH a signal that arrived while `spawnSync` was
     // blocking. Node unrefs its signal handles, so a process whose last act is a bounded check exits
