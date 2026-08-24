@@ -1269,6 +1269,55 @@ gsd-tools check verify-command-paths 3 --raw    # probe phase 3's verify command
 
 See [Resolve verify-command path findings](how-to/resolve-verify-command-path-findings.md).
 
+### `gsd-tools check verify-failure-directions`
+
+Deterministic presence probe over a phase's stated failing directions (#3172). Run automatically
+by `/gsd-plan-phase` before the plan-check pass and handed to `gsd-plan-checker`; runnable by
+hand to see what the checker saw.
+
+Every runnable `<automated>` command must carry a `<fails_when>` sibling naming what output
+constitutes failure. A command with no expressible failure mode is not an acceptance test.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `N` | **Yes** | Phase number whose `-PLAN.md` files are probed |
+
+| Flag | Description |
+|------|-------------|
+| `--raw` | Emit the JSON payload with no surrounding prose |
+
+**Prerequisites:** none — an unresolvable phase degrades to a JSON payload with `readError` set
+rather than failing.
+**Produces:** JSON on stdout. Nothing is written to disk.
+
+**It never executes command text**, and it never authors a statement for the planner — a
+prescribed failure signal would be copied verbatim and carry no information.
+
+**Pairing.** Within one `<task>`, each `<fails_when>` binds to the nearest **preceding**
+`<automated>`; the first statement after a command is the binding one. N runnable commands need
+N statements. A redundant second statement for the same command is ignored.
+
+Each row of `commands` carries `command`, `statement`, `plan`, `task`, `status`, and `severity`.
+
+| `status` | `severity` | Meaning |
+|---|---|---|
+| `ok` | `none` | A non-empty, non-placeholder statement is bound to this command |
+| `missing` | `blocker` | The command has no `<fails_when>` at all |
+| `empty` | `blocker` | A `<fails_when>` is present but blank |
+| `placeholder` | `blocker` | The whole statement is `TBD`, `TODO`, `N/A`, `NA`, `none`, `unknown`, `TBA`, `?`, or `-` (case-insensitive, whole value only) |
+| `orphan` | `warning` | A `<fails_when>` that follows no command — it satisfies nothing |
+| `sentinel` | `none` | A Nyquist `MISSING — Wave 0 …` placeholder; not runnable, so exempt |
+
+The top-level `status` is `blocked` when any row is a blocker, `unresolvable` when the probe
+could not look, and `ok` otherwise. A non-empty `readError` means the probe **could not look** —
+distinct from finding nothing.
+
+```bash
+gsd-tools check verify-failure-directions 3 --raw    # probe phase 3's failing directions
+```
+
+See [State a failing direction](how-to/state-a-failing-direction.md).
+
 ---
 
 ## Workstream Management
