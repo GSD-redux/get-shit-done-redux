@@ -586,9 +586,13 @@ describe('ci-pr-mergeability: CLI', () => {
 // ---------------------------------------------------------------------------
 // E. Workflow wiring — structural assertions on the parsed YAML object graph.
 //
-// .github/workflows/*.yml is CONFIG, not source: outside local/no-source-grep's
-// .cjs/.js/.ts scope, and the same thing tests/policy-lint-shallow-checkout.test.cjs
-// already does. No allow-test-rule marker is warranted or added.
+// CONTRIBUTING.md:842 bans raw-text matching on test outputs regardless of
+// whether the text came from a source file — broader than local/no-source-grep's
+// .cjs/.js/.ts scope. Every assertion below reads the parsed object graph
+// (yaml.load), not the raw file text, EXCEPT the single absence check further
+// down ('security and policy lanes are never gated on mergeability'): a
+// structural read cannot see a comment or an unreachable key, so that one
+// test deliberately keeps a raw scan, justified inline at its call site.
 // ---------------------------------------------------------------------------
 
 /** workflow file -> job ids that must be gated on the preflight. */
@@ -644,21 +648,37 @@ describe('ci-pr-mergeability: workflow wiring', () => {
     assert.equal(doc.concurrency, undefined, 'a matching concurrency group would cancel the caller');
   });
 
+  function findCheckoutStep() {
+    const doc = loadWorkflow(PREFLIGHT_WORKFLOW);
+    const job = doc.jobs.mergeability;
+    const step = (job.steps || []).find(
+      (s) => typeof s.uses === 'string' && s.uses.startsWith('actions/checkout@'),
+    );
+    assert.ok(step, 'the mergeability job must have an actions/checkout step');
+    return step;
+  }
+
   test('the preflight checks out the base sha, never the merge ref', () => {
+    const step = findCheckoutStep();
+    const ref = step.with && step.with.ref;
+    assert.equal(typeof ref, 'string');
     // For a CONFLICTED PR refs/pull/N/merge is stale or absent, so a default
-    // checkout fails on exactly the PRs this job exists to diagnose.
-    const raw = rawWorkflow(PREFLIGHT_WORKFLOW);
+    // checkout fails on exactly the PRs this job exists to diagnose; pinning
+    // the base sha also means no PR-supplied code is fetched or executed.
     assert.ok(
-      /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha/.test(raw),
+      ref.includes('github.event.pull_request.base.sha'),
       'the checkout must pin ref: to pull_request.base.sha',
     );
   });
 
   test('the preflight checkout is shallow, sparse, and credential-free', () => {
-    const raw = rawWorkflow(PREFLIGHT_WORKFLOW);
-    assert.ok(/fetch-depth:\s*1\b/.test(raw), 'fetch-depth must be 1');
-    assert.ok(/sparse-checkout:/.test(raw), 'must sparse-checkout only what it runs');
-    assert.ok(/persist-credentials:\s*false/.test(raw), 'must not persist credentials');
+    const step = findCheckoutStep();
+    const { with: withArgs } = step;
+    assert.equal(withArgs['fetch-depth'], 1, 'fetch-depth must be the number 1');
+    // The point is it checks out only what it runs.
+    assert.equal(typeof withArgs['sparse-checkout'], 'string');
+    assert.equal(withArgs['sparse-checkout'].trim(), 'scripts');
+    assert.equal(withArgs['persist-credentials'], false, 'must not persist credentials');
   });
 
   for (const [name, jobIds] of Object.entries(GATED)) {
@@ -708,6 +728,10 @@ describe('ci-pr-mergeability: workflow wiring', () => {
   });
 
   test('security and policy lanes are never gated on mergeability', () => {
+    // Deliberate raw scan, not a structural read: this asserts ABSENCE
+    // anywhere in the file, and the parsed object graph cannot see a
+    // commented-out or otherwise unreachable reference — exactly what this
+    // test must still catch.
     for (const name of NEVER_GATED) {
       const raw = rawWorkflow(name);
       assert.ok(
@@ -741,6 +765,56 @@ describe('ci-pr-mergeability: workflow wiring', () => {
     assert.ok(
       /PREFLIGHT_RESULT/.test(script),
       'required-tests must have an explicit preflight arm so the required context goes red, not absent',
+    );
+  });
+
+  test('a gated job whose if() overrides the implicit success() must check the preflight result itself', () => {
+    // GitHub Actions applies an implicit success() to a job-level `if:` unless
+    // that `if:` already contains a status-check function: "By default, GitHub
+    // Actions applies a success() check to steps unless another status function
+    // is specified" and "you must explicitly include failure() to override the
+    // default success() check that is otherwise applied automatically."
+    //
+    // So for a job with a plain `if:` (no status function), `needs: preflight`
+    // alone correctly skips it when the preflight fails — nothing extra is
+    // required. But the moment a job's `if:` contains always(), failure(), or
+    // cancelled(), that implicit success() is gone and `needs:` stops gating
+    // it. Such a job runs even on a conflicted PR and must therefore check the
+    // preflight result itself.
+    //
+    // Today exactly two gated jobs are in that category and both already
+    // handle it: test.yml's required-tests (if: always(), with a
+    // PREFLIGHT_RESULT arm) and mutation.yml's mutation-gate (if: always() &&
+    // ..., with a PREFLIGHT arm). This test exists to catch a FUTURE edit that
+    // adds always() to, say, `test` or `coverage-gate` — which would silently
+    // make the whole gate inert on the most expensive lanes while every
+    // existing assertion kept passing.
+    const STATUS_FUNCTION = /always\(\)|failure\(\)|cancelled\(\)/;
+    const violations = [];
+    let inspected = 0;
+    for (const [name, jobIds] of Object.entries(GATED)) {
+      const doc = loadWorkflow(name);
+      for (const jobId of jobIds) {
+        const job = (doc.jobs || {})[jobId];
+        const condition = typeof job.if === 'string' ? job.if : '';
+        if (!STATUS_FUNCTION.test(condition)) continue;
+        inspected++;
+        const checksPreflightInIf = /needs\.preflight\.result/.test(condition);
+        const stepsText = JSON.stringify(job.steps || []);
+        const checksPreflightInSteps = /PREFLIGHT/.test(stepsText);
+        if (!checksPreflightInIf && !checksPreflightInSteps) {
+          violations.push(`${name}:${jobId} (if: ${condition})`);
+        }
+      }
+    }
+    assert.ok(
+      inspected > 0,
+      'expected at least one gated job with a status-function if(); a vacuous pass here means the invariant is no longer being checked',
+    );
+    assert.deepEqual(
+      violations,
+      [],
+      `these jobs override the implicit success() with a status function in if:, so \`needs: preflight\` no longer gates them — each must test needs.preflight.result (or read PREFLIGHT_RESULT in a step) itself: ${violations.join(', ')}`,
     );
   });
 });

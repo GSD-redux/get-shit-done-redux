@@ -393,6 +393,21 @@ validators, issue-link, and unauthorized-approval dismissal. Gating those would
 let a conflicted drive-by PR evade auto-close, so they keep running on a
 conflicted PR and a test asserts they are never wired to the preflight.
 
+### What it deliberately does not do
+
+**It applies no label.** The gate does not add or remove `needs-review: merge-conflict`.
+Eight caller workflows each invoke the preflight, so eight jobs would race to
+add-or-remove one label on every PR event, and it would force
+`pull-requests: write` into eight lanes that today hold `contents: read`.
+`needs-review: merge-conflict` stays a maintainer triage label applied during PR
+sweeps; the red check and its annotation are the machine signal.
+
+**It changes no branch protection.** `.github/rulesets/main-protection.json` is
+untouched and needs no new required context — GitHub natively refuses to merge a
+pull request with conflicts, so the ruleset already blocks it. (Adding the check
+as *required* before the workflow exists on the base branch would deadlock every
+open PR until it landed.)
+
 ### What this does not replace
 
 `scripts/ci-rebase-check.cjs` is unchanged and still runs inside each matrix job,

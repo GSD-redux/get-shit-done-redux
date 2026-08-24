@@ -358,31 +358,34 @@ function missingProtectedWorkflows(names = PROTECTED_WORKFLOWS) {
     .sort();
 }
 
-// Fail loudly at module load, mirroring the PROTECTED_WORKFLOWS check above —
-// this fires on EVERY invocation of the CLI (including the real `changes` job
-// in .github/workflows/test.yml), not only when a test suite happens to run.
-{
-  const missing = missingRuleTestFiles(RULES);
-  if (missing.length > 0) {
-    throw new Error(
-      `ci-test-scope: RULES reference test file(s) that do not exist on disk ` +
-      `(silent coverage hole — see #2758):\n  ${missing.join('\n  ')}`,
-    );
-  }
+/**
+ * Shared module-load assertion for the two "this list names something that
+ * does not exist on disk" guards above. Both are silent-coverage-hole guards:
+ * a name that no longer resolves stops selecting/protecting anything while CI
+ * stays green, so both must fail loudly at load rather than at test time.
+ */
+function assertNoneMissing(missing, summary, issueRef) {
+  if (missing.length === 0) return;
+  throw new Error(`ci-test-scope: ${summary} (${issueRef}):\n  ${missing.join('\n  ')}`);
 }
 
-// Fail loudly at module load: a PROTECTED_WORKFLOWS entry naming a file that
-// does not exist means the workflow was renamed or deleted without updating
-// this list, silently un-protecting it while CI stays green (#3833).
-{
-  const missing = missingProtectedWorkflows(PROTECTED_WORKFLOWS);
-  if (missing.length > 0) {
-    throw new Error(
-      `ci-test-scope: PROTECTED_WORKFLOWS reference workflow file(s) that do not exist ` +
-      `on disk (silent protection hole — see #3833):\n  ${missing.join('\n  ')}`,
-    );
-  }
-}
+// Fail loudly at module load — this fires on EVERY invocation of the CLI
+// (including the real `changes` job in .github/workflows/test.yml), not only
+// when a test suite happens to run.
+assertNoneMissing(
+  missingRuleTestFiles(RULES),
+  'RULES reference test file(s) that do not exist on disk (silent coverage hole)',
+  'see #2758',
+);
+
+// A PROTECTED_WORKFLOWS entry naming a file that does not exist means the
+// workflow was renamed or deleted without updating this list, silently
+// un-protecting it while CI stays green.
+assertNoneMissing(
+  missingProtectedWorkflows(PROTECTED_WORKFLOWS),
+  'PROTECTED_WORKFLOWS reference workflow file(s) that do not exist on disk (silent protection hole)',
+  'see #3833',
+);
 
 function usage() {
   return [

@@ -28,6 +28,16 @@ name: PR Mergeability Preflight
 # be named — branch-naming.yml's workflow default is `{}`, which would otherwise
 # starve the API read.
 #
+# This job deliberately applies NO label. #3833 originally proposed adding and
+# removing `needs-review: merge-conflict` here; that was dropped during
+# implementation for two reasons. Eight caller workflows each invoke this
+# preflight, so eight jobs would race to add-or-remove one label on every PR
+# event — label thrash and API contention. And it would force
+# `pull-requests: write` into eight lanes that today hold `contents: read`
+# (and one that holds `permissions: {}`), widening the token everywhere to
+# write a signal the red check already carries. `needs-review: merge-conflict`
+# remains a maintainer triage label applied during PR sweeps.
+#
 # The job is NOT guarded with `if: github.event_name == 'pull_request'`. A
 # SKIPPED dependency skips its dependents exactly as a failed one does, so that
 # guard would skip the entire pipeline on every push to `next` and on every
