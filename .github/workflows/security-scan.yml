@@ -26,7 +26,17 @@ permissions:
   contents: read
 
 jobs:
+  # #3833: no compute lane runs while the PR has a merge conflict. No-ops on
+  # push and workflow_dispatch, so this dependency is unconditional.
+  preflight:
+    name: PR mergeability
+    uses: ./.github/workflows/pr-mergeable-preflight.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   security:
+    needs: preflight
     runs-on: ubuntu-latest
     # 30m (was 10m): the base64 scan is O(changed-files); a very large diff
     # (e.g. the #604 repo-wide rename, ~800 changed files) can exceed 10m. The

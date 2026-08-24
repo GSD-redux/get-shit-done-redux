@@ -36,8 +36,17 @@ jobs:
   # ── Job 1: detect ─────────────────────────────────────────────────────────
   # Computes which covered modules changed and emits a matrix for the mutate job.
   # Intentionally does NOT run npm ci — it only needs git + Node builtins.
+  # #3833: no compute lane runs while the PR has a merge conflict.
+  preflight:
+    name: PR mergeability
+    uses: ./.github/workflows/pr-mergeable-preflight.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   detect:
     name: Detect changed covered modules
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       has_work: ${{ steps.matrix.outputs.has_work }}
@@ -127,16 +136,24 @@ jobs:
         #   stryker.config.mjs (which reads process.env.MUTATION_BREAK for the
         #   break threshold). See ADR-456 / issue #1187.
         #   Note: Stryker 9.x has no --break CLI flag; the threshold is config-only.
+        # Every matrix value is bound here and referenced as a shell variable
+        # below. CONTRIBUTING.md's final rule forbids `${{ }}` inside a `run:`
+        # block outright — binding via `env:` is the sanctioned form. Fixed as
+        # part of #3833 rather than left in place for the next reader, per the
+        # repo's no-defer rule.
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
           MUTATION_TEST_CMD: node --test ${{ matrix.tests }}
           MUTATION_BREAK: ${{ matrix.minScore }}
+          MODULE_NAME: ${{ matrix.name }}
+          MUTATE_GLOB: ${{ matrix.mutate }}
+          MODULE_TESTS: ${{ matrix.tests }}
         run: |
-          echo "Module:   ${{ matrix.name }}"
-          echo "Mutate:   ${{ matrix.mutate }}"
-          echo "Tests:    ${{ matrix.tests }}"
-          echo "MinScore: ${{ matrix.minScore }}"
-          npx stryker run --incremental --mutate "${{ matrix.mutate }}"
+          echo "Module:   ${MODULE_NAME}"
+          echo "Mutate:   ${MUTATE_GLOB}"
+          echo "Tests:    ${MODULE_TESTS}"
+          echo "MinScore: ${MUTATION_BREAK}"
+          npx stryker run --incremental --mutate "${MUTATE_GLOB}"
 
       - name: Upload mutation report — ${{ matrix.name }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -157,7 +174,7 @@ jobs:
   # change. The per-module shards report as "Stryker (<module>)".
   mutation-gate:
     name: Stryker mutation score (changed files only)
-    needs: [detect, mutate]
+    needs: [detect, mutate, preflight]
     # has_work=false is rendered by SKIPPING this job entirely (job-level `if:`), not by an
     # early `exit 0` inside the step — a step that runs and exits 0 always reports `success`,
     # indistinguishable in the UI from "evaluated and passed". A job-level-skipped job reports
@@ -167,12 +184,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate gate
+        # Values arrive through `env:`, never interpolated into the script body —
+        # CONTRIBUTING.md's final rule. They were inline `${{ }}` until #3833
+        # touched this job; fixed here rather than left for the next reader.
+        env:
+          PREFLIGHT: ${{ needs.preflight.result }}
+          DETECT: ${{ needs.detect.result }}
+          MUTATE: ${{ needs.mutate.result }}
         run: |
-          DETECT="${{ needs.detect.result }}"
-          MUTATE="${{ needs.mutate.result }}"
-
+          echo "preflight result : ${PREFLIGHT}"
           echo "detect result : ${DETECT}"
           echo "mutate result : ${MUTATE}"
+
+          # #3833: report the real cause first. Without this arm a conflicted PR
+          # skips `detect` and the gate blames scope detection for a conflict.
+          if [ "${PREFLIGHT}" != "success" ]; then
+            echo "FAIL: PR mergeability preflight did not pass (${PREFLIGHT}) — resolve the merge conflict and push again"
+            exit 1
+          fi
 
           if [ "${DETECT}" != "success" ]; then
             echo "FAIL: detect job did not succeed (${DETECT})"

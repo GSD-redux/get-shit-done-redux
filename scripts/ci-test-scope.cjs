@@ -39,6 +39,10 @@ const PROTECTED_WORKFLOWS = new Set([
   'mutation.yml',
   'security-scan.yml',
   'release.yml',
+  // #3833: the reusable gate every `pull_request` compute lane depends on —
+  // marking it inert would let a change to the gate itself ship without ever
+  // running the full matrix it is responsible for enforcing.
+  'pr-mergeable-preflight.yml',
 ]);
 for (const wf of PROTECTED_WORKFLOWS) {
   if (INERT_WORKFLOWS.has(wf)) {
@@ -341,6 +345,19 @@ function missingRuleTestFiles(rules) {
   return [...referenced].filter(f => !existsSync(path.join(__dirname, '..', f))).sort();
 }
 
+/**
+ * Every PROTECTED_WORKFLOWS member that does not exist on disk.
+ * The name list and the real filenames are two surfaces over one fact
+ * (#3833): without this, renaming or deleting a gating workflow silently
+ * un-protects it and CI stays green while the protection is gone. Same
+ * shape and rationale as missingRuleTestFiles() above.
+ */
+function missingProtectedWorkflows(names = PROTECTED_WORKFLOWS) {
+  return [...names]
+    .filter(name => !existsSync(path.join(__dirname, '..', '.github', 'workflows', name)))
+    .sort();
+}
+
 // Fail loudly at module load, mirroring the PROTECTED_WORKFLOWS check above —
 // this fires on EVERY invocation of the CLI (including the real `changes` job
 // in .github/workflows/test.yml), not only when a test suite happens to run.
@@ -350,6 +367,19 @@ function missingRuleTestFiles(rules) {
     throw new Error(
       `ci-test-scope: RULES reference test file(s) that do not exist on disk ` +
       `(silent coverage hole — see #2758):\n  ${missing.join('\n  ')}`,
+    );
+  }
+}
+
+// Fail loudly at module load: a PROTECTED_WORKFLOWS entry naming a file that
+// does not exist means the workflow was renamed or deleted without updating
+// this list, silently un-protecting it while CI stays green (#3833).
+{
+  const missing = missingProtectedWorkflows(PROTECTED_WORKFLOWS);
+  if (missing.length > 0) {
+    throw new Error(
+      `ci-test-scope: PROTECTED_WORKFLOWS reference workflow file(s) that do not exist ` +
+      `on disk (silent protection hole — see #3833):\n  ${missing.join('\n  ')}`,
     );
   }
 }
@@ -590,4 +620,4 @@ if (require.main === module) {
   runMain(main);
 }
 
-module.exports = { RULES, missingRuleTestFiles };
+module.exports = { RULES, missingRuleTestFiles, PROTECTED_WORKFLOWS, INERT_WORKFLOWS, missingProtectedWorkflows };

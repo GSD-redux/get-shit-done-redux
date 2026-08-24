@@ -11,7 +11,20 @@ concurrency:
 permissions: {}
 
 jobs:
+  # #3833: no lane runs while the PR has a merge conflict. The workflow-level
+  # `permissions: {}` above is why the calling job below names both scopes
+  # explicitly — a calling job's permissions REPLACE the workflow default
+  # rather than merging with it, so an implicit inherit would hand the
+  # preflight a token with nothing on it.
+  preflight:
+    name: PR mergeability
+    uses: ./.github/workflows/pr-mergeable-preflight.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   check-branch:
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
