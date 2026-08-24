@@ -63,12 +63,32 @@ const SHIM_RE = new RegExp(
   'g',
 );
 
-// Bare CLI verbs that are unmistakably subcommands rather than English prose.
-// Everything else is recognised structurally: a dotted or hyphenated token
-// (`phase.add`, `audit-open`, `detect-custom-files`) is subcommand-shaped and never a
-// word in a sentence. This is what keeps "…the <shim> file lives in bin" unflagged
-// while still catching a verb nobody has added yet.
-const BARE_VERBS = new Set(['query', 'commit', 'effort']);
+// Every verb the CLI advertises. Two sources, unioned:
+//   * the usage banner (`gsd_run` with no arguments -> "Commands: agent, agent-skills, …")
+//   * HOST_COMMAND_ROUTERS in gsd-core/bin/gsd-tools.cjs, which carries a handful the
+//     banner omits (`verification`, `planning`, `uat`, `stats`, `todo`, `windows`)
+// plus `query`, the registered-handler entry point the workflows use most.
+//
+// This is deliberately the WHOLE roster, not the verbs that happen to occur in the tree
+// today. Scoping it to observed usage is what made the #2020 guard blind to #3809, and a
+// guard that only recognises yesterday's offenders is not a guard.
+const CLI_VERBS = new Set([
+  'agent', 'agent-skills', 'assumption-delta', 'audit-open', 'audit-uat', 'capability',
+  'check', 'check-commit', 'classify-confidence', 'commit', 'commit-to-subrepo',
+  'config-ensure-section', 'config-get', 'config-new-project', 'config-path', 'config-set',
+  'current-timestamp', 'detect-custom-files', 'docs-init', 'drift-guard', 'effort', 'eval',
+  'extract-messages', 'find-phase', 'from-gsd2', 'frontmatter', 'gap-analysis',
+  'generate-claude-md', 'generate-claude-profile', 'generate-dev-preferences',
+  'generate-slug', 'git', 'graphify', 'history-digest', 'init', 'intel', 'learnings',
+  'list-seeds', 'list-todos', 'loop', 'migrate-config', 'milestone', 'normalize-test-command',
+  'package-legitimacy', 'phase', 'phase-plan-index', 'phases', 'planning', 'pr-subrepo',
+  'profile-questionnaire', 'profile-sample', 'progress', 'project-instruction-file',
+  'prompt-budget', 'query', 'quick-tasks-append', 'requirements', 'research-plan',
+  'research-store', 'resolve-granularity', 'resolve-model', 'roadmap', 'scaffold',
+  'smart-entry', 'state', 'stats', 'task', 'template', 'todo', 'uat', 'user-story',
+  'validate', 'verification', 'verify', 'verify-path-exists', 'verify-summary', 'windows',
+  'workstream', 'worktree',
+]);
 
 /**
  * Subcommand tokens invoked on the bare shim in one line of markdown.
@@ -86,8 +106,11 @@ function findShimInvocations(line) {
     // node resolves a bare filename against cwd, so it fails exactly like the bare form.
     // The exemption therefore requires a real path separator before the shim.
     if (/\bnode[ \t]+["']?[^ \t"']*[/\\]$/.test(line.slice(0, m.index))) continue;
+    // A dotted subcommand is always `<family>.<verb>` and the family is itself a roster
+    // verb, so testing the first segment covers `phase.add` and `state.patch` without
+    // resorting to "contains a dot", which also matches prose like `v1.2`.
     const token = m[1];
-    if (BARE_VERBS.has(token) || token.includes('-') || token.includes('.')) {
+    if (CLI_VERBS.has(token.split('.')[0])) {
       found.push(token);
     }
   }
@@ -185,6 +208,8 @@ describe('#3809 — what counts as a bare shim invocation', () => {
     ['prose whose next token is an English word', `# shim-only install (${SHIM} present, \`gsd-tools\` not on PATH) the bare call exits`],
     ['prose with a lowercase English word after', `the ${SHIM} file lives under gsd-core/bin`],
     ['the filename at end of line', `authoritative tool for THIS install is ${SHIM}`],
+    ['prose with a hyphenated English word after', `the ${SHIM} built-in helper does X`],
+    ['prose with a version number after', `the ${SHIM} v1.2 release notes`],
   ];
 
   for (const [name, line] of LEGITIMATE) {
@@ -196,6 +221,14 @@ describe('#3809 — what counts as a bare shim invocation', () => {
   // `node <shim>` with no directory is NOT exempt: node resolves a bare filename
   // against cwd, so it fails exactly like the bare form (found at
   // gsd-core/references/model-profiles.md:231).
+  // The verb roster is the whole advertised command surface, not the subset that happens
+  // to appear in the tree — a bare verb nobody has written yet must still be caught.
+  for (const verb of ['phase', 'state', 'verify', 'roadmap', 'milestone', 'worktree']) {
+    test(`flags the bare verb \`${verb}\`, which appears nowhere in the tree today`, () => {
+      assert.deepEqual(findShimInvocations(`run \`${SHIM} ${verb} list\``), [verb]);
+    });
+  }
+
   test('flags a node-prefixed shim that carries no path', () => {
     assert.deepEqual(findShimInvocations(`\`node ${SHIM} effort sync --apply\``), ['effort']);
   });
