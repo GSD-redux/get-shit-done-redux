@@ -343,88 +343,86 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
   //     EOF
   //     )"
   //
-  // The extraction regex this replaced — `-m[[:space:]]+"([^"]+)"` — matched
-  // ACROSS NEWLINES, because bash `[^"]` includes them. It captured the whole
-  // span from the quote after `-m` to the final quote at `)"`, so `head -1`
-  // yielded the literal `$(cat <<'EOF'` as the subject. That can never satisfy
-  // Conventional Commits, so EVERY heredoc-form commit was blocked — conforming
-  // or not. Both directions are pinned: a conforming body must pass, and a
-  // non-conforming one must still be blocked, so the fix cannot become a blanket
-  // "skip validation whenever a heredoc is present".
-  const heredoc = (body, tag = "<<'EOF'", close = 'EOF') =>
-    `git commit -m "$(cat ${tag}\n${body}\n${close}\n)"`;
+  // The `-m` capture regex spans it whole, because bash `[^"]` matches newlines,
+  // so the first line was the literal `$(cat <<'EOF'` and EVERY heredoc-form
+  // commit was blocked regardless of its message.
+  const heredoc = (body, open = "<<'EOF'", close = 'EOF') =>
+    `git commit -m "$(cat ${open}\n${body}\n${close}\n)"`;
+  const runHookCmd = (command) => spawnHook(path.join(HOOKS_DIR, 'gsd-validate-commit.sh'), {
+    input: JSON.stringify({ tool_input: { command } }),
+    encoding: 'utf-8',
+    cwd: tmpDir,
+  });
 
   test('validate-commit allows a CONFORMING heredoc-form message', () => {
-    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
-    const result = spawnHook(hookPath, {
-      input: JSON.stringify({ tool_input: { command: heredoc('feat(auth): add login flow') } }),
-      encoding: 'utf-8',
-      cwd: tmpDir,
-    });
+    const result = runHookCmd(heredoc('feat(auth): add login flow'));
     assert.strictEqual(result.status, 0,
-      `a conforming heredoc message must pass; got ${result.status}. This is the reported defect: `
-      + `the subject read as the literal $(cat <<'EOF' opener. stdout: ${result.stdout}`);
+      `a conforming heredoc message must pass; got ${result.status}. stdout: ${result.stdout}`);
   });
 
   test('validate-commit still BLOCKS a non-conforming heredoc-form message', () => {
-    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
-    const result = spawnHook(hookPath, {
-      input: JSON.stringify({ tool_input: { command: heredoc('wibble wobble no type here') } }),
-      encoding: 'utf-8',
-      cwd: tmpDir,
-    });
+    const result = runHookCmd(heredoc('wibble wobble no type here'));
     assert.strictEqual(result.status, 2,
       'resolving the heredoc body must not become a blanket exemption for the whole form');
     assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
   });
 
   test('validate-commit measures subject length against the RESOLVED heredoc subject', () => {
-    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
     // Conventional-Commits-VALID but over 72 chars, so only the length check can
     // reject it — proving the length gate sees the real subject, not the opener.
-    const result = spawnHook(hookPath, {
-      input: JSON.stringify({ tool_input: { command: heredoc(`feat(auth): ${'x'.repeat(80)}`) } }),
-      encoding: 'utf-8',
-      cwd: tmpDir,
-    });
+    const result = runHookCmd(heredoc(`feat(auth): ${'x'.repeat(80)}`));
     assert.strictEqual(result.status, 2, 'an over-length resolved subject must still be blocked');
     assert.strictEqual(JSON.parse(result.stdout).code, 'COMMIT_SUBJECT_TOO_LONG',
-      'must fail on LENGTH, not format — a format failure here would mean the opener was still '
-      + 'being read as the subject');
+      'must fail on LENGTH, not format — a format failure would mean the opener was still the subject');
   });
 
-  test('validate-commit resolves the other heredoc opener spellings', () => {
-    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
-    for (const [label, cmd] of [
-      ['<<-"TAG"', heredoc('fix(api): correct status code', '<<-"MSG"', 'MSG')],
-      ['bare <<TAG', heredoc('chore: bump deps', '<<EOF', 'EOF')],
-      ['multi-line body', heredoc('feat(auth): add login flow\n\nBody paragraph.')],
+  test('validate-commit resolves the other heredoc opener spellings, both directions', () => {
+    // Both directions per spelling, deliberately. Asserting only "conforming
+    // passes" would also pass if the resolver returned an empty subject for a
+    // spelling it failed to recognise — an allow, but for the wrong reason
+    // (review of #3802). Pairing it with a non-conforming body that must BLOCK
+    // proves the body is genuinely being read.
+    for (const [label, open, close, indent] of [
+      ['bare <<TAG', '<<EOF', 'EOF', ''],
+      ["<<-'TAG' (tab-stripped)", "<<-'MSG'", '\tMSG', '\t'],
+      ['<< TAG (spaced)', '<< EOF', 'EOF', ''],
+      ["<<'END-MSG' (non-identifier tag)", "<<'END-MSG'", 'END-MSG', ''],
     ]) {
-      const result = spawnHook(hookPath, {
-        input: JSON.stringify({ tool_input: { command: cmd } }),
-        encoding: 'utf-8',
-        cwd: tmpDir,
-      });
-      assert.strictEqual(result.status, 0,
-        `${label}: a conforming message in this heredoc spelling must pass; got ${result.status}`);
+      assert.strictEqual(runHookCmd(heredoc(`${indent}fix(api): correct status code`, open, close)).status, 0,
+        `${label}: a conforming message in this spelling must pass`);
+      assert.strictEqual(runHookCmd(heredoc(`${indent}wibble wobble`, open, close)).status, 2,
+        `${label}: a NON-conforming message in this spelling must still block — if this passes, the `
+        + 'resolver is returning an empty subject rather than reading the body');
     }
   });
 
-  test('validate-commit reads the message through the token walk, not a raw scan', () => {
-    const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
-    // Forms the replaced regex never handled, because it scanned the raw string
-    // instead of walking tokens from the subcommand.
-    for (const [label, cmd, want] of [
-      ['-C path + heredoc', `git -C /tmp/x commit -m "$(cat <<'EOF'\nfix(core): patch it\nEOF\n)"`, 0],
-      ['env-prefix + heredoc', `GIT_AUTHOR_NAME=x git commit -m "$(cat <<'EOF'\nfix(core): patch it\nEOF\n)"`, 0],
-      ['non-commit subcommand', 'git status -m "wibble wobble"', 0],
+  test('validate-commit does not treat a message ENDING in <<WORD as a heredoc', () => {
+    // Enforcement bypass found in review of #3802: an earlier revision recognised
+    // the opener without anchoring it to a command substitution, so this resolved
+    // to line 2 and ALLOWED a commit whose real subject is non-conforming.
+    const result = runHookCmd('git commit -m "WIP notes <<EOF\nfix: smuggled subject"');
+    assert.strictEqual(result.status, 2,
+      'the real subject is the non-conforming first line; resolving past it is an ALLOW that '
+      + 'smuggles an unvalidated message through');
+    assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+  });
+
+  test('validate-commit leaves every non-heredoc form exactly as it was', () => {
+    // Differential pins. Each of these was ALLOWED before this change, and an
+    // earlier revision that walked tokens to find `-m` started BLOCKING all of
+    // them (review of #3802). They are not incidental: `--` introduces pathspecs,
+    // `&&` starts a different command, and the shared scanner drops empty tokens
+    // so a following flag can be mistaken for the message.
+    for (const [label, cmd] of [
+      ['-- introduces pathspecs', 'git commit -- -m WIP'],
+      ['a later command\'s flag', 'git commit --amend && echo -m WIP'],
+      ['empty -m before a flag', 'git commit -m "" --allow-empty-message'],
+      ['empty -m before a real -m', 'git commit -m "" -m "fix: real subject"'],
+      ['unquoted -m argument', 'git commit -m WIP'],
     ]) {
-      const result = spawnHook(hookPath, {
-        input: JSON.stringify({ tool_input: { command: cmd } }),
-        encoding: 'utf-8',
-        cwd: tmpDir,
-      });
-      assert.strictEqual(result.status, want, `${label}: expected ${want}, got ${result.status}`);
+      assert.strictEqual(runHookCmd(cmd).status, 0,
+        `${label}: this form was allowed before #3802 and must stay allowed — widening WHICH `
+        + 'argument counts as the message is out of scope for this fix');
     }
   });
 

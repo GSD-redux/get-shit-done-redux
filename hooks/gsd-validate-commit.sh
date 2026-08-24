@@ -30,28 +30,35 @@ if GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" node -e "
   const {isGitSubcommand}=require(process.env.GIT_CMD_LIB);
   process.exit(isGitSubcommand(process.argv[1],'commit')?0:1);
 " "$CMD" 2>/dev/null; then
-  # Extract the commit SUBJECT from the -m flag.
-  # Delegates to hooks/lib/git-cmd.js extractCommitSubject() for the same reason
-  # the classifier above delegates: the hand-rolled bash regex this replaces —
-  # `-m[[:space:]]+"([^"]+)"` — matched ACROSS NEWLINES, because bash `[^"]`
-  # includes them. Against Claude Code's documented heredoc idiom,
-  # `-m "$(cat <<'EOF' ... EOF)"`, it captured the whole span up to the final
-  # quote at `)"`, so `head -1` yielded the literal `$(cat <<'EOF'` as the
-  # subject and EVERY heredoc-form commit was blocked, conforming or not (#3802).
-  #
-  # Exit status distinguishes "no -m message" (1 — nothing to validate) from an
-  # EMPTY subject (0 with empty stdout — a message that must still be blocked).
-  # A `-m "$(cat <<'EOF'` whose body's first line is blank resolves to an empty
-  # subject and is correctly blocked; collapsing the two states onto "empty
-  # stdout means skip" would silently allow it. Note `-m ""` is NOT that case —
-  # the scanner drops the empty token, so it takes the null path and is allowed,
-  # exactly as the regex this replaces allowed it.
-  if SUBJECT=$(GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" node -e "
-    const {extractCommitSubject}=require(process.env.GIT_CMD_LIB);
-    const s=extractCommitSubject(process.argv[1]);
-    if (s === null) process.exit(1);
-    process.stdout.write(s);
-  " "$CMD" 2>/dev/null); then
+  # Extract message from -m flag
+  MSG=""
+  if [[ "$CMD" =~ -m[[:space:]]+\"([^\"]+)\" ]]; then
+    MSG="${BASH_REMATCH[1]}"
+  elif [[ "$CMD" =~ -m[[:space:]]+\'([^\']+)\' ]]; then
+    MSG="${BASH_REMATCH[1]}"
+  fi
+
+  if [ -n "$MSG" ]; then
+    # Subject = first line of the message, EXCEPT for the command-substituted
+    # heredoc form, where the first line is the opener rather than the message:
+    #
+    #     git commit -m "$(cat <<'EOF'
+    #     feat(auth): add login flow
+    #     EOF
+    #     )"
+    #
+    # The capture above spans it whole, because bash `[^"]` matches newlines, so
+    # `head -1` yielded the literal `$(cat <<'EOF'` and EVERY heredoc-form commit
+    # was blocked regardless of its message (#3802).
+    #
+    # Selection of WHICH argument is the message is unchanged above — only the
+    # subject-from-message step is delegated. Falls back to the previous `head -1`
+    # if node or the library is unavailable, so a broken extractor degrades to the
+    # old behavior instead of becoming a new silent-allow path.
+    SUBJECT=$(GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" MSG="$MSG" node -e "
+      const {resolveCommitSubject}=require(process.env.GIT_CMD_LIB);
+      process.stdout.write(resolveCommitSubject(process.env.MSG));
+    " 2>/dev/null) || SUBJECT=$(echo "$MSG" | head -1)
     # Validate Conventional Commits format
     if ! [[ "$SUBJECT" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\(.+\))?:[[:space:]].+ ]]; then
       # Emit a typed `code` field alongside `reason` (#2974). Tests assert

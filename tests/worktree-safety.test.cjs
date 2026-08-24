@@ -4359,7 +4359,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const ROOT = path.join(__dirname, '..');
-const { isGitSubcommand, tokenize, extractBranchArgument, extractCommitSubject } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
+const { isGitSubcommand, tokenize, extractBranchArgument, resolveCommitSubject } = require(path.join(ROOT, 'hooks', 'lib', 'git-cmd.js'));
 
 // ── tokenize ─────────────────────────────────────────────────────────────────
 
@@ -4457,72 +4457,76 @@ describe('gsd-validate-commit.sh delegates to git-cmd.js', () => {
   });
 });
 
-// ── extractCommitSubject (#3802) ─────────────────────────────────────────────
-// Sibling of extractBranchArgument, on the same tokenizeShellLike seam and for
-// the same reason this module exists: the bash regex it replaces in
-// gsd-validate-commit.sh — `-m[[:space:]]+"([^"]+)"` — matched ACROSS NEWLINES,
-// because bash `[^"]` includes them. Given Claude Code's documented heredoc
-// idiom it captured the entire span up to the final quote at `)"`, so the
-// "subject" was the literal `$(cat <<'EOF'` and every heredoc-form commit was
-// blocked regardless of conformance.
-describe('git-cmd.js extractCommitSubject', () => {
-  const heredoc = (body, open = "<<'EOF'", close = 'EOF') =>
-    `git commit -m "$(cat ${open}\n${body}\n${close}\n)"`;
+// ── resolveCommitSubject (#3802) ─────────────────────────────────────────────
+// A PURE STRING helper: it maps an already-selected `-m` argument to the subject
+// to validate. It deliberately does not tokenize — an earlier revision walked
+// tokens and regressed four cases that upstream allowed (`git commit -- -m WIP`,
+// `git commit --amend && echo -m WIP`, `-m "" --allow-empty-message`, and
+// unquoted `git commit -m WIP`). Reported in review of #3802.
+describe('git-cmd.js resolveCommitSubject', () => {
+  const sub = (open, body, close) => `$(cat ${open}\n${body}\n${close}\n)`;
 
-  test('resolves the heredoc body, not the opener', () => {
-    assert.strictEqual(extractCommitSubject(heredoc('feat(auth): add login flow')),
+  test('resolves the heredoc body rather than the opener', () => {
+    assert.strictEqual(resolveCommitSubject(sub("<<'EOF'", 'feat(auth): add login flow', 'EOF')),
       'feat(auth): add login flow');
   });
 
-  test('resolves every heredoc opener spelling', () => {
-    assert.strictEqual(extractCommitSubject(heredoc('fix: a', '<<-"MSG"', 'MSG')), 'fix: a');
-    assert.strictEqual(extractCommitSubject(heredoc('fix: b', '<<EOF')), 'fix: b');
-    assert.strictEqual(extractCommitSubject(heredoc('fix: c', '<< EOF')), 'fix: c');
+  test('accepts the opener spellings bash accepts', () => {
+    assert.strictEqual(resolveCommitSubject(sub('<<EOF', 'fix: bare', 'EOF')), 'fix: bare');
+    assert.strictEqual(resolveCommitSubject(sub('<< EOF', 'fix: spaced', 'EOF')), 'fix: spaced');
+    assert.strictEqual(resolveCommitSubject(sub('<<"EOF"', 'fix: dquoted', 'EOF')), 'fix: dquoted');
+    // A delimiter that is not identifier-shaped is still a valid bash word.
+    assert.strictEqual(resolveCommitSubject(sub("<<'END-MSG'", 'fix: hyphen tag', 'END-MSG')),
+      'fix: hyphen tag');
   });
 
-  test('takes only the FIRST body line of a multi-line message', () => {
-    assert.strictEqual(extractCommitSubject(heredoc('feat: subject\n\nBody paragraph.')), 'feat: subject');
+  test('a path-qualified cat is still the same form', () => {
+    assert.strictEqual(resolveCommitSubject("$(/bin/cat <<'EOF'\nfix: pathed cat\nEOF\n)"),
+      'fix: pathed cat');
   });
 
-  test('a blank first body line resolves to an empty subject, not to null', () => {
-    // Load-bearing: the caller distinguishes "no -m message" (null -> nothing to
-    // validate) from an empty subject (-> validate, and fail). Collapsing them
-    // would silently allow a heredoc whose body starts blank.
-    assert.strictEqual(extractCommitSubject(heredoc('')), '');
+  test('<<- strips the leading tabs bash strips', () => {
+    // With `<<-`, bash removes leading TABS from body lines, so the subject the
+    // user sees has none. Returning the raw line blocked a conforming message.
+    assert.strictEqual(resolveCommitSubject("$(cat <<-EOF\n\tfix(parser): strip heredoc tabs\n\tEOF\n)"),
+      'fix(parser): strip heredoc tabs');
   });
 
-  test('plain quoted forms are unchanged', () => {
-    assert.strictEqual(extractCommitSubject('git commit -m "feat(auth): add login flow"'),
-      'feat(auth): add login flow');
-    assert.strictEqual(extractCommitSubject("git commit -m 'feat(auth): add login flow'"),
-      'feat(auth): add login flow');
+  test('an immediately-following terminator is an EMPTY message, not a subject', () => {
+    // `$(cat <<'EOF'` then straight to `EOF` — the message is empty, and the
+    // delimiter must not be mistaken for the subject.
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nEOF\n)"), '');
+    assert.strictEqual(resolveCommitSubject("$(cat <<-EOF\n\tEOF\n)"), '',
+      'the <<- form strips the tab first, so the terminator still matches');
   });
 
-  test('walks tokens from the subcommand — the forms a raw scan misses', () => {
-    assert.strictEqual(extractCommitSubject('git -C /some/path commit -m "fix: y"'), 'fix: y');
-    assert.strictEqual(extractCommitSubject('GIT_AUTHOR_NAME=x git commit -m "fix: y"'), 'fix: y');
-    assert.strictEqual(extractCommitSubject('/usr/bin/git commit -m "fix: y"'), 'fix: y');
+  test('a heredoc opener with no body at all resolves to empty', () => {
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'"), '');
   });
 
-  test('returns null when there is no -m message to validate', () => {
-    assert.strictEqual(extractCommitSubject('git commit --amend --no-edit'), null);
-    assert.strictEqual(extractCommitSubject('git commit -m'), null, 'dangling -m has no argument');
-    assert.strictEqual(extractCommitSubject('echo -m "feat: nope"'), null, 'not a git invocation');
-    assert.strictEqual(extractCommitSubject(''), null);
-    assert.strictEqual(extractCommitSubject(undefined), null);
+  // The security half. Recognition is anchored at BOTH ends and requires a
+  // command substitution, so a message that merely contains — or ENDS IN —
+  // `<<WORD` is not an opener.
+  test('a message ENDING in <<WORD is not a heredoc — this was an enforcement bypass', () => {
+    // Without the `^$(` anchor this resolved to line 2 and ALLOWED a
+    // non-conforming commit (review of #3802).
+    assert.strictEqual(resolveCommitSubject('WIP notes <<EOF\nfix: smuggled subject'),
+      'WIP notes <<EOF', 'the real subject is the non-conforming first line, and must be judged');
   });
 
-  test('a glued -m and --message= stay unrecognised, exactly as before', () => {
-    // Not a widening of the fix: the regex this replaces required whitespace
-    // after -m, so both yielded no message and were allowed. Pinned so the
-    // change stays scoped to the heredoc defect.
-    assert.strictEqual(extractCommitSubject('git commit -mfeat: x'), null);
-    assert.strictEqual(extractCommitSubject('git commit --message="feat: x"'), null);
-  });
-
-  test('a message that merely mentions << is not treated as a heredoc', () => {
-    assert.strictEqual(extractCommitSubject('git commit -m "fix(parser): handle a << b shifts"'),
+  test('a message merely containing << is untouched', () => {
+    assert.strictEqual(resolveCommitSubject('fix(parser): preserve literal <<EOF'),
+      'fix(parser): preserve literal <<EOF');
+    assert.strictEqual(resolveCommitSubject('fix(parser): handle a << b shifts'),
       'fix(parser): handle a << b shifts');
+  });
+
+  test('ordinary messages pass through as their first line', () => {
+    assert.strictEqual(resolveCommitSubject('feat(auth): add login flow'), 'feat(auth): add login flow');
+    assert.strictEqual(resolveCommitSubject('feat: subject\n\nBody paragraph.'), 'feat: subject');
+    assert.strictEqual(resolveCommitSubject(''), '');
+    assert.strictEqual(resolveCommitSubject(null), '');
+    assert.strictEqual(resolveCommitSubject(undefined), '');
   });
 });
 
