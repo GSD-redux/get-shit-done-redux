@@ -1,5 +1,9 @@
 'use strict';
 
+// docs-guard-exempt: 'docs/readme.md' appears only inside literal RuleTester
+// fixture `code` strings (sample source text fed to no-source-grep for AST
+// linting) — this file never itself reads a real docs/ file off disk.
+
 /**
  * eslint-rules.test.cjs
  *

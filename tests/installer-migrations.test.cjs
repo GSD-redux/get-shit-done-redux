@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/installer-migrations.md is cited only in a comment; never read.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

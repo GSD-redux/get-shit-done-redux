@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/adr/1239-...md is cited only in a comment as rationale; never read.
 'use strict';
 
 /**

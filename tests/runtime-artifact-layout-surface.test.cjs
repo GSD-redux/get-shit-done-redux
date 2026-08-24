@@ -1140,7 +1140,7 @@ describe('skills-kind destination parity: installer vs surface-apply (#2911)', (
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
-    // #3712: record WHICH home this sandboxed to. src/test-home-guard.cts fails
+    // #3712: record WHICH home this sandboxed to. src/real-home-guard.cts fails
     // closed on hosts with no readable passwd entry, and this is what proves a
     // genuinely-sandboxed caller there. Without it these calls would be refused.
     const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;
@@ -1272,7 +1272,7 @@ describe('codex skills-kind destination: home override (#2911)', () => {
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
-    // #3712: record WHICH home this sandboxed to. src/test-home-guard.cts fails
+    // #3712: record WHICH home this sandboxed to. src/real-home-guard.cts fails
     // closed on hosts with no readable passwd entry, and this is what proves a
     // genuinely-sandboxed caller there. Without it these calls would be refused.
     const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;

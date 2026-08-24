@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/TESTING-SUITES.md is cited only in a header comment; never read.
 'use strict';
 
 /**

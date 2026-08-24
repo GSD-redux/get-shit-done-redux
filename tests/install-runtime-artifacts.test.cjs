@@ -1,3 +1,4 @@
+// docs-guard-exempt: codebuddy.ai/docs/... is an external URL and docs/adr/58-...md is a comment citation; neither is read.
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
@@ -220,7 +221,7 @@ function readAllSkillMd(dir) {
 // install/uninstall so codex's resolved skills dir is configDir/.agents/skills.
 //
 // #3712: promoted to tests/helpers.cjs, from the byte-identical copy that used to
-// live here. It now also sets the sandbox marker src/test-home-guard.cts needs to
+// live here. It now also sets the sandbox marker src/real-home-guard.cts needs to
 // stay permissive on hosts with no readable passwd entry.
 const { sandboxHome } = require('./helpers.cjs');
 
@@ -5086,7 +5087,7 @@ describe('Bug #2911: migrateLegacyDevPreferencesToSkill honors the skills-kind h
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
-    // #3712: record WHICH home this sandboxed to. src/test-home-guard.cts fails
+    // #3712: record WHICH home this sandboxed to. src/real-home-guard.cts fails
     // closed on hosts with no readable passwd entry, and this is what proves a
     // genuinely-sandboxed caller there. Without it these calls would be refused.
     const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;

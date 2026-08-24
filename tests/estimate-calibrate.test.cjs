@@ -1,3 +1,4 @@
+// docs-guard-exempt: docPath is a .planning/estimation-calibration.json tmp fixture; the docs/adr and docs/reference citations are comment-only.
 /**
  * estimate-calibrate — build the calibration document from completed phases.
  *

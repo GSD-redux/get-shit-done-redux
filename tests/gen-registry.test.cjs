@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/registries/ paths are synthetic fixtures written under a tmpdir, never the shipped docs/ tree.
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 

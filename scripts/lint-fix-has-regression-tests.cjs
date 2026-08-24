@@ -2,9 +2,15 @@
 'use strict';
 
 /**
- * lint-fix-has-regression-test.cjs — gate: every fix(#NNNN) commit must
+ * lint-fix-has-regression-tests.cjs — gate: every fix(#NNNN) commit must
  * include at least one behavioral test file (tests/*.test.cjs) that is NOT
  * an auto-generated fixture/baseline.
+ *
+ * Renamed (was `lint-fix-has-regression-test.cjs`, singular): the old
+ * basename matched Node's `*-test.EXT` test-collection pattern, so the
+ * remote push-gate runner collected and executed this SOURCE file as a
+ * test while GitHub CI (which globs only tests/**\/*.test.cjs) never saw
+ * it — see scripts/lint-source-test-name-collision.cjs.
  *
  * ## Why
  *
@@ -82,7 +88,7 @@ function getChangedTestFiles(baseRef) {
 
 function main() {
   if (process.env.GSD_SKIP_REGRESSION_TEST_GATE === '1') {
-    console.log('lint-fix-has-regression-test: SKIPPED (GSD_SKIP_REGRESSION_TEST_GATE=1)');
+    console.log('lint-fix-has-regression-tests: SKIPPED (GSD_SKIP_REGRESSION_TEST_GATE=1)');
     return;
   }
 
@@ -92,12 +98,12 @@ function main() {
   try {
     fixCommits = getFixCommits(baseRef);
   } catch {
-    console.log(`lint-fix-has-regression-test: no fix/feat commits found vs ${baseRef}, skipping`);
+    console.log(`lint-fix-has-regression-tests: no fix/feat commits found vs ${baseRef}, skipping`);
     return;
   }
 
   if (fixCommits.length === 0) {
-    console.log('lint-fix-has-regression-test: no fix/feat commits, passing');
+    console.log('lint-fix-has-regression-tests: no fix/feat commits, passing');
     return;
   }
 
@@ -113,7 +119,7 @@ function main() {
       .map((c) => `  ${c.sha} ${c.subject}`)
       .join('\n');
     throw new ExitError(1,
-      `lint-fix-has-regression-test: ${fixCommits.length} fix/feat commit(s) but ZERO behavioral test files (*.test.cjs) in the diff.\n` +
+      `lint-fix-has-regression-tests: ${fixCommits.length} fix/feat commit(s) but ZERO behavioral test files (*.test.cjs) in the diff.\n` +
       `Auto-generated fixtures (tests/fixtures/, *-baseline.json) do NOT count.\n\n` +
       `Fix commits:\n${commitList}\n\n` +
       `CONTRIBUTING.md:47: "Write a test that would have caught the bug."\n` +
@@ -123,7 +129,7 @@ function main() {
   }
 
   console.log(
-    `lint-fix-has-regression-test: PASS — ${fixCommits.length} fix/feat commit(s), ` +
+    `lint-fix-has-regression-tests: PASS — ${fixCommits.length} fix/feat commit(s), ` +
     `${testFiles.length} behavioral test file(s): ${testFiles.join(', ')}`
   );
 }

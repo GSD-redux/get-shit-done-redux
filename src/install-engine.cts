@@ -32,7 +32,7 @@ import retiredArtifactCleanup = require('./retired-artifact-cleanup.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 import { isPathConfined } from './external-descriptor-trust.cjs';
 import { ensureCommonJsMarker } from './commonjs-marker.cjs';
-import testHomeGuard = require('./test-home-guard.cjs');
+import testHomeGuard = require('./real-home-guard.cjs');
 // #2874 (ADR-58 cleanup phase): the injectable fs seam for the
 // installRuntimeArtifacts call tree. `installFs()` resolves to real
 // `node:fs` unless a call is wrapped in `withInstallFs(deps.fs, ...)` —

@@ -1,5 +1,9 @@
 'use strict';
 
+// docs-guard-exempt: allPathsAreTestsOrDocs(['tests/a.cjs', 'docs/b.md']) below
+// spot-checks a pure path-classifier predicate with string literals — no real
+// docs/ file is ever read or asserted on for content.
+
 /**
  * Tests for scripts/require-issue-link-policy.cjs (#3211, preserving #1389).
  *

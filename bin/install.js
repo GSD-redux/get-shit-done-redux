@@ -41,7 +41,7 @@ const {
 // consentRequired, hostPrecedenceRank) instead of the id being re-derived
 // and re-interpreted at each call site. See src/install-scope.cts.
 const { resolveScope } = require('../gsd-core/bin/lib/install-scope.cjs');
-const { isTestHomeGuardRefusal } = require('../gsd-core/bin/lib/test-home-guard.cjs');
+const { isTestHomeGuardRefusal } = require('../gsd-core/bin/lib/real-home-guard.cjs');
 // getDirName (runtime -> local config dir name) is relocated out of this
 // installer to the runtime-name-policy leaf (ADR-1508 / #1510 Phase 1) so the
 // conversion module's rewrite engine can consume it without importing

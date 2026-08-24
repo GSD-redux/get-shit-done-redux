@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/reference/gsd-capability-command.md is cited only in a header comment as rationale; no docs/ path is ever read.
 'use strict';
 
 /**

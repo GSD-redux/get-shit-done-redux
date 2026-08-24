@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/src/auth/x.ts' is a synthetic files-list fixture entry, not a real repo doc.
 /**
  * Failing-first (RED) tests for #2554 — path-scoped code-review depth overrides.
  *

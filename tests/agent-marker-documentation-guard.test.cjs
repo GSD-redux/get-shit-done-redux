@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/reference/workflow-fragments.md is cited only in a comment as a prior example; this file reads agents/*.md, never docs/.
 'use strict';
 
 // allow-test-rule: source-text-is-the-product see #2995 — parses the literal text of shipped

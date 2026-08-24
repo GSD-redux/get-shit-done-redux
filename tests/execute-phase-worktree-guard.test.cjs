@@ -13,6 +13,7 @@ const path = require('node:path');
 const { cleanup } = require('./helpers.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOW = path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -62,12 +63,17 @@ function commitFile(dir, name, msg) {
 
 /** Run the extracted guard in `dir`. Never throws — returns the observed result. */
 function runGuard(dir) {
-  // 30s: already bounded pre-migration (unchanged) — the guard runs a handful
-  // of git plumbing calls (rev-parse, log, status) against a small fixture repo.
+  // Bash FAN-OUT: the guard runs a sequence of git plumbing calls
+  // (rev-parse, log, status) under one `bash` interpreter, not a single git
+  // call — the wrong class for a plumbing-sized bound. Same class as the
+  // observed CI failures in tests/quick-branching.test.cjs (PR #3787 run
+  // 32668773524) and tests/worktree-safety.test.cjs (`next` run
+  // 32608945654). See HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for
+  // the class rationale.
   const res = runHook('-c', [guardScript()], {
     interpreter: 'bash',
     cwd: dir,
-    timeoutMs: 30_000,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   });
   return { status: res.exitCode, stdout: res.stdout || '', stderr: res.stderr || '' };

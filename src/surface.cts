@@ -35,10 +35,10 @@ import { platformWriteSync, posixNormalize } from './shell-command-projection.cj
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import installProfiles = require('./install-profiles.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-import testHomeGuard = require('./test-home-guard.cjs');
+import testHomeGuard = require('./real-home-guard.cjs');
 
 /**
- * #3712 test seam, mirroring the `Deps` shape in src/test-home-guard.cts. Declared
+ * #3712 test seam, mirroring the `Deps` shape in src/real-home-guard.cts. Declared
  * here rather than imported because that module uses `export =` on a value.
  */
 type TestHomeGuardDeps = {

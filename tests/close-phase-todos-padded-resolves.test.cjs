@@ -13,7 +13,7 @@ const path = require('node:path');
 const { cleanup } = require('./helpers.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const EXECUTE_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
 
@@ -118,7 +118,14 @@ describe('#2576: close_phase_todos normalizes padded vs unpadded resolves_phase 
     const script = path.join(tmp, 'normalize.sh');
     // argv array (no shell string) so a quoted input like '"05"' is passed verbatim.
     fs.writeFileSync(script, `${helper}\nnormalize_phase_num "$1"\n`);
-    const result = runHook(script, [input], { interpreter: 'bash', timeoutMs: PROBE_TIMEOUT_MS });
+    // Bash FAN-OUT: `normalize_phase_num` pipes through `sed`, not a
+    // self-contained bash builtin — the wrong class for `PROBE_TIMEOUT_MS`.
+    // Same class as the observed CI failures in
+    // tests/quick-branching.test.cjs (PR #3787 run 32668773524) and
+    // tests/worktree-safety.test.cjs (`next` run 32608945654). See
+    // HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the class
+    // rationale.
+    const result = runHook(script, [input], { interpreter: 'bash', timeoutMs: HOOK_FANOUT_TIMEOUT_MS });
     throwIfFailed(result, `bash ${script} ${input}`);
     return result.stdout;
   }

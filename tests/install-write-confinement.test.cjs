@@ -3215,7 +3215,7 @@ describe('#3712 in-process home confinement', () => {
   const installEngine = require('../gsd-core/bin/lib/install-engine.cjs');
   const surface = require('../gsd-core/bin/lib/surface.cjs');
   const runtimeArtifactLayout = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
-  const testHomeGuard = require('../gsd-core/bin/lib/test-home-guard.cjs');
+  const testHomeGuard = require('../gsd-core/bin/lib/real-home-guard.cjs');
 
   const escapingKinds = (home) => [{ kind: 'skills', home, destSubpath: 'skills' }];
   const confinedKinds = [{ kind: 'skills', destSubpath: 'skills' }];

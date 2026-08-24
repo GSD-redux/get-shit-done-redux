@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/getting-started.md and docs/setup.md are synthetic { file, content } corpus fixtures fed to a lint checker, not real repo docs.
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 

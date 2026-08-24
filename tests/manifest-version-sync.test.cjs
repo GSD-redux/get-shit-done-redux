@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/' appears only as an excluded-prefix string in a guard's exclusion list, never read.
 'use strict';
 
 /**

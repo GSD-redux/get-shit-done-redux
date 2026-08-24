@@ -1,3 +1,4 @@
+// docs-guard-exempt: antigravity.google/docs/... is an external URL citation in comments, not a repo path.
 // allow-test-rule: structural-regression-guard — AC2 requires asserting no `runtime === 'antigravity'` string-equality branch (nor an `isAntigravity` helper, nor a `canonical === 'antigravity'` branch) remains in bin/install.js, src/runtime-artifact-conversion.cts, src/shell-command-projection.cts, and src/runtime-name-policy.cts — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2096)
 'use strict';
 

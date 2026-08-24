@@ -1060,7 +1060,7 @@ function sandboxHome(t, dir) {
   const savedMarker = process.env[TEST_HOME_SANDBOX_MARKER];
   process.env.HOME = dir;
   process.env.USERPROFILE = dir;
-  // Records WHICH directory this call sandboxed to. src/test-home-guard.cts fails
+  // Records WHICH directory this call sandboxed to. src/real-home-guard.cts fails
   // CLOSED when it cannot read a passwd entry to compare HOME against (some CI
   // images), and consults this only in that branch, accepting it only when it
   // names the home actually in effect — so a stale marker cannot vouch for a

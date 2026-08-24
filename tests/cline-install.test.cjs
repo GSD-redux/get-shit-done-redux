@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/guide.md' is a synthetic tool_input fixture path for a hook probe, not a real repo doc.
 // allow-test-rule: source-text-is-the-product
 // Workflow .md / agent .md / command .md / reference .md files — their text
 // IS what the runtime loads. Testing text content tests the deployed contract.

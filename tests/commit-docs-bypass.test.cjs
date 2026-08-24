@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/readme.md' is a fast-check filler token and 'commit_docs' is a config key name, not a docs/ path read.
 /**
  * commit_docs bypass guard (#1783; superseded/widened by #3585)
  *

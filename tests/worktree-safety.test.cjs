@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/SUMMARY.md' is a synthetic fixture path and a predicate-check literal (isSummaryArtifactRelPath), never read as content.
 'use strict';
 
 /**
@@ -24,6 +25,7 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const { createFixture } = require('./fixtures/index.cjs');
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // 30000ms: this file's single named bound for every migrated subprocess call
 // below (git plumbing on small mkdtemp fixtures, gsd-tools.cjs/hook CLI runs,
@@ -5836,15 +5838,18 @@ const GATE_SNIPPET = [
 ].join('\n');
 
 function runGate(cwd, env) {
-  // 30000ms: previously UNBOUNDED (execFileSync had no `timeout` option).
-  // The snippet is pure shell string/array parsing plus one `git config
-  // --file .gitmodules` lookup against a small fixture repo — matched to the
-  // 30s bound already established for the other bash guard snippets in this
-  // suite for consistency, though it does substantially less work than those.
+  // This is a bash FAN-OUT: the `-c` snippet runs shell string/array parsing
+  // plus a `git config --file .gitmodules` subprocess under one bash
+  // interpreter, not a single plumbing call — 30000ms was the wrong CLASS,
+  // not a slow machine. It timed out on `next` itself, run 32608945654,
+  // `full test (windows-latest, 24, shard 1/3)`, test `plan touching only
+  // src/ in a submodule project keeps worktree isolation ENABLED`:
+  // `outcome=timed_out` exitCode null. See HOOK_FANOUT_TIMEOUT_MS in
+  // ./helpers/timeouts.cjs for the class rationale.
   const r = seamRunHookGate('-c', [GATE_SNIPPET], {
     interpreter: 'bash',
     cwd,
-    timeoutMs: 30_000,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     env: { ...process.env, ...env },
   });
   if (r.exitCode !== 0) {

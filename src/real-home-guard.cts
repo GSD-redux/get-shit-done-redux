@@ -3,6 +3,16 @@
 /**
  * #3712 — refuse to let an in-process test run reach the developer's REAL home.
  *
+ * NAMED `real-home-guard`, NOT `test-home-guard`: this is a SOURCE module, and a
+ * source filename matching Node's `test-*` convention gets COLLECTED and EXECUTED
+ * as a test by the remote runner, which never imports it and throws immediately
+ * on load — proven against the unmodified `next` tip 622f43353 (linux-node24,
+ * 37199 passed / 1 failed, failure at `src/test-home-guard.cts`). Meanwhile
+ * `scripts/run-tests.cjs` only globs `tests/**\/*.test.cjs`, so GitHub CI never
+ * sees the failure and stays green while the remote push-gate runner goes red.
+ * Any name works except one matching `test-*`, `*-test`, `*_test`, `*.test.*`,
+ * or `test.*`.
+ *
  * A runtime kind may declare a global `home` override that is resolved from
  * `os.homedir()` rather than from the caller's `configDir` (today: codex's
  * skills kind, `home: ".agents"`, ADR-1239 / #2088 — Codex auto-discovers

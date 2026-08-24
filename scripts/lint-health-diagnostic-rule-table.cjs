@@ -58,7 +58,7 @@
  * real, non-mocked `buildPlanningSnapshot(tmpCwd)` call (see
  * `tests/health-diagnostic-rules/root-existence.test.cjs`). This guard
  * therefore verifies the fixture-proof invariant STATICALLY against the
- * test files' own text — mirroring `scripts/lint-fix-has-regression-test.cjs`'s
+ * test files' own text — mirroring `scripts/lint-fix-has-regression-tests.cjs`'s
  * house style — rather than dynamically re-running fixture-building code
  * this guard does not own.
  */

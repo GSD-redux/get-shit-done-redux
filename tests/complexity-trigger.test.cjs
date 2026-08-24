@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/readme.md' is a synthetic fixture path fed to isAnalyzablePath(), never read as content.
 'use strict';
 
 /**

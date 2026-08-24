@@ -58,7 +58,7 @@ const TEST_ATTRIBUTION = () => 'Co-Authored-By: Test <t@example.com>';
  * install would write into the developer's real home directory.
  *
  * #3712: promoted to tests/helpers.cjs, from the byte-identical copy that used
- * to live here. It now also sets the sandbox marker src/test-home-guard.cts
+ * to live here. It now also sets the sandbox marker src/real-home-guard.cts
  * needs to stay permissive on hosts with no readable passwd entry.
  */
 const { sandboxHome } = require('./helpers.cjs');
