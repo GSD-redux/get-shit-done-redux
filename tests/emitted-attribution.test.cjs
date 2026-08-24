@@ -1353,9 +1353,17 @@ test('property: ackProse and normalizeAckReason agree, and both are invariant un
 // WIRING — real commits, real `git show` reads — because a guard that resolves no
 // base passes vacuously, and that is exactly how the legacy half went blind.
 
+// #2767: the remote runner mounts the repo at a path owned by another uid, and git then
+// refuses every operation there with "detected dubious ownership". Names the SPECIFIC
+// directory, never the `*` wildcard. Mirrors `safeDirArgs` in helpers/emitted-runtime.cjs.
+const gitIn = (dir, args) => execFileSync(
+  'git', ['-c', `safe.directory=${path.resolve(dir)}`, ...args],
+  { cwd: dir, encoding: 'utf8', timeout: 15000 },
+);
+
 function makeGuardNextRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-guard-next-repo-'));
-  const runGit = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', timeout: 15000 });
+  const runGit = (args) => gitIn(dir, args);
   runGit(['init', '-q', '-b', 'next']);
   function commit(msg) {
     runGit(['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'add', '-A']);
@@ -1534,9 +1542,7 @@ test('resolveBaseRef: returns the parent sha on a two-commit repo, matching `git
     fs.writeFileSync(path.join(repo.dir, 'README.md'), 'two\n');
     repo.commit('second');
 
-    const expected = execFileSync(
-      'git', ['rev-parse', 'HEAD^'], { cwd: repo.dir, encoding: 'utf8', timeout: 15000 },
-    ).trim();
+    const expected = gitIn(repo.dir, ['rev-parse', 'HEAD^']).trim();
     const actual = resolveBaseRef({ cwd: repo.dir });
     assert.match(actual, /^[0-9a-f]{40}$/, 'must be a 40-hex sha');
     assert.equal(actual, expected);
@@ -1586,9 +1592,7 @@ test('assertUsableBaseRef: rejects an option-shaped ref, an empty string, null, 
 
 test('E2E: --guard-next --base-ref runs the real script as a subprocess against this checkout, and rejects an option-shaped --base-ref', () => {
   const scriptPath = path.join(REPO_ROOT, 'scripts', 'lint-emitted-drift-ack.cjs');
-  const head = execFileSync(
-    'git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 15000 },
-  ).trim();
+  const head = gitIn(REPO_ROOT, ['rev-parse', 'HEAD']).trim();
 
   // The script resolves its OWN REPO_ROOT from __dirname/.., so it always reads THIS
   // checkout's fragment directory regardless of the subprocess cwd — these assertions

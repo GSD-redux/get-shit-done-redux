@@ -43,6 +43,18 @@ re-arming deliberately costs an actual new sentence — the comparison strips
 zero-width characters and collapses whitespace precisely so a zero-information
 edit cannot fake one.
 
+## Never pin a fragment in a test
+
+A fragment is deleted the moment it has merged (see step 3 above), so any test
+that asserts one exists, or asserts its contents, will fail the instant
+`guard-no-ack-on-next` sweeps it — and that failure has nothing to do with the
+behavior the fragment once explained. This has already cost two suites:
+`tests/emitted-attribution.test.cjs`'s three `#2914` migration pins, and
+`tests/agent-tracked-source-rule.test.cjs`'s `#3645` growth-ack pin. What a test
+may legitimately assert is the BEHAVIOR the ack explains, or the guard's own
+verdict (`assertNoAllSpentFragments`, `assertAbsentOnNext`) — never the
+paperwork.
+
 ## Do not regenerate anything
 
 There is no baseline file to re-run a generator over; #2724 deleted it. If you
