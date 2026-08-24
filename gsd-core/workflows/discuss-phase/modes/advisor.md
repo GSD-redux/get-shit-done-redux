@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 # Advisor mode — research-backed comparison tables
 
 > **Lazy-loaded and gated.** The parent `workflows/discuss-phase.md` Reads

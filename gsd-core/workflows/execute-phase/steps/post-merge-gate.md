@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 # Step: post_merge_gate
 
 Post-merge build & test gate. Runs after all worktrees in a wave are merged

@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 ### Research-Only Early Exit (`--research-phase`)
 
 **Skip if:** `RESEARCH_ONLY` is `false` (the default).

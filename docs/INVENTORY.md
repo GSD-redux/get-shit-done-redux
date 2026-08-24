@@ -349,6 +349,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `execute-phase-between-wave-reset.md` | Between-wave manifest reset and worktree base refresh for waves 2+, plus the pre-wave cross-plan key-links dependency check (#1369). |
 | `execute-phase-wave-guard.md` | Inter-wave worktree base re-check for wave N+1 — the harness caches the fork base, so a fresh worktree would otherwise be cut from the stale pre-wave base (#1369, #2652). |
 | `offer-next.md` | The `offer_next` step body extracted from `execute-phase.md` — auto-advance routing and the no-transition check (#2537). |
+| `response-language-directive.md` | Shared response-language directive for workflow output, inter-tool narration, and translated report-template prose (#2529). |
 | `continuation-format.md` | Session continuation/resume format. |
 | `domain-probes.md` | Domain-specific probing questions for discuss-phase. |
 | `edge-probe.md` | Spec-phase edge-completeness probe — 8-category edge taxonomy, shape classification, and the `requirements → checks → verifier` resolution model (Step 5.5). |

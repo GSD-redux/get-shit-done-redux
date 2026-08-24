@@ -1,3 +1,5 @@
+@~/.claude/gsd-core/references/response-language-directive.md
+
 <trigger>
 Use this workflow when:
 - Starting a new session on an existing project

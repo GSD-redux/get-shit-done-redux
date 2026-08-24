@@ -46,7 +46,7 @@ RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --raw --default "
 gsd_run query audit-open
 ```
 
-**If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+**If `response_language` is set:** All user-facing output of this workflow — narration between tool calls, status updates, progress notes, findings, questions, prompts, and explanations — MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
 If the output contains open items (any section with count > 0):
 

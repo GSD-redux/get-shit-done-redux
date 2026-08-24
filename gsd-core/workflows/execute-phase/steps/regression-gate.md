@@ -1,4 +1,5 @@
 <step name="regression_gate">
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
 Run prior phases' test suites to catch cross-phase regressions BEFORE verification.
 
 **Skip if:** This is the first phase (no prior phases), or no prior VERIFICATION.md files exist.

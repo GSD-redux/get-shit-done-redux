@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 ### 5.0. Research-Only Modifiers (`--view`, `--research`)
 
 **Skip if:** `RESEARCH_ONLY` is `false`.

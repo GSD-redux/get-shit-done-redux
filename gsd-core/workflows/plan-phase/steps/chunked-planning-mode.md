@@ -1,3 +1,5 @@
+Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
+
 ## 8.5. Chunked Planning Mode
 
 **Skip if `CHUNKED_MODE` is `false`.**
