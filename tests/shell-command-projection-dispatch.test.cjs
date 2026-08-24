@@ -1685,7 +1685,7 @@ describe('bug #3439: shell projection module owns managed-hook policy and legacy
 
   test('projectLegacySettingsHookCommand preserves non-Windows script token shape', () => {
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: '"/usr/local/bin/node"',
+      runnerToken: '"/usr/local/bin/node"',
       scriptPath: '/x/hooks/gsd-statusline.js',
       scriptToken: "'/x/hooks/gsd-statusline.js'",
       platform: 'linux',
@@ -1699,7 +1699,7 @@ describe('bug #3439: shell projection module owns managed-hook policy and legacy
     // inert for every runtime (including the former 'gemini' string and its
     // Gemini-backend successor 'antigravity'). No `& ` prefix is ever added.
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: '"C:/nvm4w/nodejs/node.exe"',
+      runnerToken: '"C:/nvm4w/nodejs/node.exe"',
       scriptPath: 'C:\\Users\\me\\.gemini\\hooks\\gsd-prompt-guard.js',
       scriptToken: "'C:\\Users\\me\\.gemini\\hooks\\gsd-prompt-guard.js'",
       platform: 'win32',
@@ -1809,7 +1809,7 @@ describe('#1693 regression: Windows legacy-node rewrite must not double-quote a 
   test('projectLegacySettingsHookCommand emits the anchored path verbatim, not re-quoted', () => {
     const anchored = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/gsd-context-monitor.js';
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: winRunner,
+      runnerToken: winRunner,
       scriptPath: anchored,
       scriptToken: anchored,
       platform: 'win32',
@@ -1827,7 +1827,7 @@ describe('#1693 regression: Windows legacy-node rewrite must not double-quote a 
   test('projectLegacySettingsHookCommand still quotes a bare absolute Windows path', () => {
     const abs = 'C:/Program Files App/.claude/hooks/gsd-context-monitor.js';
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: winRunner,
+      runnerToken: winRunner,
       scriptPath: abs,
       scriptToken: JSON.stringify(abs),
       platform: 'win32',
@@ -1847,7 +1847,7 @@ describe('#1693 regression: Windows legacy-node rewrite must not double-quote a 
   // and this assertion would fail — that is what pins the gate.
   test('projectLegacySettingsHookCommand preserves the original scriptToken for anchored paths on POSIX', () => {
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: '"/usr/local/bin/node"',
+      runnerToken: '"/usr/local/bin/node"',
       scriptPath: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/gsd-statusline.js',
       scriptToken: "'/x/hooks/gsd-statusline.js'",
       platform: 'linux',

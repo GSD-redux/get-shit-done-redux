@@ -501,7 +501,27 @@ function buildNodeRunnerChainToken(opts?: NodeNormOpts): string | null {
   if (!execPath) return null;
   const stablePath = shellCmdProjection.posixNormalize(normalizeNodePath(execPath, opts));
   const baked = escapePosixDoubleQuoted(stablePath);
-  return `"$(for n in "${baked}" "$(command -v node)" /usr/local/bin/node /usr/bin/node; do [ -x "$n" ] && printf '%s' "$n" && break; done)"`;
+  // Absolute candidates only (leading / or a win32 drive letter): a relative
+  // `command -v node` hit (legal under a relative PATH entry) must never
+  // promote repo-cwd content into the runner slot. The gate uses parameter
+  // expansion + [ ] — deliberately NO `case` (its `)` terminates the command
+  // substitution under macOS's stock bash 3.2 /bin/sh, breaking the hook).
+  // \${…} below stays a literal shell parameter expansion, not TS interpolation.
+  return `"$(for n in "${baked}" "$(command -v node)" /usr/local/bin/node /usr/bin/node; do [ -x "$n" ] && { [ "\${n#/}" != "$n" ] || [ "\${n#?:}" != "$n" ]; } && printf '%s' "$n" && break; done)"`;
+}
+
+/**
+ * #3662 — the install-time node path as a shell-safe QUOTED token, carrying
+ * the same double-quote escaping as the chain token (`escapePosixDoubleQuoted`
+ * — $ ` " \), NOT bare JSON quoting. The portable resolver's first argument
+ * is executed by the host shell before the resolver sees argv, so a path
+ * containing shell metacharacters must arrive escaped.
+ */
+function buildBakedNodeToken(opts?: NodeNormOpts): string | null {
+  const execPath = (opts && opts.execPath) || (typeof process.execPath === 'string' ? process.execPath : '');
+  if (!execPath) return null;
+  const stablePath = shellCmdProjection.posixNormalize(normalizeNodePath(execPath, opts));
+  return `"${escapePosixDoubleQuoted(stablePath)}"`;
 }
 
 /**
@@ -572,7 +592,7 @@ interface RewriteOpts {
 // #3662 — recognize the two runtime-resolving command shapes the installer
 // emits, so the rewriter never churns (or un-does) an entry that already
 // works in every environment sharing the config root.
-const CHAIN_RUNNER_COMMAND = /^"\$\(for n in [\s\S]*?; do \[ -x "\$n" \] && printf '%s' "\$n" && break; done\)"\s+\S/;
+const CHAIN_RUNNER_COMMAND = /^"\$\(for n in [\s\S]*?printf '%s' "\$n" && break; done\)"\s+\S/;
 const RESOLVER_RUNNER_COMMAND = /^(?:"[^"]*bash(\.exe)?"|bash)\s+"[^"]*gsd-node-runner\.sh"\s+"[^"]*"\s+\S/;
 
 function rewriteLegacyManagedNodeHookCommands(settings: Settings, runnerToken: string, opts?: RewriteOpts): boolean {
@@ -1137,8 +1157,10 @@ function buildHookCommand(configDir: string, hookName: string, opts?: BuildHookC
     // Portable installs route through the staged resolver: the baked absolute
     // path travels as the resolver's FIRST argument (tried first, so the
     // minimal-PATH guarantee holds), then `command -v node`, then the
-    // well-known list — one staged file, no per-install templating.
-    const bakedToken = resolveNodeRunner(opts);
+    // well-known list — one staged file, no per-install templating. The
+    // token is shell-escaped like the chain (the host shell expands the
+    // argument before bash sees argv), not merely JSON-quoted.
+    const bakedToken = buildBakedNodeToken(opts);
     if (bakedToken === null) return null;
     const portableBaseDir = projectPortableHookBaseDir({
       configDir,

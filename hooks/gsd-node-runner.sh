@@ -44,9 +44,13 @@ fi
 found=''
 
 # check <path> — record <path> if it is an absolute, executable file.
+# Absolute = POSIX root (/*) or a win32 drive-letter path (C:/…), which is
+# what the installer bakes on Windows; anything else (a relative `command -v`
+# hit under a relative PATH entry, a bare name) is rejected so repo-cwd
+# content can never reach the runner slot.
 check() {
   case "$1" in
-    /*) if [ -x "$1" ]; then found=$1; fi ;;
+    /*|[A-Za-z]:/*) if [ -x "$1" ]; then found=$1; fi ;;
   esac
   [ -n "$found" ]
 }

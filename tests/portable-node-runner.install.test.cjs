@@ -270,7 +270,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       ]);
       const changed = hooksSurface.rewriteLegacyManagedNodeHookCommands(
         settings,
-        hooksSurface.resolveNodeRunner(),
+        hooksSurface.buildNodeRunnerChainToken(),
         { platform: 'darwin', runtime: 'claude' },
       );
       assert.equal(changed, true, 'rewriter reported no change over a mixed-state install');
@@ -292,7 +292,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       );
       const changed = hooksSurface.rewriteLegacyManagedNodeHookCommands(
         settings,
-        hooksSurface.resolveNodeRunner(),
+        hooksSurface.buildNodeRunnerChainToken(),
         { platform: 'darwin', runtime: 'claude' },
       );
       assert.equal(changed, true);
@@ -320,7 +320,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
           ],
         },
       };
-      hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, hooksSurface.resolveNodeRunner(), {
+      hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, hooksSurface.buildNodeRunnerChainToken(), {
         platform: 'darwin',
         runtime: 'claude',
       });
@@ -333,7 +333,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       const settings = settingsWith([command]);
       const changed = hooksSurface.rewriteLegacyManagedNodeHookCommands(
         settings,
-        hooksSurface.resolveNodeRunner(),
+        hooksSurface.buildNodeRunnerChainToken(),
         { platform: 'darwin', runtime: 'claude' },
       );
       assert.equal(changed, false);
@@ -344,7 +344,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       const settings = settingsWith([`node "/home/u/.claude/hooks/gsd-statusline.js"`]);
       const changed = hooksSurface.rewriteLegacyManagedNodeHookCommands(
         settings,
-        hooksSurface.resolveNodeRunner(),
+        hooksSurface.buildNodeRunnerChainToken(),
         { platform: 'darwin', runtime: 'claude' },
       );
       assert.equal(changed, true);
@@ -355,12 +355,12 @@ describe('#3662 runtime-resolving managed hook runners', () => {
     });
 
     test('rewriter is idempotent and leaves resolving shapes alone', () => {
-      const chainCommand = `"$(for n in ${FOREIGN_NODE} "$(command -v node)" /usr/local/bin/node /usr/bin/node; do [ -x "$n" ] && printf '%s' "$n" && break; done)" "/home/u/.claude/hooks/gsd-statusline.js"`;
+      const chainCommand = `"$(for n in "${FOREIGN_NODE}" "$(command -v node)" /usr/local/bin/node /usr/bin/node; do [ -x "$n" ] && { [ "\${n#/}" != "$n" ] || [ "\${n#?:}" != "$n" ]; } && printf '%s' "$n" && break; done)" "/home/u/.claude/hooks/gsd-statusline.js"`;
       const resolverCommand = `bash "/home/u/.claude/hooks/${RESOLVER_HOOK}" "${FOREIGN_NODE}" "/home/u/.claude/hooks/gsd-statusline.js"`;
       const settings = settingsWith([chainCommand, resolverCommand]);
       const changed = hooksSurface.rewriteLegacyManagedNodeHookCommands(
         settings,
-        hooksSurface.resolveNodeRunner(),
+        hooksSurface.buildNodeRunnerChainToken(),
         { platform: 'darwin', runtime: 'claude' },
       );
       assert.equal(changed, false, 'already-resolving entries were churned');
@@ -400,7 +400,7 @@ describe('#3662 runtime-resolving managed hook runners', () => {
         env: {
           ...process.env,
           HOME: home,
-          PATH: emptyBin,
+          PATH: `${emptyBin}:/usr/bin:/bin`,
           GSD_NODE_RUNNER_NO_FALLBACKS: '1',
         },
         timeoutMs: RUN_TIMEOUT_MS,
@@ -528,8 +528,8 @@ describe('#3662 runtime-resolving managed hook runners', () => {
         m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\'),
       );
       assert.ok(commands.length > 0, 'no command entries found in kimi block');
-      const jsCommand = commands.find((c) => c.includes('gsd-statusline.js'));
-      assert.ok(jsCommand, `no gsd-statusline.js command in block: ${commands.join(' | ')}`);
+      const jsCommand = commands.find((c) => c.includes('gsd-prompt-guard.js'));
+      assert.ok(jsCommand, `no gsd-prompt-guard.js command in block: ${commands.join(' | ')}`);
       const foreign = foreignizeNodeTokens(jsCommand);
       const file = writeCommandFile(t, foreign, 'kimi');
       const result = runHook(file, [], {

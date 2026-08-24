@@ -706,6 +706,7 @@ Full listing: `hooks/`.
 | `gsd-validate-commit.sh` | `PostToolUse` | Commit validation for conventional-commit enforcement |
 | `gsd-phase-boundary.sh` | `PostToolUse` | Phase-boundary detection for workflow transitions |
 | `gsd-graphify-update.sh` | `PostToolUse` | Auto-rebuild knowledge graph after main HEAD advances (opt-in, default off — #3347) |
+| `gsd-node-runner.sh` | (helper) | Portable node resolver managed JS hook commands route through under `--portable-hooks`: install-time node path first, then `command -v node`, then well-known layouts — resolves at hook-fire time so a shared config root works in every environment (#3662) |
 
 ---
 
