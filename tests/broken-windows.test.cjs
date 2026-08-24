@@ -1375,7 +1375,23 @@ describe('#3689: windows ledger table-vs-JSON drift guard', () => {
     const obj = JSON.parse(res.output);
     assert.equal(obj.entry.description, 'third entry');
     assert.equal(obj.ledger.total_count, 3);
-    assert.ok(readLedgerFile(tmp).includes('third entry'), 'new entry must be present in the written ledger');
+    const written = readLedgerFile(tmp);
+    assert.ok(written.includes('third entry'), 'new entry must be present in the written ledger');
+
+    // #3689 bug discovery: the trailing prose text ABOVE the fenced array
+    // must survive byte-for-byte. A wrong binding (locateJsonBlock resolving
+    // to the prose's own fenced array instead of the real ledger block)
+    // computes `trailingProse` from the PROSE fence's afterClose, silently
+    // dropping everything between the real ledger block and the prose
+    // block — including "Operator notes below the ledger." itself. Asserting
+    // only append-succeeds (as this test did before) cannot catch that: the
+    // write still succeeds, it just discards the operator's prose.
+    const trailingProse = 'Operator notes below the ledger.\n\n' +
+      '```json\n[{"note": "a"}, {"note": "b"}, {"note": "c"}]\n```\n';
+    assert.ok(
+      written.includes(trailingProse),
+      'trailing prose above and including the fenced JSON array must survive byte-for-byte',
+    );
   });
 });
 

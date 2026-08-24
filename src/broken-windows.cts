@@ -913,35 +913,29 @@ function writeLedgerAtomic(cwd: string, ledger: Ledger): void {
     // nothing on disk to disagree with, so the drift guard below is skipped.
   }
   if (existing !== null) {
-    // #2893: search for the CLOSING fence starting AFTER the opening fence.
-    // The span is located with the same tolerant + disambiguated fence rules
-    // parseJsonBlock uses (#3657), so a formatter-normalized 3-backtick ledger
-    // keeps its prose too — a literal-width search here would find no block
-    // and silently drop everything below the ledger on the next write.
-    const span = locateJsonBlock(existing, ledger.total_count);
-    if (span.ok) {
-      const afterFence = existing.slice(span.span.afterClose);
-      // Drop leading newlines; keep the rest as prose.
-      trailingProse = afterFence.replace(/^(?:\r?\n)+/, '');
-    }
-
-    // #3689 review finding 2: refuse the write if the on-disk table has
-    // drifted from the on-disk JSON — the source of truth — BEFORE anything
-    // is regenerated. Baseline is the ON-DISK entries, not `ledger` (already
-    // the post-mutation state: an appended entry or a changed status);
-    // comparing against `ledger` would report drift on every legitimate
-    // write. expectedTotal MUST be derived from the PRE-IMAGE's own
-    // frontmatter (not `ledger.total_count`, which is post-mutation): #2893
-    // exists precisely because operators may paste prose below the closing
-    // fence, and that prose can itself contain a fenced JSON array of a
-    // different length. Without a pre-image-derived hint,
-    // locateJsonBlock's no-hint fallback binds to the LATEST array-shaped
-    // span — the prose block, not the ledger — and both the entries baseline
-    // and the table extraction below would then compare against the wrong
-    // block, refusing every subsequent write as "drift" on a ledger that
-    // never drifted. If the pre-image frontmatter cannot be parsed
-    // unambiguously, that is itself the ambiguous case — fail closed rather
-    // than falling back to the no-hint scan.
+    // #3689 review finding 2 / #3689 bug discovery: both the #2893 prose
+    // span AND the drift guard below must disambiguate `locateJsonBlock`
+    // against the SAME pre-image ledger block, so this is computed ONCE,
+    // hoisted above both uses. expectedTotal MUST be derived from the
+    // PRE-IMAGE's own frontmatter (never `ledger.total_count`, which is
+    // already post-mutation — e.g. N+1 on an append): #2893 exists precisely
+    // because operators may paste prose below the closing fence, and that
+    // prose can itself contain a fenced JSON array of a different length.
+    // Passing the post-mutation total here (as a since-fixed #3689 review
+    // pass once did for the guard alone) makes locateJsonBlock's expectedTotal
+    // scan find nothing against the pre-image — no span has N+1 entries yet —
+    // so it silently falls through to the no-hint fallback, which binds to
+    // the LATEST array-shaped span: the prose block, not the ledger. Left
+    // unfixed, that means the #2893 prose-preservation span itself would
+    // resolve to the prose fence's `afterClose`, silently dropping
+    // everything between the real ledger block and the prose block —
+    // including the operator's own prose ABOVE that array — on every
+    // append. This is exactly the failure #2893 was written to prevent,
+    // reintroduced through the disambiguation hint; it is caught here by
+    // deriving the hint from the pre-image, not the post-mutation ledger,
+    // for BOTH call sites below. If the pre-image frontmatter cannot be
+    // parsed unambiguously, that is itself the ambiguous case — fail closed
+    // rather than falling back to the no-hint scan.
     let preImageExpectedTotal: number;
     try {
       const preFm = parseFrontmatterStrict(existing);
@@ -961,6 +955,28 @@ function writeLedgerAtomic(cwd: string, ledger: Ledger): void {
           'to write — the ledger JSON block cannot be identified unambiguously.',
       );
     }
+
+    // #2893: search for the CLOSING fence starting AFTER the opening fence.
+    // The span is located with the same tolerant + disambiguated fence rules
+    // parseJsonBlock uses (#3657), so a formatter-normalized 3-backtick ledger
+    // keeps its prose too — a literal-width search here would find no block
+    // and silently drop everything below the ledger on the next write. The
+    // hint passed here is `preImageExpectedTotal` (pre-image derived, see
+    // above) — NOT `ledger.total_count` — so this binds to the same span the
+    // drift guard below does.
+    const span = locateJsonBlock(existing, preImageExpectedTotal);
+    if (span.ok) {
+      const afterFence = existing.slice(span.span.afterClose);
+      // Drop leading newlines; keep the rest as prose.
+      trailingProse = afterFence.replace(/^(?:\r?\n)+/, '');
+    }
+
+    // #3689 review finding 2: refuse the write if the on-disk table has
+    // drifted from the on-disk JSON — the source of truth — BEFORE anything
+    // is regenerated. Baseline is the ON-DISK entries, not `ledger` (already
+    // the post-mutation state: an appended entry or a changed status);
+    // comparing against `ledger` would report drift on every legitimate
+    // write.
     const onDiskEntries = parseJsonBlock(existing, preImageExpectedTotal);
     const expectedTable = renderTable(onDiskEntries);
     const actualTable = extractTableRegion(existing, preImageExpectedTotal);
