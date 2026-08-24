@@ -1323,9 +1323,17 @@ describe('#3679 — pr-branch pre-existing planning content + verify deletion ga
       /PLANNING_DELETIONS/.test(bash),
       'verify must compute a planning-deletions count',
     );
+    // The must-be-0 gate lives in the step PROSE and the display template,
+    // outside every ```bash block — assert it against the full file text so
+    // the enforcement half of criterion 4 is pinned, not just the computation.
+    const fullText = readFileNormalized(PR_BRANCH_MD);
     assert.ok(
-      /PLANNING_DELETIONS[^\n]*must be .?0|PLANNING_DELETIONS[^\\n]*-ne "?0"?\b/.test(bash) || /PLANNING_DELETIONS/.test(bash),
-      'verify must treat a non-zero planning-deletions count as failure',
+      /PLANNING_DELETIONS[^\n]*must be .?0/.test(fullText),
+      'verify prose must gate on a zero PLANNING_DELETIONS count',
+    );
+    assert.ok(
+      /Planning deletions: \{PLANNING_DELETIONS\}/.test(fullText),
+      'verify display must surface the deletion count',
     );
   });
 

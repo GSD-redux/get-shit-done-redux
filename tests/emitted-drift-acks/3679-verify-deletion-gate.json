@@ -1,7 +1,0 @@
-{
-  "$comment": "Growth ack (#2914 fragment). Reason: #3679 adds the verify-step planning-deletion gate to pr-branch.md — a PLANNING_DELETIONS count over git diff --name-status (name-only counting cannot see status, so a deleted structural/allowed planning path verified clean), a must-be-0 prose gate beside $FORBIDDEN, and a display line. The workflow's create_pr_branch deletion class itself was already fixed by #3720 (rm -f --ignore-unmatch + checkout HEAD restore); this pins detection for the failure class the issue's brief requires verify to catch (criterion 4).",
-  "version": 1,
-  "paths": {
-    "pr-branch.md": "gsd-core/workflows/pr-branch.md +14 lines: verify-step PLANNING_DELETIONS gate (#3679)"
-  }
-}
