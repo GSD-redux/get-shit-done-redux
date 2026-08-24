@@ -422,16 +422,18 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       const plain = hooksSurface.buildHookCommand(configDir, 'gsd-session-state.sh', {
         runtime: 'claude',
       });
-      // The runner token is resolveBashRunner's platform answer — literal
-      // `bash` on POSIX, the discovered absolute Git-Bash path on win32
-      // (#580) — the pre-#3662 .sh shape, byte for byte.
+      // The pre-#3662 .sh shapes, byte for byte: claude-on-win32 omits the
+      // bash runner entirely (shellHookOmitsBashRunner, #580/#3393) and emits
+      // the bare script token; POSIX prefixes resolveBashRunner's answer.
+      const bareSh = process.platform === 'win32';
       const shRunner = hooksSurface.resolveBashRunner({ platform: process.platform }) || 'bash';
-      assert.equal(plain, `${shRunner} ${JSON.stringify(path.join(configDir, 'hooks', 'gsd-session-state.sh').replace(/\\/g, '/'))}`);
+      const plainScript = JSON.stringify(path.join(configDir, 'hooks', 'gsd-session-state.sh').replace(/\\/g, '/'));
+      assert.equal(plain, bareSh ? plainScript : `${shRunner} ${plainScript}`);
       const portable = hooksSurface.buildHookCommand(configDir, 'gsd-session-state.sh', {
         portableHooks: true,
         runtime: 'claude',
       });
-      assert.equal(portable, `${shRunner} "$HOME/.claude/hooks/gsd-session-state.sh"`);
+      assert.equal(portable, bareSh ? '"$HOME/.claude/hooks/gsd-session-state.sh"' : `${shRunner} "$HOME/.claude/hooks/gsd-session-state.sh"`);
     });
 
     test('chain embeds shell-hostile baked paths safely', (t) => {
