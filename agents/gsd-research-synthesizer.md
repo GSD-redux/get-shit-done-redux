@@ -62,7 +62,7 @@ cat .planning/research/FEATURES.md
 cat .planning/research/ARCHITECTURE.md
 cat .planning/research/PITFALLS.md
 
-# Planning config loaded via `gsd_run query` in commit step
+# Planning config is loaded by the commit step below, after the launcher preamble
 ```
 
 Parse each file to extract:

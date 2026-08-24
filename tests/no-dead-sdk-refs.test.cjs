@@ -63,32 +63,36 @@ const SHIM_RE = new RegExp(
   'g',
 );
 
-// Every verb the CLI advertises. Two sources, unioned:
-//   * the usage banner (`gsd_run` with no arguments -> "Commands: agent, agent-skills, …")
-//   * HOST_COMMAND_ROUTERS in gsd-core/bin/gsd-tools.cjs, which carries a handful the
-//     banner omits (`verification`, `planning`, `uat`, `stats`, `todo`, `windows`)
-// plus `query`, the registered-handler entry point the workflows use most.
+// The verb roster is DERIVED from gsd-tools.cjs's own exports, never hand-copied.
 //
-// This is deliberately the WHOLE roster, not the verbs that happen to occur in the tree
-// today. Scoping it to observed usage is what made the #2020 guard blind to #3809, and a
-// guard that only recognises yesterday's offenders is not a guard.
-const CLI_VERBS = new Set([
-  'agent', 'agent-skills', 'assumption-delta', 'audit-open', 'audit-uat', 'capability',
-  'check', 'check-commit', 'classify-confidence', 'commit', 'commit-to-subrepo',
-  'config-ensure-section', 'config-get', 'config-new-project', 'config-path', 'config-set',
-  'current-timestamp', 'detect-custom-files', 'docs-init', 'drift-guard', 'effort', 'eval',
-  'extract-messages', 'find-phase', 'from-gsd2', 'frontmatter', 'gap-analysis',
-  'generate-claude-md', 'generate-claude-profile', 'generate-dev-preferences',
-  'generate-slug', 'git', 'graphify', 'history-digest', 'init', 'intel', 'learnings',
-  'list-seeds', 'list-todos', 'loop', 'migrate-config', 'milestone', 'normalize-test-command',
-  'package-legitimacy', 'phase', 'phase-plan-index', 'phases', 'planning', 'pr-subrepo',
-  'profile-questionnaire', 'profile-sample', 'progress', 'project-instruction-file',
-  'prompt-budget', 'query', 'quick-tasks-append', 'requirements', 'research-plan',
-  'research-store', 'resolve-granularity', 'resolve-model', 'roadmap', 'scaffold',
-  'smart-entry', 'state', 'stats', 'task', 'template', 'todo', 'uat', 'user-story',
-  'validate', 'verification', 'verify', 'verify-path-exists', 'verify-summary', 'windows',
-  'workstream', 'worktree',
-]);
+// That file already carries three hand-maintained rosters — TOP_LEVEL_USAGE,
+// HOST_COMMAND_ROUTERS and SKIP_ROOT_RESOLUTION — whose divergence is a named repo
+// defect (DEFECT.GENERATIVE-FIX), pinned by the parity test in tests/commands.test.cjs.
+// A hand-copied fourth roster here would be that same defect wearing a guard's clothes,
+// and it already was: the first cut of this list was transcribed from an INSTALLED
+// older binary and silently missed 22 verbs this tree ships, including `websearch`,
+// `windows` and `state-snapshot`. Deriving costs one require and cannot drift.
+//
+// The require is lazy and memoised: tests/helpers.cjs defers its own built-lib require
+// for the same reason, so an unbuilt tree fails one test with an actionable message
+// instead of crashing the file before a single test() registers.
+let _cliVerbs = null;
+function cliVerbs() {
+  if (_cliVerbs) return _cliVerbs;
+  const { HOST_COMMAND_ROUTERS, TOP_LEVEL_USAGE } = require('../gsd-core/bin/gsd-tools.cjs');
+  const listed = TOP_LEVEL_USAGE.match(/Commands: ([\s\S]*?)\n\nGlobal flags:/);
+  assert.ok(listed, 'TOP_LEVEL_USAGE must contain a "Commands: ...\\n\\nGlobal flags:" block');
+  _cliVerbs = new Set([
+    ...Object.keys(HOST_COMMAND_ROUTERS),
+    ...listed[1].split(',').map((s) => s.trim()).filter(Boolean),
+    // `query` dispatches through the Command Routing Hub ahead of the host-router
+    // table, so it appears in neither export — yet it is the form 45 of the 50 #3809
+    // offenders used. Verified live in this tree: bare `query` is a usage error while
+    // `query state-snapshot` dispatches and returns JSON.
+    'query',
+  ]);
+  return _cliVerbs;
+}
 
 /**
  * Subcommand tokens invoked on the bare shim in one line of markdown.
@@ -110,7 +114,7 @@ function findShimInvocations(line) {
     // verb, so testing the first segment covers `phase.add` and `state.patch` without
     // resorting to "contains a dot", which also matches prose like `v1.2`.
     const token = m[1];
-    if (CLI_VERBS.has(token.split('.')[0])) {
+    if (cliVerbs().has(token.split('.')[0])) {
       found.push(token);
     }
   }
@@ -275,5 +279,20 @@ describe('#3809 — what counts as a bare shim invocation', () => {
       ),
       { numRuns: 300 },
     );
+  });
+});
+
+describe('#3809 — the verb roster is derived, not copied', () => {
+  test('covers every command gsd-tools.cjs actually dispatches', () => {
+    const { HOST_COMMAND_ROUTERS } = require('../gsd-core/bin/gsd-tools.cjs');
+    const missing = Object.keys(HOST_COMMAND_ROUTERS).filter((v) => !cliVerbs().has(v));
+    assert.deepEqual(missing, [], `verb(s) dispatched by gsd-tools.cjs but invisible to this guard: ${missing.join(', ')}`);
+  });
+
+  test('recognises verbs that no hand-copied list had', () => {
+    // These ship in this tree but were absent from the hand-copied first cut.
+    for (const verb of ['websearch', 'windows', 'state-snapshot', 'context-predicates']) {
+      assert.equal(cliVerbs().has(verb), true, `roster is missing ${verb}`);
+    }
   });
 });
