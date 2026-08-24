@@ -525,6 +525,33 @@ Select the corresponding stable runtime in the installer prompt. GSD does not en
 
 ---
 
+## Sharing one config root across environments
+
+When one config root (`~/.claude`, `~/.config/opencode`, …) is mounted or synced into
+machines with different Node.js layouts — a host plus Docker containers bind-mounting the
+same directory, or WSL and Windows sharing a drive — install with `--portable-hooks`
+(or `GSD_PORTABLE_HOOKS=1`):
+
+```bash
+npx @opengsd/gsd-core@latest --claude --global --portable-hooks
+```
+
+Hook script paths are emitted `$HOME`-relative, and every managed JavaScript hook command
+resolves its node binary at hook-fire time instead of depending on whichever machine ran
+the installer (#3662): portable installs route through a staged
+`hooks/gsd-node-runner.sh` resolver (the install-time node path first, then `command -v
+node`, then the well-known layouts); non-portable installs carry an equivalent inline
+fallback chain. The install-time path is always tried first, so GUI launches with a
+minimal `PATH` keep working, and a bare `node` lookup is never depended on. Re-running
+install or update from any of the environments converges stale runner paths — no mixed
+state where some hooks work in one environment and the rest in another.
+
+To pin down which node a given environment picks, run the resolver directly with
+`GSD_NODE_RUNNER_NO_FALLBACKS=1` (first-argument-only resolution) — it prints a stderr
+diagnostic and exits non-zero when nothing resolves.
+
+---
+
 ## Installing without Node.js
 
 If you cannot run `npx` (for example, on a Windows machine without Node.js), you have two options.

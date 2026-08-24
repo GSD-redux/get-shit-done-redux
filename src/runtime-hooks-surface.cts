@@ -55,6 +55,7 @@ const {
   projectCodexHookTomlCommand,
   shellHookOmitsBashRunner,
   escapeTomlDoubleQuotedString,
+  escapePosixDoubleQuoted,
 } = shellCmdProjection as {
   isManagedHookBasename: (scriptPath: string, opts?: { surface?: string }) => boolean;
   isManagedHookCommand: (cmd: string | null | undefined, opts?: { surface?: string; includeLegacyAliases?: boolean; configDir?: string }) => boolean;
@@ -64,6 +65,7 @@ const {
   projectCodexHookTomlCommand: (opts: { absoluteRunner: string; scriptPath: string; platform: string }) => string;
   shellHookOmitsBashRunner: (opts: { platform: string; runtime: string; isShellHook: boolean }) => boolean;
   escapeTomlDoubleQuotedString: (value: unknown) => string;
+  escapePosixDoubleQuoted: (value: unknown) => string;
 };
 
 // ---------------------------------------------------------------------------
@@ -468,18 +470,6 @@ function resolveNodeRunner(opts?: NodeNormOpts): string | null {
 }
 
 /**
- * Escape a literal for embedding inside a POSIX double-quoted string — the
- * four characters a double-quoted context interprets ($ ` " \) must not
- * reach the shell unescaped when a filesystem path is spliced into the
- * emitted command (#3662; a baked node path containing a space, `$`, or
- * backtick would otherwise word-split or command-substitute at hook-fire
- * time).
- */
-function escapeShellDoubleQuotedLiteral(text: string): string {
-  return text.replace(/[$`"\\]/g, '\\$1');
-}
-
-/**
  * #3662 — the runtime-resolving node runner token for managed JS hooks.
  *
  * A bake-time absolute runner (`resolveNodeRunner`) only works in the
@@ -501,13 +491,16 @@ function escapeShellDoubleQuotedLiteral(text: string): string {
  *
  * One shape for every platform: emitted hook commands execute via POSIX `sh`
  * (Claude-on-win32 runs Git Bash per #166/#580; `hookCommandNeedsPowerShellCallOperator`
- * is an unused opt-in), and the baked path is posixNormalize'd before escaping.
+ * is an unused opt-in), and the baked path is posixNormalize'd before escaping
+ * (escapePosixDoubleQuoted — the Shell Command Projection seam owns quoting).
+ * The portable resolver script (hooks/gsd-node-runner.sh) resolves through a
+ * SUPERSET of this candidate list — keep the two lists consistent.
  */
 function buildNodeRunnerChainToken(opts?: NodeNormOpts): string | null {
   const execPath = (opts && opts.execPath) || (typeof process.execPath === 'string' ? process.execPath : '');
   if (!execPath) return null;
   const stablePath = shellCmdProjection.posixNormalize(normalizeNodePath(execPath, opts));
-  const baked = escapeShellDoubleQuotedLiteral(stablePath);
+  const baked = escapePosixDoubleQuoted(stablePath);
   return `"$(for n in "${baked}" "$(command -v node)" /usr/local/bin/node /usr/bin/node; do [ -x "$n" ] && printf '%s' "$n" && break; done)"`;
 }
 

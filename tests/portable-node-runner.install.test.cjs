@@ -91,6 +91,11 @@ function writeCommandFile(t, command, name) {
   return file;
 }
 
+// Local class departure (CONTRIBUTING "Class-norm timeouts"): each execution
+// row spans a bash spawn + a node child against a tiny script; 20s absorbs
+// cold CI-runner startup for both without approaching the 600s ceiling. The
+// existing classes (PROBE/GIT/BUILD/INSTALL) each describe a single-process
+// shape, not this bash+node pair.
 const RUN_TIMEOUT_MS = 20000;
 
 // POSIX-sh execution semantics (the emitted command grammar) are proven on the
@@ -482,6 +487,31 @@ describe('#3662 runtime-resolving managed hook runners', () => {
       assert.ok(emitted.includes('"$(for n in '), `win32 chain shape missing: ${emitted}`);
       assert.ok(emitted.includes('C:/Program Files/nodejs/node.exe'), `forward-slash baked path missing: ${emitted}`);
       assert.ok(!emitted.includes('\\'), `backslash survived win32 projection: ${emitted}`);
+    });
+  });
+
+  describe('managed-set parity (RULESET.GENERATIVE-FIX)', () => {
+    // #3662: the guard basenames live in TWO parallel surfaces — the runner
+    // rewriter's gate (MANAGED_HOOK_BASENAMES_BY_SURFACE, via
+    // isManagedHookBasename) and the command recognizer
+    // (MANAGED_HOOK_COMMAND_BASENAMES_BY_SURFACE, via isManagedHookCommand —
+    // uninstall + settings-migration recognition). The two lists must agree
+    // on every JS hook; this row fails the moment one gains a basename the
+    // other lacks.
+    test('every managed js basename is recognized by both managed sets', () => {
+      const projection = require('../gsd-core/bin/lib/shell-command-projection.cjs');
+      for (const basename of [...MANAGED_JS_HOOKS, ...GUARD_HOOKS]) {
+        const scriptPath = `/home/u/.claude/hooks/${basename}`;
+        assert.ok(
+          projection.isManagedHookBasename(scriptPath, { surface: 'settings-json' }),
+          `${basename} missing from the runner-rewriter gate set (isManagedHookBasename)`,
+        );
+        const command = `"/usr/bin/node" "${scriptPath}"`;
+        assert.ok(
+          projection.isManagedHookCommand(command, { surface: 'settings-json' }),
+          `${basename} missing from the command recognizer set (isManagedHookCommand)`,
+        );
+      }
     });
   });
 

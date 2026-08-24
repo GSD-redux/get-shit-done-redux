@@ -23,6 +23,10 @@
 # visibly (stderr diagnostic + exit 127) rather than emitting a half-resolved
 # invocation.
 #
+# The candidate list below is a SUPERSET of the inline chain token emitted by
+# buildNodeRunnerChainToken (src/runtime-hooks-surface.cts, #3662) — keep the
+# two lists consistent.
+#
 # Diagnostic escape: GSD_NODE_RUNNER_NO_FALLBACKS=1 disables candidates 2-3
 # (first-argument-only resolution) — used by the test suite and useful to
 # pin down which node a given environment picks.
