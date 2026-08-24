@@ -316,7 +316,11 @@ reintroduce the flag (even spelled out in prose — a regression test bans the l
 If `section_manifest` is `null` or `"reviewer-instances-note-2"` is in its `included` list: read and execute `gsd-core/workflows/review/steps/reviewer-instances-note-2.md`. Otherwise skip — do not read the file.
 <!-- /gsd:section -->
 
-Lanes run **sequentially, not in parallel** — concurrent invocation trips provider rate limits.
+Lanes run **sequentially by default** — concurrent invocation trips provider rate limits, and a lane
+lost to one is a cross-AI review that quietly went blind in one eye. A project whose providers can
+accept the concurrency opts in with `review.parallel_lanes: true` (#3034): the selected lanes are
+dispatched together and **all** joined before aggregation. The default is unchanged, and convergence
+cycles stay sequential either way — only the lanes *within* one pass overlap.
 
 ```bash
 # #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
@@ -326,6 +330,13 @@ RUN_DIR="{run_dir}"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # SELECTED_REVIEWERS is the comma-separated result of reviewer selection (ADR-0011 precedence:
 # explicit flags > --all > review.default_reviewers > all detected). Unchanged by this phase.
+
+# #3034: opt-in concurrent lane dispatch. STRICT equality on "true" is deliberate — "1", "yes" and
+# "TRUE" must NOT opt in, so a mistyped config gets the conservative behaviour rather than firing
+# concurrent requests at a rate-limited provider. Note the `|| echo "false"` fallback is the
+# OPPOSITE polarity from the commit_docs guard, which fails OPEN: there, failing open preserves the
+# user's intent; here it would fire exactly the requests the default exists to prevent.
+PARALLEL_LANES=$(gsd_run query config-get review.parallel_lanes --raw 2>/dev/null || echo "false")
 
 # Shared budget-trim helper. Was defined inside the Ollama leg; it is lane-agnostic, so it is
 # hoisted here now that any lane may declare a promptBudgetKey. Returns non-zero when the budget
@@ -360,7 +371,16 @@ gsd_run query review-lane plan \
   --selected "$SELECTED_REVIEWERS" --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" --json \
   > "$RUN_DIR/gsd-review-lanes.json"
 
-for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+# One lane, start to finish. Hoisted into a function so the sequential and concurrent paths share
+# ONE body: two dispatch bodies kept in sync by hand is the generative-fix divergence ADR-2782 spent
+# a phase deleting, and it is what let #2494/#2605 be filed twice as the same defect.
+#
+# The result goes to a SLUG-SCOPED file, never a shared append. Concurrent O_APPEND is atomic only
+# below PIPE_BUF (4096 on Linux, 512 on some platforms), so a lane result above that bound could
+# interleave — and write_reviews parses this JSONL to render the models:/model_sources: frontmatter,
+# so a torn line is a broken REVIEWS.md, not a cosmetic log defect.
+run_review_lane() {
+  SLUG="$1"
   # Per-lane prompt budget. The lane declares its own `promptBudgetKey`; `plan` resolved it,
   # applying #2797's sentinel rule (-1 = unset → fall back to the global budget; 0 legitimately
   # means "do not trim this lane"). Trimming itself stays in prompt-budget, which owns it.
@@ -378,7 +398,9 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
       # response used to (#2605), so leave the skip visible in the review output, not only on stderr.
       echo "$SLUG review skipped: prompt budget (${LANE_BUDGET} tokens) too small for the minimum review set." \
         > "$RUN_DIR/gsd-review-$SLUG.md"
-      continue
+      # Was `continue` when this was a loop body. Inside a function that keyword is not the loop
+      # control it looks like — `return 0` is what skips this lane and leaves it with no result line.
+      return 0
     fi
   fi
 
@@ -387,7 +409,32 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
   # normal, failing to run one somebody asked for is an error.
   gsd_run query review-lane invoke --slug "$SLUG" \
     --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" $PROMPT_ARG $EXPLICIT_FLAG --json \
-    >> "$RUN_DIR/gsd-review-lane-results.jsonl"
+    > "$RUN_DIR/gsd-review-lane-result-$SLUG.json"
+}
+
+for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+  if [ "$PARALLEL_LANES" = "true" ]; then
+    run_review_lane "$SLUG" &
+  else
+    run_review_lane "$SLUG"
+  fi
+done
+
+# Join every dispatched lane. A bare `wait` with no background jobs returns 0, so the sequential
+# path needs no guard around it. NOTHING below this line may run before every lane has finished —
+# write_reviews renders REVIEWS.md and the consensus summary from the aggregate below, and a review
+# assembled from a partial set looks complete while silently missing a reviewer.
+wait
+
+# Aggregate in SELECTED_REVIEWERS order, NOT completion order, so the JSONL a concurrent run
+# produces is byte-identical to the one a sequential run produces. This is post-join and therefore
+# single-threaded, so `>>` here is safe. A lane that was budget-skipped, or that never started,
+# leaves no result file and correctly contributes no line.
+for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+  LANE_RESULT="$RUN_DIR/gsd-review-lane-result-$SLUG.json"
+  if [ -f "$LANE_RESULT" ]; then
+    cat "$LANE_RESULT" >> "$RUN_DIR/gsd-review-lane-results.jsonl"
+  fi
 done
 ```
 

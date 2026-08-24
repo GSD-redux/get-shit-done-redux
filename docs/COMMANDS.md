@@ -267,7 +267,7 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 |-----------------|----------|-------------|
 | `N` | **Yes** | Phase number to plan and review |
 | Reviewer flags | No | Pass through every reviewer lane flag: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code` |
-| `--all` | No | Run every configured reviewer in parallel |
+| `--all` | No | Run every configured reviewer. Lanes are dispatched **sequentially by default**; set `review.parallel_lanes` to `true` to dispatch them concurrently within a single review pass |
 | `--max-cycles N` | No | Override cycle cap (default 3) |
 
 **Exit behavior:** Loop exits when both `current_high` and `current_actionable` hit zero. Stall detection warns when the total unresolved review count is not decreasing across cycles. Escalation gate asks the user to proceed or review manually when `--max-cycles` is hit with HIGH or actionable non-HIGH concerns still open.
