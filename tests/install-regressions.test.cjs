@@ -1726,7 +1726,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
   test('warns when the destination holds foreign agent files', (t) => {
     const { dest } = makeForeignDest(t, 'foreign', ['junie-guide.md']);
     const { lines } = capturedLogs(t, () =>
-      installerMod.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
     );
     const warning = lines.find((l) => l.includes('(#3664)'));
     assert.ok(warning, `expected a #3664 warning, got: ${lines.join(' | ') || '(none)'}`);
@@ -1773,7 +1773,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
   test('silent on a fresh custom dir', (t) => {
     const { dest } = makeForeignDest(t, 'fresh', []);
     const { lines } = capturedLogs(t, () =>
-      installerMod.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `fresh dir must be silent: ${lines.join(' | ')}`);
   });
@@ -1781,7 +1781,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
   test('silent on a gsd-only agents dir', (t) => {
     const { dest } = makeForeignDest(t, 'gsdonly', ['gsd-executor.md', 'gsd-verifier.md']);
     const { lines } = capturedLogs(t, () =>
-      installerMod.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `gsd-only dir must be silent: ${lines.join(' | ')}`);
   });
@@ -1789,7 +1789,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
   test('silent when the config-dir flag was not passed', (t) => {
     const { dest } = makeForeignDest(t, 'noflag', ['personal-agent.md']);
     const { lines } = capturedLogs(t, () =>
-      installerMod.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: false }),
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', false),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `no-flag path must be silent: ${lines.join(' | ')}`);
   });
@@ -1797,7 +1797,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
   test('warns on mixed gsd and personal agents', (t) => {
     const { dest } = makeForeignDest(t, 'mixed', ['gsd-executor.md', 'my-own-agent.md']);
     const { lines } = capturedLogs(t, () =>
-      installerMod.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
     );
     const warning = lines.find((l) => l.includes('(#3664)'));
     assert.ok(warning, 'mixed dir with a foreign agent must warn');
@@ -1808,7 +1808,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
     const { dest, agentsDir } = makeForeignDest(t, 'nonmd', []);
     fs.writeFileSync(path.join(agentsDir, 'notes.txt'), 'not an agent');
     const { lines } = capturedLogs(t, () =>
-      installerMod.warnIfForeignAgentDest('claude', dest, 'global', { explicitConfigDir: true }),
+      installerMod.warnIfForeignAgentDest('claude', dest, 'global', true),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `non-agent files are not harness evidence: ${lines.join(' | ')}`);
   });
@@ -1843,7 +1843,7 @@ describe('#3664 — config-dir foreign-agent destination warning', () => {
     const dest = createTempDir('gsd-3664-unknown-');
     t.after(() => cleanup(dest));
     const { lines } = capturedLogs(t, () =>
-      installerMod.warnIfForeignAgentDest('not-a-registered-runtime', dest, 'global', { explicitConfigDir: true }),
+      installerMod.warnIfForeignAgentDest('not-a-registered-runtime', dest, 'global', true),
     );
     assert.ok(!lines.some((l) => l.includes('(#3664)')), `unresolvable layout must degrade silently: ${lines.join(' | ')}`);
   });
