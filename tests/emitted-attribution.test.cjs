@@ -83,6 +83,9 @@ const {
   ackEntries,
   ACK_INVISIBLE,
   MAX_ACK_FRAGMENTS: MAX_ACK_FRAGMENTS_LINT,
+  resolveBaseRef,
+  readFragmentAtRef,
+  assertUsableBaseRef,
 } = require('../scripts/lint-emitted-drift-ack.cjs');
 const {
   ACK_VERSION,
@@ -91,6 +94,8 @@ const {
   NEW_FILE_CAP,
   MAX_ACK_FRAGMENTS,
   REMEDIATION,
+  INVISIBLE,
+  normalizeAckReason,
   sourceSatisfiedBy,
   parseAck,
   mergeAckSources,
@@ -1190,18 +1195,75 @@ test('assertNoAllSpentFragments: a decorative "runtime" field beside an unchange
 // duplicate `emitted-diff.cjs`'s `prose()`. This section is the parity assertion
 // that fails when they diverge.
 
-test('ackProse strips every codepoint the gate\'s own ACK_INVISIBLE declares', () => {
-  const codepoints = [0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF];
-  for (const cp of codepoints) {
+test('ACK_INVISIBLE and the gate\'s own INVISIBLE are the identical regex, not a second hand-typed copy (#3078)', () => {
+  // scripts/ ships in the npm package and tests/ does not, so ACK_INVISIBLE is a literal
+  // duplicate of INVISIBLE (tests/helpers/emitted-diff.cjs) rather than a require across
+  // that line — see both files' top-of-file comments. A divergence here means an
+  // invisible reword can re-arm a spent ack on the real `--guard-next` gate and NOT on
+  // this suite (or vice versa), which is exactly the class of drift a parity test that
+  // compares a hardcoded literal against its own definition can never catch.
+  assert.equal(
+    ACK_INVISIBLE.source, INVISIBLE.source,
+    'scripts/lint-emitted-drift-ack.cjs\'s ACK_INVISIBLE and tests/helpers/emitted-diff.cjs\'s '
+    + 'INVISIBLE must declare the identical character class — they are duplicated only because '
+    + 'scripts/ ships in the npm package and tests/ does not',
+  );
+  assert.equal(
+    ACK_INVISIBLE.flags, INVISIBLE.flags,
+    'both are duplicated for the same reason and must agree on flags too (both carry "g", '
+    + 'which is exactly what makes .test() below stateful and in need of a lastIndex reset)',
+  );
+
+  // Derive the codepoint list from the REAL gate regex rather than hardcoding one here.
+  // A hardcoded list would pass even if someone added a codepoint to only one side — the
+  // exact divergence this test exists to catch. `.test()` on a `g`-flagged regex advances
+  // `lastIndex` as a side effect, so it is reset before and after every call.
+  for (let cp = 0x0000; cp <= 0xFFFF; cp++) {
+    const ch = String.fromCodePoint(cp);
+
+    INVISIBLE.lastIndex = 0;
+    const gateStrips = INVISIBLE.test(ch);
+    INVISIBLE.lastIndex = 0;
+
+    ACK_INVISIBLE.lastIndex = 0;
+    const ackStrips = ACK_INVISIBLE.test(ch);
+    ACK_INVISIBLE.lastIndex = 0;
+
     const hex = cp.toString(16).toUpperCase().padStart(4, '0');
-    assert.ok(
-      ACK_INVISIBLE.source.includes(`\\u${hex}`),
-      `ACK_INVISIBLE must declare U+${hex} — adding a codepoint to the gate's INVISIBLE and `
-      + 'forgetting this file is what this row exists to catch',
-    );
+    assert.equal(ackStrips, gateStrips, `U+${hex}: ACK_INVISIBLE and INVISIBLE disagree on whether it is invisible`);
+
+    if (gateStrips) {
+      assert.equal(ackProse(`a${ch}b`), 'ab', `ackProse must strip U+${hex}`);
+      assert.equal(normalizeAckReason(`a${ch}b`), 'ab', `normalizeAckReason must strip U+${hex}`);
+    } else if (!/\s/.test(ch)) {
+      // Not invisible, and not plain whitespace either (whitespace-collapse behavior
+      // depends on adjacency, so it is exercised separately below) — must survive as-is.
+      assert.equal(ackProse(`a${ch}b`), `a${ch}b`, `ackProse must NOT strip U+${hex}`);
+      assert.equal(normalizeAckReason(`a${ch}b`), `a${ch}b`, `normalizeAckReason must NOT strip U+${hex}`);
+    }
+  }
+});
+
+test('normalizeAckReason (the gate\'s own prose normalizer) and ackProse agree byte-for-byte over a behavioral corpus (#3078)', () => {
+  const invisibleCps = [0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF];
+  const corpus = [
+    'identical text',
+    'doubled  internal   space',
+    '  leading and trailing space  ',
+    'crlf\r\nline',
+    'lf\nline',
+    'tab\ttab',
+    'nbsp nbsp', // U+00A0 NBSP
+    'ideographic　space', // U+3000 IDEOGRAPHIC SPACE
+    'em space', // U+2003 EM SPACE
+    ...invisibleCps.map((cp) => `invisible${String.fromCodePoint(cp)}codepoint`),
+    '',
+    '   \t\n  ',
+  ];
+  for (const reason of corpus) {
     assert.equal(
-      ackProse(`a${String.fromCodePoint(cp)}b`), 'ab',
-      `ackProse must strip U+${hex}`,
+      normalizeAckReason(reason), ackProse(reason),
+      `normalizeAckReason and ackProse diverge on ${JSON.stringify(reason)}`,
     );
   }
 });
@@ -1236,14 +1298,29 @@ test('ackProse and the sweep guard agree on what counts as "the same explanation
   }
 });
 
-test('property: ackProse is invariant under expanding existing whitespace and inserting invisible codepoints, seeded (#3078)', () => {
+test('property: normalizeAckReason (the gate) and ackProse agree for arbitrary strings, seeded (#3078)', () => {
+  // Two-sided over unconstrained input, not just the constructed corpus above — a
+  // divergence anywhere in fc.string()'s space fails here, not just at the handful of
+  // codepoints the corpus test happens to name.
+  fc.assert(
+    fc.property(
+      fc.string(),
+      (s) => {
+        assert.equal(normalizeAckReason(s), ackProse(s));
+      },
+    ),
+    { seed: 3078, numRuns: 200 },
+  );
+});
+
+test('property: ackProse and normalizeAckReason agree, and both are invariant under expanding existing whitespace and inserting invisible codepoints, seeded (#3078)', () => {
   const invisibleChars = [0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF].map((cp) => String.fromCodePoint(cp));
   const word = fc.string({ minLength: 1, maxLength: 8 }).filter((s) => !/\s/.test(s));
 
   fc.assert(
     fc.property(
       fc.array(word, { minLength: 1, maxLength: 6 }),
-      fc.constantFrom(' ', '\t', '\n', '\r\n', '  ', ' ', '　'),
+      fc.constantFrom(' ', '\t', '\n', '\r\n', '  ', ' ', '　'),
       fc.array(fc.constantFrom(...invisibleChars), { minLength: 0, maxLength: 6 }),
       (parts, whitespaceRun, invisibles) => {
         const base = parts.join(' ');
@@ -1254,9 +1331,16 @@ test('property: ackProse is invariant under expanding existing whitespace and in
         // Invisible codepoints inserted anywhere are stripped outright, never
         // collapsed to a space, so they never introduce a new word boundary.
         const withInvisibles = invisibles.reduce((s, ch) => ch + s, base);
+        const padded = `  ${base}  `;
+
+        // Two-sided on every one of these forms, not just the base string.
+        for (const candidate of [base, expanded, withInvisibles, padded]) {
+          assert.equal(normalizeAckReason(candidate), ackProse(candidate));
+        }
+
         assert.equal(ackProse(expanded), ackProse(base));
         assert.equal(ackProse(withInvisibles), ackProse(base));
-        assert.equal(ackProse(`  ${base}  `), ackProse(base));
+        assert.equal(ackProse(padded), ackProse(base));
       },
     ),
     { seed: 3078, numRuns: 200 },
@@ -1286,16 +1370,13 @@ function makeGuardNextRepo() {
   return { dir, commit, writeFrag };
 }
 
-function readFragAtCommit(dir, sha, name) {
-  try {
-    return execFileSync(
-      'git', ['show', `${sha}:${ACK_DIR_REPO_PATH}/${name}`],
-      { cwd: dir, encoding: 'utf8', timeout: 15000 },
-    );
-  } catch {
-    return null; // absent at that commit
-  }
-}
+// Section C used to reimplement git-reading in a local `readFragAtCommit` helper and
+// feed only the PURE `assertNoAllSpentFragments`, so the real wiring — the
+// `ls-tree`-then-`show` absence-vs-fault discrimination, the `HEAD`-then-`HEAD^`
+// two-step, the root-commit fallback, and the option-injection guard — was never
+// executed by any test (#3078 review). C1-C4 below now call the REAL
+// `readFragmentAtRef`, exported from `scripts/lint-emitted-drift-ack.cjs` for exactly
+// this purpose.
 
 test('C1: real repo — a fragment added in commit 2 vs commit 1 (root, no fragment) is live', () => {
   const repo = makeGuardNextRepo();
@@ -1306,7 +1387,11 @@ test('C1: real repo — a fragment added in commit 2 vs commit 1 (root, no fragm
     repo.commit('add fragment');
 
     const r = assertNoAllSpentFragments([
-      frag('a.json', readFragAtCommit(repo.dir, 'HEAD', 'a.json'), readFragAtCommit(repo.dir, c1, 'a.json')),
+      frag(
+        'a.json',
+        readFragmentAtRef('HEAD', 'a.json', { cwd: repo.dir }),
+        readFragmentAtRef(c1, 'a.json', { cwd: repo.dir }),
+      ),
     ]);
     assert.ok(r.ok, 'a fragment absent at the base is live');
   } finally {
@@ -1323,7 +1408,11 @@ test('C2: real repo — an unrelated file change leaves an unchanged fragment fu
     repo.commit('unrelated change');
 
     const r = assertNoAllSpentFragments([
-      frag('a.json', readFragAtCommit(repo.dir, 'HEAD', 'a.json'), readFragAtCommit(repo.dir, c2, 'a.json')),
+      frag(
+        'a.json',
+        readFragmentAtRef('HEAD', 'a.json', { cwd: repo.dir }),
+        readFragmentAtRef(c2, 'a.json', { cwd: repo.dir }),
+      ),
     ]);
     assert.ok(!r.ok, 'unchanged fragment against its own prior commit is fully spent');
   } finally {
@@ -1343,7 +1432,11 @@ test('C3: real repo — appending prose to the owning entry re-arms it', () => {
     repo.commit('reword');
 
     const r = assertNoAllSpentFragments([
-      frag('a.json', readFragAtCommit(repo.dir, 'HEAD', 'a.json'), readFragAtCommit(repo.dir, c2, 'a.json')),
+      frag(
+        'a.json',
+        readFragmentAtRef('HEAD', 'a.json', { cwd: repo.dir }),
+        readFragmentAtRef(c2, 'a.json', { cwd: repo.dir }),
+      ),
     ]);
     assert.ok(r.ok, 'genuinely new prose re-arms the entry');
   } finally {
@@ -1357,13 +1450,178 @@ test('C4: real repo — a fragment at the ROOT commit compared against a null ba
     repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
     repo.commit('root with fragment');
 
+    // The base is passed as a literal `null`, not a call to readFragmentAtRef(null, …)
+    // — this mirrors main()'s own `baseRef === null ? null : readFragmentAtRef(...)`
+    // branch for a root commit, where resolveBaseRef() has already returned null.
     const r = assertNoAllSpentFragments([
-      frag('a.json', readFragAtCommit(repo.dir, 'HEAD', 'a.json'), null),
+      frag('a.json', readFragmentAtRef('HEAD', 'a.json', { cwd: repo.dir }), null),
     ]);
     assert.ok(r.ok, 'a root commit has no base — resolveBaseRef returns null and nothing can be spent against it');
   } finally {
     cleanup(repo.dir);
   }
+});
+
+// ── C2 (direct). Direct coverage of the real git seam (#3078 review) ────────
+//
+// C1-C4 above exercise `readFragmentAtRef` only through `assertNoAllSpentFragments`'s
+// verdict, which cannot distinguish "read the wrong thing" from "read nothing" if both
+// happen to produce the same pure-function outcome. The tests below assert on
+// `readFragmentAtRef`, `resolveBaseRef`, and `assertUsableBaseRef` DIRECTLY, plus one
+// end-to-end run of the real script as a subprocess — the only thing that exercises
+// `main()`'s own argv parsing. `makeGuardNextRepo()` above already satisfies the "one
+// makeRepo() helper" shape this needs (mkdtempSync, `git init -q -b next`, per-commit
+// identity via `-c user.email=... -c user.name=...`, never mutating global git config),
+// so it is reused rather than duplicated.
+
+test('readFragmentAtRef: returns null for a fragment genuinely absent at that ref — distinguished via ls-tree, not a git-show error message (healthy steady state)', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    fs.writeFileSync(path.join(repo.dir, 'README.md'), 'root\n');
+    const c1 = repo.commit('root, no fragment yet');
+    repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+    repo.commit('add fragment');
+
+    assert.equal(
+      readFragmentAtRef(c1, 'a.json', { cwd: repo.dir }), null,
+      'a fragment not yet added at that ref must read as null, not throw',
+    );
+  } finally {
+    cleanup(repo.dir);
+  }
+});
+
+test('readFragmentAtRef: returns the exact bytes committed at that ref, which differ from an uncommitted working-tree edit — proves it reads the REF, not the tree', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'original' } } });
+    const c1 = repo.commit('add fragment');
+    // Deliberately left UNCOMMITTED — only the working tree carries this edit.
+    repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'edited after the commit' } } });
+
+    const atRef = readFragmentAtRef(c1, 'a.json', { cwd: repo.dir });
+    const onDisk = fs.readFileSync(path.join(repo.dir, ...ACK_DIR_REPO_PATH.split('/'), 'a.json'), 'utf8');
+    assert.equal(JSON.parse(atRef).paths['x.md'].reason, 'original');
+    assert.notEqual(atRef, onDisk, 'the ref read must not pick up the uncommitted working-tree edit');
+  } finally {
+    cleanup(repo.dir);
+  }
+});
+
+test('readFragmentAtRef: throws on a ref that does not exist — a failed base read must be an error, never a silent null', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+    repo.commit('add fragment');
+
+    // "could not read the base" read as "absent at the base" would make every fragment
+    // look brand-new and disarm the sweep — this must throw, not return null.
+    assert.throws(
+      () => readFragmentAtRef('not-a-real-ref-3078', 'a.json', { cwd: repo.dir }),
+      /not-a-real-ref-3078/,
+      'a bad ref must throw, naming itself',
+    );
+  } finally {
+    cleanup(repo.dir);
+  }
+});
+
+test('resolveBaseRef: returns the parent sha on a two-commit repo, matching `git rev-parse HEAD^` as a 40-hex string', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    fs.writeFileSync(path.join(repo.dir, 'README.md'), 'one\n');
+    const c1 = repo.commit('first');
+    fs.writeFileSync(path.join(repo.dir, 'README.md'), 'two\n');
+    repo.commit('second');
+
+    const expected = execFileSync(
+      'git', ['rev-parse', 'HEAD^'], { cwd: repo.dir, encoding: 'utf8', timeout: 15000 },
+    ).trim();
+    const actual = resolveBaseRef({ cwd: repo.dir });
+    assert.match(actual, /^[0-9a-f]{40}$/, 'must be a 40-hex sha');
+    assert.equal(actual, expected);
+    assert.equal(actual, c1);
+  } finally {
+    cleanup(repo.dir);
+  }
+});
+
+test('resolveBaseRef: returns null on a root commit (the ONLY way null is reached) and THROWS when pointed at a directory that is not a git repository at all', () => {
+  const repo = makeGuardNextRepo();
+  try {
+    fs.writeFileSync(path.join(repo.dir, 'README.md'), 'root\n');
+    repo.commit('root, no parent');
+    assert.equal(resolveBaseRef({ cwd: repo.dir }), null, 'a root commit has no parent');
+  } finally {
+    cleanup(repo.dir);
+  }
+
+  // The pair this matters for: a blanket try/catch around BOTH the HEAD and HEAD^
+  // resolutions would silently collapse "git is broken here" into "there is no base",
+  // and a guard with no base sweeps nothing — it would pass vacuously, unnoticed by any
+  // test, which is precisely how the legacy-file job spent months guarding a file that
+  // had not existed since #2914 (#3078). resolveBaseRef resolves HEAD FIRST, unguarded,
+  // specifically so a broken repository throws instead of returning null.
+  const notARepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-not-a-repo-'));
+  try {
+    assert.throws(() => resolveBaseRef({ cwd: notARepo }));
+  } finally {
+    cleanup(notARepo);
+  }
+});
+
+test('assertUsableBaseRef: rejects an option-shaped ref, an empty string, null, and a non-string; returns a normal sha unchanged', () => {
+  // `git show` honors diff options including `--output=<file>`, which WRITES a file —
+  // an option-shaped ref is a real hazard, not a hypothetical one.
+  for (const bad of ['-x', '--output=/tmp/gsd-3078-pwned', '', null, 42, {}]) {
+    assert.throws(
+      () => assertUsableBaseRef(bad),
+      /would parse|option/,
+      `${JSON.stringify(bad)} must be rejected as unusable`,
+    );
+  }
+  const sha = 'a'.repeat(40);
+  assert.equal(assertUsableBaseRef(sha), sha, 'a normal 40-hex sha must be returned unchanged');
+});
+
+test('E2E: --guard-next --base-ref runs the real script as a subprocess against this checkout, and rejects an option-shaped --base-ref', () => {
+  const scriptPath = path.join(REPO_ROOT, 'scripts', 'lint-emitted-drift-ack.cjs');
+  const head = execFileSync(
+    'git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 15000 },
+  ).trim();
+
+  // The script resolves its OWN REPO_ROOT from __dirname/.., so it always reads THIS
+  // checkout's fragment directory regardless of the subprocess cwd — these assertions
+  // hold whether or not tests/emitted-drift-acks/ exists here.
+  const out = execFileSync(
+    process.execPath,
+    [scriptPath, '--guard-next', '--base-ref', head],
+    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30000 },
+  );
+  assert.equal(
+    out.split('\n').filter((l) => l.startsWith('ok guard-no-ack-on-next:')).length, 2,
+    'both the legacy-file guard and the fragment sweep must print their own ok line',
+  );
+
+  // main()'s argv parsing is the only thing this exercises that the unit tests above
+  // cannot: an option-shaped --base-ref must be rejected, not silently accepted.
+  let threw = false;
+  let status;
+  let stderr = '';
+  try {
+    execFileSync(
+      process.execPath,
+      [scriptPath, '--guard-next', '--base-ref', '-x'],
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30000 },
+    );
+  } catch (err) {
+    threw = true;
+    status = err.status;
+    stderr = err.stderr || '';
+  }
+  assert.ok(threw, 'an option-shaped --base-ref must make the guard exit non-zero');
+  assert.notEqual(status, 0);
+  assert.match(stderr, /would parse|option/);
 });
 
 // ── D. the collision shape end-to-end — the issue's own regression criterion ─

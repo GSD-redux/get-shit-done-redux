@@ -839,13 +839,35 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          # #3078: the fragment half of the guard compares each surviving fragment against
-          # its copy at HEAD^ — "the state of next before this push". At the default depth
-          # of 1 that commit is not fetched, `git rev-parse HEAD^` fails, and every
-          # fragment reads as brand-new, so the job would pass vacuously. Which is exactly
-          # how the legacy-file half spent months guarding a file that had not existed
-          # since #2914.
+          # The guard compares each surviving fragment against its copy at the tip of
+          # `next` BEFORE this push. Depth 2 covers the script's local `HEAD^` fallback;
+          # at the default depth of 1 even that commit is absent, `git rev-parse HEAD^`
+          # fails, every fragment reads as brand-new, and the job passes VACUOUSLY —
+          # exactly how the legacy-file half spent months guarding a file that had not
+          # existed since #2914 (#3078).
           fetch-depth: 2
 
+      # `github.event.before` is the authoritative pre-push tip, and `HEAD^` is NOT a
+      # substitute for it: the default branch allows REBASE merges
+      # (.github/rulesets/main-protection.json, allowed_merge_methods), so one push can
+      # carry N commits. With `HEAD^` a 2-commit rebase-merge whose first commit adds a
+      # fragment would read that fragment as already-present and demand `git rm` on the
+      # very push that introduced it. Zeros mean the branch was just created: there is no
+      # pre-push tip, so the guard is given none and falls back to resolving one locally.
+      - name: Fetch the pre-push tip of next
+        if: github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: git fetch --no-tags --depth=1 origin "$BEFORE"
+
       - name: Assert no spent ack survives on next (legacy file and fragments)
-        run: node scripts/lint-emitted-drift-ack.cjs --guard-next
+        env:
+          BEFORE: ${{ github.event.before }}
+        # The sha goes through the environment rather than `${{ }}` interpolation into the
+        # script body, so nothing from the event can ever be parsed as shell.
+        run: |
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            node scripts/lint-emitted-drift-ack.cjs --guard-next
+          else
+            node scripts/lint-emitted-drift-ack.cjs --guard-next --base-ref "$BEFORE"
+          fi

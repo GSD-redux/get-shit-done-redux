@@ -427,8 +427,18 @@ function assertAbsentOnNext(present) {
   };
 }
 
+/**
+ * Every git call declares the SPECIFIC directory it operates on as safe, mirroring
+ * `safeDirArgs` in `tests/helpers/emitted-runtime.cjs` (#2767): a checkout mounted at a
+ * path owned by a different uid makes git refuse EVERY operation there with "detected
+ * dubious ownership", and this guard's whole value is that it fails LOUDLY on a real
+ * fault rather than degrading to "no base, nothing spent". Never the `*` wildcard, which
+ * would mark every repository on the machine safe. Duplicated rather than imported for
+ * the reason stated at the top of this file: `scripts/` ships in the npm package and
+ * `tests/` does not.
+ */
 function git(args, { cwd = REPO_ROOT } = {}) {
-  return execFileSync('git', args, {
+  return execFileSync('git', ['-c', `safe.directory=${path.resolve(cwd)}`, ...args], {
     cwd,
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
@@ -438,7 +448,19 @@ function git(args, { cwd = REPO_ROOT } = {}) {
 }
 
 /**
- * The commit `next` was at BEFORE this push, or `null` on a root commit.
+ * The LOCAL/MANUAL fallback for "the commit `next` was at BEFORE this push" — `HEAD^`,
+ * or `null` on a root commit. Correct only when the push it is standing in for carries
+ * exactly one commit.
+ *
+ * CI never relies on this: it passes the authoritative pre-push tip explicitly via
+ * `--base-ref` (`github.event.before`, wired in `.github/workflows/test.yml`), because
+ * the default branch's ruleset allows REBASE merges
+ * (`.github/rulesets/main-protection.json`, `allowed_merge_methods`), so a single push
+ * event can land N commits at once. `HEAD^` steps back exactly one commit — for a
+ * 2-commit rebase-merge whose first commit adds a fragment and whose second is
+ * unrelated, `HEAD^` would land on the first commit, read the fragment as already
+ * present there, and demand `git rm` on the very push that introduced it (#3078). This
+ * function exists purely as the manual-run / single-commit-push fallback.
  *
  * Two steps on purpose. `HEAD` is resolved first, which proves git runs and the working
  * directory is a readable repository; only then is a failure to resolve `HEAD^` read as
@@ -498,11 +520,14 @@ function main() {
     const legacy = assertAbsentOnNext(fs.existsSync(legacyFile));
     console.log(legacy.message);
 
-    // The fragment half (#3078). `--base-ref` exists for the tests and for a manual run
-    // against an arbitrary pair of commits; CI passes nothing and gets `HEAD^`, which is
-    // what "the state of next before this push" means for a squash-merge branch. NOTE the
-    // job's checkout must fetch at least depth 2, or `HEAD^` does not exist locally and
-    // every fragment reads as brand-new.
+    // The fragment half (#3078). CI always passes `--base-ref` (the pre-push tip of
+    // `next`, `github.event.before`), because the default branch allows REBASE merges
+    // and one push can carry N commits — `HEAD^` alone is not "the state of next before
+    // this push" in that case. `resolveBaseRef()`'s `HEAD^` is only the fallback for a
+    // manual run or a single-commit push, where the two agree. NOTE the job's checkout
+    // must fetch at least depth 2 for the `HEAD^` fallback to resolve at all, and must
+    // separately fetch the `--base-ref` commit itself, or every fragment reads as
+    // brand-new.
     const baseFlag = process.argv.indexOf('--base-ref');
     const baseRef = baseFlag === -1
       ? resolveBaseRef()
@@ -602,4 +627,9 @@ module.exports = {
   ACK_DIR_REPO_PATH,
   ACK_INVISIBLE,
   MAX_ACK_FRAGMENTS,
+  git,
+  resolveBaseRef,
+  readFragmentAtRef,
+  assertUsableBaseRef,
+  GIT_TIMEOUT_MS,
 };

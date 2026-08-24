@@ -97,6 +97,26 @@ const INVISIBLE = new RegExp(
 );
 
 /**
+ * The single definition of "the prose a reviewer actually reads" for an ack reason.
+ *
+ * It is exported for exactly one reason: `scripts/lint-emitted-drift-ack.cjs` carries
+ * its own duplicate (`ackProse`) rather than requiring this file, because `scripts/`
+ * ships in the published npm package and `tests/` does not — a `require('../tests/...')`
+ * from a shipped script would work in this repo and break for every installed user
+ * (#3078). That duplication is unavoidable, but leaving both copies unexported meant
+ * nothing could ever compare them: the "parity test" this module's comments promised
+ * was checking the script against itself. Exporting this lets a real test hold the
+ * script's copy to this one.
+ *
+ * The invisible-stripping (`INVISIBLE`) and whitespace-collapse below are anti-gaming
+ * defences, not incidental normalization — see the comments at the two call sites in
+ * `diffEmitted`. Do not weaken either side of the duplicate without weakening both.
+ */
+function normalizeAckReason(reason) {
+  return reason.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
  * A brand-new workflow/agent file — absent from the baseline, present now — must
  * still stay under the Codex `project_doc_max_bytes` anchor (ADR-1610 Decision
  * point 3, `NEW_FILE_CAP` in the pre-#2724 tests/workflow-size-budget.test.cjs).
@@ -490,7 +510,7 @@ function diffEmitted({
   // while being literally INVISIBLE in the diff — the purest form of "no new
   // explanation". Built from codepoints rather than literal characters, because a
   // literal class would itself be unreviewable in this file.
-  const prose = (reason) => reason.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
+  const prose = normalizeAckReason;
   const isSpent = (rel, entry) => {
     const prior = baseAcks.get(rel);
     return prior !== undefined && prose(prior.reason) === prose(entry.reason);
@@ -841,6 +861,8 @@ module.exports = {
   NEW_FILE_CAP,
   MAX_ACK_FRAGMENTS,
   REMEDIATION,
+  INVISIBLE,
+  normalizeAckReason,
   sourceSatisfiedBy,
   parseAck,
   mergeAckSources,
