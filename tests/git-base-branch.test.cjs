@@ -1219,6 +1219,20 @@ describe('#3648 Blocker 1: --is-protected is a QUERY and must not rewrite config
       'and it must resolve the same value the non-persisting read resolves');
   });
 
+  test('negative control: a planted .planning sibling changes the tree snapshot', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-stray-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const before = snapshotPlanningTree(dir);
+
+    fs.writeFileSync(path.join(dir, '.planning', 'sibling'), 'stray write\n');
+
+    assert.notDeepStrictEqual(
+      snapshotPlanningTree(dir), before,
+      'the snapshot must detect a newly planted .planning sibling',
+    );
+  });
+
   test('persist:false changes only the side effect, not the resolved config', (t) => {
     const dir = createGitRepo({ prefix: 'gsd-3648-b1-parity-', defaultBranch: 'main' });
     t.after(() => cleanup(dir));
