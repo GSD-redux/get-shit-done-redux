@@ -29,6 +29,9 @@ const { resolveQuickTaskSummaryFile } = auditMod;
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import stateContract = require('./state-contract.cjs');
+const { publishStateContract } = stateContract;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId, isSentinelPhaseDir } = phaseIdMod;
 import { escapeRegex } from './pattern.cjs';
@@ -1154,6 +1157,19 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   };
 
   output(result, raw);
+  // #3227 (design doc §40 row 26 / "Not-corruption" rule): a refreshed
+  // state.json `updated_at` must always mean something on disk actually
+  // moved. This site is unconditional because every reachable path either
+  // exits via `error()` (process.exit — refusals like a truncated milestone
+  // window, an unstarted phase, or an invalid version never reach here) or
+  // returns early on `--dry-run` (before any mutation, see the `dry_run:
+  // true` branch above) — the only way execution reaches this line is after
+  // the unconditional MILESTONES.md `platformWriteSync` a few lines above,
+  // which always runs (new file, empty file, or append) once the run is
+  // committed to mutating. Best-effort — cannot throw, cannot change this
+  // command's exit code or output. publishStateContract resolves the
+  // workstream planning root itself via planningPaths.
+  publishStateContract(cwd);
 }
 
 function cmdPhasesClear(cwd: string, raw: boolean, args: string[]): void {

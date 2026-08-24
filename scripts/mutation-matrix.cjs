@@ -296,6 +296,40 @@ const COVERED = {
     tests: ['tests/model-catalog.unit.test.cjs'],
     minScore: 58,
   },
+  // state-contract: net-new module from #3227. Without this entry the
+  // Stryker gate reports has_work: "false" and SKIPS it entirely — the
+  // exact gap #2790 (planning-inspect / plan-document / planning-command-router)
+  // and #3007 (model-catalog) each had to fix after the fact.
+  //
+  // Same #2790 precedent as planning-inspect / model-catalog above: this
+  // shard points at tests/state-contract.unit.test.cjs, NOT
+  // tests/state-contract.test.cjs — the latter spawns a `gsd-tools` child
+  // process per case via runGsdTools, and Stryker's command runner treats
+  // the whole `node --test <file>` invocation as ONE test costing whatever
+  // its slowest case costs, re-run once per mutant, so it cannot finish
+  // inside the 15-minute shard cap. tests/state-contract.unit.test.cjs is
+  // spawn-free and in-process.
+  //
+  // minScore of 50 is the ratchet's minimum permitted floor — the bound
+  // enforced by tests/mutation-matrix-ratchet.test.cjs's minScore range check
+  // (50-100 inclusive) — and is the initial floor for a newly-registered
+  // module whose score has not yet been measured on CI. Registering at the
+  // floor is deliberate: it makes the shard RUN and REPORT, where leaving the
+  // module out of COVERED makes the gate skip it silently (has_work: "false"),
+  // the exact failure mode #2790 and #3007 above were added to fix. This PR's
+  // shard run measures the real score before merge, and the floor is then
+  // ratcheted up to floor(measured) - 1, the same post-hoc calibration path
+  // the model-catalog entry above documents. A measured score below 50 reds
+  // the shard and blocks the merge — the gate working as designed. The floor
+  // MUST come from a CI shard, never a local run: local runs count timeouts
+  // as kills and inflate scores badly (this file already records
+  // prompt-budget 99.6% local vs 68.33% CI, and config-schema 69.7% local vs
+  // 54.55% CI).
+  'state-contract': {
+    cjs: 'gsd-core/bin/lib/state-contract.cjs',
+    tests: ['tests/state-contract.unit.test.cjs'],
+    minScore: 50,
+  },
 };
 
 // ── Files that, when changed, invalidate ALL modules ─────────────────────────

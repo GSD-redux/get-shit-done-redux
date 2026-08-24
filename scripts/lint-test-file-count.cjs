@@ -74,7 +74,16 @@ function prodPrefix(filename) {
 function testEffectivePrefix(testName) {
   const bare = testName
     .replace(/\.integration\.test\.(ts|cjs)$/, '')
-    .replace(/\.test\.(ts|cjs)$/, '');
+    .replace(/\.test\.(ts|cjs)$/, '')
+    // #3227: strip a trailing suite/kind qualifier (`.unit`, `.property`,
+    // `.security`, `.slow`, `.install`, `.rule`, `.regression`, `.qa`, ...).
+    // A production prefix comes from `prodPrefix`, which strips only the file
+    // extension, so it never contains a dot — any surviving trailing `.<word>`
+    // is a qualifier. Without this, `frontmatter.property` matched no module at
+    // all (65 files counted against nothing repo-wide) and `state-contract.unit`
+    // matched the SHORTER `state` module through the `prefix + '-'` rule
+    // (9 files mis-bucketed).
+    .replace(/\.[a-z0-9]+$/i, '');
   const m = bare.match(/^(?:feat|bug|enh|fix)-\d+(?:-\d+)*-(.+)$/);
   return m ? m[1] : bare;
 }

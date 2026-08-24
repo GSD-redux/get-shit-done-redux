@@ -331,6 +331,42 @@ describe('testEffectivePrefix', () => {
   test('double-numbered stamp is stripped correctly', () => {
     assert.strictEqual(testEffectivePrefix('bug-2550-2552-discuss-phase-context.test.cjs'), 'discuss-phase-context');
   });
+
+  // -------------------------------------------------------------------
+  // #3227: trailing suite/kind qualifier stripping
+  // -------------------------------------------------------------------
+  test('dotted suite-qualifier file resolves to the bare module prefix', () => {
+    assert.strictEqual(testEffectivePrefix('frontmatter.property.test.cjs'), 'frontmatter');
+  });
+
+  test('unqualified file with a hyphenated module name is unaffected (no-op)', () => {
+    assert.strictEqual(testEffectivePrefix('state-contract.test.cjs'), 'state-contract');
+  });
+
+  test('pre-existing .integration.test. strip still works after the qualifier strip', () => {
+    assert.strictEqual(
+      testEffectivePrefix('installer-migration-install.integration.test.cjs'),
+      'installer-migration-install'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3227: dotted suite-qualifier files must not mis-bucket into a shorter,
+// hyphen-related module (e.g. state-contract.unit.test.cjs -> state).
+// ---------------------------------------------------------------------------
+
+describe('_buildTestMap — dotted suite-qualifier bucketing (#3227)', () => {
+  test('state-contract.unit.test.cjs buckets to state-contract, not the shorter state module', () => {
+    const testFile = makeFiles('state-contract', ['state-contract.unit.test.cjs'])[0];
+    const prodPrefixes = new Map([
+      ['state', '/fake/src/state.cjs'],
+      ['state-contract', '/fake/src/state-contract.cjs'],
+    ]);
+    const map = _buildTestMap(prodPrefixes, [testFile]);
+    assert.deepStrictEqual(map.get('state-contract'), [testFile]);
+    assert.deepStrictEqual(map.get('state'), []);
+  });
 });
 
 // ---------------------------------------------------------------------------

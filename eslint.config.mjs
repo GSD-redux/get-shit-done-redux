@@ -138,6 +138,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/secrets.cjs',
       'gsd-core/bin/lib/smart-entry.cjs',
       'gsd-core/bin/lib/phase-lifecycle.cjs',
+      // #3227: tsc-generated artifact — lint src/state-contract.cts, not this.
+      'gsd-core/bin/lib/state-contract.cjs',
       'gsd-core/bin/lib/workstream-name-policy.cjs',
       'gsd-core/bin/lib/decisions.cjs',
       'gsd-core/bin/lib/validate.cjs',

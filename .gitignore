@@ -209,6 +209,7 @@ build/
 /gsd-core/bin/lib/planning-inspect.cjs
 /gsd-core/bin/lib/planning-command-router.cjs
 /gsd-core/bin/lib/plan-document.cjs
+/gsd-core/bin/lib/state-contract.cjs
 /gsd-core/bin/lib/pattern.cjs
 /gsd-core/bin/lib/text-lines.cjs
 /gsd-core/bin/lib/token-scanner.cjs

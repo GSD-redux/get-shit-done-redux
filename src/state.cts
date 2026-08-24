@@ -13,6 +13,9 @@ import { escapeRegex } from './pattern.cjs';
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import stateContract = require('./state-contract.cjs');
+const { publishStateContract } = stateContract;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -677,7 +680,7 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   // STATE.md lock, so the position read and the claim read cannot interleave
   // with another session's Current Position write.
   let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
-  readModifyWriteStateMd(statePath, (content) => {
+  const wrote = readModifyWriteStateMd(statePath, (content) => {
     // advance-plan has no phase argument of its own — the phase it advances is
     // whatever ## Current Position names. Compare that against the milestone
     // claim: a mismatch means another session moved the single-slot position
@@ -717,6 +720,17 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   } else {
     output({ ...resultData, updated, milestone_conflict: milestoneConflict }, raw, 'true');
   }
+  // #3227 (design doc §40 row 26 / "Not-corruption" rule): a refreshed
+  // state.json `updated_at` must always mean something on disk actually
+  // moved, in EITHER branch above — so gate on `wrote`
+  // (readModifyWriteStateMd's own return value) rather than assuming both
+  // branches are unconditional mutations. They are not: re-running
+  // advance-plan on a phase already parked in its post-advance state (e.g.
+  // two same-day calls once a phase is "ready for verification") reproduces
+  // byte-identical content, the #948 no-op guard skips the write, and
+  // `resultData`/`updated` still populate normally from the transform's OWN
+  // (unwritten) output — so those are not safe publish signals here either.
+  if (wrote) publishStateContract(cwd);
 }
 
 function cmdStateRecordMetric(cwd: string, options: StateRecordMetricOptions, raw: boolean): void {
@@ -3762,7 +3776,7 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
   // phase. The check runs INSIDE the STATE.md lock so concurrent begin-phase
   // calls cannot both read "no claim" and both write.
   let milestoneConflict: milestoneLockMod.MilestoneConflict | null = null;
-  readModifyWriteStateMd(statePath, (content) => {
+  const wrote = readModifyWriteStateMd(statePath, (content) => {
     milestoneConflict = milestoneLockMod.claimMilestonePhase(cwd, String(phaseNumber));
     if (milestoneConflict) {
       milestoneLockMod.warnMilestoneConflict(milestoneConflict, `state.begin-phase ${phaseNumber}`);
@@ -3791,6 +3805,26 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     raw,
     updated.length > 0 ? 'true' : 'false',
   );
+  // #3227 (design doc §40 row 26 / "Not-corruption" rule): gate on `wrote`
+  // (readModifyWriteStateMd's own return value — its #948 no-op guard skips
+  // the write outright when the transform produced no diff), not on
+  // `updated.length > 0`. Confirmed reproducer: an unrecognized-format
+  // STATE.md makes `beginPhaseCore` match zero body fields AND leave
+  // `existingFm` untouched, so the raw transform output is byte-identical to
+  // the input, the RMW guard fires, and `wrote` is false — matching
+  // `updated: []` here. Unlike `cmdStatePlannedPhase` (which must NOT use
+  // this same `wrote` signal — see its comment for why `plannedPhaseCore`
+  // mutates frontmatter in place even on this exact no-op shape),
+  // `beginPhaseCore` never mutates `existingFm`, so `wrote` and
+  // `updated.length > 0` agree on every case audited for this phase; `wrote`
+  // is kept as the gate here (and on `cmdStateAdvancePlan`/
+  // `cmdStateCompletePhase` below, where it is REQUIRED — `updated`/
+  // `reconciled` can be non-empty there even when nothing was written,
+  // confirmed by direct re-invocation) for one consistent rule across every
+  // RMW-backed command in this file: publish iff `readModifyWriteStateMd`
+  // itself reports a write. Best-effort — cannot throw, cannot change this
+  // command's exit code or output.
+  if (wrote) publishStateContract(cwd);
 }
 
 /**
@@ -4079,6 +4113,29 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, phaseNa
     ? { updated, phase: phaseNumber, plan_count: planCount, warning: 'STATE.md Current Position has no recognized labels — transition was a no-op. Verify STATE.md uses the canonical labeled format (Status:, Total Plans in Phase:, etc.).' }
     : { updated, phase: phaseNumber, plan_count: planCount };
   output(result, raw, updated.length > 0 ? 'true' : 'false');
+  // #3227 (design doc §40 row 26 / "Not-corruption" rule): gate on
+  // `updated.length > 0`, NOT on `readModifyWriteStateMd`'s own write-happened
+  // return value. The two are NOT equivalent here: readModifyWriteStateMd's
+  // #948 no-op guard compares the transform's RAW returned string against the
+  // RAW original file content, but `syncStateFrontmatter`'s progress-block
+  // sync and this command's `authoritativeFm: {current_phase_name}` override
+  // both run INSIDE the transform (via `frontmatterMod.reconstructFrontmatter`
+  // over `existingFm`), so an unrecognized-format STATE.md — zero fields the
+  // transition could actually apply, `updated: []`, the "transition was a
+  // no-op" warning above — can still make the raw returned string differ
+  // from the input (frontmatter gets synthesized: `gsd_state_version`,
+  // `last_updated`, a zeroed `progress` block, `current_phase_name`), so the
+  // RMW guard does NOT fire and a real write happens. That write is not a
+  // meaningful state transition by this command's OWN reporting contract
+  // (`updated: []`) — publishing on it would refresh state.json's
+  // `updated_at` for a call this command itself reports did nothing.
+  // `updated.length > 0` is the field-classification-table-backed signal
+  // that actually answers "did plannedPhaseCore itself change anything this
+  // caller asked it to change" — empirically verified: an unrecognized-format
+  // STATE.md reproduces `updated: []` with a genuine (frontmatter-only) disk
+  // write underneath it, and gating on `updated.length > 0` is what makes
+  // this reproducer NOT publish.
+  if (updated.length > 0) publishStateContract(cwd);
 }
 
 /**
@@ -4104,6 +4161,7 @@ function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name:
   const intent: StateTransitionIntent = { kind: 'milestoneSwitch', version, name: resolvedName };
   const deps: StateTransitionDeps = { clock: realClock, sourcePath: statePath };
 
+  let switched = false;
   const lockPath = acquireStateLock(statePath);
   try {
     const content = platformReadSync(statePath) || '';
@@ -4114,9 +4172,15 @@ function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name:
       raw,
       'true',
     );
+    switched = true;
   } finally {
     releaseStateLock(lockPath);
   }
+  // #3227: publish AFTER releaseStateLock — publishStateContract derives `next`
+  // from classifyProject, which shells out to git (bounded, but up to 3 x 10s).
+  // Holding the STATE.md lock across that would turn a millisecond hold into a
+  // git-bound one for every concurrent GSD process.
+  if (switched) publishStateContract(cwd);
 }
 
 /**
@@ -4969,7 +5033,7 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
   let preSyncContent = '';
   const divergedFields: string[] = [];
 
-  readModifyWriteStateMd(statePath, (content) => {
+  const wrote = readModifyWriteStateMd(statePath, (content) => {
     const currentPhase = resolvedPhase;
 
     // Bug #1255: operate on body only so the YAML frontmatter `status:` key
@@ -5078,6 +5142,14 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
     raw,
     reconciled.length > 0 ? 'true' : 'false',
   );
+  // #3227: gate on `wrote` (readModifyWriteStateMd's own return value), not
+  // `reconciled.length > 0` — a re-run of complete-phase against a phase
+  // that is ALREADY marked complete (same status/date/Current Position
+  // values already on disk) still has `stateReplaceField` report a match for
+  // every field it looks up, so `reconciled` is non-empty even though the
+  // #948 no-op guard skipped the write. Same reasoning as
+  // cmdStateBeginPhase/cmdStatePlannedPhase/cmdStateAdvancePlan above.
+  if (wrote) publishStateContract(cwd);
 }
 
 export = {

@@ -203,6 +203,11 @@ const RATCHET_BASELINE = {
   'plan-document':           75,  // CI run 32392791843: 76.58% (unit shard)
   'planning-command-router': 94,  // CI run 32392791843: 95.65% (unit shard); already exceeds TARGET 80
   'model-catalog':           58,  // #3007: measured 59.62% in CI (248 killed / 168 survived); floor(59.62)-1
+  'state-contract':          50,  // #3227: net-new module's initial floor, at this file's minimum
+                                   // permitted bound (50-100). Registering at the floor makes the
+                                   // shard run and report instead of being silently skipped; this
+                                   // PR's shard measures the real score, and the floor then ratchets
+                                   // up to floor(measured)-1, same as model-catalog above.
 };
 
 describe('mutation-matrix ratchet: floor equality enforcement', () => {
