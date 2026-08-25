@@ -78,7 +78,10 @@ import {
   // #3696: the `last_activity` invariant that `state validate` (S008/S009) now
   // asserts. Both live in the field-semantics owner, not here, so `smart-entry`
   // and `state validate` cannot drift apart about the same field.
-  isRealCalendarDate,
+  // `leadingCalendarDate` wraps `isRealCalendarDate`, which smart-entry calls
+  // directly — one predicate, two callers, no copies.
+  isUnfilledFieldValue,
+  leadingCalendarDate,
   stateFieldContinuation,
   stateReplaceField,
   KNOWN_TEMPLATE_DEFAULTS,
@@ -4494,24 +4497,28 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
   // uses (ADR-3180 §7.7) — never a private `stateExtractField` call, which is
   // what `scripts/lint-state-field-drift.cjs` counts.
   const lastActivity = stateFieldValue(fm, body, 'last_activity', 'Last activity').value;
-  if (lastActivity !== null) {
-    // ABSENCE IS NOT DRIFT. A freshly-initialized STATE.md has no activity yet;
-    // only a value that is PRESENT and unusable is a defect. Flagging absence
-    // would fire S008 on every new project.
-    const parsed = parseProseLastActivityField(lastActivity);
-    const iso = parsed.date === null ? null : /^(\d{4})-(\d{2})-(\d{2})$/.exec(parsed.date);
+  // NOT FILLED IN IS NOT DRIFT, and that covers three shapes, not one: absent,
+  // blank, and the shipped template's `[YYYY-MM-DD] — [What happened]`
+  // placeholder. Only a value a writer actually supplied can be wrong.
+  if (!isUnfilledFieldValue(lastActivity)) {
     // Calendar validity, not merely `\d{4}-\d{2}-\d{2}` shape: smart-entry's
-    // reader already rejects 2026-02-30 via isRealCalendarDate (ADR-227 —
-    // validate shape AND value). Accepting it here would leave the two surfaces
-    // disagreeing about whether the file is usable, which is the complaint
-    // #3696 opens with, not a fix for it.
-    const usable = iso !== null && isRealCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
-    if (!usable) {
+    // reader rejects 2026-02-30 via isRealCalendarDate (ADR-227 — validate shape
+    // AND value). Accepting it here would leave the two surfaces disagreeing
+    // about whether the file is usable, which is the complaint #3696 opens with.
+    //
+    // Review round 2: this asserts the LEADING date token, not
+    // `parseProseLastActivityField`'s fully-anchored `date — description`
+    // grammar. That grammar is stricter than any real reader, and routing the
+    // check through it made S008 fire on values smart-entry parses fine (e.g.
+    // `2026-08-24 Shipped feature X`, no dash separator) — the same
+    // two-surfaces-disagree defect, pointing the other way. See
+    // `leadingCalendarDate`.
+    if (leadingCalendarDate(lastActivity) === null) {
       warnings.push(stateDiagnostic(
         'S008',
         SEVERITY.WARNING,
         `Unreadable last activity: "${lastActivity}" does not begin with a real calendar date, so no reader can date this project's activity`,
-        'Rewrite the Last activity line as "YYYY-MM-DD — what happened" using a date that exists',
+        'Rewrite the Last activity line to begin with a date that exists, as "YYYY-MM-DD — what happened"',
       ));
     }
 
@@ -4522,7 +4529,17 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
     // reports the violation rather than teaching the reader a multi-line grammar
     // the template does not sanction (ADR-3180 §7.7 Rejected #1 forbids widening
     // stateExtractField, which has 20 callers and a CRITICAL blast radius).
-    const dropped = stateFieldContinuation(body, 'Last activity');
+    //
+    // Scan the body ONLY when the body is what was actually read. The ladder
+    // prefers the frontmatter scalar, so a document carrying a clean
+    // `last_activity:` in frontmatter AND a stale, wrapped `Last activity:` line
+    // in the body would otherwise report S009 — and exit 1 under `--strict` —
+    // over a remainder that no reader consumes and whose field is entirely
+    // valid. Asking the owner with an EMPTY body isolates the frontmatter rung
+    // without re-deriving the ladder here (which is what
+    // `scripts/lint-state-field-drift.cjs` counts).
+    const fromFrontmatter = stateFieldValue(fm, '', 'last_activity', 'Last activity').value;
+    const dropped = fromFrontmatter !== null ? null : stateFieldContinuation(body, 'Last activity');
     if (dropped !== null) {
       warnings.push(stateDiagnostic(
         'S009',

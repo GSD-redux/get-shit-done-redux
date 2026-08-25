@@ -99,7 +99,12 @@ const STATE_VALIDATE_TEST_FILE = path.join(REPO_ROOT, 'tests', 'state.test.cjs')
 const STATE_VALIDATE_SOURCE_FILE = path.join(REPO_ROOT, 'src', 'state.cts');
 // `g` is required by String.prototype.matchAll, which (unlike .exec) does not
 // carry lastIndex across calls — so this constant is safe to share.
-const STATE_DIAGNOSTIC_CALL_RE = /\bstateDiagnostic\(\s*(['"`])(S\d{3})\1/g;
+// #3696 review: `\s*` before `(` too. Requiring no space silently dropped a
+// `stateDiagnostic ('S010', …)` call site from the discovered set, and since the
+// fail-closed check below only fires on a FULLY empty result, a partial miss
+// escaped the fixture-proof check entirely — the same "only as complete as the
+// author's recall" failure this rewrite exists to prevent.
+const STATE_DIAGNOSTIC_CALL_RE = /\bstateDiagnostic\s*\(\s*(['"`])(S\d{3})\1/g;
 
 /**
  * Every S0NN code `cmdStateValidate` can emit, read off its

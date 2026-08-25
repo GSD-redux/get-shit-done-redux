@@ -281,12 +281,16 @@ describe('checkFixtureProofInvariant (S0NN pass, #3310)', () => {
       'warnings.push(stateDiagnostic(`S002`, SEVERITY.WARNING, "dup", "b"));',
       "// stateDiagnostic('S404', ...) in a comment still counts — this is a",
       '// regex guard, and over-inclusion only ever demands MORE fixture cover.',
+      // Review round 2: a space before `(` must not drop the call site. The
+      // fail-closed check only fires on a FULLY empty result, so a PARTIAL
+      // miss escaped the fixture-proof check silently.
+      "warnings.push(stateDiagnostic ('S010', SEVERITY.WARNING, 'spaced', 'b'));",
     ].join('\n');
 
     assert.deepEqual(
       discoverStateValidateCodes(fixture, 'fixture'),
-      ['S001', 'S002', 'S404'],
-      'codes are deduplicated and sorted, across single/double/backtick quoting and line breaks',
+      ['S001', 'S002', 'S010', 'S404'],
+      'codes are deduplicated and sorted, across quoting styles, line breaks, and a space before the paren',
     );
   });
 
