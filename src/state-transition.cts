@@ -260,6 +260,23 @@ export function getFieldClassification(field: string): FieldClassification | nul
   return FIELD_CLASSIFICATION[field];
 }
 
+/**
+ * #3836: the single source of truth for "which frontmatter keys carry the
+ * `preserve-when-unchanged` policy" — read straight off `FIELD_CLASSIFICATION`
+ * rather than re-typed as a hand-maintained literal array at each consumer.
+ * `cmdStateJson` (`state.cts`) previously hardcoded a 6-field list that had
+ * already drifted from this table by one row (`last_activity_desc`, #3258) —
+ * exactly the "second table parallel to the first" shape ADR-3473 exists to
+ * remove. `progress`/`milestone`/`milestone_name` carry a different
+ * preservation policy (`preserve-always` / `preserve-if-placeholder`) and are
+ * naturally excluded by the filter, not by a separate exclusion list.
+ */
+export function getPreserveWhenUnchangedFields(): readonly string[] {
+  return Object.keys(FIELD_CLASSIFICATION).filter(
+    (field) => FIELD_CLASSIFICATION[field].preservation === 'preserve-when-unchanged',
+  );
+}
+
 // ----------------------------------------------------------------------------
 // The state transaction (ADR-3473 §8.6, issue #3871)
 // ----------------------------------------------------------------------------

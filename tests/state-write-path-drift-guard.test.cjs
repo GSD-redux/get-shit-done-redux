@@ -7,45 +7,38 @@
  *
  * Design contract: docs/adr/3408-state-write-path-preservation.md (§8.1/§8.2/§8.3)
  *                   docs/adr/3473-enforcement-by-construction.md (§8.6)
- * Test matrix:      .gsd/phase/refactor-3468-table-driven-preservation/50-test-matrix.md
- *                    (section D, rows D1-D15 — this file previously covered
- *                    section D in full; ADR-3473 §8.6 retired the write-seam
- *                    bypass axis (`findSeamBypasses`) and its baseline-ratchet
- *                    machinery (`applyRatchet`/`loadBaseline`/`buildBaselineEntries`/
- *                    `scripts/state-write-path-drift-baseline.json`, all deleted),
- *                    since `writeStateMd`'s third parameter now requires a
- *                    `StateTransaction` the type system names
- *                    (`openStateTransaction`/`rebuildStateTransaction`,
- *                    `src/state-transition.cts`) rather than a ratcheted
- *                    string match. Rows D2-D10, D12, D13 (all of which drove
- *                    the retired `findSeamBypasses`/ratchet/baseline-file
- *                    machinery) are REMOVED along with it — the type system,
- *                    not this guard, is now what makes a `writeStateMd`
- *                    bypass unrepresentable. Rows D1, D11, D14, D15 and
- *                    section E rows E3-E5 (the axes ADR-3473 §8.6 did NOT
- *                    name for removal) are retained. F1/F2 are new: F1 drives
- *                    the raw-write axis (`findRawStateWrites`) as a pure
- *                    function; F2 proves the shrunk guard's real CLI entry
- *                    point can still fail.
  *
- * Every row except D1 and F2 drives the guard's exported PURE functions
- * directly with in-memory fixtures — no temp tree is needed, mirroring
- * tests/state-field-drift.test.cjs's own house pattern for this class of
- * guard. D1 (the real-tree contract: THIS repo's `src/` and prompt layer are
- * clean) is driven through the CLI's `--json` output against the real
- * `REPO_ROOT` — no `--root` override, no fixture. F2 (proving the guard CAN
- * fail) needs a tree that is NOT clean, and must never get that by mutating
- * this repository's own `src/`: a fixture planted in the real source tree
- * would be visible to any concurrent `tsc`/`npm run build:lib`/`npm run
- * lint`/another guard invocation, and would survive as permanent build-
- * breaking debris if the process were killed before `t.after` ran (a
- * real-race test, which this repo's rules say to redesign rather than
- * annotate around). `scripts/lint-state-write-path-drift.cjs` therefore
- * takes an explicit `--root <dir>` CLI flag (and `collect(root)` takes a
- * matching parameter), defaulting to the real repo so every existing
- * invocation (`npm run lint:ci` included) is byte-identical — F2 plants its
- * violation in a `createTempDir()` (`tests/helpers.cjs`) tree instead, runs
- * the real CLI against it via `--root`, and tears it down with `cleanup()`.
+ * The guard covers five axes, each backed by its own exported pure function
+ * and each terminal (every finding carries its own `reason` — there is no
+ * ratchet and nothing here reads a baseline file): `findPolicyDispatchDrift`/
+ * `findUnimplementedPolicies` (Axis 1, policy dispatch), `findRawStateWrites`
+ * (Axis 2, a raw `fs.writeFileSync` against the state path),
+ * `findUnstrippedContentWrites` (Axis 3, a frontmatter-shaped body write),
+ * `findPromptSeamUses` (Axis 4, prompt-layer prose shelling out to a
+ * write-side command), and `findCompositionBypasses` (Axis 5, a direct
+ * `syncStateFrontmatter`/`applyPostSyncPreservation` call outside their
+ * owner). ADR-3473 §8.6 retired one prior axis's `writeStateMd(` arm and the
+ * ratchet/retired-baseline machinery that backed it, once `writeStateMd`'s
+ * third parameter started requiring a `StateTransaction` the type system
+ * names; issue #3871 review kept that axis's OTHER arm (now
+ * `findCompositionBypasses`) because the type system gates only
+ * `writeStateMd`'s parameter, not a call site that never goes through
+ * `writeStateMd` at all — that arm was made terminal too.
+ *
+ * Sections D and E drive each pure function directly with in-memory
+ * fixtures — no temp tree needed, mirroring
+ * tests/state-field-drift.test.cjs's own house pattern. Section F instead
+ * drives the real CLI entry point, via the guard's `--root <dir>` flag
+ * (`collect(root)` takes a matching parameter, default `REPO_ROOT`, so every
+ * existing invocation — `npm run lint:ci` included — is unaffected): this is
+ * what lets a real-tree fixture run inside a disposable `createTempDir()`
+ * tree instead of ever mutating this repository's own `src/`, where a
+ * planted fixture would be visible to any concurrent `tsc`/`npm run
+ * build:lib`/`npm run lint`/another guard invocation, and would survive as
+ * build-breaking debris if the process were killed before `t.after` ran. D1
+ * is the one exception among the fixture-driven rows: it asserts the real
+ * repo's own `src/` and prompt layer are clean, so it runs through the CLI's
+ * `--json` output against the real `REPO_ROOT` with no `--root` override.
  *
  * Fixtures use array `.join('\n')`, never an indented template literal —
  * indentation bleed would shift every asserted line number.
@@ -72,8 +65,11 @@ const {
   findPolicyDispatchDrift,
   findUnstrippedContentWrites,
   findRawStateWrites,
+  findCompositionBypasses,
   targetsStatePath,
   EXECUTOR_FILE,
+  SEAM_OWNER_FILE,
+  SEAM_OWNER_EXEMPT_FUNCTIONS,
   REPO_ROOT,
 } = guard;
 
@@ -93,6 +89,154 @@ describe('D1 — the real tree', () => {
     assert.strictEqual(body.ok, true);
     assert.deepStrictEqual(body.findings, []);
     assert.strictEqual(result.exitCode, 0);
+  });
+});
+
+// ─── D8: comments are not drift (composition-bypass shape) ────────────────
+
+describe('D8 — comments are not drift', () => {
+  test('guard: comments are not drift', () => {
+    const text = [
+      '// syncStateFrontmatter(content, cwd);',
+      '/**',
+      ' * applyPostSyncPreservation(originalContent, content, synced, statePath, options);',
+      ' */',
+      'function noop() {}',
+    ].join('\n');
+
+    // ADR-3180 Amendment 3's recorded false positive: a `//` line comment
+    // and a `/* */` block comment both carrying the exact call text must
+    // stay silent — both are blanked by `stripComments` before the seam-call
+    // regex ever runs.
+    assert.deepStrictEqual(findCompositionBypasses(OTHER_FILE, text), []);
+  });
+});
+
+// ─── D9/D10: the owner-file exemption is function-scoped, not file-scoped ──
+
+describe('D9 — owner functions are exempt', () => {
+  test('guard: owner functions are exempt', () => {
+    // `syncAndPreserveStateMd` is the sole legitimate place
+    // `syncStateFrontmatter(` and `applyPostSyncPreservation(` appear
+    // together (the composition every OTHER caller routes through).
+    assert.ok(SEAM_OWNER_EXEMPT_FUNCTIONS.includes('syncAndPreserveStateMd'));
+
+    const text = [
+      'function syncAndPreserveStateMd(originalContent, transformedContent, statePath, cwd, options) {',
+      '  const synced = syncStateFrontmatter(transformedContent, cwd, options.authoritativeFm);',
+      '  return applyPostSyncPreservation(originalContent, transformedContent, synced, statePath, options);',
+      '}',
+    ].join('\n');
+
+    // The seam's own internal plumbing (the one owned composition —
+    // sync then post-sync preservation) is not a bypass.
+    assert.deepStrictEqual(findCompositionBypasses(SEAM_OWNER_FILE, text), []);
+  });
+
+  test('guard: writeStateMd is also exempt — its own sanctioned direct syncStateFrontmatter call is not a bypass', () => {
+    assert.ok(SEAM_OWNER_EXEMPT_FUNCTIONS.includes('writeStateMd'));
+
+    const text = [
+      'function writeStateMd(statePath, content, transaction, cwd, clock) {',
+      "  const synced = syncStateFrontmatter(content, cwd, undefined, transaction.kind === 'rebuild');",
+      '  platformWriteSync(statePath, synced);',
+      '}',
+    ].join('\n');
+
+    assert.deepStrictEqual(findCompositionBypasses(SEAM_OWNER_FILE, text), []);
+  });
+});
+
+describe('D10 — the owner file is not exempt', () => {
+  test('guard: the owner file is not exempt', () => {
+    // ADR-3408 Decision 5's named gaming route: a whole-FILE exemption on
+    // the owner is exactly how getMilestoneInfo stayed invisible to an
+    // earlier drift guard. A call inside any OTHER function in state.cts —
+    // not one of SEAM_OWNER_EXEMPT_FUNCTIONS — must still be caught.
+    const text = [
+      'function patchCore(cwd) {',
+      '  const modified = compute();',
+      '  const synced = syncStateFrontmatter(modified, cwd);',
+      '  return synced;',
+      '}',
+    ].join('\n');
+
+    const out = findCompositionBypasses(SEAM_OWNER_FILE, text);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].reason, REASON.COMPOSITION_BYPASS);
+    assert.strictEqual(out[0].line, 3);
+  });
+});
+
+// ─── D12: CRLF is scanned identically to LF ────────────────────────────────
+
+describe('D12 — CRLF is scanned identically', () => {
+  test('guard: CRLF is scanned identically', () => {
+    const lfText = [
+      'function cmdSomethingElse(cwd) {',
+      '  const synced = syncStateFrontmatter(modified, cwd);',
+      '}',
+    ].join('\n');
+    const crlfText = lfText.split('\n').join('\r\n');
+
+    const lfOut = findCompositionBypasses(OTHER_FILE, lfText);
+    const crlfOut = findCompositionBypasses(OTHER_FILE, crlfText);
+
+    assert.strictEqual(crlfOut.length, 1);
+    const strip = (arr) => arr.map(({ line, symbol, source }) => ({ line, symbol, source }));
+    assert.deepStrictEqual(strip(crlfOut), strip(lfOut));
+    // A stray trailing \r surviving into the reported source (the repo's
+    // documented \n-only-regex bug class) would show up here as a
+    // sanitized `\x0d` escape — it must not.
+    assert.strictEqual(crlfOut[0].source, 'const synced = syncStateFrontmatter(modified, cwd);');
+  });
+});
+
+// ─── E1/E2 (Phase 2 / #3469, RETAINED per issue #3871): the composition-pair
+// re-assembly shape itself, and the legitimate single-call composition ─────
+
+describe('E1 — a re-assembled composition at a new call site is detected', () => {
+  test('guard: a call site invoking syncStateFrontmatter and applyPostSyncPreservation directly (bypassing syncAndPreserveStateMd) is caught on BOTH calls', () => {
+    // Finding 3's exact shape (ADR-3408 Amendment 2): every step calls an
+    // owner, so neither call alone is undeclared — but assembling the PAIR
+    // at a call site outside the seam composition is the re-derivation §8.3
+    // forbids by name. Synthetic: the real instance of this shape
+    // (cmdPhaseComplete's pre-#3469 adapter) was fixed by that phase.
+    const text = [
+      'function cmdReassembledAdapter(cwd, statePath, stateContent) {',
+      '  let synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);',
+      '  synced = applyPostSyncPreservation(originalStateContent, stateContent, synced, statePath, options);',
+      '  return synced;',
+      '}',
+    ].join('\n');
+
+    const out = findCompositionBypasses(OTHER_FILE, text);
+    assert.strictEqual(out.length, 2, 'both re-assembled stages must be caught, not just one');
+    assert.deepStrictEqual(out.map((f) => f.symbol).sort(), ['applyPostSyncPreservation', 'syncStateFrontmatter']);
+    assert.ok(out.every((f) => f.reason === REASON.COMPOSITION_BYPASS));
+  });
+});
+
+describe('E2 — a legitimate single call to the composition is not detected', () => {
+  test('guard: calling syncAndPreserveStateMd (the ONE write-seam composition) is not a bypass', () => {
+    // Verbatim shape from a real caller of the composition (e.g.
+    // milestone.cts's cmdMilestoneComplete) — a single call to the owned
+    // composition function, never to its two internal stages directly.
+    const text = [
+      '      const finalContent = syncAndPreserveStateMd(',
+      '        originalStateContent,',
+      '        result.content,',
+      '        statePath,',
+      '        cwd,',
+      '        {',
+      '          resync: true,',
+      '          authoritativeFm: Object.keys(authoritativeFm).length > 0 ? authoritativeFm : undefined,',
+      '          divergedFields,',
+      '        },',
+      '      );',
+    ].join('\n');
+
+    assert.deepStrictEqual(findCompositionBypasses(OTHER_FILE, text), []);
   });
 });
 
@@ -460,5 +604,33 @@ describe('F2 — a guard that cannot fail is not a guard: the real CLI entry poi
     const body = JSON.parse(result.stdout);
     assert.strictEqual(body.ok, true);
     assert.deepStrictEqual(body.findings, []);
+  });
+});
+
+describe('F3 — a guard that cannot fail is not a guard: the real CLI entry point catches a composition bypass', () => {
+  test('CLI: --root <synthetic tree> with a re-assembled syncStateFrontmatter + applyPostSyncPreservation pair is reported, without touching the real src/ tree', (t) => {
+    const tmpRoot = createTempDir('state-write-path-drift-guard-composition-');
+    t.after(() => cleanup(tmpRoot));
+
+    const srcDir = path.join(tmpRoot, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    const fixtureContent = [
+      'function cmdReassembledAdapter(cwd: string, statePath: string, stateContent: string): string {',
+      '  let synced = syncStateFrontmatter(stateContent, cwd, authoritativeFm);',
+      '  synced = applyPostSyncPreservation(originalStateContent, stateContent, synced, statePath, options);',
+      '  return synced;',
+      '}',
+    ].join('\n');
+    fs.writeFileSync(path.join(srcDir, 'bogus-composition.cts'), fixtureContent, 'utf8');
+
+    const result = runNode([GUARD_PATH, '--root', tmpRoot, '--json'], { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(result.outcome, 'exited');
+    assert.strictEqual(result.exitCode, 1, 'a re-assembled write-seam composition must fail the CLI, not pass it');
+
+    const body = JSON.parse(result.stdout);
+    assert.strictEqual(body.ok, false);
+    const findings = body.findings.filter((f) => f.file === 'src/bogus-composition.cts');
+    assert.strictEqual(findings.length, 2, 'both re-assembled stages must appear in --json findings');
+    assert.ok(findings.every((f) => f.reason === REASON.COMPOSITION_BYPASS));
   });
 });

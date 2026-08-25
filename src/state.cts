@@ -3825,6 +3825,17 @@ function cmdStateJson(cwd: string, raw: boolean): void {
       ?? parseProsePhaseField(stateExtractField(positionScope, 'Phase')).phase;
     const bodyCurrentPlan = stateExtractField(body, 'Current Plan');
     const bodyStatus = stateExtractField(body, 'Status');
+    // #3836: mirrors applyPostSyncPreservation's own derivation (state.cts
+    // bodyDeltas, `last_activity_desc`) — the `Last Activity Description`
+    // label, falling back to the prose `Last Activity:` line's parsed
+    // description. Read-side twin of #3258's write-side wiring; this field is
+    // `preserve-when-unchanged` per FIELD_CLASSIFICATION and was previously
+    // absent from this read path entirely (never derived here, never in the
+    // loop below), so a stale body annotation always beat a fresher curated
+    // frontmatter value on every `state json` read.
+    const bodyLastActivityRaw = stateExtractField(body, 'Last Activity') ?? stateExtractField(body, 'Last activity');
+    const bodyLastActivityDesc = stateExtractField(body, 'Last Activity Description')
+      ?? parseProseLastActivityField(bodyLastActivityRaw).description;
 
     const unchanged = (v: string | null): { pre: string | null; post: string | null } => ({ pre: v, post: v });
     const ctx = {
@@ -3839,10 +3850,15 @@ function cmdStateJson(cwd: string, raw: boolean): void {
         current_phase: unchanged(bodyCurrentPhase),
         current_plan: unchanged(bodyCurrentPlan),
         current_phase_name: unchanged(bodyPhaseSource),
+        last_activity_desc: unchanged(bodyLastActivityDesc),
       },
       mutated: false,
     };
-    for (const field of ['status', 'stopped_at', 'paused_at', 'current_phase', 'current_plan', 'current_phase_name']) {
+    // #3836: derive the field set from FIELD_CLASSIFICATION's
+    // `preserve-when-unchanged` rows (single source of truth) instead of a
+    // hand-typed literal that can drift from the table — this IS the fix,
+    // not merely an addition of one more name to the literal.
+    for (const field of stateTransitionMod.getPreserveWhenUnchangedFields()) {
       const cls = stateTransitionMod.getFieldClassification(field);
       if (cls) stateTransitionMod.applyPreserveWhenUnchanged(field, cls, ctx);
     }
@@ -4219,6 +4235,16 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, phaseNa
   // line, and the prose re-derivation of current_phase_name truncates names
   // that themselves contain a parenthetical — the authoritative override keeps
   // the exact value, exactly as cmdStateBeginPhase does for its EXECUTING line.
+  //
+  // #3834: without a name, the body-source delta rule that would normally
+  // preserve the curated `current_phase_name` (FIELD_CLASSIFICATION:
+  // preserve-when-unchanged) cannot fire — THIS write rewrites the `Phase:`
+  // source line to `N — READY TO EXECUTE` itself, so pre/post disagree by
+  // construction and the post-sync re-derivation harvests "READY TO EXECUTE"
+  // as if it were the name. The fix mirrors the named-arg path: reassert an
+  // authoritative override, falling back to the pre-write curated value (read
+  // inside the RMW callback, before this write's own body mutation) rather
+  // than leaving the field to a delta heuristic this exact transition defeats.
   const divergedFields: string[] = [];
   const rmwOptions: ReadModifyWriteOptions = {
     resync: false,
@@ -4230,6 +4256,13 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, phaseNa
   let precomputedUpdated: string[] = [];
   let preSyncContent = '';
   readModifyWriteStateMd(statePath, (content) => {
+    if (!intent.phaseName) {
+      const preFm = extractFrontmatter(content, statePath) as Record<string, unknown>;
+      const curatedName = preFm['current_phase_name'];
+      if (typeof curatedName === 'string' && curatedName.trim().length > 0) {
+        rmwOptions.authoritativeFm = { current_phase_name: curatedName };
+      }
+    }
     const result = transitionCore(content, intent, deps);
     precomputedUpdated = result.updated;
     preSyncContent = result.content;
@@ -5252,6 +5285,17 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
   const updated: StateCompletePhaseUpdateEntry[] = [];
   let preSyncContent = '';
   const divergedFields: string[] = [];
+  // #3835: complete-phase unconditionally rewrites the body `Phase:` line to
+  // `N — COMPLETE` below. That defeats current_phase_name's
+  // preserve-when-unchanged delta rule the same way #3834's no-`--name`
+  // planned-phase write does — pre/post body-source disagree BY CONSTRUCTION
+  // (this write is what changed the source line), so the post-sync
+  // re-derivation harvests nothing from "COMPLETE" and the curated key is
+  // dropped entirely rather than preserved. The write site already documents
+  // "an absent name does NOT clear an existing curated value" for the body
+  // (`Current Phase Name` section below) — this reasserts the same rule for
+  // the frontmatter key, mirroring cmdStatePlannedPhase's fix.
+  const rmwOptions: ReadModifyWriteOptions = { divergedFields };
 
   const wrote = readModifyWriteStateMd(statePath, (content) => {
     const currentPhase = resolvedPhase;
@@ -5261,6 +5305,10 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
     const existingFm = extractFrontmatter(content, statePath) as Record<string, unknown>;
     const hasFrontmatter = Object.keys(existingFm).length > 0;
     let body = stripFrontmatter(content);
+    const curatedPhaseName = existingFm['current_phase_name'];
+    if (typeof curatedPhaseName === 'string' && curatedPhaseName.trim().length > 0) {
+      rmwOptions.authoritativeFm = { current_phase_name: curatedPhaseName };
+    }
 
     const reassemble = (b: string) =>
       hasFrontmatter ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}` : b;
@@ -5338,7 +5386,7 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
     const out = reassemble(body);
     preSyncContent = out;
     return out;
-  }, cwd, { divergedFields });
+  }, cwd, rmwOptions);
 
   // ADR-3408 §8.4 (D4): traced for this phase (design doc: "not traced in
   // the analysis pass"). Unlike the transitionCore-based commands, this

@@ -48,7 +48,7 @@ Two `/m`-anchored patterns in the same module use `\s` at a `^` position. Per EC
 
 This family is the reason Phases 1–3 exist and is recorded here rather than inferred later.
 
-ADR-3408 shipped completely: all five phases closed, `scripts/lint-state-write-path-drift.cjs` is live, and `scripts/state-write-path-drift-baseline.json` stands at **two entries, both `owner: sanctioned-permanent`** — zero debt. The seam is real and it held.
+ADR-3408 shipped completely: all five phases closed, `scripts/lint-state-write-path-drift.cjs` is live, and its write-path drift baseline stood at **two entries, both `owner: sanctioned-permanent`** — zero debt. The seam is real and it held. *(That baseline was retired, file and all, by Phase 1 — see §8.6's amendment. This paragraph records the state at filing.)*
 
 Eleven state defects were nonetheless filed between 2026-08-21 and 2026-08-25 (#3853, #3836, #3835, #3834, #3830, #3818, #3812, #3807, #3784, #3756, #3743). **None is a bypass of that seam.** They sit at four places it does not reach:
 
@@ -200,7 +200,11 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 **Rule — `rebuild()` is the typed expression of the sanctioned exceptions.** ADR-3408 §8.3's closed list of commands whose contract is to let the body win — `cmdStateSync` (#905: `state sync` re-derives frontmatter *from* the body) and `/gsd-health --repair`'s `REGENERATE_STATE` (a factory reset) — call `rebuild()`. They are **not** debt: a guard reporting them is reporting correctly, and a change that removes one is a regression. Adding to the list is an amendment to ADR-3408 §8.3.
 
-**Consequence for the guard.** `scripts/state-write-path-drift-baseline.json`'s two `sanctioned-permanent` entries are retired: the exception becomes a constructor the type system names, not a ratcheted string match. `scripts/lint-state-write-path-drift.cjs` keeps only its raw-write check (`fs.writeFileSync` against the state path), which the type cannot make unrepresentable.
+**Consequence for the guard.** The write-path drift baseline's two `sanctioned-permanent` entries are retired, and the baseline file with them: the exception becomes a constructor the type system names, not a ratcheted string match. `scripts/lint-state-write-path-drift.cjs` keeps every check the type does **not** make unrepresentable.
+
+> **Amendment, 2026-08-25 (Phase 1, #3871) — this paragraph originally read "keeps only its raw-write check (`fs.writeFileSync` against the state path)", and that sentence was wrong on both halves.** Verified against `next` while implementing: the guard contained **no raw-write check at all**, and it contained **four** checks besides the one §8.6 retires — policy-dispatch drift, unimplemented policies, unstripped content writes, and prompt-layer state writes. None of those is named by §8.6 and none is made unrepresentable by the transaction type, so all four are retained; the raw-write check is **net-new**, written because §8.6 requires it to exist.
+>
+> The retired axis was the **seam-bypass** scan, and only half of it was redundant. Its `writeStateMd(` arm is genuinely replaced by the type and is gone with its ratchet. Its **composition-bypass** arm — a new call site re-assembling `syncStateFrontmatter` + `applyPostSyncPreservation` instead of routing through the owned composition, which is ADR-3408 §8.3's rule and the exact shape #3469 found live in `cmdPhaseComplete` — is **not** replaced by the type, which gates one parameter of one function and nothing more. It is retained, made terminal rather than ratcheted, and carries its own reason code. Decision 6 sanctions retiring a guard the change makes **redundant**; deleting this arm would have been a silent coverage regression dressed as a guard-count win, which is precisely the Goodhart outcome Decision 6 exists to prevent.
 
 #### 8.7 What a command reports it wrote — *Required — Phase 2*
 
@@ -288,7 +292,7 @@ Net across the set: one guard retired, one increase recorded honestly. The incre
 
 | Guard | Status under this ADR |
 |---|---|
-| `scripts/lint-state-write-path-drift.cjs` | retained, shrunk (§8.6) |
+| `scripts/lint-state-write-path-drift.cjs` | retained, shrunk (§8.6) — seam-bypass `writeStateMd(` arm and its ratchet retired at Phase 1; composition-bypass arm retained and made terminal; raw-write check added net-new. See §8.6's amendment. |
 | `scripts/lint-state-field-drift.cjs` | **retired at Phase 3** (§8.8) |
 | `scripts/lint-vendored-deps.cjs` | reused as-is for §8.1's vendoring rule |
 | `local/no-external-require-in-bin` | reused as-is; enforces §8.1's packaging rule |

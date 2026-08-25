@@ -21,8 +21,26 @@
  * acknowledging in a baseline file. That baseline file, and the whole
  * ratchet machinery that existed ONLY to support it (loading it, the
  * STALE-entry check, `--baseline` regeneration), is retired along with it —
- * see git history for the removed `findSeamBypasses` axis and its ratchet if
- * that shape is ever needed again.
+ * the `writeStateMd(` ARM of the old `findSeamBypasses` axis is gone for
+ * good, because the type system now names both of its exceptions.
+ *
+ * WHAT STAYED, RETITLED, AND MADE TERMINAL (issue #3871 review): the OTHER
+ * half of `findSeamBypasses` — every direct `syncStateFrontmatter(` /
+ * `applyPostSyncPreservation(` call outside their owner
+ * (`syncAndPreserveStateMd`, `src/state.cts`) — is NOT redundant. The type
+ * system gates `writeStateMd`'s THIRD PARAMETER; it says nothing about a call
+ * site that re-assembles `syncStateFrontmatter` + `applyPostSyncPreservation`
+ * itself instead of calling the one write-seam composition. ADR-3408 §8.3:
+ * "Assembling the stages at a call site is a re-derivation even when every
+ * step calls the owner." #3469 found exactly that shape live in
+ * `cmdPhaseComplete`'s atomic-commit adapter (`src/phase.cts`) — every step
+ * called an owner, so an owner-level test and this guard's OLD, narrower
+ * scan both stayed green while the composition itself drifted from
+ * `readModifyWriteStateMd`'s. See `findCompositionBypasses` below. Unlike
+ * the retired `writeStateMd(` arm, this one ships TERMINAL, not ratcheted —
+ * mirrors `findPromptSeamUses`'s own conversion in this same shrink: no
+ * legitimate call site outside the owner exists today, so any occurrence is
+ * a violation, not an entry to acknowledge.
  *
  * WHAT THIS GUARD STILL OWNS, because the type system cannot make it
  * unrepresentable:
@@ -66,6 +84,16 @@
  *   TypeScript — a check the type system cannot reach at all, since markdown
  *   is never compiled. Any occurrence is a violation.
  *
+ *   AXIS 5 — COMPOSITION BYPASS (§8.3, RETAINED, issue #3871). A direct
+ *   `syncStateFrontmatter(` or `applyPostSyncPreservation(` call outside
+ *   their owner (`syncAndPreserveStateMd`) is a re-assembly of the write-seam
+ *   composition — the exact shape #3469 found live in `cmdPhaseComplete`.
+ *   `writeStateMd(` is deliberately NOT scanned here (that arm is retired,
+ *   §8.6) — `writeStateMd`'s own legitimate direct `syncStateFrontmatter(`
+ *   call (the sanctioned #905 exception) is instead exempted by function
+ *   name, same as the composition owner itself; see
+ *   `SEAM_OWNER_EXEMPT_FUNCTIONS`. Terminal: any occurrence is a violation.
+ *
  * DESIGN CONSTRAINTS (ADR-3180 Decision 4, adopted verbatim by ADR-3408):
  *   - 4(a) whole-repo scan, never an allowlist. ADR-3180's own phases found
  *     26/5/54 copies where their epics scoped 3/3/4 — a scoped guard earns
@@ -96,17 +124,22 @@
  * this file before this shrink — `findRawStateWrites` (Axis 2, below) is
  * NET-NEW, written for this shrink, not retained from a prior version.
  * Second, this file did not (and does not) drop to "only" one check: besides
- * the retired `findSeamBypasses` axis (the writeStateMd/syncStateFrontmatter/
- * applyPostSyncPreservation bypass scan §8.6 correctly names for removal),
- * `findPolicyDispatchDrift`, `findUnimplementedPolicies`,
- * `findUnstrippedContentWrites`, and `findPromptSeamUses` all remain, because
- * §8.6 names neither them nor anything that makes what they check
- * unrepresentable — a field-name-keyed dispatch branch, an unimplemented
- * `FieldPreservation` policy, an unstripped frontmatter write, and prompt-
- * layer prose shelling out to `gsd-tools` are all still exactly as
- * representable in TypeScript (or in markdown, for the last one) after the
- * state-transaction constructor as they were before it. Do not edit the ADR
- * to match this file; this paragraph is the correction of record.
+ * the retired `writeStateMd(` arm of the old `findSeamBypasses` axis (the
+ * half §8.6 correctly names for removal, since the type system now names
+ * both of its exceptions), `findPolicyDispatchDrift`, `findUnimplementedPolicies`,
+ * `findUnstrippedContentWrites`, `findPromptSeamUses`, and the RETAINED
+ * `syncStateFrontmatter`/`applyPostSyncPreservation` composition-bypass half
+ * of `findSeamBypasses` (now `findCompositionBypasses`, terminal — issue
+ * #3871 review) all remain, because §8.6 names neither them nor anything
+ * that makes what they check unrepresentable — a field-name-keyed dispatch
+ * branch, an unimplemented `FieldPreservation` policy, an unstripped
+ * frontmatter write, prompt-layer prose shelling out to `gsd-tools`, and a
+ * re-assembled write-seam composition are all still exactly as representable
+ * in TypeScript (or in markdown, for the prompt-layer one) after the
+ * state-transaction constructor as they were before it — the constructor
+ * gates `writeStateMd`'s third parameter, nothing about a call site that
+ * never goes through `writeStateMd` at all. Do not edit the ADR to match
+ * this file; this paragraph is the correction of record.
  */
 
 const path = require('node:path');
@@ -132,6 +165,10 @@ const REASON = Object.freeze({
   // Axis 4 (§8.3, Decision 4(d)): prompt-layer prose shelling out to a
   // write-side `gsd-tools` subcommand — see `findPromptSeamUses`.
   PROMPT_LAYER_STATE_WRITE: 'prompt_layer_state_write',
+  // Axis 5 (§8.3, RETAINED, issue #3871): a direct `syncStateFrontmatter(` or
+  // `applyPostSyncPreservation(` call outside their owner
+  // (`syncAndPreserveStateMd`) — see `findCompositionBypasses`.
+  COMPOSITION_BYPASS: 'composition_bypass',
 });
 
 // Scan surface — declared, per Decision 4(d), never inferred from `src/`
@@ -147,6 +184,29 @@ const PROMPT_EXT = new Set(['.md']);
 // guard compares against it is unconditionally POSIX-normalized first
 // (`toPosixRel` below) — never gated on `process.platform`.
 const EXECUTOR_FILE = 'src/state-transition.cts';
+
+// The write-seam composition owner (Axis 5). Forward-slash literal, same
+// POSIX-normalization rule as `EXECUTOR_FILE` above.
+const SEAM_OWNER_FILE = 'src/state.cts';
+
+// Per Decision 4(d)'s "owner FILE is not exempt, only its named canonical
+// FUNCTIONS are": a `syncStateFrontmatter(`/`applyPostSyncPreservation(` call
+// inside one of these two functions, in `SEAM_OWNER_FILE` only, is the
+// seam's own internal plumbing, not a bypass. `writeStateMd` is the
+// `cmdStateSync`/`REGENERATE_STATE` path's own I/O wrapper calling
+// `syncStateFrontmatter` directly (no preservation, by design — §8.3's
+// closed exception list; ADR-3473 §8.6 gates ITS third parameter, which is
+// an orthogonal, type-level check — this guard's exemption is about which
+// FUNCTION BODY a raw call to the two seam stages is allowed to live in).
+// `syncAndPreserveStateMd` is the ONE write-seam composition — every OTHER
+// caller needing a non-standard I/O envelope routes through it. Every OTHER
+// function in `state.cts` — and every function in every OTHER file — is
+// still scanned and still flagged; in particular `readModifyWriteStateMd` is
+// NOT exempt: it calls `syncAndPreserveStateMd` like everyone else, so if a
+// direct `syncStateFrontmatter(`/`applyPostSyncPreservation(` call
+// reappeared there it would be exactly the re-assembly shape this axis
+// exists to catch.
+const SEAM_OWNER_EXEMPT_FUNCTIONS = ['writeStateMd', 'syncAndPreserveStateMd'];
 
 // Unconditional path-separator normalization (never gated on
 // `process.platform` — a Windows-authored fork PR must be judged by the
@@ -208,8 +268,25 @@ function stripComments(text) {
 }
 
 // A named function declaration, tolerating `export`/`async` prefixes — the
-// SAME shape `nearestPrecedingAssignment` uses as its backward-scan boundary.
+// SAME shape `nearestPrecedingAssignment` uses as its backward-scan boundary,
+// and `enclosingFunction` below uses to recognise (and skip) the seam
+// functions' own definitions.
 const FUNCTION_DECL_LINE_RE = /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/;
+
+/**
+ * Nearest preceding named-function declaration, scanning `lines` BACKWARD
+ * from `index`. Scopes an exemption to a FUNCTION, never a FILE — a whole-
+ * file owner exemption is precisely how `getMilestoneInfo` stayed invisible
+ * to an earlier drift guard (ADR-3180 Decision 4(d)'s own cautionary case,
+ * cross-referenced by this guard's header).
+ */
+function enclosingFunction(lines, index) {
+  for (let i = index; i >= 0; i--) {
+    const m = FUNCTION_DECL_LINE_RE.exec(lines[i]);
+    if (m) return m[1];
+  }
+  return null;
+}
 
 // One member of the `FieldPreservation` union, e.g. `'preserve-always'` —
 // lowercase-with-dashes, single-quoted.
@@ -532,6 +609,53 @@ function findRawStateWrites(rel, text) {
   return out;
 }
 
+// The two write-seam STAGE functions, matched only as CALLS (`\(`
+// immediately after, modulo whitespace) — never as bare mentions of the
+// name. `writeStateMd(` is deliberately NOT included here (that arm is
+// retired — ADR-3473 §8.6 gates it at the type level instead).
+const SEAM_CALL_RE = /\b(syncStateFrontmatter|applyPostSyncPreservation)\s*\(/g;
+// A line that IS one of the two seam stage functions' own definitions —
+// skipped outright, never counted as a call to itself.
+const SEAM_DEF_LINE_RE = /^\s*(?:export\s+)?(?:async\s+)?function\s+(?:syncStateFrontmatter|applyPostSyncPreservation)\b/;
+
+/**
+ * AXIS 5 (§8.3, RETAINED, issue #3871): every direct `syncStateFrontmatter(`/
+ * `applyPostSyncPreservation(` call in `text`, outside the two functions' own
+ * definitions and (only inside `SEAM_OWNER_FILE`) outside
+ * `SEAM_OWNER_EXEMPT_FUNCTIONS`'s own bodies. Terminal: unlike the old
+ * `findSeamBypasses` this axis descends from, there is no ratchet — any
+ * occurrence is `REASON.COMPOSITION_BYPASS` directly.
+ */
+function findCompositionBypasses(rel, text) {
+  const rawLines = text.split('\n');
+  const stripped = stripComments(text);
+  const out = [];
+  for (let i = 0; i < stripped.length; i++) {
+    const line = stripped[i];
+    if (!line.trim()) continue;
+    if (SEAM_DEF_LINE_RE.test(line)) continue;
+    SEAM_CALL_RE.lastIndex = 0;
+    let m;
+    while ((m = SEAM_CALL_RE.exec(line)) !== null) {
+      if (rel === SEAM_OWNER_FILE) {
+        const fn = enclosingFunction(stripped, i);
+        if (fn && SEAM_OWNER_EXEMPT_FUNCTIONS.includes(fn)) continue;
+      }
+      // `file`/`source` sanitized for the same fork-PR reason as every other
+      // finding in this guard.
+      out.push({
+        reason: REASON.COMPOSITION_BYPASS,
+        axis: 'composition-bypass',
+        file: sanitizeForReport(rel),
+        line: i + 1,
+        symbol: m[1],
+        source: sanitizeForReport(rawLines[i].trim()),
+      });
+    }
+  }
+  return out;
+}
+
 // Prose in the prompt layer shelling out to a write-side `gsd-tools`
 // subcommand — the SAME write seam, expressed as markdown instructing an
 // agent to run a command, rather than TypeScript calling a function
@@ -613,8 +737,8 @@ function findPromptSeamUses(rel, text) {
 }
 
 /**
- * Run both scan passes (the `src/` tree for Axis 1 + Axis 2 + Axis 3, the
- * prompt layer for Axis 4) and return the flat, already-terminal finding
+ * Run both scan passes (the `src/` tree for Axis 1 + Axis 2 + Axis 3 + Axis 5,
+ * the prompt layer for Axis 4) and return the flat, already-terminal finding
  * list — every finding this guard produces carries its own `reason`; there
  * is no longer a ratcheted axis needing a second pass against a baseline.
  *
@@ -641,6 +765,7 @@ function collect(root = REPO_ROOT) {
         found.push(...findUnstrippedContentWrites(relPosix, text));
       }
       found.push(...findRawStateWrites(relPosix, text));
+      found.push(...findCompositionBypasses(relPosix, text));
       return found;
     },
   });
@@ -729,6 +854,7 @@ function main(argv) {
     frontmatterWriteViolations: findings.filter((f) => f.axis === 'frontmatter-write').length,
     rawWriteViolations: findings.filter((f) => f.axis === 'raw-write').length,
     writeSeamViolations: findings.filter((f) => f.axis === 'write-seam').length,
+    compositionBypassViolations: findings.filter((f) => f.axis === 'composition-bypass').length,
   };
 
   if (wantJson) {
@@ -739,8 +865,8 @@ function main(argv) {
 
   if (findings.length === 0) {
     process.stdout.write(
-      'ok state-write-path-drift: no policy-dispatch, frontmatter-write, raw-write, or prompt-layer ' +
-        'violations found\n',
+      'ok state-write-path-drift: no policy-dispatch, frontmatter-write, raw-write, prompt-layer, or ' +
+        'composition-bypass violations found\n',
     );
     process.stdout.write(`${GOODHART_NOTE}\n`);
     process.exitCode = 0;
@@ -766,8 +892,11 @@ module.exports = {
   PROMPT_DIRS,
   PROMPT_EXT,
   EXECUTOR_FILE,
+  SEAM_OWNER_FILE,
+  SEAM_OWNER_EXEMPT_FUNCTIONS,
   toPosixRel,
   stripComments,
+  enclosingFunction,
   readPolicyUnion,
   findPolicyDispatchDrift,
   findUnimplementedPolicies,
@@ -776,6 +905,7 @@ module.exports = {
   nearestPrecedingAssignment,
   findRawStateWrites,
   targetsStatePath,
+  findCompositionBypasses,
   findPromptSeamUses,
   isInsideCodeSpan,
   parseArgs,
