@@ -1144,6 +1144,31 @@ describe('#2289 context-monitor: injection events still warn (unchanged)', () =>
     const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 25 });
     assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /CONTEXT CRITICAL/);
   });
+
+  // Review of #3709 (Major 3): complete the limit-1/limit/limit+1 trios on the
+  // EMIT path for both thresholds. 36/35 (WARNING) and 25 (CRITICAL) are pinned
+  // above; these close the trios. 26 is the row that separates the two
+  // comparisons — a `< CRITICAL_THRESHOLD` regression keeps 25 CRITICAL-looking
+  // tests green while silently reclassifying nothing, but 24-as-CRITICAL plus
+  // 26-as-WARNING-not-CRITICAL pins the `<=` on both sides.
+  test('PostToolUse at 34% (WARNING limit-1) → still WARNING envelope', () => {
+    const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 34 });
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /CONTEXT WARNING/);
+  });
+
+  test('PostToolUse at 26% (CRITICAL limit+1) → WARNING, not CRITICAL', () => {
+    const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 26 });
+    const msg = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(msg, /CONTEXT WARNING/, '26% is inside WARNING territory');
+    assert.doesNotMatch(msg, /CONTEXT CRITICAL/,
+      '26% must NOT be CRITICAL — the threshold is `remaining <= 25`, and one-off-the-limit is '
+      + 'exactly where an off-by-one in the comparison hides');
+  });
+
+  test('PostToolUse at 24% (CRITICAL limit-1) → CRITICAL envelope', () => {
+    const { stdout } = runMonitor({ event: 'PostToolUse', remaining: 24 });
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /CONTEXT CRITICAL/);
+  });
 });
 
 describe('#2289 context-monitor: side effects still fire on silent events (no output ≠ no side effect)', () => {
@@ -1180,6 +1205,7 @@ describe('#2289 context-monitor: side effects still fire on silent events (no ou
  */
 describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
   const HOOK = path.join(__dirname, '..', 'hooks', 'gsd-context-monitor.js');
+  const UNLINK_EPERM_PRELOAD = path.join(__dirname, 'helpers', 'context-monitor-unlink-eperm-preload.cjs');
 
   function makeSession(t, { gsdActive = false, contextWarnings = null } = {}) {
     const dir = os.tmpdir();
@@ -1220,7 +1246,12 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       // exit status, which made `assert.doesNotThrow` vacuous: a hook that exited
       // 1 on an ENOENT unlink would still have passed, because the assertion only
       // saw the helper's own catch.
-      call(event, remaining, { metrics = true } = {}) {
+      // `failUnlinkMatching` injects an EPERM into the CHILD's fs.unlinkSync for
+      // every path containing the given substring, via --require preload — the
+      // review-of-#3709 (Blocker 2) seam for the unlink-failure fallback. Method
+      // monkeypatching, never chmod 0o000: root bypasses mode bits under
+      // Docker/CI, so a chmod row passes with zero coverage.
+      call(event, remaining, { metrics = true, failUnlinkMatching = null } = {}) {
         if (metrics === 'keep') {
           // leave the bridge exactly as the previous call left it
         } else if (metrics) {
@@ -1235,11 +1266,16 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
         }
         let stdout = '';
         let exitCode = 0;
+        const argv = failUnlinkMatching ? ['--require', UNLINK_EPERM_PRELOAD, HOOK] : [HOOK];
+        const env = failUnlinkMatching
+          ? { ...process.env, GSD_TEST_UNLINK_EPERM_MATCH: failUnlinkMatching }
+          : process.env;
         try {
-          stdout = execFileSync(process.execPath, [HOOK], {
+          stdout = execFileSync(process.execPath, argv, {
             input: JSON.stringify({ session_id: id, cwd, hook_event_name: event }),
             encoding: 'utf8',
             timeout: 8000,
+            env,
           });
         } catch (e) { stdout = e.stdout || ''; exitCode = e.status ?? 1; }
         return { stdout: String(stdout), exitCode };
@@ -1247,6 +1283,19 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       warn() {
         try { return JSON.parse(fs.readFileSync(warnPath, 'utf8')); } catch { return null; }
       },
+      // Raw file contents (or null when absent) — the truncation rows assert on
+      // the exact byte content, because `warn()` cannot distinguish "absent"
+      // from "present but unparseable", and that distinction IS the fallback.
+      warnRaw() {
+        try { return fs.readFileSync(warnPath, 'utf8'); } catch { return null; }
+      },
+      metricsRaw() {
+        try { return fs.readFileSync(metricsPath, 'utf8'); } catch { return null; }
+      },
+      // The bridge filename (claude-ctx-<id>.json) ends with this, the sentinel
+      // (claude-ctx-<id>-warned.json) does not — a match string that fails ONLY
+      // the bridge unlink.
+      bridgeMatch: `${id}.json`,
       metrics() {
         try { return JSON.parse(fs.readFileSync(metricsPath, 'utf8')); } catch { return null; }
       },
@@ -1411,5 +1460,44 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     const { stdout } = s.call('PostToolUse', 30);
     assert.match(stdout, /CONTEXT WARNING/,
       'the cycle after a compaction starts fresh, so its first warning fires immediately');
+  });
+
+  // Review of #3709, Blockers 1+2. The unlink-failure fallback is the branch a
+  // held Windows handle takes, and it used to write well-formed NEUTRAL values —
+  // which are not equivalent to deletion on either path. These rows execute the
+  // branch for real (EPERM injected into the child's fs.unlinkSync via preload)
+  // and pin each half at its observable consequence. The '' assertions are also
+  // the proof the injection fired: a preload that failed to match would let the
+  // unlink succeed and leave `null`, not ''.
+  test('Blocker: sentinel unlink EPERM → truncated to empty, and AC2 still holds on this path', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const r = s.call('PreCompact', 20, { failUnlinkMatching: '-warned.json' });
+    assert.strictEqual(r.exitCode, 0, 'a failed unlink must never fail the compaction');
+    assert.strictEqual(s.warnRaw(), '',
+      'the sentinel must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral {} '
+      + 'parsed fine, so firstWarn was false and the first post-compaction warning was debounced: '
+      + 'AC2 of #3709 still unfixed on exactly the path the fallback exists for');
+    const { stdout } = s.call('PostToolUse', 30);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an unparseable sentinel IS the reset: the first warning of the new cycle fires immediately');
+  });
+
+  test('Blocker: bridge unlink EPERM → truncated to empty, silent — never "Usage at undefined%"', (t) => {
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const r = s.call('PreCompact', 20, { failUnlinkMatching: s.bridgeMatch });
+    assert.strictEqual(r.exitCode, 0, 'a failed unlink must never fail the compaction');
+    assert.strictEqual(s.metricsRaw(), '',
+      'the bridge must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral '
+      + '{"timestamp":0} was NEVER stale (the staleness guard is `metrics.timestamp && ...` and 0 '
+      + 'is falsy), so the flow reached emit with remaining === undefined');
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'the next tool use must be SILENT: an unreadable bridge falls to the outer catch and exits 0 '
+      + '— re-entering the prior round\'s Major as a literal "CONTEXT WARNING: Usage at undefined%" '
+      + 'injection is the failure mode this row pins shut');
+    assert.strictEqual(s.warn(), null,
+      'and no sentinel may be rebuilt off the truncated bridge — criticalRecorded stays un-re-armed');
   });
 });

@@ -102,8 +102,9 @@ As a brief reference: the statusline hook registers as `statusLine` in `settings
 - Stale metrics (older than 60s) are ignored
 - Missing bridge files are handled gracefully (subagents, fresh sessions)
 - A compaction is never blocked by this hook: if the per-session state cannot be
-  removed (a held file handle on Windows, for instance) it is neutralised in
-  place instead, and any remaining error is swallowed
+  removed (a held file handle on Windows, for instance) the file is truncated to
+  empty in place instead — which later reads treat exactly like an absent file —
+  and any remaining error is swallowed
 
 ---
 

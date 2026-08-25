@@ -119,17 +119,23 @@ process.stdin.on('end', () => {
       // "no reading yet" state a fresh session starts in, which exits silently.
       // A compaction invalidates the warning state AND the reading that produced
       // it, so both go.
-      for (const [stale, neutral] of [[warnPath, '{}'], [metricsPath, '{"timestamp":0}']]) {
+      for (const stale of [warnPath, metricsPath]) {
         try {
           fs.unlinkSync(stale);
         } catch (e) {
           if (e && e.code === 'ENOENT') continue;   // already absent — that IS the reset
           // Windows can hold a handle (EPERM/EBUSY), and a failed unlink would
           // leave the original bug silently intact, indistinguishable from
-          // success. Neutralise in place instead: an empty sentinel carries no
-          // lastLevel or criticalRecorded, and a timestamp-0 bridge is
-          // unconditionally stale, so both reach the state the reset wants.
-          try { fs.writeFileSync(stale, neutral); } catch (e2) { /* give up, never throw */ }
+          // success. Truncate to EMPTY instead — '' is the one payload both
+          // readers treat exactly like deletion, because JSON.parse('') throws:
+          // the sentinel read falls to its catch, so firstWarn stays true, and
+          // the bridge read falls to the outer catch and exits 0 silently. A
+          // well-formed "neutral" value is NOT equivalent (review of #3709):
+          // '{}' parses fine, so the first post-compaction warning is debounced
+          // — AC2 undone on this path — and '{"timestamp":0}' is never stale
+          // (the staleness guard is `metrics.timestamp && ...`, and 0 is
+          // falsy), so the flow reaches emit with remaining === undefined.
+          try { fs.writeFileSync(stale, ''); } catch (e2) { /* give up, never throw */ }
         }
       }
       process.exit(0);
