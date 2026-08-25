@@ -16490,3 +16490,276 @@ describe('#3468 B8: a drifted / malformed / unparseable STATE.md never reaches t
     });
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3699 — `state update` told the truth about failure.
+//
+// A frontmatter key like `stopped_at` is a PROJECTION of a body field, and the
+// body is the source of truth. Asking to update the key used to return
+// `Field "stopped_at" not found in STATE.md` — byte-identical to what a
+// genuinely absent field returns, and pointing away from the route that works.
+//
+// Case D is the one real capability gap: frontmatter carries the key, the body
+// has no source line, and neither route can write. `updateCore` now falls back
+// to writing the frontmatter key directly there (and only there).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3699 state update — derived frontmatter keys explain themselves', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FM = [
+    '---',
+    'gsd_state_version: 1.0',
+    'current_phase: 1',
+    'current_phase_name: alpha',
+    'status: executing',
+    'stopped_at: "original value"',
+    '---',
+    '',
+  ];
+  const BODY = ['# Project State', '', '## Current Position', '', 'Phase: 1 (alpha)', 'Status: Executing', ''];
+  const SESSION = ['## Session Continuity', '', 'Stopped at: original value', ''];
+
+  function writeState(lines, opts = {}) {
+    const eol = opts.crlf ? '\r\n' : '\n';
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), lines.join(eol));
+  }
+  function update(field, value) {
+    const result = runGsdTools(['state', 'update', field, value], tmpDir);
+    return { result, output: JSON.parse(result.output) };
+  }
+  function stateText() {
+    return fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+  }
+  function frontmatterStoppedAt() {
+    const m = stateText().match(/^stopped_at:.*$/m);
+    return m ? m[0] : null;
+  }
+
+  // ── the headline defect: present-but-derived vs genuinely absent ───────────
+
+  test('a body-derived frontmatter key is reported as derived, and names its body source', () => {
+    writeState([...FM, ...BODY, ...SESSION]);
+
+    const { output } = update('stopped_at', 'NEW VALUE');
+    assert.strictEqual(output.updated, false);
+    assert.match(output.reason, /not directly writable/i);
+    assert.match(output.reason, /Stopped At/i, 'the reason must name the body source that DOES work');
+    assert.doesNotMatch(output.reason, /not found in STATE\.md/i, 'the key is present — reporting absence is the bug');
+    assert.match(frontmatterStoppedAt(), /original value/, 'a refused update must not write');
+  });
+
+  test('a genuinely absent field still reports absence', () => {
+    // The control that keeps the fix honest: if EVERY failure now says
+    // "derived", the defect has been inverted, not closed.
+    writeState([...FM, ...BODY, ...SESSION]);
+
+    const { output } = update('definitely_not_a_field', 'NEW VALUE');
+    assert.strictEqual(output.updated, false);
+    assert.strictEqual(output.reason, 'Field "definitely_not_a_field" not found in STATE.md');
+  });
+
+  test('a present-but-derived key and a genuinely absent field no longer produce the same message', () => {
+    // #3699 stated as a test: the two were byte-identical apart from the name.
+    writeState([...FM, ...BODY, ...SESSION]);
+    const derived = update('stopped_at', 'NEW VALUE').output.reason;
+
+    writeState([...FM, ...BODY, ...SESSION]);
+    const absent = update('definitely_not_a_field', 'NEW VALUE').output.reason;
+
+    assert.notStrictEqual(
+      derived.replace(/"stopped_at"/g, 'X'),
+      absent.replace(/"definitely_not_a_field"/g, 'X'),
+      'the two failures must be distinguishable by more than the field name',
+    );
+  });
+
+  test('the body source route still works and still syncs to frontmatter', () => {
+    writeState([...FM, ...BODY, ...SESSION]);
+
+    const { output } = update('Stopped at', 'NEW VALUE');
+    assert.strictEqual(output.updated, true);
+    assert.match(frontmatterStoppedAt(), /NEW VALUE/);
+  });
+
+  // ── case D: the capability gap ────────────────────────────────────────────
+
+  test('case D: with no body source, the frontmatter key becomes directly writable', () => {
+    // Frontmatter carries stopped_at; the body has no `Stopped at:` line and no
+    // `## Session` section. Before this, BOTH routes failed and the stale value
+    // survived — the document was unrepairable through `state update`.
+    writeState([...FM, ...BODY]);
+
+    const { output } = update('stopped_at', 'NEW VALUE');
+    assert.strictEqual(output.updated, true);
+    assert.strictEqual(output.wrote, 'frontmatter');
+    assert.match(
+      frontmatterStoppedAt(),
+      /NEW VALUE/,
+      'the value must survive syncStateFrontmatter + applyStatePreservation, not just be written by the transition',
+    );
+  });
+
+  test('case D: the fallback is idempotent across repeated writes', () => {
+    writeState([...FM, ...BODY]);
+
+    update('stopped_at', 'FIRST');
+    assert.match(frontmatterStoppedAt(), /FIRST/);
+    const { output } = update('stopped_at', 'SECOND');
+    assert.strictEqual(output.updated, true);
+    assert.match(frontmatterStoppedAt(), /SECOND/);
+  });
+
+  test('case D: preserved does not claim a restore that authoritativeFm overrode', () => {
+    // Preservation DOES restore stopped_at's snapshot here (its body source is
+    // unchanged — absent), and authoritativeFm then overrides it. Listing the
+    // field in `preserved` would report a restore that did not survive: the
+    // same unfalsifiable-success shape this issue is about, one field over.
+    writeState([...FM, ...BODY]);
+
+    const { output } = update('stopped_at', 'NEW VALUE');
+    const claimed = (output.preserved || []).map((p) => String(p).toLowerCase());
+    assert.ok(
+      !claimed.includes('stopped at') && !claimed.includes('stopped_at'),
+      `preserved must not claim this field; got: ${JSON.stringify(output.preserved)}`,
+    );
+  });
+
+  test('case D via the body field name names the frontmatter key that still holds a value', () => {
+    writeState([...FM, ...BODY]);
+
+    const { output } = update('Stopped at', 'NEW VALUE');
+    assert.strictEqual(output.updated, false);
+    assert.match(output.reason, /stopped_at/, 'the reason must name the frontmatter key carrying the value');
+  });
+
+  // ── negative space: where the fallback must NOT fire ──────────────────────
+
+  test('the fallback does not fire when frontmatter does not carry the key', () => {
+    // Nothing to repair — inventing a key here would be fabricating state.
+    writeState([...FM.filter((l) => !l.startsWith('stopped_at:')), ...BODY]);
+
+    const { output } = update('stopped_at', 'NEW VALUE');
+    assert.strictEqual(output.updated, false);
+    assert.strictEqual(frontmatterStoppedAt(), null, 'no frontmatter key may be invented');
+  });
+
+  test('the fallback does not fire while ANY body source line exists, even outside ## Session', () => {
+    // The presence check is deliberately UNSCOPED while the builder's read is
+    // `## Session`-scoped. That asymmetry is the safe direction: a `Stopped at:`
+    // line the user could edit — even one stranded in an archive section —
+    // suppresses the frontmatter write. This pins the decision.
+    writeState([...FM, ...BODY, '## Session Continuity Archive', '', 'Stopped at: an archived value', '']);
+
+    const { output } = update('stopped_at', 'NEW VALUE');
+    assert.strictEqual(output.updated, false, 'a body line exists, so the body is still the route');
+    assert.notStrictEqual(output.wrote, 'frontmatter');
+  });
+
+  test('case D behaves identically on a CRLF document', () => {
+    writeState([...FM, ...BODY], { crlf: true });
+
+    const { output } = update('stopped_at', 'NEW VALUE');
+    assert.strictEqual(output.updated, true);
+    assert.match(frontmatterStoppedAt(), /NEW VALUE/);
+  });
+
+  // ── keys with no body source must not be given one ───────────────────────
+
+  test('keys derived from the clock, ROADMAP.md, or a disk scan say so instead of naming a body field', () => {
+    const cases = [
+      ['last_updated', /recomputed on every write/i],
+      ['state_head', /recomputed on every write/i],
+      ['gsd_state_version', /recomputed on every write/i],
+      ['milestone', /ROADMAP\.md/i],
+      ['milestone_name', /ROADMAP\.md/i],
+      ['progress.percent', /scan of \.planning\/phases/i],
+      ['progress.total_plans', /scan of \.planning\/phases/i],
+    ];
+    for (const [field, expected] of cases) {
+      writeState([...FM, ...BODY, ...SESSION]);
+      const { output } = update(field, 'X');
+      assert.strictEqual(output.updated, false, `${field} must not be writable`);
+      assert.match(output.reason, expected, `${field}: wrong derivation named`);
+      assert.doesNotMatch(output.reason, /Update its body source/i, `${field} has no body source to name`);
+    }
+  });
+
+  // ── the map cannot silently drift from the builder ───────────────────────
+
+  test('FRONTMATTER_BODY_SOURCE covers exactly the body-derived keys buildStateFrontmatter emits', () => {
+    // Parity assertion (CLAUDE.md → Generative Fix Divergence). The map is a
+    // second copy of knowledge that lives in buildStateFrontmatter, so this
+    // fails the moment either side gains or loses a body-derived key.
+    // Behavioral: drive a fully-populated STATE.md through a real write and read
+    // the frontmatter the builder actually produced.
+    writeState([
+      '---', 'gsd_state_version: 1.0', '---', '',
+      '# Project State', '',
+      '## Current Position', '',
+      'Current Phase: 2',
+      'Current Phase Name: beta',
+      'Current Plan: 1',
+      'Status: Executing',
+      'Last Activity: 2026-08-19 — did a thing',
+      '',
+      '## Session Continuity', '',
+      'Stopped at: somewhere',
+      'Paused At: elsewhere',
+      '',
+    ]);
+    update('Status', 'Executing');
+
+    const emitted = new Set(
+      stateText().split('---')[1].split('\n')
+        .map((l) => l.split(':')[0].trim())
+        .filter(Boolean),
+    );
+    const mapped = Object.keys(stateTransitionMod.FRONTMATTER_BODY_SOURCE);
+
+    for (const key of mapped) {
+      assert.ok(
+        emitted.has(key),
+        `FRONTMATTER_BODY_SOURCE maps "${key}", which buildStateFrontmatter did not emit for a fully-populated document — the map has drifted`,
+      );
+    }
+    for (const key of ['current_phase', 'current_phase_name', 'current_plan', 'status', 'stopped_at', 'paused_at', 'last_activity']) {
+      assert.ok(mapped.includes(key), `"${key}" is body-derived but absent from FRONTMATTER_BODY_SOURCE`);
+    }
+  });
+
+  test('property: every body label round-trips back to its frontmatter key', () => {
+    const entries = Object.entries(stateTransitionMod.FRONTMATTER_BODY_SOURCE);
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: entries.length - 1 }), fc.boolean(), (i, upper) => {
+        const [key, labels] = entries[i];
+        for (const label of labels) {
+          const probe = upper ? label.toUpperCase() : label.toLowerCase();
+          assert.strictEqual(
+            stateTransitionMod.frontmatterKeyForBodyField(probe),
+            key,
+            `"${probe}" must resolve back to "${key}"`,
+          );
+        }
+      }),
+      { numRuns: 25 },
+    );
+  });
+
+  test('inherited prototype members are not treated as fields', () => {
+    // Both lookups are own-property only; a prototype member must not produce a
+    // bogus "is a derived key" reason.
+    for (const probe of ['toString', 'constructor', 'valueOf', '__proto__', 'hasOwnProperty']) {
+      assert.strictEqual(stateTransitionMod.getFrontmatterBodySource(probe), null, `${probe} is not a frontmatter key`);
+      assert.strictEqual(stateTransitionMod.frontmatterKeyForBodyField(probe), null, `${probe} is not a body field`);
+    }
+  });
+});
