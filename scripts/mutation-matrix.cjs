@@ -114,7 +114,17 @@ const TARGET_MUTATION_SCORE = 80;
 // Measured CI scores 2026-06-14 (issue #1187, timeout-free — source of truth):
 //   context-utilization     92.31% → floor 80  (target already met)
 //   prompt-budget           68.33% → floor 66  (local was 99.6% — TIMEOUT INFLATION; CI is the truth)
-//   frontmatter             63.35% → floor 62
+//   frontmatter             63.35% → floor 62  (SUPERSEDED — see 2026-08-25 below)
+// Measured CI score 2026-08-25 (#3706, PR 3867):
+//   frontmatter             66.67% → floor 65  — #3706 added agentScalarNeedsDoubleQuoting and
+//     exported escapeDoubleQuoted from frontmatter.cts, and the tests constraining them lived in
+//     tests/runtime-converters.test.cjs, which this lane does NOT run: the shard fell to 60.58 and
+//     broke the floor. Direct unit tests for both were added to tests/frontmatter.unit.test.cjs
+//     (each clause paired with a near-miss that must answer the opposite way), which took the
+//     module ABOVE its pre-change score. Floor ratcheted per the HOW TO UPDATE formula above.
+//     NOTE: step 3 of that procedure says to update 'the matching RATCHET_BASELINE entry' — no
+//     such declaration exists in this file (the name appears only in that comment), so only
+//     minScore and this ledger were updated.
 //   adr-parser              69.30% → floor 68
 //   config-schema           54.55% → floor 52  (local was 69.7% — TIMEOUT INFLATION; CI is the truth)
 //   active-workstream-store 81.91% → floor 80
@@ -169,7 +179,7 @@ const COVERED = {
       // no test in the shard, so the module's score drops even though the behaviour is tested.
       'tests/unusable-input.test.cjs',
     ],
-    minScore: 62,
+    minScore: 65,
   },
   'adr-parser': {
     cjs: 'gsd-core/bin/lib/adr-parser.cjs',
