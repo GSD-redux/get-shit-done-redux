@@ -79,6 +79,13 @@ export type IdentityStatus = (typeof IDENTITY_STATUS)[keyof typeof IDENTITY_STAT
  * `--raw` payload always STARTS with this. An unanchored match would verify the
  * decoy `{"packageName":"get-shit-done-cc","note":"@opengsd/gsd-core"}`, which
  * is exactly the shape a colliding package could publish.
+ *
+ * The preamble anchors at BOTH ends: its `case` pattern is this prefix, then
+ * anything, then a literal `}`, so a truncated payload fails too. That is safe
+ * for any future additive field — a JSON object's own closing brace is always
+ * the last character, whatever the last value's type. It also pairs the literal
+ * `{` for the raw-text brace guards the preamble is inlined into (#3841); the
+ * pairing is a consequence of the stronger check, not the reason for it.
  */
 export const IDENTITY_RAW_PREFIX = `{"packageName":"${EXPECTED_PACKAGE_NAME}"`;
 

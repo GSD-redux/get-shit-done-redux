@@ -608,6 +608,46 @@ describe('runtime-launcher-parity (#373)', () => {
     }
   });
 
+  // ─── (F0) Brace balance — the preamble is inlined into brace-counted files ──
+  //
+  // Regression for the #3841 red matrix run. The preamble is inlined into 112
+  // shipped files, and several downstream guards balance braces by scanning raw
+  // TEXT with no string-context awareness — tests/new-project-mvp-prompt.test.cjs's
+  // "balanced braces" guard (mirroring #3784 bd53925f) counts every `{` and `}`
+  // across new-project.md plus its steps/. new-project.md and
+  // new-project/steps/auto-mode-config.md each carry one preamble copy, so a
+  // snippet that is off by one reports a combined net depth of TWO, in a test whose
+  // name mentions neither the launcher nor this issue.
+  //
+  // The identity assertion's `case` pattern legitimately contains a `{` inside a
+  // single-quoted shell literal. It is paired by requiring the payload to be a
+  // CLOSED object (`*'}'`) — which is also a real strengthening, since a truncated
+  // payload then fails. Pin the balance HERE, at the snippet, so the next edit to
+  // that pattern fails on the file it broke rather than three files downstream.
+  test('(F0) the snippet has balanced braces (#3841 — inlined into brace-counted files)', () => {
+    const snippetContent = fs.readFileSync(SNIPPET_FILE, 'utf8');
+    let depth = 0;
+    let minDepth = 0;
+    for (const ch of snippetContent) {
+      if (ch === '{') depth++;
+      if (ch === '}') depth--;
+      if (depth < minDepth) minDepth = depth;
+    }
+    assert.equal(
+      depth,
+      0,
+      `_runtime-launcher.snippet.sh has unbalanced braces: net depth ${depth}. ` +
+        `The preamble is inlined into 112 shipped files, and downstream guards ` +
+        `(tests/new-project-mvp-prompt.test.cjs) balance braces over raw text with no ` +
+        `awareness of shell quoting — an unpaired brace here fails there instead, ` +
+        `multiplied by the number of inlined copies in the scanned file set. ` +
+        `Pair the brace in the snippet; do not relax the downstream guard.`,
+    );
+    // Never dips below zero: a `}` that precedes its `{` would still net to 0 while
+    // being unbalanced at every prefix, which is what a text scanner actually reports.
+    assert.equal(minDepth, 0, `brace depth went negative (min ${minDepth}) — a closing brace precedes its opener`);
+  });
+
   // ─── (F) Regression locks: no /gsd-tools substring; no do.md dispatcher false-positive ──
   test('(F) snippet has no /gsd-tools substring; do.md has no /gsd[:-][a-z] matches', () => {
     // (F1) The snippet must not contain the literal substring /gsd-tools.

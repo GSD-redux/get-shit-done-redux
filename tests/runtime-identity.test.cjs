@@ -523,6 +523,51 @@ describe('launcher preamble: identity assertion on a path-based branch (#3841)',
     assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.UNVERIFIED}`), true, r.stdout);
   });
 
+  // ── The closing brace in the pattern is load-bearing, not cosmetic ─────────
+  // The `case` pattern is anchored at BOTH ends: it starts with the prefix and
+  // requires the payload to be a closed object. The trailing `'}'` also happens
+  // to balance the literal `{` for the raw-text brace guards the preamble is
+  // inlined into (see runtime-launcher-parity (F0)) — but it is asserted here
+  // because it does real work. Delete it and these two tests go red.
+  test('a truncated payload does not verify even though its prefix matches', (t) => {
+    if (skipOnWindows(t)) return;
+    installFakeTool(emit(`${IDENTITY_RAW_PREFIX},"version":"9.9.9"`));
+
+    const r = sourceAndReport();
+
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.UNVERIFIED}`), true, r.stdout);
+  });
+
+  test('trailing garbage after the closing brace does not verify', (t) => {
+    if (skipOnWindows(t)) return;
+    installFakeTool(emit(`${IDENTITY_RAW_PREFIX},"version":"9.9.9"} and then some`));
+
+    const r = sourceAndReport();
+
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.UNVERIFIED}`), true, r.stdout);
+  });
+
+  // Negative space for the two above: closing-brace anchoring must not reject a
+  // legitimate FUTURE payload. A JSON object's own `}` is always the last
+  // character regardless of the last value's type, so additive fields are safe.
+  for (const [label, extraKey] of [
+    ['a nested object', { extra: { a: [1, 2] } }],
+    ['an array-valued last key', { tags: ['x'] }],
+  ]) {
+    test(`an additive payload ending in ${label} still verifies`, (t) => {
+      if (skipOnWindows(t)) return;
+      installFakeTool(emit(JSON.stringify({
+        packageName: EXPECTED_PACKAGE_NAME,
+        version: '1.0.0',
+        ...extraKey,
+      })));
+
+      const r = sourceAndReport();
+
+      assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.OK}`), true, r.stdout);
+    });
+  }
+
   test('the anchor rejects a decoy that carries the name in a later field', (t) => {
     if (skipOnWindows(t)) return;
     // An UNANCHORED substring match accepts this. That is the whole point of
