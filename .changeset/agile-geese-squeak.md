@@ -1,5 +1,5 @@
 ---
 type: Fixed
-pr: 0
+pr: 3815
 ---
-**OpenCode subagents now carry the reasoning effort GSD resolved for them** — `query resolve-execution` reported an effort level that never reached the generated OpenCode agent, so every subagent ran at whatever the runtime defaulted the model to, silently ignoring `effort` config. The bake now emits a `variant` key alongside `model`, and only when effort is actually configured, so installs that never asked for effort routing are unchanged. `inherit` and any level OpenCode does not accept omit the key rather than naming a variant that cannot resolve. Config-supplied `model` and `variant` values are also quoted whenever YAML would not read them back verbatim — previously a value containing a newline could inject extra top-level keys into a generated agent file, and values like `no`, `12:30`, `@org/model` or a bare date were silently retyped or truncated. (#3706)
+**Workflows no longer send AI runtimes hunting the filesystem for the GSD shim** — 50 places across 23 runtime-loaded workflow, agent, reference, and command files told the agent to run `gsd-tools.cjs` by filename, which is not on PATH under any name. The agent got "command not found", fell back to locating the file, and on Git Bash for Windows `find /` walked the entire drive until someone killed it. Every one now calls the canonical `gsd_run` launcher. (#3809)
