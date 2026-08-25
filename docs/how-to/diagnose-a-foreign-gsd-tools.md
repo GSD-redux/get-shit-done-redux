@@ -18,8 +18,21 @@ under the predecessor. Both print success-shaped output, and `.planning/` is git
 default, so the difference is invisible until the directories are gone.
 
 Shipped workflows no longer resolve `gsd-tools` from `PATH` at all — they resolve `gsd_run`,
-which only this package publishes. That closes the path that caused #3129. The steps below
-are for confirming your setup and for fixing the cases the resolver now refuses.
+which only this package publishes. That closes the path that caused #3129. The remaining
+path-based branches — a project-local install, a runtime config directory — are checked by
+assertion instead: the launcher probes whatever it resolved and warns when the tool cannot
+prove it is `@opengsd/gsd-core`.
+
+If you got here from that warning, it looks like this:
+
+```text
+WARNING: "/some/path/gsd-tools.cjs" did not prove it is @opengsd/gsd-core - it is either a
+different package or an @opengsd/gsd-core older than the runtime-identity verb.
+```
+
+The two causes need opposite fixes, and the warning cannot tell them apart — the sections
+below can. The steps that follow are for confirming your setup and for fixing the cases the
+resolver refuses outright.
 
 ## Ask the tool what it is
 
@@ -122,9 +135,25 @@ command -v gsd-tools || echo "gsd-tools: NOT FOUND"
 - **Both missing** — nothing is installed globally; workflows will use a local or
   config-directory install if one exists.
 
+## Check the assertion's own verdict
+
+Inside a workflow shell — that is, after the launcher preamble has run — the outcome is a
+variable, not just a message:
+
+```bash
+printf '%s\n' "$GSD_IDENTITY_STATUS"
+```
+
+- `ok` — the resolved tool proved it is `@opengsd/gsd-core`. Nothing to do.
+- `unverified` — it did not. Work the two sections above, in that order: rule out a foreign
+  package first, then upgrade an old one.
+
+The warn phase does not stop the workflow. A later release turns `unverified` into a refusal,
+so treat it as something to fix now rather than something to live with.
+
 ## Related
 
-- [Runtime identity](../FEATURES.md#168-runtime-identity) — why the launcher resolves `gsd_run`
-  rather than asserting identity at every call
+- [Runtime identity](../FEATURES.md#168-runtime-identity) — why the launcher resolves `gsd_run`,
+  and why it also asserts identity on the branches that resolution alone cannot make safe
 - [`runtime-identity`](../COMMANDS.md#runtime-identity) — the verb's exact output
 - [#3129](https://github.com/open-gsd/gsd-core/issues/3129) — the incident this prevents

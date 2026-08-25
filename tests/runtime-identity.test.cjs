@@ -27,7 +27,10 @@ const {
   classifyIdentityProbe,
   buildIdentityPayload,
   explainVerdict,
+  statusForVerdict,
   EXPECTED_PACKAGE_NAME,
+  IDENTITY_STATUS,
+  IDENTITY_RAW_PREFIX,
 } = require('../gsd-core/bin/lib/runtime-identity.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -337,5 +340,243 @@ describe('launcher resolver: PATH branch prefers the collision-free bin', () => 
 
     assert.equal(fs.existsSync(foreign), false, 'the foreign gsd-tools must never run');
     assert.notEqual(r.exitCode, 0, 'resolution must fail closed');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3841 — the launcher preamble ASSERTS identity before any verb runs.
+//
+// #3831 closed the PATH route structurally (the resolver takes `gsd_run`, which
+// only this package publishes). The path-based branches — a project-local
+// install, a runtime config directory — had no such guarantee: they trusted
+// their configured location. These tests cover the assertion that closes them.
+//
+// Every shell assertion below reads the TYPED `GSD_IDENTITY_STATUS` value, never
+// the warning prose: CONTRIBUTING forbids `assert.match` on process output as
+// the proof a behavior fired.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('statusForVerdict — the five-way reason collapses to two shell values', () => {
+  test('only `ok` yields OK; every other reason yields UNVERIFIED', () => {
+    const cases = [
+      [{ stdout: JSON.stringify(buildIdentityPayload({ readVersion: () => '1.0.0' })), exitCode: 0 }, IDENTITY_STATUS.OK],
+      [{ stdout: okStdout('get-shit-done-cc'), exitCode: 0 }, IDENTITY_STATUS.UNVERIFIED],
+      [{ stdout: 'Usage: gsd-sdk', exitCode: 1 }, IDENTITY_STATUS.UNVERIFIED],
+      [{ stdout: 'not json', exitCode: 0 }, IDENTITY_STATUS.UNVERIFIED],
+      [{ stdout: '', exitCode: null, spawnFailed: true }, IDENTITY_STATUS.UNVERIFIED],
+    ];
+    const seen = new Set();
+    for (const [probe, expected] of cases) {
+      const verdict = classifyIdentityProbe(probe);
+      seen.add(verdict.reason);
+      assert.equal(statusForVerdict(verdict), expected, `reason ${verdict.reason}`);
+    }
+    // Proof of coverage: all five reason codes were actually exercised above.
+    assert.equal(seen.size, 5, `expected all five reasons, saw ${[...seen].join(',')}`);
+  });
+
+  test('the status enum is frozen, so a test can bind to the value', () => {
+    assert.equal(Object.isFrozen(IDENTITY_STATUS), true);
+    assert.deepEqual(Object.values(IDENTITY_STATUS).sort(), ['ok', 'unverified']);
+  });
+
+  test('is total: every classifier output maps to a declared status', () => {
+    const STATUSES = new Set(Object.values(IDENTITY_STATUS));
+    fc.assert(
+      fc.property(
+        fc.string(),
+        fc.oneof(fc.integer({ min: -8, max: 8 }), fc.constant(null)),
+        fc.boolean(),
+        fc.boolean(),
+        (stdout, exitCode, spawnFailed, timedOut) => {
+          const verdict = classifyIdentityProbe({ stdout, exitCode, spawnFailed, timedOut });
+          const status = statusForVerdict(verdict);
+          assert.ok(STATUSES.has(status));
+          // OK is reachable only through a genuine match — fail-closed by default.
+          if (status === IDENTITY_STATUS.OK) assert.equal(verdict.reason, 'ok');
+        },
+      ),
+      { seed: 38410, numRuns: 300 },
+    );
+  });
+});
+
+describe('IDENTITY_RAW_PREFIX — the anchor the shell matches on', () => {
+  // Generative-divergence guard: the shell `case` pattern and the JS payload
+  // builder are two surfaces that must agree byte-for-byte. If `--raw`'s key
+  // order or serialization ever changed, the preamble would silently stop
+  // verifying a legitimate install and warn on every run.
+  test('the real --raw payload starts with the prefix', () => {
+    const r = runNode([GSD_TOOLS, 'runtime-identity', '--raw'], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.stdout.startsWith(IDENTITY_RAW_PREFIX), true);
+  });
+
+  test('the prefix names this package and closes the quoted value', () => {
+    assert.equal(IDENTITY_RAW_PREFIX, `{"packageName":"${EXPECTED_PACKAGE_NAME}"`);
+  });
+});
+
+describe('launcher preamble: identity assertion on a path-based branch (#3841)', () => {
+  let dir;
+  let binDir;
+  let toolsDir;
+
+  // Resolution here goes through the RUNTIME_DIR-local branch — the branch
+  // #3831 could NOT make safe structurally, and therefore the one this
+  // assertion exists for.
+  const installFakeTool = (identityBody) => {
+    fs.writeFileSync(
+      path.join(toolsDir, 'gsd-tools.cjs'),
+      '#!/usr/bin/env node\n' +
+        "const a = process.argv.slice(2);\n" +
+        "if (a[0] === 'runtime-identity') { " + identityBody + " }\n" +
+        "process.stdout.write('RAN:' + a.join(',') + '\\n');\n",
+      { mode: 0o755 },
+    );
+  };
+
+  const sourceAndReport = (extra = '') => {
+    const harness = path.join(dir, 'harness.sh');
+    fs.writeFileSync(
+      harness,
+      '#!/bin/sh\n' +
+        `. "${SNIPPET}"\n` +
+        "printf 'STATUS=%s\\n' \"$GSD_IDENTITY_STATUS\"\n" +
+        extra +
+        '\n',
+      { mode: 0o755 },
+    );
+    return runHook(harness, [], {
+      // Absolute interpreter: env.PATH below is restricted to the fixture bin,
+      // so a bare `sh` would not resolve and every assertion would be vacuous.
+      interpreter: '/bin/sh',
+      cwd: dir,
+      timeoutMs: PROBE_TIMEOUT_MS,
+      // PATH holds only the fixture bin (plus a node symlink) so a real gsd_run
+      // on the developer's machine cannot satisfy the resolver instead.
+      env: { PATH: binDir, HOME: dir, RUNTIME_DIR: dir },
+    });
+  };
+
+  const skipOnWindows = (t) => {
+    if (process.platform !== 'win32') return false;
+    t.skip('POSIX shell preamble is not executed on Windows runtimes');
+    return true;
+  };
+
+  beforeEach(() => {
+    dir = createTempDir('gsd-3841-identity-');
+    binDir = path.join(dir, 'bin');
+    toolsDir = path.join(dir, 'gsd-core', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(toolsDir, { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
+  });
+
+  afterEach(() => cleanup(dir));
+
+  const emit = (json) => `process.stdout.write(${JSON.stringify(json)} + '\\n'); process.exit(0);`;
+
+  test('a tool that proves it is this package reports status ok', (t) => {
+    if (skipOnWindows(t)) return;
+    installFakeTool(emit(`${IDENTITY_RAW_PREFIX},"version":"9.9.9"}`));
+
+    const r = sourceAndReport();
+
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.OK}`), true, r.stdout);
+  });
+
+  // ── Anchor boundary: limit-1 / limit / limit+1 on the matched prefix ───────
+  // The "limit" is IDENTITY_RAW_PREFIX itself. One byte short, exact, and one
+  // byte long are the three cases a substring match would get wrong.
+  test('a payload one byte SHORT of the anchor does not verify (limit-1)', (t) => {
+    if (skipOnWindows(t)) return;
+    // Truncate the expected name by one character, then close the JSON legally.
+    const short = IDENTITY_RAW_PREFIX.slice(0, IDENTITY_RAW_PREFIX.length - 2) + '"';
+    assert.notEqual(short, IDENTITY_RAW_PREFIX);
+    installFakeTool(emit(`${short},"version":"9.9.9"}`));
+
+    const r = sourceAndReport();
+
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.UNVERIFIED}`), true, r.stdout);
+  });
+
+  test('the exact anchor verifies (limit)', (t) => {
+    if (skipOnWindows(t)) return;
+    installFakeTool(emit(`${IDENTITY_RAW_PREFIX},"version":"0.0.0"}`));
+
+    const r = sourceAndReport();
+
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.OK}`), true, r.stdout);
+  });
+
+  test('a payload one byte LONGER than the anchor does not verify (limit+1)', (t) => {
+    if (skipOnWindows(t)) return;
+    // An extra character inside the package name: `@opengsd/gsd-coreX`.
+    const long = `{"packageName":"${EXPECTED_PACKAGE_NAME}X"`;
+    installFakeTool(emit(`${long},"version":"9.9.9"}`));
+
+    const r = sourceAndReport();
+
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.UNVERIFIED}`), true, r.stdout);
+  });
+
+  test('the anchor rejects a decoy that carries the name in a later field', (t) => {
+    if (skipOnWindows(t)) return;
+    // An UNANCHORED substring match accepts this. That is the whole point of
+    // anchoring: the decoy is trivially publishable by a colliding package.
+    installFakeTool(emit(JSON.stringify({ packageName: 'get-shit-done-cc', note: EXPECTED_PACKAGE_NAME })));
+
+    const r = sourceAndReport();
+
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.UNVERIFIED}`), true, r.stdout);
+  });
+
+  test('a tool with no runtime-identity verb does not verify and does not kill the run', (t) => {
+    if (skipOnWindows(t)) return;
+    // Shape of the real predecessor: usage screen, exit 1. Also the shape of an
+    // @opengsd/gsd-core older than the verb — which is why this WARNS rather
+    // than failing during the warn-then-fail rollout (#3146 ruling).
+    installFakeTool("process.stderr.write('Unknown command\\n'); process.exit(1);");
+
+    const r = sourceAndReport('gsd_run phases clear');
+
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.UNVERIFIED}`), true, r.stdout);
+    assert.equal(r.exitCode, 0, 'the warn phase must not stop the workflow');
+    assert.equal(r.stdout.includes('RAN:phases,clear'), true, 'the verb must still run in the warn phase');
+  });
+
+  test('a probe that prints nothing does not verify', (t) => {
+    if (skipOnWindows(t)) return;
+    installFakeTool('process.exit(0);');
+
+    const r = sourceAndReport();
+
+    assert.equal(r.stdout.includes(`STATUS=${IDENTITY_STATUS.UNVERIFIED}`), true, r.stdout);
+  });
+
+  test('the probe writes nothing to the workflow stdout', (t) => {
+    if (skipOnWindows(t)) return;
+    // The preamble captures the probe in a command substitution. If it leaked,
+    // every workflow that parses gsd_run output would read the payload first.
+    installFakeTool(emit(`${IDENTITY_RAW_PREFIX},"version":"1.0.0"}`));
+
+    const r = sourceAndReport();
+
+    assert.equal(r.stdout.split('\n')[0], `STATUS=${IDENTITY_STATUS.OK}`, r.stdout);
+  });
+
+  test('the status survives as an exported environment variable', (t) => {
+    if (skipOnWindows(t)) return;
+    installFakeTool(emit(`${IDENTITY_RAW_PREFIX},"version":"1.0.0"}`));
+
+    // A child process must see it — workflows spawn subshells between steps.
+    // Absolute interpreter: PATH holds only the fixture bin, so a bare `sh`
+    // would not resolve and the child would never run.
+    const r = sourceAndReport('/bin/sh -c \'printf "CHILD=%s\\n" "$GSD_IDENTITY_STATUS"\'');
+
+    assert.equal(r.stdout.includes(`CHILD=${IDENTITY_STATUS.OK}`), true, r.stdout);
   });
 });

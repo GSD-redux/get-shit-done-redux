@@ -2230,9 +2230,17 @@ The payload is additive-only: consumers must ignore unrecognized keys. `version`
 reported but is **not** asserted by the launcher check — identity alone determines whether
 the check passes, so a `0.0.0` development tree still verifies.
 
-This is a **manual diagnostic**. Nothing invokes it automatically; the launcher prevents the
-package-collision failure structurally instead, by resolving `gsd_run` rather than `gsd-tools`
-on `PATH`.
+The launcher preamble runs this verb once, immediately after it resolves a tool and before
+any workflow verb executes. It matches the `--raw` output **anchored to the start** of the
+payload — a substring search would accept `{"packageName":"get-shit-done-cc","note":
+"@opengsd/gsd-core"}` — and exports the outcome as `GSD_IDENTITY_STATUS`:
+
+| `GSD_IDENTITY_STATUS` | Meaning |
+|---|---|
+| `ok` | The resolved tool proved it is `@opengsd/gsd-core`. |
+| `unverified` | It did not. Either a different package, or an `@opengsd/gsd-core` older than this verb. The preamble prints one line to stderr and continues — the rollout is warn-then-fail. |
+
+The same verb is still useful by hand for answering "which tool am I actually running?".
 
 See [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) for using it,
 and [Runtime identity](FEATURES.md#168-runtime-identity) for the rationale.

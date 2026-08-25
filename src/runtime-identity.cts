@@ -11,9 +11,19 @@
  * That collision is now prevented in the resolver rather than detected here:
  * the launcher's PATH branch resolves `gsd_run`, which only this package
  * publishes and which self-locates to its sibling shim, so a foreign binary is
- * unreachable from PATH. This module backs the `runtime-identity` verb, a
- * MANUAL diagnostic for answering "which tool am I actually running?" — it is
- * not an automatic gate, and nothing calls it on the hot path.
+ * unreachable from PATH. The path-based branches — a project-local install, a
+ * runtime config directory — have no such structural guarantee: they trust
+ * their configured location. #3841 closes that remaining route by making the
+ * launcher preamble PROBE the resolved tool once, before any verb runs, and
+ * warn when it cannot prove it is this package. This module backs both the
+ * `runtime-identity` verb the preamble calls and the vocabulary that gate
+ * reports in (`IDENTITY_STATUS`).
+ *
+ * The rollout is warn-then-fail (the #3146 maintainer ruling): the preamble
+ * prints one actionable line and proceeds. It cannot hard-fail yet because
+ * `no_identity_verb` does not distinguish a foreign package from an
+ * `@opengsd/gsd-core` older than the verb — and during rollout the old-version
+ * case is the common one, so a hard failure would stop working installs.
  *
  * Parsing is deliberately STRICT. The whole value of the check is telling "us"
  * from "not us"; a lenient parse that accepts the predecessor's usage text as
@@ -42,6 +52,35 @@ export type IdentityReason =
   | 'no_identity_verb'
   | 'unparseable'
   | 'probe_failed';
+
+/**
+ * The two-valued status the launcher preamble exports as `GSD_IDENTITY_STATUS`
+ * (#3841). Frozen so it is a VALUE a test can assert on: CONTRIBUTING forbids
+ * proving the gate fired by matching its human-readable warning prose.
+ *
+ * Two values, not five: the shell has no use for the distinction between
+ * `no_identity_verb` and `unparseable` — it either holds proof or it does not.
+ * The five-way {@link IdentityReason} stays the diagnostic vocabulary;
+ * {@link statusForVerdict} is the only bridge between them.
+ */
+export const IDENTITY_STATUS = Object.freeze({
+  OK: 'ok',
+  UNVERIFIED: 'unverified',
+} as const);
+
+/** A value of {@link IDENTITY_STATUS}. */
+export type IdentityStatus = (typeof IDENTITY_STATUS)[keyof typeof IDENTITY_STATUS];
+
+/**
+ * The exact byte prefix the preamble anchors its `case` pattern to.
+ *
+ * ANCHORED, never a substring search. `JSON.stringify` emits keys in insertion
+ * order and `buildIdentityPayload` inserts `packageName` first, so a genuine
+ * `--raw` payload always STARTS with this. An unanchored match would verify the
+ * decoy `{"packageName":"get-shit-done-cc","note":"@opengsd/gsd-core"}`, which
+ * is exactly the shape a colliding package could publish.
+ */
+export const IDENTITY_RAW_PREFIX = `{"packageName":"${EXPECTED_PACKAGE_NAME}"`;
 
 /** Raw result of running `<resolved gsd-tools> runtime-identity`. */
 export interface IdentityProbe {
@@ -132,6 +171,16 @@ export function classifyIdentityProbe(
 
   // Unknown keys are ignored so a future payload addition cannot fail an older check.
   return { reason: 'ok', expected, actual, version };
+}
+
+/**
+ * Collapse a five-way verdict onto the two-valued shell status.
+ *
+ * Total by construction: anything that is not `ok` is `unverified`. A future
+ * sixth reason code therefore fails CLOSED here rather than silently verifying.
+ */
+export function statusForVerdict(verdict: IdentityVerdict): IdentityStatus {
+  return verdict.reason === 'ok' ? IDENTITY_STATUS.OK : IDENTITY_STATUS.UNVERIFIED;
 }
 
 export interface PayloadDeps {
