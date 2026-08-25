@@ -88,6 +88,8 @@ const {
   assertUsableBaseRef,
   fetchOpenPrTouchedAckPaths,
   MAX_OPEN_PRS,
+  MAX_PR_FILES,
+  GITHUB_MAX_PR_FILES,
   runGuardNext,
 } = require('../scripts/lint-emitted-drift-ack.cjs');
 const {
@@ -4472,6 +4474,113 @@ describe('#3842: fetchOpenPrTouchedAckPaths', () => {
     assert.equal(paths.has(`${ACK_DIR_REPO_PATH}/x.json`), true);
     assert.equal(paths.size, 1);
   });
+
+  // `gh pr list --json files` truncates each PR's own file list at MAX_PR_FILES, silently
+  // (#3842, PR #3848: 124 files changed, 100 returned, none of the two ack paths among
+  // them because the list stops mid `gsd-core/workflows/`, which sorts before `tests/`).
+  // A PR AT the cap is answered with one additional paginated `gh api` call; below the
+  // cap, the single `gh pr list` call is trusted as-is.
+  const filler = (n) => Array.from(
+    { length: n },
+    (_, i) => ({ path: `gsd-core/workflows/w${String(i).padStart(4, '0')}.md` }),
+  );
+
+  test('a sub-cap PR is answered by the single list call', () => {
+    const files = filler(MAX_PR_FILES - 2).concat([{ path: `${ACK_DIR_REPO_PATH}/a.json` }]);
+    const stdout = JSON.stringify([{ number: 1, files }]);
+    let calls = 0;
+    const paths = fetchOpenPrTouchedAckPaths({ execGh: () => { calls += 1; return stdout; } });
+    assert.equal(calls, 1);
+    assert.equal(paths.has(`${ACK_DIR_REPO_PATH}/a.json`), true);
+  });
+
+  test('a PR at the file cap is re-fetched, because full and truncated look identical', () => {
+    const files = filler(MAX_PR_FILES);
+    const stdout = JSON.stringify([{ number: 77, files }]);
+    const paths = fetchOpenPrTouchedAckPaths({
+      execGh: (args) => (args[0] === 'pr' ? stdout : `${ACK_DIR_REPO_PATH}/a.json\n`),
+    });
+    assert.equal(paths.has(`${ACK_DIR_REPO_PATH}/a.json`), true);
+  });
+
+  test('a PR past the file cap has its ack path recovered by the re-fetch', () => {
+    const files = filler(MAX_PR_FILES + 1);
+    const stdout = JSON.stringify([{ number: 77, files }]);
+    const paths = fetchOpenPrTouchedAckPaths({
+      execGh: (args) => (args[0] === 'pr' ? stdout : `${ACK_DIR_REPO_PATH}/a.json\n`),
+    });
+    assert.equal(paths.has(`${ACK_DIR_REPO_PATH}/a.json`), true);
+  });
+
+  test('the re-fetch asks the paginated REST endpoint for that PR', () => {
+    const files = filler(MAX_PR_FILES);
+    const stdout = JSON.stringify([{ number: 77, files }]);
+    let capturedArgs;
+    fetchOpenPrTouchedAckPaths({
+      execGh: (args) => {
+        if (args[0] === 'pr') return stdout;
+        capturedArgs = args;
+        return '';
+      },
+    });
+    assert.ok(capturedArgs.includes('api'));
+    assert.ok(capturedArgs.includes('repos/{owner}/{repo}/pulls/77/files'));
+    assert.ok(capturedArgs.includes('--paginate'));
+  });
+
+  test('a failed re-fetch throws rather than trusting the truncated list', () => {
+    const files = filler(MAX_PR_FILES);
+    const stdout = JSON.stringify([{ number: 77, files }]);
+    assert.throws(() => fetchOpenPrTouchedAckPaths({
+      execGh: (args) => {
+        if (args[0] === 'pr') return stdout;
+        throw new Error('gh: rate limited');
+      },
+    }));
+  });
+
+  test("a PR beyond GitHub's own file ceiling throws rather than returning a partial set", () => {
+    const files = filler(MAX_PR_FILES);
+    const stdout = JSON.stringify([{ number: 77, files }]);
+    const apiOut = Array.from(
+      { length: GITHUB_MAX_PR_FILES },
+      (_, i) => `gsd-core/workflows/w${i}.md`,
+    ).join('\n');
+    assert.throws(() => fetchOpenPrTouchedAckPaths({
+      execGh: (args) => (args[0] === 'pr' ? stdout : apiOut),
+    }));
+  });
+
+  test('a re-fetched PR that touches no fragment contributes nothing', () => {
+    const files = filler(MAX_PR_FILES);
+    const stdout = JSON.stringify([{ number: 77, files }]);
+    const apiOut = filler(MAX_PR_FILES + 5).map((f) => f.path).join('\n');
+    const paths = fetchOpenPrTouchedAckPaths({
+      execGh: (args) => (args[0] === 'pr' ? stdout : apiOut),
+    });
+    assert.equal(paths.size, 0);
+  });
+
+  test('each capped PR is re-fetched independently', () => {
+    const cappedFiles = filler(MAX_PR_FILES);
+    const subCapFiles = filler(MAX_PR_FILES - 1);
+    const stdout = JSON.stringify([
+      { number: 1, files: cappedFiles },
+      { number: 2, files: cappedFiles },
+      { number: 3, files: subCapFiles },
+    ]);
+    let apiCalls = 0;
+    const paths = fetchOpenPrTouchedAckPaths({
+      execGh: (args) => {
+        if (args[0] === 'pr') return stdout;
+        apiCalls += 1;
+        const prNumber = args[1].match(/pulls\/(\d+)\/files/)[1];
+        return prNumber === '2' ? `${ACK_DIR_REPO_PATH}/a.json\n` : 'gsd-core/workflows/w0000.md\n';
+      },
+    });
+    assert.equal(apiCalls, 2);
+    assert.deepEqual([...paths], [`${ACK_DIR_REPO_PATH}/a.json`]);
+  });
 });
 
 describe('#3842: runGuardNext wires --defer-to-open-prs end to end against a real repo', () => {
@@ -4532,6 +4641,27 @@ describe('#3842: runGuardNext wires --defer-to-open-prs end to end against a rea
       });
       assert.ok(result.ok, 'an unverifiable open-PR set must hold rather than sweep');
       assert.ok(result.lines.some((l) => l.includes('gh: rate limited')));
+      assert.ok(result.lines.some((l) => l.includes('open-PR check unavailable')));
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('a re-fetch failure degrades to the unknown sentinel, not to an empty set', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+      const c2 = repo.commit('add fragment');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+      repo.commit('unrelated change');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c2, '--defer-to-open-prs'],
+        cwd: repo.dir,
+        fetchOpenPrPaths: () => { throw new Error('fetchPrFiles: PR #77 re-fetch failed'); },
+      });
+      assert.ok(result.ok, 'an unverifiable open-PR set must hold rather than sweep');
+      assert.ok(result.lines.some((l) => l.includes('a.json') && l.includes('held')));
       assert.ok(result.lines.some((l) => l.includes('open-PR check unavailable')));
     } finally {
       cleanup(repo.dir);
