@@ -340,6 +340,12 @@ jobs:
     if: inputs.action == 'rc'
     permissions:
       contents: read
+      # #3833: install-smoke.yml now calls the mergeability preflight, which
+      # requests pull-requests: read. A nested reusable workflow may only
+      # DOWNGRADE its caller's token, so without this the whole release run
+      # fails to start on a permissions escalation. On a release the preflight
+      # itself no-ops (the event is not pull_request) and never uses the scope.
+      pull-requests: read
     uses: ./.github/workflows/install-smoke.yml
     with:
       ref: ${{ needs.validate-version.outputs.branch }}
@@ -528,6 +534,9 @@ jobs:
     if: inputs.action == 'finalize'
     permissions:
       contents: read
+      # #3833: see install-smoke-rc — the nested preflight requests this scope,
+      # and a nested reusable workflow can only downgrade, never elevate.
+      pull-requests: read
     uses: ./.github/workflows/install-smoke.yml
     with:
       ref: ${{ needs.validate-version.outputs.branch }}

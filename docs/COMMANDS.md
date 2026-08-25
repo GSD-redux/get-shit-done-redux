@@ -2012,6 +2012,64 @@ Presence and posture are separate verdicts: a missing agent is reported in `miss
 
 ---
 
+### `state update <field> <value>`
+
+Update a single STATE.md field.
+
+**Prerequisites:** `.planning/STATE.md` exists
+**Produces:** `{updated: true, preserved: [...]}`, or `{updated: false, reason, preserved: [...]}`
+
+```bash
+node gsd-tools.cjs state update "Stopped at" "finished the migration"
+```
+
+#### Frontmatter keys are projections — write the body field
+
+STATE.md's frontmatter is **re-derived from the body on every write**. So a frontmatter key like
+`stopped_at` is not the value; it is a projection of the body field `Stopped at:`. Ask to update the
+key and the command refuses, naming the field that does work:
+
+```json
+{
+  "updated": false,
+  "reason": "Field \"stopped_at\" is a body-derived frontmatter key and is not directly writable. Update its body source instead: state update \"Stopped At\" <value>."
+}
+```
+
+This is distinct from a field that genuinely is not there, which still reports
+`Field "…" not found in STATE.md`. The two used to be indistinguishable (#3699).
+
+| Frontmatter key | Body source |
+|---|---|
+| `current_phase` | `Current Phase` (or the prose `Phase:` line) |
+| `current_phase_name` | `Current Phase Name` (or the prose `Phase:` name) |
+| `current_plan` | `Current Plan` |
+| `status` | `Status` |
+| `stopped_at` | `Stopped At` / `Stopped at` (under `## Session`) |
+| `paused_at` | `Paused At` (under `## Session`) |
+| `last_activity` | `Last Activity` / `Last activity` (date part) |
+| `last_activity_desc` | `Last Activity Description` (or the prose after the dash) |
+
+Keys not in this table have no body source at all — `milestone` and `milestone_name` come from
+ROADMAP.md, `progress.*` from a scan of `.planning/phases/`, and `last_updated` / `state_head` /
+`gsd_state_version` are recomputed on every write. The refusal names which of those applies.
+
+#### Repairing a document whose body source is missing
+
+If frontmatter carries a key but the body has **no** source line for it, there is nothing to derive
+from and neither route can write. In that one case the frontmatter key *is* directly writable, and
+the command says so:
+
+```json
+{ "updated": true, "wrote": "frontmatter", "preserved": [] }
+```
+
+`wrote: "frontmatter"` appears only on this repair path — an ordinary update omits it. The fallback
+is deliberately narrow: it will not fire while any body source line still exists (even one stranded
+in an archive section), and it will not invent a frontmatter key that is not already there.
+
+---
+
 ### `state validate`
 
 Detect drift between STATE.md and the actual filesystem.
@@ -2023,6 +2081,24 @@ Detect drift between STATE.md and the actual filesystem.
 node gsd-tools.cjs state validate
 ```
 
+| Flag | Description |
+|------|-------------|
+| `--strict` | Exit non-zero when the report is not `valid: true`. Off by default. |
+
+Without `--strict` the command always exits `0`, including when it reports
+`valid: false` — so a CI step or git hook has to parse the JSON to decide whether
+state is correct. `--strict` makes the verdict gateable directly:
+
+```bash
+node gsd-tools.cjs state validate --strict || echo "STATE.md needs attention"
+```
+
+The default is deliberately unchanged: the exit status is observable behavior that
+reaches downstream consumers who cannot be enumerated, so opting in is a choice the
+caller makes rather than one imposed on every existing script.
+
+A missing or unreadable STATE.md exits non-zero under `--strict` too — those report
+`error` or `valid: false` and are as gateable as any drift warning.
 The report also carries a `scope` field reporting whether the drift derivation could actually run:
 
 | `scope` | Meaning |
@@ -2045,6 +2121,8 @@ Each `warnings` entry is a coded diagnostic object (`{code, severity, message, r
 | `S005` | warning | STATE.md's plan count disagrees with the plan count on disk |
 | `S006` | warning | STATE.md still says "executing" but a `*-VERIFICATION.md` in the phase shows verification passed |
 | `S007` | warning | Every plan in the phase has a summary, but STATE.md still says "executing" |
+| `S008` | warning | STATE.md's `Last activity` value does not begin with a real calendar date, so no reader can date the project's activity |
+| `S009` | warning | The `Last activity` description wrapped onto a second line, and every reader silently drops the remainder |
 
 ---
 
@@ -2118,6 +2196,54 @@ Mark the current phase as COMPLETE in STATE.md — updates the body `Status`, `L
 ```bash
 node gsd-tools.cjs state complete-phase --phase 3
 ```
+
+---
+
+### `runtime-identity`
+
+Report the package coordinates of the `gsd-tools` that is executing. Used by the runtime
+launcher preamble to confirm a shipped workflow reached this package's tool rather than a
+different package that also provides a `gsd-tools` binary.
+
+**Prerequisites:** none — it reads no project state and needs no resolvable project root
+**Produces:** a JSON identity payload on stdout
+
+```bash
+node gsd-tools.cjs runtime-identity
+```
+
+```json
+{
+  "packageName": "@opengsd/gsd-core",
+  "version": "1.12.0"
+}
+```
+
+| Field | Type | Value |
+|---|---|---|
+| `packageName` | string | Always `@opengsd/gsd-core`. Baked at build time from `package.json`, so it survives an installed tree that carries no real `package.json`. |
+| `version` | string | The installed host version. Falls back to `0.0.0` when neither `gsd-core/VERSION` nor a runtime-root `package.json` is readable. |
+
+`--raw` emits the same payload on a single line.
+
+The payload is additive-only: consumers must ignore unrecognized keys. `version` is
+reported but is **not** asserted by the launcher check — identity alone determines whether
+the check passes, so a `0.0.0` development tree still verifies.
+
+The launcher preamble runs this verb once, immediately after it resolves a tool and before
+any workflow verb executes. It matches the `--raw` output **anchored to the start** of the
+payload — a substring search would accept `{"packageName":"get-shit-done-cc","note":
+"@opengsd/gsd-core"}` — and exports the outcome as `GSD_IDENTITY_STATUS`:
+
+| `GSD_IDENTITY_STATUS` | Meaning |
+|---|---|
+| `ok` | The resolved tool proved it is `@opengsd/gsd-core`. |
+| `unverified` | It did not. Either a different package, or an `@opengsd/gsd-core` older than this verb. The preamble prints one line to stderr and continues — the rollout is warn-then-fail. |
+
+The same verb is still useful by hand for answering "which tool am I actually running?".
+
+See [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) for using it,
+and [Runtime identity](FEATURES.md#168-runtime-identity) for the rationale.
 
 ---
 

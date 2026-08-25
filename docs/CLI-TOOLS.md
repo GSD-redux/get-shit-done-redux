@@ -45,7 +45,8 @@ node gsd-tools.cjs state load
 # Output STATE.md frontmatter as JSON
 node gsd-tools.cjs state json
 
-# Update a single field
+# Update a single field. Frontmatter keys are projections of body fields —
+# write the body field (see COMMANDS.md#state-update-field-value).
 node gsd-tools.cjs state update <field> <value>
 
 # Get STATE.md content or a specific section

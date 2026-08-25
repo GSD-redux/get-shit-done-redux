@@ -64,6 +64,9 @@ import { findProjectRoot } from './project-root.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import milestoneLockMod = require('./milestone-lock.cjs');
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
+// #3699: the frontmatter-key <-> body-field routing behind `state update`'s
+// failure explanation, and the classification table it falls back to.
+const { getFieldClassification, getFrontmatterBodySource, frontmatterKeyForBodyField } = stateTransitionMod;
 type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
 type StateTransitionDeps = stateTransitionMod.StateTransitionDeps;
 type PhaseInventoryRecord = stateTransitionMod.PhaseInventoryRecord;
@@ -75,6 +78,14 @@ import {
   shouldPreserveExistingProgress,
   stateExtractField,
   stateFieldValue,
+  // #3696: the `last_activity` invariant that `state validate` (S008/S009) now
+  // asserts. Both live in the field-semantics owner, not here, so `smart-entry`
+  // and `state validate` cannot drift apart about the same field.
+  // `leadingCalendarDate` wraps `isRealCalendarDate`, which smart-entry calls
+  // directly — one predicate, two callers, no copies.
+  isUnfilledFieldValue,
+  leadingCalendarDate,
+  stateFieldContinuation,
   stateReplaceField,
   KNOWN_TEMPLATE_DEFAULTS,
   stateReplaceFieldIfTemplate,
@@ -576,6 +587,54 @@ function cmdStatePatch(cwd: string, patches: Record<string, string>, raw: boolea
   }
 }
 
+/**
+ * Why did `state update <field>` not write anything?
+ *
+ * #3699: this used to be one sentence — `Field "X" not found in STATE.md` — for
+ * every falsy outcome, so a PRESENT-but-derived frontmatter key and a genuinely
+ * absent field produced byte-identical output apart from the name. The classifier
+ * already knew the difference; the message threw it away, and worse, pointed away
+ * from the route that works.
+ *
+ * Four distinct answers, because there are four distinct situations:
+ *   1. a body-derived frontmatter key whose body source EXISTS  → name that source
+ *   2. a frontmatter key with no body source at all (disk/external/clock-derived)
+ *      → say what derives it, and do not invent a body field to blame
+ *   3. a body field that feeds a frontmatter key still carrying a value
+ *      → name the key, so case D is diagnosable rather than a bare absence
+ *   4. genuinely unknown                                         → unchanged
+ */
+function explainUpdateFailure(field: string): string {
+  const bodySource = getFrontmatterBodySource(field);
+  if (bodySource) {
+    // (1) The fallback in `updateCore` did not fire, so a body source line
+    // exists — that is the writable route.
+    const [primary] = bodySource;
+    return `Field "${field}" is a body-derived frontmatter key and is not directly writable. `
+      + `Update its body source instead: state update "${primary}" <value>.`;
+  }
+  const classification = getFieldClassification(field);
+  if (classification) {
+    // (2) Known key, no body source: disk/external/free-derived.
+    const derivedFrom: Record<string, string> = {
+      disk: 'derived from a scan of .planning/phases/ and is not directly writable',
+      external: 'derived from ROADMAP.md and is not directly writable',
+      free: 'recomputed on every write and is not directly writable',
+      curated: 'maintained by the write path and is not directly writable through this command',
+      body: 'body-derived and is not directly writable',
+    };
+    return `Field "${field}" is a frontmatter key that is ${derivedFrom[classification.source]}.`;
+  }
+  const owningKey = frontmatterKeyForBodyField(field);
+  if (owningKey) {
+    // (3) Case D from the body-field side.
+    return `Field "${field}" not found in STATE.md. It is the body source for frontmatter key `
+      + `"${owningKey}" — add the "${field}:" line to the body, or update "${owningKey}" directly `
+      + `to repair a document whose body source is missing.`;
+  }
+  return `Field "${field}" not found in STATE.md`; // (4) genuinely unknown
+}
+
 function cmdStateUpdate(cwd: string, field: string | undefined, value: string | undefined): void {
   if (!field || value === undefined) {
     error('field and value required for state update');
@@ -593,6 +652,27 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
   try {
     let updated = false;
     let preSyncContent = '';
+    let transitionData: Record<string, unknown> | undefined;
+    // #3699 case D: when `updateCore` falls back to writing the frontmatter key
+    // directly, the value must survive the post-sync pass — otherwise the write
+    // is silently undone. `buildStateFrontmatter` re-derives `stopped_at` from
+    // the body, finds no source, and emits nothing; `applyPreserveWhenUnchanged`
+    // then sees an unchanged (absent) body source and restores the PRE-write
+    // snapshot over the value just written. Verified: without this the command
+    // reported `updated:false` with `preserved:["Stopped At"]` and the old value
+    // stood.
+    //
+    // `authoritativeFm` is the seam built for exactly this (#2736 — "intent-first
+    // frontmatter values … so the lossy body-prose re-derivation can never
+    // destroy information the transition just resolved"), and it is re-applied
+    // AFTER preservation (`applyPostSyncPreservation`), so it wins the restore.
+    //
+    // Populated by the transform below rather than up front, because only the
+    // transition knows whether the fallback fired. Safe: `readModifyWriteStateMd`
+    // dereferences `options.authoritativeFm` after running the transform. Left
+    // empty when the fallback does not fire — an empty object iterates zero
+    // entries and is a no-op at both application sites.
+    const authoritativeFm: Record<string, unknown> = {};
     const divergedFields: string[] = [];
     const shouldResync = shouldResyncStateProgress([field as string]);
     // ADR-1769 Phase 7: dispatches to the STATE.md Transition Module. The
@@ -608,9 +688,13 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
         { clock: realClock },
       );
       updated = (result.data as { updated: boolean } | undefined)?.updated === true;
+      transitionData = result.data;
+      if (transitionData?.wroteFrontmatter === true) {
+        authoritativeFm[field as string] = value;
+      }
       preSyncContent = result.content;
       return result.content;
-    }, cwd, { resync: shouldResync, divergedFields });
+    }, cwd, { resync: shouldResync, divergedFields, authoritativeFm });
 
     // ADR-3408 §8.4 (D4): reconcile against the bytes actually persisted —
     // `updateCore`'s own match does not know whether sync/preservation later
@@ -624,9 +708,31 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
     const preserved = reconciled.filter((f) => f !== field);
 
     if (updated) {
-      output({ updated: true, preserved }, false, undefined);
+      // #3699 case D: surfaced so a caller can tell "wrote the body source" from
+      // "wrote the frontmatter key because no body source existed" — the second
+      // is a repair, and silently reporting it as an ordinary update is the same
+      // class of unfalsifiable success this issue is about.
+      const wroteFrontmatter = (transitionData as { wroteFrontmatter?: boolean } | undefined)?.wroteFrontmatter === true;
+      if (!wroteFrontmatter) {
+        output({ updated: true, preserved }, false, undefined);
+      } else {
+        // `preserved` reports the BODY LABEL of each field preservation restored
+        // (`bodyLabelFor`, the #3345 direction). In the case-D fallback that
+        // reading is stale by one step: preservation DID restore this field's
+        // snapshot, and `authoritativeFm` then overrode it, so the value on disk
+        // is the one just written. Reporting it as preserved would claim a
+        // restore that did not survive — the same unfalsifiable-success shape
+        // #3699 is about, one field over. Drop this field's own labels; other
+        // fields' preservation is untouched and still reported.
+        const ownLabels = new Set((getFrontmatterBodySource(field as string) ?? []).map((l) => l.toLowerCase()));
+        output({
+          updated: true,
+          wrote: 'frontmatter',
+          preserved: preserved.filter((p) => !ownLabels.has(p.toLowerCase())),
+        }, false, undefined);
+      }
     } else {
-      output({ updated: false, reason: `Field "${field as string}" not found in STATE.md`, preserved }, false, undefined);
+      output({ updated: false, reason: explainUpdateFailure(field as string), preserved }, false, undefined);
     }
   } catch {
     output({ updated: false, reason: 'STATE.md not found' }, false, undefined);
@@ -4279,10 +4385,30 @@ function stateDiagnostic(code: string, severity: Severity, message: string, advi
   return { code, severity, message, remedy: adviseRemedy(advice) };
 }
 
-function cmdStateValidate(cwd: string, raw: boolean): void {
+function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } = {}): void {
   const statePath = planningPaths(cwd).state;
+  // #3696: `valid: false` used to exit 0, so a CI step or git hook could not gate
+  // on state correctness without parsing JSON — every consumer had to
+  // re-implement the "is this actually valid" decision, which is the
+  // duplication #3473 is about.
+  //
+  // The DEFAULT is deliberately unchanged. `state validate`'s exit status is
+  // Tier-2 observable output reaching "downstream projects that cannot be
+  // enumerated" (ADR-3180 Decision 3, Hyrum's Law), so flipping 0 -> 1 for
+  // everyone would break every script that runs it unconditionally. `--strict`
+  // is the opt-in the issue itself offers as the alternative.
+  //
+  // Routed through one emit helper rather than a trailing assignment because
+  // three of the exit paths below (`STATE.md not found`, S001, and the four
+  // `return` branches in the phase-drift scan) emit and return early — a fix
+  // that only set the exit code at the end of the function would silently miss
+  // them, which is exactly the shape of the bug being fixed.
+  const emit = (payload: { valid?: boolean; error?: string; warnings?: Diagnostic[]; scope?: planningScopeMod.Scope }): void => {
+    if (opts.strict && payload.valid !== true) process.exitCode = 1;
+    output(payload, raw, undefined);
+  };
   if (!fs.existsSync(statePath)) {
-    output({ error: 'STATE.md not found' }, raw, undefined);
+    emit({ error: 'STATE.md not found' });
     return;
   }
 
@@ -4296,10 +4422,10 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
     // unconditionally and returned immediately, matching every other
     // error-class code, not a mere warning). Message reused verbatim from
     // `textEncodingError`, not paraphrased.
-    output({
+    emit({
       valid: false,
       warnings: [stateDiagnostic('S001', SEVERITY.ERROR, encErr, 'Re-save STATE.md as UTF-8 text with the embedded NUL byte(s) removed')],
-    }, raw, undefined);
+    });
     return;
   }
   const warnings: Diagnostic[] = [];
@@ -4326,7 +4452,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
       'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
       'Set current_phase (frontmatter) or Current Phase / Current Position Phase (body) in STATE.md',
     ));
-    output({ valid: false, warnings, scope }, raw, undefined);
+    emit({ valid: false, warnings, scope });
     return;
   }
   const selectedPhaseKey = phaseKeyFromToken(currentPhase);
@@ -4345,7 +4471,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
       `Cannot validate phase drift: phases directory is missing for phase ${currentPhase}`,
       'Create the phases directory or correct current_phase to a phase that exists on disk',
     ));
-    output({ valid: false, warnings, scope }, raw, undefined);
+    emit({ valid: false, warnings, scope });
     return;
   }
   let phaseDirPath: string;
@@ -4359,7 +4485,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
         `Cannot validate phase drift: no phase directory matches phase ${currentPhase}`,
         'Create a phase directory matching the current phase or correct current_phase',
       ));
-      output({ valid: false, warnings, scope }, raw, undefined);
+      emit({ valid: false, warnings, scope });
       return;
     }
     phaseDirPath = path.join(phasesDir, phaseDir.name);
@@ -4370,7 +4496,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
       `Cannot validate phase drift: phases directory is unreadable for phase ${currentPhase}`,
       'Check phases directory permissions and re-run validate',
     ));
-    output({ valid: false, warnings, scope }, raw, undefined);
+    emit({ valid: false, warnings, scope });
     return;
   }
   try {
@@ -4462,8 +4588,68 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
     ));
   }
 
+  // #3696 — the `last_activity` invariant. Three readers consumed this field
+  // and none of them checked it, so a value no reader can parse validated as
+  // `{valid:true, warnings:[], scope:'complete'}`: the scan ran to completion
+  // and simply never looked. Read through the same owner every other field here
+  // uses (ADR-3180 §7.7) — never a private `stateExtractField` call, which is
+  // what `scripts/lint-state-field-drift.cjs` counts.
+  const lastActivity = stateFieldValue(fm, body, 'last_activity', 'Last activity').value;
+  // NOT FILLED IN IS NOT DRIFT, and that covers three shapes, not one: absent,
+  // blank, and the shipped template's `[YYYY-MM-DD] — [What happened]`
+  // placeholder. Only a value a writer actually supplied can be wrong.
+  if (!isUnfilledFieldValue(lastActivity)) {
+    // Calendar validity, not merely `\d{4}-\d{2}-\d{2}` shape: smart-entry's
+    // reader rejects 2026-02-30 via isRealCalendarDate (ADR-227 — validate shape
+    // AND value). Accepting it here would leave the two surfaces disagreeing
+    // about whether the file is usable, which is the complaint #3696 opens with.
+    //
+    // Review round 2: this asserts the LEADING date token, not
+    // `parseProseLastActivityField`'s fully-anchored `date — description`
+    // grammar. That grammar is stricter than any real reader, and routing the
+    // check through it made S008 fire on values smart-entry parses fine (e.g.
+    // `2026-08-24 Shipped feature X`, no dash separator) — the same
+    // two-surfaces-disagree defect, pointing the other way. See
+    // `leadingCalendarDate`.
+    if (leadingCalendarDate(lastActivity) === null) {
+      warnings.push(stateDiagnostic(
+        'S008',
+        SEVERITY.WARNING,
+        `Unreadable last activity: "${lastActivity}" does not begin with a real calendar date, so no reader can date this project's activity`,
+        'Rewrite the Last activity line to begin with a date that exists, as "YYYY-MM-DD — what happened"',
+      ));
+    }
+
+    // The attached half of #3696: `templates/state.md` prescribes a single-line
+    // field, but writers emit descriptions long enough to wrap, and
+    // `stateExtractField`'s newline-excluding `(.+)` drops the remainder with no
+    // diagnostic. The DOCUMENT is what violates the template here, so this
+    // reports the violation rather than teaching the reader a multi-line grammar
+    // the template does not sanction (ADR-3180 §7.7 Rejected #1 forbids widening
+    // stateExtractField, which has 20 callers and a CRITICAL blast radius).
+    //
+    // Scan the body ONLY when the body is what was actually read. The ladder
+    // prefers the frontmatter scalar, so a document carrying a clean
+    // `last_activity:` in frontmatter AND a stale, wrapped `Last activity:` line
+    // in the body would otherwise report S009 — and exit 1 under `--strict` —
+    // over a remainder that no reader consumes and whose field is entirely
+    // valid. Asking the owner with an EMPTY body isolates the frontmatter rung
+    // without re-deriving the ladder here (which is what
+    // `scripts/lint-state-field-drift.cjs` counts).
+    const fromFrontmatter = stateFieldValue(fm, '', 'last_activity', 'Last activity').value;
+    const dropped = fromFrontmatter !== null ? null : stateFieldContinuation(body, 'Last activity');
+    if (dropped !== null) {
+      warnings.push(stateDiagnostic(
+        'S009',
+        SEVERITY.WARNING,
+        `Truncated last activity description: "${dropped}" follows the Last activity line and is silently dropped by every reader`,
+        'Fold the Last activity description onto one line — the template prescribes a single-line field',
+      ));
+    }
+  }
+
   const valid = warnings.length === 0;
-  output({ valid, warnings, scope }, raw, undefined);
+  emit({ valid, warnings, scope });
 }
 
 /**

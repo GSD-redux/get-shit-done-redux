@@ -1278,15 +1278,52 @@ describe('ADR-3408 §8.3(b) Matrix D: patchCore strips frontmatter first (#3469)
     assert.strictEqual(result.content, input);
   });
 
-  // D7 (independence, extend): updateCore is unchanged — it already strips
-  // frontmatter first, the correct shape patchCore now matches. A
-  // frontmatter-shaped `field` still cannot reach the YAML block through it.
-  test('D7: updateCore is unchanged — a frontmatter-shaped field still cannot reach the YAML block', () => {
-    const input = ['---', 'current_phase: "3"', '---', '', '# State', '', '**Status:** Planning', ''].join('\n');
+  // D7 (independence, extend): updateCore strips frontmatter first — the correct
+  // shape patchCore now matches — so a frontmatter-shaped `field` cannot reach
+  // the YAML block by text replacement.
+  //
+  // NARROWED BY #3699, deliberately. The original assertion was "a
+  // frontmatter-shaped field can NEVER reach the YAML block", which was a true
+  // characterisation of updateCore when this test was written as an independence
+  // guard for #3469 — but it is broader than the rule ADR-3408 actually states.
+  // §8.3(b)'s invariant is "no transition core calls `stateReplaceField` on
+  // unstripped content" (ADR-3408 line 318), and #3699's repair path honours it:
+  // it strips frontmatter, edits the PARSED object, and re-serialises via
+  // `reconstructFrontmatter` — it never runs the body-field text replacer over
+  // YAML, which is the dangerous shape the rule exists to forbid.
+  //
+  // So the invariant is re-pinned here at the ADR's actual boundary, in both
+  // directions, rather than deleted.
+  test('D7: a frontmatter-shaped field cannot reach the YAML block while a body source exists', () => {
+    // The body carries `Current Phase`, so the body IS the writable route and
+    // the frontmatter key must be refused exactly as before.
+    const input = [
+      '---', 'current_phase: "3"', '---', '',
+      '# State', '', '**Current Phase:** 3', '**Status:** Planning', '',
+    ].join('\n');
     const result = transitionCore(input, { kind: 'update', field: 'current_phase', value: '9' }, deps);
-    assert.strictEqual(result.content, input);
+    assert.strictEqual(result.content, input, 'no write may occur through the frontmatter key');
     assert.strictEqual(result.data && result.data.updated, false);
     assert.ok(/^current_phase: "3"$/m.test(result.content));
+  });
+
+  test('D7b: the #3699 repair path is the ONLY way frontmatter is written, and it never text-replaces over YAML', () => {
+    // Body source absent — the case-D repair shape. The write is permitted here,
+    // and `updated` is the field name rather than `false`.
+    const input = ['---', 'current_phase: "3"', '---', '', '# State', '', '**Status:** Planning', ''].join('\n');
+    const result = transitionCore(input, { kind: 'update', field: 'current_phase', value: '9' }, deps);
+
+    assert.strictEqual(result.data && result.data.updated, true);
+    assert.strictEqual(result.data && result.data.wroteFrontmatter, true, 'the repair path must announce itself');
+    assert.ok(/^current_phase: 9$/m.test(result.content), 'the frontmatter key carries the new value');
+
+    // ADR-3408 §8.3(b) still holds: the body is untouched and the frontmatter
+    // block was REBUILT from the parsed object, not text-patched in place. A
+    // `stateReplaceField` pass over unstripped content would have left the rest
+    // of the document's frontmatter formatting alone; re-serialisation is what
+    // proves the parsed-object route was taken.
+    assert.ok(result.content.includes('**Status:** Planning'), 'the body must be untouched');
+    assert.ok(!/current_phase: "9"/.test(result.content), 'the value went through the YAML serialiser, not a text splice');
   });
 });
 

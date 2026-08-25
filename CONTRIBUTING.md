@@ -303,6 +303,77 @@ When a change genuinely has no user-facing documentation impact (infrastructure 
 
 When unsure whether a change is user-facing, **update the docs**.
 
+### Adding a feature to `docs/FEATURES.md`
+
+**`docs/FEATURES.md` is generated. Do not edit it by hand.** Add one fragment
+under `docs/features/` and regenerate:
+
+```
+docs/features/<kebab-slug>.md
+```
+
+```markdown
+---
+id: 3840
+title: Runtime Identity
+group: v1.7.0 Features
+---
+
+**Purpose:** …
+```
+
+Then run `npm run regen:derived` (or just `npm run gen:features -- --write`) and
+commit both the fragment and the regenerated `docs/FEATURES.md`.
+`npm run lint:generated-sync` runs the `--check` twin, so a stale index cannot
+merge. `--write` is fail-closed: it refuses to emit `docs/FEATURES.md` while any
+fragment violation stands, so a `--write && git commit` chain cannot commit a
+corrupt file. Pass `--force` only to see what a broken corpus would render as.
+
+**Why fragments.** The old practice hand-allocated a monotonically increasing
+integer at authoring time, and every feature PR wrote into *two* shared mutable
+cells: the `### N.` heading and the hand-maintained table of contents. With
+several PRs in flight everyone picked the same next integer, and two PRs adding
+*differently numbered* features still collided on the TOC. #3831 was renumbered
+165 → 166 → 167 → 168 across successive rebases — the last collision landing
+*during* a verification run — and because every rebase invalidates the sha-keyed
+pass marker, each collision also cost a full remote matrix run. This is the same
+fix `.changeset/` already applies to `CHANGELOG.md` and
+`tests/emitted-drift-acks/` applies to the ack ledger
+([#2914](https://github.com/open-gsd/gsd-core/issues/2914)): one file per
+contribution, consolidated by a generator. You add a new file and touch no
+shared file, so there is nothing to collide on.
+
+**The rules:**
+
+1. **Any unique `id` is legal.** It does not have to be contiguous or maximal —
+   58, 113 and 131 are already absent, and `6.5`, `27a` and `27b` are live
+   non-integer ids. **Use your issue number** and you never have to revisit the
+   choice after a rebase. `--check` rejects a duplicate with an `id_duplicate`
+   violation naming both fragments, so a collision is a loud one-line fix in
+   your own file, not a merge conflict.
+2. **Never renumber a merged feature.** `id` is frozen once it ships: other docs
+   link to `FEATURES.md#<id>-<slug>`, and `--check` now verifies every one of
+   those inbound anchors resolves (`inbound_anchor_unresolved`). Renaming the
+   *title* moves the anchor too — fix the inbound links in the same commit.
+3. **Groups are derived, not registered.** `group` is the `##` heading text.
+   Groups are ordered by their lowest-ordered member, so adding a release bucket
+   is just the first fragment that names it. Optional per-group prose lives in
+   `docs/features/_groups/<slug>.md`, which a feature PR never touches.
+4. **`order` is optional.** It defaults to the numeric part of `id`, which is
+   right for almost everything. Declare it only to place a section somewhere its
+   number would not put it (`27b` precedes `27a` for historical reasons).
+5. **Bodies start at `####`.** A `##` or `###` inside a fragment body would
+   forge a group or a sibling section with no id and no TOC entry; `--check`
+   rejects it (`body_heading_too_shallow`).
+
+**Fork contributors:** there is nothing to coordinate and nothing to chase. Pick
+your issue number, add your file, regenerate. If `docs/FEATURES.md` conflicts on
+a rebase, discard your side and re-run `--write` — it is a derived artifact.
+
+**Agents:** no Fleet allocation lease is needed for a feature number any more.
+The lease that used to serialize `docs/FEATURES.md::section-number-allocation`
+protected an invariant that no longer exists.
+
 ## Testing Standards
 
 All tests use Node.js built-in test runner (`node:test`) and assertion library (`node:assert`). **Do not use Jest, Mocha, Chai, or any external test framework.**
@@ -1049,6 +1120,22 @@ too. If you ever see the legacy file present on `next`, delete it; do not try to
 well-formed. If the job names a spent fragment, run the `git rm` it prints — that is the
 whole remedy, and there is nothing to regenerate.
 
+**The sweep is staged around open PRs, not unconditional (#3842).** A fragment being
+all-spent is necessary but not sufficient to sweep it: deleting a fragment that an OPEN
+pull request still modifies hands that PR a `modify/delete` conflict on its very next
+merge attempt — precisely the shared-file conflict fragments were adopted to end, just
+reintroduced by the sweep itself. This actually happened the first time the sweep ran:
+#3330, #3774, and #3648 all conflicted simultaneously, each with the swept fragment as its
+*only* conflicting path, all three outside contributors. So `--guard-next` now also takes
+`--defer-to-open-prs` (passed by the `guard-no-ack-on-next` job): it runs one `gh pr list
+--json number,files` call, and any all-spent fragment an open PR's file list still names
+is *held* rather than swept — reported informationally in the job output, never as a
+failure — until that PR merges or closes. If the open-PR lookup itself fails (auth,
+network, rate limit), every otherwise-sweepable fragment is held for that run rather than
+swept blind; the next push to `next` tries again. A fragment fully spent AND untouched by
+any open PR sweeps exactly as before — this changes *when* a spent fragment is removed,
+never what "spent" means.
+
 `npm run regen:derived` still exists for the artifacts that ARE committed and derived —
 `sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
 the registry, and `tests/fixtures/install-tree/*.json` (`npm run gen:install-tree`, the
@@ -1206,6 +1293,23 @@ lines. The scan also only models `git add` and `git commit -a`/`--all` as stagin
 does not recognize `git stash`, `git rm --cached`, `git restore --staged`, or
 `git update-index --add`, any of which can also move `.planning/` content into a state a later
 commit picks up.
+
+### A conflicted PR runs no CI
+
+Every `pull_request` compute lane waits on one shared gate, `PR mergeability`.
+If GitHub reports your PR as having a merge conflict, **nothing runs** — no test
+matrix, no install smoke, no mutation shards, no docs or changeset lint — until
+you resolve it. The check annotates the base branch and the fix:
+
+```bash
+git fetch origin && git rebase origin/next && git push --force-with-lease
+```
+
+The gate fails **open**: if GitHub cannot tell us whether the PR is mergeable,
+the pipeline runs exactly as it did before, and the per-job
+`scripts/ci-rebase-check.cjs` still catches the conflict. Full reference,
+including which lanes are deliberately *not* gated, is in
+[docs/TESTING-SUITES.md → The mergeability preflight](docs/TESTING-SUITES.md#the-mergeability-preflight).
 
 ### CI Test Quality Checks
 

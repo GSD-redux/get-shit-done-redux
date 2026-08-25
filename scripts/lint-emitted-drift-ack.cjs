@@ -326,11 +326,29 @@ function ackEntries(raw) {
  *
  * Pure — no fs, no git, no clock. `main()` does the reading.
  *
+ * #3842: an all-spent fragment is not automatically safe to sweep. #3078's sweep deletes
+ * the fragment outright, and when an OPEN PR still modifies that same file, git reports a
+ * `modify/delete` conflict on the very next merge attempt — exactly the shared-file
+ * conflict fragments were adopted (#2914) to end, reintroduced by the sweep itself. Three
+ * outside-contributor PRs (#3330, #3774, #3648) hit this simultaneously the first time the
+ * sweep ran, each with the swept fragment as its ONLY conflicting path. `openPrTouchedPaths`
+ * lets a caller defer sweeping any fragment an open PR still touches, without changing the
+ * inertness rule itself: a held fragment is still reported (informationally, never as a
+ * failure) so it is not silently forgotten once the touching PR merges or closes.
+ *
  * @param {Array<{name: string, currentRaw: string|null, baseRaw: string|null}>} fragments
+ * @param {object} [opts]
+ * @param {Set<string>|'unknown'} [opts.openPrTouchedPaths] repo-relative fragment paths
+ *   (`${ACK_DIR_REPO_PATH}/<name>`) that at least one OPEN pull request currently modifies.
+ *   Omit entirely to skip the open-PR distinction altogether (every all-spent fragment is
+ *   reported as sweepable, unchanged pre-#3842 behavior — the shape every existing caller
+ *   and test relies on). Pass the literal string `'unknown'` when the open-PR set could not
+ *   be determined (e.g. the `gh` lookup failed): every otherwise-sweepable fragment is held
+ *   rather than swept, since "we could not check" must never collapse to "assume it is safe".
  * @returns {{ ok: boolean, message: string, sweepable: string[] }}
  */
-function assertNoAllSpentFragments(fragments) {
-  const sweepable = [];
+function assertNoAllSpentFragments(fragments, { openPrTouchedPaths } = {}) {
+  const allSpentFragments = [];
 
   for (const { name, currentRaw, baseRaw } of fragments) {
     const current = ackEntries(currentRaw);
@@ -339,27 +357,54 @@ function assertNoAllSpentFragments(fragments) {
     if (base === null) continue;
 
     const allSpent = [...current].every(([rel, prose]) => base.get(rel) === prose);
-    if (allSpent) sweepable.push({ name, entries: current.size });
+    if (allSpent) allSpentFragments.push({ name, entries: current.size });
   }
 
-  if (sweepable.length === 0) {
+  const holdAll = openPrTouchedPaths === 'unknown';
+  const touched = openPrTouchedPaths instanceof Set ? openPrTouchedPaths : new Set();
+  const toSweep = [];
+  const held = [];
+  for (const frag of allSpentFragments) {
+    (holdAll || touched.has(`${ACK_DIR_REPO_PATH}/${frag.name}`) ? held : toSweep).push(frag);
+  }
+
+  const heldLines = held.length === 0 ? [] : [
+    '',
+    holdAll
+      ? 'deferred (open-PR check unavailable): whether an open PR still touches the following '
+        + 'all-spent fragment(s) could not be determined this run, so none of them were swept '
+        + '(#3842) — assuming "safe to sweep" on a failed check would risk the exact conflict '
+        + 'this deferral exists to avoid. They will be reconsidered on a later run.'
+      : `deferred: ${held.length} all-spent fragment(s) are held back because an open pull `
+        + 'request still touches them (#3842). Sweeping one now would hand that PR a '
+        + 'modify/delete conflict it did not cause — the same failure #2914 adopted fragments '
+        + 'to end. They will be swept once the touching PR merges or closes.',
+      ...held.map(
+        ({ name, entries }) => `  - ${ACK_DIR_REPO_PATH}/${name} (${entries} entr${entries === 1 ? 'y' : 'ies'}, all spent, held)`,
+      ),
+    ];
+
+  if (toSweep.length === 0) {
     return {
       ok: true,
-      message: `ok guard-no-ack-on-next: no all-spent fragment survives in ${ACK_DIR_REPO_PATH}/`,
+      message: [
+        `ok guard-no-ack-on-next: no all-spent fragment survives in ${ACK_DIR_REPO_PATH}/`,
+        ...heldLines,
+      ].join('\n'),
       sweepable: [],
     };
   }
 
-  const lines = sweepable.map(
+  const lines = toSweep.map(
     ({ name, entries }) => `  - ${ACK_DIR_REPO_PATH}/${name} (${entries} entr${entries === 1 ? 'y' : 'ies'}, all spent)`
       + `\n    remedy: git rm ${ACK_DIR_REPO_PATH}/${name}`,
   );
 
   return {
     ok: false,
-    sweepable: sweepable.map(({ name }) => name),
+    sweepable: toSweep.map(({ name }) => name),
     message: [
-      `guard-no-ack-on-next: ${sweepable.length} fully-spent ack fragment(s) survive on next.`,
+      `guard-no-ack-on-next: ${toSweep.length} fully-spent ack fragment(s) survive on next.`,
       '',
       ...lines,
       '',
@@ -371,6 +416,7 @@ function assertNoAllSpentFragments(fragments) {
       '',
       'A partially spent fragment is deliberately NOT reported: only an entirely inert one '
       + 'is swept, so appending prose to a live entry to re-arm it keeps working.',
+      ...heldLines,
     ].join('\n'),
   };
 }
@@ -513,39 +559,163 @@ function assertUsableBaseRef(ref) {
   return ref;
 }
 
+/**
+ * Upper bound on how many OPEN pull requests `fetchOpenPrTouchedAckPaths` may reason
+ * about in one run. Mirrors the shape of `MAX_ACK_FRAGMENTS` above: exceeding it throws
+ * rather than silently reasoning about a truncated list — a truncated open-PR set would
+ * make an actually-touched fragment look untouched and sweep it anyway, which is the
+ * exact failure #3842 exists to prevent. 200 is comfortably above this repo's open-PR
+ * count at any point observed to date.
+ */
+const MAX_OPEN_PRS = 200;
+
+/** Bound on the `gh pr list` call `fetchOpenPrTouchedAckPaths` makes (#3842). */
+const GH_TIMEOUT_MS = 20_000;
+
+/**
+ * Default `execGh` for `fetchOpenPrTouchedAckPaths` — a real `gh` invocation. Kept as a
+ * separate, swappable function (rather than inlined) so tests can inject a stub instead
+ * of shelling out to a real, authenticated `gh` — which is unavailable, and would be
+ * flaky and network-dependent, in the test sandbox.
+ */
+function execGhDefault(args, { cwd = REPO_ROOT } = {}) {
+  return execFileSync('gh', args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: GH_TIMEOUT_MS,
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+/**
+ * The set of `tests/emitted-drift-acks/*.json` repo-relative paths touched by at least
+ * one currently-OPEN pull request (#3842).
+ *
+ * One `gh` call — `gh pr list --json number,files` returns every open PR's changed-file
+ * list in a single round trip, never one call per PR — intersected against the fragment
+ * directory prefix. This is the "one `gh` API call" the issue itself proposes: cheap
+ * enough to run on every push to `next` without meaningfully growing the guard job's
+ * budget.
+ *
+ * Throws (never degrades to an empty set) when: `gh` itself fails (auth, network, rate
+ * limit), the output is not parseable JSON, is not an array, or reaches the `MAX_OPEN_PRS`
+ * cap — a truncated or unreadable answer must never be silently read as "no open PR
+ * touches anything", which would defeat the entire deferral this function exists to
+ * support. The caller (`main()`) decides what "we could not check" means for the sweep;
+ * this function's only job is to never fabricate an empty answer.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.cwd]
+ * @param {(args: string[], opts: {cwd: string}) => string} [opts.execGh] injectable `gh`
+ *   runner, defaulting to a real bounded `execFileSync` call. Tests inject a stub here
+ *   rather than exec'ing a real, authenticated `gh` binary.
+ * @param {number} [opts.limit]
+ * @returns {Set<string>}
+ */
+function fetchOpenPrTouchedAckPaths({ cwd = REPO_ROOT, execGh = execGhDefault, limit = MAX_OPEN_PRS } = {}) {
+  const stdout = execGh(['pr', 'list', '--state', 'open', '--json', 'number,files', '--limit', String(limit)], { cwd });
+
+  let prs;
+  try {
+    prs = JSON.parse(stdout);
+  } catch (err) {
+    throw new Error(`fetchOpenPrTouchedAckPaths: "gh pr list" did not return valid JSON: ${err.message}`);
+  }
+  if (!Array.isArray(prs)) {
+    throw new Error(`fetchOpenPrTouchedAckPaths: expected a JSON array from "gh pr list", got ${typeof prs}`);
+  }
+  if (prs.length >= limit) {
+    throw new Error(
+      `fetchOpenPrTouchedAckPaths: "gh pr list" returned ${prs.length} open PRs, at or above `
+      + `the cap of ${limit}. Refusing to reason about a possibly-truncated list — a fragment `
+      + 'touched only by a PR past the cap would look untouched and be swept anyway. Raise '
+      + '`limit` or investigate the open-PR count.',
+    );
+  }
+
+  const touched = new Set();
+  for (const pr of prs) {
+    const files = Array.isArray(pr?.files) ? pr.files : [];
+    for (const file of files) {
+      const filePath = isPlainObject(file) ? file.path : file;
+      if (typeof filePath === 'string' && filePath.startsWith(`${ACK_DIR_REPO_PATH}/`)) {
+        touched.add(filePath);
+      }
+    }
+  }
+  return touched;
+}
+
+/**
+ * The full `--guard-next` behavior, factored out of `main()` so it is callable directly
+ * from a test with injected deps — never through a real, network-dependent `gh` (or a
+ * real filesystem/git checkout) the way `main()` itself is only exercisable via
+ * subprocess. Returns data rather than performing I/O; `main()` does the printing and
+ * exit-code setting.
+ *
+ * @param {object} [opts]
+ * @param {string[]} [opts.argv] defaults to `process.argv`
+ * @param {string} [opts.cwd] defaults to `REPO_ROOT`
+ * @param {() => Set<string>} [opts.fetchOpenPrPaths] defaults to `fetchOpenPrTouchedAckPaths`.
+ *   Injectable so a test can supply canned open-PR data (or a throwing stub, to exercise
+ *   the fail-closed "hold everything" path) without shelling out to a real `gh`.
+ * @returns {{ ok: boolean, lines: string[] }}
+ */
+function runGuardNext({ argv = process.argv, cwd = REPO_ROOT, fetchOpenPrPaths = fetchOpenPrTouchedAckPaths } = {}) {
+  const legacyFile = path.join(cwd, ...ACK_REPO_PATH.split('/'));
+  const legacy = assertAbsentOnNext(fs.existsSync(legacyFile));
+  const lines = [legacy.message];
+
+  // The fragment half (#3078). CI always passes `--base-ref` (the pre-push tip of `next`,
+  // `github.event.before`), because the default branch allows REBASE merges and one push
+  // can carry N commits — `HEAD^` alone is not "the state of next before this push" in
+  // that case. `resolveBaseRef()`'s `HEAD^` is only the fallback for a manual run or a
+  // single-commit push, where the two agree. NOTE the job's checkout must fetch at least
+  // depth 2 for the `HEAD^` fallback to resolve at all, and must separately fetch the
+  // `--base-ref` commit itself, or every fragment reads as brand-new.
+  const baseFlag = argv.indexOf('--base-ref');
+  const baseRef = baseFlag === -1
+    ? resolveBaseRef({ cwd })
+    : assertUsableBaseRef(argv[baseFlag + 1]);
+
+  const dir = path.join(cwd, ...ACK_DIR_REPO_PATH.split('/'));
+  const fragments = listFragmentFiles(dir).map((name) => ({
+    name,
+    currentRaw: readIfPresent(path.join(dir, name)),
+    baseRaw: baseRef === null ? null : readFragmentAtRef(baseRef, name, { cwd }),
+  }));
+
+  // #3842: opt-in (never on by default — a caller that omits this flag gets the exact
+  // pre-#3842 behavior, which is what every existing test and any manual/local run relies
+  // on). CI passes it so the sweep never hands an open PR a modify/delete conflict it did
+  // not cause. A failed lookup holds EVERYTHING back rather than sweeping blind (see
+  // fetchOpenPrTouchedAckPaths's own doc comment).
+  let openPrTouchedPaths;
+  if (argv.includes('--defer-to-open-prs')) {
+    try {
+      openPrTouchedPaths = fetchOpenPrPaths();
+    } catch (err) {
+      lines.push(`lint-emitted-drift-ack: open-PR check unavailable — ${err.message}`);
+      openPrTouchedPaths = 'unknown';
+    }
+  }
+
+  const sweep = assertNoAllSpentFragments(fragments, { openPrTouchedPaths });
+  lines.push(sweep.message);
+
+  return { ok: legacy.ok && sweep.ok, lines };
+}
+
 function main() {
-  const legacyFile = path.join(REPO_ROOT, ...ACK_REPO_PATH.split('/'));
-
   if (process.argv.includes('--guard-next')) {
-    const legacy = assertAbsentOnNext(fs.existsSync(legacyFile));
-    console.log(legacy.message);
-
-    // The fragment half (#3078). CI always passes `--base-ref` (the pre-push tip of
-    // `next`, `github.event.before`), because the default branch allows REBASE merges
-    // and one push can carry N commits — `HEAD^` alone is not "the state of next before
-    // this push" in that case. `resolveBaseRef()`'s `HEAD^` is only the fallback for a
-    // manual run or a single-commit push, where the two agree. NOTE the job's checkout
-    // must fetch at least depth 2 for the `HEAD^` fallback to resolve at all, and must
-    // separately fetch the `--base-ref` commit itself, or every fragment reads as
-    // brand-new.
-    const baseFlag = process.argv.indexOf('--base-ref');
-    const baseRef = baseFlag === -1
-      ? resolveBaseRef()
-      : assertUsableBaseRef(process.argv[baseFlag + 1]);
-
-    const dir = path.join(REPO_ROOT, ...ACK_DIR_REPO_PATH.split('/'));
-    const fragments = listFragmentFiles(dir).map((name) => ({
-      name,
-      currentRaw: readIfPresent(path.join(dir, name)),
-      baseRaw: baseRef === null ? null : readFragmentAtRef(baseRef, name),
-    }));
-
-    const sweep = assertNoAllSpentFragments(fragments);
-    console.log(sweep.message);
-
-    if (!legacy.ok || !sweep.ok) process.exitCode = 1;
+    const result = runGuardNext();
+    for (const line of result.lines) console.log(line);
+    if (!result.ok) process.exitCode = 1;
     return;
   }
+
+  const legacyFile = path.join(REPO_ROOT, ...ACK_REPO_PATH.split('/'));
 
   const fragmentsDir = path.join(REPO_ROOT, ...ACK_DIR_REPO_PATH.split('/'));
   const sources = [
@@ -632,4 +802,8 @@ module.exports = {
   readFragmentAtRef,
   assertUsableBaseRef,
   GIT_TIMEOUT_MS,
+  fetchOpenPrTouchedAckPaths,
+  MAX_OPEN_PRS,
+  GH_TIMEOUT_MS,
+  runGuardNext,
 };

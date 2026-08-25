@@ -162,6 +162,7 @@ build/
 /gsd-core/bin/lib/validate.cjs
 /gsd-core/bin/lib/schema-detect.cjs
 /gsd-core/bin/lib/runtime-name-policy.cjs
+/gsd-core/bin/lib/runtime-identity.cjs
 /gsd-core/bin/lib/runtime-slash.cjs
 /gsd-core/bin/lib/observability/event.cjs
 /gsd-core/bin/lib/workstream-inventory-builder.cjs

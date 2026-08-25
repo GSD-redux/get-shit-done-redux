@@ -494,6 +494,7 @@
       "runtime-config-adapter-registry.cjs",
       "runtime-homes.cjs",
       "runtime-hooks-surface.cjs",
+      "runtime-identity.cjs",
       "runtime-name-policy.cjs",
       "runtime-slash.cjs",
       "schema-detect.cjs",

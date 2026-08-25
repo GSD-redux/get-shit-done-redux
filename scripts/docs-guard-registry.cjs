@@ -160,6 +160,10 @@ const DOCS_GUARD_TESTS = {
   // Walks docs/adr/ as a directory (builds/reads docs/adr/README.md and
   // fixture ADRs throughout) and separately reads docs/contributor-standards.md.
   'tests/adr-index-gate.test.cjs': ['docs/adr/', 'docs/contributor-standards.md'],
+
+  // Walks docs/features/ as a directory (the fragment corpus) and asserts the
+  // committed docs/FEATURES.md equals the generated projection of it (#3840).
+  'tests/features-index-gate.test.cjs': ['docs/features/', 'docs/FEATURES.md'],
   'tests/agent-classification-parity.test.cjs': ['docs/AGENTS.md', 'docs/INVENTORY.md'],
   // #3683: pins the learnings feature section's agreement with the canonical
   // artifact registry (reads docs/FEATURES.md around the extract-learnings
