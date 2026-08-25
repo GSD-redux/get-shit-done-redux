@@ -214,6 +214,112 @@ function locateFieldRow(content: string, fieldName: string): { valueStart: numbe
   return null;
 }
 
+/**
+ * True only when y/m/d name a date that actually exists on the calendar.
+ *
+ * `Date.parse` validates shape but not value: it rolls an out-of-range day
+ * FORWARD rather than rejecting it (`2026-02-30` -> `2026-03-02`,
+ * `2026-04-31` -> `2026-05-01`). Shape-only validation would therefore
+ * propagate a different, wrong instant instead of failing safe — precisely
+ * what ADR-227 ("validate shape AND value; on failure of either layer coerce
+ * to the contract's safe default, never propagate") exists to prevent. A
+ * round-trip through Date.UTC detects the rollover: any component the
+ * constructor normalised comes back changed.
+ *
+ * #3696: this predicate previously lived privately inside `smart-entry.cts`,
+ * where it gated `parseActivityTimestamp`. `state validate` needed the same
+ * answer to assert the `last_activity` invariant (S008), and a second copy is
+ * the "generative fix divergence" class outright — two surfaces that disagree
+ * about whether a STATE.md is usable is the defect #3696 opens with, so a
+ * parity test over two copies would be codifying the bug rather than fixing
+ * it. It moves here because this module is already the designated owner of
+ * STATE.md field semantics (ADR-3180 §7.7) and `smart-entry.cts` imports no
+ * peer that would make the reverse direction a cycle.
+ */
+export function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return (
+    probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() === month - 1 &&
+    probe.getUTCDate() === day
+  );
+}
+
+/**
+ * Markdown structure that can legitimately follow a single-line field. A line
+ * matching any of these is the NEXT construct, never a continuation of the
+ * field above it.
+ *
+ * Order of the alternatives is irrelevant; breadth is not. The `[-*_]{3,}`
+ * horizontal-rule arm and the `|` table arm are the two that matter most: a
+ * check that fires on a legitimate `---` or on the next row of a pipe table
+ * would report drift on well-formed documents, which is worse than not
+ * checking at all.
+ */
+const MD_STRUCTURE_LINE_RE =
+  /^(?:#{1,6}\s|\||>|```|~~~|[-*_]{3,}\s*$|[-*+]\s|\d+[.)]\s|\[[^\]]+\]:)/;
+
+/**
+ * A sibling field line — `Field: value`, `**Field:** value`, or the
+ * `Field::`/`**Field**:` spellings STATE.md documents use in practice. Also
+ * the next construct, not a continuation.
+ */
+const STATE_SIBLING_FIELD_LINE_RE = /^\*{0,2}[A-Za-z][A-Za-z0-9 _-]*\*{0,2}:{1,2}\*{0,2}(?:\s|$)/;
+
+/**
+ * Return the prose that FOLLOWS a single-line field but plainly belongs to it —
+ * i.e. the remainder `stateExtractField` silently drops when a writer emits a
+ * value long enough to wrap.
+ *
+ * `stateExtractField`'s `(.+)` is newline-excluding, so
+ *
+ *     Last activity: 2026-08-19 — Project initialized from ingest; PROJECT.md,
+ *     REQUIREMENTS.md, ROADMAP.md written
+ *
+ * yields only the first line and the rest is lost with no diagnostic (#3696).
+ * `templates/state.md` prescribes a single-line field, so the DOCUMENT is what
+ * is wrong here, not the reader — this function exists so `state validate` can
+ * SAY so, not so the reader can start guessing at a multi-line grammar the
+ * template does not sanction.
+ *
+ * That is also why the fix is not in `stateExtractField` itself: it has 20
+ * direct callers and a CRITICAL blast radius (ADR-3180 §7.7, Rejected #1), and
+ * joining continuations there would apply to every field — `Status:` would
+ * swallow the line beneath it.
+ *
+ * Returns `null` when the field is absent, is a pipe-table row (a table cell
+ * cannot wrap), or is followed by end-of-file, a blank line, Markdown
+ * structure, or a sibling field.
+ */
+export function stateFieldContinuation(content: string, fieldName: string): string | null {
+  const escaped = escapeRegex(fieldName);
+  // Same two single-line grammars stateExtractField uses, in the same order, so
+  // this locates exactly the line whose value it returned. The pipe-table rung
+  // is deliberately absent: a `| Field | value |` row is bounded by its closing
+  // pipe and cannot wrap.
+  const match =
+    new RegExp(`\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'i').exec(content) ??
+    new RegExp(`^${escaped}:[ \\t]*(.+)`, 'im').exec(content);
+  if (!match) return null;
+
+  // `(.+)` stops at the line terminator, so the field's line ends where the
+  // match does — modulo a CRLF document, whose \r is inside the match.
+  const afterValue = match.index + match[0].length;
+  const rest = content.slice(afterValue).replace(/^\r/, '');
+  if (!rest.startsWith('\n')) return null; // end of file: nothing follows
+
+  const continuation: string[] = [];
+  for (const rawLine of rest.slice(1).split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (!line.trim()) break;
+    if (MD_STRUCTURE_LINE_RE.test(line)) break;
+    if (STATE_SIBLING_FIELD_LINE_RE.test(line)) break;
+    continuation.push(line.trim());
+  }
+  return continuation.length ? continuation.join(' ') : null;
+}
+
 export function stateExtractField(content: string, fieldName: string): string | null {
   const escaped = escapeRegex(fieldName);
   // Bold inline format: **FieldName:** value
