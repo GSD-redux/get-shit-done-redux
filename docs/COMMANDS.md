@@ -2157,7 +2157,7 @@ package-collision failure structurally instead, by resolving `gsd_run` rather th
 on `PATH`.
 
 See [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) for using it,
-and [Runtime identity](FEATURES.md#runtime-identity) for the rationale.
+and [Runtime identity](FEATURES.md#168-runtime-identity) for the rationale.
 
 ---
 

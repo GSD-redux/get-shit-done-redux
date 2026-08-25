@@ -303,50 +303,74 @@ When a change genuinely has no user-facing documentation impact (infrastructure 
 
 When unsure whether a change is user-facing, **update the docs**.
 
-### Adding a section to `docs/FEATURES.md`
+### Adding a feature to `docs/FEATURES.md`
 
-`docs/FEATURES.md` numbers each feature with a monotonically increasing integer (`### 164.`). That
-integer is the single most common source of merge conflicts in this repo — with several PRs in
-flight, everyone picks the same next number and everyone after the first has to renumber.
+**`docs/FEATURES.md` is generated. Do not edit it by hand.** Add one fragment
+under `docs/features/` and regenerate:
 
-**There are two conflict cells, not one.** The `### N.` heading, and the hand-maintained table of
-contents at the top of the file. Two PRs adding *differently numbered* features still collide on
-the TOC, so renumbering alone does not make you safe.
+```
+docs/features/<kebab-slug>.md
+```
+
+```markdown
+---
+id: 3840
+title: Runtime Identity
+group: v1.7.0 Features
+---
+
+**Purpose:** …
+```
+
+Then run `npm run regen:derived` (or just `npm run gen:features -- --write`) and
+commit both the fragment and the regenerated `docs/FEATURES.md`.
+`npm run lint:generated-sync` runs the `--check` twin, so a stale index cannot
+merge.
+
+**Why fragments.** The old practice hand-allocated a monotonically increasing
+integer at authoring time, and every feature PR wrote into *two* shared mutable
+cells: the `### N.` heading and the hand-maintained table of contents. With
+several PRs in flight everyone picked the same next integer, and two PRs adding
+*differently numbered* features still collided on the TOC. #3831 was renumbered
+165 → 166 → 167 → 168 across successive rebases — the last collision landing
+*during* a verification run — and because every rebase invalidates the sha-keyed
+pass marker, each collision also cost a full remote matrix run. This is the same
+fix `.changeset/` already applies to `CHANGELOG.md` and
+`tests/emitted-drift-acks/` applies to the ack ledger
+([#2914](https://github.com/open-gsd/gsd-core/issues/2914)): one file per
+contribution, consolidated by a generator. You add a new file and touch no
+shared file, so there is nothing to collide on.
 
 **The rules:**
 
-1. **Allocate the number LAST.** Write the section body first; pick the integer immediately before
-   you open the PR, or immediately after your final rebase. A number chosen at branch time is
-   already stale.
-2. **Never pre-emptively renumber to dodge a conflict.** When you hit one, rebase, take
-   `max + 1` of what is now on `next`, and update the TOC in the same commit. Gaps are fine — 58 is
-   already missing and `#27b-existing-codebase-onboarding` is a live non-integer id, so the
-   sequence is not an invariant anyone depends on.
-3. **Fork contributors: you do not have to fight this.** If your PR conflicts only on the number or
-   the TOC, say so in a comment and leave it — a maintainer will assign the final number at merge.
-   Do not rebase repeatedly just to chase the counter.
-4. **Do not renumber someone else's section** to make room for yours. Take the next free integer
-   above the current maximum.
+1. **Any unique `id` is legal.** It does not have to be contiguous or maximal —
+   58, 113 and 131 are already absent, and `6.5`, `27a` and `27b` are live
+   non-integer ids. **Use your issue number** and you never have to revisit the
+   choice after a rebase. `--check` rejects a duplicate with an `id_duplicate`
+   violation naming both fragments, so a collision is a loud one-line fix in
+   your own file, not a merge conflict.
+2. **Never renumber a merged feature.** `id` is frozen once it ships: other docs
+   link to `FEATURES.md#<id>-<slug>`, and `--check` now verifies every one of
+   those inbound anchors resolves (`inbound_anchor_unresolved`). Renaming the
+   *title* moves the anchor too — fix the inbound links in the same commit.
+3. **Groups are derived, not registered.** `group` is the `##` heading text.
+   Groups are ordered by their lowest-ordered member, so adding a release bucket
+   is just the first fragment that names it. Optional per-group prose lives in
+   `docs/features/_groups/<slug>.md`, which a feature PR never touches.
+4. **`order` is optional.** It defaults to the numeric part of `id`, which is
+   right for almost everything. Declare it only to place a section somewhere its
+   number would not put it (`27b` precedes `27a` for historical reasons).
+5. **Bodies start at `####`.** A `##` or `###` inside a fragment body would
+   forge a group or a sibling section with no id and no TOC entry; `--check`
+   rejects it (`body_heading_too_shallow`).
 
-**If you are an agent**, take an exclusive Fleet lease on the allocation before choosing a number,
-and include `docs/FEATURES.md` in your published `touched` set — a `touched` set of symbols alone
-leaves you invisible to a peer editing the same index:
+**Fork contributors:** there is nothing to coordinate and nothing to chase. Pick
+your issue number, add your file, regenerate. If `docs/FEATURES.md` conflicts on
+a rebase, discard your side and re-run `--write` — it is a derived artifact.
 
-```
-fleet_acquire_lease({ repo_id, agent_id,
-  scope: ["docs/FEATURES.md::section-number-allocation"], ttl_seconds: 1800 })
-… allocate, write, commit …
-fleet_release_lease({ lease_id })
-```
-
-The lease serializes allocation between coordinating agents. It does not prevent a git conflict
-once two branches already carry adjacent text, and it cannot reach a fork PR.
-
-> **Planned durable fix.** This whole class disappears if `FEATURES.md` becomes generated from
-> per-feature fragments the way `CHANGELOG.md` is generated from `.changeset/` (three random words
-> per fragment, so concurrent PRs cannot collide) and the way `tests/emitted-drift-acks/` works
-> ([#2914](https://github.com/open-gsd/gsd-core/issues/2914)). Until that lands, the rules above are
-> the practice.
+**Agents:** no Fleet allocation lease is needed for a feature number any more.
+The lease that used to serialize `docs/FEATURES.md::section-number-allocation`
+protected an invariant that no longer exists.
 
 ## Testing Standards
 

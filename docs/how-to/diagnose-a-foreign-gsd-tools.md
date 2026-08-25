@@ -124,7 +124,7 @@ command -v gsd-tools || echo "gsd-tools: NOT FOUND"
 
 ## Related
 
-- [Runtime identity](../FEATURES.md#runtime-identity) — why the launcher resolves `gsd_run`
+- [Runtime identity](../FEATURES.md#168-runtime-identity) — why the launcher resolves `gsd_run`
   rather than asserting identity at every call
 - [`runtime-identity`](../COMMANDS.md#runtime-identity) — the verb's exact output
 - [#3129](https://github.com/open-gsd/gsd-core/issues/3129) — the incident this prevents
