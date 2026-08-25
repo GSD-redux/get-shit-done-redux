@@ -530,6 +530,16 @@ function extractProtectedBranchWarningBash(workflowFile, stepName) {
         if (refInBash) refBuffer.push(line);
       }
       block = refBlocks.find((candidate) => candidate.includes('--is-protected'));
+      // #3648: sync-runtime-launcher.cjs adds the canonical gsd_run resolver
+      // preamble to this standalone step file (runtime-launcher-parity's
+      // one-preamble-per-file rule). That preamble defines its own gsd_run(),
+      // which would shadow this harness's injected mock and reach the real
+      // gsd-tools.cjs on the machine running the test. The preamble's own
+      // correctness is covered by tests/runtime-launcher-parity.test.cjs; this
+      // harness only needs the #3552 warning logic, so strip it here.
+      if (block) {
+        block = block.split('\n').filter((l) => !l.trimStart().startsWith('_GSD_SHIM_NAME=')).join('\n');
+      }
     }
   }
   if (!block) {
