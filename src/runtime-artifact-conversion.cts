@@ -1844,30 +1844,24 @@ function neutralizeAgentReferences(content, instructionFile) {
  * the frontmatter module's own `escapeDoubleQuoted` — the one escaper, not a
  * third copy of the rules.
  */
-// A value is emitted bare only when YAML must read it back as the exact string
-// it went in as. Everything else is quoted. The clauses, each earning its place:
-//
-//   1. First char alphanumeric. `@` and `` ` `` are YAML *reserved* indicators and
-//      may not open a plain scalar at all, so a scoped ID like `@org/model` bare
-//      is not merely ambiguous — it is a parse error. `-`/`:`/`?` in first
-//      position are legal but only conditionally, which is not worth tracking.
-//   2. Not a boolean/null word. YAML 1.1 readers resolve `no`/`y`/`off`/`null`
-//      to non-strings, so a variant literally named `no` would arrive as `false`.
-//   3. Not numeric-looking, including the YAML 1.1 sexagesimal form: `12:30`
-//      resolves to the integer 750, and `:` is legal mid-ID here.
-//
-// Real model IDs (`sonnet`, `synthetic/hf:zai-org/GLM-5.2`, `gpt-5.6-luna`) pass
-// every clause and stay bare, so already-generated files are byte-identical.
-const PLAIN_SCALAR_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
-const YAML_WORD_SCALAR_RE = /^(?:y|n|yes|no|true|false|on|off|null)$/i;
-const YAML_NUMERIC_RE = /^(?:\d[\d_]*(?:\.[\d_]*)?(?:[eE][-+]?\d+)?|0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?::[0-5]?\d)+(?:\.[\d_]*)?)$/;
-
+/**
+ * Render one frontmatter `key: value` line whose value came from user config.
+ *
+ * #3706: both `model:` and `variant:` interpolate a value read from
+ * `.planning/config.json` / `~/.gsd/defaults.json`. Raw interpolation lets a value
+ * containing a newline inject additional TOP-LEVEL frontmatter keys into the
+ * generated agent file — proven by execution during the #3705 security review
+ * (`"sonnet\ntools: [\"*\"]\npermission: bypass"` produced two extra keys).
+ *
+ * That sink predates #3706, but this change adds a SECOND write to it, so it is
+ * closed here rather than doubled. Both the decision and the escaping live in
+ * frontmatter.cts so there is exactly one set of YAML scalar rules; a value that
+ * round-trips bare is still emitted bare, so generated files do not churn.
+ */
 function frontmatterScalar(key: string, value: string): string {
-  const plain =
-    PLAIN_SCALAR_RE.test(value) &&
-    !YAML_WORD_SCALAR_RE.test(value) &&
-    !YAML_NUMERIC_RE.test(value);
-  return plain ? `${key} ${value}` : `${key} "${frontmatterModule.escapeDoubleQuoted(value)}"`;
+  return frontmatterModule.agentScalarNeedsDoubleQuoting(value)
+    ? `${key} "${frontmatterModule.escapeDoubleQuoted(value)}"`
+    : `${key} ${value}`;
 }
 
 function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOverride = null, variant = null } = {}) {

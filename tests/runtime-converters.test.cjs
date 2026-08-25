@@ -2211,167 +2211,228 @@ describe('bug-2876: skill+agent converters emit YAML-quoted description', () => 
 
 // ─── #3706: OpenCode subagent effort (variant) + frontmatter escaping ────────
 //
-// `query resolve-model` reported an effort (e.g. high/xhigh) that never reached
+// `query resolve-execution` reported an effort (high/xhigh) that never reached
 // OpenCode: the bake wrote `model:` and nothing else, so every subagent ran at
-// whatever opencode.jsonc defaults the model to — for a custom provider commonly
-// the most expensive setting. The effort-side twin of #3705's model-side defect.
+// whatever opencode.jsonc defaults the model to. The effort-side twin of #3705.
 //
-// OpenCode ONLY. `EFFORT_ARGV` declares surfaces for claude/opencode/codex and no
-// kilo entry, so Kilo must NOT gain the key — unlike the model side, where #2794
-// J8 requires the two runtimes to resolve identically. Emitting `variant:` for
-// Kilo would invent a key that runtime never documented.
+// TWO COPIES, ONE TABLE. The converter exists in bin/install.js (required at the
+// top of this file) AND in src/runtime-artifact-conversion.cts — the live bake
+// path, reached from runtime-artifact-layout.cts. That file carries a standing
+// DEFECT.GENERATIVE-FIX note; the first draft of these tests exercised only the
+// install.js copy and would have passed while the live path stayed broken. Every
+// case below therefore runs against BOTH copies, which IS the parity assertion:
+// if one is changed and the other is not, this block goes red.
+const liveConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+
+const OPENCODE_CONVERTERS = [
+  ['bin/install.js', convertClaudeToOpencodeFrontmatter],
+  ['src (live bake)', liveConversion.convertClaudeToOpencodeFrontmatter],
+];
+const KILO_CONVERTERS = [
+  ['bin/install.js', convertClaudeToKiloFrontmatter],
+  ['src (live bake)', liveConversion.convertClaudeToKiloFrontmatter],
+];
+
 describe('#3706: OpenCode agent variant (resolved effort)', () => {
   const AGENT = ['---', 'name: gsd-executor', 'description: x', 'model: sonnet', '---', '', 'Body.'].join('\n');
   const hasKey = (out, key) => new RegExp(`^${key}:`, 'm').test(out);
 
-  test('emits variant alongside model for an OpenCode agent', () => {
-    const out = convertClaudeToOpencodeFrontmatter(AGENT, {
-      isAgent: true, modelOverride: 'synthetic/hf:zai-org/GLM-5.2', variant: 'high',
+  for (const [label, convert] of OPENCODE_CONVERTERS) {
+    test(`[${label}] emits variant alongside model`, () => {
+      const out = convert(AGENT, {
+        isAgent: true, modelOverride: 'synthetic/hf:zai-org/GLM-5.2', variant: 'high',
+      });
+      assert.match(out, /^model: synthetic\/hf:zai-org\/GLM-5\.2$/m);
+      assert.match(out, /^variant: high$/m);
     });
 
-    assert.match(out, /^model: synthetic\/hf:zai-org\/GLM-5\.2$/m);
-    assert.match(out, /^variant: high$/m);
-  });
+    test(`[${label}] carries whatever level was resolved, not a fixed one`, () => {
+      assert.match(convert(AGENT, { isAgent: true, variant: 'xhigh' }), /^variant: xhigh$/m);
+    });
 
-  test('carries whatever level was resolved, not a fixed one', () => {
-    const out = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, variant: 'xhigh' });
-    assert.match(out, /^variant: xhigh$/m);
-  });
+    test(`[${label}] omits the key entirely when no variant is supplied`, () => {
+      // The control that keeps every existing install byte-identical.
+      const out = convert(AGENT, { isAgent: true, modelOverride: 'M' });
+      assert.ok(!hasKey(out, 'variant'), `expected no variant key, got:\n${out}`);
+      assert.match(out, /^model: M$/m, 'the model side is unaffected');
+    });
 
-  test('omits the key entirely when no variant is supplied', () => {
-    // #1156's rule for `model: inherit`: never emit a key the runtime may not
-    // understand — omit it and let the runtime default. `variant` needs a matching
-    // `variants` map in the user's opencode.jsonc, so a stamped-in value nobody
-    // defined could break spawns for every install that never asked for effort
-    // routing. This is the control that keeps existing installs byte-identical.
-    const out = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, modelOverride: 'M' });
+    test(`[${label}] commands get neither model nor variant`, () => {
+      const out = convert(AGENT, { isAgent: false, modelOverride: 'M', variant: 'high' });
+      assert.ok(!hasKey(out, 'variant'));
+      assert.ok(!hasKey(out, 'model'));
+    });
 
-    assert.ok(!hasKey(out, 'variant'), `expected no variant key, got:\n${out}`);
-    assert.match(out, /^model: M$/m, 'the model side is unaffected');
-  });
+    test(`[${label}] adding a variant perturbs no other line`, () => {
+      const withV = convert(AGENT, { isAgent: true, modelOverride: 'M', variant: 'high' });
+      const without = convert(AGENT, { isAgent: true, modelOverride: 'M' });
+      assert.match(withV, /^mode: subagent$/m);
+      assert.deepEqual(
+        withV.split('\n').filter((l) => !/^variant:/.test(l)),
+        without.split('\n'),
+      );
+    });
+  }
 
-  test('Kilo does NOT emit variant even when one is passed', () => {
-    // The asymmetry, pinned. EFFORT_ARGV has no kilo entry.
-    const out = convertClaudeToKiloFrontmatter(AGENT, { isAgent: true, modelOverride: 'M', variant: 'high' });
-
-    assert.ok(!hasKey(out, 'variant'), `kilo has no declared effort surface; got:\n${out}`);
-    assert.match(out, /^model: M$/m, 'but the model override still applies');
-  });
-
-  test('commands get neither model nor variant', () => {
-    const out = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: false, modelOverride: 'M', variant: 'high' });
-
-    assert.ok(!hasKey(out, 'variant'));
-    assert.ok(!hasKey(out, 'model'));
-  });
-
-  test('mode: subagent and the existing stripped keys are unchanged', () => {
-    const withVariant = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, modelOverride: 'M', variant: 'high' });
-    const without = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, modelOverride: 'M' });
-
-    assert.match(withVariant, /^mode: subagent$/m);
-    // The ONLY difference between the two outputs is the variant line.
-    assert.deepEqual(
-      withVariant.split('\n').filter((l) => !/^variant:/.test(l)),
-      without.split('\n'),
-      'adding a variant must not perturb any other line',
-    );
-  });
+  for (const [label, convert] of KILO_CONVERTERS) {
+    test(`[${label}] Kilo does NOT emit variant even when one is passed`, () => {
+      // The asymmetry, pinned. EFFORT_ARGV declares surfaces for claude/opencode/
+      // codex and has no kilo entry — unlike the model side, where #2794 J8
+      // requires the two runtimes to resolve identically.
+      const out = convert(AGENT, { isAgent: true, modelOverride: 'M', variant: 'high' });
+      assert.ok(!hasKey(out, 'variant'), `kilo has no declared effort surface; got:\n${out}`);
+      assert.match(out, /^model: M$/m, 'but the model override still applies');
+    });
+  }
 });
 
 // ─── #3706: config-supplied values cannot inject frontmatter keys ────────────
 //
 // `model:` and now `variant:` both interpolate values read from
 // .planning/config.json / ~/.gsd/defaults.json. Raw interpolation let a value
-// containing a newline inject additional TOP-LEVEL keys into the generated agent
-// file — proven by execution during the #3705 security review. That sink predates
-// #3706, but this change adds a SECOND write to it, so it is closed here rather
-// than doubled.
+// containing a newline inject additional TOP-LEVEL keys — proven by execution
+// during the #3705 security review. The sink predates #3706; this change adds a
+// SECOND write to it, so it is closed here rather than doubled.
 describe('#3706: frontmatter values are escaped, not interpolated raw', () => {
   const AGENT = ['---', 'name: gsd-executor', 'description: x', '---', '', 'Body.'].join('\n');
 
-  test('a newline-bearing model value cannot add top-level keys', () => {
-    const out = convertClaudeToOpencodeFrontmatter(AGENT, {
-      isAgent: true, modelOverride: 'sonnet\ntools: ["*"]\npermission: bypass',
+  for (const [label, convert] of OPENCODE_CONVERTERS) {
+    test(`[${label}] a newline-bearing model value cannot add top-level keys`, () => {
+      const out = convert(AGENT, {
+        isAgent: true, modelOverride: 'sonnet\ntools: ["*"]\npermission: bypass',
+      });
+      assert.ok(!/^tools:/m.test(out), `injected a tools key:\n${out}`);
+      assert.ok(!/^permission: bypass$/m.test(out), `injected a permission key:\n${out}`);
+      assert.match(out, /^model: "/m, 'the value is quoted');
     });
 
-    assert.ok(!/^tools:/m.test(out), `injected a tools key:\n${out}`);
-    assert.ok(!/^permission: bypass$/m.test(out), `injected a permission key:\n${out}`);
-    assert.match(out, /^model: "/m, 'the value is quoted');
-  });
-
-  test('a newline-bearing variant value cannot add top-level keys', () => {
-    const out = convertClaudeToOpencodeFrontmatter(AGENT, {
-      isAgent: true, variant: 'high\nevil: yes',
+    test(`[${label}] a newline-bearing variant value cannot add top-level keys`, () => {
+      const out = convert(AGENT, { isAgent: true, variant: 'high\nevil: yes' });
+      assert.ok(!/^evil:/m.test(out), `injected a key:\n${out}`);
+      assert.match(out, /^variant: "/m);
     });
+  }
 
-    assert.ok(!/^evil:/m.test(out), `injected a key:\n${out}`);
-    assert.match(out, /^variant: "/m);
-  });
-
-  test('Kilo model values are escaped too — the same sink exists there', () => {
-    const out = convertClaudeToKiloFrontmatter(AGENT, {
-      isAgent: true, modelOverride: 'sonnet\ntools: ["*"]',
+  for (const [label, convert] of KILO_CONVERTERS) {
+    test(`[${label}] Kilo model values are escaped too — the same sink exists there`, () => {
+      const out = convert(AGENT, { isAgent: true, modelOverride: 'sonnet\ntools: ["*"]' });
+      assert.ok(!/^tools:/m.test(out), `injected a tools key:\n${out}`);
     });
-
-    assert.ok(!/^tools:/m.test(out), `injected a tools key:\n${out}`);
-  });
-
-  test('an ordinary value is still emitted unquoted, so existing files do not churn', () => {
-    // Escaping must not rewrite every already-generated file. A plain model ID
-    // takes the same bare form it always had.
-    const out = convertClaudeToOpencodeFrontmatter(AGENT, {
-      isAgent: true, modelOverride: 'synthetic/hf:zai-org/GLM-5.2', variant: 'high',
-    });
-
-    assert.match(out, /^model: synthetic\/hf:zai-org\/GLM-5\.2$/m, 'no quotes added to a plain ID');
-    assert.match(out, /^variant: high$/m);
-  });
+  }
 });
 
-// ─── #3706: values that are plain-LOOKING but not plain-SAFE ────────────────
+// ─── #3706: values that look plain but do not round-trip ────────────────────
 //
-// Added while self-reviewing the predicate above. The first draft accepted any
-// value matching /^[A-Za-z0-9._:\/@+-]+$/, which is not the same question as
-// "does YAML read this back as this exact string". Each row below round-trips
-// wrong (or does not parse) when emitted bare.
+// Matching /^[A-Za-z0-9._:\/@+-]+$/ is not the same question as "does YAML read
+// this back as the exact string that went in". Each row below is wrong when
+// emitted bare; the last is the control that keeps real installs unchanged.
 describe('#3706: YAML-ambiguous scalars are quoted, not emitted bare', () => {
   const AGENT = ['---', 'name: gsd-executor', 'description: x', '---', '', 'Body.'].join('\n');
-  const modelLine = (v) =>
-    (convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, modelOverride: v })
-      .split('\n').find((l) => l.startsWith('model:')) ?? '');
 
-  test('a leading @ is quoted — YAML reserves it and will not open a plain scalar', () => {
-    // The sharpest of these: `model: @org/model` is a PARSE ERROR, not an
-    // ambiguity, so the generated agent file would be unreadable end to end.
-    assert.equal(modelLine('@org/model'), 'model: "@org/model"');
+  const QUOTED = [
+    // A PARSE ERROR bare, not merely ambiguous: '@' is a YAML reserved
+    // indicator and may not open a plain scalar, so the whole agent file
+    // becomes unreadable.
+    '@org/model',
+    // A trailing ':' reads as a nested mapping key — "bad indentation of a
+    // mapping entry" kills the frontmatter.
+    'foo:',
+    // YAML 1.1 resolves these to booleans/null, so a variant named 'no'
+    // arrives as `false` and matches no entry in the user's variants map.
+    'no', 'yes', 'true', 'off', 'y', 'n', 'null',
+    // '12:30' resolves to the integer 750; ':' is legal mid-identifier here,
+    // so the form is reachable rather than contrived.
+    '12:30', '0755', '1.5', '0x1f',
+  ];
+  // The whole point of the predicate: no churn for anybody's existing files.
+  const BARE = ['sonnet', 'synthetic/hf:zai-org/GLM-5.2', 'gpt-5.6-luna', 'claude-opus-5'];
+
+  for (const [label, convert] of OPENCODE_CONVERTERS) {
+    const modelLine = (v) =>
+      (convert(AGENT, { isAgent: true, modelOverride: v })
+        .split('\n').find((l) => l.startsWith('model:')) ?? '');
+
+    for (const v of QUOTED) {
+      test(`[${label}] quotes ${JSON.stringify(v)}`, () => {
+        assert.equal(modelLine(v), `model: "${v}"`);
+      });
+    }
+    for (const v of BARE) {
+      test(`[${label}] leaves ${JSON.stringify(v)} bare`, () => {
+        assert.equal(modelLine(v), `model: ${v}`);
+      });
+    }
+    test(`[${label}] the same predicate governs variant, not just model`, () => {
+      assert.match(convert(AGENT, { isAgent: true, variant: 'no' }), /^variant: "no"$/m);
+    });
+  }
+});
+
+// ─── #3706: the threading seam — where the bug actually was ─────────────────
+//
+// Every test above exercises a converter directly. #3706 broke one layer up, in
+// runtime-artifact-layout's convertedAgentsKind: the converter had no variant to
+// write because nothing resolved or passed one. A converter-only suite goes green
+// while the value still never arrives, so the resolve→render chain is pinned here.
+describe('#3706: install-time effort resolves and renders for OpenCode', () => {
+  const effortResolver = require('../gsd-core/bin/lib/install-effort-resolver.cjs');
+  const catalog = require('../gsd-core/bin/lib/model-catalog.cjs');
+
+  // Exactly the composition the layout performs per agent.
+  const thread = (effortCfg, agentName) => {
+    const universal = effortCfg ? effortResolver.resolveInstallTimeEffort(effortCfg, agentName) : null;
+    return universal ? catalog.renderEffortArgv('opencode', universal, 'argv').value : null;
+  };
+
+  test('no effort config at all yields no variant', () => {
+    // The gate. resolveInstallTimeEffort ALWAYS returns a level ('high' from the
+    // catalog default) even for a null config, so gating on its return value
+    // would stamp `variant:` into every existing OpenCode install.
+    assert.equal(effortResolver.resolveInstallTimeEffort(null, 'gsd-executor'), 'high');
+    assert.equal(thread(null, 'gsd-executor'), null);
   });
 
-  test('boolean-like words are quoted', () => {
-    // YAML 1.1 resolves these to booleans, so a variant named `no` would arrive
-    // as `false` and match no entry in the user's variants map.
-    for (const v of ['no', 'yes', 'true', 'off', 'y', 'n', 'null']) {
-      assert.equal(modelLine(v), `model: "${v}"`, `${v} must be quoted`);
+  test('a configured agent override reaches the emitted value', () => {
+    assert.equal(thread({ agent_overrides: { 'gsd-executor': 'xhigh' } }, 'gsd-executor'), 'xhigh');
+  });
+
+  test('a configured default reaches the emitted value', () => {
+    assert.equal(thread({ default: 'low' }, 'gsd-doc-writer'), 'low');
+  });
+
+  test("'inherit' is never emitted as a literal", () => {
+    // #3533 (10d): inherit means "omit the key and follow the host default" and
+    // is not a wire level on ANY runtime. It IS a member of EFFORT_SET, so the
+    // resolver returns it verbatim — the declared render seam is what drops it.
+    // Writing `variant: inherit` would name a variant that cannot resolve.
+    for (const cfg of [
+      { agent_overrides: { 'gsd-executor': 'inherit' } },
+      { routing_tier_defaults: { light: 'inherit', standard: 'inherit', heavy: 'inherit' } },
+    ]) {
+      assert.equal(effortResolver.resolveInstallTimeEffort(cfg, 'gsd-executor'), 'inherit');
+      assert.equal(thread(cfg, 'gsd-executor'), null, `should omit for ${JSON.stringify(cfg)}`);
     }
   });
 
-  test('numeric-looking values are quoted, including the sexagesimal form', () => {
-    // `12:30` resolves to the integer 750 under YAML 1.1 — and `:` is legal
-    // mid-identifier here, so this is reachable, not contrived.
-    for (const v of ['12:30', '0755', '1.5', '0x1f']) {
-      assert.equal(modelLine(v), `model: "${v}"`, `${v} must be quoted`);
-    }
+  test('a bare effort.default does NOT reach a tiered agent', () => {
+    // Not obvious, and it is why the `inherit` case above goes through
+    // agent_overrides instead: for an agent WITH a catalog tier the manifest
+    // tier ladder (#3531) answers before effort.default is ever consulted, so
+    // `default: 'inherit'` leaves a tiered agent at its tier value. Pinned
+    // because a test written against `default` alone would assert nothing.
+    assert.equal(effortResolver.resolveInstallTimeEffort({ default: 'inherit' }, 'gsd-executor'), 'high');
+    assert.equal(thread({ default: 'inherit' }, 'gsd-executor'), 'high');
   });
 
-  test('the values real installs actually use stay bare', () => {
-    // The whole point of the predicate: no churn for anybody's existing files.
-    for (const v of ['sonnet', 'synthetic/hf:zai-org/GLM-5.2', 'gpt-5.6-luna', 'claude-opus-5']) {
-      assert.equal(modelLine(v), `model: ${v}`, `${v} must stay bare`);
-    }
+  test('a level OpenCode does not accept is dropped, not emitted', () => {
+    // 'ultra' is a real EFFORT_SET member that OpenCode's declared supported set
+    // does not contain. Omitting beats naming a variant that cannot resolve.
+    assert.equal(catalog.renderEffortArgv('opencode', 'ultra', 'argv').value, null);
   });
 
-  test('the same predicate governs variant, not just model', () => {
-    const out = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, variant: 'no' });
-    assert.match(out, /^variant: "no"$/m);
+  test('the full universal ladder OpenCode does accept passes through', () => {
+    for (const lvl of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+      assert.equal(catalog.renderEffortArgv('opencode', lvl, 'argv').value, lvl);
+    }
   });
 });

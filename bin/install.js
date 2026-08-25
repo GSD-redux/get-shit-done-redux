@@ -6995,7 +6995,39 @@ function neutralizeAgentReferences(content, instructionFile) {
   return c;
 }
 
-function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOverride = null } = {}) {
+/**
+ * #3706 — Render a frontmatter `key: value` line whose value came from user
+ * config, quoting anything YAML would not read back verbatim.
+ *
+ * MIRROR of frontmatterScalar in src/runtime-artifact-conversion.cts, which
+ * delegates to frontmatter.cts's agentScalarNeedsDoubleQuoting/escapeDoubleQuoted.
+ * This file must stay require-free of bin/lib (it is the standalone installer),
+ * so the rules are restated here and pinned by a parity test that runs the SAME
+ * table against both copies — see tests/runtime-converters.test.cjs (#3706).
+ * DEFECT.GENERATIVE-FIX: change one, change the other.
+ */
+function gsdFrontmatterScalar(key, value) {
+  const needsQuoting =
+    value === '' ||
+    /["\\\u0000-\u001f\u007f]/.test(value) ||
+    /^[,[\]{}#&*!|>'"%@`]/.test(value) ||
+    /^\s|\s$/.test(value) ||
+    /^[-?:](\s|$)/.test(value) ||
+    value.endsWith(':') ||
+    /^(?:y|n|yes|no|true|false|on|off|null)$/i.test(value) ||
+    /^(?:\d[\d_]*(?:\.[\d_]*)?(?:[eE][-+]?\d+)?|0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?::[0-5]?\d)+(?:\.[\d_]*)?)$/.test(value);
+  if (!needsQuoting) return `${key} ${value}`;
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t')
+    .replace(/\r/g, '\\r')
+    .replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+  return `${key} "${escaped}"`;
+}
+
+function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOverride = null, variant = null } = {}) {
   // Replace tool name references in content (applies to all files)
   let convertedContent = content;
   convertedContent = convertedContent.replace(/\bAskUserQuestion\b/g, 'question');
@@ -7134,7 +7166,13 @@ function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOve
     // respected on OpenCode (which uses static agent frontmatter, not inline
     // Task() model parameters). See #2256.
     if (modelOverride) {
-      newLines.push(`model: ${modelOverride}`);
+      newLines.push(gsdFrontmatterScalar('model:', modelOverride));
+    }
+    // #3706: the resolved reasoning effort. OpenCode only — EFFORT_ARGV declares
+    // surfaces for claude/opencode/codex and has no kilo entry. Omitted entirely
+    // when absent, per #1156's rule for `model: inherit`.
+    if (variant) {
+      newLines.push(gsdFrontmatterScalar('variant:', variant));
     }
   }
 
@@ -7321,7 +7359,7 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
     // Task() model parameters) — mirrors convertClaudeToOpencodeFrontmatter's
     // model emission exactly (#2093 UPGRADE 2 / ADR-1239). See #2256.
     if (modelOverride) {
-      newLines.push(['model:', modelOverride].join(' '));
+      newLines.push(gsdFrontmatterScalar('model:', modelOverride));
     }
     newLines.push(...buildKiloAgentPermissionBlock(agentTools));
   }

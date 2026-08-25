@@ -378,6 +378,36 @@ function scalarNeedsDoubleQuoting(s: string): boolean {
   return false;
 }
 
+/**
+ * #3706 — Does this value need double-quoting when written as an AGENT
+ * frontmatter scalar (`model:`, `variant:`)?
+ *
+ * Deliberately a superset of `scalarNeedsDoubleQuoting` rather than a second,
+ * competing predicate: that one answers "can this open a plain scalar safely",
+ * which is necessary but not sufficient for a value that must ROUND-TRIP as the
+ * exact string it went in as. The extra clauses:
+ *
+ *   - a trailing `:` — `model: foo:` is read as a nested mapping key and fails
+ *     the whole frontmatter with "bad indentation of a mapping entry";
+ *   - a boolean/null word — YAML 1.1 readers resolve `no`/`y`/`off`/`null` to
+ *     non-strings, so a variant named `no` arrives as `false`;
+ *   - a numeric-looking value, including the YAML 1.1 sexagesimal form: `12:30`
+ *     resolves to the integer 750, and `:` is legal mid-identifier here.
+ *
+ * Keeping both predicates in this module is the point — they are two answers to
+ * one question and drift the moment they live apart.
+ */
+const YAML_WORD_SCALAR_RE = /^(?:y|n|yes|no|true|false|on|off|null)$/i;
+const YAML_NUMERIC_RE = /^(?:\d[\d_]*(?:\.[\d_]*)?(?:[eE][-+]?\d+)?|0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?::[0-5]?\d)+(?:\.[\d_]*)?)$/;
+
+function agentScalarNeedsDoubleQuoting(s: string): boolean {
+  if (scalarNeedsDoubleQuoting(s)) return true;
+  if (s.endsWith(':')) return true;
+  if (YAML_WORD_SCALAR_RE.test(s)) return true;
+  if (YAML_NUMERIC_RE.test(s)) return true;
+  return false;
+}
+
 function reconstructFrontmatter(obj: Frontmatter): string {
   const lines: string[] = [];
   // #3257: read the full-line-comment channel (set by parseYamlRegion when comments
@@ -942,6 +972,7 @@ export = {
   // `model:`/`variant:` value cannot break out of its scalar. Previously private
   // here while those writers interpolated raw — one escaper, three call sites.
   escapeDoubleQuoted,
+  agentScalarNeedsDoubleQuoting,
   extractFrontmatter,
   UNTERMINATED_KEY_THRESHOLD,
   // Additive alias (#644 prohibition-probe schema contract): the probe round-trip seam reads a

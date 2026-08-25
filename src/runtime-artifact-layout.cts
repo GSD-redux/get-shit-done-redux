@@ -44,6 +44,8 @@ const conversionExports = runtimeArtifactConversion as Record<string, unknown> &
 import installModelOverrideResolver = require('./install-model-override-resolver.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- export= CommonJS module, same as the sibling resolver import above
 import installEffortResolver = require('./install-effort-resolver.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- export= CommonJS module, same as the sibling resolver import above
+import modelCatalog = require('./model-catalog.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 // #2870: `isGlobalScope` centralizes the `scope === 'global'` boolean
 // projection both kind-builder closures below need at the converters'
@@ -456,12 +458,13 @@ function convertedAgentsKind(
         //
         // Gated on the effort config being PRESENT, not on a value coming back.
         // `resolveInstallTimeEffort` always returns something (measured: 'high'
-        // even with no project config, no effort block, and a null config), so
-        // "skip when resolution yields no value" has no trigger and would stamp
-        // `variant:` into every generated agent file for every existing install.
-        // `variant` needs a matching `variants` map in the user's opencode.jsonc,
-        // so emitting one nobody defined risks breaking spawns for users who never
-        // asked for effort routing. #1156's rule for `model: inherit` is the
+        // even with no project config and no effort block), so "skip when
+        // resolution yields no value" has no trigger and would stamp `variant:`
+        // into every generated agent file for every existing install. OpenCode's
+        // built-in variant sets are provider-specific upstream (Anthropic ships
+        // only `high`/`max`), so a level GSD resolved is not guaranteed to name a
+        // variant the user's provider actually has — emitting one unasked-for is
+        // the risk this gate avoids. #1156's rule for `model: inherit` is the
         // precedent: do not emit a key the runtime may not understand.
         //
         // OpenCode only; the kilo converter ignores the field (no EFFORT_ARGV.kilo).
@@ -472,8 +475,18 @@ function convertedAgentsKind(
           const modelOverride = meta
             ? installModelOverrideResolver.resolveAgentModelOverride(meta.agentName, modelOverrides, runtimeResolver)
             : null;
-          const variant = effortConfig && meta
+          // The universal level is NOT emitted raw. `renderEffortArgv` is the
+          // declared OpenCode effort seam (EFFORT_ARGV.opencode: its own
+          // `supported` set + `clamp`), and it is what rejects a level that is
+          // not a wire value — most importantly `inherit`, which per #3533 (10d)
+          // means "omit the key and follow the host default" and must never be
+          // written literally. Anything unsupported renders `value: null`, which
+          // omits the key rather than inventing one.
+          const universal = effortConfig && meta
             ? installEffortResolver.resolveInstallTimeEffort(effortConfig, meta.agentName)
+            : null;
+          const variant = universal
+            ? modelCatalog.renderEffortArgv('opencode', universal, 'argv').value
             : null;
           return rawConverter(content, { isAgent: true, modelOverride, variant });
         };
