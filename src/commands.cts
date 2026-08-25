@@ -738,43 +738,59 @@ function effortSurfaceForHost(cwd: string, host: string): string {
 }
 
 /**
- * #488 — Replace or inject the `effort:` value in YAML frontmatter.
+ * #488 — Replace or inject the `<key>:` value in YAML frontmatter.
  * Unlike injectEffortFrontmatter (install.js), this overwrites an existing value.
+ * #3706: key-parameterised so the same line-editor serves both claude's
+ * `effort:` and OpenCode's `variant:`.
  */
-function setEffortFrontmatter(content: string, effortValue: string): string {
+function setFrontmatterKeyLine(content: string, key: string, value: string): string {
   const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
   const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
   const match = fmRe.exec(content);
   if (!match) return content;
   const fmBody = match[1];
-  if (/^effort:/m.test(fmBody)) {
-    return content.replace(/^(effort:)[ \t]*.*$/m, `$1 ${effortValue}`);
+  const keyRe = new RegExp(`^${key}:`, 'm');
+  const keyLineRe = new RegExp(`^(${key}:)[ \\t]*.*$`, 'm');
+  if (keyRe.test(fmBody)) {
+    return content.replace(keyLineRe, `$1 ${value}`);
   }
   const openLen = 3 + eol.length;
   const closingStart = match.index + openLen + fmBody.length;
-  return content.slice(0, closingStart) + `effort: ${effortValue}${eol}` + content.slice(closingStart);
+  return content.slice(0, closingStart) + `${key}: ${value}${eol}` + content.slice(closingStart);
 }
 
 /**
- * #3533 (10d) — remove exactly the frontmatter `effort:` line (and its line
+ * #3533 (10d) — remove exactly the frontmatter `<key>:` line (and its line
  * ending) so an agent configured for `inherit` carries NO key. Mirrors the
  * codex-agent-toml strip discipline: targeted line removal, EOL-aware, every
  * other byte (comments, sibling keys, the body) untouched.
+ * #3706: key-parameterised so the same line-editor serves both claude's
+ * `effort:` and OpenCode's `variant:`.
  */
-function removeEffortFrontmatter(content: string): string {
+function removeFrontmatterKeyLine(content: string, key: string): string {
   // Scoped to the FIRST frontmatter block (not a whole-file /m match): a
-  // preamble or body line starting with `effort:` (a fenced config example,
+  // preamble or body line starting with `<key>:` (a fenced config example,
   // a thematic-break flanked fragment) must never be the line removed.
   const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
   const match = fmRe.exec(content);
   if (!match) return content;
   const fmBody = match[1];
-  const lineRe = /^effort:[ \t]*.*\r?\n?/m;
+  const lineRe = new RegExp(`^${key}:[ \\t]*.*\\r?\\n?`, 'm');
   if (!lineRe.test(fmBody)) return content;
   const strippedFm = fmBody.replace(lineRe, '');
   const openLen = 3 + (/^---\r\n/.test(content) ? 2 : 1);
   const closingStart = match.index + openLen + fmBody.length;
   return content.slice(0, match.index + openLen) + strippedFm + content.slice(closingStart);
+}
+
+/** #488 — Replace or inject the `effort:` value in YAML frontmatter. */
+function setEffortFrontmatter(content: string, effortValue: string): string {
+  return setFrontmatterKeyLine(content, 'effort', effortValue);
+}
+
+/** #3533 (10d) — remove exactly the frontmatter `effort:` line (and its line ending). */
+function removeEffortFrontmatter(content: string): string {
+  return removeFrontmatterKeyLine(content, 'effort');
 }
 
 /**
@@ -803,16 +819,17 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     return;
   }
 
+  // #3706: install now bakes OpenCode's resolved effort into agent
+  // frontmatter under the `variant:` key (not `effort:`), so OpenCode gets
+  // its own sync path — mirroring the codex branch above — rather than
+  // falling into the generic "does not use effort: frontmatter" skip.
+  if (runtime === 'opencode') {
+    cmdEffortSyncOpencode(cwd, raw, dryRun, opts.configDir);
+    return;
+  }
+
   if (runtime !== 'claude') {
-    // #3706: OpenCode DOES carry install-time effort in frontmatter now — under
-    // the `variant:` key, not `effort:` — so the generic reason below would be
-    // false for it. `effort sync` has no OpenCode path yet (the codex branch
-    // above is the precedent for adding one), so the skip stands; only the
-    // explanation is corrected, because a wrong reason is worse than none.
-    const reason = runtime === 'opencode'
-      ? `runtime 'opencode' bakes effort as the 'variant:' key at install time; 'effort sync' does not maintain that key yet — reinstall to apply effort config changes`
-      : `runtime '${runtime}' does not use effort: frontmatter`;
-    output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, reason }, raw, '');
+    output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, reason: `runtime '${runtime}' does not use effort: frontmatter` }, raw, '');
     return;
   }
 
@@ -1028,6 +1045,88 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
     raw,
     synced > 0 ? 'changed' : 'ok',
   );
+}
+
+/**
+ * #3706 — the OpenCode branch of `cmdEffortSync`. Maintains the `variant:`
+ * frontmatter key install now bakes into every `~/.config/opencode/agents/
+ * gsd-*.md` (or configDir-relative equivalent), mirroring exactly what
+ * install writes: a resolved universal effort clamped through
+ * `clampEffortForHost('opencode', ...)`. Null means the key must be ABSENT —
+ * #3533 (10d): an absent key is the correct state under `inherit`, and a
+ * level OpenCode does not accept must never be written, so both collapse to
+ * the same `target: null` and the same removal path. Result shape matches
+ * the claude branch's `{synced, skipped, changes, dry_run, agents_dir}`.
+ */
+function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, configDir?: string): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+  const { getGlobalConfigDir } = require('./runtime-homes.cjs') as { getGlobalConfigDir(runtime: string, explicitDir?: string | null): string };
+  const agentsDir = path.join(configDir || getGlobalConfigDir('opencode'), 'agents');
+
+  if (!fs.existsSync(agentsDir)) {
+    output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, agents_dir: agentsDir, reason: 'agents directory not found' }, raw, '');
+    return;
+  }
+
+  // Skip symlinks — matches the claude branch's existing guard (only write
+  // regular files, never follow a symlink into clobbering its target).
+  const files = fs
+    .readdirSync(agentsDir)
+    .filter(f => {
+      if (!f.startsWith('gsd-') || !f.endsWith('.md')) return false;
+      try { return fs.lstatSync(path.join(agentsDir, f)).isFile(); } catch { return false; }
+    })
+    .sort();
+
+  // Use install-time resolvers: they merge ~/.gsd/defaults.json with project
+  // config, matching the exact logic used when agents were originally
+  // installed. Resolved once, outside the loop, like the claude branch.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+  const { readGsdEffectiveEffortConfig, resolveInstallTimeEffort } = require('./install-effort-resolver.cjs') as {
+    readGsdEffectiveEffortConfig(cwd: string): Record<string, unknown>;
+    resolveInstallTimeEffort(cfg: Record<string, unknown>, agentName: string): string;
+  };
+  const effortCfg = readGsdEffectiveEffortConfig(cwd);
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+  const { clampEffortForHost } = require('./model-catalog.cjs') as { clampEffortForHost(host: string, effort: string): string | null };
+
+  const changes: EffortSyncChange[] = [];
+  let synced = 0;
+  let skipped = 0;
+
+  for (const file of files) {
+    const agentName = file.replace(/\.md$/, '');
+    const filePath = path.join(agentsDir, file);
+    const content = fs.readFileSync(filePath, 'utf8');
+
+    // `target === null` covers both "no effort configured" (inherit) and "a
+    // level OpenCode does not accept" — both must produce NO `variant:` key,
+    // exactly what install writes.
+    const universal = effortCfg ? resolveInstallTimeEffort(effortCfg, agentName) : null;
+    const target = universal ? clampEffortForHost('opencode', universal) : null;
+
+    // eslint-disable-next-line local/no-unbounded-quantifier -- lazy `*?` bounded by the `^---$/m` closing anchor, no nested quantifier, matches the claude branch's frontmatter scan
+    const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
+    if (!fmMatch) { skipped++; continue; }
+
+    const variantMatch = /^variant:[ \t]*(.+?)[ \t]*$/m.exec(fmMatch[1]);
+    const currentVariant = variantMatch ? variantMatch[1] : null;
+
+    if (currentVariant === target) { skipped++; continue; }
+
+    changes.push({ agent: agentName, from: currentVariant, to: target });
+    synced++;
+
+    if (!dryRun) {
+      fs.writeFileSync(
+        filePath,
+        target === null ? removeFrontmatterKeyLine(content, 'variant') : setFrontmatterKeyLine(content, 'variant', target),
+      );
+    }
+  }
+
+  output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir }, raw, synced > 0 ? 'changed' : 'ok');
 }
 
 /**

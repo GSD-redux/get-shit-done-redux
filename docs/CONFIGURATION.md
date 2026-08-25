@@ -1566,6 +1566,8 @@ Effort is rendered per-runtime: `output_config.effort` for Claude (Claude Code s
 
 Note that the gate is on effort being configured **at all**, not on the individual agent being named. Once any `effort` block exists, the usual cascade resolves a level for *every* agent — an `agent_overrides` entry for one agent still leaves the others resolving through `routing_tier_defaults` and the tier ladder — so every generated OpenCode agent gets a `variant` line, not only the one you named. Two levels are never written: `inherit` (which means "follow the host default", so the key is omitted) and any level outside OpenCode's supported set. Runtimes with no declared effort surface — Kilo among them — never receive the key at all.
 
+`effort sync` maintains the key too, so changing `effort` config does not require a reinstall: it writes the newly resolved `variant` into each installed OpenCode agent, and removes the key when the agent resolves to `inherit` or to a level OpenCode does not accept — the same states under which install writes nothing.
+
 **Cross-provider clamping:** `minimal` is Anthropic-unsupported — it clamps to `low` on Claude.
 
 **Codex effort is resolved per model, not per runtime (#3007).** Codex advertises a
