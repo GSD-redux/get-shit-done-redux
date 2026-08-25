@@ -1010,8 +1010,8 @@ interface CodexEffortSyncRefusal {
   reason: string;
 }
 
-/** A write that failed mid-sync (fs fault), reported so the remaining agents still get processed. */
-interface EffortSyncWriteFailure {
+/** A read or write that failed mid-sync (fs fault), reported so the remaining agents still get processed. */
+interface EffortSyncFileFailure {
   agent: string;
   file: string;
   error: string;
@@ -1026,8 +1026,9 @@ interface EffortSyncWriteFailure {
  * document is refused and reported, never partially rewritten (40-design.md
  * "Reconciliation" — parseCodexAgentToml is the STRICT half of the reader/
  * writer split). Result shape is additive over the claude branch's
- * `{synced, skipped, changes, dry_run, agents_dir}` — `refused` and
- * `write_failures` are new fields, never a reshape of the existing ones.
+ * `{synced, skipped, changes, dry_run, agents_dir}` — `refused`,
+ * `write_failures`, and `read_failures` are new fields, never a reshape of
+ * the existing ones.
  */
 function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
@@ -1051,14 +1052,26 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
 
   const changes: CodexEffortSyncChange[] = [];
   const refused: CodexEffortSyncRefusal[] = [];
-  const writeFailures: EffortSyncWriteFailure[] = [];
+  const writeFailures: EffortSyncFileFailure[] = [];
+  const readFailures: EffortSyncFileFailure[] = [];
   let synced = 0;
   let skipped = 0;
 
   for (const file of files) {
     const agentName = file.replace(/\.toml$/, '');
     const filePath = path.join(agentsDir, file);
-    const content = fs.readFileSync(filePath, 'utf8');
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      // An unreadable agent file must not abort the whole sweep — mirrors the
+      // opencode branch's own read guard, reported under its own
+      // `read_failures` key so a caller can tell "never read" apart from
+      // "read but write failed".
+      skipped++;
+      readFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
 
     const parsed = parseCodexAgentToml(content);
     if (!parsed.ok) {
@@ -1105,17 +1118,28 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
       // bare fs.renameSync) carries the transient-Windows-lock retry per
       // DEFECT.WINDOWS-FS-OPS.
       const tmpPath = `${filePath}.tmp.${process.pid}`;
+      // Stat filePath BEFORE the write so the original mode is available to
+      // pass at creation time, not just at chmod time afterward — otherwise
+      // the tmp file is briefly created at the default `0666 & ~umask`
+      // (world-readable under a typical 022 umask) even when filePath is
+      // e.g. 0600, exposing its contents for the window between creation and
+      // chmod. Best-effort: a stat failure must not abort the sync, since the
+      // content write is what matters, not the mode.
+      let originalMode: number | undefined;
       try {
-        fs.writeFileSync(tmpPath, renderCodexAgentToml(doc));
-        // Preserve the original file's mode across the tmp+rename publish —
-        // without this the renamed-over file would inherit the default
-        // `0666 & ~umask` instead of filePath's existing mode. Mask off the
-        // file-type bits fs.statSync().mode carries (POSIX leaves chmod's
-        // handling of those unspecified); best-effort only, since the content
-        // write is what matters, not the mode.
+        originalMode = fs.statSync(filePath).mode & 0o7777;
+      } catch { /* non-fatal: fall back to writing without an explicit mode */ }
+      try {
+        fs.writeFileSync(tmpPath, renderCodexAgentToml(doc), originalMode !== undefined ? { mode: originalMode } : undefined);
+        // Not redundant with the `mode` option above: `mode` only applies
+        // when the file is actually created (O_CREAT). A leftover tmp file
+        // from an earlier crashed run would be reused (truncated) at its OLD
+        // mode instead, and this chmod is what corrects that case. Mask off
+        // the file-type bits fs.statSync().mode carries (POSIX leaves
+        // chmod's handling of those unspecified); best-effort only, since
+        // the content write is what matters, not the mode.
         try {
-          const { mode } = fs.statSync(filePath);
-          fs.chmodSync(tmpPath, mode & 0o7777);
+          if (originalMode !== undefined) fs.chmodSync(tmpPath, originalMode);
         } catch { /* non-fatal: proceed with default tmp-file mode */ }
         retryRenameSync(tmpPath, filePath);
       } catch (err) {
@@ -1133,9 +1157,9 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
   }
 
   output(
-    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, refused, write_failures: writeFailures },
+    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, refused, write_failures: writeFailures, read_failures: readFailures },
     raw,
-    synced > 0 ? 'changed' : 'ok',
+    writeFailures.length > 0 || readFailures.length > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok',
   );
 }
 
@@ -1185,8 +1209,8 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
   const { clampEffortForHost } = require('./model-catalog.cjs') as { clampEffortForHost(host: string, effort: string): string | null };
 
   const changes: EffortSyncChange[] = [];
-  const writeFailures: EffortSyncWriteFailure[] = [];
-  const readFailures: EffortSyncWriteFailure[] = [];
+  const writeFailures: EffortSyncFileFailure[] = [];
+  const readFailures: EffortSyncFileFailure[] = [];
   let synced = 0;
   let skipped = 0;
 
@@ -1250,25 +1274,35 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
       // write is reported, not thrown, so the remaining agents still get
       // processed.
       const tmpPath = `${filePath}.tmp.${process.pid}`;
+      // Stat filePath BEFORE the write so its mode can be passed at CREATION
+      // time — a plain `writeFileSync(tmpPath, data)` creates the tmp file at
+      // the default `0666 & ~umask` (world-readable under a typical 022
+      // umask) even when filePath is e.g. 0600, exposing its contents for
+      // the window between creation and the chmod below. Mask off the
+      // file-type bits (e.g. S_IFREG 0o100000) that fs.statSync().mode
+      // carries alongside the permission bits — POSIX leaves chmod's
+      // handling of those bits unspecified, and the remote matrix runs Linux
+      // only (Darwin tolerating the full mode is not evidence it is safe
+      // there). Best-effort only: a stat failure must not abort the sync,
+      // since the content write is what matters, not the mode.
+      let originalMode: number | undefined;
+      try {
+        originalMode = fs.statSync(filePath).mode & 0o7777;
+      } catch { /* non-fatal: fall back to writing without an explicit mode */ }
       try {
         fs.writeFileSync(
           tmpPath,
           target === null ? removeFrontmatterKeyLine(content, 'variant') : setFrontmatterKeyLine(content, 'variant', target),
+          originalMode !== undefined ? { mode: originalMode } : undefined,
         );
-        // A tmp-file + rename publish does NOT preserve the original file's
-        // mode the way an in-place `writeFileSync` to an existing path would
-        // — the renamed-over file would otherwise inherit the default
-        // `0666 & ~umask` instead of whatever mode `filePath` already had.
-        // Best-effort only: a stat/chmod failure must not abort the sync,
-        // since the content write is what matters, not the mode.
+        // Not redundant with the `mode` option above: `mode` only applies
+        // when the file is actually created (O_CREAT). A leftover tmp file
+        // from an earlier crashed run would be reused (truncated) at its OLD
+        // mode instead, and this chmod is what corrects that case.
+        // Best-effort only: a chmod failure must not abort the sync, since
+        // the content write is what matters, not the mode.
         try {
-          // Mask off the file-type bits (e.g. S_IFREG 0o100000) that
-          // fs.statSync().mode carries alongside the permission bits — POSIX
-          // leaves chmod's handling of those bits unspecified, and the remote
-          // matrix runs Linux only (Darwin tolerating the full mode is not
-          // evidence it is safe there).
-          const { mode } = fs.statSync(filePath);
-          fs.chmodSync(tmpPath, mode & 0o7777);
+          if (originalMode !== undefined) fs.chmodSync(tmpPath, originalMode);
         } catch { /* non-fatal: proceed with default tmp-file mode */ }
         retryRenameSync(tmpPath, filePath);
       } catch (err) {

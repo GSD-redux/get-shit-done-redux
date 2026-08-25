@@ -177,6 +177,68 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
     }
   });
 
+  test('the temp file is never more permissive than the agent it replaces', () => {
+    // A plain `writeFileSync(tmpPath, data)` creates the tmp file at the
+    // default `0666 & ~umask`, then only tightens it afterward via chmod —
+    // for a 0600 agent that briefly leaves its contents world-readable
+    // inside agents/. Assert the mode is correct at CREATION, not just
+    // after the later chmod, by monkeypatching fs.writeFileSync in the
+    // child process to record the on-disk mode immediately after the real
+    // write runs. Mode bits are not meaningful on Windows, so skip there.
+    if (process.platform === 'win32') return;
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'xhigh' } });
+      const filePath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      fs.chmodSync(filePath, 0o600);
+
+      const opts = { dryRun: false, configDir, runtime: 'opencode' };
+      const script = [
+        "const fs = require('node:fs');",
+        'const captures = [];',
+        'const originalWriteFileSync = fs.writeFileSync;',
+        'fs.writeFileSync = function (targetPath, data, options) {',
+        '  const result = originalWriteFileSync.call(fs, targetPath, data, options);',
+        '  if (typeof targetPath === "string" && /\\.tmp\\.\\d+$/.test(targetPath)) {',
+        '    captures.push({ options: options || null, modeAfterWrite: fs.statSync(targetPath).mode & 0o777 });',
+        '  }',
+        '  return result;',
+        '};',
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, false, ${JSON.stringify(opts)});`,
+        'process.stdout.write("###CAPTURE_START###" + JSON.stringify(captures) + "###CAPTURE_END###");',
+      ].join('\n');
+      const spawned = runNode(['-e', script], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        spawned.exitCode, 0,
+        `capture child process failed (outcome=${spawned.outcome}):\nstdout: ${spawned.stdout}\nstderr: ${spawned.stderr}`,
+      );
+      const match = /###CAPTURE_START###([\s\S]*?)###CAPTURE_END###/.exec(spawned.stdout);
+      assert.ok(match, `expected capture marker on stdout, got:\n${spawned.stdout}`);
+      const captures = JSON.parse(match[1]);
+      assert.strictEqual(captures.length, 1, `expected exactly one tmp-file write, got:\n${JSON.stringify(captures)}`);
+
+      // The tmp file's mode immediately after creation must already match
+      // the target agent's 0600, not the default 0644 a bare writeFileSync
+      // would produce.
+      assert.strictEqual(
+        captures[0].modeAfterWrite, 0o600,
+        'the tmp file must never be created more permissive than the agent it replaces',
+      );
+
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.match(content, /^variant: xhigh$/m, 'the sync must have actually rewritten the file');
+      assert.strictEqual(fs.statSync(filePath).mode & 0o777, 0o600, 'the published file must keep the original file mode');
+    } finally {
+      cleanup(root);
+    }
+  });
+
   test('reports the change without writing under dry run', () => {
     // Protects: dry-run reports the pending change but leaves the file
     // byte-identical — no write happens until dryRun is explicitly false.
@@ -573,6 +635,70 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
 
       const okContent = fs.readFileSync(okPath, 'utf8');
       assert.match(okContent, /^variant: xhigh$/m, 'the sweep must continue past the unreadable agent');
+    } finally {
+      cleanup(root);
+    }
+  });
+});
+
+// ADR-2313 D7 (#3243) — the Codex branch (cmdEffortSyncCodex) strips a stale
+// Anthropic-flavored `model` pin (and its coupled `model_reasoning_effort`)
+// from every installed `~/.codex/agents/<agent>.toml`, publishing via the same
+// tmp-file + chmod + retryRenameSync discipline as the OpenCode branch above.
+describe('#3243: effort sync strips Anthropic-flavored model pins from Codex agents', () => {
+  function makeSandbox() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-effort-sync-codex-'));
+    const cwd = path.join(root, 'project');
+    const configDir = path.join(root, 'runtime-home');
+    const agentsDir = path.join(configDir, 'agents');
+    const home = path.join(root, 'home');
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.mkdirSync(home, { recursive: true });
+    return { root, cwd, configDir, agentsDir, home };
+  }
+
+  function writeAgent(agentsDir, name, lines) {
+    const filePath = path.join(agentsDir, name);
+    fs.writeFileSync(filePath, lines.join('\n'));
+    return filePath;
+  }
+
+  test('a synced codex agent keeps its original file mode', () => {
+    // The tmp-file + rename publish does not preserve mode the way an
+    // in-place writeFileSync would — cmdEffortSyncCodex stat+chmods the tmp
+    // file before the rename specifically to compensate, same discipline as
+    // the OpenCode branch. Mode bits are not meaningful on Windows, so skip
+    // there. The reachable rewrite path is the Anthropic-model-strip: a
+    // `.toml` agent carrying an Anthropic-flavored `model` value.
+    if (process.platform === 'win32') return;
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      const before = ['model = "claude-sonnet-4"', 'model_reasoning_effort = "high"', ''].join('\n');
+      const filePath = writeAgent(agentsDir, 'gsd-executor.toml', [before]);
+      fs.chmodSync(filePath, 0o600);
+
+      const opts = { dryRun: false, configDir, runtime: 'codex' };
+      const script = [
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, false, ${JSON.stringify(opts)});`,
+      ].join('\n');
+      const spawned = runNode(['-e', script], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        spawned.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${spawned.outcome}):\nstdout: ${spawned.stdout}\nstderr: ${spawned.stderr}`,
+      );
+
+      const after = fs.readFileSync(filePath, 'utf8');
+      assert.notStrictEqual(after, before, 'the sync must have actually rewritten the file');
+      assert.doesNotMatch(after, /claude/i, 'the Anthropic-flavored model pin must have been stripped');
+      assert.strictEqual(
+        fs.statSync(filePath).mode & 0o777, 0o600,
+        'the published file must keep the original file mode',
+      );
     } finally {
       cleanup(root);
     }
