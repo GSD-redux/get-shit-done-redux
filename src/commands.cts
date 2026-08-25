@@ -52,7 +52,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir, planningPaths } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter } = frontmatter;
+const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuoted } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
@@ -754,6 +754,12 @@ function setFrontmatterKeyLine(content: string, key: string, value: string): str
   const match = fmRe.exec(content);
   if (!match) return content;
   const fmBody = match[1];
+  // Both writers of these frontmatter keys — this sync path and the
+  // install-side `frontmatterScalar` in runtime-artifact-conversion.cts —
+  // now share one escaping rule: quote via `agentScalarNeedsDoubleQuoting` +
+  // `escapeDoubleQuoted` (both from frontmatter.cts) rather than each
+  // interpolating `value` raw/differently.
+  const renderedValue = agentScalarNeedsDoubleQuoting(value) ? `"${escapeDoubleQuoted(value)}"` : value;
   // EOL comes from the MATCHED BLOCK, not the start of the file. With a
   // preamble the two can disagree, and on a CRLF document that misaligns every
   // offset below by one byte and mangles the opening fence.
@@ -782,7 +788,7 @@ function setFrontmatterKeyLine(content: string, key: string, value: string): str
       (_m, nl) => {
         if (!seen) {
           seen = true;
-          return `${key}: ${value}${nl}`;
+          return `${key}: ${renderedValue}${nl}`;
         }
         return '';
       },
@@ -791,7 +797,7 @@ function setFrontmatterKeyLine(content: string, key: string, value: string): str
     // rewrite an earlier preamble line that happens to start with this key.
     return content.slice(0, bodyStart) + newBody + content.slice(closingStart);
   }
-  return content.slice(0, closingStart) + `${key}: ${value}${eol}` + content.slice(closingStart);
+  return content.slice(0, closingStart) + `${key}: ${renderedValue}${eol}` + content.slice(closingStart);
 }
 
 /**
@@ -911,6 +917,18 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   const changes: EffortSyncChange[] = [];
   let synced = 0;
   let skipped = 0;
+  // Local-only counter: reads AND writes are both guarded in this loop (an
+  // unreadable or unwritable agent file must not abort the whole sweep), but
+  // this result shape (`{synced, skipped, changes, dry_run, agents_dir}`) is
+  // long-standing and widely consumed, so it deliberately gains NO new key
+  // (no `read_failures`/`write_failures`, unlike the codex/opencode branches
+  // below). Instead every per-file failure — read or write — is folded into
+  // `skipped` and rides the raw-mode summary token below — `output()`'s
+  // third argument is never merged into the emitted JSON object (see io.cts
+  // `output()`: it is only read when `raw === true`, entirely replacing the
+  // JSON payload), so flipping it to `'failed'` costs nothing in the wire
+  // shape while still surfacing the failure to a raw-mode caller.
+  let fileFailureCount = 0;
 
   for (const file of files) {
     const agentName = file.replace(/\.md$/, '');
@@ -919,12 +937,13 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     try {
       content = fs.readFileSync(filePath, 'utf8');
     } catch {
-      // An unreadable agent file must not abort the whole sweep — degrade
-      // like the write path in this same loop does. Deliberately NOT adding
-      // a new field here: this result shape (`{synced, skipped, changes,
-      // dry_run, agents_dir}`) is long-standing and widely consumed, so the
-      // failure is folded into `skipped` only, with no read_failures list.
+      // An unreadable agent file must not abort the whole sweep. Deliberately
+      // NOT adding a new field here: this result shape (`{synced, skipped,
+      // changes, dry_run, agents_dir}`) is long-standing and widely consumed,
+      // so the failure is folded into `skipped` only, with no
+      // read_failures/write_failures list — see `fileFailureCount` above.
       skipped++;
+      fileFailureCount++;
       continue;
     }
 
@@ -951,11 +970,20 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
       // failed value match means the key is present with an EMPTY value —
       // report `''`, not `null`, so "present-but-empty" is never conflated
       // with "absent" in the sync output.
+      if (!dryRun) {
+        // An unwritable agent file must not abort the whole sweep — same
+        // per-file degrade as the read guard above: folded into `skipped`,
+        // no new field, surfaced via `fileFailureCount` / the raw token.
+        try {
+          fs.writeFileSync(filePath, removeEffortFrontmatter(content));
+        } catch {
+          skipped++;
+          fileFailureCount++;
+          continue;
+        }
+      }
       changes.push({ agent: agentName, from: effortMatchInherit ? effortMatchInherit[1] : '', to: null });
       synced++;
-      if (!dryRun) {
-        fs.writeFileSync(filePath, removeEffortFrontmatter(content));
-      }
       continue;
     }
 
@@ -984,15 +1012,28 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
 
     if (currentEffort === newEffortValue) { skipped++; continue; }
 
+    if (!dryRun) {
+      // An unwritable agent file must not abort the whole sweep — same
+      // per-file degrade as the read guard above: folded into `skipped`,
+      // no new field, surfaced via `fileFailureCount` / the raw token.
+      try {
+        fs.writeFileSync(filePath, setEffortFrontmatter(content, newEffortValue));
+      } catch {
+        skipped++;
+        fileFailureCount++;
+        continue;
+      }
+    }
+
     changes.push({ agent: agentName, from: currentEffort, to: newEffortValue });
     synced++;
-
-    if (!dryRun) {
-      fs.writeFileSync(filePath, setEffortFrontmatter(content, newEffortValue));
-    }
   }
 
-  output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir }, raw, synced > 0 ? 'changed' : 'ok');
+  output(
+    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir },
+    raw,
+    fileFailureCount > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok',
+  );
 }
 
 /** One `{agent, field, from}` strip reported by {@link cmdEffortSyncCodex} — `to` is always omission (`null`). */

@@ -524,6 +524,176 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
     }
   });
 
+  test('a claude read failure reports failed without changing the result shape', () => {
+    // Protects: the claude branch of cmdEffortSync deliberately does NOT gain
+    // a `read_failures` key on a read failure — that result shape
+    // (`{synced, skipped, changes, dry_run, agents_dir}`) is long-standing
+    // and widely consumed. The failure is surfaced only through output()'s
+    // third argument (the raw-mode summary token), which is never merged
+    // into the JSON object. Asserts both halves: the raw token is 'failed',
+    // and the JSON result's key set is exactly the historic five, with no
+    // read_failures/write_failures key added.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-unreadable': 'xhigh' } });
+      writeAgent(agentsDir, 'gsd-unreadable.md', [
+        '---', 'name: gsd-unreadable', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+
+      const opts = { dryRun: false, configDir, runtime: 'claude' };
+      const makeScript = raw => [
+        `const fs = require('node:fs');`,
+        `const originalReadFileSync = fs.readFileSync;`,
+        `fs.readFileSync = function (targetPath, ...rest) {`,
+        `  if (typeof targetPath === 'string' && targetPath.includes('gsd-unreadable.md')) {`,
+        `    throw new Error('injected read failure');`,
+        `  }`,
+        `  return originalReadFileSync.call(fs, targetPath, ...rest);`,
+        `};`,
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, ${raw}, ${JSON.stringify(opts)});`,
+      ].join('\n');
+
+      const jsonRun = runNode(['-e', makeScript(false)], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        jsonRun.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${jsonRun.outcome}):\nstdout: ${jsonRun.stdout}\nstderr: ${jsonRun.stderr}`,
+      );
+      const jsonStart = jsonRun.stdout.indexOf('{');
+      assert.notStrictEqual(jsonStart, -1, `expected JSON output on stdout, got:\n${jsonRun.stdout}`);
+      const result = JSON.parse(jsonRun.stdout.slice(jsonStart));
+      assert.strictEqual(result.skipped, 1);
+      assert.deepStrictEqual(
+        Object.keys(result).sort(),
+        ['agents_dir', 'changes', 'dry_run', 'skipped', 'synced'],
+        'the claude result shape must gain no read_failures/write_failures key',
+      );
+
+      const rawRun = runNode(['-e', makeScript(true)], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        rawRun.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${rawRun.outcome}):\nstdout: ${rawRun.stdout}\nstderr: ${rawRun.stderr}`,
+      );
+      assert.strictEqual(rawRun.stdout.trim(), 'failed', `expected the raw summary token 'failed', got:\n${rawRun.stdout}`);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a claude write failure is reported and does not abort the sweep', () => {
+    // Protects: the claude branch's fs.writeFileSync (both the inherit/strip
+    // call site and the concrete/set call site) used to sit outside any try,
+    // so a single unwritable agent file threw and aborted the entire sweep.
+    // Injected deterministically by monkeypatching fs.writeFileSync inside
+    // the child script for exactly ONE agent's path — per this repo's
+    // CLAUDE.md §4, chmod-based injection is forbidden (root bypasses mode
+    // bits under Docker/CI and it leaks resources).
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-broken': 'xhigh', 'gsd-executor': 'xhigh' } });
+      const brokenPath = writeAgent(agentsDir, 'gsd-broken.md', [
+        '---', 'name: gsd-broken', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      const okPath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      const brokenBefore = fs.readFileSync(brokenPath);
+
+      const opts = { dryRun: false, configDir, runtime: 'claude' };
+      const makeScript = raw => [
+        `const fs = require('node:fs');`,
+        `const originalWriteFileSync = fs.writeFileSync;`,
+        `fs.writeFileSync = function (targetPath, ...rest) {`,
+        `  if (typeof targetPath === 'string' && targetPath.includes('gsd-broken.md')) {`,
+        `    throw new Error('injected write failure');`,
+        `  }`,
+        `  return originalWriteFileSync.call(fs, targetPath, ...rest);`,
+        `};`,
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, ${raw}, ${JSON.stringify(opts)});`,
+      ].join('\n');
+
+      const jsonRun = runNode(['-e', makeScript(false)], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        jsonRun.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${jsonRun.outcome}):\nstdout: ${jsonRun.stdout}\nstderr: ${jsonRun.stderr}`,
+      );
+      const jsonStart = jsonRun.stdout.indexOf('{');
+      assert.notStrictEqual(jsonStart, -1, `expected JSON output on stdout, got:\n${jsonRun.stdout}`);
+      const result = JSON.parse(jsonRun.stdout.slice(jsonStart));
+      assert.strictEqual(result.skipped, 1);
+      assert.deepStrictEqual(
+        Object.keys(result).sort(),
+        ['agents_dir', 'changes', 'dry_run', 'skipped', 'synced'],
+        'the claude result shape must gain no read_failures/write_failures key',
+      );
+
+      const brokenAfter = fs.readFileSync(brokenPath);
+      assert.ok(brokenBefore.equals(brokenAfter), 'the failing agent file must be byte-unchanged');
+
+      const okContent = fs.readFileSync(okPath, 'utf8');
+      assert.match(okContent, /^effort: xhigh$/m, 'the sweep must continue past the failing agent');
+
+      const rawRun = runNode(['-e', makeScript(true)], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        rawRun.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${rawRun.outcome}):\nstdout: ${rawRun.stdout}\nstderr: ${rawRun.stderr}`,
+      );
+      assert.strictEqual(rawRun.stdout.trim(), 'failed', `expected the raw summary token 'failed', got:\n${rawRun.stdout}`);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('effort values are written unquoted', () => {
+    // Control for the shared-escaping fix: setFrontmatterKeyLine now routes
+    // through the same agentScalarNeedsDoubleQuoting/escapeDoubleQuoted
+    // helpers the install-side frontmatterScalar writer uses, but every
+    // effort level the sync actually writes today is a plain scalar — the
+    // output must stay byte-identical (unquoted) across runtimes/levels.
+    for (const level of ['low', 'xhigh']) {
+      const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+      try {
+        writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': level } });
+        const claudePath = writeAgent(agentsDir, 'gsd-executor.md', [
+          '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+        ]);
+        runEffortSync({ cwd, home, configDir, runtime: 'claude', dryRun: false });
+        const claudeContent = fs.readFileSync(claudePath, 'utf8');
+        assert.match(claudeContent, new RegExp(`^effort: ${level}$`, 'm'));
+        assert.doesNotMatch(claudeContent, /^effort: "/m);
+      } finally {
+        cleanup(root);
+      }
+
+      const { root: root2, cwd: cwd2, configDir: configDir2, agentsDir: agentsDir2, home: home2 } = makeSandbox();
+      try {
+        writeProjectEffortConfig(cwd2, { agent_overrides: { 'gsd-executor': level } });
+        const opencodePath = writeAgent(agentsDir2, 'gsd-executor.md', [
+          '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+        ]);
+        runEffortSync({ cwd: cwd2, home: home2, configDir: configDir2, runtime: 'opencode', dryRun: false });
+        const opencodeContent = fs.readFileSync(opencodePath, 'utf8');
+        assert.match(opencodeContent, new RegExp(`^variant: ${level}$`, 'm'));
+        assert.doesNotMatch(opencodeContent, /^variant: "/m);
+      } finally {
+        cleanup(root2);
+      }
+    }
+  });
+
   test('a write failure on one agent is reported and does not stop the sweep', () => {
     // Protects: cmdEffortSyncOpencode's atomic tmp-write + rename can fail
     // mid-sync (fs fault). The failure must be reported per-agent in
@@ -639,6 +809,48 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
       cleanup(root);
     }
   });
+
+  test('the summary reports failed when an opencode write could not complete', () => {
+    // Protects: the raw-mode summary TOKEN cmdEffortSync passes as output()'s
+    // third argument (never merged into the JSON object — io.cts `output()`
+    // only reads it when `raw === true`, entirely replacing the JSON
+    // payload) must flip to 'failed' when a write_failures entry exists, even
+    // though the JSON result itself carries no such flag. Captured by
+    // running the child with `raw: true` and asserting on the literal stdout
+    // text `output()` writes for that mode, not on parsed JSON.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-broken': 'xhigh' } });
+      writeAgent(agentsDir, 'gsd-broken.md', [
+        '---', 'name: gsd-broken', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+
+      const opts = { dryRun: false, configDir, runtime: 'opencode' };
+      const script = [
+        `const fs = require('node:fs');`,
+        `const originalWriteFileSync = fs.writeFileSync;`,
+        `fs.writeFileSync = function (targetPath, ...rest) {`,
+        `  if (typeof targetPath === 'string' && targetPath.includes('gsd-broken.md.tmp.')) {`,
+        `    throw new Error('injected write failure');`,
+        `  }`,
+        `  return originalWriteFileSync.call(fs, targetPath, ...rest);`,
+        `};`,
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, true, ${JSON.stringify(opts)});`,
+      ].join('\n');
+      const spawned = runNode(['-e', script], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        spawned.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${spawned.outcome}):\nstdout: ${spawned.stdout}\nstderr: ${spawned.stderr}`,
+      );
+      assert.strictEqual(spawned.stdout.trim(), 'failed', `expected the raw summary token 'failed', got:\n${spawned.stdout}`);
+    } finally {
+      cleanup(root);
+    }
+  });
 });
 
 // ADR-2313 D7 (#3243) — the Codex branch (cmdEffortSyncCodex) strips a stale
@@ -699,6 +911,101 @@ describe('#3243: effort sync strips Anthropic-flavored model pins from Codex age
         fs.statSync(filePath).mode & 0o777, 0o600,
         'the published file must keep the original file mode',
       );
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('an unreadable codex agent is reported and does not abort the sweep', () => {
+    // Protects: cmdEffortSyncCodex's fs.readFileSync used to sit outside any
+    // try, so a single unreadable agent file would throw and abort the
+    // entire sweep instead of degrading into read_failures like the write
+    // path in the same loop. Injected deterministically by monkeypatching
+    // fs.readFileSync inside the child script — per this repo's CLAUDE.md
+    // §4, chmod-based injection is forbidden (root bypasses mode bits under
+    // Docker/CI and it leaks resources). The Anthropic-flavored `model` pin
+    // is the reachable codex rewrite path (verified by execution above), so
+    // the sibling agent uses that fixture to prove it still gets rewritten.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeAgent(agentsDir, 'gsd-unreadable.toml', [
+        'model = "claude-sonnet-4"', 'model_reasoning_effort = "high"', '',
+      ]);
+      const okPath = writeAgent(agentsDir, 'gsd-ok.toml', [
+        'model = "claude-sonnet-4"', 'model_reasoning_effort = "high"', '',
+      ]);
+      const okBefore = fs.readFileSync(okPath, 'utf8');
+
+      const opts = { dryRun: false, configDir, runtime: 'codex' };
+      const script = [
+        `const fs = require('node:fs');`,
+        `const originalReadFileSync = fs.readFileSync;`,
+        `fs.readFileSync = function (targetPath, ...rest) {`,
+        `  if (typeof targetPath === 'string' && targetPath.includes('gsd-unreadable.toml')) {`,
+        `    throw new Error('injected read failure');`,
+        `  }`,
+        `  return originalReadFileSync.call(fs, targetPath, ...rest);`,
+        `};`,
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, false, ${JSON.stringify(opts)});`,
+      ].join('\n');
+      const spawned = runNode(['-e', script], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        spawned.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${spawned.outcome}):\nstdout: ${spawned.stdout}\nstderr: ${spawned.stderr}`,
+      );
+      const jsonStart = spawned.stdout.indexOf('{');
+      assert.notStrictEqual(jsonStart, -1, `expected JSON output on stdout, got:\n${spawned.stdout}`);
+      const result = JSON.parse(spawned.stdout.slice(jsonStart));
+
+      assert.strictEqual(result.read_failures.length, 1);
+      assert.strictEqual(result.read_failures[0].agent, 'gsd-unreadable');
+
+      const okAfter = fs.readFileSync(okPath, 'utf8');
+      assert.notStrictEqual(okAfter, okBefore, 'the sweep must continue past the unreadable agent and still rewrite the sibling');
+      assert.doesNotMatch(okAfter, /claude/i, 'the sibling agent must have had its Anthropic-flavored model pin stripped');
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('the summary reports failed when a codex sync could not complete', () => {
+    // Protects: same raw-mode summary TOKEN contract as the opencode case
+    // above — output()'s third argument is never merged into the JSON
+    // object, so a raw-mode caller can only see the failure via this token.
+    // Captured the same way: run with `raw: true` and assert on the literal
+    // stdout text, not on parsed JSON.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeAgent(agentsDir, 'gsd-unreadable.toml', [
+        'model = "claude-sonnet-4"', 'model_reasoning_effort = "high"', '',
+      ]);
+
+      const opts = { dryRun: false, configDir, runtime: 'codex' };
+      const script = [
+        `const fs = require('node:fs');`,
+        `const originalReadFileSync = fs.readFileSync;`,
+        `fs.readFileSync = function (targetPath, ...rest) {`,
+        `  if (typeof targetPath === 'string' && targetPath.includes('gsd-unreadable.toml')) {`,
+        `    throw new Error('injected read failure');`,
+        `  }`,
+        `  return originalReadFileSync.call(fs, targetPath, ...rest);`,
+        `};`,
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, true, ${JSON.stringify(opts)});`,
+      ].join('\n');
+      const spawned = runNode(['-e', script], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        spawned.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${spawned.outcome}):\nstdout: ${spawned.stdout}\nstderr: ${spawned.stderr}`,
+      );
+      assert.strictEqual(spawned.stdout.trim(), 'failed', `expected the raw summary token 'failed', got:\n${spawned.stdout}`);
     } finally {
       cleanup(root);
     }
