@@ -152,6 +152,31 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
     }
   });
 
+  test('a synced agent keeps its original file mode', () => {
+    // The tmp-file + rename publish does not preserve mode the way an
+    // in-place writeFileSync would — cmdEffortSyncOpencode stat+chmods the
+    // tmp file before the rename specifically to compensate. Mode bits are
+    // not meaningful on Windows (no POSIX permission model), so skip there.
+    if (process.platform === 'win32') return;
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'xhigh' } });
+      const filePath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      fs.chmodSync(filePath, 0o600);
+      runEffortSync({ cwd, home, configDir, runtime: 'opencode', dryRun: false });
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.match(content, /^variant: xhigh$/m, 'the sync must have actually rewritten the file');
+      assert.strictEqual(
+        fs.statSync(filePath).mode & 0o777, 0o600,
+        'the published file must keep the original file mode',
+      );
+    } finally {
+      cleanup(root);
+    }
+  });
+
   test('reports the change without writing under dry run', () => {
     // Protects: dry-run reports the pending change but leaves the file
     // byte-identical — no write happens until dryRun is explicitly false.
@@ -499,6 +524,59 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
       cleanup(root);
     }
   });
+
+  test('an unreadable agent file is reported and does not abort the sweep', () => {
+    // Protects: cmdEffortSyncOpencode's fs.readFileSync used to sit outside
+    // any try, so a single unreadable agent file threw and aborted the
+    // entire sweep, unlike the write path in the same loop which degrades
+    // into write_failures. Injected deterministically by monkeypatching
+    // fs.readFileSync inside the child script — per this repo's CLAUDE.md
+    // §4, chmod-based injection is forbidden (root bypasses mode bits under
+    // Docker/CI and it leaks resources).
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-unreadable': 'xhigh', 'gsd-executor': 'xhigh' } });
+      writeAgent(agentsDir, 'gsd-unreadable.md', [
+        '---', 'name: gsd-unreadable', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      const okPath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+
+      const opts = { dryRun: false, configDir, runtime: 'opencode' };
+      const script = [
+        `const fs = require('node:fs');`,
+        `const originalReadFileSync = fs.readFileSync;`,
+        `fs.readFileSync = function (targetPath, ...rest) {`,
+        `  if (typeof targetPath === 'string' && targetPath.includes('gsd-unreadable.md')) {`,
+        `    throw new Error('injected read failure');`,
+        `  }`,
+        `  return originalReadFileSync.call(fs, targetPath, ...rest);`,
+        `};`,
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, false, ${JSON.stringify(opts)});`,
+      ].join('\n');
+      const spawned = runNode(['-e', script], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        spawned.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${spawned.outcome}):\nstdout: ${spawned.stdout}\nstderr: ${spawned.stderr}`,
+      );
+      const jsonStart = spawned.stdout.indexOf('{');
+      assert.notStrictEqual(jsonStart, -1, `expected JSON output on stdout, got:\n${spawned.stdout}`);
+      const result = JSON.parse(spawned.stdout.slice(jsonStart));
+
+      assert.strictEqual(result.read_failures.length, 1);
+      assert.strictEqual(result.read_failures[0].agent, 'gsd-unreadable');
+
+      const okContent = fs.readFileSync(okPath, 'utf8');
+      assert.match(okContent, /^variant: xhigh$/m, 'the sweep must continue past the unreadable agent');
+    } finally {
+      cleanup(root);
+    }
+  });
 });
 
 // #3706 — setFrontmatterKeyLine / removeFrontmatterKeyLine are not exported
@@ -613,6 +691,36 @@ describe('#3706: frontmatter line editors are scoped to the matched block', () =
         afterRemove,
         ['---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.'].join('\n'),
       );
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a duplicated key converges to one occurrence on a single set', () => {
+    // Protects: setFrontmatterKeyLine used to rewrite only the FIRST
+    // occurrence of a duplicated key, leaving a stale second occurrence in
+    // place. A last-wins YAML reader would then honour the stale value while
+    // this function's own first-occurrence read reports "in sync" — a
+    // permanently non-converging state. One run must collapse a duplicated
+    // key to exactly one occurrence, carrying the new value, in the position
+    // of the FIRST occurrence.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, 'xhigh');
+      const filePath = path.join(agentsDir, 'gsd-executor.md');
+      const before = [
+        '---', 'name: gsd-executor', 'effort: low', 'description: x', 'effort: high', '---', '', 'Body.',
+      ].join('\n');
+      fs.writeFileSync(filePath, before);
+      runEffortSync({ cwd, home, configDir });
+      const after = fs.readFileSync(filePath, 'utf8');
+      assert.strictEqual(
+        after,
+        ['---', 'name: gsd-executor', 'effort: xhigh', 'description: x', '---', '', 'Body.'].join('\n'),
+        'exactly one effort: line must remain, at the position of the first occurrence, carrying the resolved value',
+      );
+      const occurrences = after.match(/^effort:/gm) || [];
+      assert.strictEqual(occurrences.length, 1, 'exactly one effort: line must remain');
     } finally {
       cleanup(root);
     }
