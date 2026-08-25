@@ -791,7 +791,16 @@ function removeFrontmatterKeyLine(content: string, key: string): string {
   // #3706: same generic-key escape as setFrontmatterKeyLine above.
   const lineRe = new RegExp(`^${escapeRegex(key)}:[ \\t]*.*\\r?\\n?`, 'm');
   if (!lineRe.test(fmBody)) return content;
-  const strippedFm = fmBody.replace(lineRe, '');
+  // A duplicate `<key>:` mapping key is already invalid YAML (a document with
+  // two `effort:`/`variant:` lines does not parse), so this is robustness
+  // against a malformed document, not a live corruption path. Still, "a null
+  // target means the key must not exist" is an invariant this function must
+  // leave true on disk — a non-global replace here would strip only the
+  // FIRST occurrence and require a second run to converge. Use a fresh
+  // global RegExp for the strip so every occurrence in the frontmatter body
+  // is removed in one pass.
+  const stripAllRe = new RegExp(`^${escapeRegex(key)}:[ \\t]*.*\\r?\\n?`, 'gm');
+  const strippedFm = fmBody.replace(stripAllRe, '');
   // Same rule as setFrontmatterKeyLine: the EOL must come from the matched
   // block, not the start of the file, or a preambled CRLF document misaligns.
   const eol = /^---\r\n/.test(match[0]) ? '\r\n' : '\n';
@@ -904,7 +913,11 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
       const effortPresentInherit = /^effort:/m.test(fmMatchInherit[1]);
       if (!effortPresentInherit) { skipped++; continue; }
       const effortMatchInherit = /^effort:[ \t]*(.+?)[ \t]*$/m.exec(fmMatchInherit[1]);
-      changes.push({ agent: agentName, from: effortMatchInherit ? effortMatchInherit[1] : null, to: null });
+      // `effortPresentInherit` is guaranteed true here (checked above), so a
+      // failed value match means the key is present with an EMPTY value —
+      // report `''`, not `null`, so "present-but-empty" is never conflated
+      // with "absent" in the sync output.
+      changes.push({ agent: agentName, from: effortMatchInherit ? effortMatchInherit[1] : '', to: null });
       synced++;
       if (!dryRun) {
         fs.writeFileSync(filePath, removeEffortFrontmatter(content));
@@ -921,16 +934,22 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
     if (!fmMatch) { skipped++; continue; }
 
-    // Presence and value are distinct questions here too: `newEffortValue` is
-    // never null on this path (guarded above), but `currentEffort` reads null
-    // both when the key is ABSENT and when it is present with an EMPTY value
-    // — `effortPresent` disambiguates so a present-but-empty key is treated
-    // as drift (synced) rather than silently matching an absent one.
+    // Presence and value are distinct questions here too: `currentEffort`
+    // reads null both when the key is ABSENT and when it is present with an
+    // EMPTY value. `effortPresent` disambiguates those two for the reported
+    // `from` below (never `null` when the key is present but empty) — but it
+    // has no bearing on the skip check that follows: `newEffortValue` is
+    // never null on this path (guarded above), so an absent key already
+    // yields `currentEffort === null !== newEffortValue` without consulting
+    // presence separately.
     const effortPresent = /^effort:/m.test(fmMatch[1]);
     const effortMatch = /^effort:[ \t]*(.+?)[ \t]*$/m.exec(fmMatch[1]);
-    const currentEffort = effortMatch ? effortMatch[1] : null;
+    // `null` (key absent) and `''` (key present, value empty) are distinct
+    // states `effortPresent` deliberately disambiguates — collapsing both to
+    // `null` here would make the reported `from` lie about which case fired.
+    const currentEffort = effortPresent ? (effortMatch ? effortMatch[1] : '') : null;
 
-    if (effortPresent && currentEffort === newEffortValue) { skipped++; continue; }
+    if (currentEffort === newEffortValue) { skipped++; continue; }
 
     changes.push({ agent: agentName, from: currentEffort, to: newEffortValue });
     synced++;
@@ -959,7 +978,7 @@ interface CodexEffortSyncRefusal {
 }
 
 /** A write that failed mid-sync (fs fault), reported so the remaining agents still get processed. */
-interface CodexEffortSyncWriteFailure {
+interface EffortSyncWriteFailure {
   agent: string;
   file: string;
   error: string;
@@ -999,7 +1018,7 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
 
   const changes: CodexEffortSyncChange[] = [];
   const refused: CodexEffortSyncRefusal[] = [];
-  const writeFailures: CodexEffortSyncWriteFailure[] = [];
+  const writeFailures: EffortSyncWriteFailure[] = [];
   let synced = 0;
   let skipped = 0;
 
@@ -1085,8 +1104,9 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
  * `clampEffortForHost('opencode', ...)`. Null means the key must be ABSENT —
  * #3533 (10d): an absent key is the correct state under `inherit`, and a
  * level OpenCode does not accept must never be written, so both collapse to
- * the same `target: null` and the same removal path. Result shape matches
- * the claude branch's `{synced, skipped, changes, dry_run, agents_dir}`.
+ * the same `target: null` and the same removal path. Result shape is
+ * additive over the claude branch, matching the CODEX branch's
+ * `{synced, skipped, changes, dry_run, agents_dir, write_failures}`.
  */
 function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, configDir?: string): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
@@ -1122,7 +1142,7 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
   const { clampEffortForHost } = require('./model-catalog.cjs') as { clampEffortForHost(host: string, effort: string): string | null };
 
   const changes: EffortSyncChange[] = [];
-  const writeFailures: CodexEffortSyncWriteFailure[] = [];
+  const writeFailures: EffortSyncWriteFailure[] = [];
   let synced = 0;
   let skipped = 0;
 
@@ -1150,7 +1170,12 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
     // once presence is known.
     const variantPresent = /^variant:/m.test(fmMatch[1]);
     const variantMatch = /^variant:[ \t]*(.+?)[ \t]*$/m.exec(fmMatch[1]);
-    const currentVariant = variantMatch ? variantMatch[1] : null;
+    // `null` (key absent) and `''` (key present, value empty) are distinct
+    // states this code deliberately tracks via `variantPresent` above — a
+    // reported `from` that collapses both to `null` would make "no key" and
+    // "empty key" indistinguishable in the sync output, even though only one
+    // of them actually has a `variant:` line to remove.
+    const currentVariant = variantPresent ? (variantMatch ? variantMatch[1] : '') : null;
 
     if (target === null) {
       if (!variantPresent) { skipped++; continue; }
@@ -1174,6 +1199,16 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
           tmpPath,
           target === null ? removeFrontmatterKeyLine(content, 'variant') : setFrontmatterKeyLine(content, 'variant', target),
         );
+        // A tmp-file + rename publish does NOT preserve the original file's
+        // mode the way an in-place `writeFileSync` to an existing path would
+        // — the renamed-over file would otherwise inherit the default
+        // `0666 & ~umask` instead of whatever mode `filePath` already had.
+        // Best-effort only: a stat/chmod failure must not abort the sync,
+        // since the content write is what matters, not the mode.
+        try {
+          const { mode } = fs.statSync(filePath);
+          fs.chmodSync(tmpPath, mode);
+        } catch { /* non-fatal: proceed with default tmp-file mode */ }
         retryRenameSync(tmpPath, filePath);
       } catch (err) {
         try { fs.unlinkSync(tmpPath); } catch { /* already gone or never created */ }
@@ -1186,7 +1221,14 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
     }
   }
 
-  output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, write_failures: writeFailures }, raw, synced > 0 ? 'changed' : 'ok');
+  // A run where every write failed must not report 'ok' or 'changed' — either
+  // reading would hide that nothing was actually persisted. `write_failures`
+  // takes priority over the synced-count-derived summary below.
+  output(
+    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, write_failures: writeFailures },
+    raw,
+    writeFailures.length > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok',
+  );
 }
 
 /**

@@ -2379,7 +2379,7 @@ describe('#3706: install-time effort resolves and renders for OpenCode', () => {
   // Exactly the composition the layout performs per agent.
   const thread = (effortCfg, agentName) => {
     const universal = effortCfg ? effortResolver.resolveInstallTimeEffort(effortCfg, agentName) : null;
-    return universal ? catalog.renderEffortArgv('opencode', universal, 'argv').value : null;
+    return universal ? catalog.clampEffortForHost('opencode', universal) : null;
   };
 
   test('no effort config at all yields no variant', () => {
@@ -2527,8 +2527,15 @@ describe('#3706: the layout seam actually threads the variant', () => {
     try {
       return agentKind.stage(resolvedProfile, agentCtx);
     } finally {
-      process.env.HOME = realHome;
-      process.env.USERPROFILE = realUserProfile;
+      // On POSIX, USERPROFILE (and potentially HOME) is unset before this
+      // helper runs — `process.env.X = undefined` would coerce to the
+      // literal string "undefined" and leak that into the environment for
+      // the rest of the test process. Restore by deletion when the saved
+      // value was genuinely absent.
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      if (realUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = realUserProfile;
       cleanup(fakeHome);
     }
   }

@@ -436,6 +436,69 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
       cleanup(root);
     }
   });
+
+  test('a write failure on one agent is reported and does not stop the sweep', () => {
+    // Protects: cmdEffortSyncOpencode's atomic tmp-write + rename can fail
+    // mid-sync (fs fault). The failure must be reported per-agent in
+    // write_failures, the remaining agents must still be processed, the
+    // failing agent's file must be byte-unchanged, and cmdEffortSync must
+    // never throw. Injected deterministically by monkeypatching
+    // fs.writeFileSync inside the child script — per this repo's CLAUDE.md
+    // §4, chmod-based injection is forbidden (root bypasses mode bits under
+    // Docker/CI and it leaks resources).
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-broken': 'xhigh', 'gsd-executor': 'xhigh' } });
+      const brokenPath = writeAgent(agentsDir, 'gsd-broken.md', [
+        '---', 'name: gsd-broken', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      const okPath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      const brokenBefore = fs.readFileSync(brokenPath);
+
+      const opts = { dryRun: false, configDir, runtime: 'opencode' };
+      const script = [
+        `const fs = require('node:fs');`,
+        `const originalWriteFileSync = fs.writeFileSync;`,
+        // The tmp-write + rename publish (cmdEffortSyncOpencode) writes to
+        // `<filePath>.tmp.<pid>` before renaming over the real path — throw
+        // only for that one agent's tmp file, so every other write (and any
+        // fs machinery the require chain itself performs) passes through
+        // unmodified.
+        `fs.writeFileSync = function (targetPath, ...rest) {`,
+        `  if (typeof targetPath === 'string' && targetPath.includes('gsd-broken.md.tmp.')) {`,
+        `    throw new Error('injected write failure');`,
+        `  }`,
+        `  return originalWriteFileSync.call(fs, targetPath, ...rest);`,
+        `};`,
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, false, ${JSON.stringify(opts)});`,
+      ].join('\n');
+      const spawned = runNode(['-e', script], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        spawned.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${spawned.outcome}):\nstdout: ${spawned.stdout}\nstderr: ${spawned.stderr}`,
+      );
+      const jsonStart = spawned.stdout.indexOf('{');
+      assert.notStrictEqual(jsonStart, -1, `expected JSON output on stdout, got:\n${spawned.stdout}`);
+      const result = JSON.parse(spawned.stdout.slice(jsonStart));
+
+      assert.strictEqual(result.write_failures.length, 1);
+      assert.strictEqual(result.write_failures[0].agent, 'gsd-broken');
+
+      const brokenAfter = fs.readFileSync(brokenPath);
+      assert.ok(brokenBefore.equals(brokenAfter), 'the failing agent file must be byte-unchanged');
+
+      const okContent = fs.readFileSync(okPath, 'utf8');
+      assert.match(okContent, /^variant: xhigh$/m, 'the sweep must continue past the failing agent');
+    } finally {
+      cleanup(root);
+    }
+  });
 });
 
 // #3706 — setFrontmatterKeyLine / removeFrontmatterKeyLine are not exported
@@ -491,7 +554,7 @@ describe('#3706: frontmatter line editors are scoped to the matched block', () =
       runEffortSync({ cwd, home, configDir });
       const after = fs.readFileSync(filePath, 'utf8');
       assert.strictEqual(after, 'Preamble line\r\n\r\n---\r\nname: x\r\n---\r\n\r\nBody.\r\n');
-      assert.match(after, /^---\r\nname: x\r\n/);
+      assert.ok(after.includes('---\r\nname: x\r\n'), 'the CRLF opening fence must survive intact');
       assert.ok(after.startsWith('Preamble line\r\n\r\n'), 'preamble must survive untouched');
       assert.ok(after.endsWith('\r\n\r\nBody.\r\n'), 'body must survive untouched');
       assert.doesNotMatch(after, /^-{1,2}\r?\n/m, 'no truncated/stray fence');
