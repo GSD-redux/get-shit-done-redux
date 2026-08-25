@@ -2050,6 +2050,37 @@ describe('normalizeNodePath — fnm versioned path → alias (#3704)', () => {
     assert.notEqual(out, 'node');
   });
 
+  test('a trailing slash on FNM_DIR does not bake a doubled separator', () => {
+    // Review finding (minor). Cosmetic only — existsSync resolves `//` and shells
+    // collapse it — but the value is written into a user's settings.json.
+    const alias = `${FNM}/aliases/default/bin/node`;
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_SHIM, {
+        env: { FNM_DIR: `${FNM}/` },
+        // Exact match, deliberately: a stub that collapses a doubled separator
+      // before comparing would pass whether or not the trim happened.
+      existsSync: p => p === alias,
+      }),
+      alias);
+  });
+
+  test('a trailing slash is trimmed on every fnm root, not just one branch', () => {
+    // One shared normalizeRootDir, three call sites — the versioned branch, the
+    // shim branch's FNM_DIR, and its APPDATA fallback.
+    const aliasBin = `${FNM}/aliases/default/bin/node`;
+    assert.equal(
+      normalizeNodePath('/nowhere/node-versions/v1/installation/bin/node',
+        { env: { FNM_DIR: `${FNM}//` }, existsSync: p => p === aliasBin }),
+      aliasBin,
+      'versioned branch');
+    const winAlias = 'C:/Users/u/AppData/Roaming/fnm/aliases/default/node.exe';
+    assert.equal(
+      normalizeNodePath('C:/x/fnm_multishells/1_2/node.exe',
+        { env: { APPDATA: 'C:/Users/u/AppData/Roaming/' }, existsSync: p => p === winAlias }),
+      winAlias,
+      'APPDATA fallback');
+  });
+
   test('empty execPath is returned unchanged without throwing', () => {
     assert.equal(normalizeNodePath('', { env: {}, existsSync: () => true }), '');
   });

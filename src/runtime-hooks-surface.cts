@@ -390,6 +390,21 @@ interface NodeNormOpts {
   execPath?: string;
 }
 
+/**
+ * Normalize a directory that will be joined with `/…` — posix separators, no
+ * trailing slash. `FNM_DIR=/custom/fnm/` would otherwise bake
+ * `/custom/fnm//aliases/default/bin/node` (#3704 review). Cosmetic — `existsSync`
+ * resolves the doubled separator and every shell collapses it — but the value is
+ * written into a user's settings.json and read by humans.
+ *
+ * Shared by both fnm branches deliberately: they build the same alias paths from
+ * different roots, and a trim applied to only one is a difference with no reason
+ * behind it.
+ */
+function normalizeRootDir(dir: string): string {
+  return shellCmdProjection.posixNormalize(dir).replace(/\/+$/, '');
+}
+
 function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
   if (!execPath) return execPath;
   const env = (opts && opts.env) || process.env;
@@ -404,11 +419,12 @@ function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
   if (/\/fnm_multishells\/[0-9]+_[0-9]+\/(?:bin\/)?node(\.exe)?$/i.test(normalizedForMatch)) {
     const candidates: string[] = [];
     if (env.FNM_DIR) {
-      candidates.push(`${env.FNM_DIR}/aliases/default/node.exe`);
-      candidates.push(`${env.FNM_DIR}/aliases/default/bin/node`);
+      const fnmRoot = normalizeRootDir(env.FNM_DIR);
+      candidates.push(`${fnmRoot}/aliases/default/node.exe`);
+      candidates.push(`${fnmRoot}/aliases/default/bin/node`);
     }
     if (env.APPDATA) {
-      candidates.push(`${env.APPDATA}/fnm/aliases/default/node.exe`);
+      candidates.push(`${normalizeRootDir(env.APPDATA)}/fnm/aliases/default/node.exe`);
     }
     for (const candidate of candidates) {
       if (candidate && existsSync(candidate)) return candidate;
@@ -439,7 +455,7 @@ function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
   if (fnmVersioned) {
     const isExe = Boolean(fnmVersioned[2]);
     const roots = [fnmVersioned[1]];
-    if (env.FNM_DIR) roots.push(shellCmdProjection.posixNormalize(env.FNM_DIR));
+    if (env.FNM_DIR) roots.push(normalizeRootDir(env.FNM_DIR));
     const fnmAliasCandidates: string[] = [];
     for (const root of roots) {
       // Probe the spelling matching the input first, then the other — a layout
