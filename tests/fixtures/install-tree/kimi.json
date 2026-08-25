@@ -314,6 +314,7 @@
   "gsd-core/workflows/execute-phase/steps/per-plan-executor-routing.md",
   "gsd-core/workflows/execute-phase/steps/per-plan-worktree-gate.md",
   "gsd-core/workflows/execute-phase/steps/post-merge-gate.md",
+  "gsd-core/workflows/execute-phase/steps/protected-branch.md",
   "gsd-core/workflows/execute-phase/steps/regression-gate-run.md",
   "gsd-core/workflows/execute-phase/steps/regression-gate.md",
   "gsd-core/workflows/execute-phase/steps/wave-post-gate-hooks.md",
