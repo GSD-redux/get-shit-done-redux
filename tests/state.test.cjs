@@ -29,6 +29,8 @@ const fc = require('fast-check');
 const stateLib = require('../gsd-core/bin/lib/state.cjs');
 const stateTransitionMod = require('../gsd-core/bin/lib/state-transition.cjs');
 const stateDocument = require('../gsd-core/bin/lib/state-document.cjs');
+// #3699: the repo's one metacharacter-escape helper (local/no-adhoc-regex-escape).
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 const frontmatterLib = require('../gsd-core/bin/lib/frontmatter.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const workstreamInventory = require('../gsd-core/bin/lib/workstream-inventory.cjs');
@@ -16652,16 +16654,59 @@ describe('#3699 state update — derived frontmatter keys explain themselves', (
     assert.strictEqual(frontmatterStoppedAt(), null, 'no frontmatter key may be invented');
   });
 
-  test('the fallback does not fire while ANY body source line exists, even outside ## Session', () => {
-    // The presence check is deliberately UNSCOPED while the builder's read is
-    // `## Session`-scoped. That asymmetry is the safe direction: a `Stopped at:`
-    // line the user could edit — even one stranded in an archive section —
-    // suppresses the frontmatter write. This pins the decision.
-    writeState([...FM, ...BODY, '## Session Continuity Archive', '', 'Stopped at: an archived value', '']);
+  test('a stale body-source line OUTSIDE ## Session is not treated as the source', () => {
+    // Reversed from this change's first cut, on evidence. That cut suppressed the
+    // repair whenever ANY body line existed, reasoning "prefer a line the user can
+    // edit". But `buildStateFrontmatter` harvests Stopped At from `## Session`
+    // ONLY, so an archive line is not a source — suppressing on it left the
+    // document unrepairable AND pointed the user at a command that rewrote the
+    // wrong line. Read scope, write scope and probe scope now all agree.
+    writeState([
+      ...FM, ...BODY,
+      '## Session', '', 'Notes: none', '',
+      '## Session Continuity Archive', '', 'Stopped At: 2025-01-01 (old session)', '',
+    ]);
 
-    const { output } = update('stopped_at', 'NEW VALUE');
-    assert.strictEqual(output.updated, false, 'a body line exists, so the body is still the route');
-    assert.notStrictEqual(output.wrote, 'frontmatter');
+    const { output } = update('stopped_at', '2026-08-24');
+    assert.strictEqual(output.updated, true, 'an archive line must not block the repair');
+    assert.strictEqual(output.wrote, 'frontmatter');
+    assert.match(
+      stateText(),
+      /Stopped At: 2025-01-01 \(old session\)/,
+      'the archived line is a historical record and must be left alone',
+    );
+  });
+
+  test('updating a session field never rewrites a line outside ## Session', () => {
+    // The defect this guards: `stateReplaceField` matches the FIRST occurrence
+    // anywhere in the body, so with no `Stopped At:` in `## Session` and a stale
+    // one in the archive, the update reported success while silently rewriting
+    // the archived record and leaving the real field untouched. #3374 established
+    // the scoped writer for exactly this; `updateCore` had not adopted it.
+    writeState([
+      ...FM, ...BODY,
+      '## Session', '', 'Notes: none', '',
+      '## Session Continuity Archive', '', 'Stopped At: 2025-01-01 (old session)', '',
+    ]);
+
+    const { output } = update('Stopped At', '2026-08-24');
+    assert.strictEqual(output.updated, false, 'there is no Stopped At line in ## Session to write');
+    assert.match(
+      stateText(),
+      /Stopped At: 2025-01-01 \(old session\)/,
+      'the archived line must be byte-identical after a refused update',
+    );
+    assert.doesNotMatch(stateText(), /Stopped At: 2026-08-24/, 'nothing may have been written anywhere');
+  });
+
+  test('a session field inside ## Session is still writable and still syncs', () => {
+    // The complement: scoping must not break the normal route.
+    writeState([...FM, ...BODY, '## Session', '', 'Stopped at: original value', '']);
+
+    const { output } = update('Stopped at', 'NEW VALUE');
+    assert.strictEqual(output.updated, true);
+    assert.match(stateText(), /^Stopped at: NEW VALUE$/m, 'the session line is the one that moved');
+    assert.match(frontmatterStoppedAt(), /NEW VALUE/, 'and it synced to frontmatter');
   });
 
   test('case D behaves identically on a CRLF document', () => {
@@ -16695,44 +16740,99 @@ describe('#3699 state update — derived frontmatter keys explain themselves', (
 
   // ── the map cannot silently drift from the builder ───────────────────────
 
-  test('FRONTMATTER_BODY_SOURCE covers exactly the body-derived keys buildStateFrontmatter emits', () => {
-    // Parity assertion (CLAUDE.md → Generative Fix Divergence). The map is a
-    // second copy of knowledge that lives in buildStateFrontmatter, so this
-    // fails the moment either side gains or loses a body-derived key.
-    // Behavioral: drive a fully-populated STATE.md through a real write and read
-    // the frontmatter the builder actually produced.
+  test('every FRONTMATTER_BODY_SOURCE entry actually round-trips from its body field', () => {
+    // Real parity, per key. The first cut asserted only SET MEMBERSHIP against
+    // the emitted frontmatter — near-vacuous, because buildStateFrontmatter
+    // emits the whole schema key set regardless of body derivation, so a wrong
+    // mapping (or a non-body-derived key added to the map) would still pass.
+    //
+    // This drives each mapped key's BODY field to a unique sentinel and asserts
+    // the sentinel arrives in that frontmatter key. A mapping that names the
+    // wrong body field cannot survive it.
+    const sessionScoped = new Set(['stopped_at', 'paused_at']);
+    const entries = Object.entries(stateTransitionMod.FRONTMATTER_BODY_SOURCE);
+
+    for (const [key, labels] of entries) {
+      const sentinel = `sentinel-${key.replace(/_/g, '-')}`;
+      // last_activity is parsed as a date + prose; give it a shape its reader accepts.
+      const value = key === 'last_activity' ? '2026-08-19'
+        : key === 'last_activity_desc' ? sentinel
+          : sentinel;
+      const line = `${labels[0]}: ${value}`;
+      const positionLines = sessionScoped.has(key) ? [] : [line];
+      const sessionLines = sessionScoped.has(key) ? [line] : [];
+
+      writeState([
+        '---', 'gsd_state_version: 1.0', '---', '',
+        '# Project State', '',
+        '## Current Position', '',
+        'Current Phase: 2',
+        'Status: Planning',
+        ...positionLines,
+        '',
+        '## Session', '',
+        ...sessionLines,
+        '',
+      ]);
+      // A real change, so the #948 no-op guard cannot skip the sync.
+      update('Status', 'Executing');
+
+      const fm = stateText().split('---')[1];
+      const emitted = new RegExp(`^${key}:\\s*(.+)$`, 'm').exec(fm);
+      assert.ok(emitted, `${key} was not emitted at all from body field "${labels[0]}" — the mapping is wrong`);
+      assert.match(
+        emitted[1],
+        new RegExp(escapeRegex(value)),
+        `${key} did not carry the value written to its mapped body field "${labels[0]}"`,
+      );
+    }
+  });
+
+  test('no body-derived frontmatter key escapes FRONTMATTER_BODY_SOURCE', () => {
+    // The reverse direction. Every key buildStateFrontmatter emits must be either
+    // mapped, or a declared non-body-derived key. A NEW body-derived key added to
+    // the builder without a map entry fails here.
+    //
+    // Known limit, stated rather than hidden: someone could add a key to the
+    // exclusion set below instead of the map. That is a smaller and far more
+    // visible edit than silently forgetting the map, which is what this guards.
+    const NOT_BODY_DERIVED = new Set([
+      'gsd_state_version', // schema constant
+      'last_updated', 'state_head', // recomputed every write
+      'milestone', 'milestone_name', // ROADMAP.md
+      'progress', // disk scan
+    ]);
+
     writeState([
       '---', 'gsd_state_version: 1.0', '---', '',
       '# Project State', '',
       '## Current Position', '',
-      'Current Phase: 2',
-      'Current Phase Name: beta',
-      'Current Plan: 1',
-      'Status: Executing',
+      'Current Phase: 2', 'Current Phase Name: beta', 'Current Plan: 1',
+      'Status: Planning',
       'Last Activity: 2026-08-19 — did a thing',
       '',
-      '## Session Continuity', '',
-      'Stopped at: somewhere',
-      'Paused At: elsewhere',
-      '',
+      '## Session', '', 'Stopped at: somewhere', 'Paused At: elsewhere', '',
     ]);
     update('Status', 'Executing');
 
-    const emitted = new Set(
-      stateText().split('---')[1].split('\n')
-        .map((l) => l.split(':')[0].trim())
-        .filter(Boolean),
-    );
-    const mapped = Object.keys(stateTransitionMod.FRONTMATTER_BODY_SOURCE);
+    const fm = stateText().split('---')[1];
+    assert.match(fm, /^last_updated:/m, 'precondition: the write must have synced frontmatter');
 
-    for (const key of mapped) {
+    const emitted = fm.split('\n')
+      .filter((l) => /^[a-z_]+:/.test(l))
+      .map((l) => l.split(':')[0].trim());
+    const mapped = new Set(Object.keys(stateTransitionMod.FRONTMATTER_BODY_SOURCE));
+
+    for (const key of emitted) {
       assert.ok(
-        emitted.has(key),
-        `FRONTMATTER_BODY_SOURCE maps "${key}", which buildStateFrontmatter did not emit for a fully-populated document — the map has drifted`,
+        mapped.has(key) || NOT_BODY_DERIVED.has(key),
+        `buildStateFrontmatter emits "${key}", which is neither mapped in FRONTMATTER_BODY_SOURCE nor declared non-body-derived — `
+        + 'if it is body-derived, `state update` cannot name its body source',
       );
     }
-    for (const key of ['current_phase', 'current_phase_name', 'current_plan', 'status', 'stopped_at', 'paused_at', 'last_activity']) {
-      assert.ok(mapped.includes(key), `"${key}" is body-derived but absent from FRONTMATTER_BODY_SOURCE`);
+    // And the map may not carry a key the builder never emits.
+    for (const key of mapped) {
+      assert.ok(emitted.includes(key), `FRONTMATTER_BODY_SOURCE maps "${key}", which the builder did not emit — the map has drifted`);
     }
   });
 

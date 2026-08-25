@@ -179,6 +179,44 @@ export const FRONTMATTER_BODY_SOURCE: Readonly<Record<string, readonly string[]>
 );
 
 /**
+ * The frontmatter keys whose body source lives inside `## Session`.
+ *
+ * #3374 established that these fields must be written where the reader reads
+ * them: `buildStateFrontmatter` harvests `Stopped At` / `Paused At` from the
+ * session section only, so a whole-body replace "lets a decoy `**Stopped at:**`
+ * line in an unrelated (e.g. archive) section absorb the refresh while the
+ * harvested session value stays stale" (`stateReplaceFieldInSession`'s own
+ * docstring). `updateCore` was still doing the whole-body replace.
+ */
+const SESSION_SCOPED_KEYS: ReadonlySet<string> = new Set(['stopped_at', 'paused_at']);
+
+/**
+ * The `(primary, fallback)` label pair for a session-scoped write, resolved from
+ * either spelling — the frontmatter key (`stopped_at`) or a body label
+ * (`Stopped At` / `Stopped at`). `null` when the field is not session-scoped.
+ */
+function sessionScopedLabels(field: string): { primary: string; fallback: string | null } | null {
+  const key = SESSION_SCOPED_KEYS.has(field) ? field : frontmatterKeyForBodyField(field);
+  if (key === null || !SESSION_SCOPED_KEYS.has(key)) return null;
+  const labels = FRONTMATTER_BODY_SOURCE[key];
+  return { primary: labels[0], fallback: labels[1] ?? null };
+}
+
+/**
+ * Would a session-scoped write actually land? Asks by attempting the real write
+ * with a throwaway value and seeing whether anything moved.
+ *
+ * Deliberately reuses the writer rather than re-deriving "where is the session
+ * section" — a separate scope check could disagree with the writer, and a
+ * presence check that disagrees with the write it guards is the whole bug class
+ * here. `stateReplaceFieldInSession` is replace-only and pure, so probing costs
+ * nothing and the result is discarded.
+ */
+function sessionSourceExists(body: string, labels: { primary: string; fallback: string | null }): boolean {
+  return stateReplaceFieldInSession(body, labels.primary, labels.fallback, '\u0000probe') !== body;
+}
+
+/**
  * Own-property body-source lookup. `null` for a key with no body source (a
  * disk/external/clock-derived key) and for anything not a frontmatter key.
  */
@@ -1892,7 +1930,24 @@ function updateCore(
   const existingFm = extractFrontmatter(content) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   const body = stripFrontmatter(content);
-  const result = stateReplaceField(body, intent.field, intent.value);
+  // #3699 review: session-scoped fields are written through the session-scoped
+  // writer. A whole-body `stateReplaceField` matches the FIRST occurrence
+  // anywhere, so with no `Stopped At:` line in `## Session` but a stale one in
+  // `## Session Continuity Archive`, `state update "Stopped At" …` reported
+  // `updated: true` while rewriting the ARCHIVE line and leaving both the session
+  // section and the `stopped_at` frontmatter key untouched — a silent corruption
+  // of a historical record reported as success. #3374 already established this
+  // rule for the other writer; this one had not adopted it.
+  const sessionLabels = sessionScopedLabels(intent.field);
+  let result: string | null;
+  if (sessionLabels) {
+    // Replace-only by contract: unchanged content means the field is not in the
+    // session section, which is a miss, not a write.
+    const replaced = stateReplaceFieldInSession(body, sessionLabels.primary, sessionLabels.fallback, intent.value);
+    result = replaced === body ? null : replaced;
+  } else {
+    result = stateReplaceField(body, intent.field, intent.value);
+  }
   if (result === null) {
     // #3699 case D — the frontmatter fallback.
     //
@@ -1920,8 +1975,16 @@ function updateCore(
     const bodySource = getFrontmatterBodySource(intent.field);
     const frontmatterCarriesKey =
       hasFrontmatter && Object.prototype.hasOwnProperty.call(existingFm, intent.field);
-    if (bodySource && frontmatterCarriesKey
-      && !bodySource.some((f) => stateExtractField(body, f) !== null)) {
+    // The presence check asks the same question the WRITE asks, in the same
+    // scope. An earlier cut checked the whole body on the reasoning that any
+    // editable line should suppress the repair — but a line the reader never
+    // reads is not a source, and suppressing on it left the document
+    // unrepairable while pointing the user at a command that would rewrite the
+    // wrong line. Same scope for read, write and probe, or they disagree.
+    const bodySourceExists = sessionLabels
+      ? sessionSourceExists(body, sessionLabels)
+      : (bodySource ?? []).some((f) => stateExtractField(body, f) !== null);
+    if (bodySource && frontmatterCarriesKey && !bodySourceExists) {
       const nextFm = { ...existingFm, [intent.field]: intent.value };
       return {
         content: `---\n${reconstructFrontmatter(nextFm as unknown as Frontmatter)}\n---\n\n${body}`,
