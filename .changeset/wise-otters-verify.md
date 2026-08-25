@@ -1,5 +1,5 @@
 ---
 type: Fixed
-pr: 0
+pr: 3862
 ---
 **`gsd-tools query state.advance-plan` no longer increments a stale plan position and reports it as success** — the verb derived `Plan: X of Y` entirely from `## Current Position` prose, guarded it with a syntactic `isNaN` check only, and never consulted the plans on disk. A well-formed but drifted `2 of 8` was incremented, written back, and returned as `{"advanced": true, "current_plan": 3, "total_plans": 8}` for a phase holding twelve summarized plans — while `query phase-plan-index`, in the same binary on the same tree, reported all twelve. The same unchecked pair also fed the phase-completion decision, so drift could withhold `ready_for_verification` from a finished phase or declare it on an unfinished one. The verb now cross-checks the prose against the real plan set (via the existing `listMilestonePhaseDirs` + `matchPhaseDirs` + `scanPhasePlans` owners) and, on disagreement, refuses to mutate and reports `{"advanced": false, "reason": "position_diverged", "prose": {...}, "disk": {...}}`. It also now rejects unrecognized options instead of silently discarding them. (#3830)
