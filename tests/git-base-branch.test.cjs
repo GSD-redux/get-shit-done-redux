@@ -508,13 +508,27 @@ function extractProtectedBranchWarningBash(workflowFile, stepName) {
   if (!block) {
     // #3648: the step may point at an extracted step file (e.g. execute-phase.md's
     // ADR-857 byte-ceiling extraction) instead of carrying the bash block inline.
-    const stepBody = content
-      .split('\n')
-      .slice(lines.indexOf(`<step name="${stepName}">`) + 1);
-    const ref = stepBody.join('\n').match(/`(execute-phase\/steps\/[\w-]+\.md)`/);
-    if (ref) {
-      const refContent = readFileNormalized(path.join(WORKFLOW_DIR, ref[1]));
-      const refBlocks = refContent.split(/```bash\n/).slice(1).map((s) => s.split('```')[0]);
+    const stepBody = lines.slice(lines.indexOf(`<step name="${stepName}">`) + 1);
+    const ref = stepBody.find((l) => /`execute-phase\/steps\/[\w-]+\.md`/.test(l));
+    const refMatch = ref && ref.match(/`(execute-phase\/steps\/[\w-]+\.md)`/);
+    if (refMatch) {
+      const refLines = readFileNormalized(path.join(WORKFLOW_DIR, refMatch[1])).split('\n');
+      const refBlocks = [];
+      let refInBash = false;
+      let refBuffer = [];
+      for (const line of refLines) {
+        if (!refInBash && /^\s*```bash\s*$/.test(line)) {
+          refInBash = true;
+          refBuffer = [];
+          continue;
+        }
+        if (refInBash && /^\s*```\s*$/.test(line)) {
+          refBlocks.push(refBuffer.join('\n'));
+          refInBash = false;
+          continue;
+        }
+        if (refInBash) refBuffer.push(line);
+      }
       block = refBlocks.find((candidate) => candidate.includes('--is-protected'));
     }
   }
