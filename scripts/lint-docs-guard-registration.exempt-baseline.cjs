@@ -139,7 +139,7 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'gsd-agent-isolation-guard.test.cjs': ['docs/adr/1239-...md', 'docs/adr/1239-gsd-embeddable-orchestration-engine.md'],
   'hermes-dispatch-upgrade.test.cjs': ['docs/guides/delegation-patterns.md'],
   'install-minimal-hooks.test.cjs': ['docs/en/hooks', 'docs/en/users/features/hooks'],
-  'install-runtime-artifacts.test.cjs': ['docs/adr/58-...md', 'docs/adr/58-runtime-install-policy-module.md', 'docs/cli/slash-commands'],
+  'install-runtime-artifacts.test.cjs': ['docs/CONFIGURATION.md', 'docs/adr/58-...md', 'docs/adr/58-runtime-install-policy-module.md', 'docs/cli/slash-commands'],
   'installer-migration-config-root-marker.test.cjs': ['docs/installer-migrations.md'],
   'installer-migration-pi-extension-ext.test.cjs': ['docs/installer-migrations.md'],
   'installer-migrations.test.cjs': ['docs/installer-migrations.md'],

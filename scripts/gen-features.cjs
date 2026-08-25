@@ -165,6 +165,20 @@ const GROUP_NOTE_FIELDS = Object.freeze(['group']);
  */
 const ID_RE = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+|[a-z])?$/;
 
+/**
+ * A legal explicit `order`: an optionally-signed decimal literal.
+ *
+ * `order` was the only field validated by COERCION rather than by shape, and
+ * `Number()` is far more liberal than a docs ordering field has reason to be:
+ * `Number('')` and `Number(' ')` are 0, and `0x10`, `0b11`, `0o17`, `1e3`, `1.`
+ * and `.5` all coerce to finite numbers. A fragment declaring `order:` with
+ * nothing after it therefore sorted to position 0 — ahead of every real
+ * feature — with no violation and exit 0, in a gate whose whole contract is a
+ * typed violation rather than a silent guess. Shape first, then coerce,
+ * mirroring how ID_RE guards `id`.
+ */
+const ORDER_RE = /^[+-]?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
+
 /** The fragment filename shape: a kebab slug, mirroring `docs/adr/`'s rule. */
 const FRAGMENT_FILENAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
 
@@ -407,7 +421,10 @@ function readCorpus() {
     let order = defaultOrder(data.id);
     if (data.order !== undefined) {
       order = Number(data.order);
-      if (!Number.isFinite(order)) {
+      // Both guards are load-bearing: the regex rejects the shapes `Number`
+      // would silently accept, and `isFinite` still catches a well-shaped
+      // literal long enough to overflow to Infinity.
+      if (!ORDER_RE.test(data.order) || !Number.isFinite(order)) {
         add(REASON.ORDER_INVALID, rel, { order: data.order });
         continue;
       }
@@ -620,7 +637,7 @@ function describeViolation(v) {
     case REASON.ID_DUPLICATE:
       return `${v.file}: id '${v.id}' is already used by ${v.first} — pick another (any unique id is legal)`;
     case REASON.ORDER_INVALID:
-      return `${v.file}: order '${v.order}' is not a finite number`;
+      return `${v.file}: order '${v.order}' is not a decimal number (an optionally-signed integer or decimal)`;
     case REASON.ANCHOR_DUPLICATE:
       return `${v.file}: anchor '#${v.anchor}' collides with ${v.first}`;
     case REASON.BODY_EMPTY:
