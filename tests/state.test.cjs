@@ -2274,13 +2274,15 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     '',
   ].join('\n');
 
-  const seedPhase = (dirName, planCount) => {
+  const seedPhase = (dirName, planCount, summaryCount = planCount) => {
     const phaseDir = path.join(tmpDir, '.planning', 'phases', dirName);
     fs.mkdirSync(phaseDir, { recursive: true });
     for (let i = 1; i <= planCount; i++) {
       const id = String(i).padStart(2, '0');
       fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
-      fs.writeFileSync(path.join(phaseDir, `01-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+      if (i <= summaryCount) {
+        fs.writeFileSync(path.join(phaseDir, `01-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+      }
     }
     return phaseDir;
   };
@@ -2305,7 +2307,8 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     assert.strictEqual(output.advanced, false);
     assert.strictEqual(output.reason, 'position_diverged');
     assert.deepStrictEqual(output.prose, { current_plan: 2, total_plans: 8 });
-    assert.deepStrictEqual(output.disk, { phase: '01', plan_count: 12 });
+    assert.strictEqual(output.disk.phase, '01');
+    assert.strictEqual(output.disk.plan_count, 12);
     assert.deepStrictEqual(output.updated, []);
     assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
   });
@@ -2354,6 +2357,33 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     const output = JSON.parse(result.output);
     assert.strictEqual(output.advanced, true);
     assert.strictEqual(output.reason, undefined);
+  });
+
+  test('a non-canonically-named plan-shaped file does not inflate the count', () => {
+    // scanPhasePlans's own planFiles carry isRootPlanFile's loose /PLAN/i
+    // fallback; phase-plan-index intersects with the strict predicate (#2893).
+    // The cross-check must report the same number that verb does, or a stray
+    // `notes-PLAN-draft.md` manufactures divergence out of nothing.
+    const phaseDir = seedPhase('01-demo', 8);
+    fs.writeFileSync(path.join(phaseDir, 'notes-PLAN-draft.md'), '# not a canonical plan\n');
+    writeState('Plan: 2 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true, `stray plan-shaped file must not count; got ${result.output}`);
+  });
+
+  test('the reported plan_count matches what phase-plan-index reports', () => {
+    // The issue's premise is that two commands in one CLI disagreed about the
+    // same fact. A cross-check that introduced a THIRD number would be worse
+    // than the defect it fixes.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 8');
+
+    const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+    const index = JSON.parse(runGsdTools('query phase-plan-index 01', tmpDir).output);
+    assert.strictEqual(advance.disk.plan_count, index.plans.length,
+      'advance-plan and phase-plan-index must agree on the plan count');
   });
 
   test('divergence is reported instead of a premature phase completion', () => {
@@ -2411,14 +2441,35 @@ describe('#3830 facet 2: state advance-plan rejects options instead of discardin
     assert.ok(typeof parsed.reason === 'string' && parsed.reason.length > 0);
   });
 
-  test('global flags are NOT mistaken for command options', () => {
-    // main() splices --raw/--cwd/--pick/--ws/--default/--json-errors out of
-    // argv before any router runs, so the strict check below must never see
-    // them. This pins that: a false rejection here would break every caller.
+  test('--raw is not mistaken for a command option', () => {
     seedSimpleState();
     const result = runGsdTools('state advance-plan --raw', tmpDir);
     assert.ok(result.success, `--raw must still work: ${result.error}`);
     assert.strictEqual(result.output.trim(), 'true');
+  });
+
+  test('the other global flags are not mistaken for command options either', () => {
+    // main() splices each of these out of argv before any router runs, so the
+    // strict check must never see them. Exercised individually rather than
+    // asserted collectively — a false rejection on any one breaks its callers.
+    for (const flag of ['--json-errors', '--ws default']) {
+      seedSimpleState();
+      const result = runGsdTools(`state advance-plan ${flag}`, tmpDir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(!combined.includes('takes no options'),
+        `${flag} must not be rejected as a command option; got: ${combined}`);
+    }
+  });
+
+  test('a bare `--` end-of-options marker is not an option', () => {
+    // POSIX end-of-options. main() honours it and does not strip it, so it
+    // reaches the router in argv; rejecting it refuses a conventional
+    // invocation. Found by adversarial review of this fix, pre-filing.
+    seedSimpleState();
+    const result = runGsdTools(['state', 'advance-plan', '--'], tmpDir);
+    const combined = `${result.output || ''}${result.error || ''}`;
+    assert.ok(!combined.includes('takes no options'),
+      `bare -- must not be rejected; got: ${combined}`);
   });
 
   test('--pick still projects a field', () => {

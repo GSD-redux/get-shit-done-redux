@@ -67,6 +67,12 @@ function isUnparseableFrontmatter(existingFm: Record<string, unknown>): boolean 
 }
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
+// #3830: the STRICT canonical predicate. scanPhasePlans's own planFiles carry
+// isRootPlanFile's loose `/PLAN/i` fallback (deliberately permissive for
+// live-plan counting); cmdPhasePlanIndex intersects with this for the same
+// reason (#2893), and the cross-check below must report the same number that
+// verb does or it introduces a THIRD count to disagree with.
+const { isCanonicalPlanFile } = scanPhasePlans;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtilsMod = require('./core-utils.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1056,12 +1062,34 @@ function resolvePlanSetForPhase(cwd: string, phase: string): stateTransitionMod.
     return { ok: false, reason: `phase ${normalized} is ambiguous: ${matches.length} directories match` };
   }
 
-  const { planCount, scope } = scanPhasePlans(path.join(phasesDir, matches[0]));
-  if (scope !== SCOPE.COMPLETE) {
-    return { ok: false, reason: `plan scan for phase ${normalized} is ${String(scope)}, not a complete answer` };
+  const scan = scanPhasePlans(path.join(phasesDir, matches[0]));
+  if (scan.scope !== SCOPE.COMPLETE) {
+    return { ok: false, reason: `plan scan for phase ${normalized} is ${String(scan.scope)}, not a complete answer` };
   }
 
-  return { ok: true, phase: normalized, planCount };
+  // Two counts, deliberately, because the two writers of the prose total do not
+  // agree on supersession and the cross-check must not manufacture divergence
+  // out of that disagreement:
+  //   planCount    — live canonical plans (superseded excluded). What
+  //                  `phase-plan-index` reports as `plan_count`, and what
+  //                  execute-phase's init scan hands `begin-phase --plans`.
+  //   planCountAll — canonical plans including superseded. What `find-phase`
+  //                  reports as `plan_count_all`, and what
+  //                  plan-review-convergence hands `planned-phase --plans`.
+  // Both are intersected with isCanonicalPlanFile so neither can drift from the
+  // read-only verb the issue used as ground truth.
+  const planCount = scan.planFiles.filter(isCanonicalPlanFile).length;
+  const planCountAll = scan.allPlanFiles.filter(isCanonicalPlanFile).length;
+
+  // Deliberately NOT returning a completion signal. Whether every plan is
+  // summarized is a real and separate question, and answering it here means
+  // either re-deriving `summaryCount >= planCount` or reading the scan's
+  // `.completed` — both of which lint-completion-predicate-drift flags outside
+  // `plan-scan.cts`, the second only dischargeable by adding this function to
+  // that lint's FUNCTION_SCOPED_EXEMPTIONS table. This fix reports the position
+  // divergence the issue asks about and leaves that table alone; see the PR
+  // body for the case it therefore does not catch.
+  return { ok: true, phase: normalized, planCount, planCountAll };
 }
 
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {

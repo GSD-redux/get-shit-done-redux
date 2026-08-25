@@ -1061,7 +1061,14 @@ export type PhaseInventoryRecord = {
  * a project the check has nothing against.
  */
 export type PlanSetResult =
-  | { ok: true; phase: string; planCount: number }
+  | {
+      ok: true;
+      phase: string;
+      /** Live canonical plans (superseded excluded) — `phase-plan-index`'s `plan_count`. */
+      planCount: number;
+      /** Canonical plans INCLUDING superseded — `find-phase`'s `plan_count_all`. */
+      planCountAll: number;
+    }
   | { ok: false; reason: string };
 
 export type PhaseInventoryResult =
@@ -1854,21 +1861,36 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   // no-plans-yet case is the ordinary state of a phase between `begin-phase`
   // and its first written plan.
   const planSet = deps.planSetProvider ? deps.planSetProvider() : null;
-  if (planSet !== null && planSet.ok && planSet.planCount > 0 && planSet.planCount !== totalPlans) {
-    return {
-      // The ORIGINAL bytes, not a `reassemble(stripFrontmatter(content))`
-      // round-trip: a refusal must not mutate, and frontmatter reconstruction
-      // is a normalizing transform. The sibling `error: true` path above
-      // round-trips because it predates this rule; do not copy it here.
-      content,
-      updated: [],
-      data: {
-        advanced: false,
-        reason: 'position_diverged',
-        prose: { current_plan: currentPlan, total_plans: totalPlans },
-        disk: { phase: planSet.phase, plan_count: planSet.planCount },
-      },
-    };
+  if (planSet !== null && planSet.ok && planSet.planCount > 0) {
+    // The prose total is accepted if it matches EITHER disk count. The two
+    // commands that write it disagree about supersession — execute-phase's
+    // init scan supplies the live count, plan-review-convergence supplies
+    // `plan_count_all` — so insisting on one of them would report a writer
+    // disagreement as project drift. Divergence means the prose total matches
+    // neither, which is unambiguous.
+    const totalDiverged =
+      totalPlans !== planSet.planCount && totalPlans !== planSet.planCountAll;
+
+    if (totalDiverged) {
+      return {
+        // The ORIGINAL bytes, not a `reassemble(stripFrontmatter(content))`
+        // round-trip: a refusal must not mutate, and frontmatter reconstruction
+        // is a normalizing transform. The sibling `error: true` path above
+        // round-trips because it predates this rule; do not copy it here.
+        content,
+        updated: [],
+        data: {
+          advanced: false,
+          reason: 'position_diverged',
+          prose: { current_plan: currentPlan, total_plans: totalPlans },
+          disk: {
+            phase: planSet.phase,
+            plan_count: planSet.planCount,
+            plan_count_all: planSet.planCountAll,
+          },
+        },
+      };
+    }
   }
 
   const updated: string[] = [];

@@ -163,7 +163,13 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
         // fabricated plan position. The repair path for a genuinely diverged
         // STATE.md is the existing one: `state rebuild`, `state sync`, or
         // `state patch`.
-        const unrecognized = args.filter((t) => t.startsWith('--'));
+        // `--` is the POSIX end-of-options marker, not an option. main()
+        // honours it (gsd-tools.cjs) and does not strip it, so a caller
+        // writing `state advance-plan -- …` reaches here with a bare `--` in
+        // argv; treating it as an unrecognized option rejects a legitimate,
+        // conventional invocation. Excluded by exact match, so `--x` is
+        // still caught.
+        const unrecognized = args.filter((t) => t !== '--' && t.startsWith('--'));
         if (unrecognized.length > 0) {
           error(`state advance-plan takes no options; unrecognized: ${unrecognized.join(' ')}`);
           return;

@@ -1455,9 +1455,17 @@ describe('#3830: advancePlan cross-checks prose plan position against the plan s
     '',
   ].join('\n');
 
-  const diskSays = (planCount, phase = '01') => ({
+  // Default shape: both disk counts agree with each other, so only a prose
+  // total matching neither can diverge.
+  const diskSays = (planCount, extra = {}) => ({
     ...clock,
-    planSetProvider: () => ({ ok: true, phase, planCount }),
+    planSetProvider: () => ({
+      ok: true,
+      phase: '01',
+      planCount,
+      planCountAll: planCount,
+      ...extra,
+    }),
   });
 
   test('refuses to advance when the disk plan count diverges from the prose total (compound)', () => {
@@ -1465,7 +1473,11 @@ describe('#3830: advancePlan cross-checks prose plan position against the plan s
     assert.strictEqual(result.data && result.data.advanced, false);
     assert.strictEqual(result.data && result.data.reason, 'position_diverged');
     assert.deepStrictEqual(result.data && result.data.prose, { current_plan: 2, total_plans: 8 });
-    assert.deepStrictEqual(result.data && result.data.disk, { phase: '01', plan_count: 12 });
+    assert.deepStrictEqual(result.data && result.data.disk, {
+      phase: '01',
+      plan_count: 12,
+      plan_count_all: 12,
+    });
   });
 
   test('the refusal reports NO updated fields and returns the input bytes untouched', () => {
@@ -1494,7 +1506,7 @@ describe('#3830: advancePlan cross-checks prose plan position against the plan s
     assert.strictEqual(result.content, input);
   });
 
-  test('advances exactly as before when prose and disk agree', () => {
+  test('advances exactly as before when the prose TOTAL matches the disk plan count', () => {
     const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, diskSays(8));
     assert.strictEqual(result.data && result.data.advanced, true);
     assert.strictEqual(result.data && result.data.current_plan, 3);
@@ -1534,6 +1546,24 @@ describe('#3830: advancePlan cross-checks prose plan position against the plan s
         `disk=${planCount} vs prose total 8 should diverge`,
       );
     }
+  });
+
+  // --- the two-writer supersession split (#2893 / plan_count vs plan_count_all) ---
+
+  test('a prose total matching plan_count_all is NOT divergence, even when live plans are fewer', () => {
+    // execute-phase writes the live count; plan-review-convergence writes
+    // plan_count_all. A superseded plan makes them differ by design, and a
+    // check that insisted on one would report that writer split as drift.
+    const deps = diskSays(7, { planCountAll: 8 });
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true, 'prose total 8 == plan_count_all 8');
+    assert.strictEqual(result.data && result.data.reason, undefined);
+  });
+
+  test('a prose total matching NEITHER disk count is divergence', () => {
+    const deps = diskSays(11, { planCountAll: 12 });
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.reason, 'position_diverged');
   });
 
   test('the unparseable-prose error still wins over the disk check', () => {
