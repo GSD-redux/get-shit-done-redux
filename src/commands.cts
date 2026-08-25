@@ -913,7 +913,10 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   const files = fs.readdirSync(agentsDir).filter(f => {
     if (!f.startsWith('gsd-') || !f.endsWith('.md')) return false;
     try { return fs.lstatSync(path.join(agentsDir, f)).isFile(); } catch { return false; }
-  });
+  }).sort(); // #3706: sorted like the codex and
+  // opencode branches — readdir order is platform-dependent, so leaving it unsorted makes the
+  // reported `changes` ordering differ across machines for identical inputs.
+
   const changes: EffortSyncChange[] = [];
   let synced = 0;
   let skipped = 0;
@@ -927,7 +930,12 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   // third argument is never merged into the emitted JSON object (see io.cts
   // `output()`: it is only read when `raw === true`, entirely replacing the
   // JSON payload), so flipping it to `'failed'` costs nothing in the wire
-  // shape while still surfacing the failure to a raw-mode caller.
+  // shape while still surfacing the failure to a raw-mode caller. The three
+  // branches differ on that reporting shape, but are now also consistent in
+  // HOW they publish: every write below goes through the same tmp-file +
+  // chmod + retryRenameSync atomic-publish sequence used by
+  // cmdEffortSyncCodex and cmdEffortSyncOpencode, so a fault mid-write can
+  // never leave an agent file truncated or empty.
   let fileFailureCount = 0;
 
   for (const file of files) {
@@ -971,12 +979,43 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
       // report `''`, not `null`, so "present-but-empty" is never conflated
       // with "absent" in the sync output.
       if (!dryRun) {
-        // An unwritable agent file must not abort the whole sweep — same
-        // per-file degrade as the read guard above: folded into `skipped`,
-        // no new field, surfaced via `fileFailureCount` / the raw token.
+        // Atomic publish AND mode preservation, same discipline as
+        // cmdEffortSyncCodex/cmdEffortSyncOpencode: write to a sibling tmp
+        // file, chmod it to match filePath's existing (masked) mode, then
+        // retryRenameSync it over the target so filePath is either the old
+        // bytes or the new ones, never half-written and never dropped to a
+        // default mode. On any failure the tmp file is unlinked (best-effort)
+        // and the write is reported (folded into `skipped`/`fileFailureCount`,
+        // no new field), not thrown, so the remaining agents still get
+        // processed. ONE failure path for this site — no nested try/catch.
+        const tmpPathInherit = `${filePath}.tmp.${process.pid}`;
+        // Stat filePath BEFORE the write so its mode can be passed at
+        // CREATION time — a plain `writeFileSync(tmpPath, data)` creates the
+        // tmp file at the default `0666 & ~umask` even when filePath is more
+        // restrictive. Best-effort only: a stat failure must not abort the
+        // sync, since the content write is what matters, not the mode.
+        let originalModeInherit: number | undefined;
         try {
-          fs.writeFileSync(filePath, removeEffortFrontmatter(content));
+          originalModeInherit = fs.statSync(filePath).mode & 0o7777;
+        } catch { /* non-fatal: fall back to writing without an explicit mode */ }
+        try {
+          fs.writeFileSync(
+            tmpPathInherit,
+            removeEffortFrontmatter(content),
+            originalModeInherit !== undefined ? { mode: originalModeInherit } : undefined,
+          );
+          // Not redundant with the `mode` option above: `mode` only applies
+          // when the file is actually created (O_CREAT). A leftover tmp file
+          // from an earlier crashed run would be reused (truncated) at its
+          // OLD mode instead, and this chmod is what corrects that case.
+          // Best-effort only: a chmod failure must not abort the sync, since
+          // the content write is what matters, not the mode.
+          try {
+            if (originalModeInherit !== undefined) fs.chmodSync(tmpPathInherit, originalModeInherit);
+          } catch { /* non-fatal: proceed with default tmp-file mode */ }
+          retryRenameSync(tmpPathInherit, filePath);
         } catch {
+          try { fs.unlinkSync(tmpPathInherit); } catch { /* already gone or never created */ }
           skipped++;
           fileFailureCount++;
           continue;
@@ -1013,12 +1052,43 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     if (currentEffort === newEffortValue) { skipped++; continue; }
 
     if (!dryRun) {
-      // An unwritable agent file must not abort the whole sweep — same
-      // per-file degrade as the read guard above: folded into `skipped`,
-      // no new field, surfaced via `fileFailureCount` / the raw token.
+      // Atomic publish AND mode preservation, same discipline as
+      // cmdEffortSyncCodex/cmdEffortSyncOpencode: write to a sibling tmp
+      // file, chmod it to match filePath's existing (masked) mode, then
+      // retryRenameSync it over the target so filePath is either the old
+      // bytes or the new ones, never half-written and never dropped to a
+      // default mode. On any failure the tmp file is unlinked (best-effort)
+      // and the write is reported (folded into `skipped`/`fileFailureCount`,
+      // no new field), not thrown, so the remaining agents still get
+      // processed. ONE failure path for this site — no nested try/catch.
+      const tmpPathSet = `${filePath}.tmp.${process.pid}`;
+      // Stat filePath BEFORE the write so its mode can be passed at CREATION
+      // time — a plain `writeFileSync(tmpPath, data)` creates the tmp file
+      // at the default `0666 & ~umask` even when filePath is more
+      // restrictive. Best-effort only: a stat failure must not abort the
+      // sync, since the content write is what matters, not the mode.
+      let originalModeSet: number | undefined;
       try {
-        fs.writeFileSync(filePath, setEffortFrontmatter(content, newEffortValue));
+        originalModeSet = fs.statSync(filePath).mode & 0o7777;
+      } catch { /* non-fatal: fall back to writing without an explicit mode */ }
+      try {
+        fs.writeFileSync(
+          tmpPathSet,
+          setEffortFrontmatter(content, newEffortValue),
+          originalModeSet !== undefined ? { mode: originalModeSet } : undefined,
+        );
+        // Not redundant with the `mode` option above: `mode` only applies
+        // when the file is actually created (O_CREAT). A leftover tmp file
+        // from an earlier crashed run would be reused (truncated) at its OLD
+        // mode instead, and this chmod is what corrects that case.
+        // Best-effort only: a chmod failure must not abort the sync, since
+        // the content write is what matters, not the mode.
+        try {
+          if (originalModeSet !== undefined) fs.chmodSync(tmpPathSet, originalModeSet);
+        } catch { /* non-fatal: proceed with default tmp-file mode */ }
+        retryRenameSync(tmpPathSet, filePath);
       } catch {
+        try { fs.unlinkSync(tmpPathSet); } catch { /* already gone or never created */ }
         skipped++;
         fileFailureCount++;
         continue;

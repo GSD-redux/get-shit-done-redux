@@ -657,6 +657,98 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
     }
   });
 
+  test('a claude agent survives a fault mid-publish', () => {
+    // Protects: the claude branch now publishes atomically (tmp-write +
+    // chmod + retryRenameSync), same discipline as cmdEffortSyncOpencode. An
+    // ENOSPC-mid-write injected on the TMP path must never truncate or empty
+    // the real agent file — pre-fix, an in-place `writeFileSync(filePath,
+    // ...)` truncates via O_TRUNC before the fault, leaving the file empty.
+    // Injected deterministically by monkeypatching fs.writeFileSync inside
+    // the child script for exactly the `.tmp.` path — per this repo's
+    // CLAUDE.md §4, chmod-based injection is forbidden (root bypasses mode
+    // bits under Docker/CI and it leaks resources).
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'xhigh' } });
+      const filePath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      const before = fs.readFileSync(filePath);
+
+      const opts = { dryRun: false, configDir, runtime: 'claude' };
+      const makeScript = raw => [
+        `const fs = require('node:fs');`,
+        `const originalWriteFileSync = fs.writeFileSync;`,
+        // cmdEffortSync's claude branch writes to `<filePath>.tmp.<pid>`
+        // before renaming over the real path — throw only for that tmp
+        // write, simulating an ENOSPC fault after the original file has
+        // already been truncated by a naive in-place write (which this
+        // atomic-publish path no longer performs).
+        `fs.writeFileSync = function (targetPath, ...rest) {`,
+        `  if (typeof targetPath === 'string' && targetPath.includes('gsd-executor.md.tmp.')) {`,
+        `    throw new Error('injected ENOSPC mid-write');`,
+        `  }`,
+        `  return originalWriteFileSync.call(fs, targetPath, ...rest);`,
+        `};`,
+        `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+        `cmdEffortSync(${JSON.stringify(cwd)}, ${raw}, ${JSON.stringify(opts)});`,
+      ].join('\n');
+
+      const jsonRun = runNode(['-e', makeScript(false)], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        jsonRun.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${jsonRun.outcome}):\nstdout: ${jsonRun.stdout}\nstderr: ${jsonRun.stderr}`,
+      );
+
+      const after = fs.readFileSync(filePath);
+      assert.ok(before.equals(after), 'the original agent file must be byte-identical after a fault mid-publish');
+
+      const leftoverTmp = fs.readdirSync(agentsDir).filter(f => f.includes('.tmp.'));
+      assert.deepStrictEqual(leftoverTmp, [], `no orphan tmp file must remain in agents_dir, found: ${leftoverTmp.join(', ')}`);
+
+      const rawRun = runNode(['-e', makeScript(true)], {
+        cwd,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.strictEqual(
+        rawRun.exitCode, 0,
+        `cmdEffortSync child process failed (outcome=${rawRun.outcome}):\nstdout: ${rawRun.stdout}\nstderr: ${rawRun.stderr}`,
+      );
+      assert.strictEqual(rawRun.stdout.trim(), 'failed', `expected the raw summary token 'failed', got:\n${rawRun.stdout}`);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a claude sync preserves the agent file mode', () => {
+    // The tmp-file + rename publish does not preserve mode the way an
+    // in-place writeFileSync would — cmdEffortSync's claude branch
+    // stat+chmods the tmp file before the rename specifically to compensate,
+    // mirroring cmdEffortSyncOpencode. Mode bits are not meaningful on
+    // Windows (no POSIX permission model), so skip there.
+    if (process.platform === 'win32') return;
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'xhigh' } });
+      const filePath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ]);
+      fs.chmodSync(filePath, 0o600);
+      runEffortSync({ cwd, home, configDir, runtime: 'claude', dryRun: false });
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.match(content, /^effort: xhigh$/m, 'the sync must have actually rewritten the file');
+      assert.strictEqual(
+        fs.statSync(filePath).mode & 0o777, 0o600,
+        'the published file must keep the original file mode',
+      );
+    } finally {
+      cleanup(root);
+    }
+  });
+
   test('effort values are written unquoted', () => {
     // Control for the shared-escaping fix: setFrontmatterKeyLine now routes
     // through the same agentScalarNeedsDoubleQuoting/escapeDoubleQuoted
