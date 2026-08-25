@@ -361,7 +361,13 @@ shared file, so there is nothing to collide on.
    `docs/features/_groups/<slug>.md`, which a feature PR never touches.
 4. **`order` is optional.** It defaults to the numeric part of `id`, which is
    right for almost everything. Declare it only to place a section somewhere its
-   number would not put it (`27b` precedes `27a` for historical reasons).
+   number would not put it (`27b` precedes `27a` for historical reasons). When
+   declared it must be an optionally-signed integer or decimal — `27`, `0`,
+   `-1`, `+3`, `27.2`. Anything else is an `order_invalid` violation, including
+   an empty value, a hex/binary/octal literal and exponential notation: all of
+   those coerce to a finite number under JavaScript's `Number()`, so before
+   #3840 a bare `order:` sorted the section to position 0 — ahead of every real
+   feature — with no violation and a clean `--check`.
 5. **Bodies start at `####`.** A `##` or `###` inside a fragment body would
    forge a group or a sibling section with no id and no TOC entry; `--check`
    rejects it (`body_heading_too_shallow`).

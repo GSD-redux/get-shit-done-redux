@@ -571,6 +571,180 @@ describe('gen-features CLI', () => {
     assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID]);
   });
 
+  // ---------------------------------------------------------------------------
+  // `order` validation (#3840 follow-up): `Number()` coercion is far more
+  // liberal than a docs ordering field has reason to be. `Number('')` is 0,
+  // and `0x10`, `0b11`, `0o17`, `1e3`, `1.` and `.5` all coerce to finite
+  // numbers — so a fragment declaring `order:` with nothing after it sorted
+  // to position 0, ahead of every real feature, with zero violations.
+  // ---------------------------------------------------------------------------
+
+  test('an empty order is rejected, not coerced to zero', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('1', 'A', 'G', '**Purpose:** x.', { order: '' }),
+    });
+    assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID]);
+  });
+
+  test('a bare `order:` line is rejected too — the shape an author actually types', (t) => {
+    // The reject rows above build `order` through renderFrontmatter, which
+    // emits the QUOTED-empty form `order: ""`. A human types the bare form.
+    // Both converge to '' at the validator; this pins that they do, so a
+    // change to parseScalar's quoted branch cannot quietly split them.
+    for (const line of ['order:', 'order:   ']) {
+      const root = makeRepo(t, {
+        'a.md': `---\nid: 1\ntitle: A\ngroup: G\n${line}\n---\n\n**Purpose:** x.\n`,
+      });
+      assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID], line);
+    }
+  });
+
+  test('a non-decimal radix order is rejected', (t) => {
+    for (const order of ['0x10', '0b11', '0o17']) {
+      const root = makeRepo(t, {
+        'a.md': fragment('1', 'A', 'G', '**Purpose:** x.', { order }),
+      });
+      assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID], `order: ${order}`);
+    }
+  });
+
+  test('an exponential order is rejected', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('1', 'A', 'G', '**Purpose:** x.', { order: '1e3' }),
+    });
+    assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID]);
+  });
+
+  test('a malformed decimal order is rejected', (t) => {
+    for (const order of ['1.', '.5']) {
+      const root = makeRepo(t, {
+        'a.md': fragment('1', 'A', 'G', '**Purpose:** x.', { order }),
+      });
+      assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID], `order: ${order}`);
+    }
+  });
+
+  test('Infinity, NaN and separators stay rejected', (t) => {
+    // Regression pin: these already fail today under plain Number() coercion
+    // and must keep failing once order is validated by shape as well.
+    for (const order of ['Infinity', 'NaN', '1_0']) {
+      const root = makeRepo(t, {
+        'a.md': fragment('1', 'A', 'G', '**Purpose:** x.', { order }),
+      });
+      assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID], `order: ${order}`);
+    }
+  });
+
+  test('an order that overflows to Infinity is rejected', (t) => {
+    // The regex alone would admit this shape; the finite guard must still fire.
+    const root = makeRepo(t, {
+      'a.md': fragment('1', 'A', 'G', '**Purpose:** x.', { order: '1'.repeat(400) }),
+    });
+    assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID]);
+  });
+
+  test('accepts a plain integer order', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('5', 'A', 'G', '**Purpose:** x.', { order: '27' }),
+      'b.md': fragment('1', 'B', 'G'),
+    });
+    assert.deepEqual(report(root).violations, []);
+    run(root, ['--write']);
+    const doc = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    // order 27 > B's default order (1), so A must render after B.
+    assert.equal(doc.indexOf('### 5.') > doc.indexOf('### 1.'), true);
+  });
+
+  test('accepts an explicit zero order', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('5', 'A', 'G', '**Purpose:** x.', { order: '0' }),
+      'b.md': fragment('9', 'B', 'G'),
+    });
+    assert.deepEqual(report(root).violations, []);
+    run(root, ['--write']);
+    const doc = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    // order 0 < B's default order (9), so A must render before B.
+    assert.equal(doc.indexOf('### 5.') < doc.indexOf('### 9.'), true);
+  });
+
+  test('accepts a negative order', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('5', 'A', 'G', '**Purpose:** x.', { order: '-1' }),
+      'b.md': fragment('1', 'B', 'G'),
+    });
+    assert.deepEqual(report(root).violations, []);
+    run(root, ['--write']);
+    const doc = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    // order -1 < B's default order (1), so A must render before B.
+    assert.equal(doc.indexOf('### 5.') < doc.indexOf('### 1.'), true);
+  });
+
+  test('accepts a leading-plus order', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('5', 'A', 'G', '**Purpose:** x.', { order: '+3' }),
+      'b.md': fragment('1', 'B', 'G'),
+      'c.md': fragment('10', 'C', 'G'),
+    });
+    assert.deepEqual(report(root).violations, []);
+    run(root, ['--write']);
+    const doc = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    // order +3 sits between B's default order (1) and C's default order (10).
+    assert.equal(doc.indexOf('### 1.') < doc.indexOf('### 5.'), true);
+    assert.equal(doc.indexOf('### 5.') < doc.indexOf('### 10.'), true);
+  });
+
+  test('a quoted numeric order is accepted after unquoting', (t) => {
+    // Built by writing the raw fragment text so the frontmatter line literally
+    // reads `order: "27.2"`, rather than going through the `fragment()` helper
+    // (which would double-quote a JS string value).
+    const root = makeRepo(t, {
+      'a.md': '---\nid: 5\ntitle: A\ngroup: G\norder: "27.2"\n---\n\n**Purpose:** x.\n',
+      'b.md': fragment('1', 'B', 'G'),
+    });
+    assert.deepEqual(report(root).violations, []);
+    run(root, ['--write']);
+    const doc = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    // order 27.2 > B's default order (1), so A must render after B.
+    assert.equal(doc.indexOf('### 5.') > doc.indexOf('### 1.'), true);
+  });
+
+  test('an invalid id short-circuits before order validation', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('12ab', 'A', 'G', '**Purpose:** x.', { order: '' }),
+    });
+    assert.deepEqual(reasonsIn(report(root)), [REASON.ID_INVALID]);
+  });
+
+  test('an invalid order short-circuits before the body check', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('1', 'A', 'G', '', { order: '' }),
+    });
+    assert.deepEqual(reasonsIn(report(root)), [REASON.ORDER_INVALID]);
+  });
+
+  test('each malformed order is reported per file', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('1', 'A', 'G', '**Purpose:** x.', { order: '' }),
+      'b.md': fragment('2', 'B', 'G', '**Purpose:** x.', { order: '' }),
+    });
+    const rep = report(root);
+    assert.equal(rep.violations.length, 2);
+    const files = rep.violations.map((v) => v.file).sort();
+    assert.deepEqual(files, ['docs/features/a.md', 'docs/features/b.md']);
+  });
+
+  test('a malformed order refuses the write rather than reordering the document', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('1', 'A', 'G'),
+      'b.md': fragment('2', 'B', 'G'),
+      'c.md': fragment('900', 'C', 'G', '**Purpose:** x.', { order: '' }),
+    });
+    const before = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    assert.equal(run(root, ['--write']).exitCode, 1);
+    const after = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    assert.equal(after, before);
+  });
+
   test('an explicit order overrides the id-derived default', (t) => {
     const root = makeRepo(t, {
       'a.md': fragment('27', 'A', 'G'),
