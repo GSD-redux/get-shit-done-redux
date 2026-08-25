@@ -325,7 +325,9 @@ group: v1.7.0 Features
 Then run `npm run regen:derived` (or just `npm run gen:features -- --write`) and
 commit both the fragment and the regenerated `docs/FEATURES.md`.
 `npm run lint:generated-sync` runs the `--check` twin, so a stale index cannot
-merge.
+merge. `--write` is fail-closed: it refuses to emit `docs/FEATURES.md` while any
+fragment violation stands, so a `--write && git commit` chain cannot commit a
+corrupt file. Pass `--force` only to see what a broken corpus would render as.
 
 **Why fragments.** The old practice hand-allocated a monotonically increasing
 integer at authoring time, and every feature PR wrote into *two* shared mutable

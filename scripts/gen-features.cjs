@@ -59,6 +59,7 @@
  *   node scripts/gen-features.cjs --write      # rewrite the region in docs/FEATURES.md
  *   node scripts/gen-features.cjs --check      # exit 1 if stale or invalid
  *   node scripts/gen-features.cjs --json       # --check semantics; JSON report on stdout
+ *   node scripts/gen-features.cjs --write --force   # write despite violations
  */
 
 const fs = require('node:fs');
@@ -107,8 +108,33 @@ const REASON = Object.freeze({
   GROUP_NOTE_ORPHAN: 'group_note_orphan',
   GROUP_NOTE_DUPLICATE: 'group_note_duplicate',
   INBOUND_ANCHOR_UNRESOLVED: 'inbound_anchor_unresolved',
+  BODY_FORGES_REGION_MARKER: 'body_forges_region_marker',
+  DIRENT_NOT_REGULAR_FILE: 'dirent_not_regular_file',
   DIRENT_UNREADABLE: 'dirent_unreadable',
 });
+
+/**
+ * Substrings a fragment body may never contain.
+ *
+ * `spliceIntoFeatures` finds the region boundaries by scanning `docs/FEATURES.md`
+ * for these markers. A fragment that PLANTS one gets it rendered verbatim into
+ * the generated region, where it becomes an earlier (or later) match than the
+ * real boundary on the NEXT run — so a subsequent `--write` splices against the
+ * forged boundary and silently freezes everything past it as "hand-authored",
+ * a corruption that survives deleting the offending fragment. Fragments arrive
+ * through fork PRs, so this is attacker-reachable input, not a typo class.
+ *
+ * Defence is in depth: this rejects the forgery at the source, and
+ * `spliceIntoFeatures` independently anchors on the LAST end marker so a
+ * marker that reaches the document some other way still cannot shrink the
+ * region it governs.
+ */
+const FORBIDDEN_BODY_SUBSTRINGS = Object.freeze(['<!-- FEATURES:START', '<!-- FEATURES:END']);
+
+/** Which forbidden marker (if any) `body` contains. */
+function forgedRegionMarker(body) {
+  return FORBIDDEN_BODY_SUBSTRINGS.find((marker) => String(body).includes(marker)) || null;
+}
 
 /**
  * Directories the inbound-anchor scan walks, relative to the repo root.
@@ -299,9 +325,31 @@ function markdownFilesIn(dir) {
     return [];
   }
   return entries
-    .filter((e) => e.isFile() && e.name.endsWith('.md'))
-    .map((e) => e.name)
-    .sort();
+    .filter((e) => e.name.endsWith('.md'))
+    .map((e) => ({ name: e.name, regular: e.isFile() && !e.isSymbolicLink() }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
+ * Whether a `docs/features/` entry may be READ at all.
+ *
+ * `readdirSync(..., {withFileTypes:true})` reports dirent types WITHOUT
+ * following symlinks (it is `lstat`-shaped), so `isFile()` is already false for
+ * a symlink — but relying on that alone reads as an accident. This states the
+ * rule outright: only a regular file is a fragment.
+ *
+ * The threat is concrete. A fork PR can commit `docs/features/evil.md` as a
+ * symlink to any path the process can read (`~/.ssh/id_rsa`, a CI secret file,
+ * anything outside the repo). The generator INLINES a fragment's bytes into the
+ * committed `docs/FEATURES.md`, so following one link would exfiltrate that
+ * file's contents into a public document on the next `regen:derived`. Refusing
+ * non-regular entries is what keeps the fragment corpus to files a reviewer can
+ * actually see in the diff.
+ */
+function refuseNonRegular(entry, rel, add) {
+  if (entry.regular) return false;
+  add(REASON.DIRENT_NOT_REGULAR_FILE, rel, {});
+  return true;
 }
 
 /**
@@ -318,12 +366,14 @@ function readCorpus() {
   const add = (reason, file, detail) => violations.push({ reason, file, ...detail });
 
   const fragments = [];
-  for (const name of markdownFilesIn(FEATURES_DIR)) {
+  for (const entry of markdownFilesIn(FEATURES_DIR)) {
+    const name = entry.name;
     const rel = path.posix.join('docs/features', name);
     if (!FRAGMENT_FILENAME_RE.test(name)) {
       add(REASON.FILENAME_INVALID, rel, {});
       continue;
     }
+    if (refuseNonRegular(entry, rel, add)) continue;
     let text;
     try {
       text = fs.readFileSync(path.join(FEATURES_DIR, name), 'utf8');
@@ -371,6 +421,11 @@ function readCorpus() {
     for (const hit of shallowBodyHeadings(trimmed)) {
       add(REASON.BODY_HEADING_TOO_SHALLOW, rel, { line: hit.line, depth: hit.depth });
     }
+    const forged = forgedRegionMarker(trimmed);
+    if (forged !== null) {
+      add(REASON.BODY_FORGES_REGION_MARKER, rel, { marker: forged });
+      continue;
+    }
 
     fragments.push({
       file: rel,
@@ -385,8 +440,10 @@ function readCorpus() {
   }
 
   const notes = new Map();
-  for (const name of markdownFilesIn(GROUP_NOTES_DIR)) {
+  for (const entry of markdownFilesIn(GROUP_NOTES_DIR)) {
+    const name = entry.name;
     const rel = path.posix.join('docs/features/_groups', name);
+    if (refuseNonRegular(entry, rel, add)) continue;
     let text;
     try {
       text = fs.readFileSync(path.join(GROUP_NOTES_DIR, name), 'utf8');
@@ -413,6 +470,11 @@ function readCorpus() {
     const trimmed = body.replace(/\s+$/, '');
     if (trimmed === '') {
       add(REASON.BODY_EMPTY, rel, {});
+      continue;
+    }
+    const forgedNote = forgedRegionMarker(trimmed);
+    if (forgedNote !== null) {
+      add(REASON.BODY_FORGES_REGION_MARKER, rel, { marker: forgedNote });
       continue;
     }
     notes.set(data.group, { file: rel, group: data.group, body: trimmed });
@@ -571,6 +633,10 @@ function describeViolation(v) {
       return `${v.file}: a second note for group '${v.group}'`;
     case REASON.INBOUND_ANCHOR_UNRESOLVED:
       return `${v.file}: links docs/FEATURES.md#${v.anchor}, which no heading provides`;
+    case REASON.BODY_FORGES_REGION_MARKER:
+      return `${v.file}: body contains the generated-region marker '${v.marker}'`;
+    case REASON.DIRENT_NOT_REGULAR_FILE:
+      return `${v.file}: not a regular file (a symlink is never followed)`;
     case REASON.DIRENT_UNREADABLE:
       return `${v.file}: unreadable`;
     default:
@@ -606,9 +672,21 @@ function renderFeatures(corpus) {
   return out.join('\n');
 }
 
+/**
+ * Replace the generated region of `doc` with `region`.
+ *
+ * The end boundary is the LAST occurrence, not the first. With `indexOf`, a
+ * forged `<!-- FEATURES:END -->` anywhere inside the region would become the de
+ * facto boundary and everything after it would be preserved as if hand-authored
+ * — permanently, since the next run splices against the same forged marker.
+ * `lastIndexOf` makes the true trailing marker win, so the generated region can
+ * only ever GROW to swallow a forgery, never shrink to be governed by one.
+ * `FORBIDDEN_BODY_SUBSTRINGS` rejects the forgery upstream; this is the second
+ * layer, and it also covers a marker that reached the document by hand.
+ */
 function spliceIntoFeatures(doc, region) {
   const start = doc.indexOf(START_MARKER);
-  const end = doc.indexOf(END_MARKER);
+  const end = doc.lastIndexOf(END_MARKER);
   if (start === -1 || end === -1) {
     throw new ExitError(
       1,
@@ -624,18 +702,24 @@ function spliceIntoFeatures(doc, region) {
  * run. Mirrors `scripts/gen-adr-index.cjs`.
  */
 function parseArgs(argv) {
-  const opts = { write: false, check: false, json: false };
+  const opts = { write: false, check: false, json: false, force: false };
   for (const arg of argv) {
     if (arg === '--write') opts.write = true;
     else if (arg === '--check') opts.check = true;
     else if (arg === '--json') opts.json = true;
-    else throw new ExitError(1, `unknown flag: ${arg}\nRecognized flags: --write, --check, --json.`);
+    else if (arg === '--force') opts.force = true;
+    else {
+      throw new ExitError(
+        1,
+        `unknown flag: ${arg}\nRecognized flags: --write, --check, --json, --force.`,
+      );
+    }
   }
   return opts;
 }
 
 function main() {
-  const { write, check, json } = parseArgs(process.argv.slice(2));
+  const { write, check, json, force } = parseArgs(process.argv.slice(2));
 
   const corpus = buildCorpus();
   const { violations } = corpus;
@@ -660,10 +744,19 @@ function main() {
     return ok ? 0 : 1;
   }
 
-  if (violations.length > 0 && !write) {
+  // FAIL-CLOSED. `--write` used to render the region regardless, warning only
+  // on stderr and exiting 0 — so a `--write && git commit` chain would happily
+  // commit a docs/FEATURES.md carrying two colliding `### 7.` sections. Every
+  // other gate in this repo refuses rather than degrades, and a generator that
+  // emits a known-corrupt artifact is worse than one that emits none: the
+  // corruption is what gets reviewed. `--force` remains for the deliberate
+  // "write it anyway so I can see what it looks like" case, and says so.
+  if (violations.length > 0 && !(write && force)) {
     process.stderr.write(
       `docs/features/ has ${violations.length} fragment violation(s).\n` +
-        'See CONTRIBUTING.md "Adding a feature to `docs/FEATURES.md`" for the contract.\n\n',
+        'See CONTRIBUTING.md "Adding a feature to `docs/FEATURES.md`" for the contract.\n' +
+        (write ? 'Refusing to write a corrupt docs/FEATURES.md; pass --force to override.\n' : '') +
+        '\n',
     );
     for (const v of violations) process.stderr.write(`  ✗ ${describeViolation(v)}\n`);
     process.stderr.write('\n');
@@ -679,7 +772,10 @@ function main() {
       `Wrote ${corpus.fragments.length} features in ${corpus.groups.length} groups into ${FEATURES_PATH}.\n`,
     );
     if (violations.length > 0) {
-      process.stderr.write(`\n${violations.length} violation(s) remain — --check will fail:\n\n`);
+      // Only reachable under --force; the guard above rejects otherwise.
+      process.stderr.write(
+        `\n${violations.length} violation(s) written anyway under --force — --check will fail:\n\n`,
+      );
       for (const v of violations) process.stderr.write(`  ✗ ${describeViolation(v)}\n`);
     }
   } else if (check) {
@@ -712,6 +808,8 @@ module.exports = {
   parseFrontmatter,
   renderFrontmatter,
   shallowBodyHeadings,
+  forgedRegionMarker,
+  FORBIDDEN_BODY_SUBSTRINGS,
   defaultOrder,
   checkInboundAnchors,
   buildCorpus,

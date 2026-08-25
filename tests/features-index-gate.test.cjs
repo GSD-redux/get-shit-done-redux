@@ -45,6 +45,8 @@ const {
   parseFrontmatter,
   renderFrontmatter,
   shallowBodyHeadings,
+  forgedRegionMarker,
+  FORBIDDEN_BODY_SUBSTRINGS,
   defaultOrder,
   buildCorpus,
   renderFeatures,
@@ -119,6 +121,27 @@ function reasonsIn(rep) {
 
 const fragment = (id, title, group, body = '**Purpose:** x.', extra = {}) =>
   renderFrontmatter({ id, title, group, ...extra }, `${body}\n`);
+
+/**
+ * Reason string when this host cannot create a symlink, else `false`.
+ *
+ * Unprivileged Windows without Developer Mode rejects `symlinkSync` with
+ * EPERM. A bare `return` there would be a PASS, not a skip — the documented
+ * trap — so the skip is declared to the runner instead.
+ */
+function symlinkSkip() {
+  const probe = createTempDir('gsd-symlink-probe-');
+  try {
+    fs.writeFileSync(path.join(probe, 'target'), 'x');
+    fs.symlinkSync(path.join(probe, 'target'), path.join(probe, 'link'));
+    return false;
+  } catch {
+    return 'this host cannot create symlinks (unprivileged Windows)';
+  } finally {
+    // helpers.cleanup, not fs.rmSync — it carries the Windows-EBUSY retry budget.
+    cleanup(probe);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Frontmatter parser — the seam every fragment passes through
@@ -271,6 +294,40 @@ describe('shallowBodyHeadings', () => {
 // Ordering
 // ---------------------------------------------------------------------------
 
+describe('forgedRegionMarker', () => {
+  test('names the marker a body forges, so the violation can carry it', () => {
+    assert.equal(forgedRegionMarker('a\n<!-- FEATURES:END -->\nb'), '<!-- FEATURES:END');
+    assert.equal(forgedRegionMarker('<!-- FEATURES:START x -->'), '<!-- FEATURES:START');
+  });
+
+  test('an ordinary body forges nothing', () => {
+    assert.equal(forgedRegionMarker('**Purpose:** talks about FEATURES.md.'), null);
+    assert.equal(forgedRegionMarker(''), null);
+  });
+
+  test('the forbidden list is the marker PREFIXES, so a variant comment cannot slip past', () => {
+    // Matching the full marker string would let `<!-- FEATURES:END junk -->`
+    // through, and `indexOf`/`lastIndexOf` in the splice would still find the
+    // real substring inside it. Prefixes close that gap.
+    assert.deepEqual([...FORBIDDEN_BODY_SUBSTRINGS], ['<!-- FEATURES:START', '<!-- FEATURES:END']);
+    assert.equal(forgedRegionMarker('<!-- FEATURES:END junk -->'), '<!-- FEATURES:END');
+  });
+});
+
+describe('spliceIntoFeatures', () => {
+  test('anchors the end boundary on the LAST marker, never the first', () => {
+    const doc = `head\n${START_MARKER}\nold\n${END_MARKER}\nmiddle\n${END_MARKER}\ntail\n`;
+    const out = spliceIntoFeatures(doc, `${START_MARKER}\nnew\n${END_MARKER}`);
+    assert.equal(out, `head\n${START_MARKER}\nnew\n${END_MARKER}\ntail\n`);
+  });
+
+  test('is a fixed point on a document it just produced', () => {
+    const doc = `head\n${START_MARKER}\nnew\n${END_MARKER}\ntail\n`;
+    const region = `${START_MARKER}\nnew\n${END_MARKER}`;
+    assert.equal(spliceIntoFeatures(doc, region), doc);
+  });
+});
+
 describe('defaultOrder', () => {
   test('derives a sort key from the id so most fragments need no `order`', () => {
     assert.equal(defaultOrder('1'), 1);
@@ -366,7 +423,9 @@ describe('REASON', () => {
     assert.deepEqual(Object.keys(REASON).sort(), [
       'ANCHOR_DUPLICATE',
       'BODY_EMPTY',
+      'BODY_FORGES_REGION_MARKER',
       'BODY_HEADING_TOO_SHALLOW',
+      'DIRENT_NOT_REGULAR_FILE',
       'DIRENT_UNREADABLE',
       'FIELD_MISSING',
       'FIELD_UNKNOWN',
@@ -593,15 +652,44 @@ describe('gen-features CLI', () => {
     assert.equal(run(root, ['--check']).exitCode, 0);
   });
 
-  test('--write still exits 0 while reporting outstanding violations', (t) => {
+  test('--write REFUSES to emit a corrupt file when violations remain', (t) => {
     const root = makeRepo(t, {
       'a.md': fragment('1', 'A', 'G'),
       'b.md': fragment('1', 'B', 'G'),
     });
-    // --write must remain usable as the repair path even when the corpus is
-    // invalid; --check is the gate, --write is the fixer.
-    assert.equal(run(root, ['--write']).exitCode, 0);
+    const docPath = path.join(root, 'docs', 'FEATURES.md');
+    const before = fs.readFileSync(docPath, 'utf8');
+
+    // Fail-closed. An earlier revision wrote the region anyway and exited 0,
+    // warning only on stderr — so `--write && git commit` would commit a
+    // FEATURES.md carrying two colliding `### 1.` sections.
+    assert.equal(run(root, ['--write']).exitCode, 1);
+    assert.equal(fs.readFileSync(docPath, 'utf8'), before, 'the file must be untouched');
+  });
+
+  test('--write --force overrides the refusal, deliberately and loudly', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('1', 'A', 'G'),
+      'b.md': fragment('1', 'B', 'G'),
+    });
+    const docPath = path.join(root, 'docs', 'FEATURES.md');
+    const before = fs.readFileSync(docPath, 'utf8');
+
+    const res = run(root, ['--write', '--force']);
+    assert.equal(res.exitCode, 0);
+    assert.notEqual(fs.readFileSync(docPath, 'utf8'), before);
+    // --force does not launder the corpus: --check still fails.
     assert.equal(run(root, ['--check']).exitCode, 1);
+  });
+
+  test('--force alone does not suppress the violation report on a read-only run', (t) => {
+    const root = makeRepo(t, {
+      'a.md': fragment('1', 'A', 'G'),
+      'b.md': fragment('1', 'B', 'G'),
+    });
+    // --force is scoped to --write; without it the gate still refuses.
+    assert.equal(run(root, ['--force']).exitCode, 1);
+    assert.equal(run(root, ['--check', '--force']).exitCode, 1);
   });
 
   test('no flags prints the region without touching the file', (t) => {
@@ -619,6 +707,81 @@ describe('gen-features CLI', () => {
     const res = run(root, ['--wirte']);
     assert.equal(res.exitCode, 1);
     assert.equal(res.stdout, '');
+  });
+
+  test('a fragment body that forges the END marker is rejected', (t) => {
+    const root = makeRepo(t, {
+      'evil.md': fragment('1', 'Evil', 'G', 'body\n\n<!-- FEATURES:END -->\n\nsmuggled tail'),
+    });
+    const rep = report(root);
+    assert.deepEqual(reasonsIn(rep), [REASON.BODY_FORGES_REGION_MARKER]);
+    assert.equal(rep.violations[0].marker, '<!-- FEATURES:END');
+    assert.equal(run(root, ['--write']).exitCode, 1, 'must not be written');
+  });
+
+  test('a fragment body that forges the START marker is rejected', (t) => {
+    const root = makeRepo(t, {
+      'evil.md': fragment('1', 'Evil', 'G', 'body\n\n<!-- FEATURES:START whatever -->'),
+    });
+    assert.deepEqual(reasonsIn(report(root)), [REASON.BODY_FORGES_REGION_MARKER]);
+  });
+
+  test('a group note that forges a region marker is rejected too', (t) => {
+    const root = makeRepo(
+      t,
+      { 'a.md': fragment('1', 'A', 'Core Features') },
+      { notes: { 'core-features.md': renderFrontmatter({ group: 'Core Features' }, '<!-- FEATURES:END -->\n') } },
+    );
+    assert.deepEqual(reasonsIn(report(root)), [REASON.BODY_FORGES_REGION_MARKER]);
+  });
+
+  test('a stray END marker inside the region cannot shrink it — the LAST one wins', (t) => {
+    // Defence in depth: the fragment gate above rejects a forged marker at the
+    // source, but a marker that reaches docs/FEATURES.md some other way (a hand
+    // edit, a bad merge) must still not become the de facto boundary and freeze
+    // everything after it as hand-authored.
+    const doc = [
+      '# Features',
+      '',
+      START_MARKER,
+      'stale body',
+      END_MARKER,
+      'MUST NOT SURVIVE',
+      END_MARKER,
+      '',
+      '## Related',
+      '',
+    ].join('\n');
+    const root = makeRepo(t, { 'a.md': fragment('1', 'Alpha', 'G') }, { doc });
+    assert.equal(run(root, ['--write']).exitCode, 0);
+    const after = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    assert.equal(after.includes('MUST NOT SURVIVE'), false);
+    assert.equal(after.includes('## Related'), true, 'real trailing content is preserved');
+    // Idempotent: a second write is a fixed point, so the forgery cannot recur.
+    assert.equal(run(root, ['--check']).exitCode, 0);
+  });
+
+  test('a symlinked fragment is refused, not followed', { skip: symlinkSkip() }, (t) => {
+    const root = makeRepo(t, { 'real.md': fragment('1', 'Real', 'G') });
+    const secret = path.join(root, 'secret.txt');
+    fs.writeFileSync(secret, 'SUPER-SECRET-BYTES\n');
+    fs.symlinkSync(secret, path.join(root, 'docs', 'features', 'evil.md'));
+
+    const rep = report(root);
+    assert.deepEqual(reasonsIn(rep), [REASON.DIRENT_NOT_REGULAR_FILE]);
+    assert.equal(rep.violations[0].file, 'docs/features/evil.md');
+    // Fail-closed keeps the bytes out of the document; belt and braces, assert it.
+    assert.equal(run(root, ['--write']).exitCode, 1);
+    const doc = fs.readFileSync(path.join(root, 'docs', 'FEATURES.md'), 'utf8');
+    assert.equal(doc.includes('SUPER-SECRET-BYTES'), false);
+  });
+
+  test('a symlinked group note is refused too', { skip: symlinkSkip() }, (t) => {
+    const root = makeRepo(t, { 'a.md': fragment('1', 'A', 'G') });
+    const secret = path.join(root, 'secret.txt');
+    fs.writeFileSync(secret, 'SUPER-SECRET-BYTES\n');
+    fs.symlinkSync(secret, path.join(root, 'docs', 'features', '_groups', 'g.md'));
+    assert.deepEqual(reasonsIn(report(root)), [REASON.DIRENT_NOT_REGULAR_FILE]);
   });
 
   test('an empty corpus is not a crash', (t) => {
