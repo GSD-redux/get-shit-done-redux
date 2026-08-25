@@ -390,25 +390,82 @@ interface NodeNormOpts {
   execPath?: string;
 }
 
+/**
+ * Normalize a directory that will be joined with `/…` — posix separators, no
+ * trailing slash. `FNM_DIR=/custom/fnm/` would otherwise bake
+ * `/custom/fnm//aliases/default/bin/node` (#3704 review). Cosmetic — `existsSync`
+ * resolves the doubled separator and every shell collapses it — but the value is
+ * written into a user's settings.json and read by humans.
+ *
+ * Shared by both fnm branches deliberately: they build the same alias paths from
+ * different roots, and a trim applied to only one is a difference with no reason
+ * behind it.
+ */
+function normalizeRootDir(dir: string): string {
+  return shellCmdProjection.posixNormalize(dir).replace(/\/+$/, '');
+}
+
 function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
   if (!execPath) return execPath;
   const env = (opts && opts.env) || process.env;
   const existsSync = (opts && opts.existsSync) || fs.existsSync;
 
   const normalizedForMatch = shellCmdProjection.posixNormalize(execPath);
-  if (/\/fnm_multishells\/[0-9]+_[0-9]+\/node(\.exe)?$/i.test(normalizedForMatch)) {
+  // #977: fnm's Windows shim IS `process.execPath` there — Windows does not
+  // realpath through it — so this branch stays. #3704 adds `(?:bin\/)?`: fnm's
+  // POSIX shim is `<multishell>/bin/node`, so the original pattern could not match
+  // it even when a caller hands one in explicitly (#3662's `execPath` option
+  // exists to do exactly that, normalizing a path from another environment).
+  if (/\/fnm_multishells\/[0-9]+_[0-9]+\/(?:bin\/)?node(\.exe)?$/i.test(normalizedForMatch)) {
     const candidates: string[] = [];
     if (env.FNM_DIR) {
-      candidates.push(`${env.FNM_DIR}/aliases/default/node.exe`);
-      candidates.push(`${env.FNM_DIR}/aliases/default/bin/node`);
+      const fnmRoot = normalizeRootDir(env.FNM_DIR);
+      candidates.push(`${fnmRoot}/aliases/default/node.exe`);
+      candidates.push(`${fnmRoot}/aliases/default/bin/node`);
     }
     if (env.APPDATA) {
-      candidates.push(`${env.APPDATA}/fnm/aliases/default/node.exe`);
+      candidates.push(`${normalizeRootDir(env.APPDATA)}/fnm/aliases/default/node.exe`);
     }
     for (const candidate of candidates) {
       if (candidate && existsSync(candidate)) return candidate;
     }
     return execPath;
+  }
+
+  // #3704: fnm pins a concrete version at
+  // <FNM_DIR>/node-versions/<ver>/installation/bin/node (Windows:
+  // .../installation/node.exe). On macOS/Linux this — not the shim above — is what
+  // `process.execPath` reports, because Node realpaths through
+  // `fnm_multishells`. So the shim branch above is unreachable on POSIX and the
+  // raw versioned path was baked into every managed hook: `fnm uninstall <ver>`,
+  // or fnm's own pruning, then 404s every hook — the ephemeral-path failure #977
+  // exists to prevent, and the same one #1619 (mise) and #2185 (Homebrew) fixed
+  // for their managers by matching the VERSIONED path rather than a shim.
+  //
+  // The stable alias is <FNM_DIR>/aliases/default/..., which fnm repoints on
+  // `fnm default`. Derive <FNM_DIR> from execPath first (#2185's rule — the path
+  // IS the install location, and FNM_DIR may be unset or point at a different
+  // install), keeping the env as a secondary candidate. Rewrite only when the
+  // alias exists; otherwise fall through to the raw execPath, exactly like the
+  // mise and volta branches, so a rewrite never turns a stale-but-working pin
+  // into an immediately broken one.
+  const fnmVersioned = normalizedForMatch.match(
+    /^(.*)\/node-versions\/[^/]+\/installation\/(?:bin\/)?node(\.exe)?$/i,
+  );
+  if (fnmVersioned) {
+    const isExe = Boolean(fnmVersioned[2]);
+    const roots = [fnmVersioned[1]];
+    if (env.FNM_DIR) roots.push(normalizeRootDir(env.FNM_DIR));
+    const fnmAliasCandidates: string[] = [];
+    for (const root of roots) {
+      // Probe the spelling matching the input first, then the other — a layout
+      // is one or the other, and guessing wrong would skip a real alias.
+      const leaf = isExe ? ['node.exe', 'bin/node'] : ['bin/node', 'node.exe'];
+      for (const tail of leaf) fnmAliasCandidates.push(`${root}/aliases/default/${tail}`);
+    }
+    for (const candidate of fnmAliasCandidates) {
+      if (existsSync(candidate)) return candidate;
+    }
   }
 
   // Homebrew (macOS Intel /usr/local, Apple Silicon /opt/homebrew, Linuxbrew

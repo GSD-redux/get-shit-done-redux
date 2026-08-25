@@ -1,7 +1,0 @@
-{
-  "$comment": "Growth ack (#2914 fragment). Reason: #3645 adds the tracked-source rule (git ls-files verification, gitignored-mirror rejection, tracked-origin fallback, submodule note). gsd-pattern-mapper.md 12487 -> 13326 (+839, DEFAULT cap 24576). The planner-side rule lives in plan-phase.md (ack appended to the 3409 fragment — two ack sources may never name the same path). gsd-planner.md is UNCHANGED (frozen under 49152 LF chars by four suites).",
-  "version": 1,
-  "paths": {
-    "gsd-pattern-mapper.md": "agents/gsd-pattern-mapper.md +839B: Tracked-source gate on analog selection; PATTERNS.md never emits mirror paths (#3645)"
-  }
-}

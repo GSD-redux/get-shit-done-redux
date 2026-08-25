@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "sync-skills.md": {
-      "reason": "#3025 (option b, user decision): sync-skills refused cross-runtime sync. Skill content/layout is runtime-specific (the installer applies per-runtime converters/adapter headers/brand swaps/layout rules) and grok/gemini alias another runtime's skills root, so a verbatim cross-runtime cp -r corrupted destination skills and could damage a runtime the user never named; #3024 (closed) un-masked it. This PR adds: (1) a Step 1 runtime-id SHAPE validation guard (^[a-z0-9][a-z0-9-]*$) that rejects shell-metachar --from/--to values before any echo/heredoc/[[ ]] interpolation, hardening a command-substitution injection vector in the new (and pre-existing) error messages; (2) a FUNCTIONAL Step 1 cross-runtime refuse guard (a bash loop over TO_RUNTIMES that exits 1 with an installer pointer when any destination != FROM_RUNTIME), placed before Step 2 resolution and Step 5's rm -rf/cp -r so cross-runtime can never reach the copy; identity sync (--from == --to) stays a no-op. Growth is: the shape-validation guard (is_runtime_id + loop), the cross-runtime refuse guard loop + cat<<EOF heredoc error block, the new validation bullets, the rewritten Step 5 comment (the prior non-functional #3025 comment is replaced), and the strengthened Limitations bullet. No code module or path-resolution changes (out of scope per triage)."
-    }
-  }
-}

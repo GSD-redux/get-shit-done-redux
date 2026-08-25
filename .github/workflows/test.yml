@@ -21,6 +21,21 @@ permissions:
   contents: read
 
 jobs:
+  # #3833: a conflicted PR must provision no compute runner. The gate fails OPEN
+  # on everything except an explicit `mergeable: false`, and it no-ops (exit 0,
+  # zero API calls) on push and workflow_dispatch — so this job is safe to make
+  # an unconditional dependency of the lanes below.
+  #
+  # `changes` is deliberately NOT gated: it is a 2-minute scope classifier that
+  # runs in parallel with this job, and serializing it behind the preflight
+  # would add latency to every healthy PR for no saving.
+  preflight:
+    name: PR mergeability
+    uses: ./.github/workflows/pr-mergeable-preflight.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   changes:
     name: Detect test scope
     runs-on: ubuntu-latest
@@ -85,6 +100,7 @@ jobs:
   # Static lint: test-suite and PR-check contracts.
   # Runs once, not per matrix lane.
   lint-tests:
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -113,7 +129,7 @@ jobs:
 
   test:
     name: test (${{ matrix.os }}, ${{ matrix.node-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.product_changed == 'true'
     runs-on: ${{ matrix.os }}
     # #2952: the `scope: full` lane is sharded three ways (see the matrix
@@ -335,7 +351,7 @@ jobs:
 
   test-inert:
     name: test (inert CI)
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.code_changed == 'true' && needs.changes.outputs.product_changed != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -389,7 +405,7 @@ jobs:
 
   test-full:
     name: full test (${{ matrix.os }}, ${{ matrix.node-version }}, shard ${{ matrix.shard }}/3)
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.code_changed == 'true' && needs.changes.outputs.full_matrix == 'true'
     runs-on: ${{ matrix.os }}
     defaults:
@@ -554,7 +570,7 @@ jobs:
   # include/exclude globs changes, only where they are evaluated.
   coverage-gate:
     name: Coverage gate (merged shards)
-    needs: [changes, test]
+    needs: [changes, test, preflight]
     if: needs.changes.outputs.product_changed == 'true' && needs.test.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -627,7 +643,7 @@ jobs:
   # to walk on a docs-only change.
   qa-loop-walk:
     name: QA loop walk (smell ratchet)
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.product_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -686,6 +702,7 @@ jobs:
   required-tests:
     name: Required tests
     needs:
+      - preflight
       - changes
       - lint-tests
       - test
@@ -699,6 +716,7 @@ jobs:
     steps:
       - name: Summarize required test gate
         env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           CODE_CHANGED: ${{ needs.changes.outputs.code_changed }}
           PRODUCT_CHANGED: ${{ needs.changes.outputs.product_changed }}
           CHANGES_RESULT: ${{ needs.changes.result }}
@@ -710,6 +728,7 @@ jobs:
           QA_LOOP_WALK_RESULT: ${{ needs.qa-loop-walk.result }}
         run: |
           set -euo pipefail
+          echo "preflight=$PREFLIGHT_RESULT"
           echo "code_changed=$CODE_CHANGED"
           echo "product_changed=$PRODUCT_CHANGED"
           echo "changes=$CHANGES_RESULT"
@@ -719,6 +738,18 @@ jobs:
           echo "test-full=$FULL_TEST_RESULT"
           echo "coverage-gate=$COVERAGE_GATE_RESULT"
           echo "qa-loop-walk=$QA_LOOP_WALK_RESULT"
+
+          # #3833: the preflight arm comes FIRST and reports its own cause.
+          # Without it a conflicted PR skips `changes` too, and this gate would
+          # blame scope detection for a merge conflict. It also matters that
+          # this job stays `if: always()` and exits NON-ZERO here: a required
+          # status check that merely goes absent does not block a merge (see
+          # the mutation-gate note in mutation.yml, #3319), so the required
+          # `Required tests` context has to actually report red.
+          if [ "$PREFLIGHT_RESULT" != "success" ]; then
+            echo "::error::PR mergeability preflight did not pass ($PREFLIGHT_RESULT) — resolve the merge conflict and push again; no test lane runs until then"
+            exit 1
+          fi
 
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "::error::test scope detection did not pass"
@@ -836,8 +867,50 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/next'
     runs-on: ubuntu-latest
     timeout-minutes: 1
+    # `contents: read` restates the top-level default because job-level `permissions`
+    # REPLACES it rather than adds to it. `pull-requests: read` is new (#3842): the sweep
+    # step now runs `gh pr list` to defer any all-spent fragment an OPEN PR still touches,
+    # rather than deleting it out from under that PR (#3330, #3774, #3648 all hit this the
+    # first time the sweep ran, each with the swept fragment as its only conflicting path).
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # The guard compares each surviving fragment against its copy at the tip of
+          # `next` BEFORE this push. Depth 2 covers the script's local `HEAD^` fallback;
+          # at the default depth of 1 even that commit is absent, `git rev-parse HEAD^`
+          # fails, every fragment reads as brand-new, and the job passes VACUOUSLY —
+          # exactly how the legacy-file half spent months guarding a file that had not
+          # existed since #2914 (#3078).
+          fetch-depth: 2
 
-      - name: Assert tests/emitted-drift-ack.json is absent
-        run: node scripts/lint-emitted-drift-ack.cjs --guard-next
+      # `github.event.before` is the authoritative pre-push tip, and `HEAD^` is NOT a
+      # substitute for it: the default branch allows REBASE merges
+      # (.github/rulesets/main-protection.json, allowed_merge_methods), so one push can
+      # carry N commits. With `HEAD^` a 2-commit rebase-merge whose first commit adds a
+      # fragment would read that fragment as already-present and demand `git rm` on the
+      # very push that introduced it. Zeros mean the branch was just created: there is no
+      # pre-push tip, so the guard is given none and falls back to resolving one locally.
+      - name: Fetch the pre-push tip of next
+        if: github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: git fetch --no-tags --depth=1 origin "$BEFORE"
+
+      - name: Assert no spent ack survives on next (legacy file and fragments)
+        env:
+          BEFORE: ${{ github.event.before }}
+          # `gh pr list` needs auth; the default GITHUB_TOKEN plus this job's
+          # `pull-requests: read` permission above is sufficient to read PR file lists in
+          # this same repo (#3842).
+          GH_TOKEN: ${{ github.token }}
+        # The sha goes through the environment rather than `${{ }}` interpolation into the
+        # script body, so nothing from the event can ever be parsed as shell.
+        run: |
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            node scripts/lint-emitted-drift-ack.cjs --guard-next --defer-to-open-prs
+          else
+            node scripts/lint-emitted-drift-ack.cjs --guard-next --base-ref "$BEFORE" --defer-to-open-prs
+          fi

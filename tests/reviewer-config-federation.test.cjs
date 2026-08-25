@@ -21,12 +21,15 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const { createTempProject, createTempDir, cleanup, runGsdTools } = require('./helpers.cjs');
 const configSchema = require('../gsd-core/bin/lib/config-schema.cjs');
 const capValidator = require('../gsd-core/bin/lib/capability-validator.cjs');
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const gen = require('../scripts/gen-capability-registry.cjs');
+const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
 
 /** Keys that moved to a lane capability, with the lane that must own each. */
 const FEDERATED = {
@@ -98,12 +101,26 @@ describe('reviewer config federation — provenance actually moved (#2797)', () 
     assert.equal(configSchema.isCentralConfigKey('review.max_prompt_tokens_per_reviewer'), true);
   });
 
-  test('a lane with no model flag and no host owns no config keys', () => {
+  test('a lane with no model flag and no host owns no MODEL or HOST key (#3691 narrows #2797)', () => {
     // Absent-safe (ADR-2782 D4): qwen, cursor and coderabbit take neither a model
-    // argument nor a host, so they declare nothing. That is not a coverage hole.
-    const owners = Object.values(registry.configSchema || {}).map((e) => e && e.owner);
-    for (const laneId of ['qwen', 'cursor', 'coderabbit']) {
-      assert.equal(owners.includes(laneId), false, `${laneId} must declare no config keys`);
+    // argument nor a host. Under #2797 that meant "declares nothing" — the only
+    // way a lane owned a config key was via a model flag or a host. #3691 gave
+    // every CLI lane a `review.max_prompt_tokens_per_reviewer.<slug>` key, a
+    // third legitimate reason to own a key, so qwen/cursor/coderabbit now
+    // legitimately own their own budget key. The part of the #2797 invariant
+    // that still holds — a lane must never own a MODEL or HOST key, or another
+    // lane's budget key, it has no use for — is what this asserts directly.
+    for (const [key, entry] of Object.entries(registry.configSchema || {})) {
+      const owner = entry && entry.owner;
+      if (!['qwen', 'cursor', 'coderabbit'].includes(owner)) continue;
+      assert.ok(
+        !key.startsWith('review.models.') && !key.endsWith('_host'),
+        `${owner} must not own a model or host key, but owns "${key}"`,
+      );
+      assert.equal(
+        key, `review.max_prompt_tokens_per_reviewer.${owner}`,
+        `${owner} must own no key other than its own budget key, but owns "${key}"`,
+      );
     }
   });
 });
@@ -359,6 +376,229 @@ describe('exclusivity gate sees dynamic patterns (#2797)', () => {
     assert.throws(
       () => gen.loadCentralConfigPatterns(dir),
       'reading a directory as the manifest must fail closed',
+    );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #3691 — no prompt cap reaches any CLI reviewer lane.
+//
+// Two independent defects, per .gsd/bug/fix-3691-reviewer-prompt-budget/10-diagnosis.md:
+// (1) every `transport: spawn` lane (claude, coderabbit, antigravity, cursor, gemini,
+//     codex, kimi-code, opencode, qwen) declares `promptBudgetKey: null`, so
+//     `budgetFor` (gsd-core/bin/gsd-tools.cjs) returns null for them unconditionally;
+// (2) `review.max_prompt_tokens` is documented and in validKeys but
+//     `config-defaults.manifest.json` has no `review` section, so the resolved
+//     config surface never materializes the key at all — `budgetFor`'s global
+//     fallback is dead code.
+//
+// `budgetFor` is an unexported closure inside `routeReviewLane`
+// (gsd-core/bin/gsd-tools.cjs:1373-1380, confirmed via `module.exports` at
+// gsd-tools.cjs:4410 — it is not there), so there is no in-process seam to call
+// directly; every row below drives the real `review-lane plan` CLI end-to-end,
+// same idiom as the federation suite above.
+// ────────────────────────────────────────────────────────────────────────
+describe('reviewer prompt budget — #3691 (CLI lanes cannot receive a cap)', () => {
+  /** Write `.planning/config.json` for a temp project (overwrites any existing one). */
+  function writeReviewConfig(tmpDir, cfg) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify(cfg, null, 2));
+  }
+
+  /** Run `review-lane plan --selected <slugs>` and return the parsed plan array. */
+  function planLanes(tmpDir, slugs) {
+    const runDir = path.join(tmpDir, 'run');
+    const r = runGsdTools(
+      ['review-lane', 'plan', '--selected', slugs.join(','), '--run-dir', runDir, '--repo-root', tmpDir],
+      tmpDir,
+    );
+    assert.equal(r.success, true, `review-lane plan failed: ${r.error || r.output}`);
+    return JSON.parse(r.output);
+  }
+
+  /** Run `review-lane plan` for exactly one slug and return its entry. */
+  function planLane(tmpDir, slug) {
+    const entry = planLanes(tmpDir, [slug]).find((e) => e.slug === slug);
+    assert.ok(entry, `no plan entry for slug "${slug}"`);
+    return entry;
+  }
+
+  test('row1 (regression): a CLI spawn lane with only the central global set still reports null today', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, { review: { max_prompt_tokens: 50000 } });
+    assert.equal(
+      planLane(tmpDir, 'codex').promptBudget, 50000,
+      'codex must inherit the central global once it declares a promptBudgetKey',
+    );
+  });
+
+  test('row2 (regression): the -1 per-lane sentinel on an already-budgeted lane must inherit the global', (t) => {
+    // The exact repro from 10-diagnosis.md.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, {
+      review: { max_prompt_tokens: 50000, max_prompt_tokens_per_reviewer: { ollama: -1 } },
+    });
+    assert.equal(
+      planLane(tmpDir, 'ollama').promptBudget, 50000,
+      'ollama already declares a promptBudgetKey, so this fails purely on defect 2 (the dead global)',
+    );
+  });
+
+  test('row3 (regression): the resolved config surface must carry review.max_prompt_tokens', (t) => {
+    // Asserts on the resolver's own surface, not only on promptBudget — the two
+    // defects are independent, and fixing only the lane keys would leave THIS
+    // row red even after row1/row2 go green.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, {
+      review: { max_prompt_tokens: 50000, max_prompt_tokens_per_reviewer: { ollama: -1 } },
+    });
+    const resolved = configLoader.loadConfigResolved(tmpDir);
+    const reviewKeys = Object.keys(resolved.config.review || {});
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(resolved.config.review || {}, 'max_prompt_tokens'),
+      `resolved review surface is missing max_prompt_tokens, got keys: ${JSON.stringify(reviewKeys)}`,
+    );
+    assert.equal(resolved.config.review.max_prompt_tokens, 50000);
+  });
+
+  test('row4 (happy path): a per-lane value overrides the global', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, {
+      review: { max_prompt_tokens: 50000, max_prompt_tokens_per_reviewer: { codex: 12345 } },
+    });
+    assert.equal(planLane(tmpDir, 'codex').promptBudget, 12345);
+  });
+
+  test('row5 (boundary, limit-1): an explicit per-lane 0 means "do not trim", never the global', (t) => {
+    // The specific regression budgetFor's own comment warns about — 0 is a real
+    // value, not the unset sentinel, and must not be silently promoted to the
+    // global budget.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, {
+      review: { max_prompt_tokens: 50000, max_prompt_tokens_per_reviewer: { codex: 0 } },
+    });
+    assert.equal(planLane(tmpDir, 'codex').promptBudget, 0);
+  });
+
+  test('row6 (boundary, limit): the -1 sentinel inherits the global', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, {
+      review: { max_prompt_tokens: 50000, max_prompt_tokens_per_reviewer: { codex: -1 } },
+    });
+    assert.equal(planLane(tmpDir, 'codex').promptBudget, 50000);
+  });
+
+  test('row7 (boundary, limit+1): a real one-token budget is not read as a sentinel', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, {
+      review: { max_prompt_tokens: 50000, max_prompt_tokens_per_reviewer: { codex: 1 } },
+    });
+    assert.equal(planLane(tmpDir, 'codex').promptBudget, 1);
+  });
+
+  test('row8 (anti-tightening pin, green today and after): no config at all trims nothing, on every declared lane', (t) => {
+    // Guards against a "fix" that hard-codes a budget onto every lane: that
+    // would satisfy rows 1-7 while breaking every user who configured nothing.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, {});
+    const allSlugs = REVIEWER_LANES.map((l) => l.slug);
+    const plans = planLanes(tmpDir, allSlugs);
+    for (const slug of allSlugs) {
+      const entry = plans.find((e) => e.slug === slug);
+      assert.ok(entry, `no plan entry for slug "${slug}"`);
+      assert.equal(entry.promptBudget, null, `${slug}: the default resolved surface must not gain trimming`);
+    }
+  });
+
+  test('row9 (independence pin, green today and after): the three pre-existing http lanes are unaffected', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeReviewConfig(tmpDir, { review: { max_prompt_tokens_per_reviewer: { ollama: 777 } } });
+    const plans = planLanes(tmpDir, ['ollama', 'lm_studio', 'llama_cpp']);
+    assert.equal(plans.find((e) => e.slug === 'ollama').promptBudget, 777, 'ollama must keep resolving its own configured value');
+    assert.equal(plans.find((e) => e.slug === 'lm_studio').promptBudget, null, 'lm_studio must not shift with no config of its own');
+    assert.equal(plans.find((e) => e.slug === 'llama_cpp').promptBudget, null, 'llama_cpp must not shift with no config of its own');
+  });
+
+  test('row10 (negative space, green today and after): config-set still rejects an unknown per-lane slug', (t) => {
+    // #2841 made an unknown `review.max_prompt_tokens_per_reviewer.<x>` slug an
+    // error; extending the family to nine more lanes must not loosen that.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const set = runGsdTools('config-set review.max_prompt_tokens_per_reviewer.not_a_lane 5', tmpDir);
+    assert.equal(set.success, false, 'an unknown lane slug must still be rejected, not silently accepted');
+  });
+
+  // ─── property: the budget-resolution contract ──────────────────────────
+  //
+  // `budgetFor`'s contract (gsd-core/bin/gsd-tools.cjs:1361-1380): the resolved
+  // budget is the per-lane value when it is a finite number other than -1;
+  // otherwise the global when finite; otherwise null.
+  //
+  // Driven through the REAL CLI (review-lane plan against a temp project), not
+  // a reimplementation of the formula — `budgetFor` is not exported (see the
+  // describe-block header), so this is the lowest reachable seam that still
+  // exercises production code rather than a copy of it.
+  //
+  // Generator note on non-finite numbers: JSON cannot encode a literal NaN or
+  // Infinity (`JSON.stringify(NaN) === 'null'`), so a real `.planning/config.json`
+  // can never carry a numeric NaN/Infinity in the first place — driving those
+  // exact values through this seam would not be testing anything reachable.
+  // The string forms below ('NaN', 'Infinity', 'not-a-number') ARE reachable
+  // (JSON strings survive the round trip) and exercise the identical
+  // `typeof v === 'number' && Number.isFinite(v)` guard: a string is rejected
+  // by `typeof` exactly as a real NaN would be rejected by `Number.isFinite`.
+  test('property: per-lane wins when finite and not -1, else the global when finite, else null', () => {
+    const perLaneArb = fc.oneof(
+      fc.integer({ min: -1000, max: 1000000 }),
+      fc.constantFrom(-1, 0),
+      fc.constantFrom('NaN', 'Infinity', 'not-a-number'),
+      fc.constant(undefined),
+    );
+    const globalArb = fc.oneof(
+      fc.integer({ min: 0, max: 1000000 }),
+      fc.constant(null),
+      fc.constantFrom('NaN', 'not-a-number'),
+      fc.constant(undefined),
+    );
+
+    fc.assert(
+      fc.property(perLaneArb, globalArb, (p, g) => {
+        const review = {};
+        if (g !== undefined) review.max_prompt_tokens = g;
+        if (p !== undefined) review.max_prompt_tokens_per_reviewer = { codex: p };
+
+        const tmpDir = createTempProject();
+        try {
+          fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({ review }, null, 2));
+          const runDir = path.join(tmpDir, 'run');
+          const r = runGsdTools(
+            ['review-lane', 'plan', '--selected', 'codex', '--run-dir', runDir, '--repo-root', tmpDir],
+            tmpDir,
+          );
+          if (!r.success) return false;
+          const entry = JSON.parse(r.output).find((e) => e.slug === 'codex');
+          if (!entry) return false;
+
+          const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+          const expected = isNum(p) && p !== -1 ? p : (isNum(g) ? g : null);
+          return entry.promptBudget === expected;
+        } finally {
+          cleanup(tmpDir);
+        }
+      }),
+      // Bounded low: each run spawns a real gsd-tools child process (plus its own
+      // nested `query resolve-execution` spawn), so this is deliberately far
+      // below the suite's usual 200-run property budget — see the file header
+      // note on why the CLI is nonetheless the right seam.
+      { seed: 36910824, numRuns: 20 },
     );
   });
 });
