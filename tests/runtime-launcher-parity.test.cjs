@@ -1149,7 +1149,7 @@ const EXPECTED_RUNTIME_PROBES = {
   codebuddy:   '.codebuddy}/gsd-core/bin/',
   cline:       '.cline}/gsd-core/bin/',
   grok:        '.agents}/gsd-core/bin/',
-  antigravity: '.gemini/antigravity}/gsd-core/bin/',
+  antigravity: '.gemini/config}/gsd-core/bin/',
   opencode:    'opencode}/gsd-core/bin/',
   kilo:        'kilo}/gsd-core/bin/',
 };

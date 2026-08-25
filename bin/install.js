@@ -1097,7 +1097,7 @@ function getConfigDirFromHome(runtime, isGlobal) {
     }
     // If resolution points outside HOME (e.g. via env override), keep the
     // stable legacy template so generated path.join() calls remain valid.
-    return "'.gemini', 'antigravity'";
+    return "'.gemini', 'config'";
   }
   // All other runtimes: single source-of-truth fragment table (ADR-1239 Phase B,
   // #1679). claude/unknown fall through to the table's default '.claude'.
@@ -2331,7 +2331,7 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
 /**
  * Apply Antigravity-specific content conversion — path replacement + command name conversion.
  * Path mappings depend on install mode:
- *   Global: ~/.claude/ → ~/.gemini/antigravity/, ./.claude/ → ./.agents/
+ *   Global: ~/.claude/ → ~/.gemini/config/, ./.claude/ → ./.agents/
  *   Local:  ~/.claude/ → .agents/, ./.claude/ → ./.agents/
  * Applied to ALL Antigravity content (skills, agents, engine files).
  * @param {string} content - Source content to convert
@@ -2340,11 +2340,11 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
 function convertClaudeToAntigravityContent(content, isGlobal = false) {
   let c = content;
   if (isGlobal) {
-    c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/antigravity/');
-    c = c.replace(/~\/\.claude\//g, '~/.gemini/antigravity/');
+    c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/config/');
+    c = c.replace(/~\/\.claude\//g, '~/.gemini/config/');
     // Bare form (no trailing slash) — must come after slash form to avoid double-replace
-    c = c.replace(/\$HOME\/\.claude\b/g, '$HOME/.gemini/antigravity');
-    c = c.replace(/~\/\.claude\b/g, '~/.gemini/antigravity');
+    c = c.replace(/\$HOME\/\.claude\b/g, '$HOME/.gemini/config');
+    c = c.replace(/~\/\.claude\b/g, '~/.gemini/config');
   } else {
     c = c.replace(/\$HOME\/\.claude\//g, '.agents/');
     c = c.replace(/~\/\.claude\//g, '.agents/');
@@ -12855,7 +12855,7 @@ const ALL_RUNTIMES_OPTION = '19';
  */
 function buildRuntimePromptText() {
   return `  ${yellow}Which runtime(s) would you like to install for?${reset}\n\n  ${cyan}1${reset}) Claude Code  ${dim}(~/.claude)${reset}
-  ${cyan}2${reset}) Antigravity  ${dim}(~/.gemini/antigravity)${reset}
+  ${cyan}2${reset}) Antigravity  ${dim}(~/.gemini/config)${reset}
   ${cyan}3${reset}) Augment      ${dim}(~/.augment)${reset}
   ${cyan}4${reset}) Cline        ${dim}(.clinerules)${reset}
   ${cyan}5${reset}) CodeBuddy    ${dim}(~/.codebuddy)${reset}

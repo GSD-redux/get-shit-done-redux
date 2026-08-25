@@ -14,7 +14,7 @@ Detect the installed GSD version, scope, runtime, and config dir.
 
 First, derive `PREFERRED_CONFIG_DIR` and `PREFERRED_RUNTIME` from the invoking prompt's `execution_context` path — this is the one input only the workflow knows:
 - If the path contains `/gsd-core/workflows/update.md`, strip that suffix and store the remainder as `PREFERRED_CONFIG_DIR`.
-- Infer `PREFERRED_RUNTIME` from the path: `/.codex/` -> `codex`; `/.gemini/antigravity-ide/`, `/.gemini/antigravity-cli/`, `/.gemini/antigravity/`, `/.agents/` or `/.agent/` -> `antigravity` (`.agents` is the canonical local Antigravity install dir (#791); `.agent` is the legacy form (#503); see bin/install.js `getDirName('antigravity')`); `/.config/kilo/` or `/.kilo/` -> `kilo`; `/.config/opencode/` or `/.opencode/` -> `opencode`; otherwise `claude`.
+- Infer `PREFERRED_RUNTIME` from the path: `/.codex/` -> `codex`; `/.gemini/config/`, `/.gemini/antigravity-ide/`, `/.gemini/antigravity-cli/`, `/.gemini/antigravity/`, `/.agents/` or `/.agent/` -> `antigravity` (`.agents` is the canonical local Antigravity install dir (#791); `.agent` is the legacy form (#503); see bin/install.js `getDirName('antigravity')`); `/.config/kilo/` or `/.kilo/` -> `kilo`; `/.config/opencode/` or `/.opencode/` -> `opencode`; otherwise `claude`.
 
 Then resolve the install context via the deterministic projection (#498). **Do NOT re-derive scope, runtime, or version by hand** — `update-context` owns that cascade in tested code (`gsd-core/bin/lib/update-context.cjs`), the same way `check-latest-version` owns the package name (#2992):
 
@@ -460,7 +460,7 @@ for dir in "${CACHE_DIRS[@]}"; do
   fi
 done
 
-for dir in .claude .config/opencode .opencode .gemini/antigravity-ide .gemini/antigravity-cli .gemini/antigravity .agents .agent .config/kilo .kilo .codex .cursor .codeium/windsurf .augment .trae .qwen .hermes .codebuddy .cline; do
+for dir in .claude .config/opencode .opencode .gemini/config .gemini/antigravity-ide .gemini/antigravity-cli .gemini/antigravity .agents .agent .config/kilo .kilo .codex .cursor .codeium/windsurf .augment .trae .qwen .hermes .codebuddy .cline; do
   rm -f "./$dir/cache/gsd-update-check"*.json
   rm -f "$HOME/$dir/cache/gsd-update-check"*.json
 done
