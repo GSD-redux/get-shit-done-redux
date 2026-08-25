@@ -190,16 +190,22 @@ export function classifyIdentityProbe(
       const version = typeof record.version === 'string' ? record.version : undefined;
       if (actual !== expected) return { reason: 'identity_mismatch', expected, actual, version };
 
-      // ANCHOR PARITY (#3841). The shell preamble cannot parse JSON; it matches
-      // a `case` pattern anchored at the START of stdout, so `packageName` must
-      // serialize first. A structural parse alone would accept
-      // `{"note":"x","packageName":"<us>"}` — a shape this package never emits —
-      // while the shell rejected it, so the two surfaces would disagree in the
-      // FAIL-OPEN direction. Honoring the anchor here is also what the module
-      // already claims to do: IDENTITY_RAW_PREFIX is documented as "ANCHORED,
-      // never a substring search", and buildIdentityPayload inserts packageName
-      // first precisely so a genuine payload always satisfies it.
-      if (!probe.stdout.startsWith(IDENTITY_RAW_PREFIX)) {
+      // ANCHOR PARITY (#3841). The shell preamble cannot parse JSON: it matches
+      // a `case` pattern anchored at the START of stdout, so a payload only
+      // verifies there when it begins at the first byte and serializes
+      // `packageName` first. A purely structural parse would accept
+      // `{"note":"x","packageName":"<us>"}` and a leading-whitespace payload
+      // that the shell rejects -- a FAIL-OPEN disagreement between the two
+      // surfaces.
+      //
+      // Reproduce those two properties SEMANTICALLY rather than byte-matching
+      // IDENTITY_RAW_PREFIX. The prefix describes the `--raw` wire format, but
+      // this classifier is also handed the DEFAULT pretty serialization
+      // (`runtime-identity` with no `--raw`, which is two-space indented) --
+      // byte-matching the compact prefix rejected that, which the remote matrix
+      // caught. `startsWith('{')` and a first-key check hold for both.
+      const firstKey = Object.keys(record)[0];
+      if (!probe.stdout.startsWith('{') || firstKey !== 'packageName') {
         return {
           reason: 'unparseable',
           expected,

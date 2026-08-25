@@ -190,6 +190,19 @@ describe('classifyIdentityProbe', () => {
     assert.equal(v.reason, 'unparseable');
   });
 
+  test('the default PRETTY serialization still verifies (not just --raw)', () => {
+    // The classifier is handed both serializations: the shell only ever sees
+    // `--raw`, but `runtime-identity` with no flag emits two-space-indented
+    // JSON. An anchor expressed as a compact byte prefix rejected this.
+    const pretty = JSON.stringify({ packageName: EXPECTED_PACKAGE_NAME, version: '9.9.9' }, null, 2);
+    assert.equal(classifyIdentityProbe({ stdout: `${pretty}\n`, exitCode: 0 }).reason, 'ok');
+  });
+
+  test('a pretty payload with packageName not first does not verify', () => {
+    const pretty = JSON.stringify({ note: 'x', packageName: EXPECTED_PACKAGE_NAME }, null, 2);
+    assert.equal(classifyIdentityProbe({ stdout: `${pretty}\n`, exitCode: 0 }).reason, 'unparseable');
+  });
+
   test('a foreign packageName is a mismatch wherever it appears in the object', () => {
     const stdout = '{"note":"x","packageName":"get-shit-done-cc"}';
     const v = classifyIdentityProbe({ stdout, exitCode: 0 });
