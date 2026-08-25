@@ -4997,6 +4997,59 @@ describe('#1196 — discuss loop wiring + wired-point guard', () => {
       );
     });
 
+    // ─── #3866: the verify lane must be open to every hook kind ────────────────
+    //
+    // verify-work.md's verify_pre_hooks step historically dispatched only
+    // `kind == "gate"`, so getWiredKinds reported verify:pre → {gate} and any
+    // capability wanting to DO something before UAT (rather than block it) was
+    // rejected at registry-build time. The rows below are the machine-observable
+    // contract: what a capability may declare at verify:pre.
+
+    test('boundary: cap declaring a verify:pre step is accepted against real getWiredKinds(ROOT) (#3866)', () => {
+      const cap = makeCapWithStep('verify:pre');
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const errs = validateHooksWired(cap, getWiredKinds(ROOT));
+      assert.deepEqual(
+        errs, [],
+        'verify:pre must dispatch step hooks — a capability can contribute to what UAT covers, ' +
+        `not only refuse to let it start. Errors: ${errs.join('; ')}`,
+      );
+    });
+
+    test('boundary: cap declaring a verify:pre contribution is accepted against real getWiredKinds(ROOT) (#3866)', () => {
+      const cap = makeCapWithContribution('verify:pre');
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const errs = validateHooksWired(cap, getWiredKinds(ROOT));
+      assert.deepEqual(
+        errs, [],
+        `verify:pre must dispatch contribution hooks. Errors: ${errs.join('; ')}`,
+      );
+    });
+
+    test('regression: cap declaring a verify:pre gate stays accepted after the step/contribution arms land (#3866)', () => {
+      // The pre-existing gate arm is the one behavior verify:pre already had.
+      // Adding arms above it must not orphan or narrow it.
+      const cap = makeCapWithGate('verify:pre');
+      const { getWiredKinds } = require('../scripts/gen-loop-host-contract.cjs');
+      const errs = validateHooksWired(cap, getWiredKinds(ROOT));
+      assert.deepEqual(
+        errs, [],
+        `the verify:pre gate arm must survive the new kind arms. Errors: ${errs.join('; ')}`,
+      );
+    });
+
+    test('verify:pre dispatch text covers exactly the three hook kinds, no more (#3866)', () => {
+      // Asserts the VALUE, not `.has(...)`: a scanner that over-credits (or a
+      // future fourth token creeping into HOOK_KINDS) fails here too.
+      const { getWiredKinds, HOOK_KINDS } = require('../scripts/gen-loop-host-contract.cjs');
+      const covered = getWiredKinds(ROOT).get('verify:pre');
+      assert.ok(covered, 'verify:pre must have a render-hooks call site in the host loop');
+      assert.deepEqual(
+        [...covered].sort(), [...HOOK_KINDS].sort(),
+        `verify:pre must cover every hook kind; got ${JSON.stringify([...covered].sort())}`,
+      );
+    });
+
     test('invalid points (not in VALID_LOOP_POINTS) are not flagged as "unwired" (already caught by schema validator)', () => {
       const cap = {
         id: 'test-cap',
