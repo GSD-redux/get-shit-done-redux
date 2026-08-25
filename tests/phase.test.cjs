@@ -12198,3 +12198,256 @@ describe('bug #3572 controls and clamps', () => {
     t.after(() => cleanup(tmpDir));
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3701 — next_phase follows ROADMAP ORDER, not artifact presence.
+//
+// The successor cascade resolved disk-first: the first phase DIRECTORY above N
+// won, and the roadmap scan only ran when the disk found nothing. Directories
+// are created lazily, but `phase insert` scaffolds an inserted phase's directory
+// immediately — so an inserted decimal was routinely the only directory above N
+// and outranked every phase preceding it in the roadmap. The wrong value was
+// reported AND persisted to STATE.md, silently.
+//
+// #3581 fixed the identical defect at `init.progress` and named the rule: "the
+// frontier is ROADMAP ORDER, not artifact presence". This call site was outside
+// that change's scope.
+//
+// Most of this block is CONTROLS. The fix promotes the roadmap to decide WHICH
+// phase is next while the disk still decides HOW it is spelled, so the failure
+// mode of a naive fix is a silent spelling change on every aligned project —
+// which is the majority case, and which `alignedTreeKeepsDiskSpelling` catches.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3701 phase complete — next_phase follows roadmap order, not disk', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3701-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const statePath = () => path.join(tmpDir, '.planning', 'STATE.md');
+
+  function scaffoldPhaseDir(slug) {
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', slug), { recursive: true });
+  }
+
+  /** Roadmap rows + matching detail headings, so both scan shapes are present. */
+  function writeRoadmap(rows) {
+    const checklist = rows.map((r) => `- [${r.done ? 'x' : ' '}] **Phase ${r.num}: ${r.name}**${r.inserted ? ' (INSERTED)' : ''} - ${r.name}`);
+    const details = rows.map((r) => `### Phase ${r.num}: ${r.name}\n\n**Goal:** ${r.name}`);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n## Phases\n\n${checklist.join('\n')}\n\n## Phase Details\n\n${details.join('\n\n')}\n`,
+    );
+  }
+
+  function writeState(currentPhase) {
+    fs.writeFileSync(
+      statePath(),
+      `---\ngsd_state_version: 1.0\ncurrent_phase: ${currentPhase}\nstatus: executing\n---\n\n# Project State\n`,
+    );
+  }
+
+  function complete(phase) {
+    const result = runVerifiedPhaseComplete(`phase complete ${phase}`, tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    return JSON.parse(result.output);
+  }
+
+  function frontmatterField(key) {
+    const m = fs.readFileSync(statePath(), 'utf-8').match(new RegExp(`^${key}:\\s*(.*)$`, 'm'));
+    return m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
+  }
+
+  // Roadmap 1, 2, 02.1 (INSERTED), 3 — the shape from the report.
+  const INSERTED_ROADMAP = [
+    { num: '1', name: 'Alpha' },
+    { num: '2', name: 'Beta' },
+    { num: '02.1', name: 'Inserted Thing', inserted: true },
+    { num: '3', name: 'Gamma' },
+  ];
+
+  // ── the defect ────────────────────────────────────────────────────────────
+
+  test('insertedDecimalDoesNotOutrankTheRoadmapSuccessor', () => {
+    // Directories for 01 and 02.1 only. Phase 2 is next in the roadmap and has
+    // no directory — the ordinary state of an unplanned phase.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap(INSERTED_ROADMAP);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.is_last_phase, false);
+    assert.strictEqual(
+      output.next_phase,
+      '2',
+      `roadmap order puts Phase 2 next; the inserted decimal has a directory and must not outrank it (got ${output.next_phase})`,
+    );
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('theWrongSuccessorIsNotPersistedToStateMd', () => {
+    // Independent of the reported value: the defect's real cost is the resume
+    // pointer written to STATE.md, which sends the next session to the wrong
+    // phase for the whole of the following phase.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap(INSERTED_ROADMAP);
+    writeState(1);
+
+    complete(1);
+
+    assert.strictEqual(
+      frontmatterField('current_phase'),
+      '2',
+      'STATE.md must advance to the roadmap successor, not to the inserted decimal',
+    );
+  });
+
+  // ── controls: what must not move ──────────────────────────────────────────
+
+  test('alignedTreeKeepsDiskSpelling', () => {
+    // THE control for this fix. When roadmap and disk agree, the directory still
+    // supplies the spelling: the zero-padded token and the on-disk slug. A fix
+    // that merely promoted the roadmap would report `2`/`beta` here instead of
+    // `02`/`beta` — a silent output change on every aligned project.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    scaffoldPhaseDir('03-gamma');
+    writeRoadmap([{ num: '1', name: 'Alpha' }, { num: '2', name: 'Beta' }, { num: '3', name: 'Gamma' }]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02', 'the on-disk zero-padded token is the established spelling');
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('roadmapSpellingWhenTheSuccessorHasNoDirectory', () => {
+    scaffoldPhaseDir('01-alpha');
+    writeRoadmap([{ num: '1', name: 'Alpha' }, { num: '2', name: 'Beta' }, { num: '3', name: 'Gamma' }]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '2', 'no directory exists, so the roadmap supplies the spelling too');
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('aDecimalThatGenuinelyIsNextIsStillSelected', () => {
+    // The mirror of the defect: an over-correction that refused decimals would
+    // pass the two tests above and fail here.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap([
+      { num: '1', name: 'Alpha', done: true },
+      { num: '2', name: 'Beta' },
+      { num: '02.1', name: 'Inserted Thing', inserted: true },
+      { num: '3', name: 'Gamma' },
+    ]);
+    writeState(2);
+
+    const output = complete(2);
+    assert.strictEqual(output.next_phase, '02.1', 'the inserted phase really does follow 2 in roadmap order');
+    assert.strictEqual(output.next_phase_name, 'inserted-thing');
+  });
+
+  test('completingTheDecimalAdvancesToTheNextWholePhase', () => {
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap([
+      { num: '1', name: 'Alpha', done: true },
+      { num: '2', name: 'Beta', done: true },
+      { num: '02.1', name: 'Inserted Thing', inserted: true },
+      { num: '3', name: 'Gamma' },
+    ]);
+    writeState('02.1');
+
+    const output = complete('02.1');
+    assert.strictEqual(output.next_phase, '3');
+    assert.strictEqual(output.next_phase_name, 'gamma');
+  });
+
+  // ── the disk fallback must survive ────────────────────────────────────────
+
+  test('noRoadmapFallsBackToTheDiskScan', () => {
+    // Making the roadmap primary must not make it required.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    writeState(1);
+    // deliberately no ROADMAP.md
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02', 'with no roadmap the disk is the only resolver');
+  });
+
+  test('unparseableRoadmapPhaseRowsFallBackToTheDiskScan', () => {
+    // A roadmap that exists but yields no phase rows is the same situation as no
+    // roadmap at all, and must degrade the same way.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n\nnothing here parses as a phase row\n');
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02');
+  });
+
+  test('lastPhaseStillReportsMilestoneEnd', () => {
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    writeRoadmap([{ num: '1', name: 'Alpha', done: true }, { num: '2', name: 'Beta' }]);
+    writeState(2);
+
+    const output = complete(2);
+    assert.strictEqual(output.is_last_phase, true);
+    assert.strictEqual(output.next_phase, null);
+  });
+
+  // ── sentinels and the #2028 stage this change does not touch ──────────────
+
+  test('sentinelBacklogAndDraftPhasesAreNeverSelected', () => {
+    // Both scans skip sentinels (#2786 / #3185 / #2949). Whichever one is
+    // primary, that must still hold.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('999.1-backlog-item');
+    scaffoldPhaseDir('0.1-draft-item');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' },
+      { num: '2', name: 'Beta' },
+      { num: '999.1', name: 'Backlog Item' },
+      { num: '0.1', name: 'Draft Item' },
+    ]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '2', 'sentinel phases are not the frontier');
+  });
+
+  test('lowestOutstandingOverrideStillWins', () => {
+    // Independence: the #2028 stage-3 override answers a different question — is
+    // a LOWER phase still outstanding — and is untouched by this change.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    scaffoldPhaseDir('03-gamma');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' }, // still unchecked — outstanding
+      { num: '2', name: 'Beta' },
+      { num: '3', name: 'Gamma' },
+    ]);
+    writeState(2);
+
+    const output = complete(2);
+    assert.strictEqual(
+      output.next_phase,
+      '1',
+      'a lower outstanding phase still overrides the positional successor (#2028)',
+    );
+  });
+});
