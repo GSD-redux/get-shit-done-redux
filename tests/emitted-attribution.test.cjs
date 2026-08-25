@@ -4551,6 +4551,38 @@ describe('#3842: fetchOpenPrTouchedAckPaths', () => {
     }));
   });
 
+  // Boundary coverage at GitHub's own file ceiling: limit-1, limit, limit+1.
+  // (limit is the test immediately above.)
+  test("boundary: a re-fetch just under GitHub's file ceiling is accepted", () => {
+    const files = filler(MAX_PR_FILES);
+    const stdout = JSON.stringify([{ number: 77, files }]);
+    const paths = Array.from(
+      { length: GITHUB_MAX_PR_FILES - 1 },
+      (_, i) => `gsd-core/workflows/w${i}.md`,
+    );
+    paths[0] = `${ACK_DIR_REPO_PATH}/a.json`;
+    const apiOut = paths.join('\n');
+    let result;
+    assert.doesNotThrow(() => {
+      result = fetchOpenPrTouchedAckPaths({
+        execGh: (args) => (args[0] === 'pr' ? stdout : apiOut),
+      });
+    });
+    assert.equal(result.has(`${ACK_DIR_REPO_PATH}/a.json`), true);
+  });
+
+  test('boundary: a re-fetch one past GitHub\'s file ceiling also throws', () => {
+    const files = filler(MAX_PR_FILES);
+    const stdout = JSON.stringify([{ number: 77, files }]);
+    const apiOut = Array.from(
+      { length: GITHUB_MAX_PR_FILES + 1 },
+      (_, i) => `gsd-core/workflows/w${i}.md`,
+    ).join('\n');
+    assert.throws(() => fetchOpenPrTouchedAckPaths({
+      execGh: (args) => (args[0] === 'pr' ? stdout : apiOut),
+    }));
+  });
+
   test('a re-fetched PR that touches no fragment contributes nothing', () => {
     const files = filler(MAX_PR_FILES);
     const stdout = JSON.stringify([{ number: 77, files }]);

@@ -702,9 +702,14 @@ function fetchOpenPrTouchedAckPaths({ cwd = REPO_ROOT, execGh = execGhDefault, l
     // `>=`, never `>`: a PR with exactly MAX_PR_FILES files is byte-identical,
     // in this response, to one with four thousand truncated to MAX_PR_FILES.
     // The only safe reading of "at the cap" is "possibly incomplete".
-    const paths = files.length >= MAX_PR_FILES
-      ? fetchPrFiles(pr.number, { cwd, execGh })
-      : files.map((file) => (isPlainObject(file) ? file.path : file));
+    let paths;
+    if (files.length >= MAX_PR_FILES) {
+      // Second round trip, and the only one in this function. Deliberately not
+      // taken for the common case -- see this function's doc comment.
+      paths = fetchPrFiles(pr.number, { cwd, execGh });
+    } else {
+      paths = files.map((file) => (isPlainObject(file) ? file.path : file));
+    }
     for (const filePath of paths) {
       if (typeof filePath === 'string' && filePath.startsWith(`${ACK_DIR_REPO_PATH}/`)) {
         touched.add(filePath);
