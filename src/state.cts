@@ -35,6 +35,11 @@ const {
   scopeToPhase,
   // #2761 M3: owns the bracket milestone intro and canonical pad2 spelling.
   bracketMilestoneIntroSrcFor,
+  // #3830: phase-directory selection for advance-plan's disk cross-check —
+  // with `matchPhaseDirs` above, the same two owners `cmdPhasePlanIndex` uses,
+  // so the read-only plan-index verb and this writing verb cannot disagree
+  // about which directory a phase names.
+  normalizePhaseName,
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
@@ -989,6 +994,76 @@ function unsummarizedPlansForPositionPhase(
   return scanOutstanding(phasesDir, retry.matches[0]);
 }
 
+/**
+ * Resolve the plan set actually on disk for `phase` — the ground truth
+ * `state.advance-plan` checks its `## Current Position` prose against (#3830).
+ *
+ * Every step delegates to the existing canonical owner, which is the point:
+ *
+ * - Phase-directory ENUMERATION goes through `listMilestonePhaseDirs`
+ *   (#3185 / ADR-3180 Decision 1), the single owner of "which phase
+ *   directories belong to the current milestone" — the same one
+ *   `cmdStateUpdateProgress` above uses. A local `readdirSync` here would
+ *   re-derive it and skip the sentinel filter, counting backlog directories
+ *   as phases.
+ *
+ *   Its `scope` is deliberately NOT gated on, and that is not an oversight.
+ *   `scope` describes the milestone WINDOW, not the directory listing: a
+ *   project with no ROADMAP.md to scope against reports `unreadable` while
+ *   still returning every real phase directory, because the owner degrades
+ *   pass-all for non-sentinels by design. This lookup wants one named phase,
+ *   not a scoped aggregate, so an unscoped-but-complete listing answers it
+ *   perfectly well — unlike `cmdStateUpdateProgress`, which sums across the
+ *   window and must withhold when the window is unknown. Refusing here on
+ *   `unreadable` would disable the cross-check for every project that has not
+ *   written a roadmap yet, which is most of the projects most likely to be
+ *   carrying drifted prose. If a resolvable window legitimately excludes the
+ *   phase Current Position names, the match below simply misses and the check
+ *   abstains — the safe direction.
+ * - Phase SELECTION goes through `normalizePhaseName` + `matchPhaseDirs`, the
+ *   canonical two-pass matcher (#2528) `cmdPhasePlanIndex` uses. That is what
+ *   keeps the read-only plan-index verb and this writing verb from disagreeing
+ *   about which directory a phase names, and it inherits the #2237 fail-loud
+ *   rule for a bare number matching several directories.
+ * - Plan COUNTING goes through `scanPhasePlans` (#3199), which owns the
+ *   canonical-plan-file predicate and the #2349 superseded-plan exclusion. A
+ *   local filter would count files this project does not consider plans and
+ *   then report divergence against its own mistake.
+ *
+ * Anything that is not a completed scan returns `ok:false`. A phase absent
+ * from the enumeration, an ambiguous phase number, and a plan scan whose own
+ * `scope` is not COMPLETE are all "unknown" — and `advancePlanCore` treats
+ * unknown as no-evidence rather than as divergence (ADR-3180 Decision 2 /
+ * #3057 B1: a non-answer is not a zero). TRUNCATED matters specifically: it
+ * means a nested `plans/` directory exists but could not be read, so the count
+ * is a floor, and a floor below the prose total is not proof the prose is
+ * wrong.
+ */
+function resolvePlanSetForPhase(cwd: string, phase: string): stateTransitionMod.PlanSetResult {
+  const normalized = normalizePhaseName(phase);
+  const phasesDir = planningPaths(cwd).phases;
+
+  const { value: phaseDirs } = listMilestonePhaseDirs(phasesDir, { cwd });
+
+  const { matches } = matchPhaseDirs(phaseDirs, normalized);
+  if (matches.length === 0) {
+    return { ok: false, reason: `phase ${normalized} not found among current-milestone phases` };
+  }
+  if (matches.length > 1) {
+    // #2237: several directories match the same bare phase number. Which plan
+    // set belongs to this position is genuinely undecidable, so say so rather
+    // than first-matching one and comparing the prose against a coin flip.
+    return { ok: false, reason: `phase ${normalized} is ambiguous: ${matches.length} directories match` };
+  }
+
+  const { planCount, scope } = scanPhasePlans(path.join(phasesDir, matches[0]));
+  if (scope !== SCOPE.COMPLETE) {
+    return { ok: false, reason: `plan scan for phase ${normalized} is ${String(scope)}, not a complete answer` };
+  }
+
+  return { ok: true, phase: normalized, planCount };
+}
+
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
@@ -1050,7 +1125,19 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
         milestoneLockMod.warnMilestoneConflict(milestoneConflict, 'state.advance-plan');
       }
     }
-    const result = transitionCore(content, intent, deps);
+    // #3830: hand the core a disk-truth provider for the SAME phase the
+    // milestone check above just resolved, built inside the lock so the
+    // position read and the plan scan cannot interleave with another session's
+    // Current Position write (the #3311 reason, applied one level down to the
+    // plan position). `deps` is spread rather than mutated so it stays the
+    // immutable, phase-independent object the other call sites share. A null
+    // `positionPhase` leaves the provider absent, and the core then behaves
+    // exactly as it did before this check existed.
+    const result = transitionCore(content, intent, {
+      ...deps,
+      planSetProvider:
+        positionPhase === null ? undefined : () => resolvePlanSetForPhase(cwd, positionPhase),
+    });
     // #4067: the transform's phase-complete branch is decided by STATE.md's
     // scalar plan counter, which can neither carry a stale value across phases
     // nor represent wave-parallel execution. Before letting that branch write

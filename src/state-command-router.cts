@@ -135,7 +135,41 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
         }
         state.cmdStatePatch(cwd, patches, raw);
       },
-      'advance-plan': () => state.cmdStateAdvancePlan(cwd, raw),
+      'advance-plan': () => {
+        // #3830 facet 2: reject unrecognized options instead of discarding them.
+        //
+        // `parseNamedArgs` is an ALLOWLIST PROJECTION — it reads only the flags
+        // a caller names and silently drops every other token. This verb named
+        // none and took none, so `--plan 10 --total 10` (flags a caller might
+        // reasonably believe bind the very value the verb got wrong) parsed as
+        // nothing at all, and the verb returned a confident result those flags
+        // had not touched. That silence is what let the first diagnosis of the
+        // incident behind #3830 mis-attribute an unrelated corruption here.
+        //
+        // Safe to be strict at this layer: `main()` splices every global flag
+        // out of argv before any router runs (`--json-errors`, `--cwd`/`--cwd=`,
+        // `--ws`, `--raw`, `--pick`, `--default`), so a `--`-prefixed token that
+        // survives to here is command-scoped and genuinely unrecognized. The
+        // filter is index-independent on purpose — the leading tokens are
+        // command words and can never be `--`-prefixed, so it reads the same
+        // whether this verb was reached as `state advance-plan` or
+        // `state.advance-plan`.
+        //
+        // Rejected rather than bound: this verb's defect is mutating on an
+        // unvalidated position, and an operator-supplied `--plan`/`--total`
+        // would be an unvalidated position arriving at a different port. To be
+        // useful as an escape hatch it would have to BYPASS the disk
+        // cross-check added above — i.e. ship a documented way to write a
+        // fabricated plan position. The repair path for a genuinely diverged
+        // STATE.md is the existing one: `state rebuild`, `state sync`, or
+        // `state patch`.
+        const unrecognized = args.filter((t) => t.startsWith('--'));
+        if (unrecognized.length > 0) {
+          error(`state advance-plan takes no options; unrecognized: ${unrecognized.join(' ')}`);
+          return;
+        }
+        state.cmdStateAdvancePlan(cwd, raw);
+      },
       'record-metric': () => {
         const a = parseNamedArgsOrExit(args, { valueFlags: ['phase', 'plan', 'duration', 'tasks', 'files'], positionals: 2 }, error);
         state.cmdStateRecordMetric(cwd, {

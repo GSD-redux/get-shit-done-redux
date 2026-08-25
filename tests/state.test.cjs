@@ -2256,6 +2256,179 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
   });
 });
 
+describe('#3830: state advance-plan checks its prose position against the plans on disk', () => {
+  let tmpDir;
+
+  // A phase whose Current Position names it, so the adapter has a phase to
+  // resolve. `advance-plan` still takes no phase argument — this is the only
+  // input it has, which is the whole point of the defect.
+  const stateWith = (planLine) => [
+    '# Project State',
+    '',
+    '## Current Position',
+    '',
+    'Phase: 01 (Demo Phase) — EXECUTING',
+    planLine,
+    'Status: Ready to execute',
+    'Last Activity: 2026-08-01',
+    '',
+  ].join('\n');
+
+  const seedPhase = (dirName, planCount) => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', dirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= planCount; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+    }
+    return phaseDir;
+  };
+
+  const stateText = () => fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+  const writeState = (planLine) =>
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateWith(planLine));
+
+  beforeEach(() => { tmpDir = createFixture(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('refuses to advance stale prose and leaves STATE.md byte-identical', () => {
+    // The issue's reproduction: twelve plans on disk, prose still "2 of 8".
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 8');
+    const before = stateText();
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, false);
+    assert.strictEqual(output.reason, 'position_diverged');
+    assert.deepStrictEqual(output.prose, { current_plan: 2, total_plans: 8 });
+    assert.deepStrictEqual(output.disk, { phase: '01', plan_count: 12 });
+    assert.deepStrictEqual(output.updated, []);
+    assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+  });
+
+  test('advances normally when the prose total matches the plans on disk', () => {
+    seedPhase('01-demo', 8);
+    writeState('Plan: 2 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true);
+    assert.strictEqual(output.current_plan, 3);
+    const updated = stateText();
+    assert.ok(updated.includes('Plan: 3 of 8'), `expected "Plan: 3 of 8"; got:\n${updated}`);
+  });
+
+  test('a phase with no plan files on disk yet is not blocked', () => {
+    seedPhase('01-demo', 0);
+    writeState('Plan: 1 of 3');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true, 'an empty phase directory is a real zero, not divergence');
+    assert.strictEqual(output.current_plan, 2);
+  });
+
+  test('no phases directory at all is not blocked', () => {
+    writeState('Plan: 1 of 3');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true, 'an unresolvable phase is unknown, not diverged');
+  });
+
+  test('an AMBIGUOUS phase number is unknown, not divergence — the verb still advances', () => {
+    // #2237: two directories match bare "01". Which plan set belongs to this
+    // position is genuinely undecidable, so the check must abstain rather than
+    // first-match one and compare the prose against a coin flip.
+    seedPhase('01-demo', 12);
+    seedPhase('01-other', 4);
+    writeState('Plan: 2 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true);
+    assert.strictEqual(output.reason, undefined);
+  });
+
+  test('divergence is reported instead of a premature phase completion', () => {
+    // Without the check this took the currentPlan >= totalPlans branch and
+    // declared ready_for_verification on a phase holding twelve plans.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 8 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.reason, 'position_diverged');
+    assert.strictEqual(output.status, undefined, 'must not claim ready_for_verification');
+    const updated = stateText();
+    assert.ok(!updated.includes('Phase complete'), 'Status must not be moved to Phase complete');
+  });
+});
+
+describe('#3830 facet 2: state advance-plan rejects options instead of discarding them', () => {
+  let tmpDir;
+  beforeEach(() => { tmpDir = createFixture(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const seedSimpleState = () =>
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\nPlan: 2 of 5 in current phase\nStatus: In progress\nLast activity: 2025-01-01\n',
+    );
+
+  test('--plan / --total are rejected rather than silently ignored', () => {
+    seedSimpleState();
+    const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+
+    const result = runGsdTools('state advance-plan --plan 10 --total 10', tmpDir);
+    assert.ok(!result.success, 'unrecognized options must fail, not return a confident wrong answer');
+
+    const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.strictEqual(after, before, 'a rejected invocation must not mutate STATE.md');
+  });
+
+  test('the rejection names the offending options', () => {
+    seedSimpleState();
+    const result = runGsdTools('state advance-plan --bogus', tmpDir);
+    const combined = `${result.output || ''}${result.error || ''}`;
+    assert.ok(combined.includes('--bogus'), `rejection should name --bogus; got: ${combined}`);
+  });
+
+  test('a structured error carries a reason code for --json-errors callers', () => {
+    seedSimpleState();
+    const result = runGsdTools('state advance-plan --bogus --json-errors', tmpDir);
+    const combined = `${result.output || ''}${result.error || ''}`;
+    const line = combined.split('\n').find((l) => l.trim().startsWith('{'));
+    assert.ok(line, `expected a JSON error object; got: ${combined}`);
+    const parsed = JSON.parse(line);
+    assert.strictEqual(parsed.ok, false);
+    assert.ok(typeof parsed.reason === 'string' && parsed.reason.length > 0);
+  });
+
+  test('global flags are NOT mistaken for command options', () => {
+    // main() splices --raw/--cwd/--pick/--ws/--default/--json-errors out of
+    // argv before any router runs, so the strict check below must never see
+    // them. This pins that: a false rejection here would break every caller.
+    seedSimpleState();
+    const result = runGsdTools('state advance-plan --raw', tmpDir);
+    assert.ok(result.success, `--raw must still work: ${result.error}`);
+    assert.strictEqual(result.output.trim(), 'true');
+  });
+
+  test('--pick still projects a field', () => {
+    seedSimpleState();
+    const result = runGsdTools('state advance-plan --pick advanced', tmpDir);
+    assert.ok(result.success, `--pick must still work: ${result.error}`);
+    assert.strictEqual(result.output.trim(), 'true');
+  });
+});
+
 describe('cmdStateRecordMetric (state record-metric)', () => {
   let tmpDir;
 

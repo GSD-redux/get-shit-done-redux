@@ -1010,6 +1010,23 @@ export type StateTransitionDeps = {
    * callers and test stubs are unaffected when absent.
    */
   sourcePath?: string;
+  /**
+   * Plan-set provider for `advancePlan` (#3830): resolves the plan files
+   * actually on disk for the phase `## Current Position` names, so the verb
+   * can check its prose-derived plan position against ground truth before
+   * mutating on it. Optional: when absent, `advancePlan` behaves exactly as
+   * it did before this check existed (Leaky-Abstractions guard — the core
+   * stays pure and testable without disk I/O, same shape as
+   * `phaseInventoryProvider` and `roadmapProvider`).
+   *
+   * Zero-arg by design. `advance-plan` still takes no phase argument, so the
+   * phase is whatever `## Current Position` names; the ADAPTER resolves it
+   * (it already parses that field inside the STATE.md lock for the #3311
+   * milestone-claim check) and closes over it here. Re-parsing the phase
+   * inside the core would duplicate the position-selection question that
+   * #3807 and #3812 own separately.
+   */
+  planSetProvider?: () => PlanSetResult;
 };
 
 /**
@@ -1033,6 +1050,20 @@ export type PhaseInventoryRecord = {
  * array means "nothing to reconcile"; `ok:false` means "unknown — do not
  * treat as reconciled".
  */
+/**
+ * Discriminated result of a `planSetProvider` disk scan (#3830). Mirrors
+ * `PhaseInventoryResult`'s contract, for the same reason (#3057 B1): a scan
+ * that could not complete is NOT the same answer as "no plans on disk".
+ *
+ * Only `ok:true` licenses a divergence claim. `ok:false` means "unknown", and
+ * `advancePlanCore` treats unknown as no-evidence rather than as divergence —
+ * refusing to advance because a phase directory could not be read would block
+ * a project the check has nothing against.
+ */
+export type PlanSetResult =
+  | { ok: true; phase: string; planCount: number }
+  | { ok: false; reason: string };
+
 export type PhaseInventoryResult =
   | { ok: true; phases: PhaseInventoryRecord[] }
   | { ok: false; reason: string };
@@ -1798,6 +1829,44 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
           `Current Plan: ${legacyPlan}`,
           `Plan: ${planField}`,
         ],
+      },
+    };
+  }
+
+  // #3830: everything above came out of `## Current Position` prose and out of
+  // nothing else — there is no filesystem read anywhere in this function. The
+  // `isNaN` guard is SYNTACTIC, so a stale-but-well-formed `2 of 8` passes it
+  // and gets incremented, written back, and reported as `advanced: true` for a
+  // phase that may have twelve plans on disk, all summarized. Cross-check the
+  // prose against the plan set actually on disk before mutating on it.
+  //
+  // The gate sits BEFORE both branches deliberately: the phase-completion test
+  // below (`currentPlan >= totalPlans`) reads the same two operands, so drift
+  // mistimes completion in either direction — withholding it from a finished
+  // phase, or declaring it on an unfinished one — and a gate placed after that
+  // test would leave the more expensive of the two failures uncovered.
+  //
+  // Deliberately narrow. Divergence is claimed ONLY from a completed scan that
+  // found at least one plan. An absent provider (existing callers and test
+  // stubs), a scan that could not complete (`ok:false`), and a phase with no
+  // plan files on disk yet are all "no evidence" — NOT "diverged". Blocking on
+  // those would strand projects this check knows nothing about, and the
+  // no-plans-yet case is the ordinary state of a phase between `begin-phase`
+  // and its first written plan.
+  const planSet = deps.planSetProvider ? deps.planSetProvider() : null;
+  if (planSet !== null && planSet.ok && planSet.planCount > 0 && planSet.planCount !== totalPlans) {
+    return {
+      // The ORIGINAL bytes, not a `reassemble(stripFrontmatter(content))`
+      // round-trip: a refusal must not mutate, and frontmatter reconstruction
+      // is a normalizing transform. The sibling `error: true` path above
+      // round-trips because it predates this rule; do not copy it here.
+      content,
+      updated: [],
+      data: {
+        advanced: false,
+        reason: 'position_diverged',
+        prose: { current_plan: currentPlan, total_plans: totalPlans },
+        disk: { phase: planSet.phase, plan_count: planSet.planCount },
       },
     };
   }
