@@ -30,6 +30,11 @@
  * close-enough would reproduce the exact silent success #3129 already produced.
  * Liberality is spent on visibility instead — distinct reason codes, each
  * naming what actually happened.
+ *
+ * The classifier and the shell preamble are held in agreement by a
+ * cross-surface parity test (#3841): both read stdout only and must reach the
+ * same verdict for the same payload, or the preamble's warning and this
+ * module's diagnostic would silently diverge on the same input.
  */
 
 import { packageName } from './package-identity.cjs';
@@ -124,6 +129,24 @@ function excerpt(text: string): string {
 }
 
 /**
+ * `stdout` as a plain JSON object, or `null` when it is not one.
+ *
+ * `JSON.parse` accepts `0`, `"str"`, `[]`, `null` and `true`; arrays and `null`
+ * are also `object` to `typeof`. All are rejected here so no downstream
+ * truthiness check can mistake `[]` for a verified identity.
+ */
+function parseIdentityRecord(stdout: string): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout) as unknown;
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+/**
  * Pure classifier: probe result -> verdict. Total — never throws, for any input.
  *
  * Non-object JSON (`0`, `"str"`, `[]`, `null`, `true`) is `unparseable`, not
@@ -142,9 +165,37 @@ export function classifyIdentityProbe(
     };
   }
 
-  // A non-zero exit is what a binary without this verb does. The predecessor
-  // prints its usage screen and exits 1; treat that as "something else
-  // answered", never as a parse problem.
+  // PARSE BEFORE CONSULTING THE EXIT CODE (#3841).
+  //
+  // The exit-code rule below is right for its stated reason -- the predecessor
+  // prints a usage screen and exits 1, and that is "something else answered",
+  // not a parse problem -- but it used to run FIRST, so it also caught a tool
+  // that had already proved its identity and merely exited non-zero afterwards.
+  // The shell preamble this module speaks for reads stdout ONLY (its command
+  // substitution discards the status), so the two surfaces disagreed on exactly
+  // that input: shell `ok`, classifier `no_identity_verb`. Measured against the
+  // real snippet, not inferred. Since this classifier is the engine for the
+  // announced hard-fail phase, such an install would have flipped from verified
+  // to refused at rollout, in the phase where that stops the run.
+  //
+  // The predecessor defence is unaffected: a usage screen yields no usable
+  // payload, so it still falls through to the exit-code branch below.
+  const record = parseIdentityRecord(probe.stdout);
+  if (record !== null) {
+    const actual = record.packageName;
+    if (typeof actual === 'string' && actual.length > 0) {
+      // Unknown keys are ignored so a future payload addition cannot fail an
+      // older check. The shell anchor is deliberately open in the middle for the
+      // same reason, and the parity suite pins both halves of that (case P10).
+      const version = typeof record.version === 'string' ? record.version : undefined;
+      return actual === expected
+        ? { reason: 'ok', expected, actual, version }
+        : { reason: 'identity_mismatch', expected, actual, version };
+    }
+  }
+
+  // Nothing was proved. NOW the exit status is the discriminator: a non-zero
+  // exit means a binary that does not implement this verb answered.
   if (probe.exitCode !== 0) {
     return {
       reason: 'no_identity_verb',
@@ -153,31 +204,11 @@ export function classifyIdentityProbe(
     };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(probe.stdout) as unknown;
-  } catch {
-    return { reason: 'unparseable', expected, detail: excerpt(probe.stdout) };
-  }
-
-  // Arrays are objects to typeof; null is too. Both must be rejected.
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { reason: 'unparseable', expected, detail: excerpt(probe.stdout) };
-  }
-
-  const record = parsed as Record<string, unknown>;
-  const actual = record.packageName;
-  if (typeof actual !== 'string' || actual.length === 0) {
-    return { reason: 'unparseable', expected, detail: 'payload has no usable packageName' };
-  }
-
-  const version = typeof record.version === 'string' ? record.version : undefined;
-  if (actual !== expected) {
-    return { reason: 'identity_mismatch', expected, actual, version };
-  }
-
-  // Unknown keys are ignored so a future payload addition cannot fail an older check.
-  return { reason: 'ok', expected, actual, version };
+  return {
+    reason: 'unparseable',
+    expected,
+    detail: record === null ? excerpt(probe.stdout) : 'payload has no usable packageName',
+  };
 }
 
 /**

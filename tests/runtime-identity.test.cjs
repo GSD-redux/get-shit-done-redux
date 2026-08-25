@@ -170,6 +170,59 @@ describe('classifyIdentityProbe', () => {
     const stdout = JSON.stringify({ packageName: 'get-shit-done-cc', note: EXPECTED_PACKAGE_NAME });
     assert.equal(classifyIdentityProbe({ stdout, exitCode: 0 }).reason, 'identity_mismatch');
   });
+
+  // ── Parse-before-exit-code (#3841) ──────────────────────────────────────
+  // The shell preamble reads stdout only — its command substitution discards
+  // the child's exit status entirely. So the classifier must reach the same
+  // verdict a tool that already proved its identity and then exited non-zero
+  // for an unrelated reason (a later verb failing, a warning exit, etc.).
+
+  test('a valid payload verifies even when the probe exits non-zero', () => {
+    const v = classifyIdentityProbe({ stdout: okStdout(), exitCode: 1 });
+    assert.equal(v.reason, 'ok');
+    assert.equal(v.actual, EXPECTED_PACKAGE_NAME);
+  });
+
+  test('a non-zero exit with a foreign payload is a mismatch, not a missing verb', () => {
+    const v = classifyIdentityProbe({
+      stdout: '{"packageName":"get-shit-done-cc","version":"1.0.0"}',
+      exitCode: 1,
+    });
+    assert.equal(v.reason, 'identity_mismatch');
+    assert.equal(v.actual, 'get-shit-done-cc');
+  });
+
+  // REGRESSION PIN: these pass today and must keep passing — the predecessor
+  // and any answer that proves nothing still fall through to no_identity_verb.
+  for (const stdout of [
+    'usage: gsd-tools ...',
+    '[]',
+    '0',
+    'null',
+    '{"version":"1"}',
+  ]) {
+    test(`a non-zero exit that proved nothing stays no_identity_verb (${JSON.stringify(stdout)})`, () => {
+      const v = classifyIdentityProbe({ stdout, exitCode: 1 });
+      assert.equal(v.reason, 'no_identity_verb');
+    });
+  }
+
+  test('a signal-killed probe that still proved identity verifies', () => {
+    const v = classifyIdentityProbe({ stdout: okStdout(), exitCode: null });
+    assert.equal(v.reason, 'ok');
+  });
+
+  test('an empty stdout is unparseable', () => {
+    const v = classifyIdentityProbe({ stdout: '', exitCode: 0 });
+    assert.equal(v.reason, 'unparseable');
+  });
+
+  test('spawn failure short-circuits ahead of the payload', () => {
+    const spawnFailed = classifyIdentityProbe({ stdout: okStdout(), exitCode: 0, spawnFailed: true });
+    assert.equal(spawnFailed.reason, 'probe_failed');
+    const timedOut = classifyIdentityProbe({ stdout: okStdout(), exitCode: 0, timedOut: true });
+    assert.equal(timedOut.reason, 'probe_failed');
+  });
 });
 
 describe('buildIdentityPayload', () => {
@@ -624,4 +677,94 @@ describe('launcher preamble: identity assertion on a path-based branch (#3841)',
 
     assert.equal(r.stdout.includes(`CHILD=${IDENTITY_STATUS.OK}`), true, r.stdout);
   });
+});
+
+describe('shell preamble and classifier agree (cross-surface parity, #3841)', () => {
+  let dir;
+  let binDir;
+  let toolsDir;
+
+  const installFakeTool = (identityBody) => {
+    fs.writeFileSync(
+      path.join(toolsDir, 'gsd-tools.cjs'),
+      '#!/usr/bin/env node\n' +
+        'const a = process.argv.slice(2);\n' +
+        "if (a[0] === 'runtime-identity') { " + identityBody + ' }\n' +
+        "process.stdout.write('RAN:' + a.join(',') + '\\n');\n",
+      { mode: 0o755 },
+    );
+  };
+
+  const sourceAndReport = () => {
+    const harness = path.join(dir, 'harness.sh');
+    fs.writeFileSync(
+      harness,
+      '#!/bin/sh\n' +
+        `. "${SNIPPET}"\n` +
+        "printf 'STATUS=%s\\n' \"$GSD_IDENTITY_STATUS\"\n",
+      { mode: 0o755 },
+    );
+    return runHook(harness, [], {
+      interpreter: '/bin/sh',
+      cwd: dir,
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { PATH: binDir, HOME: dir, RUNTIME_DIR: dir },
+    });
+  };
+
+  const skipOnWindows = (t) => {
+    if (process.platform !== 'win32') return false;
+    t.skip('POSIX shell preamble is not executed on Windows runtimes');
+    return true;
+  };
+
+  beforeEach(() => {
+    dir = createTempDir('gsd-3841-parity-');
+    binDir = path.join(dir, 'bin');
+    toolsDir = path.join(dir, 'gsd-core', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(toolsDir, { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
+  });
+
+  afterEach(() => cleanup(dir));
+
+  const matching = (extra = '') => `${IDENTITY_RAW_PREFIX},"version":"1.0.0"${extra}}`;
+  const foreign = '{"packageName":"get-shit-done-cc","version":"1.0.0"}';
+
+  const CASES = [
+    ['P1 payload matches, exit 0', matching(), 0, true],
+    ['P2 payload matches, exit 1', matching(), 1, true],
+    ['P3 foreign payload, exit 0', foreign, 0, false],
+    ['P4 foreign payload, exit 1', foreign, 1, false],
+    ['P5 predecessor usage text, exit 1', 'usage: gsd-tools <command>', 1, false],
+    [
+      'P6 decoy embeds expected name in another field, exit 0',
+      JSON.stringify({ packageName: 'get-shit-done-cc', note: EXPECTED_PACKAGE_NAME }),
+      0,
+      false,
+    ],
+    ['P7 truncated payload (no closing brace), exit 0', matching().slice(0, -1), 0, false],
+    ['P8 payload followed by trailing garbage, exit 0', `${matching()}\nextra`, 0, false],
+    ['P9 empty stdout, exit 0', '', 0, false],
+    ['P10 additive unknown key, exit 0', matching(',"extra":true'), 0, true],
+  ];
+
+  for (const [label, stdout, exitCode, verified] of CASES) {
+    test(label, (t) => {
+      if (skipOnWindows(t)) return;
+
+      installFakeTool(`process.stdout.write(${JSON.stringify(stdout)} + '\\n'); process.exit(${exitCode});`);
+      const r = sourceAndReport();
+      const shellStatus = r.stdout.split('\n').find((l) => l.startsWith('STATUS='))?.slice('STATUS='.length);
+
+      const verdict = classifyIdentityProbe({ stdout: `${stdout}\n`, exitCode });
+      const jsStatus = statusForVerdict(verdict);
+
+      const expectedStatus = verified ? IDENTITY_STATUS.OK : IDENTITY_STATUS.UNVERIFIED;
+      assert.equal(jsStatus, shellStatus, `classifier/shell disagree for: ${label}`);
+      assert.equal(jsStatus, expectedStatus, `classifier status wrong for: ${label}`);
+      assert.equal(shellStatus, expectedStatus, `shell status wrong for: ${label}`);
+    });
+  }
 });
