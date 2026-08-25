@@ -573,6 +573,33 @@ const MAX_OPEN_PRS = 200;
 const GH_TIMEOUT_MS = 20_000;
 
 /**
+ * Upper bound on how many files `gh pr list --json files` reports for ANY ONE
+ * pull request. gh requests a single page of GitHub's file connection, so a PR
+ * touching more than this comes back SILENTLY TRUNCATED — the response carries
+ * no "there is more" flag.
+ *
+ * Measured against PR #3848 (2026-08-25): 124 files changed, 100 returned, and
+ * ZERO of the returned paths under `tests/`, because the list stops mid
+ * `gsd-core/workflows/` which sorts before it. Every ack fragment in that PR was
+ * invisible to the filter below — so the sweep would have deleted it and handed
+ * the PR a modify/delete conflict, the exact failure #3842 exists to prevent,
+ * one level down from the MAX_OPEN_PRS guard that already states this reasoning.
+ *
+ * Reachable rather than theoretical: the launcher preamble is inlined into 113
+ * shipped files, so every preamble change is a >100-file PR, and those are among
+ * the likeliest to carry an ack fragment.
+ */
+const MAX_PR_FILES = 100;
+
+/**
+ * GitHub will not enumerate more than this many files for one pull request on
+ * ANY route, paginated included. A PR past it cannot be answered completely, so
+ * it throws rather than returning a set quietly missing paths — the same rule,
+ * and the same reason, as MAX_OPEN_PRS.
+ */
+const GITHUB_MAX_PR_FILES = 3000;
+
+/**
  * Default `execGh` for `fetchOpenPrTouchedAckPaths` — a real `gh` invocation. Kept as a
  * separate, swappable function (rather than inlined) so tests can inject a stub instead
  * of shelling out to a real, authenticated `gh` — which is unavailable, and would be
@@ -589,6 +616,38 @@ function execGhDefault(args, { cwd = REPO_ROOT } = {}) {
 }
 
 /**
+ * Every changed path for ONE pull request, via the paginated REST endpoint.
+ *
+ * `gh pr list --json files` and `gh pr view --json files` both cap at
+ * MAX_PR_FILES; only `gh api … --paginate` walks the whole set. Verified against
+ * PR #3848: 124 paths, including the two under `tests/` that the capped route
+ * dropped. `{owner}` and `{repo}` are gh's own placeholders, resolved from the
+ * repository in `cwd`, so this needs no nwo plumbing.
+ *
+ * Throws on anything it cannot answer completely — the caller turns that into
+ * the `'unknown'` sentinel that holds every fragment, which is the whole
+ * fail-closed contract of this seam.
+ */
+function fetchPrFiles(number, { cwd = REPO_ROOT, execGh = execGhDefault } = {}) {
+  const stdout = execGh(
+    ['api', `repos/{owner}/{repo}/pulls/${number}/files`, '--paginate', '--jq', '.[].filename'],
+    { cwd },
+  );
+  const files = String(stdout)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  if (files.length >= GITHUB_MAX_PR_FILES) {
+    throw new Error(
+      `fetchPrFiles: pull request #${number} reported ${files.length} files, at or above `
+      + `GitHub's own per-PR ceiling of ${GITHUB_MAX_PR_FILES}. Refusing to reason about a list `
+      + 'that may still be incomplete.',
+    );
+  }
+  return files;
+}
+
+/**
  * The set of `tests/emitted-drift-acks/*.json` repo-relative paths touched by at least
  * one currently-OPEN pull request (#3842).
  *
@@ -596,7 +655,10 @@ function execGhDefault(args, { cwd = REPO_ROOT } = {}) {
  * list in a single round trip, never one call per PR — intersected against the fragment
  * directory prefix. This is the "one `gh` API call" the issue itself proposes: cheap
  * enough to run on every push to `next` without meaningfully growing the guard job's
- * budget.
+ * budget. A PR whose file list lands AT `MAX_PR_FILES` earns exactly one additional
+ * paginated `gh api` call to re-fetch its full list (#3842) — because `gh pr list`
+ * silently truncates there, "at the cap" and "truncated" are indistinguishable from
+ * this response alone, so every such PR must be re-checked rather than trusted.
  *
  * Throws (never degrades to an empty set) when: `gh` itself fails (auth, network, rate
  * limit), the output is not parseable JSON, is not an array, or reaches the `MAX_OPEN_PRS`
@@ -637,8 +699,18 @@ function fetchOpenPrTouchedAckPaths({ cwd = REPO_ROOT, execGh = execGhDefault, l
   const touched = new Set();
   for (const pr of prs) {
     const files = Array.isArray(pr?.files) ? pr.files : [];
-    for (const file of files) {
-      const filePath = isPlainObject(file) ? file.path : file;
+    // `>=`, never `>`: a PR with exactly MAX_PR_FILES files is byte-identical,
+    // in this response, to one with four thousand truncated to MAX_PR_FILES.
+    // The only safe reading of "at the cap" is "possibly incomplete".
+    let paths;
+    if (files.length >= MAX_PR_FILES) {
+      // Second round trip, and the only one in this function. Deliberately not
+      // taken for the common case -- see this function's doc comment.
+      paths = fetchPrFiles(pr.number, { cwd, execGh });
+    } else {
+      paths = files.map((file) => (isPlainObject(file) ? file.path : file));
+    }
+    for (const filePath of paths) {
       if (typeof filePath === 'string' && filePath.startsWith(`${ACK_DIR_REPO_PATH}/`)) {
         touched.add(filePath);
       }
@@ -803,7 +875,10 @@ module.exports = {
   assertUsableBaseRef,
   GIT_TIMEOUT_MS,
   fetchOpenPrTouchedAckPaths,
+  fetchPrFiles,
   MAX_OPEN_PRS,
+  MAX_PR_FILES,
+  GITHUB_MAX_PR_FILES,
   GH_TIMEOUT_MS,
   runGuardNext,
 };
