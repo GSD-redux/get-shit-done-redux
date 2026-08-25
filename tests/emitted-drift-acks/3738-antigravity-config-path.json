@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-core/bin/verify-reapply-patches.cjs": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/artifact-types.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/context-budget.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/debugger-techniques.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/edge-probe.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/honest-verifier.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/model-profile-resolution.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/model-profiles.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/offer-next.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/planner-guidance.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/planner-load-graph-context.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/planner-mvp-mode.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/prohibition-probe.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/research-documentation-lookup.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/specless-probe-fallback.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/thinking-models-planning.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/verification-patterns.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/references/verifier-phase-gates.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/templates/codebase/structure.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/templates/phase-prompt.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/workflows/discuss-phase/modes/power.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/workflows/help/modes/full.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/workflows/note.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/workflows/onboard.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "gsd-core/workflows/reapply-patches.md": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). This source file itself is unchanged; only its antigravity-emitted copy differs because the file contains a ~/.claude reference the converter rewrites."
+    },
+    "skills/gsd-add-tests/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-ai-integration-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-audit-fix/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-audit-milestone/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-audit-uat/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-autonomous/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-capture/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-cleanup/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-code-review/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-complete-milestone/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-config/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-debug/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-discuss-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-docs-update/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-eval-review/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-execute-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-explore/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-extract-learnings/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-fast/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-forensics/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-graphify/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-health/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-help/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-import/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-inbox/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-ingest-docs/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-manager/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-map-codebase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-milestone-summary/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-mvp-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-new-milestone/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-new-project/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-next/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-onboard/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-pause-work/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-plan-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-plan-review-convergence/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-pr-branch/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-profile-user/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-progress/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-quick/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-resume-work/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-review/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-secure-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-settings/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-ship/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-sketch/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-spec-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-spike/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-stats/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-surface/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-thread/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-ui-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-ui-review/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-ultraplan-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-undo/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-update/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-validate-phase/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-verify-work/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "skills/gsd-workspace/SKILL.md": {
+      "reason": "Derived antigravity SKILL.md from the corresponding commands/gsd/*.md source (also unchanged) via the same convertClaudeToAntigravityContent rewrite (gsd-core#3738): $HOME/.claude / ~/.claude path references in the command body now convert to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity."
+    },
+    "update.md": {
+      "reason": "gsd-core/workflows/update.md grew 35 bytes: added the new .gemini/config probe entry to the runtime-classification prose and the cache-clear probe loop so /gsd-update can find a fresh antigravity install at the new default location (gsd-core#3738)."
+    }
+  }
+}
