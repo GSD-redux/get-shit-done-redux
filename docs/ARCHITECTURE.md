@@ -555,6 +555,8 @@ STATE.md carries the same fact in two places — YAML frontmatter and the docume
 
 **[ADR-3408](adr/3408-state-write-path-preservation.md) is the normative contract** for that path: one executor per declared policy, one write seam, and reports computed from what was actually persisted rather than from what the caller intended to write. Where the contract and the code disagree, the code is the defect. It is the write-side counterpart of [ADR-3180](adr/3180-planning-semantic-model-single-owner.md), which gave each read-side derivation a single owner.
 
+**[ADR-3473](adr/3473-enforcement-by-construction.md) owns the invariants that sit outside that contract.** ADR-3408 governs what survives a write; it does not govern the pipeline's precondition, what a command reports it wrote, or where the set of STATE.md keys, types and enums is declared. ADR-3473 owns those, alongside document parsing, enumeration, and the return contract of every routine that can fail. It is the third application of ADR-3180's mechanism and the first whose success metric requires the guard surface to *shrink* as each seam lands.
+
 ---
 
 ## Data Flow

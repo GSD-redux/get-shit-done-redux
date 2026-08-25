@@ -1,0 +1,9 @@
+{
+  "$comment": "Growth ack (#2914 fragment). Reason: #3866 opens the verify lane to capabilities. verify-work.md's verify_pre_hooks step dispatched `kind == \"gate\"` only, so getWiredKinds reported verify:pre -> {gate} and gen-capability-registry's validateHooksWired rejected any capability declaring a step or contribution there — a capability could refuse to let UAT start but never contribute to what UAT covers. The growth is the two new dispatch arms (contribution + step, deferring to gsd-core/references/loop-hook-dispatch.md and carrying its ref.command in-context validation guard) plus the additive extract_tests consumption seam for the produces[] artefact names those steps declare. Prose is the product here: the arms ARE the dispatch contract an executing agent reads, so there is no smaller form. Includes the in-context allowlist for manifest-supplied produces names (isolated security review) and the artefact-shape contract (spec review), both of which a capability author must be able to read at the point of use. verify-work.md 35973 -> 39212 LF bytes (+3239).",
+  "version": 1,
+  "paths": {
+    "verify-work.md": {
+      "reason": "#3866: verify:pre gains contribution + step dispatch arms and extract_tests gains the produces[] consumption seam with its in-context name allowlist and artefact-shape contract; the dispatch contract is executable prose, so the arms cannot be expressed shorter; +3239 bytes"
+    }
+  }
+}
