@@ -1,16 +1,43 @@
 {
   "_doc": "Baseline of modules currently exceeding the 2-test-file limit. Each entry locks in TODAY's exact test filenames as the allowlisted set (identity ratchet). Adding a NEW test file to a capped module fails (novel). Removing one requires pruning this list (stale, ratchet-down). When a cluster drops to \u2264 2, remove its entry entirely. New entries require justification in PR description.",
   "modules": {
+    "adr-parser": {
+      "files": [
+        "adr-parser.property.test.cjs",
+        "adr-parser.test.cjs",
+        "adr-parser.unit.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
     "config": {
       "files": [
         "config-defaults-runtime-exclusion.test.cjs",
         "config-field-docs.test.cjs",
         "config-get-default.test.cjs",
-        "config-schema.property.test.cjs",
         "config-validation.test.cjs",
         "config.test.cjs"
       ],
       "issue": "TBD"
+    },
+    "context-predicates": {
+      "files": [
+        "context-predicates-query.test.cjs",
+        "context-predicates.property.test.cjs",
+        "context-predicates.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "frontmatter": {
+      "files": [
+        "frontmatter-cli.test.cjs",
+        "frontmatter.property.test.cjs",
+        "frontmatter.test.cjs",
+        "frontmatter.unit.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
     },
     "graphify": {
       "files": [
@@ -151,9 +178,65 @@
       "files": [
         "prompt-budget-cli.test.cjs",
         "prompt-budget-parity.test.cjs",
-        "prompt-budget.test.cjs"
+        "prompt-budget.property.test.cjs",
+        "prompt-budget.test.cjs",
+        "prompt-budget.unit.test.cjs"
       ],
       "issue": "2929"
+    },
+    "mcp-catalog": {
+      "files": [
+        "mcp-catalog-parity.install.test.cjs",
+        "mcp-catalog.property.test.cjs",
+        "mcp-catalog.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "model-catalog": {
+      "files": [
+        "model-catalog-runtime-defaults.test.cjs",
+        "model-catalog-valid-tiers.test.cjs",
+        "model-catalog.unit.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "package-legitimacy": {
+      "files": [
+        "package-legitimacy-gate.test.cjs",
+        "package-legitimacy.property.test.cjs",
+        "package-legitimacy.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "runtime-homes": {
+      "files": [
+        "runtime-homes-descriptor-drive.test.cjs",
+        "runtime-homes-legacy-ids-drift-guard.test.cjs",
+        "runtime-homes.property.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "section-manifest": {
+      "files": [
+        "section-manifest-init-facts.test.cjs",
+        "section-manifest.property.test.cjs",
+        "section-manifest.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "workflow-fragments": {
+      "files": [
+        "workflow-fragments-emission.install.test.cjs",
+        "workflow-fragments.property.test.cjs",
+        "workflow-fragments.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
     }
   }
 }

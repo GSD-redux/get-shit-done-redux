@@ -138,6 +138,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/secrets.cjs',
       'gsd-core/bin/lib/smart-entry.cjs',
       'gsd-core/bin/lib/phase-lifecycle.cjs',
+      // #3227: tsc-generated artifact — lint src/state-contract.cts, not this.
+      'gsd-core/bin/lib/state-contract.cjs',
       'gsd-core/bin/lib/workstream-name-policy.cjs',
       'gsd-core/bin/lib/decisions.cjs',
       'gsd-core/bin/lib/validate.cjs',
@@ -296,6 +298,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/capability-writer.cjs',
       // issue #1754: tsc-generated runtime artifact — lint the src/cli-skew-check.cts source.
       'gsd-core/bin/lib/cli-skew-check.cjs',
+      // issue #3146: tsc-generated runtime artifact — lint the src/runtime-identity.cts source.
+      'gsd-core/bin/lib/runtime-identity.cjs',
       // issue #1355: tsc-generated runtime artifact — lint the src/teams-status.cts source.
       'gsd-core/bin/lib/teams-status.cjs',
       // ADR-1372: tsc-generated runtime artifact — lint the src/markdown-sectionizer.cts source.

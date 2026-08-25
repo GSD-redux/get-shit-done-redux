@@ -267,7 +267,7 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 |-----------------|----------|-------------|
 | `N` | **Yes** | Phase number to plan and review |
 | Reviewer flags | No | Pass through every reviewer lane flag: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code` |
-| `--all` | No | Run every configured reviewer in parallel |
+| `--all` | No | Run every configured reviewer. Lanes are dispatched **sequentially by default**; set `review.parallel_lanes` to `true` to dispatch them concurrently within a single review pass |
 | `--max-cycles N` | No | Override cycle cap (default 3) |
 
 **Exit behavior:** Loop exits when both `current_high` and `current_actionable` hit zero. Stall detection warns when the total unresolved review count is not decreasing across cycles. Escalation gate asks the user to proceed or review manually when `--max-cycles` is hit with HIGH or actionable non-HIGH concerns still open.
@@ -790,6 +790,16 @@ Interactive command center for managing multiple phases from one terminal.
 
 **Phase completion is disk-strict (ADR-3180 §7.4, issue #3186).** A phase's status here — and in `roadmap analyze`, `roadmap update-plan-progress`, and `phase complete` — is decided by one rule: a passing `*-VERIFICATION.md` on disk, checked unconditionally (plan count is never a precondition, so a zero-plan phase with a passing verification reports complete). A ticked `- [x]` checkbox in `ROADMAP.md` is a human annotation only; it carries no machine authority and is never consulted for these commands' completion verdicts. `roadmap update-plan-progress` additionally withholds writing the checkbox/completion date while any plan in the phase has no matching `*-SUMMARY.md`, mirroring `phase complete`'s own coverage gate.
 
+**Which phase comes *next* is a different question, and the roadmap answers it.** Disk-strictness
+governs whether a phase is *complete*; it does not decide the successor. `phase complete` resolves
+`next_phase` as the **lowest-numbered phase above the completed one that `ROADMAP.md` declares** for the
+current milestone, regardless of which phase directories happen to exist. Phase *numbers* decide the
+sequence — the order rows happen to appear in the file does not — a phase that has not been planned yet has no directory, and must still
+be selected ahead of a later phase that does. When the roadmap and the directories agree, the
+directory supplies the spelling (the zero-padded token and its on-disk slug). The directory scan is
+the fallback only when no readable roadmap phase list exists (#3701; the same rule #3581 established
+for `init.progress`).
+
 **Checkpoint Heartbeats (#2410):**
 
 Background `execute-phase` runs emit `[checkpoint]` markers at every wave and plan
@@ -1268,6 +1278,55 @@ gsd-tools check verify-command-paths 3 --raw    # probe phase 3's verify command
 ```
 
 See [Resolve verify-command path findings](how-to/resolve-verify-command-path-findings.md).
+
+### `gsd-tools check verify-failure-directions`
+
+Deterministic presence probe over a phase's stated failing directions (#3172). Run automatically
+by `/gsd-plan-phase` before the plan-check pass and handed to `gsd-plan-checker`; runnable by
+hand to see what the checker saw.
+
+Every runnable `<automated>` command must carry a `<fails_when>` sibling naming what output
+constitutes failure. A command with no expressible failure mode is not an acceptance test.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `N` | **Yes** | Phase number whose `-PLAN.md` files are probed |
+
+| Flag | Description |
+|------|-------------|
+| `--raw` | Emit the JSON payload with no surrounding prose |
+
+**Prerequisites:** none — an unresolvable phase degrades to a JSON payload with `readError` set
+rather than failing.
+**Produces:** JSON on stdout. Nothing is written to disk.
+
+**It never executes command text**, and it never authors a statement for the planner — a
+prescribed failure signal would be copied verbatim and carry no information.
+
+**Pairing.** Within one `<task>`, each `<fails_when>` binds to the nearest **preceding**
+`<automated>`; the first statement after a command is the binding one. N runnable commands need
+N statements. A redundant second statement for the same command is ignored.
+
+Each row of `commands` carries `command`, `statement`, `plan`, `task`, `status`, and `severity`.
+
+| `status` | `severity` | Meaning |
+|---|---|---|
+| `ok` | `none` | A non-empty, non-placeholder statement is bound to this command |
+| `missing` | `blocker` | The command has no `<fails_when>` at all |
+| `empty` | `blocker` | A `<fails_when>` is present but blank |
+| `placeholder` | `blocker` | The whole statement is `TBD`, `TODO`, `N/A`, `NA`, `none`, `unknown`, `TBA`, `?`, or `-` (case-insensitive, whole value only) |
+| `orphan` | `warning` | A `<fails_when>` that follows no command — it satisfies nothing |
+| `sentinel` | `none` | A Nyquist `MISSING — Wave 0 …` placeholder; not runnable, so exempt |
+
+The top-level `status` is `blocked` when any row is a blocker, `unresolvable` when the probe
+could not look, and `ok` otherwise. A non-empty `readError` means the probe **could not look** —
+distinct from finding nothing.
+
+```bash
+gsd-tools check verify-failure-directions 3 --raw    # probe phase 3's failing directions
+```
+
+See [State a failing direction](how-to/state-a-failing-direction.md).
 
 ---
 
@@ -1963,6 +2022,64 @@ Presence and posture are separate verdicts: a missing agent is reported in `miss
 
 ---
 
+### `state update <field> <value>`
+
+Update a single STATE.md field.
+
+**Prerequisites:** `.planning/STATE.md` exists
+**Produces:** `{updated: true, preserved: [...]}`, or `{updated: false, reason, preserved: [...]}`
+
+```bash
+node gsd-tools.cjs state update "Stopped at" "finished the migration"
+```
+
+#### Frontmatter keys are projections — write the body field
+
+STATE.md's frontmatter is **re-derived from the body on every write**. So a frontmatter key like
+`stopped_at` is not the value; it is a projection of the body field `Stopped at:`. Ask to update the
+key and the command refuses, naming the field that does work:
+
+```json
+{
+  "updated": false,
+  "reason": "Field \"stopped_at\" is a body-derived frontmatter key and is not directly writable. Update its body source instead: state update \"Stopped At\" <value>."
+}
+```
+
+This is distinct from a field that genuinely is not there, which still reports
+`Field "…" not found in STATE.md`. The two used to be indistinguishable (#3699).
+
+| Frontmatter key | Body source |
+|---|---|
+| `current_phase` | `Current Phase` (or the prose `Phase:` line) |
+| `current_phase_name` | `Current Phase Name` (or the prose `Phase:` name) |
+| `current_plan` | `Current Plan` |
+| `status` | `Status` |
+| `stopped_at` | `Stopped At` / `Stopped at` (under `## Session`) |
+| `paused_at` | `Paused At` (under `## Session`) |
+| `last_activity` | `Last Activity` / `Last activity` (date part) |
+| `last_activity_desc` | `Last Activity Description` (or the prose after the dash) |
+
+Keys not in this table have no body source at all — `milestone` and `milestone_name` come from
+ROADMAP.md, `progress.*` from a scan of `.planning/phases/`, and `last_updated` / `state_head` /
+`gsd_state_version` are recomputed on every write. The refusal names which of those applies.
+
+#### Repairing a document whose body source is missing
+
+If frontmatter carries a key but the body has **no** source line for it, there is nothing to derive
+from and neither route can write. In that one case the frontmatter key *is* directly writable, and
+the command says so:
+
+```json
+{ "updated": true, "wrote": "frontmatter", "preserved": [] }
+```
+
+`wrote: "frontmatter"` appears only on this repair path — an ordinary update omits it. The fallback
+is deliberately narrow: it will not fire while any body source line still exists (even one stranded
+in an archive section), and it will not invent a frontmatter key that is not already there.
+
+---
+
 ### `state validate`
 
 Detect drift between STATE.md and the actual filesystem.
@@ -1974,6 +2091,24 @@ Detect drift between STATE.md and the actual filesystem.
 node gsd-tools.cjs state validate
 ```
 
+| Flag | Description |
+|------|-------------|
+| `--strict` | Exit non-zero when the report is not `valid: true`. Off by default. |
+
+Without `--strict` the command always exits `0`, including when it reports
+`valid: false` — so a CI step or git hook has to parse the JSON to decide whether
+state is correct. `--strict` makes the verdict gateable directly:
+
+```bash
+node gsd-tools.cjs state validate --strict || echo "STATE.md needs attention"
+```
+
+The default is deliberately unchanged: the exit status is observable behavior that
+reaches downstream consumers who cannot be enumerated, so opting in is a choice the
+caller makes rather than one imposed on every existing script.
+
+A missing or unreadable STATE.md exits non-zero under `--strict` too — those report
+`error` or `valid: false` and are as gateable as any drift warning.
 The report also carries a `scope` field reporting whether the drift derivation could actually run:
 
 | `scope` | Meaning |
@@ -1996,6 +2131,8 @@ Each `warnings` entry is a coded diagnostic object (`{code, severity, message, r
 | `S005` | warning | STATE.md's plan count disagrees with the plan count on disk |
 | `S006` | warning | STATE.md still says "executing" but a `*-VERIFICATION.md` in the phase shows verification passed |
 | `S007` | warning | Every plan in the phase has a summary, but STATE.md still says "executing" |
+| `S008` | warning | STATE.md's `Last activity` value does not begin with a real calendar date, so no reader can date the project's activity |
+| `S009` | warning | The `Last activity` description wrapped onto a second line, and every reader silently drops the remainder |
 
 ---
 
@@ -2069,6 +2206,54 @@ Mark the current phase as COMPLETE in STATE.md — updates the body `Status`, `L
 ```bash
 node gsd-tools.cjs state complete-phase --phase 3
 ```
+
+---
+
+### `runtime-identity`
+
+Report the package coordinates of the `gsd-tools` that is executing. Used by the runtime
+launcher preamble to confirm a shipped workflow reached this package's tool rather than a
+different package that also provides a `gsd-tools` binary.
+
+**Prerequisites:** none — it reads no project state and needs no resolvable project root
+**Produces:** a JSON identity payload on stdout
+
+```bash
+node gsd-tools.cjs runtime-identity
+```
+
+```json
+{
+  "packageName": "@opengsd/gsd-core",
+  "version": "1.12.0"
+}
+```
+
+| Field | Type | Value |
+|---|---|---|
+| `packageName` | string | Always `@opengsd/gsd-core`. Baked at build time from `package.json`, so it survives an installed tree that carries no real `package.json`. |
+| `version` | string | The installed host version. Falls back to `0.0.0` when neither `gsd-core/VERSION` nor a runtime-root `package.json` is readable. |
+
+`--raw` emits the same payload on a single line.
+
+The payload is additive-only: consumers must ignore unrecognized keys. `version` is
+reported but is **not** asserted by the launcher check — identity alone determines whether
+the check passes, so a `0.0.0` development tree still verifies.
+
+The launcher preamble runs this verb once, immediately after it resolves a tool and before
+any workflow verb executes. It matches the `--raw` output **anchored to the start** of the
+payload — a substring search would accept `{"packageName":"get-shit-done-cc","note":
+"@opengsd/gsd-core"}` — and exports the outcome as `GSD_IDENTITY_STATUS`:
+
+| `GSD_IDENTITY_STATUS` | Meaning |
+|---|---|
+| `ok` | The resolved tool proved it is `@opengsd/gsd-core`. |
+| `unverified` | It did not. Either a different package, or an `@opengsd/gsd-core` older than this verb. The preamble prints one line to stderr and continues — the rollout is warn-then-fail. |
+
+The same verb is still useful by hand for answering "which tool am I actually running?".
+
+See [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) for using it,
+and [Runtime identity](FEATURES.md#168-runtime-identity) for the rationale.
 
 ---
 

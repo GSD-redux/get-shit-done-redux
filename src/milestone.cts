@@ -14,7 +14,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 import frontmatterMod = require('./frontmatter.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- state.cjs is an export= CommonJS module
 import stateMod = require('./state.cjs');
-import { platformWriteSync, platformReadSync, platformEnsureDir, execGit, retryRenameSync } from './shell-command-projection.cjs';
+import { platformWriteSync, platformReadSync, platformEnsureDir, execGit, retryRenameSync, contentChangedAfterNormalize } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
 import { transitionCore } from './state-transition.cjs';
@@ -28,6 +28,9 @@ const { resolveQuickTaskSummaryFile } = auditMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import stateContract = require('./state-contract.cjs');
+const { publishStateContract } = stateContract;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId, isSentinelPhaseDir } = phaseIdMod;
@@ -922,6 +925,13 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   const accomplishmentsList = accomplishments.map((a) => `- ${a}`).join('\n');
   const milestoneEntry = `## ${version} ${milestoneName} (Shipped: ${today})\n\n**Phases completed:** ${phaseCount} phases, ${totalPlans} plans, ${totalTasks} tasks\n\n**Key accomplishments:**\n${accomplishmentsList || '- (none recorded)'}\n\n---\n\n`;
 
+  // #3685: mirror requirementsUpdated's diff-tracking contract — the result
+  // below used to report `milestones_updated: true` hardcoded, never
+  // consulting whether the MILESTONES.md write actually changed anything.
+  // Captured before the write branches below so the after-comparison reports
+  // a real content diff instead of an assumed one.
+  const milestonesBefore = fs.existsSync(milestonesPath) ? fs.readFileSync(milestonesPath, 'utf-8') : null;
+
   if (fs.existsSync(milestonesPath)) {
     const existing = fs.readFileSync(milestonesPath, 'utf-8');
     if (!existing.trim()) {
@@ -948,6 +958,11 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   } else {
     platformWriteSync(milestonesPath, `# Milestones\n\n${milestoneEntry}`);
   }
+
+  // #3685: real content diff, not the hardcoded `true` this used to report —
+  // see the `milestonesBefore` capture above.
+  const milestonesAfter = fs.existsSync(milestonesPath) ? fs.readFileSync(milestonesPath, 'utf-8') : null;
+  const milestonesUpdated = milestonesAfter !== milestonesBefore;
 
   // #2142 BLOCKER 2 (review): opt-in quick-task archival. This call MUST sit
   // immediately adjacent to the STATE.md write block directly below it, with
@@ -989,6 +1004,13 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   // taken). `resync: true` mirrors `cmdPhaseComplete`'s posture (progress
   // recomputed from disk; only the preserve-when-unchanged deltas apply) —
   // milestone completion is the same kind of lifecycle transition.
+  // #3685: mirror requirementsUpdated's diff-tracking contract — this used to
+  // report `state_updated: fs.existsSync(statePath)`, true even on a no-op
+  // transaction. Declared here beside `stateUpdated`'s sibling flags and
+  // defaulted to `false` so the "STATE.md absent" case keeps today's answer
+  // (existsSync also returns false there) reached via a real content
+  // comparison instead.
+  let stateUpdated = false;
   if (fs.existsSync(statePath)) {
     withStateLock(statePath, () => {
       const originalStateContent = platformReadSync(statePath) || '';
@@ -1070,6 +1092,24 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         },
       );
       platformWriteSync(statePath, finalContent);
+      // #3685 / #3691: compare NORMALIZED bytes, not the pre-normalize
+      // `finalContent` string, against the pre-normalize `originalStateContent`
+      // read above. `platformWriteSync` runs Markdown normalization (blank-line
+      // insertion around headings/fences/lists) before persisting — the
+      // transition core (`transitionCore`'s `## Current Position` section
+      // reset) regenerates that section fresh on every call, including on a
+      // genuine no-op re-run, and its raw un-normalized output differs from
+      // the already-normalized on-disk original even though the write
+      // converges to byte-identical content. Comparing pre-normalize strings
+      // (mirroring cmdPhaseComplete's shape verbatim) was verified live to
+      // report `true` on three consecutive byte-identical writes.
+      // `contentChangedAfterNormalize` runs BOTH sides through the exact same
+      // normalizer `platformWriteSync` used to persist (no extra disk I/O,
+      // and immune by construction to this ordering artifact) — this used to
+      // re-read the file to get the same answer; #3691 hoisted that seam so
+      // this site, `updateRoadmapAfterPhaseRemoval`, and `cmdPhaseComplete`'s
+      // roadmap/state/requirements flags all agree by construction.
+      stateUpdated = contentChangedAfterNormalize(statePath, originalStateContent, finalContent);
       for (const field of divergedFields) {
         preservationWarnings.push({ field, reason: 'preserved-over-disagreeing-derived' });
       }
@@ -1148,12 +1188,28 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       phases_archive_skip_reason: phasesArchiveSkipReason,
       quick: !!quickArchiveResult && quickArchiveResult.archived > 0,
     },
-    milestones_updated: true,
-    state_updated: fs.existsSync(statePath),
+    // #3685: mirror requirementsUpdated's diff-tracking contract — both flags
+    // now report a real before/after content diff instead of the previous
+    // hardcoded `true` (milestones_updated) / bare fs.existsSync (state_updated).
+    milestones_updated: milestonesUpdated,
+    state_updated: stateUpdated,
     preservation_warnings: preservationWarnings,
   };
 
   output(result, raw);
+  // #3227 (design doc §40 row 26 / "Not-corruption" rule): a refreshed
+  // state.json `updated_at` must always mean something on disk actually
+  // moved. This site is unconditional because every reachable path either
+  // exits via `error()` (process.exit — refusals like a truncated milestone
+  // window, an unstarted phase, or an invalid version never reach here) or
+  // returns early on `--dry-run` (before any mutation, see the `dry_run:
+  // true` branch above) — the only way execution reaches this line is after
+  // the unconditional MILESTONES.md `platformWriteSync` a few lines above,
+  // which always runs (new file, empty file, or append) once the run is
+  // committed to mutating. Best-effort — cannot throw, cannot change this
+  // command's exit code or output. publishStateContract resolves the
+  // workstream planning root itself via planningPaths.
+  publishStateContract(cwd);
 }
 
 function cmdPhasesClear(cwd: string, raw: boolean, args: string[]): void {

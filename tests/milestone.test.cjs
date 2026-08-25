@@ -515,6 +515,66 @@ describe('milestone complete command', () => {
     assert.strictEqual(output.plans, 0);
     assert.strictEqual(output.tasks, 0);
   });
+
+  // #3685: state_updated/milestones_updated were reported via
+  // fs.existsSync(statePath) and a hardcoded `true` respectively — neither
+  // consulted whether the file's content actually changed in the
+  // transaction. Both now mirror requirements_updated's diff-tracking
+  // contract. Clock is pinned (GSD_TEST_MODE + GSD_NOW_MS) because
+  // syncStateFrontmatter stamps a millisecond-resolution `last_updated:`
+  // field on every STATE.md write — an unpinned second run would genuinely
+  // differ by that timestamp alone, masking the no-op this test needs to
+  // observe.
+  describe('write-flag content-change contract (#3685)', () => {
+    const PINNED_CLOCK_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: '1750000000000' };
+
+    test('state_updated is true and STATE.md content actually changes on a genuine completion', () => {
+      writeRoadmap(tmpDir, `# Roadmap v1.0\n`);
+      writeState(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+      const stateBefore = fs.readFileSync(statePath, 'utf-8');
+
+      const result = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test'], tmpDir, PINNED_CLOCK_ENV);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+
+      const output = JSON.parse(result.output);
+      const stateAfter = fs.readFileSync(statePath, 'utf-8');
+      assert.notEqual(stateAfter, stateBefore, 'precondition: STATE.md content must actually change');
+      assert.strictEqual(output.state_updated, true, 'state_updated must be true for a genuine rewrite');
+      assert.strictEqual(output.milestones_updated, true, 'milestones_updated must be true for a genuine rewrite');
+    });
+
+    test('state_updated is false when a second identical completion rewrites nothing (#3685)', () => {
+      writeRoadmap(tmpDir, `# Roadmap v1.0\n`);
+      writeState(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      const run1 = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test', '--force'], tmpDir, PINNED_CLOCK_ENV);
+      assert.ok(run1.success, `first milestone complete failed: ${run1.error}`);
+      const stateAfter1 = fs.readFileSync(statePath, 'utf-8');
+
+      // Second call: STATE.md is already in its "milestone complete" closure
+      // shape, so re-running the same closure transform against it is a
+      // genuine no-op for STATE.md content, even though MILESTONES.md still
+      // gains a new (duplicate-looking) entry each call — the two flags are
+      // independent and must not be conflated.
+      const run2 = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test', '--force'], tmpDir, PINNED_CLOCK_ENV);
+      assert.ok(run2.success, `second milestone complete failed: ${run2.error}`);
+      const stateAfter2 = fs.readFileSync(statePath, 'utf-8');
+
+      assert.equal(stateAfter2, stateAfter1, 'STATE.md must be byte-identical across the no-op second run');
+      const output2 = JSON.parse(run2.output);
+      assert.strictEqual(
+        output2.state_updated, false,
+        'fs.existsSync() reported true here, masking the no-op (#3685)',
+      );
+      // milestones_updated has no reachable no-op path: the MILESTONES.md
+      // write unconditionally inserts a new entry block every call, so its
+      // content always differs from the pre-call file — pinning the
+      // true-direction here instead of fabricating a no-op case.
+      assert.strictEqual(output2.milestones_updated, true, 'milestones_updated stays true — MILESTONES.md always gains a new entry');
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

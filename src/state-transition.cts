@@ -143,6 +143,115 @@ export const FIELD_CLASSIFICATION: Readonly<Record<string, FieldClassification>>
 );
 
 /**
+ * Which BODY field feeds each frontmatter key.
+ *
+ * `FIELD_CLASSIFICATION` above answers "who wins when frontmatter and body
+ * disagree"; this answers "and what is the body one called". They are separate
+ * questions and this one is display/routing knowledge, not preservation policy,
+ * so it does not widen the ADR-3408-governed table.
+ *
+ * #3699: `state update stopped_at …` reported `Field "stopped_at" not found in
+ * STATE.md` — byte-identical to what a genuinely absent field reports. The key
+ * IS present; it is a projection of a body field, and the message pointed away
+ * from the route that works. Naming the source is what makes the two cases
+ * distinguishable.
+ *
+ * Transcribed from `buildStateFrontmatter` (`state.cts`), which is the real
+ * deriver. That makes this a SECOND copy of knowledge that already exists, so it
+ * ships with a parity test asserting this key set equals the body-derived key set
+ * the builder actually emits (CLAUDE.md → Generative Fix Divergence). Keys the
+ * builder derives from disk, an external file, or the clock have no body source
+ * and are deliberately ABSENT here rather than mapped to a lie.
+ */
+export const FRONTMATTER_BODY_SOURCE: Readonly<Record<string, readonly string[]>> = Object.freeze(
+  Object.assign(Object.create(null) as Record<string, readonly string[]>, {
+    current_phase: Object.freeze(['Current Phase']),
+    current_phase_name: Object.freeze(['Current Phase Name']),
+    current_plan: Object.freeze(['Current Plan']),
+    status: Object.freeze(['Status']),
+    // Scoped to `## Session` by the builder; see the presence check in
+    // `updateCore` for why the lookup here is deliberately unscoped.
+    stopped_at: Object.freeze(['Stopped At', 'Stopped at']),
+    paused_at: Object.freeze(['Paused At']),
+    last_activity: Object.freeze(['Last Activity', 'Last activity']),
+    last_activity_desc: Object.freeze(['Last Activity Description']),
+  } satisfies Record<string, readonly string[]>),
+);
+
+/**
+ * The frontmatter keys whose body source lives inside `## Session`.
+ *
+ * #3374 established that these fields must be written where the reader reads
+ * them: `buildStateFrontmatter` harvests `Stopped At` / `Paused At` from the
+ * session section only, so a whole-body replace "lets a decoy `**Stopped at:**`
+ * line in an unrelated (e.g. archive) section absorb the refresh while the
+ * harvested session value stays stale" (`stateReplaceFieldInSession`'s own
+ * docstring). `updateCore` was still doing the whole-body replace.
+ */
+const SESSION_SCOPED_KEYS: ReadonlySet<string> = new Set(['stopped_at', 'paused_at']);
+
+/**
+ * The `(primary, fallback)` label pair for a session-scoped frontmatter KEY.
+ */
+function sessionLabelsForKey(key: string): { primary: string; fallback: string | null } | null {
+  if (!SESSION_SCOPED_KEYS.has(key)) return null;
+  const labels = FRONTMATTER_BODY_SOURCE[key];
+  return { primary: labels[0], fallback: labels[1] ?? null };
+}
+
+/**
+ * The same pair, resolved from a BODY LABEL the caller named (`Stopped At`,
+ * `Stopped at`, `Paused At`). `null` for anything else.
+ *
+ * Deliberately does NOT accept a frontmatter key. An earlier cut resolved both
+ * spellings through one function and used it for the write, which made
+ * `state update stopped_at …` write the BODY line through the session writer —
+ * silently defeating the "frontmatter keys are not directly writable" contract
+ * this whole change exists to state, and reporting `updated: false` while having
+ * written. The write may only ever be reached by naming a body field.
+ */
+function sessionLabelsForBodyField(field: string): { primary: string; fallback: string | null } | null {
+  const key = frontmatterKeyForBodyField(field);
+  return key === null ? null : sessionLabelsForKey(key);
+}
+
+/**
+ * Would a session-scoped write actually land? Asks by attempting the real write
+ * with a throwaway value and seeing whether anything moved.
+ *
+ * Deliberately reuses the writer rather than re-deriving "where is the session
+ * section" — a separate scope check could disagree with the writer, and a
+ * presence check that disagrees with the write it guards is the whole bug class
+ * here. `stateReplaceFieldInSession` is replace-only and pure, so probing costs
+ * nothing and the result is discarded.
+ */
+function sessionSourceExists(body: string, labels: { primary: string; fallback: string | null }): boolean {
+  return stateReplaceFieldInSession(body, labels.primary, labels.fallback, '\u0000probe') !== body;
+}
+
+/**
+ * Own-property body-source lookup. `null` for a key with no body source (a
+ * disk/external/clock-derived key) and for anything not a frontmatter key.
+ */
+export function getFrontmatterBodySource(field: string): readonly string[] | null {
+  if (!Object.prototype.hasOwnProperty.call(FRONTMATTER_BODY_SOURCE, field)) return null;
+  return FRONTMATTER_BODY_SOURCE[field];
+}
+
+/**
+ * Reverse lookup: the frontmatter key a body field feeds, or `null`.
+ * Lets a failed body-field update name the frontmatter key that still carries a
+ * value (#3699 case D), instead of reporting a bare absence.
+ */
+export function frontmatterKeyForBodyField(bodyField: string): string | null {
+  const wanted = bodyField.trim().toLowerCase();
+  for (const key of Object.keys(FRONTMATTER_BODY_SOURCE)) {
+    if (FRONTMATTER_BODY_SOURCE[key].some((f) => f.toLowerCase() === wanted)) return key;
+  }
+  return null;
+}
+
+/**
  * Own-property classification lookup. Returns `null` for unknown fields
  * (including inherited prototype methods like `toString`/`valueOf`).
  */
@@ -1834,8 +1943,69 @@ function updateCore(
   const existingFm = extractFrontmatter(content) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   const body = stripFrontmatter(content);
-  const result = stateReplaceField(body, intent.field, intent.value);
+  // #3699 review: session-scoped fields are written through the session-scoped
+  // writer. A whole-body `stateReplaceField` matches the FIRST occurrence
+  // anywhere, so with no `Stopped At:` line in `## Session` but a stale one in
+  // `## Session Continuity Archive`, `state update "Stopped At" …` reported
+  // `updated: true` while rewriting the ARCHIVE line and leaving both the session
+  // section and the `stopped_at` frontmatter key untouched — a silent corruption
+  // of a historical record reported as success. #3374 already established this
+  // rule for the other writer; this one had not adopted it.
+  const sessionWriteLabels = sessionLabelsForBodyField(intent.field);
+  let result: string | null;
+  if (sessionWriteLabels) {
+    // Replace-only by contract: unchanged content means the field is not in the
+    // session section, which is a miss, not a write.
+    const replaced = stateReplaceFieldInSession(body, sessionWriteLabels.primary, sessionWriteLabels.fallback, intent.value);
+    result = replaced === body ? null : replaced;
+  } else {
+    result = stateReplaceField(body, intent.field, intent.value);
+  }
   if (result === null) {
+    // #3699 case D — the frontmatter fallback.
+    //
+    // Normally frontmatter keys are NOT writable here: they are projections, and
+    // `buildStateFrontmatter` re-derives them from the body on every write, so a
+    // direct frontmatter write would be discarded. But when the body source line
+    // is absent entirely, there is nothing to derive FROM: the key's existing
+    // value survives on `preserve-when-unchanged`, and neither the frontmatter
+    // key nor the body field can be updated by any route. That document is
+    // unrepairable through `state update`, which is the gap this closes.
+    //
+    // Deliberately narrow — all three must hold:
+    //   (1) the field is a frontmatter key with a known body source,
+    //   (2) NO body source line exists, so the body route is genuinely unavailable
+    //       (this is what keeps case A, where the body route works, routing to the
+    //       body as before), and
+    //   (3) the frontmatter already carries the key, so this updates a value that
+    //       is really there rather than inventing one.
+    //
+    // The presence check in (2) is UNSCOPED on purpose, unlike the builder's
+    // `## Session` scoping for stopped_at/paused_at. The asymmetry is the safe
+    // direction: any `Stopped at:` line anywhere in the body — including one in an
+    // archive section — suppresses the fallback, so this never writes frontmatter
+    // while a body line the user could edit still exists.
+    const bodySource = getFrontmatterBodySource(intent.field);
+    const frontmatterCarriesKey =
+      hasFrontmatter && Object.prototype.hasOwnProperty.call(existingFm, intent.field);
+    // The presence check asks the same question the WRITE asks, in the same
+    // scope. An earlier cut checked the whole body on the reasoning that any
+    // editable line should suppress the repair — but a line the reader never
+    // reads is not a source, and suppressing on it left the document
+    // unrepairable while pointing the user at a command that would rewrite the
+    // wrong line. Same scope for read, write and probe, or they disagree.
+    const sessionProbeLabels = sessionLabelsForKey(intent.field);
+    const bodySourceExists = sessionProbeLabels
+      ? sessionSourceExists(body, sessionProbeLabels)
+      : (bodySource ?? []).some((f) => stateExtractField(body, f) !== null);
+    if (bodySource && frontmatterCarriesKey && !bodySourceExists) {
+      const nextFm = { ...existingFm, [intent.field]: intent.value };
+      return {
+        content: `---\n${reconstructFrontmatter(nextFm as unknown as Frontmatter)}\n---\n\n${body}`,
+        updated: [intent.field],
+        data: { updated: true, wroteFrontmatter: true },
+      };
+    }
     return { content, updated: [], data: { updated: false } };
   }
   const reassembled = hasFrontmatter

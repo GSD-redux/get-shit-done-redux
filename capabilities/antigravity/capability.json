@@ -133,7 +133,7 @@
     "reviewsSection": "Antigravity",
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
-    "promptBudgetKey": null,
+    "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
     "modelConfigKey": "review.models.agy",
     "handler": "antigravity"
   },
@@ -142,6 +142,11 @@
       "type": "string",
       "default": "",
       "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+    },
+    "review.max_prompt_tokens_per_reviewer.antigravity": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
     }
   }
 }

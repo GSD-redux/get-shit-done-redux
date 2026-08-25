@@ -20,7 +20,16 @@ permissions:
   pull-requests: read
 
 jobs:
+  # #3833: no lane runs while the PR has a merge conflict.
+  preflight:
+    name: PR mergeability
+    uses: ./.github/workflows/pr-mergeable-preflight.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   default-flip-documentation:
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1

@@ -23,7 +23,7 @@ describe('CANONICAL_EXACT', () => {
     const expected = [
       'PROJECT.md', 'ROADMAP.md', 'STATE.md', 'REQUIREMENTS.md',
       'MILESTONES.md', 'BACKLOG.md', 'LEARNINGS.md', 'THREADS.md',
-      'config.json', 'CLAUDE.md', 'RETROSPECTIVE.md', 'WINDOWS.md',
+      'config.json', 'CLAUDE.md', 'RETROSPECTIVE.md', 'WINDOWS.md', 'state.json',
     ];
     for (const name of expected) {
       assert.ok(CANONICAL_EXACT.has(name), `expected ${name} in CANONICAL_EXACT`);
@@ -56,6 +56,15 @@ describe('isCanonicalPlanningFile', () => {
 
   test('returns true for exact match config.json', () => {
     assert.strictEqual(isCanonicalPlanningFile('config.json'), true);
+  });
+
+  test('#3227: state.json (machine-readable state contract) is a canonical .planning/ artifact', () => {
+    // gsd-core writes .planning/state.json at every step boundary
+    // (src/state-contract.cts). Before #3227 it was absent from the
+    // registry, so validate health would falsely flag it W019
+    // "Unrecognized" on every GSD project.
+    assert.ok(CANONICAL_EXACT.has('state.json'), 'state.json must be in CANONICAL_EXACT');
+    assert.strictEqual(isCanonicalPlanningFile('state.json'), true);
   });
 
   test('#3224: WINDOWS.md (broken-windows ledger) is a canonical .planning/ artifact', () => {
@@ -186,6 +195,18 @@ describe('gsd-health W019 — unrecognized .planning/ root files', () => {
 
     const w019 = result.warnings.find(w => w.code === 'W019');
     assert.strictEqual(w019, undefined, 'no W019 for canonical files');
+  });
+
+  test('#3227: no W019 for .planning/state.json (state contract published at step boundaries)', () => {
+    const dir = makeTempProject({
+      ...BASE_FILES,
+      '.planning/state.json': '{}',
+    });
+
+    const result = cmdValidateHealth(dir, { repair: false }, false);
+
+    const w019 = result.warnings.find(w => w.code === 'W019');
+    assert.strictEqual(w019, undefined, 'state.json must not be flagged as unrecognized');
   });
 
   test('no W019 for phase subdirectory files (only root is checked)', () => {

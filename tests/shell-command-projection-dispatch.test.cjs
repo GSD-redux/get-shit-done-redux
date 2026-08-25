@@ -30,6 +30,7 @@ const {
   escapePosixDoubleQuoted,
   escapeSingleQuotedShellLiteral,
   retryRenameSync,
+  contentChangedAfterNormalize,
 } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'));
 
 const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
@@ -1288,6 +1289,71 @@ describe('normalizeContent', () => {
   test('encoding defaults to utf-8', () => {
     const result = normalizeContent('file.md', 'hello\n');
     assert.strictEqual(result.encoding, 'utf-8');
+  });
+});
+
+// ─── contentChangedAfterNormalize ─────────────────────────────────────────────
+
+// #3685 / #3691: `platformWriteSync` runs Markdown normalization before
+// persisting. `roadmap_updated`/`state_updated`/`requirements_updated`-style
+// flags computed via a raw `after !== before` on the PRE-normalize strings
+// false-positive whenever the two sides differ only in a way normalization
+// erases (CRLF, blank-line-run collapse, trailing-newline count) — the exact
+// artifact class the milestone.cts #3685 fix diagnosed. This seam is the
+// single point every such flag must go through instead.
+describe('contentChangedAfterNormalize (#3685 / #3691)', () => {
+  test('reports false when the only difference is a CRLF vs LF artifact', () => {
+    const before = 'line1\r\nline2\r\n';
+    const after = 'line1\nline2\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('STATE.md', before, after), false,
+      'CRLF-only difference must not report a content change',
+    );
+  });
+
+  test('reports false when the only difference is a collapsible blank-line run', () => {
+    const before = '# Title\n\nparagraph\n';
+    const after = '# Title\n\n\nparagraph\n'; // extra blank line — collapses under normalize
+    assert.strictEqual(
+      contentChangedAfterNormalize('ROADMAP.md', before, after), false,
+      'a blank-line-run artifact that normalizes away must not report a content change',
+    );
+  });
+
+  test('reports false when the only difference is trailing-newline count', () => {
+    const before = '# Title\n\nbody\n';
+    const after = '# Title\n\nbody\n\n\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('STATE.md', before, after), false,
+      'trailing-newline-count-only difference must not report a content change',
+    );
+  });
+
+  test('reports true for a genuine content change', () => {
+    const before = '# Title\n\nold body\n';
+    const after = '# Title\n\nnew body\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('ROADMAP.md', before, after), true,
+      'a real content change must still report true',
+    );
+  });
+
+  test('reports true for a genuine change even when disguised by normalize-equivalent formatting on both sides', () => {
+    const before = '# Title\r\n\r\n\r\nold body\r\n';
+    const after = '# Title\n\nnew body\n\n\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('ROADMAP.md', before, after), true,
+      'formatting noise on both sides must not mask a real semantic change',
+    );
+  });
+
+  test('non-.md files still normalize (CRLF strip + trailing newline) before comparing', () => {
+    const before = 'a: 1\r\nb: 2';
+    const after = 'a: 1\nb: 2\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('config.json', before, after), false,
+      'non-.md normalization (CRLF + trailing newline) must also suppress a false positive',
+    );
   });
 });
 

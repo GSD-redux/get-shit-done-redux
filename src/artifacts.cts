@@ -27,6 +27,7 @@ export const CANONICAL_EXACT: ReadonlySet<string> = new Set([
   'WINDOWS.md', // #3224: broken-windows ledger (src/broken-windows.cts, LEDGER_FILE_NAME)
   'STATE-ARCHIVE.md', // state.cts's cmdStatePrune writes this at the .planning/ root
   'milestone.lock', // #3311: milestone (phase + session) claim (src/milestone-lock.cts); persistent, unlike the transient STATE.md.lock/WAITING.json
+  'state.json', // #3227: machine-readable state contract published at step boundaries (src/state-contract.cts)
 ]);
 
 // Pattern-match canonical file names (regex tests on the basename)
