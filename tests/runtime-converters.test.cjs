@@ -2215,23 +2215,15 @@ describe('bug-2876: skill+agent converters emit YAML-quoted description', () => 
 // OpenCode: the bake wrote `model:` and nothing else, so every subagent ran at
 // whatever opencode.jsonc defaults the model to. The effort-side twin of #3705.
 //
-// TWO COPIES, ONE TABLE. The converter exists in bin/install.js (required at the
-// top of this file) AND in src/runtime-artifact-conversion.cts — the live bake
-// path, reached from runtime-artifact-layout.cts. That file carries a standing
-// DEFECT.GENERATIVE-FIX note; the first draft of these tests exercised only the
-// install.js copy and would have passed while the live path stayed broken. Every
-// case below therefore runs against BOTH copies, which IS the parity assertion:
-// if one is changed and the other is not, this block goes red.
+// bin/install.js has its own copy of these converters, but no `isAgent: true`
+// call site: its agents install path runs through the compiled bin/lib module,
+// not through its own copy. The live copy in src/runtime-artifact-conversion.cts
+// (compiled to gsd-core/bin/lib/runtime-artifact-conversion.cjs) is therefore
+// the one the bake actually uses, and the one under test here.
 const liveConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
-const OPENCODE_CONVERTERS = [
-  ['bin/install.js', convertClaudeToOpencodeFrontmatter],
-  ['src (live bake)', liveConversion.convertClaudeToOpencodeFrontmatter],
-];
-const KILO_CONVERTERS = [
-  ['bin/install.js', convertClaudeToKiloFrontmatter],
-  ['src (live bake)', liveConversion.convertClaudeToKiloFrontmatter],
-];
+const OPENCODE_CONVERTERS = [['src (live bake)', liveConversion.convertClaudeToOpencodeFrontmatter]];
+const KILO_CONVERTERS = [['src (live bake)', liveConversion.convertClaudeToKiloFrontmatter]];
 
 describe('#3706: OpenCode agent variant (resolved effort)', () => {
   const AGENT = ['---', 'name: gsd-executor', 'description: x', 'model: sonnet', '---', '', 'Body.'].join('\n');
@@ -2396,8 +2388,10 @@ describe('#3706: install-time effort resolves and renders for OpenCode', () => {
     assert.equal(thread({ agent_overrides: { 'gsd-executor': 'xhigh' } }, 'gsd-executor'), 'xhigh');
   });
 
-  test('a configured default reaches the emitted value', () => {
-    assert.equal(thread({ default: 'low' }, 'gsd-doc-writer'), 'low');
+  test('a configured default reaches an agent with no catalog tier', () => {
+    // effort.default is only consulted for agents the tier ladder does not
+    // answer for; see the tiered-agent test below for the other half.
+    assert.equal(thread({ default: 'low' }, 'not-a-catalog-agent'), 'low');
   });
 
   test("'inherit' is never emitted as a literal", () => {
@@ -2435,53 +2429,42 @@ describe('#3706: install-time effort resolves and renders for OpenCode', () => {
       assert.equal(catalog.renderEffortArgv('opencode', lvl, 'argv').value, lvl);
     }
   });
-});
 
-// ─── #3706: the two frontmatterScalar copies cannot diverge ─────────────────
-//
-// bin/install.js cannot require anything under bin/lib, so the quoting and
-// escaping rules are restated there by hand. Two hand-maintained copies of
-// one rule set is the DEFECT.GENERATIVE-FIX shape the repo requires a parity
-// assertion for, so this asserts equivalence directly instead of trusting
-// that both were edited. A divergence means one install path still emits a
-// value the other quotes.
-
-describe('#3706: the two frontmatterScalar copies cannot diverge', () => {
-  const fc = require('fast-check');
-
-  const modelLineFor = (convert, value) => {
-    const AGENT = ['---', 'name: x', 'description: y', '---', '', 'Body.'].join('\n');
-    return convert(AGENT, { isAgent: true, modelOverride: value }).split('\n').find((l) => l.startsWith('model:'));
-  };
-
-  test('agrees on a hand-picked adversarial corpus', () => {
-    const corpus = [
-      'sonnet', 'synthetic/hf:zai-org/GLM-5.2', '@org/m', 'foo:', 'a:b', 'no', 'NULL', '12:30', '0x1f', '1.5',
-      '', '   ', 'x ', ' x', '-a', '- a', '?a', '#c', '&anc', '*ali', '!tag', '|blk', '>fold', '%res', '`btk',
-      '{f}', '[f]', 'a,b', 'q"q', 'back\\slash', 'tab\there', 'nl\nhere', 'cr\rhere', ' ctl', 'del',
-      'e-unicode', '1e5', '017', '.inf', '~', 'on', 'y', 'n', 'true',
-    ];
-
-    for (const value of corpus) {
-      assert.equal(
-        modelLineFor(convertClaudeToOpencodeFrontmatter, value),
-        modelLineFor(liveConversion.convertClaudeToOpencodeFrontmatter, value),
-        `bin/install.js and bin/lib/runtime-artifact-conversion.cjs disagree on frontmatterScalar(${JSON.stringify(value)})`,
-      );
-    }
+  test('an empty model override omits the key rather than writing an empty value', () => {
+    // Found by the property below, which originally asserted a round-trip for
+    // every generated string and failed on "". An empty override is falsy, so
+    // no `model:` line is written at all — that is the #2256/J7 contract (omit
+    // the key, never `model: ""`), so the property is scoped to non-empty
+    // values and the empty case is pinned here instead of being generated away.
+    const out = liveConversion.convertClaudeToOpencodeFrontmatter(
+      ['---', 'name: x', 'description: y', '---', '', 'Body.'].join('\n'),
+      { isAgent: true, modelOverride: '' },
+    );
+    assert.ok(!/^model:/m.test(out), `expected no model key, got:\n${out}`);
   });
 
-  test('agrees on arbitrary values', () => {
-    const yamlChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:@-_./\"\\ \n\t#&*!|>%`{}[],?~".split('');
-    const valueArb = fc.string({ unit: fc.constantFrom(...yamlChars), maxLength: 40 });
-
+  test('every emitted model line parses back to the exact value', () => {
+    // The real contract, stated directly: whatever a user puts in config, the
+    // generated frontmatter must read back as that same string. A per-character
+    // rule list is only a means to this end, and this is what catches the case
+    // nobody thought to enumerate.
+    const fc = require('fast-check');
+    const yaml = require('js-yaml');
+    const chars = ':@-_./"\\ \n\t#&*!|>%`{}[],?~+abcXY019';
     fc.assert(
-      fc.property(valueArb, (value) => {
-        assert.equal(
-          modelLineFor(convertClaudeToOpencodeFrontmatter, value),
-          modelLineFor(liveConversion.convertClaudeToOpencodeFrontmatter, value),
-        );
-      }),
+      fc.property(
+        fc.string({ unit: fc.constantFrom(...chars.split('')), minLength: 1 }),
+        (value) => {
+          const out = liveConversion.convertClaudeToOpencodeFrontmatter(
+            ['---', 'name: x', 'description: y', '---', '', 'Body.'].join('\n'),
+            { isAgent: true, modelOverride: value },
+          );
+          const fmBody = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(out)[1];
+          return yaml.load(fmBody).model === value;
+        },
+      ),
+      { numRuns: 2000 },
     );
   });
 });
+

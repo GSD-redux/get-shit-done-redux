@@ -475,19 +475,17 @@ function convertedAgentsKind(
           const modelOverride = meta
             ? installModelOverrideResolver.resolveAgentModelOverride(meta.agentName, modelOverrides, runtimeResolver)
             : null;
-          // The universal level is NOT emitted raw. `renderEffortArgv` is the
-          // declared OpenCode effort seam (EFFORT_ARGV.opencode: its own
+          // The universal level is NOT emitted raw. `clampEffortForHost` is the
+          // declared OpenCode effort capability (EFFORT_ARGV.opencode: its own
           // `supported` set + `clamp`), and it is what rejects a level that is
           // not a wire value — most importantly `inherit`, which per #3533 (10d)
           // means "omit the key and follow the host default" and must never be
-          // written literally. Anything unsupported renders `value: null`, which
-          // omits the key rather than inventing one.
+          // written literally. Anything unsupported clamps to null, which omits
+          // the key rather than inventing one.
           const universal = effortConfig && meta
             ? installEffortResolver.resolveInstallTimeEffort(effortConfig, meta.agentName)
             : null;
-          const variant = universal
-            ? modelCatalog.renderEffortArgv('opencode', universal, 'argv').value
-            : null;
+          const variant = universal ? modelCatalog.clampEffortForHost('opencode', universal) : null;
           return rawConverter(content, { isAgent: true, modelOverride, variant });
         };
       } else {

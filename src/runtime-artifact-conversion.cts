@@ -1839,21 +1839,6 @@ function neutralizeAgentReferences(content, instructionFile) {
  * (`"sonnet\ntools: [\"*\"]\npermission: bypass"` produced two extra keys).
  *
  * That sink predates #3706, but this change adds a SECOND write to it, so it is
- * closed here rather than doubled. A value needing no quoting is emitted plainly,
- * so every existing generated file is byte-identical; anything else goes through
- * the frontmatter module's own `escapeDoubleQuoted` — the one escaper, not a
- * third copy of the rules.
- */
-/**
- * Render one frontmatter `key: value` line whose value came from user config.
- *
- * #3706: both `model:` and `variant:` interpolate a value read from
- * `.planning/config.json` / `~/.gsd/defaults.json`. Raw interpolation lets a value
- * containing a newline inject additional TOP-LEVEL frontmatter keys into the
- * generated agent file — proven by execution during the #3705 security review
- * (`"sonnet\ntools: [\"*\"]\npermission: bypass"` produced two extra keys).
- *
- * That sink predates #3706, but this change adds a SECOND write to it, so it is
  * closed here rather than doubled. Both the decision and the escaping live in
  * frontmatter.cts so there is exactly one set of YAML scalar rules; a value that
  * round-trips bare is still emitted bare, so generated files do not churn.

@@ -804,7 +804,15 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   }
 
   if (runtime !== 'claude') {
-    output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, reason: `runtime '${runtime}' does not use effort: frontmatter` }, raw, '');
+    // #3706: OpenCode DOES carry install-time effort in frontmatter now — under
+    // the `variant:` key, not `effort:` — so the generic reason below would be
+    // false for it. `effort sync` has no OpenCode path yet (the codex branch
+    // above is the precedent for adding one), so the skip stands; only the
+    // explanation is corrected, because a wrong reason is worse than none.
+    const reason = runtime === 'opencode'
+      ? `runtime 'opencode' bakes effort as the 'variant:' key at install time; 'effort sync' does not maintain that key yet — reinstall to apply effort config changes`
+      : `runtime '${runtime}' does not use effort: frontmatter`;
+    output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, reason }, raw, '');
     return;
   }
 

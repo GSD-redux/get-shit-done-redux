@@ -385,26 +385,44 @@ function scalarNeedsDoubleQuoting(s: string): boolean {
  * Deliberately a superset of `scalarNeedsDoubleQuoting` rather than a second,
  * competing predicate: that one answers "can this open a plain scalar safely",
  * which is necessary but not sufficient for a value that must ROUND-TRIP as the
- * exact string it went in as. The extra clauses:
+ * exact string it went in as. Keeping both here is the point — they are two
+ * answers to one question and drift the moment they live apart.
  *
+ * The extra clauses, each an observed mis-parse rather than a precaution:
+ *
+ *   - a non-alphanumeric first character. `scalarNeedsDoubleQuoting` rejects the
+ *     indicators that cannot OPEN a scalar, but YAML still resolves plenty of
+ *     values that open legally: `~` and `.inf`/`.nan` become null and floats,
+ *     and a leading sign or dot (`+1`, `-0`, `.5`) becomes a number. Requiring
+ *     alphanumeric-first covers that whole family at once, and costs nothing:
+ *     every real model ID and effort level starts alphanumeric.
  *   - a trailing `:` — `model: foo:` is read as a nested mapping key and fails
- *     the whole frontmatter with "bad indentation of a mapping entry";
+ *     the whole frontmatter with "bad indentation of a mapping entry".
  *   - a boolean/null word — YAML 1.1 readers resolve `no`/`y`/`off`/`null` to
- *     non-strings, so a variant named `no` arrives as `false`;
+ *     non-strings, so a variant named `no` arrives as `false`.
  *   - a numeric-looking value, including the YAML 1.1 sexagesimal form: `12:30`
  *     resolves to the integer 750, and `:` is legal mid-identifier here.
- *
- * Keeping both predicates in this module is the point — they are two answers to
- * one question and drift the moment they live apart.
+ *   - a date. `2026-08-25` starts alphanumeric and survives every clause above,
+ *     yet YAML resolves it to a Date object rather than a string.
  */
 const YAML_WORD_SCALAR_RE = /^(?:y|n|yes|no|true|false|on|off|null)$/i;
 const YAML_NUMERIC_RE = /^(?:\d[\d_]*(?:\.[\d_]*)?(?:[eE][-+]?\d+)?|0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?::[0-5]?\d)+(?:\.[\d_]*)?)$/;
+// YAML 1.1 timestamp: a bare ymd, optionally followed by a time part.
+const YAML_TIMESTAMP_RE = /^\d{4}-\d{1,2}-\d{1,2}(?:[Tt ].*)?$/;
 
 function agentScalarNeedsDoubleQuoting(s: string): boolean {
   if (scalarNeedsDoubleQuoting(s)) return true;
+  if (!/^[A-Za-z0-9]/.test(s)) return true;
+  // A plain scalar ENDS at `: ` or ` #` wherever they appear — the base
+  // predicate only inspects the first character, because its question is
+  // whether the scalar can legally open. `a: b` makes the line a nested
+  // mapping (a parse error at this indent) and `a #b` silently truncates to
+  // `a`. Both were found by the round-trip property, not by inspection.
+  if (/:\s/.test(s) || /\s#/.test(s)) return true;
   if (s.endsWith(':')) return true;
   if (YAML_WORD_SCALAR_RE.test(s)) return true;
   if (YAML_NUMERIC_RE.test(s)) return true;
+  if (YAML_TIMESTAMP_RE.test(s)) return true;
   return false;
 }
 
