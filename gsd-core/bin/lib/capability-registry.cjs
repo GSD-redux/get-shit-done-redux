@@ -97,7 +97,7 @@ const capabilities = {
     "role": "runtime",
     "version": "1.11.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity IDE — nested under ~/.gemini/config (falls back to legacy ~/.gemini/antigravity{,-ide,-cli} for pre-existing installs); probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -112,6 +112,7 @@ const capabilities = {
           "ANTIGRAVITY_CONFIG_DIR"
         ],
         "probe": [
+          "config",
           "antigravity",
           "antigravity-ide",
           "antigravity-cli"
@@ -5246,7 +5247,7 @@ const runtimes = {
     "role": "runtime",
     "version": "1.11.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity IDE — nested under ~/.gemini/config (falls back to legacy ~/.gemini/antigravity{,-ide,-cli} for pre-existing installs); probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -5261,6 +5262,7 @@ const runtimes = {
           "ANTIGRAVITY_CONFIG_DIR"
         ],
         "probe": [
+          "config",
           "antigravity",
           "antigravity-ide",
           "antigravity-cli"

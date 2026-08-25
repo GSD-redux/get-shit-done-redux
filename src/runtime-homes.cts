@@ -379,7 +379,7 @@ export function resolveAntigravityGlobalDir(opts: ResolveAntigravityOpts = {}): 
       name: 'antigravity',
       parent: '.gemini',
       env: ['ANTIGRAVITY_CONFIG_DIR'],
-      probe: ['antigravity', 'antigravity-ide', 'antigravity-cli'],
+      probe: ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'],
       // Prefer the candidate GSD installed into (carries gsd-core/VERSION) over
       // a bare-existing sibling. Without this, a CLI user (antigravity-cli) who
       // also has the IDE's ~/.gemini/antigravity dir is shadowed to the legacy

@@ -21,6 +21,7 @@ export const RUNTIME_DIRS: RuntimeDirEntry[] = [
   ['claude', '.claude'],
   ['opencode', '.config/opencode'],
   ['opencode', '.opencode'],
+  ['antigravity', '.gemini/config'],
   ['antigravity', '.gemini/antigravity-ide'],
   ['antigravity', '.gemini/antigravity-cli'],
   ['antigravity', '.gemini/antigravity'],
