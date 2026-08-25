@@ -6624,7 +6624,9 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       ].join('\n');
       fs.writeFileSync(statePath, original);
 
-      stateLib.writeStateMd(statePath, original, tmp);
+      stateLib.writeStateMd(statePath, original, stateTransitionMod.rebuildStateTransaction({
+        snapshot: frontmatterLib.extractFrontmatter(original),
+      }), tmp);
 
       const onDisk = fs.readFileSync(statePath, 'utf8');
       const fm = frontmatterLib.extractFrontmatter(onDisk);
@@ -6657,7 +6659,9 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       ].join('\n');
       fs.writeFileSync(statePath, original);
 
-      stateLib.writeStateMd(statePath, original, tmp);
+      stateLib.writeStateMd(statePath, original, stateTransitionMod.rebuildStateTransaction({
+        snapshot: frontmatterLib.extractFrontmatter(original),
+      }), tmp);
 
       const expected = [
         '---', 'gsd_state_version: 1.0', 'status: unknown', 'last_updated: "2023-11-14T22:13:20.000Z"',
@@ -6693,7 +6697,9 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
         '**Current phase:** (determining...)', '**Status:** Resuming', '',
       ].join('\n');
 
-      stateLib.writeStateMd(statePath, regenerated, tmp);
+      stateLib.writeStateMd(statePath, regenerated, stateTransitionMod.rebuildStateTransaction({
+        snapshot: frontmatterLib.extractFrontmatter(oldCurated),
+      }), tmp);
 
       const onDisk = fs.readFileSync(statePath, 'utf8');
       const fm = frontmatterLib.extractFrontmatter(onDisk);
@@ -14385,7 +14391,9 @@ describe('buildStateFrontmatter cache invalidation (#1967)', () => {
   test('writeStateMd invalidates cache so subsequent reads see new disk state', () => {
     // First write — populates cache via buildStateFrontmatter
     const content1 = fs.readFileSync(statePath, 'utf-8');
-    state.writeStateMd(statePath, content1, tmpDir);
+    state.writeStateMd(statePath, content1, stateTransitionMod.rebuildStateTransaction({
+      snapshot: frontmatterLib.extractFrontmatter(content1),
+    }), tmpDir);
 
     // Create a NEW phase directory AFTER the first write
     // Without cache invalidation, the second write would still see only 1 phase
@@ -14400,7 +14408,9 @@ describe('buildStateFrontmatter cache invalidation (#1967)', () => {
 
     // Second write in the SAME process — must see the new phase
     const content2 = fs.readFileSync(statePath, 'utf-8');
-    state.writeStateMd(statePath, content2, tmpDir);
+    state.writeStateMd(statePath, content2, stateTransitionMod.rebuildStateTransaction({
+      snapshot: frontmatterLib.extractFrontmatter(content2),
+    }), tmpDir);
 
     // Read back and parse frontmatter to verify it reflects 2 phases, not 1
     const result = fs.readFileSync(statePath, 'utf-8');

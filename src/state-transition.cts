@@ -17,7 +17,7 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback, stateReplaceFieldInSession } from './state-document.cjs';
-import { KNOWN_TEMPLATE_DEFAULTS } from './state-document.cjs';
+import { KNOWN_TEMPLATE_DEFAULTS, toFiniteNumber } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { deriveProgressFromRoadmap, clampPercent } from './phase-lifecycle.cjs';
@@ -261,6 +261,117 @@ export function getFieldClassification(field: string): FieldClassification | nul
 }
 
 // ----------------------------------------------------------------------------
+// The state transaction (ADR-3473 §8.6, issue #3871)
+// ----------------------------------------------------------------------------
+//
+// Collapses the two-field `preFm` / `preFmSnapshot` shape (same source, same
+// arguments, same `extractFrontmatter` call — `preFm` was `preFmSnapshot` with
+// a policy flag baked in by nulling it on `resync`) into ONE snapshot plus a
+// typed constructor pair that names the policy explicitly instead of encoding
+// it as a null. See `.gsd/phase/feat-3871-state-transaction-snapshot/40-design.md`.
+
+/** The two sanctioned write-path kinds (ADR-3408 §8.3's closed exception list, typed). */
+export type StateTransactionKind = 'open' | 'rebuild';
+
+export type StateBodyDelta = { pre: string | null; post: string | null };
+
+export type StateTransactionInit = {
+  /** Pre-write frontmatter snapshot. `{}` is legal (see `createStateTransaction`). */
+  snapshot: Record<string, unknown>;
+  resync?: boolean;
+  deriveProgressKeys?: boolean;
+  bodyDeltas?: Record<string, StateBodyDelta>;
+};
+
+export type StateTransaction = {
+  readonly kind: StateTransactionKind;
+  readonly snapshot: Readonly<Record<string, unknown>>;
+  readonly resync: boolean;
+  readonly deriveProgressKeys: boolean;
+  readonly bodyDeltas?: Readonly<Record<string, StateBodyDelta>>;
+};
+
+/**
+ * Shared constructor body for `openStateTransaction` / `rebuildStateTransaction`
+ * (ADR-3473 §8.6 Decision 2/3). Validates `init.snapshot` and freezes the
+ * result so nothing downstream can mutate a transaction after construction
+ * (this is what makes the aliasing fix in `applyPreserveAlways`'s clone hold:
+ * the snapshot a caller passed in cannot be rewritten out from under it).
+ *
+ * `{}` and a null-prototype object are BOTH legal snapshots (Decision 2 / row
+ * 15 of the behavior table): `extractFrontmatter` returns `{}` for a document
+ * with no frontmatter or an unterminated one and never returns null or throws
+ * (`src/frontmatter.cts`), so `{}` is the honest snapshot of a real document —
+ * and `/gsd-health --repair`, which runs precisely when STATE.md is broken,
+ * depends on that staying legal. What is NOT legal is the snapshot being
+ * ABSENT (`null`/`undefined`/an array/a non-object): that is the caller
+ * forgetting to read the pre-write document at all, a construction failure,
+ * not a data question. Conflating "absent" with "empty" would turn the repair
+ * path's normal case into a hard throw.
+ */
+function createStateTransaction(kind: StateTransactionKind, init: StateTransactionInit, ctorName: string): StateTransaction {
+  if (init === null || typeof init !== 'object' || Array.isArray(init)) {
+    const err = new Error(
+      `${ctorName}: expected an init object, got ${init === null ? 'null' : typeof init}. ` +
+      'Per ADR-3473 §8.6 / Decision 2, an absent init is a construction failure, distinct from ' +
+      'a legal empty snapshot ({}) — do not "fix" this by tolerating null.',
+    ) as Error & { code: string; constructorName: string };
+    err.code = 'STATE_TRANSACTION_SNAPSHOT_REQUIRED';
+    err.constructorName = ctorName;
+    throw err;
+  }
+  const snapshot = init.snapshot;
+  if (snapshot === null || snapshot === undefined || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    const err = new Error(
+      `${ctorName}: init.snapshot is required and must be a non-array object (frontmatter map). ` +
+      `Per ADR-3473 §8.6 / Decision 2, an ABSENT snapshot is a construction failure — this is NOT ` +
+      'the same as a legal EMPTY snapshot ({}), which every executor accepts and simply finds ' +
+      'nothing to restore from (extractFrontmatter returns {} for a document with no parseable ' +
+      'frontmatter, and /gsd-health --repair depends on that staying legal). Pass {} explicitly ' +
+      'when the document truly has none; do not tolerate null/undefined here.',
+    ) as Error & { code: string; constructorName: string };
+    err.code = 'STATE_TRANSACTION_SNAPSHOT_REQUIRED';
+    err.constructorName = ctorName;
+    throw err;
+  }
+  return Object.freeze({
+    kind,
+    snapshot,
+    resync: init.resync === true,
+    deriveProgressKeys: init.deriveProgressKeys === true,
+    bodyDeltas: init.bodyDeltas,
+  });
+}
+
+/**
+ * ADR-3473 §8.6's `open()`: the default write-path transaction. Carries the
+ * pre-write snapshot and applies preservation (`applyStatePreservation` runs
+ * its full dispatch loop against it) — this is every STATE.md write EXCEPT
+ * the two sanctioned exceptions below.
+ */
+export function openStateTransaction(init: StateTransactionInit): StateTransaction {
+  return createStateTransaction('open', init, 'openStateTransaction');
+}
+
+/**
+ * ADR-3473 §8.6's `rebuild()`: the TYPED expression of ADR-3408 §8.3's closed
+ * list of sanctioned exceptions to the preservation pipeline. Exactly two
+ * callers may construct this: `cmdStateSync` (`state sync` re-derives
+ * frontmatter FROM the body per #905 — the body is authoritative and
+ * preservation would fight it) and `REGENERATE_STATE` (`/gsd-health --repair`'s
+ * factory reset — the whole point is to replace what's there). The snapshot
+ * is still carried (for §8.7's reporting) but `applyStatePreservation` skips
+ * its dispatch loop entirely for a `rebuild` transaction.
+ *
+ * This list is NOT debt to be paid down later — it is a closed, deliberate
+ * set. Adding a third caller is an amendment to ADR-3408 §8.3, not a call site
+ * convenience.
+ */
+export function rebuildStateTransaction(init: StateTransactionInit): StateTransaction {
+  return createStateTransaction('rebuild', init, 'rebuildStateTransaction');
+}
+
+// ----------------------------------------------------------------------------
 // applyStatePreservation — table-driven post-sync preservation (ADR-1769 #1796)
 // ----------------------------------------------------------------------------
 //
@@ -274,38 +385,18 @@ export function getFieldClassification(field: string): FieldClassification | nul
 // the pre-#1796 inline block; this is the consolidation ADR-1769 / CONTEXT.md
 // already claimed shipped. See issue #1796 (Path A: finish the consolidation).
 
+/**
+ * ADR-3473 §8.6: the whole pre-write policy — snapshot, resync, deriveProgressKeys,
+ * bodyDeltas — now travels as ONE `StateTransaction` (see `openStateTransaction`
+ * / `rebuildStateTransaction` above), rather than as four separate fields the
+ * caller could set inconsistently (the `preFm`/`preFmSnapshot` split this
+ * replaces was exactly that: the same snapshot with a policy flag baked in by
+ * nulling one copy of it on resync).
+ */
 export type StatePreservationInput = {
-  /** Pre-transform frontmatter; `null` when the transition re-derives from disk (resync=true). */
-  preFm: Record<string, unknown> | null;
+  transaction: StateTransaction;
   /** Post-`syncStateFrontmatter` frontmatter (the freshly recomputed one). */
   postFm: Record<string, unknown>;
-  /** Always-present pre-transform frontmatter snapshot (drives the #1230 deltas). */
-  preFmSnapshot: Record<string, unknown>;
-  /** True when the caller asked for a full disk re-derivation (sync / advancePlan / completePhase). */
-  resync: boolean;
-  /**
-   * #2440: when true, total_plans and total_phases take the derived (post-sync)
-   * value even under !resync, instead of the wholesale curated restore. Used
-   * by callers (e.g. cmdStatePlannedPhase) where total_plans must correct to
-   * disk truth after plans are added. Body-only writes (state.update/patch)
-   * leave this false — the #3242 wholesale protection stays in force.
-   */
-  deriveProgressKeys?: boolean;
-  /**
-   * #3258 / #3468: pre/post body-source values for every preserve-when-unchanged
-   * (#1230 delta heuristic) row, keyed by the FRONTMATTER field the policy
-   * guards — one channel for all seven rows (status, stopped_at,
-   * current_phase_name, current_phase, current_plan, paused_at,
-   * last_activity_desc), folded from the two channels (a bodyDeltas map plus
-   * three dedicated pre/post parameter pairs) #3468 replaced. The caller
-   * snapshots each field's body source before/after the transform (mirroring
-   * how buildStateFrontmatter derives it); `applyPreserveWhenUnchanged`
-   * restores the pre-write frontmatter value when that body source was left
-   * unchanged by this write. Adding a preserve-when-unchanged row is a
-   * one-row table edit PLUS a bodyDeltas entry from the caller — omitting the
-   * entry is not a silent no-op, it THROWS (ADR-3408 §8.2, `applyPreserveWhenUnchanged`).
-   */
-  bodyDeltas?: Record<string, { pre: string | null; post: string | null }>;
 };
 
 export type StatePreservationResult = {
@@ -319,9 +410,8 @@ export type StatePreservationResult = {
  * §8.1 — one executor per policy, sharing one result).
  */
 export type PreservationCtx = {
-  preFm: Record<string, unknown> | null;
   postFm: Record<string, unknown>;
-  preFmSnapshot: Record<string, unknown>;
+  snapshot: Record<string, unknown>;
   resync: boolean;
   deriveProgressKeys: boolean;
   bodyDeltas: Record<string, { pre: string | null; post: string | null }> | undefined;
@@ -384,7 +474,7 @@ export function applyPreserveWhenUnchanged(field: string, cls: FieldClassificati
   // 2. Only a real, non-whitespace-only curated string is worth restoring
   // (#3468: tightened from `.length > 0` to a trimmed check — a whitespace-
   // only snapshot is not a real curated value).
-  const snapshot = ctx.preFmSnapshot[field];
+  const snapshot = ctx.snapshot[field];
   if (typeof snapshot !== 'string' || snapshot.trim().length === 0) return;
 
   // 3. Closed-vocabulary guard: status's 'unknown' sentinel is never restored.
@@ -403,27 +493,98 @@ export function applyPreserveWhenUnchanged(field: string, cls: FieldClassificati
 }
 
 /**
+ * The closed set of `progress` keys whose non-zero value means "a real
+ * measurement happened" (ADR-3473 §8.6 / #3756).
+ */
+const PROGRESS_TOTAL_KEYS = ['total_phases', 'total_plans'] as const;
+
+/**
+ * Did this row's derived (or curated) value represent a REAL measurement?
+ *
+ * For a `progress-ratchet` row (today, only `progress`): an empty
+ * milestone-scoped scan is "nothing was measured", not "zero is done"
+ * (#3756, and the convention #3233 established — `computeProgressPercent`
+ * already returns `null` for an empty denominator). Only the TOTALS decide:
+ * `completed_*` being zero is normal for a real project, so it is
+ * deliberately excluded from this check. A non-object / absent / negative /
+ * non-numeric total is NOT a measurement, so it degrades TOWARD preservation,
+ * never toward deletion — `toFiniteNumber` (not a raw `=== 0`/`> 0` test)
+ * because frontmatter scalars arrive as STRINGS (`"0"`, not `0`).
+ *
+ * For any other row (no `progress-ratchet` strategy) the question is
+ * meaningless, so it answers `true` and behavior is unchanged — this
+ * function is only ever consulted from inside the `preserve-always` /
+ * `progress-ratchet` branch below.
+ */
+function scanMeasuredSomething(cls: FieldClassification, value: unknown): boolean {
+  if (cls.mergeStrategy !== 'progress-ratchet') return true;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const rec = value as Record<string, unknown>;
+  return PROGRESS_TOTAL_KEYS.some((k) => (toFiniteNumber(rec[k]) ?? 0) > 0);
+}
+
+/**
+ * Deep-clone a curated value before it re-enters `postFm` (ADR-3473 §8.6,
+ * "Defects fixed inline" / aliasing). `structuredClone` is a Node built-in;
+ * this repo takes no external deps for it. WHY a clone and not a reference
+ * assignment: the transaction's `snapshot` is now the SAME object §8.7's
+ * reporting will diff against. Assigning the nested curated object by
+ * reference would make `postFm.progress` alias that snapshot, so a later
+ * in-place mutation of `postFm` would silently rewrite the snapshot too, and
+ * the diff would report "no change" for a field that did change.
+ */
+function cloneCurated(value: unknown): unknown {
+  return structuredClone(value);
+}
+
+/**
+ * Structural equality for a restored value vs. what `postFm` already held
+ * (ADR-3473 §8.6, "Defects fixed inline" / #948 no-op-write family).
+ * `JSON.stringify` compare when either side is an object (the `progress`
+ * block), `===` otherwise. WHY: `applyPreserveAlways` previously set
+ * `ctx.mutated = true` unconditionally at its tail, even when it restored a
+ * value identical to what was already there — driving a write that changes
+ * nothing but still bumps `last_updated` / restamps `state_head`.
+ * `applyPreserveWhenUnchanged` already guards this (its step 5); this brings
+ * the two executors into agreement.
+ */
+function preservedValuesEqual(a: unknown, b: unknown): boolean {
+  if (typeof a === 'object' || typeof b === 'object') {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return a === b;
+}
+
+/**
  * Executor for `preservation: 'preserve-always'` (ADR-3408 §8.1). Only
  * `progress` carries this policy today. Preserves #3242/#1446/#2440/#2969
- * semantics byte-for-byte: gated on `!resync` and a truthy `preFm[field]`;
- * the `mergeStrategy: 'progress-ratchet'` per-key merge only fires when the
- * caller opts in via `deriveProgressKeys`, else the whole curated block wins
- * wholesale.
+ * semantics byte-for-byte on every row the behavior table marks unchanged;
+ * ADR-3473 §8.6 fixes the #3756 defect (a resyncing write that measured
+ * nothing must not drop a real curated block) plus the two "Defects fixed
+ * inline" no-op-write / aliasing bugs.
  */
 function applyPreserveAlways(field: string, cls: FieldClassification, ctx: PreservationCtx): void {
-  if (ctx.resync || !ctx.preFm || !ctx.preFm[field]) return;
+  const curated = ctx.snapshot[field];
+  if (!curated) return;
+  const derived = ctx.postFm[field];
+  const derivedMeasured = scanMeasuredSomething(cls, derived);
+  const curatedMeasured = scanMeasuredSomething(cls, curated);
+  // On a resyncing write the fresh derivation is authoritative — UNLESS it
+  // measured nothing while the curated block did. (#3756)
+  if (ctx.resync && (derivedMeasured || !curatedMeasured)) return;
 
-  if (cls.mergeStrategy === 'progress-ratchet' && ctx.deriveProgressKeys && ctx.postFm[field]) {
+  let next: unknown;
+  if (cls.mergeStrategy === 'progress-ratchet' && ctx.deriveProgressKeys && derived && derivedMeasured) {
     // #2440: total_plans and total_phases always take the derived (post-sync)
     // value even under !resync. This is used by cmdStatePlannedPhase where
     // total_plans must correct upward after plans are added. For body-only
     // writes (state.update/patch without the flag), the wholesale restore
     // below preserves everything as before — the #3242 Bug A protection
     // stays fully in force.
-    const curated = ctx.preFm[field] as Record<string, unknown> | null;
-    const derived = (ctx.postFm[field] ?? {}) as Record<string, unknown>;
-    const merged: Record<string, unknown> = { ...derived };
-    if (curated) {
+    const curatedRecord = curated as Record<string, unknown> | null;
+    const derivedRecord = (derived ?? {}) as Record<string, unknown>;
+    const merged: Record<string, unknown> = { ...derivedRecord };
+    if (curatedRecord) {
       // #2440: total_plans and total_phases always take the derived value.
       // #2969: completed_plans and completed_phases take the derived value
       // when it is GREATER than the curated value (gap-closure plans that
@@ -434,10 +595,10 @@ function applyPreserveAlways(field: string, cls: FieldClassification, ctx: Prese
       // disk counts, and a stale curated percent would be incoherent against
       // the ratcheted-up completed counts (e.g. 54/54 at 93%).
       const ratchetUpKeys = new Set(['completed_plans', 'completed_phases']);
-      for (const [key, value] of Object.entries(curated)) {
+      for (const [key, value] of Object.entries(curatedRecord)) {
         if (key === 'total_plans' || key === 'total_phases' || key === 'percent') continue;
         if (ratchetUpKeys.has(key)) {
-          const derivedNum = typeof derived[key] === 'number' ? derived[key] : -Infinity;
+          const derivedNum = typeof derivedRecord[key] === 'number' ? derivedRecord[key] : -Infinity;
           const curatedNum = typeof value === 'number' ? value : -Infinity;
           // Take the derived value only when it ratchets up (strictly
           // greater — #2969's `>` not `>=`); else keep curated.
@@ -448,10 +609,12 @@ function applyPreserveAlways(field: string, cls: FieldClassification, ctx: Prese
         }
       }
     }
-    ctx.postFm[field] = merged;
+    next = merged;
   } else {
-    ctx.postFm[field] = ctx.preFm[field];
+    next = cloneCurated(curated);
   }
+  if (preservedValuesEqual(ctx.postFm[field], next)) return;
+  ctx.postFm[field] = next;
   ctx.mutated = true;
 }
 
@@ -477,7 +640,7 @@ function applyPreserveIfPlaceholder(_field: string, _cls: FieldClassification, c
     && derivedName.length > 0
     && derivedName !== MILESTONE_PLACEHOLDER
     && !/^[\s—–:-]/.test(derivedName);
-  const snapshotName = ctx.preFmSnapshot['milestone_name'];
+  const snapshotName = ctx.snapshot['milestone_name'];
   const snapshotNameIsReal = typeof snapshotName === 'string'
     && snapshotName.length > 0
     && snapshotName !== MILESTONE_PLACEHOLDER;
@@ -487,7 +650,7 @@ function applyPreserveIfPlaceholder(_field: string, _cls: FieldClassification, c
     ctx.postFm['milestone_name'] = snapshotName;
     ctx.mutated = true;
   }
-  const snapshotVersion = ctx.preFmSnapshot['milestone'];
+  const snapshotVersion = ctx.snapshot['milestone'];
   if (
     typeof snapshotVersion === 'string' && snapshotVersion.length > 0 &&
     ctx.postFm['milestone'] !== snapshotVersion
@@ -517,13 +680,22 @@ function applyDerive(_field: string, _cls: FieldClassification, _ctx: Preservati
  * any field was restored.
  */
 export function applyStatePreservation(input: StatePreservationInput): StatePreservationResult {
+  const { transaction } = input;
+
+  // A `rebuild()` transaction still carries the snapshot (§8.7's reporting
+  // needs it) but must not run preservation at all: `state sync` / `REGENERATE_STATE`
+  // exist to let the body / factory-reset win, and restoring curated values
+  // over that would re-lock exactly what the command was invoked to replace.
+  if (transaction.kind === 'rebuild') {
+    return { postFm: input.postFm, mutated: false };
+  }
+
   const ctx: PreservationCtx = {
-    preFm: input.preFm,
     postFm: input.postFm,
-    preFmSnapshot: input.preFmSnapshot,
-    resync: input.resync,
-    deriveProgressKeys: input.deriveProgressKeys === true,
-    bodyDeltas: input.bodyDeltas,
+    snapshot: transaction.snapshot,
+    resync: transaction.resync,
+    deriveProgressKeys: transaction.deriveProgressKeys === true,
+    bodyDeltas: transaction.bodyDeltas,
     mutated: false,
   };
 

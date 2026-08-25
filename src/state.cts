@@ -71,6 +71,9 @@ type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
 type StateTransitionDeps = stateTransitionMod.StateTransitionDeps;
 type PhaseInventoryRecord = stateTransitionMod.PhaseInventoryRecord;
 type PhaseInventoryResult = stateTransitionMod.PhaseInventoryResult;
+// ADR-3473 §8.6: the state transaction type (see openStateTransaction /
+// rebuildStateTransaction in state-transition.cts).
+type StateTransaction = stateTransitionMod.StateTransaction;
 import {
   computeProgressPercent,
   normalizeProgressNumbers,
@@ -3193,7 +3196,25 @@ function withStateLock<T>(statePath: string, fn: () => T): T {
  * @param clock
  *   Optional clock seam; defaults to realClock. Passed through to acquireStateLock.
  */
-function writeStateMd(statePath: string, content: string, cwd?: string, clock?: StateLockClock): void {
+/**
+ * ADR-3473 §8.6: `writeStateMd` is ADR-3408 §8.3's sanctioned-exception write
+ * path — only a `rebuildStateTransaction` may travel it. Enforced here rather
+ * than left to caller discipline: the transaction TYPE is what makes the two
+ * sanctioned exceptions (`cmdStateSync`, `REGENERATE_STATE`) greppable and
+ * closed, and an `open()` transaction reaching this function would mean a
+ * preservation-governed write silently skipped preservation.
+ */
+function writeStateMd(statePath: string, content: string, transaction: StateTransaction, cwd?: string, clock?: StateLockClock): void {
+  if (transaction.kind !== 'rebuild') {
+    const err = new Error(
+      `writeStateMd: expected a 'rebuild' transaction, got '${transaction.kind}'. writeStateMd is ` +
+      'ADR-3408 §8.3\'s sanctioned-exception write path (cmdStateSync / REGENERATE_STATE only) — ' +
+      'only rebuildStateTransaction() may travel it (ADR-3473 §8.6). An open() transaction here ' +
+      'would silently skip preservation for a write that was supposed to run it.',
+    ) as Error & { code: string };
+    err.code = 'STATE_TRANSACTION_KIND_INVALID';
+    throw err;
+  }
   const lockPath = acquireStateLock(statePath, clock);
   // Test seam (audit M8): fire AFTER the lock is taken so a test can simulate a
   // concurrent writer landing in the (now-closed) scan→lock window.
@@ -3213,10 +3234,14 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
     if (cwd) _diskScanCache.delete(cwd);
     // ADR-3408 §8.3: `writeStateMd` is the sole write path for the two
     // sanctioned-permanent exceptions (`cmdStateSync`, `REGENERATE_STATE`) —
-    // pass `sanctionedPermanentEmptyFallback: true` so their long-standing
-    // empty-field fallback behavior stays byte-identical (see
-    // `syncStateFrontmatter`'s docstring above the guard block).
-    const synced = syncStateFrontmatter(content, cwd, undefined, true);
+    // the sanctioned-permanent empty-field fallback is now DERIVED FROM THE
+    // TRANSACTION KIND (ADR-3473 §8.6) rather than asserted by a literal
+    // `true` at this call site: only a `rebuild` transaction can reach this
+    // function (enforced above), so `transaction.kind === 'rebuild'` is
+    // always `true` here today, but the derivation is what keeps the
+    // fallback's scope tied to the transaction type rather than a
+    // hard-coded constant that could silently drift from it.
+    const synced = syncStateFrontmatter(content, cwd, undefined, transaction.kind === 'rebuild');
     platformWriteSync(statePath, synced);
   } finally {
     releaseStateLock(lockPath);
@@ -3281,9 +3306,6 @@ function applyPostSyncPreservation(
 ): string {
   assertStatePreservationOptions(options, 'applyPostSyncPreservation');
   const { resync, authoritativeFm, deriveProgressKeys, divergedFields } = options;
-  // Snapshot the existing progress block BEFORE the transform so we can
-  // restore it when resync is false.
-  const preFm = resync ? null : extractFrontmatter(originalContent, statePath) as Record<string, unknown>;
 
   // Bug #1230: delta heuristic — snapshot pre-transform body source fields so
   // we can detect whether THIS write changed them. syncStateFrontmatter
@@ -3399,11 +3421,19 @@ function applyPostSyncPreservation(
   // callers that omit it (readModifyWriteStateMd, cmdPhaseComplete) pay
   // nothing extra and see no change to `synced`/the returned content.
   const preservationInputSnapshot = divergedFields ? { ...postFm } : null;
-  const preservation = applyStatePreservation({
-    preFm, postFm, preFmSnapshot, resync,
+  // ADR-3473 §8.6: the pre-write snapshot + policy flags now travel as ONE
+  // transaction rather than as a nullable `preFm` alongside the always-present
+  // `preFmSnapshot` (same source, same extractFrontmatter call — `preFm` was
+  // `preFmSnapshot` with the `resync` policy baked in by nulling it, which is
+  // what made `applyPreserveAlways` inert on the default resyncing write
+  // path — #3756).
+  const transaction = stateTransitionMod.openStateTransaction({
+    snapshot: preFmSnapshot,
+    resync,
     deriveProgressKeys: deriveProgressKeys === true,
     bodyDeltas,
   });
+  const preservation = applyStatePreservation({ transaction, postFm });
   if (divergedFields && preservationInputSnapshot) {
     // §8.5's "liberal but visible": every field whose value actually
     // differs before vs after `applyStatePreservation` is a field where the
@@ -3798,9 +3828,8 @@ function cmdStateJson(cwd: string, raw: boolean): void {
 
     const unchanged = (v: string | null): { pre: string | null; post: string | null } => ({ pre: v, post: v });
     const ctx = {
-      preFm: null,
       postFm: built,
-      preFmSnapshot: existingFm,
+      snapshot: existingFm,
       resync: true,
       deriveProgressKeys: false,
       bodyDeltas: {
@@ -4828,7 +4857,12 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   }
 
   if (changes.length > 0 || modified !== content) {
-    writeStateMd(statePath, modified, cwd);
+    // ADR-3473 §8.6: `rebuild()` is the typed expression of #905's contract —
+    // `state sync` exists to let the body win, so preservation must NOT run,
+    // and the snapshot is carried anyway because §8.7's reporting needs it.
+    writeStateMd(statePath, modified, stateTransitionMod.rebuildStateTransaction({
+      snapshot: extractFrontmatter(content, statePath),
+    }), cwd);
   }
 
   output({ synced: true, changes, dry_run: false }, raw, undefined);
