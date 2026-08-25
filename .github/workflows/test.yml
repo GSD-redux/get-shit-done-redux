@@ -867,6 +867,14 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/next'
     runs-on: ubuntu-latest
     timeout-minutes: 1
+    # `contents: read` restates the top-level default because job-level `permissions`
+    # REPLACES it rather than adds to it. `pull-requests: read` is new (#3842): the sweep
+    # step now runs `gh pr list` to defer any all-spent fragment an OPEN PR still touches,
+    # rather than deleting it out from under that PR (#3330, #3774, #3648 all hit this the
+    # first time the sweep ran, each with the swept fragment as its only conflicting path).
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -894,11 +902,15 @@ jobs:
       - name: Assert no spent ack survives on next (legacy file and fragments)
         env:
           BEFORE: ${{ github.event.before }}
+          # `gh pr list` needs auth; the default GITHUB_TOKEN plus this job's
+          # `pull-requests: read` permission above is sufficient to read PR file lists in
+          # this same repo (#3842).
+          GH_TOKEN: ${{ github.token }}
         # The sha goes through the environment rather than `${{ }}` interpolation into the
         # script body, so nothing from the event can ever be parsed as shell.
         run: |
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            node scripts/lint-emitted-drift-ack.cjs --guard-next
+            node scripts/lint-emitted-drift-ack.cjs --guard-next --defer-to-open-prs
           else
-            node scripts/lint-emitted-drift-ack.cjs --guard-next --base-ref "$BEFORE"
+            node scripts/lint-emitted-drift-ack.cjs --guard-next --base-ref "$BEFORE" --defer-to-open-prs
           fi

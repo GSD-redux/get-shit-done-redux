@@ -86,6 +86,9 @@ const {
   resolveBaseRef,
   readFragmentAtRef,
   assertUsableBaseRef,
+  fetchOpenPrTouchedAckPaths,
+  MAX_OPEN_PRS,
+  runGuardNext,
 } = require('../scripts/lint-emitted-drift-ack.cjs');
 const {
   ACK_VERSION,
@@ -4297,5 +4300,261 @@ describe('#3271: emitted-runtime-bounds', () => {
     assert.match(thrown.message, /git-worktree-add failed after [\d.]+s/);
     assert.match(thrown.message, /Step timings: git-worktree-add=FAILED@[\d.]+s/);
     assert.match(thrown.message, /bounds: worktree 60000ms, build:lib 180000ms, generator 360000ms/);
+  });
+});
+
+// ─── E. #3842: stage the sweep — hold a fragment an open PR still touches ───
+//
+// The sweep landed by #3078 deletes every all-spent fragment unconditionally. When an
+// OPEN pull request still modifies that same file, deleting it hands that PR a
+// `modify/delete` conflict on its very next merge attempt — the exact shared-file
+// conflict fragments were adopted (#2914) to end, reintroduced by the sweep itself.
+// #3330, #3774, and #3648 all conflicted the first time the sweep ran, each with the
+// swept fragment as its ONLY conflicting path. `assertNoAllSpentFragments` now takes an
+// optional `openPrTouchedPaths` to defer sweeping those; `fetchOpenPrTouchedAckPaths`
+// computes that set with one `gh pr list` call; `runGuardNext` wires the two together
+// behind an opt-in `--defer-to-open-prs` flag so every pre-#3842 caller (including every
+// test above, and section C's real-git-repo tests) is completely unaffected.
+
+describe('#3842: assertNoAllSpentFragments defers to open PRs', () => {
+  test('omitting openPrTouchedPaths entirely is byte-identical to pre-#3842 behavior', () => {
+    const spent = doc({ a: { reason: 'a' } });
+    const withoutOpt = assertNoAllSpentFragments([frag('a.json', spent, spent)]);
+    const withEmptyOpt = assertNoAllSpentFragments([frag('a.json', spent, spent)], {});
+    assert.deepEqual(withoutOpt, withEmptyOpt);
+    assert.ok(!withoutOpt.ok);
+    assert.deepEqual(withoutOpt.sweepable, ['a.json']);
+  });
+
+  test('an all-spent fragment named by an open PR is held, not reported as sweepable', () => {
+    const spent = doc({ a: { reason: 'a' } });
+    const r = assertNoAllSpentFragments(
+      [frag('a.json', spent, spent)],
+      { openPrTouchedPaths: new Set([`${ACK_DIR_REPO_PATH}/a.json`]) },
+    );
+    assert.ok(r.ok, 'nothing left safe to sweep, so the guard must pass');
+    assert.deepEqual(r.sweepable, []);
+    assert.match(r.message, /deferred:.*held back because an open pull request/s);
+    assert.match(r.message, new RegExp(`${ACK_DIR_REPO_PATH}/a\\.json.*held`));
+    assert.doesNotMatch(r.message, /git rm/, 'a held fragment must never carry a git rm remedy');
+  });
+
+  test('a mix of held and safe-to-sweep fragments fails only on the safe one', () => {
+    const spentHeld = doc({ a: { reason: 'a' } });
+    const spentSafe = doc({ b: { reason: 'b' } });
+    const r = assertNoAllSpentFragments(
+      [frag('held.json', spentHeld, spentHeld), frag('safe.json', spentSafe, spentSafe)],
+      { openPrTouchedPaths: new Set([`${ACK_DIR_REPO_PATH}/held.json`]) },
+    );
+    assert.ok(!r.ok, 'one fragment is still safe to sweep, so the guard must still fail');
+    assert.deepEqual(r.sweepable, ['safe.json']);
+    assert.match(r.message, /safe\.json/);
+    assert.match(r.message, /git rm[^\n]*safe\.json/);
+    assert.match(r.message, /held\.json.*held/s);
+    assert.doesNotMatch(r.message, /git rm[^\n]*held\.json/);
+  });
+
+  test('the "unknown" sentinel holds every otherwise-sweepable fragment (a failed open-PR lookup must never sweep blind)', () => {
+    const spentA = doc({ a: { reason: 'a' } });
+    const spentB = doc({ b: { reason: 'b' } });
+    const r = assertNoAllSpentFragments(
+      [frag('a.json', spentA, spentA), frag('b.json', spentB, spentB)],
+      { openPrTouchedPaths: 'unknown' },
+    );
+    assert.ok(r.ok);
+    assert.deepEqual(r.sweepable, []);
+    assert.match(r.message, /open-PR check unavailable/);
+    assert.match(r.message, /a\.json/);
+    assert.match(r.message, /b\.json/);
+  });
+
+  test('a PARTIALLY spent fragment is left alone regardless of open-PR touch — the open-PR set only ever narrows an already-sweepable list', () => {
+    const live = doc({ c: { reason: 'c-new' } });
+    const liveBase = doc({ c: { reason: 'c-old' } });
+    const r = assertNoAllSpentFragments(
+      [frag('live.json', live, liveBase)],
+      { openPrTouchedPaths: new Set([`${ACK_DIR_REPO_PATH}/live.json`]) },
+    );
+    assert.ok(r.ok);
+    assert.deepEqual(r.sweepable, []);
+    assert.doesNotMatch(r.message, /live\.json/, 'a partially-spent fragment is never mentioned by either rule');
+  });
+});
+
+describe('#3842: fetchOpenPrTouchedAckPaths', () => {
+  const prsWithFile = (relPath) => JSON.stringify([{ number: 1, files: [{ path: relPath }] }]);
+
+  test('returns only paths under the fragment directory, ignoring unrelated changed files', () => {
+    const stdout = JSON.stringify([
+      { number: 1, files: [{ path: `${ACK_DIR_REPO_PATH}/a.json` }, { path: 'README.md' }] },
+      { number: 2, files: [{ path: 'src/foo.cts' }] },
+    ]);
+    const paths = fetchOpenPrTouchedAckPaths({ execGh: () => stdout });
+    assert.deepEqual([...paths], [`${ACK_DIR_REPO_PATH}/a.json`]);
+  });
+
+  test('accepts a bare-string file entry, not only { path }-shaped ones', () => {
+    const stdout = JSON.stringify([{ number: 1, files: [`${ACK_DIR_REPO_PATH}/a.json`] }]);
+    const paths = fetchOpenPrTouchedAckPaths({ execGh: () => stdout });
+    assert.deepEqual([...paths], [`${ACK_DIR_REPO_PATH}/a.json`]);
+  });
+
+  test('a PR with no files array, or an empty one, contributes nothing and does not throw', () => {
+    const stdout = JSON.stringify([{ number: 1 }, { number: 2, files: [] }]);
+    const paths = fetchOpenPrTouchedAckPaths({ execGh: () => stdout });
+    assert.deepEqual([...paths], []);
+  });
+
+  test('zero open PRs is an empty set, not an error', () => {
+    const paths = fetchOpenPrTouchedAckPaths({ execGh: () => '[]' });
+    assert.deepEqual([...paths], []);
+  });
+
+  test('invokes gh with the expected argv: pr list, open state, number+files json, and a --limit', () => {
+    let capturedArgs;
+    fetchOpenPrTouchedAckPaths({
+      execGh: (args) => { capturedArgs = args; return '[]'; },
+      limit: 42,
+    });
+    assert.deepEqual(capturedArgs, ['pr', 'list', '--state', 'open', '--json', 'number,files', '--limit', '42']);
+  });
+
+  test('malformed JSON from gh throws, rather than degrading to an empty (falsely "nothing touched") set', () => {
+    assert.throws(
+      () => fetchOpenPrTouchedAckPaths({ execGh: () => '{ not json' }),
+      /did not return valid JSON/,
+    );
+  });
+
+  test('a non-array JSON value from gh throws', () => {
+    assert.throws(
+      () => fetchOpenPrTouchedAckPaths({ execGh: () => '{"unexpected":"shape"}' }),
+      /expected a JSON array/,
+    );
+  });
+
+  test('a real execGh failure (gh missing, unauthenticated, rate-limited) propagates rather than being swallowed here', () => {
+    assert.throws(
+      () => fetchOpenPrTouchedAckPaths({
+        execGh: () => { throw new Error('gh: command not found'); },
+      }),
+      /command not found/,
+    );
+  });
+
+  // Boundary coverage at the MAX_OPEN_PRS cap: limit-1, limit, limit+1.
+  test(`boundary: ${MAX_OPEN_PRS - 1} open PRs (limit-1) is accepted without truncation risk`, () => {
+    const n = MAX_OPEN_PRS - 1;
+    const stdout = JSON.stringify(Array.from({ length: n }, (_, i) => ({ number: i, files: [] })));
+    assert.doesNotThrow(() => fetchOpenPrTouchedAckPaths({ execGh: () => stdout }));
+  });
+
+  test(`boundary: exactly ${MAX_OPEN_PRS} open PRs (limit) throws — a list this long might be truncated by --limit itself`, () => {
+    const n = MAX_OPEN_PRS;
+    const stdout = JSON.stringify(Array.from({ length: n }, (_, i) => ({ number: i, files: [] })));
+    assert.throws(
+      () => fetchOpenPrTouchedAckPaths({ execGh: () => stdout }),
+      /at or above the cap/,
+    );
+  });
+
+  test(`boundary: ${MAX_OPEN_PRS + 1} open PRs (limit+1) also throws`, () => {
+    const n = MAX_OPEN_PRS + 1;
+    const stdout = JSON.stringify(Array.from({ length: n }, (_, i) => ({ number: i, files: [] })));
+    assert.throws(
+      () => fetchOpenPrTouchedAckPaths({ execGh: () => stdout }),
+      /at or above the cap/,
+    );
+  });
+
+  test('sanity: a stub returning a single PR that touches one fragment is detected (guards against a vacuously-passing stub)', () => {
+    const paths = fetchOpenPrTouchedAckPaths({ execGh: () => prsWithFile(`${ACK_DIR_REPO_PATH}/x.json`) });
+    assert.equal(paths.has(`${ACK_DIR_REPO_PATH}/x.json`), true);
+    assert.equal(paths.size, 1);
+  });
+});
+
+describe('#3842: runGuardNext wires --defer-to-open-prs end to end against a real repo', () => {
+  test('without --defer-to-open-prs, the open-PR fetcher is never called and behavior is unchanged', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+      const c2 = repo.commit('add fragment');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+      repo.commit('unrelated change');
+
+      let calls = 0;
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c2],
+        cwd: repo.dir,
+        fetchOpenPrPaths: () => { calls += 1; return new Set(); },
+      });
+      assert.equal(calls, 0, 'the fetcher must not be invoked without the opt-in flag');
+      assert.ok(!result.ok, 'the fully-spent fragment must still fail the guard');
+      assert.ok(result.lines.some((l) => l.includes('a.json')));
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('with --defer-to-open-prs, a fragment an "open PR" touches is held instead of failing the guard', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+      const c2 = repo.commit('add fragment');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+      repo.commit('unrelated change');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c2, '--defer-to-open-prs'],
+        cwd: repo.dir,
+        fetchOpenPrPaths: () => new Set([`${ACK_DIR_REPO_PATH}/a.json`]),
+      });
+      assert.ok(result.ok, 'the only sweepable fragment is held, so the guard must pass');
+      assert.ok(result.lines.some((l) => l.includes('a.json') && l.includes('held')));
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('with --defer-to-open-prs, a failing fetcher holds everything rather than sweeping blind, and still reports why', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+      const c2 = repo.commit('add fragment');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+      repo.commit('unrelated change');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c2, '--defer-to-open-prs'],
+        cwd: repo.dir,
+        fetchOpenPrPaths: () => { throw new Error('gh: rate limited'); },
+      });
+      assert.ok(result.ok, 'an unverifiable open-PR set must hold rather than sweep');
+      assert.ok(result.lines.some((l) => l.includes('gh: rate limited')));
+      assert.ok(result.lines.some((l) => l.includes('open-PR check unavailable')));
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('with --defer-to-open-prs, a fragment untouched by any open PR still sweeps (the flag only narrows, never widens, the safe set)', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+      const c2 = repo.commit('add fragment');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+      repo.commit('unrelated change');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c2, '--defer-to-open-prs'],
+        cwd: repo.dir,
+        fetchOpenPrPaths: () => new Set(['tests/emitted-drift-acks/unrelated-other.json']),
+      });
+      assert.ok(!result.ok, 'a.json is untouched by any open PR, so it must still be reported as sweepable');
+      assert.ok(result.lines.some((l) => l.includes('git rm') && l.includes('a.json')));
+    } finally {
+      cleanup(repo.dir);
+    }
   });
 });

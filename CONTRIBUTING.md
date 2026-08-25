@@ -1120,6 +1120,22 @@ too. If you ever see the legacy file present on `next`, delete it; do not try to
 well-formed. If the job names a spent fragment, run the `git rm` it prints — that is the
 whole remedy, and there is nothing to regenerate.
 
+**The sweep is staged around open PRs, not unconditional (#3842).** A fragment being
+all-spent is necessary but not sufficient to sweep it: deleting a fragment that an OPEN
+pull request still modifies hands that PR a `modify/delete` conflict on its very next
+merge attempt — precisely the shared-file conflict fragments were adopted to end, just
+reintroduced by the sweep itself. This actually happened the first time the sweep ran:
+#3330, #3774, and #3648 all conflicted simultaneously, each with the swept fragment as its
+*only* conflicting path, all three outside contributors. So `--guard-next` now also takes
+`--defer-to-open-prs` (passed by the `guard-no-ack-on-next` job): it runs one `gh pr list
+--json number,files` call, and any all-spent fragment an open PR's file list still names
+is *held* rather than swept — reported informationally in the job output, never as a
+failure — until that PR merges or closes. If the open-PR lookup itself fails (auth,
+network, rate limit), every otherwise-sweepable fragment is held for that run rather than
+swept blind; the next push to `next` tries again. A fragment fully spent AND untouched by
+any open PR sweeps exactly as before — this changes *when* a spent fragment is removed,
+never what "spent" means.
+
 `npm run regen:derived` still exists for the artifacts that ARE committed and derived —
 `sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
 the registry, and `tests/fixtures/install-tree/*.json` (`npm run gen:install-tree`, the
