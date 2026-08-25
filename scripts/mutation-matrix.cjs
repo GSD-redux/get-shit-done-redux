@@ -122,9 +122,10 @@ const TARGET_MUTATION_SCORE = 80;
 //     broke the floor. Direct unit tests for both were added to tests/frontmatter.unit.test.cjs
 //     (each clause paired with a near-miss that must answer the opposite way), which took the
 //     module ABOVE its pre-change score. Floor ratcheted per the HOW TO UPDATE formula above.
-//     NOTE: step 3 of that procedure says to update 'the matching RATCHET_BASELINE entry' — no
-//     such declaration exists in this file (the name appears only in that comment), so only
-//     minScore and this ledger were updated.
+//     RATCHET_BASELINE lives in tests/mutation-matrix-ratchet.test.cjs, not in this file, and it
+//     is updated in the same diff as required. I first concluded it did not exist because I only
+//     searched this file; the ratchet test caught the mismatch immediately, which is precisely
+//     what that deliberate review-visible mirror is for.
 //   adr-parser              69.30% → floor 68
 //   config-schema           54.55% → floor 52  (local was 69.7% — TIMEOUT INFLATION; CI is the truth)
 //   active-workstream-store 81.91% → floor 80
