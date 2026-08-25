@@ -35,6 +35,7 @@ const { getDirName } = runtimeNamePolicy;
 import capabilityRegistry = require('./capability-registry.cjs');
 import hostIntegration = require('./host-integration.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
+import frontmatterModule = require('./frontmatter.cjs');
 import { escapeRegex as escapeRegExp } from './pattern.cjs';
 import { scanFencedBlocks } from './markdown-sectionizer.cjs';
 // #2870: install-scope.cts is a leaf-tier sibling (imports only
@@ -1828,7 +1829,27 @@ function neutralizeAgentReferences(content, instructionFile) {
   return c;
 }
 
-function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOverride = null } = {}) {
+/**
+ * Render one frontmatter `key: value` line whose value came from user config.
+ *
+ * #3706: both `model:` and `variant:` interpolate a value read from
+ * `.planning/config.json` / `~/.gsd/defaults.json`. Raw interpolation lets a value
+ * containing a newline inject additional TOP-LEVEL frontmatter keys into the
+ * generated agent file — proven by execution during the #3705 security review
+ * (`"sonnet\ntools: [\"*\"]\npermission: bypass"` produced two extra keys).
+ *
+ * That sink predates #3706, but this change adds a SECOND write to it, so it is
+ * closed here rather than doubled. A value needing no quoting is emitted plainly,
+ * so every existing generated file is byte-identical; anything else goes through
+ * the frontmatter module's own `escapeDoubleQuoted` — the one escaper, not a
+ * third copy of the rules.
+ */
+function frontmatterScalar(key: string, value: string): string {
+  const plain = /^[A-Za-z0-9._:/@+-]+$/.test(value);
+  return plain ? `${key} ${value}` : `${key} "${frontmatterModule.escapeDoubleQuoted(value)}"`;
+}
+
+function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOverride = null, variant = null } = {}) {
   // Replace tool name references in content (applies to all files)
   let convertedContent = content;
   convertedContent = convertedContent.replace(/\bAskUserQuestion\b/g, 'question');
@@ -1967,7 +1988,23 @@ function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOve
     // respected on OpenCode (which uses static agent frontmatter, not inline
     // Task() model parameters). See #2256.
     if (modelOverride) {
-      newLines.push(['model:', modelOverride].join(' '));
+      newLines.push(frontmatterScalar('model:', modelOverride));
+    }
+    // #3706: deliver the RESOLVED reasoning effort to the spawned subagent.
+    // `query resolve-model` reported an effort that never reached OpenCode, so
+    // every subagent ran at whatever opencode.jsonc defaults the model to — for
+    // a custom provider commonly the most expensive setting.
+    //
+    // OpenCode ONLY: `EFFORT_ARGV` declares surfaces for claude/opencode/codex
+    // and NO kilo entry, so the Kilo converter below deliberately does not emit
+    // this. Unlike the model side — where #2794 J8 requires kilo and opencode to
+    // resolve identically — there is no kilo effort surface to render into, and
+    // inventing one would emit a key that runtime never documented.
+    //
+    // Omitted entirely when absent, per #1156's rule for `model: inherit`:
+    // never an empty or sentinel value, let the runtime use its own default.
+    if (variant) {
+      newLines.push(frontmatterScalar('variant:', variant));
     }
   }
 
@@ -2155,7 +2192,7 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
     // model emission exactly (#2093 UPGRADE 2 / ADR-1239; Kilo is an OpenCode
     // fork with the same static-frontmatter model constraint). See #2256.
     if (modelOverride) {
-      newLines.push(['model:', modelOverride].join(' '));
+      newLines.push(frontmatterScalar('model:', modelOverride));
     }
     newLines.push(...buildKiloAgentPermissionBlock(agentTools));
   }

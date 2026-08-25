@@ -1560,7 +1560,9 @@ Control the reasoning effort of agent invocations with a single config. The univ
 minimal < low < medium < high < xhigh < max
 ```
 
-Effort is rendered per-runtime: `output_config.effort` for Claude (Claude Code subagent `effort` frontmatter / `CLAUDE_CODE_EFFORT_LEVEL` env), `model_reasoning_effort` for Codex (Responses API `reasoning.effort`).
+Effort is rendered per-runtime: `output_config.effort` for Claude (Claude Code subagent `effort` frontmatter / `CLAUDE_CODE_EFFORT_LEVEL` env), `model_reasoning_effort` for Codex (Responses API `reasoning.effort`), and `variant` for OpenCode (agent frontmatter).
+
+**OpenCode `variant` is opt-in ([#3706](https://github.com/open-gsd/gsd-core/issues/3706)).** OpenCode resolves a `variant` name against a `variants` map you define in your `opencode.jsonc`, so a value nobody declared is not a safe default. GSD writes the key only when an `effort` block is actually configured; with no `effort` config the generated agent carries no `variant` line and OpenCode applies its own default. Runtimes with no declared effort surface — Kilo among them — never receive the key.
 
 **Cross-provider clamping:** `minimal` is Anthropic-unsupported — it clamps to `low` on Claude.
 

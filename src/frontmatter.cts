@@ -938,6 +938,10 @@ function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: strin
 }
 
 export = {
+  // #3706: shared with the agent-frontmatter writers so a config-supplied
+  // `model:`/`variant:` value cannot break out of its scalar. Previously private
+  // here while those writers interpolated raw — one escaper, three call sites.
+  escapeDoubleQuoted,
   extractFrontmatter,
   UNTERMINATED_KEY_THRESHOLD,
   // Additive alias (#644 prohibition-probe schema contract): the probe round-trip seam reads a
