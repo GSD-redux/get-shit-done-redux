@@ -1252,6 +1252,23 @@ does not recognize `git stash`, `git rm --cached`, `git restore --staged`, or
 `git update-index --add`, any of which can also move `.planning/` content into a state a later
 commit picks up.
 
+### A conflicted PR runs no CI
+
+Every `pull_request` compute lane waits on one shared gate, `PR mergeability`.
+If GitHub reports your PR as having a merge conflict, **nothing runs** — no test
+matrix, no install smoke, no mutation shards, no docs or changeset lint — until
+you resolve it. The check annotates the base branch and the fix:
+
+```bash
+git fetch origin && git rebase origin/next && git push --force-with-lease
+```
+
+The gate fails **open**: if GitHub cannot tell us whether the PR is mergeable,
+the pipeline runs exactly as it did before, and the per-job
+`scripts/ci-rebase-check.cjs` still catches the conflict. Full reference,
+including which lanes are deliberately *not* gated, is in
+[docs/TESTING-SUITES.md → The mergeability preflight](docs/TESTING-SUITES.md#the-mergeability-preflight).
+
 ### CI Test Quality Checks
 
 The following checks run on every PR in addition to the test suite:

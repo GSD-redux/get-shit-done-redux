@@ -13,7 +13,17 @@ permissions:
   pull-requests: read
 
 jobs:
+  # #3833: this lane is `npm ci` plus every registered docs-guard test (~210s).
+  # None of it means anything against a tree that cannot merge.
+  preflight:
+    name: PR mergeability
+    uses: ./.github/workflows/pr-mergeable-preflight.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   docs-lint:
+    needs: preflight
     runs-on: ubuntu-latest
     # This job supplies the ALREADY-REQUIRED `docs-lint` context
     # (.github/rulesets/main-protection.json) and runs `npm ci` plus every
