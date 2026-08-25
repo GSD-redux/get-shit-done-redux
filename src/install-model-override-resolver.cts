@@ -214,7 +214,20 @@ function readGsdRuntimeProfileResolver(targetDir: string | null = null): Runtime
       // is, one layer down. A null from it (unknown provider, missing tier key, a
       // `runtime_tiers` miss) falls through to the tier table — never to null,
       // which would omit a frontmatter key that used to be written.
-      const policyModel = gsdResolveModelPolicy(merged.model_policy, tier);
+      // The policy object must carry the effective runtime before it is resolved.
+      // `resolveModelPolicy`'s `runtime_tiers` branch reads `policy['runtime']`, but
+      // the documented config shape (docs/CONFIGURATION.md) puts `runtime` at the
+      // TOP level and keeps only `provider`/`runtime_tiers` inside `model_policy`.
+      // Dispatch injects it — `{ ...config.model_policy, runtime: effectiveRuntime }`
+      // (model-resolver.cts) — and passing the policy unmodified here silently
+      // skipped `runtime_tiers` entirely, falling through to the flat hi/med/lo keys
+      // or the catalog tier. That is the same "catalog Anthropic ID baked over a
+      // configured provider" defect this fix exists to close, so the injection is
+      // mirrored rather than assumed.
+      const policyForRuntime = merged.model_policy
+        ? { ...(merged.model_policy as Record<string, unknown>), runtime }
+        : null;
+      const policyModel = gsdResolveModelPolicy(policyForRuntime, tier);
       if (policyModel) return { model: policyModel };
       return gsdResolveTierEntry({
         runtime,

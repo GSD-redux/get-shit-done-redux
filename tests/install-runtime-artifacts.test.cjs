@@ -2956,19 +2956,55 @@ describe('#3705: install-time bake honours model_policy', () => {
     assert.notMatch(String(baked), /^anthropic\/claude-/, 'the preset, not the catalog default');
   });
 
-  test('the runtime_tiers escape hatch is honoured', () => {
+  test('the runtime_tiers escape hatch is honoured for the DOCUMENTED config shape', () => {
+    // Review finding (blocker). The first version of this test put a `runtime`
+    // key INSIDE `model_policy`, duplicating the top-level one. No real config
+    // does that — docs/CONFIGURATION.md puts `runtime` at the top level and keeps
+    // only `provider`/`runtime_tiers` inside the policy — and that one fabricated
+    // key was the only reason the test passed. `resolveModelPolicy`'s
+    // runtime_tiers branch reads `policy['runtime']`, which dispatch injects and
+    // the bake did not, so runtime_tiers was silently skipped for every real
+    // config. The fixture below is the documented shape verbatim.
     projectConfig({
       runtime: 'opencode',
       model_policy: {
         provider: 'generic',
-        runtime: 'opencode',
-        runtime_tiers: { opencode: { sonnet: 'RT-sonnet' } },
+        runtime_tiers: { opencode: { sonnet: 'runtime-tiers-model' } },
         medium: 'GENERIC-medium',
       },
     });
 
-    assert.strictEqual(bake('gsd-executor'), 'RT-sonnet',
-      'runtime_tiers outranks the generic hi/med/lo keys within the policy');
+    assert.strictEqual(bake('gsd-executor'), 'runtime-tiers-model',
+      'runtime_tiers must outrank the flat generic keys — and must be reached at all');
+  });
+
+  test('runtime_tiers accepts the object entry form the docs show', () => {
+    // docs/CONFIGURATION.md's own example uses `{ model, reasoning_effort }`
+    // rather than a bare string.
+    projectConfig({
+      runtime: 'codex',
+      model_policy: {
+        provider: 'openai',
+        runtime_tiers: { codex: { sonnet: { model: 'gpt-5.6-terra', reasoning_effort: 'medium' } } },
+      },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'gpt-5.6-terra');
+  });
+
+  test('a runtime_tiers block for a DIFFERENT runtime does not leak', () => {
+    // The injected runtime is what selects the block; a mismatch must fall
+    // through rather than borrow another runtime's pins.
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: {
+        provider: 'generic',
+        runtime_tiers: { codex: { sonnet: 'CODEX-only' } },
+        medium: 'GENERIC-medium',
+      },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'GENERIC-medium');
   });
 });
 
