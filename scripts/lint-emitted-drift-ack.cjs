@@ -371,10 +371,10 @@ function assertNoAllSpentFragments(fragments, { openPrTouchedPaths } = {}) {
   const heldLines = held.length === 0 ? [] : [
     '',
     holdAll
-      ? 'deferred: whether an open PR still touches the following all-spent fragment(s) could '
-        + 'not be determined this run, so none of them were swept (#3842) — assuming "safe to '
-        + 'sweep" on a failed check would risk the exact conflict this deferral exists to avoid. '
-        + 'They will be reconsidered on a later run.'
+      ? 'deferred (open-PR check unavailable): whether an open PR still touches the following '
+        + 'all-spent fragment(s) could not be determined this run, so none of them were swept '
+        + '(#3842) — assuming "safe to sweep" on a failed check would risk the exact conflict '
+        + 'this deferral exists to avoid. They will be reconsidered on a later run.'
       : `deferred: ${held.length} all-spent fragment(s) are held back because an open pull `
         + 'request still touches them (#3842). Sweeping one now would hand that PR a '
         + 'modify/delete conflict it did not cause — the same failure #2914 adopted fragments '
@@ -696,7 +696,7 @@ function runGuardNext({ argv = process.argv, cwd = REPO_ROOT, fetchOpenPrPaths =
     try {
       openPrTouchedPaths = fetchOpenPrPaths();
     } catch (err) {
-      lines.push(`lint-emitted-drift-ack: open-PR check failed (${err.message}).`);
+      lines.push(`lint-emitted-drift-ack: open-PR check unavailable — ${err.message}`);
       openPrTouchedPaths = 'unknown';
     }
   }
