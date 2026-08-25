@@ -352,13 +352,6 @@ export interface RenderedEffortArgv {
 }
 
 /**
- * Render the invocation-time effort argument for a host.
- *
- * `effortSurface` is the host's negotiated axis value. Only `argv` produces an
- * argument; `none`, `undocumented`, and anything unrecognised produce nothing.
- * Never throws.
- */
-/**
  * Clamp a universal effort level to what a host actually accepts, or null.
  *
  * #3706 — extracted from `renderEffortArgv` so the two effort CHANNELS can share
@@ -385,6 +378,13 @@ export function clampEffortForHost(host: string, universalEffort: string): strin
   return spec.supported.has(clamped) ? clamped : null;
 }
 
+/**
+ * Render the invocation-time effort argument for a host.
+ *
+ * `effortSurface` is the host's negotiated axis value. Only `argv` produces an
+ * argument; `none`, `undocumented`, and anything unrecognised produce nothing.
+ * Never throws.
+ */
 export function renderEffortArgv(
   host: string,
   universalEffort: string,

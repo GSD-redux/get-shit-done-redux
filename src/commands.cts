@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeEol } from './text-lines.cjs';
 import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout, retryRenameSync } from './shell-command-projection.cjs';
+import { escapeRegex } from './pattern.cjs';
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
@@ -757,7 +758,10 @@ function setFrontmatterKeyLine(content: string, key: string, value: string): str
   const openLen = 3 + eol.length;
   const bodyStart = match.index + openLen;
   const closingStart = bodyStart + fmBody.length;
-  const keyLineRe = new RegExp(`^(${key}:)[ \\t]*.*$`, 'm');
+  // #3706: key is now generic (not just the literal 'effort'/'variant'
+  // callers happen to pass today) — escape it before interpolating into the
+  // RegExp so a future caller can't have its key metacharacters reinterpreted.
+  const keyLineRe = new RegExp(`^(${escapeRegex(key)}:)[ \\t]*.*$`, 'm');
   if (keyLineRe.test(fmBody)) {
     // Replace INSIDE the frontmatter span only: a whole-file /m replace would
     // rewrite an earlier preamble line that happens to start with this key.
@@ -784,7 +788,8 @@ function removeFrontmatterKeyLine(content: string, key: string): string {
   const match = fmRe.exec(content);
   if (!match) return content;
   const fmBody = match[1];
-  const lineRe = new RegExp(`^${key}:[ \\t]*.*\\r?\\n?`, 'm');
+  // #3706: same generic-key escape as setFrontmatterKeyLine above.
+  const lineRe = new RegExp(`^${escapeRegex(key)}:[ \\t]*.*\\r?\\n?`, 'm');
   if (!lineRe.test(fmBody)) return content;
   const strippedFm = fmBody.replace(lineRe, '');
   // Same rule as setFrontmatterKeyLine: the EOL must come from the matched
@@ -853,8 +858,8 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   // package-root bin/install.js, which the installer never copies into a runtime home).
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
   const { readGsdEffectiveEffortConfig, resolveInstallTimeEffort } = require('./install-effort-resolver.cjs') as {
-    readGsdEffectiveEffortConfig(cwd: string): Record<string, unknown>;
-    resolveInstallTimeEffort(cfg: Record<string, unknown>, agentName: string): string;
+    readGsdEffectiveEffortConfig(cwd: string): Record<string, unknown> | null;
+    resolveInstallTimeEffort(cfg: Record<string, unknown> | null, agentName: string): string;
   };
   const effortCfg = readGsdEffectiveEffortConfig(cwd);
 
@@ -890,9 +895,16 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
       // eslint-disable-next-line local/no-unbounded-quantifier -- same lazy `*?` bounded by the `^---$/m` closing anchor as the concrete-path fmMatch below; duplicated here so the inherit branch validates against the same frontmatter span the strip targets
       const fmMatchInherit = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
       if (!fmMatchInherit) { skipped++; continue; }
+      // Presence and value are distinct questions: `effort:` with an EMPTY
+      // value is a key that IS present but whose captured value is null (the
+      // `(.+?)` group requires at least one char). Deciding "already correct"
+      // from a null value alone is wrong here — it would leave an
+      // unresolvable `effort: null` key on disk forever. Test presence with
+      // its own regex, and only compare values once presence is known.
+      const effortPresentInherit = /^effort:/m.test(fmMatchInherit[1]);
+      if (!effortPresentInherit) { skipped++; continue; }
       const effortMatchInherit = /^effort:[ \t]*(.+?)[ \t]*$/m.exec(fmMatchInherit[1]);
-      if (!effortMatchInherit) { skipped++; continue; }
-      changes.push({ agent: agentName, from: effortMatchInherit[1], to: null });
+      changes.push({ agent: agentName, from: effortMatchInherit ? effortMatchInherit[1] : null, to: null });
       synced++;
       if (!dryRun) {
         fs.writeFileSync(filePath, removeEffortFrontmatter(content));
@@ -909,10 +921,16 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
     if (!fmMatch) { skipped++; continue; }
 
+    // Presence and value are distinct questions here too: `newEffortValue` is
+    // never null on this path (guarded above), but `currentEffort` reads null
+    // both when the key is ABSENT and when it is present with an EMPTY value
+    // — `effortPresent` disambiguates so a present-but-empty key is treated
+    // as drift (synced) rather than silently matching an absent one.
+    const effortPresent = /^effort:/m.test(fmMatch[1]);
     const effortMatch = /^effort:[ \t]*(.+?)[ \t]*$/m.exec(fmMatch[1]);
     const currentEffort = effortMatch ? effortMatch[1] : null;
 
-    if (currentEffort === newEffortValue) { skipped++; continue; }
+    if (effortPresent && currentEffort === newEffortValue) { skipped++; continue; }
 
     changes.push({ agent: agentName, from: currentEffort, to: newEffortValue });
     synced++;
@@ -1095,8 +1113,8 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
   // installed. Resolved once, outside the loop, like the claude branch.
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
   const { readGsdEffectiveEffortConfig, resolveInstallTimeEffort } = require('./install-effort-resolver.cjs') as {
-    readGsdEffectiveEffortConfig(cwd: string): Record<string, unknown>;
-    resolveInstallTimeEffort(cfg: Record<string, unknown>, agentName: string): string;
+    readGsdEffectiveEffortConfig(cwd: string): Record<string, unknown> | null;
+    resolveInstallTimeEffort(cfg: Record<string, unknown> | null, agentName: string): string;
   };
   const effortCfg = readGsdEffectiveEffortConfig(cwd);
 
@@ -1104,6 +1122,7 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
   const { clampEffortForHost } = require('./model-catalog.cjs') as { clampEffortForHost(host: string, effort: string): string | null };
 
   const changes: EffortSyncChange[] = [];
+  const writeFailures: CodexEffortSyncWriteFailure[] = [];
   let synced = 0;
   let skipped = 0;
 
@@ -1122,23 +1141,52 @@ function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, confi
     const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
     if (!fmMatch) { skipped++; continue; }
 
+    // Presence and value are distinct questions: `variant:` with an EMPTY
+    // value is a key that IS present but whose captured value is null (the
+    // `(.+?)` group requires at least one char). Deciding "already correct"
+    // from a null-vs-null comparison alone is wrong when target is also
+    // null — it would leave an unresolvable `variant: null` key on disk
+    // forever. Test presence with its own regex, and only compare values
+    // once presence is known.
+    const variantPresent = /^variant:/m.test(fmMatch[1]);
     const variantMatch = /^variant:[ \t]*(.+?)[ \t]*$/m.exec(fmMatch[1]);
     const currentVariant = variantMatch ? variantMatch[1] : null;
 
-    if (currentVariant === target) { skipped++; continue; }
+    if (target === null) {
+      if (!variantPresent) { skipped++; continue; }
+    } else if (variantPresent && currentVariant === target) {
+      skipped++;
+      continue;
+    }
 
     changes.push({ agent: agentName, from: currentVariant, to: target });
     synced++;
 
     if (!dryRun) {
-      fs.writeFileSync(
-        filePath,
-        target === null ? removeFrontmatterKeyLine(content, 'variant') : setFrontmatterKeyLine(content, 'variant', target),
-      );
+      // Atomic publish, same discipline as cmdEffortSyncCodex above: write to
+      // a sibling tmp file and retryRenameSync it over the target so filePath
+      // is either the old bytes or the new ones, never half-written. On
+      // failure the write is reported, not thrown, so the remaining agents
+      // still get processed.
+      const tmpPath = `${filePath}.tmp.${process.pid}`;
+      try {
+        fs.writeFileSync(
+          tmpPath,
+          target === null ? removeFrontmatterKeyLine(content, 'variant') : setFrontmatterKeyLine(content, 'variant', target),
+        );
+        retryRenameSync(tmpPath, filePath);
+      } catch (err) {
+        try { fs.unlinkSync(tmpPath); } catch { /* already gone or never created */ }
+        changes.pop();
+        synced--;
+        skipped++;
+        writeFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
     }
   }
 
-  output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir }, raw, synced > 0 ? 'changed' : 'ok');
+  output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, write_failures: writeFailures }, raw, synced > 0 ? 'changed' : 'ok');
 }
 
 /**

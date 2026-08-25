@@ -283,6 +283,142 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
     }
   });
 
+  test('a key present with an empty value is removed, not mistaken for absent', () => {
+    // The value regex's `(.+?)` requires at least one character, so a bare
+    // `variant:` line (zero-width value) used to read as "key absent" rather
+    // than "key present, value empty" — presence and value are now distinct
+    // questions, and a stale empty-valued key must still be stripped when no
+    // effort config resolves one.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, undefined);
+      const filePath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', 'variant:', '---', '', 'Body.',
+      ]);
+      runEffortSync({ cwd, home, configDir, runtime: 'opencode', dryRun: false });
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.doesNotMatch(content, /^variant:/m);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a key present with a whitespace-only value is removed too (the spelling that always worked)', () => {
+    // Trailing whitespace after the colon always matched the old regex (it is
+    // not zero-width), so this spelling never exhibited the absent-vs-empty
+    // bug above — pinned as the control that makes the bug look like a
+    // whitespace lottery rather than a real presence/value distinction.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, undefined);
+      const filePath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', 'variant:   ', '---', '', 'Body.',
+      ]);
+      runEffortSync({ cwd, home, configDir, runtime: 'opencode', dryRun: false });
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.doesNotMatch(content, /^variant:/m);
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('CRLF agents keep their line endings through a write and a strip', () => {
+    // Key-parameterising the frontmatter editors (claude's effort: vs
+    // opencode's variant:) is exactly the kind of change that would regress
+    // CRLF handling if the line ending were baked in per-key rather than
+    // detected from the matched frontmatter block.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'xhigh' } });
+      const filePath = path.join(agentsDir, 'gsd-executor.md');
+      const beforeWrite = [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ].join('\r\n');
+      fs.writeFileSync(filePath, beforeWrite);
+      runEffortSync({ cwd, home, configDir, runtime: 'opencode', dryRun: false });
+      const afterWrite = fs.readFileSync(filePath, 'utf8');
+      assert.match(afterWrite, /^variant: xhigh\r$/m);
+      assert.doesNotMatch(afterWrite, /(?<!\r)\n/, 'no lone LF must appear in a CRLF document');
+
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'inherit' } });
+      const beforeStrip = [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', 'variant: high', '---', '', 'Body.',
+      ].join('\r\n');
+      fs.writeFileSync(filePath, beforeStrip);
+      runEffortSync({ cwd, home, configDir, runtime: 'opencode', dryRun: false });
+      const afterStrip = fs.readFileSync(filePath, 'utf8');
+      assert.doesNotMatch(afterStrip, /^variant:/m);
+      assert.doesNotMatch(afterStrip, /(?<!\r)\n/, 'no lone LF must appear in a CRLF document');
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a symlinked agent file is skipped, never followed', () => {
+    // A symlinked gsd-*.md must never have its TARGET file rewritten — the
+    // sync must skip it structurally (readdir's Dirent reports a symlink
+    // entry as not-a-file), not follow it and edit whatever it points to.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      const targetPath = path.join(root, 'outside-target.md');
+      const targetContent = [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.',
+      ].join('\n');
+      fs.writeFileSync(targetPath, targetContent);
+      const linkPath = path.join(agentsDir, 'gsd-executor.md');
+      try {
+        fs.symlinkSync(targetPath, linkPath);
+      } catch {
+        return; // platform cannot create symlinks (e.g. unprivileged Windows) — skip
+      }
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'xhigh' } });
+      runEffortSync({ cwd, home, configDir, runtime: 'opencode', dryRun: false });
+      const after = fs.readFileSync(targetPath, 'utf8');
+      assert.strictEqual(after, targetContent, 'the symlink target must be left untouched');
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a body line starting with variant: is never the line edited', () => {
+    // Scoping-by-content, not a whole-file /m replace: a body line that
+    // happens to start with `variant:` must survive untouched while the
+    // frontmatter gains its own key.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'xhigh' } });
+      const filePath = writeAgent(agentsDir, 'gsd-executor.md', [
+        '---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '',
+        'variant: in-the-body', '', 'more.',
+      ]);
+      runEffortSync({ cwd, home, configDir, runtime: 'opencode', dryRun: false });
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.ok(content.includes('variant: in-the-body'), 'the body line must survive untouched');
+      const fmEnd = content.indexOf('\n---', 4);
+      assert.match(content.slice(0, fmEnd), /^variant: xhigh$/m, 'the frontmatter must gain its own variant: line');
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a file with no frontmatter at all is skipped, not corrupted', () => {
+    // No `---` fences at all: the sync must leave the file byte-identical
+    // rather than guessing where a frontmatter block would go.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, { agent_overrides: { 'gsd-executor': 'xhigh' } });
+      const filePath = writeAgent(agentsDir, 'gsd-executor.md', [
+        'Just a body, no frontmatter fences at all.',
+      ]);
+      const before = fs.readFileSync(filePath);
+      runEffortSync({ cwd, home, configDir, runtime: 'opencode', dryRun: false });
+      const after = fs.readFileSync(filePath);
+      assert.ok(before.equals(after), 'a file with no frontmatter must be byte-identical afterward');
+    } finally {
+      cleanup(root);
+    }
+  });
+
   test('the claude path still writes effort:, not variant:', () => {
     // The frontmatter line-editors were key-parameterised for #3706; this is
     // the control that the pre-existing claude behavior did not move.

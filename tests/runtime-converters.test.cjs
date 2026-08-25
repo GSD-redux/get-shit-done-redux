@@ -2335,9 +2335,15 @@ describe('#3706: YAML-ambiguous scalars are quoted, not emitted bare', () => {
     // '12:30' resolves to the integer 750; ':' is legal mid-identifier here,
     // so the form is reachable rather than contrived.
     '12:30', '0755', '1.5', '0x1f',
+    // #3706 hardening: '(.+?)' in the value regex needs one character before
+    // this fix, so an empty/whitespace-only value read as "key absent" rather
+    // than "key present, value empty" — these are the YAML-ambiguous classes
+    // that predicate missed once presence and value became distinct questions.
+    '~', '.inf', '.Inf', '.nan', '+1', '-1', '-0', '+1.5', '.5', '0x1F',
+    '2026-08-25', '2026-08-25T10:00:00Z', 'a: b', 'a #b',
   ];
   // The whole point of the predicate: no churn for anybody's existing files.
-  const BARE = ['sonnet', 'synthetic/hf:zai-org/GLM-5.2', 'gpt-5.6-luna', 'claude-opus-5'];
+  const BARE = ['sonnet', 'synthetic/hf:zai-org/GLM-5.2', 'gpt-5.6-luna', 'claude-opus-5', 'x-', 'a.b', 'GLM-5.2'];
 
   for (const [label, convert] of OPENCODE_CONVERTERS) {
     const modelLine = (v) =>
@@ -2465,6 +2471,104 @@ describe('#3706: install-time effort resolves and renders for OpenCode', () => {
       ),
       { numRuns: 2000 },
     );
+  });
+});
+
+// ─── #3706: the layout seam actually threads the variant ─────────────────────
+//
+// Every test above calls a converter directly. Direct-converter tests all
+// still pass if a future edit drops `variant` from the `rawConverter(...)`
+// call inside runtime-artifact-layout.cts's convertedAgentsKind, or flips its
+// `converterName ===` gate — this drives the REAL staging path
+// (resolveRuntimeArtifactLayout -> the OpenCode 'agents' kind's stage()) so
+// that regression cannot hide behind converter-only coverage.
+describe('#3706: the layout seam actually threads the variant', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { cleanup } = require('./helpers.cjs');
+  const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+
+  // Fixture layout mirrors the .gsd-source marker convention
+  // (findAgentsSourceRoot): the marker at <configDir>/.gsd-source points to
+  // <configDir>/commands/gsd, and agents/ is resolved as its sibling.
+  function makeConfigDirFixture(agentContent) {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3706-seam-configdir-'));
+    const commandsDir = path.join(configDir, 'commands', 'gsd');
+    const agentsDir = path.join(configDir, 'agents');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, '.gsd-source'), commandsDir + '\n', 'utf8');
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), agentContent, 'utf8');
+    return configDir;
+  }
+
+  function makeProjectRootWithEffort(effort) {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3706-seam-project-'));
+    fs.mkdirSync(path.join(projectRoot, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, '.planning', 'config.json'),
+      JSON.stringify({ effort }),
+      'utf8',
+    );
+    return projectRoot;
+  }
+
+  // resolveInstallTimeEffort also merges ~/.gsd/defaults.json (os.homedir()),
+  // so HOME/USERPROFILE are pinned to an empty temp dir for the duration of
+  // each stage() call to keep the assertion hermetic against the real
+  // developer machine's home directory.
+  function stageWithFakeHome(agentKind, resolvedProfile, agentCtx) {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3706-seam-home-'));
+    const realHome = process.env.HOME;
+    const realUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      return agentKind.stage(resolvedProfile, agentCtx);
+    } finally {
+      process.env.HOME = realHome;
+      process.env.USERPROFILE = realUserProfile;
+      cleanup(fakeHome);
+    }
+  }
+
+  const AGENT_SOURCE = ['---', 'name: gsd-executor', 'description: x', '---', '', 'Body.'].join('\n');
+  const resolvedProfile = { name: 'full', skills: '*', agents: new Set() };
+
+  test('a configured effort reaches the real OpenCode agents kind staging output', () => {
+    const configDir = makeConfigDirFixture(AGENT_SOURCE);
+    const projectRoot = makeProjectRootWithEffort({ agent_overrides: { 'gsd-executor': 'xhigh' } });
+    try {
+      const layout = resolveRuntimeArtifactLayout('opencode', configDir, 'global');
+      const agentKind = layout.kinds.find((k) => k.kind === 'agents');
+      assert.ok(agentKind, 'opencode global layout must include an agents kind');
+
+      const agentCtx = { runtime: 'opencode', pathPrefix: '', attribution: null, targetDir: projectRoot };
+      const stagedDir = stageWithFakeHome(agentKind, resolvedProfile, agentCtx);
+      const stagedContent = fs.readFileSync(path.join(stagedDir, 'gsd-executor.md'), 'utf8');
+      assert.match(stagedContent, /^variant: xhigh$/m, `expected variant: xhigh in staged output:\n${stagedContent}`);
+    } finally {
+      cleanup(configDir);
+      cleanup(projectRoot);
+    }
+  });
+
+  test('no effort config at all reaches the real staging output with no variant key', () => {
+    const configDir = makeConfigDirFixture(AGENT_SOURCE);
+    const noConfigRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3706-seam-noconfig-'));
+    try {
+      const layout = resolveRuntimeArtifactLayout('opencode', configDir, 'global');
+      const agentKind = layout.kinds.find((k) => k.kind === 'agents');
+
+      const agentCtx = { runtime: 'opencode', pathPrefix: '', attribution: null, targetDir: noConfigRoot };
+      const stagedDir = stageWithFakeHome(agentKind, resolvedProfile, agentCtx);
+      const stagedContent = fs.readFileSync(path.join(stagedDir, 'gsd-executor.md'), 'utf8');
+      assert.doesNotMatch(stagedContent, /^variant:/m, `expected no variant key in staged output:\n${stagedContent}`);
+    } finally {
+      cleanup(configDir);
+      cleanup(noConfigRoot);
+    }
   });
 });
 
