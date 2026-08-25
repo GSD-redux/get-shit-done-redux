@@ -745,6 +745,7 @@ for each plan in plan_order:
     plan.wave = max(waves[dep] for dep in plan.depends_on) + 1
   waves[plan.id] = plan.wave
 
+# Implicit dependency: files_modified overlap forces a later wave.
 for each plan B in plan_order:
   for each earlier plan A where A != B:
     if any file in (B.files_modified + B.files_deleted) is also in (A.files_modified + A.files_deleted):
