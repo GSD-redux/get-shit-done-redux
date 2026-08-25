@@ -2012,6 +2012,64 @@ Presence and posture are separate verdicts: a missing agent is reported in `miss
 
 ---
 
+### `state update <field> <value>`
+
+Update a single STATE.md field.
+
+**Prerequisites:** `.planning/STATE.md` exists
+**Produces:** `{updated: true, preserved: [...]}`, or `{updated: false, reason, preserved: [...]}`
+
+```bash
+node gsd-tools.cjs state update "Stopped at" "finished the migration"
+```
+
+#### Frontmatter keys are projections — write the body field
+
+STATE.md's frontmatter is **re-derived from the body on every write**. So a frontmatter key like
+`stopped_at` is not the value; it is a projection of the body field `Stopped at:`. Ask to update the
+key and the command refuses, naming the field that does work:
+
+```json
+{
+  "updated": false,
+  "reason": "Field \"stopped_at\" is a body-derived frontmatter key and is not directly writable. Update its body source instead: state update \"Stopped At\" <value>."
+}
+```
+
+This is distinct from a field that genuinely is not there, which still reports
+`Field "…" not found in STATE.md`. The two used to be indistinguishable (#3699).
+
+| Frontmatter key | Body source |
+|---|---|
+| `current_phase` | `Current Phase` (or the prose `Phase:` line) |
+| `current_phase_name` | `Current Phase Name` (or the prose `Phase:` name) |
+| `current_plan` | `Current Plan` |
+| `status` | `Status` |
+| `stopped_at` | `Stopped At` / `Stopped at` (under `## Session`) |
+| `paused_at` | `Paused At` (under `## Session`) |
+| `last_activity` | `Last Activity` / `Last activity` (date part) |
+| `last_activity_desc` | `Last Activity Description` (or the prose after the dash) |
+
+Keys not in this table have no body source at all — `milestone` and `milestone_name` come from
+ROADMAP.md, `progress.*` from a scan of `.planning/phases/`, and `last_updated` / `state_head` /
+`gsd_state_version` are recomputed on every write. The refusal names which of those applies.
+
+#### Repairing a document whose body source is missing
+
+If frontmatter carries a key but the body has **no** source line for it, there is nothing to derive
+from and neither route can write. In that one case the frontmatter key *is* directly writable, and
+the command says so:
+
+```json
+{ "updated": true, "wrote": "frontmatter", "preserved": [] }
+```
+
+`wrote: "frontmatter"` appears only on this repair path — an ordinary update omits it. The fallback
+is deliberately narrow: it will not fire while any body source line still exists (even one stranded
+in an archive section), and it will not invent a frontmatter key that is not already there.
+
+---
+
 ### `state validate`
 
 Detect drift between STATE.md and the actual filesystem.

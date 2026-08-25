@@ -143,6 +143,64 @@ export const FIELD_CLASSIFICATION: Readonly<Record<string, FieldClassification>>
 );
 
 /**
+ * Which BODY field feeds each frontmatter key.
+ *
+ * `FIELD_CLASSIFICATION` above answers "who wins when frontmatter and body
+ * disagree"; this answers "and what is the body one called". They are separate
+ * questions and this one is display/routing knowledge, not preservation policy,
+ * so it does not widen the ADR-3408-governed table.
+ *
+ * #3699: `state update stopped_at …` reported `Field "stopped_at" not found in
+ * STATE.md` — byte-identical to what a genuinely absent field reports. The key
+ * IS present; it is a projection of a body field, and the message pointed away
+ * from the route that works. Naming the source is what makes the two cases
+ * distinguishable.
+ *
+ * Transcribed from `buildStateFrontmatter` (`state.cts`), which is the real
+ * deriver. That makes this a SECOND copy of knowledge that already exists, so it
+ * ships with a parity test asserting this key set equals the body-derived key set
+ * the builder actually emits (CLAUDE.md → Generative Fix Divergence). Keys the
+ * builder derives from disk, an external file, or the clock have no body source
+ * and are deliberately ABSENT here rather than mapped to a lie.
+ */
+export const FRONTMATTER_BODY_SOURCE: Readonly<Record<string, readonly string[]>> = Object.freeze(
+  Object.assign(Object.create(null) as Record<string, readonly string[]>, {
+    current_phase: Object.freeze(['Current Phase']),
+    current_phase_name: Object.freeze(['Current Phase Name']),
+    current_plan: Object.freeze(['Current Plan']),
+    status: Object.freeze(['Status']),
+    // Scoped to `## Session` by the builder; see the presence check in
+    // `updateCore` for why the lookup here is deliberately unscoped.
+    stopped_at: Object.freeze(['Stopped At', 'Stopped at']),
+    paused_at: Object.freeze(['Paused At']),
+    last_activity: Object.freeze(['Last Activity', 'Last activity']),
+    last_activity_desc: Object.freeze(['Last Activity Description']),
+  } satisfies Record<string, readonly string[]>),
+);
+
+/**
+ * Own-property body-source lookup. `null` for a key with no body source (a
+ * disk/external/clock-derived key) and for anything not a frontmatter key.
+ */
+export function getFrontmatterBodySource(field: string): readonly string[] | null {
+  if (!Object.prototype.hasOwnProperty.call(FRONTMATTER_BODY_SOURCE, field)) return null;
+  return FRONTMATTER_BODY_SOURCE[field];
+}
+
+/**
+ * Reverse lookup: the frontmatter key a body field feeds, or `null`.
+ * Lets a failed body-field update name the frontmatter key that still carries a
+ * value (#3699 case D), instead of reporting a bare absence.
+ */
+export function frontmatterKeyForBodyField(bodyField: string): string | null {
+  const wanted = bodyField.trim().toLowerCase();
+  for (const key of Object.keys(FRONTMATTER_BODY_SOURCE)) {
+    if (FRONTMATTER_BODY_SOURCE[key].some((f) => f.toLowerCase() === wanted)) return key;
+  }
+  return null;
+}
+
+/**
  * Own-property classification lookup. Returns `null` for unknown fields
  * (including inherited prototype methods like `toString`/`valueOf`).
  */
@@ -1836,6 +1894,41 @@ function updateCore(
   const body = stripFrontmatter(content);
   const result = stateReplaceField(body, intent.field, intent.value);
   if (result === null) {
+    // #3699 case D — the frontmatter fallback.
+    //
+    // Normally frontmatter keys are NOT writable here: they are projections, and
+    // `buildStateFrontmatter` re-derives them from the body on every write, so a
+    // direct frontmatter write would be discarded. But when the body source line
+    // is absent entirely, there is nothing to derive FROM: the key's existing
+    // value survives on `preserve-when-unchanged`, and neither the frontmatter
+    // key nor the body field can be updated by any route. That document is
+    // unrepairable through `state update`, which is the gap this closes.
+    //
+    // Deliberately narrow — all three must hold:
+    //   (1) the field is a frontmatter key with a known body source,
+    //   (2) NO body source line exists, so the body route is genuinely unavailable
+    //       (this is what keeps case A, where the body route works, routing to the
+    //       body as before), and
+    //   (3) the frontmatter already carries the key, so this updates a value that
+    //       is really there rather than inventing one.
+    //
+    // The presence check in (2) is UNSCOPED on purpose, unlike the builder's
+    // `## Session` scoping for stopped_at/paused_at. The asymmetry is the safe
+    // direction: any `Stopped at:` line anywhere in the body — including one in an
+    // archive section — suppresses the fallback, so this never writes frontmatter
+    // while a body line the user could edit still exists.
+    const bodySource = getFrontmatterBodySource(intent.field);
+    const frontmatterCarriesKey =
+      hasFrontmatter && Object.prototype.hasOwnProperty.call(existingFm, intent.field);
+    if (bodySource && frontmatterCarriesKey
+      && !bodySource.some((f) => stateExtractField(body, f) !== null)) {
+      const nextFm = { ...existingFm, [intent.field]: intent.value };
+      return {
+        content: `---\n${reconstructFrontmatter(nextFm as unknown as Frontmatter)}\n---\n\n${body}`,
+        updated: [intent.field],
+        data: { updated: true, wroteFrontmatter: true },
+      };
+    }
     return { content, updated: [], data: { updated: false } };
   }
   const reassembled = hasFrontmatter

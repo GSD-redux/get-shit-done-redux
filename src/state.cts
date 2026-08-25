@@ -64,6 +64,9 @@ import { findProjectRoot } from './project-root.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import milestoneLockMod = require('./milestone-lock.cjs');
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
+// #3699: the frontmatter-key <-> body-field routing behind `state update`'s
+// failure explanation, and the classification table it falls back to.
+const { getFieldClassification, getFrontmatterBodySource, frontmatterKeyForBodyField } = stateTransitionMod;
 type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
 type StateTransitionDeps = stateTransitionMod.StateTransitionDeps;
 type PhaseInventoryRecord = stateTransitionMod.PhaseInventoryRecord;
@@ -584,6 +587,54 @@ function cmdStatePatch(cwd: string, patches: Record<string, string>, raw: boolea
   }
 }
 
+/**
+ * Why did `state update <field>` not write anything?
+ *
+ * #3699: this used to be one sentence — `Field "X" not found in STATE.md` — for
+ * every falsy outcome, so a PRESENT-but-derived frontmatter key and a genuinely
+ * absent field produced byte-identical output apart from the name. The classifier
+ * already knew the difference; the message threw it away, and worse, pointed away
+ * from the route that works.
+ *
+ * Four distinct answers, because there are four distinct situations:
+ *   1. a body-derived frontmatter key whose body source EXISTS  → name that source
+ *   2. a frontmatter key with no body source at all (disk/external/clock-derived)
+ *      → say what derives it, and do not invent a body field to blame
+ *   3. a body field that feeds a frontmatter key still carrying a value
+ *      → name the key, so case D is diagnosable rather than a bare absence
+ *   4. genuinely unknown                                         → unchanged
+ */
+function explainUpdateFailure(field: string): string {
+  const bodySource = getFrontmatterBodySource(field);
+  if (bodySource) {
+    // (1) The fallback in `updateCore` did not fire, so a body source line
+    // exists — that is the writable route.
+    const [primary] = bodySource;
+    return `Field "${field}" is a body-derived frontmatter key and is not directly writable. `
+      + `Update its body source instead: state update "${primary}" <value>.`;
+  }
+  const classification = getFieldClassification(field);
+  if (classification) {
+    // (2) Known key, no body source: disk/external/free-derived.
+    const derivedFrom: Record<string, string> = {
+      disk: 'derived from a scan of .planning/phases/ and is not directly writable',
+      external: 'derived from ROADMAP.md and is not directly writable',
+      free: 'recomputed on every write and is not directly writable',
+      curated: 'maintained by the write path and is not directly writable through this command',
+      body: 'body-derived and is not directly writable',
+    };
+    return `Field "${field}" is a frontmatter key that is ${derivedFrom[classification.source]}.`;
+  }
+  const owningKey = frontmatterKeyForBodyField(field);
+  if (owningKey) {
+    // (3) Case D from the body-field side.
+    return `Field "${field}" not found in STATE.md. It is the body source for frontmatter key `
+      + `"${owningKey}" — add the "${field}:" line to the body, or update "${owningKey}" directly `
+      + `to repair a document whose body source is missing.`;
+  }
+  return `Field "${field}" not found in STATE.md`; // (4) genuinely unknown
+}
+
 function cmdStateUpdate(cwd: string, field: string | undefined, value: string | undefined): void {
   if (!field || value === undefined) {
     error('field and value required for state update');
@@ -601,6 +652,27 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
   try {
     let updated = false;
     let preSyncContent = '';
+    let transitionData: Record<string, unknown> | undefined;
+    // #3699 case D: when `updateCore` falls back to writing the frontmatter key
+    // directly, the value must survive the post-sync pass — otherwise the write
+    // is silently undone. `buildStateFrontmatter` re-derives `stopped_at` from
+    // the body, finds no source, and emits nothing; `applyPreserveWhenUnchanged`
+    // then sees an unchanged (absent) body source and restores the PRE-write
+    // snapshot over the value just written. Verified: without this the command
+    // reported `updated:false` with `preserved:["Stopped At"]` and the old value
+    // stood.
+    //
+    // `authoritativeFm` is the seam built for exactly this (#2736 — "intent-first
+    // frontmatter values … so the lossy body-prose re-derivation can never
+    // destroy information the transition just resolved"), and it is re-applied
+    // AFTER preservation (`applyPostSyncPreservation`), so it wins the restore.
+    //
+    // Populated by the transform below rather than up front, because only the
+    // transition knows whether the fallback fired. Safe: `readModifyWriteStateMd`
+    // dereferences `options.authoritativeFm` after running the transform. Left
+    // empty when the fallback does not fire — an empty object iterates zero
+    // entries and is a no-op at both application sites.
+    const authoritativeFm: Record<string, unknown> = {};
     const divergedFields: string[] = [];
     const shouldResync = shouldResyncStateProgress([field as string]);
     // ADR-1769 Phase 7: dispatches to the STATE.md Transition Module. The
@@ -616,9 +688,13 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
         { clock: realClock },
       );
       updated = (result.data as { updated: boolean } | undefined)?.updated === true;
+      transitionData = result.data;
+      if (transitionData?.wroteFrontmatter === true) {
+        authoritativeFm[field as string] = value;
+      }
       preSyncContent = result.content;
       return result.content;
-    }, cwd, { resync: shouldResync, divergedFields });
+    }, cwd, { resync: shouldResync, divergedFields, authoritativeFm });
 
     // ADR-3408 §8.4 (D4): reconcile against the bytes actually persisted —
     // `updateCore`'s own match does not know whether sync/preservation later
@@ -632,9 +708,31 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
     const preserved = reconciled.filter((f) => f !== field);
 
     if (updated) {
-      output({ updated: true, preserved }, false, undefined);
+      // #3699 case D: surfaced so a caller can tell "wrote the body source" from
+      // "wrote the frontmatter key because no body source existed" — the second
+      // is a repair, and silently reporting it as an ordinary update is the same
+      // class of unfalsifiable success this issue is about.
+      const wroteFrontmatter = (transitionData as { wroteFrontmatter?: boolean } | undefined)?.wroteFrontmatter === true;
+      if (!wroteFrontmatter) {
+        output({ updated: true, preserved }, false, undefined);
+      } else {
+        // `preserved` reports the BODY LABEL of each field preservation restored
+        // (`bodyLabelFor`, the #3345 direction). In the case-D fallback that
+        // reading is stale by one step: preservation DID restore this field's
+        // snapshot, and `authoritativeFm` then overrode it, so the value on disk
+        // is the one just written. Reporting it as preserved would claim a
+        // restore that did not survive — the same unfalsifiable-success shape
+        // #3699 is about, one field over. Drop this field's own labels; other
+        // fields' preservation is untouched and still reported.
+        const ownLabels = new Set((getFrontmatterBodySource(field as string) ?? []).map((l) => l.toLowerCase()));
+        output({
+          updated: true,
+          wrote: 'frontmatter',
+          preserved: preserved.filter((p) => !ownLabels.has(p.toLowerCase())),
+        }, false, undefined);
+      }
     } else {
-      output({ updated: false, reason: `Field "${field as string}" not found in STATE.md`, preserved }, false, undefined);
+      output({ updated: false, reason: explainUpdateFailure(field as string), preserved }, false, undefined);
     }
   } catch {
     output({ updated: false, reason: 'STATE.md not found' }, false, undefined);
