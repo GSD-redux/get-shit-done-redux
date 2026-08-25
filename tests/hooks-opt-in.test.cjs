@@ -388,6 +388,22 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
           + 'being read as the subject');
       }
     }
+
+    // Review of #3816, Major 2: the clean fixtures above cannot see a
+    // one-directional cleanup=whitespace implementation. git strips TRAILING
+    // whitespace too, so a 72-char subject plus trailing spaces is a conforming
+    // commit — measuring the raw 75 chars re-blocks it, the very defect #3802
+    // reports. And the guard must strip, not blanket-allow: 73 chars plus a
+    // trailing space is still over-long once stripped.
+    const dirty72 = runHookCmd(heredoc(`${at(72)}   `));
+    assert.strictEqual(dirty72.status, 0,
+      `git's actual subject is 72 chars — measuring the raw line as 75 must not block it; `
+      + `got ${dirty72.status}: ${dirty72.stdout}`);
+    const dirty73 = runHookCmd(heredoc(`${at(73)} `));
+    assert.strictEqual(dirty73.status, 2,
+      'a 73-char subject stays blocked with trailing whitespace attached — stripping must not '
+      + 'become an allowance');
+    assert.strictEqual(JSON.parse(dirty73.stdout).code, 'COMMIT_SUBJECT_TOO_LONG');
   });
 
   test('validate-commit does not resolve a TRUNCATED capture past its own limit', () => {

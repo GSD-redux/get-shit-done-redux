@@ -215,11 +215,22 @@ function isGitSubcommand(cmd, sub) {
  * ALLOWED a non-conforming commit: an enforcement bypass, not just a
  * misclassification (review of #3802).
  *
+ * KNOWN LIMIT: an UNQUOTED delimiter (`<<EOF`) makes bash expand `$var` and
+ * `$(...)` in the body, so this validates the literal text rather than what git
+ * receives — the same pre-existing limit as expansions in a plain `-m "..."`
+ * argument, and the anchored recognition above is unaffected by it (review of
+ * #3816).
+ *
  * @param {string} messageArg - the raw `-m` argument, already selected by the caller
  * @returns {string} the subject to validate
  */
 function resolveCommitSubject(messageArg) {
-  const lines = String(messageArg == null ? '' : messageArg).split('\n');
+  // CRLF-tolerant split. With a bare split('\n') every body line kept its \r,
+  // so `body.indexOf(delimiter)` never matched on CRLF input: the truncation
+  // guard was inert, an empty CRLF message resolved to 'EOF\r' instead of '',
+  // and a real 72-char subject measured 73 (review of #3816). Splitting on
+  // /\r?\n/ is the repo-wide remedy for this recurring defect class.
+  const lines = String(messageArg == null ? '' : messageArg).split(/\r?\n/);
   const opener = /^\$\(\s*(?:\S*\/)?cat\s+<<(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))\s*$/
     .exec(lines[0]);
   if (!opener) return lines[0];
@@ -256,7 +267,14 @@ function resolveCommitSubject(messageArg) {
   // measured a PREFIX of the real subject and let an over-long message through
   // (review of #3802).
   if (end === -1 && idx >= body.length - 1) return lines[0];
-  return scan[idx];
+
+  // git's `cleanup=whitespace` strips whitespace at BOTH ends of the line, not
+  // just leading blanks. Measuring the raw line rejected `feat: <66 x's>` plus
+  // three trailing spaces as 75 chars when git's actual subject is a conforming
+  // 72 — a still-blocked conforming commit, the very defect #3802 reports
+  // (review of #3816). Trailing only, here: leading blank-LINE handling is the
+  // findIndex above, and `<<-` leading-tab stripping already happened.
+  return scan[idx].replace(/[ \t]+$/, '');
 }
 
 module.exports = { isGitSubcommand, tokenize, extractBranchArgument, skipToSubcommand, resolveCommitSubject };

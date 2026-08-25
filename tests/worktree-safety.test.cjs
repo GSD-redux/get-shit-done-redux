@@ -4559,37 +4559,123 @@ describe('git-cmd.js resolveCommitSubject', () => {
   // hook path, so the invariants are asserted over generated input rather than
   // examples alone. Seeded setup helper, not `fast-check` directly, so numRuns
   // and seed are configured before any fc.assert (repo convention).
+  //
+  // Review of #3816, Major 1: the previous generator was a bare
+  // fc.string({maxLength: 400}), whose pinned-seed corpus contained NO newline
+  // and NO opener — 0 of 200 inputs reached the parser, so all three properties
+  // reduced to `f(s) === s`. The generator now CONSTRUCTS heredoc-shaped input
+  // (every opener spelling, <<- tabs, optional terminator, CRLF) alongside plain
+  // and multi-line strings, and each property PROVES its corpus took the heredoc
+  // arm: `resolved` counts inputs whose output is not the first line, which only
+  // the resolver's body-scanning branch can produce.
+  const delimiterArb = fc.stringMatching(/^[A-Za-z][A-Za-z0-9_-]{0,8}$/);
+  const bodyLineArb = fc.stringMatching(/^[^\n\r]{0,60}$/);
+  const heredocArb = fc.record({
+    delim: delimiterArb,
+    quote: fc.constantFrom("'", '"', '', '\\'),
+    dash: fc.boolean(),
+    spaced: fc.boolean(),
+    catPath: fc.constantFrom('cat', '/bin/cat'),
+    body: fc.array(bodyLineArb, { minLength: 0, maxLength: 5 }),
+    terminated: fc.boolean(),
+    eol: fc.constantFrom('\n', '\r\n'),
+  }).map(({ delim, quote, dash, spaced, catPath, body, terminated, eol }) => {
+    const word = quote === '\\' ? `\\${delim}` : quote ? `${quote}${delim}${quote}` : delim;
+    const opener = `$(${catPath} <<${dash ? '-' : ''}${spaced ? ' ' : ''}${word}`;
+    const parts = [opener, ...body.map((l) => (dash ? `\t${l}` : l))];
+    if (terminated) parts.push(dash ? `\t${delim}` : delim, ')');
+    return parts.join(eol);
+  });
+  const messageArb = fc.oneof(
+    { weight: 3, arbitrary: heredocArb },
+    fc.string({ maxLength: 400 }),
+    // multi-line plain messages — the old generator never produced a newline
+    fc.array(bodyLineArb, { minLength: 1, maxLength: 4 }).map((ls) => ls.join('\n')),
+  );
+  const firstLineOf = (input) => String(input).split(/\r?\n/)[0];
+  // Floor for the resolved-input count across the seeded corpus. Deliberately
+  // far below the ~60% heredoc weighting so generator drift cannot flake it,
+  // while still failing loudly if the corpus stops reaching the parser — the
+  // exact vacuity Major 1 caught.
+  const MIN_RESOLVED = 20;
+
   test('property: total — never throws, always returns a string', () => {
     // Totality is a SECURITY property here, not tidiness: this runs inside a
     // PreToolUse hook whose caller treats a failed extraction as "nothing to
-    // validate", so an exception fails OPEN.
-    fc.assert(fc.property(fc.string({ maxLength: 400 }), (input) => {
+    // validate", so an exception fails OPEN. Backed by a corpus that reaches
+    // the parser, which is what makes the claim about the PARSER and not about
+    // fc.string pass-through.
+    let resolved = 0;
+    fc.assert(fc.property(messageArb, (input) => {
       const out = resolveCommitSubject(input);
       assert.strictEqual(typeof out, 'string');
+      if (out !== firstLineOf(input)) resolved += 1;
     }));
-    for (const odd of [null, undefined, '', '\n', '\n\n\n', '$(cat <<', '$(cat <<-']) {
+    assert.ok(resolved >= MIN_RESOLVED,
+      `only ${resolved} corpus inputs were actually resolved past the first line — the property is `
+      + 'running on inputs that never reach the parser again (review of #3816, Major 1)');
+    for (const odd of [null, undefined, '', '\n', '\n\n\n', '\r\n', '$(cat <<', '$(cat <<-']) {
       assert.strictEqual(typeof resolveCommitSubject(odd), 'string', JSON.stringify(odd));
     }
   });
 
   test('property: idempotent — resolving a resolved subject changes nothing', () => {
-    fc.assert(fc.property(fc.string({ maxLength: 400 }), (input) => {
+    let resolved = 0;
+    fc.assert(fc.property(messageArb, (input) => {
       const once = resolveCommitSubject(input);
       assert.strictEqual(resolveCommitSubject(once), once);
+      if (once !== firstLineOf(input)) resolved += 1;
     }));
+    assert.ok(resolved >= MIN_RESOLVED,
+      `only ${resolved} corpus inputs were actually resolved — vacuous corpus (review of #3816)`);
   });
 
-  test('property: the result is always a single line drawn from the input', () => {
-    // The subject is a LINE, never a synthesised string: whatever comes back must
-    // be one of the input's own lines. A resolver that concatenated or trimmed
-    // would satisfy the two properties above but not this one.
-    fc.assert(fc.property(fc.string({ maxLength: 400 }), (input) => {
+  test('property: the result is a single line derived from an input line by git\'s own strips', () => {
+    // The subject is a LINE, never a synthesised string: whatever comes back
+    // must be one of the input's own lines, modulo exactly the transformations
+    // git itself performs — `<<-` leading-tab stripping and cleanup=whitespace
+    // trailing-whitespace stripping. A resolver that concatenated lines or
+    // trimmed anything MORE than that would fail this.
+    let resolved = 0;
+    fc.assert(fc.property(messageArb, (input) => {
       const out = resolveCommitSubject(input);
-      assert.ok(!out.includes('\n'), 'a subject is one line');
-      const lines = String(input).split('\n');
-      assert.ok(lines.includes(out) || lines.some((l) => l.replace(/^\t+/, '') === out) || out === '',
-        `result ${JSON.stringify(out)} is not a line of the input`);
+      assert.ok(!/[\n\r]/.test(out), 'a subject is one line');
+      const lines = String(input).split(/\r?\n/);
+      const derivations = (l) => {
+        const untabbed = l.replace(/^\t+/, '');
+        return [l, untabbed, untabbed.replace(/[ \t]+$/, '')];
+      };
+      assert.ok(out === '' || lines.some((l) => derivations(l).includes(out)),
+        `result ${JSON.stringify(out)} is not derived from any line of the input`);
+      if (out !== firstLineOf(input)) resolved += 1;
     }));
+    assert.ok(resolved >= MIN_RESOLVED,
+      `only ${resolved} corpus inputs were actually resolved — vacuous corpus (review of #3816)`);
+  });
+
+  test('MAJOR 2: trailing whitespace is stripped, as git cleanup=whitespace does', () => {
+    // git strips whitespace at BOTH ends of the line, not just leading blank
+    // lines. Measuring the raw line rejected a body of `feat: ` + 66 x's + three
+    // spaces as 75 chars when git's actual subject is a conforming 72 — a
+    // still-blocked conforming commit, the defect #3802 reports (review of #3816).
+    const subject72 = `feat: ${'x'.repeat(66)}`;
+    assert.strictEqual(subject72.length, 72, 'fixture built wrong');
+    assert.strictEqual(resolveCommitSubject(sub("<<'EOF'", `${subject72}   `, 'EOF')), subject72);
+    assert.strictEqual(resolveCommitSubject(sub("<<'EOF'", 'feat: tab tail\t \t', 'EOF')),
+      'feat: tab tail', 'tabs are trailing whitespace too');
+  });
+
+  test('MINOR 3: CRLF bodies resolve identically to LF bodies', () => {
+    // split('\n') left \r on every body line, so the delimiter never matched on
+    // CRLF input: the truncation guard was inert, an empty CRLF message resolved
+    // to "EOF\r" instead of '', and a real 72-char subject measured 73
+    // (review of #3816).
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\r\nfeat: crlf subject\r\nEOF\r\n)"),
+      'feat: crlf subject');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\r\nEOF\r\n)"), '',
+      'an empty CRLF message is EMPTY — it used to resolve to the terminator plus \\r');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\r\nfeat: aaaa"), "$(cat <<'EOF'",
+      'the truncation guard must be live on CRLF input, not defeated by an unmatchable delimiter');
   });
 
   test('ordinary messages pass through as their first line', () => {
