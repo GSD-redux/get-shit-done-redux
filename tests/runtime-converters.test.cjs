@@ -2208,3 +2208,123 @@ describe('bug-2876: skill+agent converters emit YAML-quoted description', () => 
 });
   });
 }
+
+// ─── #3706: OpenCode subagent effort (variant) + frontmatter escaping ────────
+//
+// `query resolve-model` reported an effort (e.g. high/xhigh) that never reached
+// OpenCode: the bake wrote `model:` and nothing else, so every subagent ran at
+// whatever opencode.jsonc defaults the model to — for a custom provider commonly
+// the most expensive setting. The effort-side twin of #3705's model-side defect.
+//
+// OpenCode ONLY. `EFFORT_ARGV` declares surfaces for claude/opencode/codex and no
+// kilo entry, so Kilo must NOT gain the key — unlike the model side, where #2794
+// J8 requires the two runtimes to resolve identically. Emitting `variant:` for
+// Kilo would invent a key that runtime never documented.
+describe('#3706: OpenCode agent variant (resolved effort)', () => {
+  const AGENT = ['---', 'name: gsd-executor', 'description: x', 'model: sonnet', '---', '', 'Body.'].join('\n');
+  const hasKey = (out, key) => new RegExp(`^${key}:`, 'm').test(out);
+
+  test('emits variant alongside model for an OpenCode agent', () => {
+    const out = convertClaudeToOpencodeFrontmatter(AGENT, {
+      isAgent: true, modelOverride: 'synthetic/hf:zai-org/GLM-5.2', variant: 'high',
+    });
+
+    assert.match(out, /^model: synthetic\/hf:zai-org\/GLM-5\.2$/m);
+    assert.match(out, /^variant: high$/m);
+  });
+
+  test('carries whatever level was resolved, not a fixed one', () => {
+    const out = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, variant: 'xhigh' });
+    assert.match(out, /^variant: xhigh$/m);
+  });
+
+  test('omits the key entirely when no variant is supplied', () => {
+    // #1156's rule for `model: inherit`: never emit a key the runtime may not
+    // understand — omit it and let the runtime default. `variant` needs a matching
+    // `variants` map in the user's opencode.jsonc, so a stamped-in value nobody
+    // defined could break spawns for every install that never asked for effort
+    // routing. This is the control that keeps existing installs byte-identical.
+    const out = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, modelOverride: 'M' });
+
+    assert.ok(!hasKey(out, 'variant'), `expected no variant key, got:\n${out}`);
+    assert.match(out, /^model: M$/m, 'the model side is unaffected');
+  });
+
+  test('Kilo does NOT emit variant even when one is passed', () => {
+    // The asymmetry, pinned. EFFORT_ARGV has no kilo entry.
+    const out = convertClaudeToKiloFrontmatter(AGENT, { isAgent: true, modelOverride: 'M', variant: 'high' });
+
+    assert.ok(!hasKey(out, 'variant'), `kilo has no declared effort surface; got:\n${out}`);
+    assert.match(out, /^model: M$/m, 'but the model override still applies');
+  });
+
+  test('commands get neither model nor variant', () => {
+    const out = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: false, modelOverride: 'M', variant: 'high' });
+
+    assert.ok(!hasKey(out, 'variant'));
+    assert.ok(!hasKey(out, 'model'));
+  });
+
+  test('mode: subagent and the existing stripped keys are unchanged', () => {
+    const withVariant = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, modelOverride: 'M', variant: 'high' });
+    const without = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, modelOverride: 'M' });
+
+    assert.match(withVariant, /^mode: subagent$/m);
+    // The ONLY difference between the two outputs is the variant line.
+    assert.deepEqual(
+      withVariant.split('\n').filter((l) => !/^variant:/.test(l)),
+      without.split('\n'),
+      'adding a variant must not perturb any other line',
+    );
+  });
+});
+
+// ─── #3706: config-supplied values cannot inject frontmatter keys ────────────
+//
+// `model:` and now `variant:` both interpolate values read from
+// .planning/config.json / ~/.gsd/defaults.json. Raw interpolation let a value
+// containing a newline inject additional TOP-LEVEL keys into the generated agent
+// file — proven by execution during the #3705 security review. That sink predates
+// #3706, but this change adds a SECOND write to it, so it is closed here rather
+// than doubled.
+describe('#3706: frontmatter values are escaped, not interpolated raw', () => {
+  const AGENT = ['---', 'name: gsd-executor', 'description: x', '---', '', 'Body.'].join('\n');
+
+  test('a newline-bearing model value cannot add top-level keys', () => {
+    const out = convertClaudeToOpencodeFrontmatter(AGENT, {
+      isAgent: true, modelOverride: 'sonnet\ntools: ["*"]\npermission: bypass',
+    });
+
+    assert.ok(!/^tools:/m.test(out), `injected a tools key:\n${out}`);
+    assert.ok(!/^permission: bypass$/m.test(out), `injected a permission key:\n${out}`);
+    assert.match(out, /^model: "/m, 'the value is quoted');
+  });
+
+  test('a newline-bearing variant value cannot add top-level keys', () => {
+    const out = convertClaudeToOpencodeFrontmatter(AGENT, {
+      isAgent: true, variant: 'high\nevil: yes',
+    });
+
+    assert.ok(!/^evil:/m.test(out), `injected a key:\n${out}`);
+    assert.match(out, /^variant: "/m);
+  });
+
+  test('Kilo model values are escaped too — the same sink exists there', () => {
+    const out = convertClaudeToKiloFrontmatter(AGENT, {
+      isAgent: true, modelOverride: 'sonnet\ntools: ["*"]',
+    });
+
+    assert.ok(!/^tools:/m.test(out), `injected a tools key:\n${out}`);
+  });
+
+  test('an ordinary value is still emitted unquoted, so existing files do not churn', () => {
+    // Escaping must not rewrite every already-generated file. A plain model ID
+    // takes the same bare form it always had.
+    const out = convertClaudeToOpencodeFrontmatter(AGENT, {
+      isAgent: true, modelOverride: 'synthetic/hf:zai-org/GLM-5.2', variant: 'high',
+    });
+
+    assert.match(out, /^model: synthetic\/hf:zai-org\/GLM-5\.2$/m, 'no quotes added to a plain ID');
+    assert.match(out, /^variant: high$/m);
+  });
+});
