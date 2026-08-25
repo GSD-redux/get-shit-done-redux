@@ -123,6 +123,10 @@ Gates check a condition at a loop extension point and optionally block progressi
 
 The 12 loop extension points are a **closed, additive-only vocabulary**. Every `steps`, `contributions`, and `gates` entry must use one of these identifiers exactly.
 
+A valid point is necessary but not sufficient: each host workflow decides, per point, which hook **kinds** its dispatch text handles, and a point may dispatch a subset. The registry build derives the real answer from the host workflows (`getWiredKinds()` in `scripts/gen-loop-host-contract.cjs`) and rejects a manifest declaring a kind the point does not dispatch — so an unsupported combination is a build-time error naming the point, the kind, and the kinds that point does cover. It is never a hook that renders and is then silently dropped.
+
+`verify:pre` dispatches all three kinds. A step there is **advisory**: it runs before UAT begins and never blocks it — a precondition that must halt verification is a `gate`. Its `produces` artefact names are consumed **additively** by the verify workflow's `extract_tests` step, which can deepen what UAT covers but cannot suppress a checkpoint. See [Develop a capability](../how-to/develop-a-capability.md#check-the-point-dispatches-your-kind) for the authoring workflow.
+
 | Point | Phase | Position |
 |---|---|---|
 | `discuss:pre` | Discuss | Before the discuss step executes |
