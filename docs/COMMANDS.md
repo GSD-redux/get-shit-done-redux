@@ -790,6 +790,15 @@ Interactive command center for managing multiple phases from one terminal.
 
 **Phase completion is disk-strict (ADR-3180 §7.4, issue #3186).** A phase's status here — and in `roadmap analyze`, `roadmap update-plan-progress`, and `phase complete` — is decided by one rule: a passing `*-VERIFICATION.md` on disk, checked unconditionally (plan count is never a precondition, so a zero-plan phase with a passing verification reports complete). A ticked `- [x]` checkbox in `ROADMAP.md` is a human annotation only; it carries no machine authority and is never consulted for these commands' completion verdicts. `roadmap update-plan-progress` additionally withholds writing the checkbox/completion date while any plan in the phase has no matching `*-SUMMARY.md`, mirroring `phase complete`'s own coverage gate.
 
+**Which phase comes *next* is a different question, and it follows ROADMAP order.** Disk-strictness
+governs whether a phase is *complete*; it does not decide the successor. `phase complete` resolves
+`next_phase` as the phase following the completed one in `ROADMAP.md`, regardless of which phase
+directories happen to exist — a phase that has not been planned yet has no directory, and must still
+be selected ahead of a later phase that does. When the roadmap and the directories agree, the
+directory supplies the spelling (the zero-padded token and its on-disk slug). The directory scan is
+the fallback only when no readable roadmap phase list exists (#3701; the same rule #3581 established
+for `init.progress`).
+
 **Checkpoint Heartbeats (#2410):**
 
 Background `execute-phase` runs emit `[checkpoint]` markers at every wave and plan

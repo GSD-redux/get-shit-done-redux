@@ -3036,6 +3036,37 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         }
       }
 
+      // #3701 — ROADMAP ORDER decides WHICH phase is next; the disk decides only
+      // HOW it is spelled.
+      //
+      // Both scans below are unchanged in what they match; what changed is that
+      // the roadmap is no longer gated behind "the disk found nothing". It used
+      // to be (`if (isLastPhase && roadmapContent !== null)`), which made a wrong
+      // disk answer uncorrectable: phase directories are created lazily, but
+      // `phase insert` scaffolds an inserted phase's directory immediately, so an
+      // inserted decimal is routinely the ONLY directory above N and outranked
+      // every phase preceding it in the roadmap. Observed: roadmap `1, 2, 02.1,
+      // 3` with directories for 01 and 02.1 only reported `next_phase: "02.1"`
+      // after completing 1 — and PERSISTED it to STATE.md — while
+      // `roadmap.analyze` correctly said `2`.
+      //
+      // #3581 fixed exactly this at `init.progress` and named the rule: "the
+      // frontier is ROADMAP ORDER, not artifact presence". This call site was not
+      // in that change's scope.
+      //
+      // Why the disk scan survives, rather than being replaced:
+      //   1. It is the only resolver when there is no ROADMAP.md, or when its
+      //      phase rows do not parse.
+      //   2. When both agree, it carries the SPELLING the output has always used
+      //      — the zero-padded directory token and the on-disk slug (`02`/`beta`),
+      //      where the roadmap would give `2` and a slugified title. Promoting the
+      //      roadmap without this would silently change the reported value on
+      //      every aligned project, which is the majority case.
+      let diskNextNum: string | null = null;
+      let diskNextName: string | null = null;
+      let roadmapNextNum: string | null = null;
+      let roadmapNextName: string | null = null;
+
       try {
         // #3185 (ADR-3180 Decision 1): "which phase directories belong to
         // the CURRENT milestone" — routed through the canonical owner
@@ -3052,9 +3083,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
             // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
             if (isSentinelPhaseId(dm[1])) continue;
             if (comparePhaseNum(dm[1], phaseNum) > 0) {
-              nextPhaseNum = dm[1];
-              nextPhaseName = dm[2] || null;
-              isLastPhase = false;
+              diskNextNum = dm[1];
+              diskNextName = dm[2] || null;
               break;
             }
           }
@@ -3069,7 +3099,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
          * — not a silent data-loss path. */
       }
 
-      if (isLastPhase && roadmapContent !== null) {
+      if (roadmapContent !== null) {
         try {
           const roadmapForPhases = extractCurrentMilestone(roadmapContent, cwd);
           // #1591: match BOTH heading-style phases (`### Phase N:`) AND
@@ -3098,13 +3128,12 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
             // stage 2's heading scan must not advance into backlog headings either.
             if (isSentinelPhaseId(pm[1])) continue;
             if (comparePhaseNum(pm[1], phaseNum) > 0) {
-              nextPhaseNum = pm[1];
-              nextPhaseName = pm[2]
+              roadmapNextNum = pm[1];
+              roadmapNextName = pm[2]
                 .replace(/\(INSERTED\)/i, '')
                 .trim()
                 .toLowerCase()
                 .replace(/\s+/g, '-');
-              isLastPhase = false;
               break;
             }
           }
@@ -3114,6 +3143,26 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
            * isLastPhase as stage 1 left it; stage 3 (#2028) below runs next
            * regardless and provides a further, independent override. */
         }
+      }
+
+
+      // Resolve. The roadmap wins on identity; the disk wins on spelling when it
+      // is talking about the same phase.
+      if (roadmapNextNum !== null) {
+        // Same comparator both scans already use to order phases, so "the disk
+        // and the roadmap mean the same phase" cannot drift from "N is above the
+        // one just completed". `02` and `2` compare equal, which is the whole
+        // point — they are the same phase spelled two ways.
+        const diskAgrees = diskNextNum !== null && comparePhaseNum(diskNextNum, roadmapNextNum) === 0;
+        nextPhaseNum = diskAgrees ? diskNextNum : roadmapNextNum;
+        nextPhaseName = diskAgrees ? diskNextName : roadmapNextName;
+        isLastPhase = false;
+      } else if (diskNextNum !== null) {
+        // No usable roadmap (absent, unreadable, or no parseable phase rows) —
+        // the disk is all there is. Unchanged from the pre-#3701 behaviour.
+        nextPhaseNum = diskNextNum;
+        nextPhaseName = diskNextName;
+        isLastPhase = false;
       }
 
       // #2028: don't stamp "All phases complete" when a LOWER-numbered phase is
