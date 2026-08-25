@@ -2842,7 +2842,7 @@ describe('#3705: install-time bake honours model_policy', () => {
 
     // gsd-executor's balanced tier is sonnet -> the policy's `medium`.
     assert.strictEqual(bake('gsd-executor'), POLICY.medium);
-    assert.notMatch(String(bake('gsd-executor')), /^anthropic\/claude-/,
+    assert.doesNotMatch(String(bake('gsd-executor')), /^anthropic\/claude-/,
       'the whole defect is the catalog Anthropic ID being baked over a configured provider');
   });
 
@@ -2953,7 +2953,7 @@ describe('#3705: install-time bake honours model_policy', () => {
 
     const baked = bake('gsd-executor');
     assert.ok(baked, 'a known preset must resolve');
-    assert.notMatch(String(baked), /^anthropic\/claude-/, 'the preset, not the catalog default');
+    assert.doesNotMatch(String(baked), /^anthropic\/claude-/, 'the preset, not the catalog default');
   });
 
   test('the runtime_tiers escape hatch is honoured for the DOCUMENTED config shape', () => {
