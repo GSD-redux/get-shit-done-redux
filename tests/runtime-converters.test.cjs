@@ -2436,3 +2436,52 @@ describe('#3706: install-time effort resolves and renders for OpenCode', () => {
     }
   });
 });
+
+// ─── #3706: the two frontmatterScalar copies cannot diverge ─────────────────
+//
+// bin/install.js cannot require anything under bin/lib, so the quoting and
+// escaping rules are restated there by hand. Two hand-maintained copies of
+// one rule set is the DEFECT.GENERATIVE-FIX shape the repo requires a parity
+// assertion for, so this asserts equivalence directly instead of trusting
+// that both were edited. A divergence means one install path still emits a
+// value the other quotes.
+
+describe('#3706: the two frontmatterScalar copies cannot diverge', () => {
+  const fc = require('fast-check');
+
+  const modelLineFor = (convert, value) => {
+    const AGENT = ['---', 'name: x', 'description: y', '---', '', 'Body.'].join('\n');
+    return convert(AGENT, { isAgent: true, modelOverride: value }).split('\n').find((l) => l.startsWith('model:'));
+  };
+
+  test('agrees on a hand-picked adversarial corpus', () => {
+    const corpus = [
+      'sonnet', 'synthetic/hf:zai-org/GLM-5.2', '@org/m', 'foo:', 'a:b', 'no', 'NULL', '12:30', '0x1f', '1.5',
+      '', '   ', 'x ', ' x', '-a', '- a', '?a', '#c', '&anc', '*ali', '!tag', '|blk', '>fold', '%res', '`btk',
+      '{f}', '[f]', 'a,b', 'q"q', 'back\\slash', 'tab\there', 'nl\nhere', 'cr\rhere', ' ctl', 'del',
+      'e-unicode', '1e5', '017', '.inf', '~', 'on', 'y', 'n', 'true',
+    ];
+
+    for (const value of corpus) {
+      assert.equal(
+        modelLineFor(convertClaudeToOpencodeFrontmatter, value),
+        modelLineFor(liveConversion.convertClaudeToOpencodeFrontmatter, value),
+        `bin/install.js and bin/lib/runtime-artifact-conversion.cjs disagree on frontmatterScalar(${JSON.stringify(value)})`,
+      );
+    }
+  });
+
+  test('agrees on arbitrary values', () => {
+    const yamlChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:@-_./\"\\ \n\t#&*!|>%`{}[],?~".split('');
+    const valueArb = fc.string({ unit: fc.constantFrom(...yamlChars), maxLength: 40 });
+
+    fc.assert(
+      fc.property(valueArb, (value) => {
+        assert.equal(
+          modelLineFor(convertClaudeToOpencodeFrontmatter, value),
+          modelLineFor(liveConversion.convertClaudeToOpencodeFrontmatter, value),
+        );
+      }),
+    );
+  });
+});
