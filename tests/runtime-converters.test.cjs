@@ -2328,3 +2328,50 @@ describe('#3706: frontmatter values are escaped, not interpolated raw', () => {
     assert.match(out, /^variant: high$/m);
   });
 });
+
+// ─── #3706: values that are plain-LOOKING but not plain-SAFE ────────────────
+//
+// Added while self-reviewing the predicate above. The first draft accepted any
+// value matching /^[A-Za-z0-9._:\/@+-]+$/, which is not the same question as
+// "does YAML read this back as this exact string". Each row below round-trips
+// wrong (or does not parse) when emitted bare.
+describe('#3706: YAML-ambiguous scalars are quoted, not emitted bare', () => {
+  const AGENT = ['---', 'name: gsd-executor', 'description: x', '---', '', 'Body.'].join('\n');
+  const modelLine = (v) =>
+    (convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, modelOverride: v })
+      .split('\n').find((l) => l.startsWith('model:')) ?? '');
+
+  test('a leading @ is quoted — YAML reserves it and will not open a plain scalar', () => {
+    // The sharpest of these: `model: @org/model` is a PARSE ERROR, not an
+    // ambiguity, so the generated agent file would be unreadable end to end.
+    assert.equal(modelLine('@org/model'), 'model: "@org/model"');
+  });
+
+  test('boolean-like words are quoted', () => {
+    // YAML 1.1 resolves these to booleans, so a variant named `no` would arrive
+    // as `false` and match no entry in the user's variants map.
+    for (const v of ['no', 'yes', 'true', 'off', 'y', 'n', 'null']) {
+      assert.equal(modelLine(v), `model: "${v}"`, `${v} must be quoted`);
+    }
+  });
+
+  test('numeric-looking values are quoted, including the sexagesimal form', () => {
+    // `12:30` resolves to the integer 750 under YAML 1.1 — and `:` is legal
+    // mid-identifier here, so this is reachable, not contrived.
+    for (const v of ['12:30', '0755', '1.5', '0x1f']) {
+      assert.equal(modelLine(v), `model: "${v}"`, `${v} must be quoted`);
+    }
+  });
+
+  test('the values real installs actually use stay bare', () => {
+    // The whole point of the predicate: no churn for anybody's existing files.
+    for (const v of ['sonnet', 'synthetic/hf:zai-org/GLM-5.2', 'gpt-5.6-luna', 'claude-opus-5']) {
+      assert.equal(modelLine(v), `model: ${v}`, `${v} must stay bare`);
+    }
+  });
+
+  test('the same predicate governs variant, not just model', () => {
+    const out = convertClaudeToOpencodeFrontmatter(AGENT, { isAgent: true, variant: 'no' });
+    assert.match(out, /^variant: "no"$/m);
+  });
+});
