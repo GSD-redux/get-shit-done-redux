@@ -191,15 +191,28 @@ export const FRONTMATTER_BODY_SOURCE: Readonly<Record<string, readonly string[]>
 const SESSION_SCOPED_KEYS: ReadonlySet<string> = new Set(['stopped_at', 'paused_at']);
 
 /**
- * The `(primary, fallback)` label pair for a session-scoped write, resolved from
- * either spelling — the frontmatter key (`stopped_at`) or a body label
- * (`Stopped At` / `Stopped at`). `null` when the field is not session-scoped.
+ * The `(primary, fallback)` label pair for a session-scoped frontmatter KEY.
  */
-function sessionScopedLabels(field: string): { primary: string; fallback: string | null } | null {
-  const key = SESSION_SCOPED_KEYS.has(field) ? field : frontmatterKeyForBodyField(field);
-  if (key === null || !SESSION_SCOPED_KEYS.has(key)) return null;
+function sessionLabelsForKey(key: string): { primary: string; fallback: string | null } | null {
+  if (!SESSION_SCOPED_KEYS.has(key)) return null;
   const labels = FRONTMATTER_BODY_SOURCE[key];
   return { primary: labels[0], fallback: labels[1] ?? null };
+}
+
+/**
+ * The same pair, resolved from a BODY LABEL the caller named (`Stopped At`,
+ * `Stopped at`, `Paused At`). `null` for anything else.
+ *
+ * Deliberately does NOT accept a frontmatter key. An earlier cut resolved both
+ * spellings through one function and used it for the write, which made
+ * `state update stopped_at …` write the BODY line through the session writer —
+ * silently defeating the "frontmatter keys are not directly writable" contract
+ * this whole change exists to state, and reporting `updated: false` while having
+ * written. The write may only ever be reached by naming a body field.
+ */
+function sessionLabelsForBodyField(field: string): { primary: string; fallback: string | null } | null {
+  const key = frontmatterKeyForBodyField(field);
+  return key === null ? null : sessionLabelsForKey(key);
 }
 
 /**
@@ -1938,12 +1951,12 @@ function updateCore(
   // section and the `stopped_at` frontmatter key untouched — a silent corruption
   // of a historical record reported as success. #3374 already established this
   // rule for the other writer; this one had not adopted it.
-  const sessionLabels = sessionScopedLabels(intent.field);
+  const sessionWriteLabels = sessionLabelsForBodyField(intent.field);
   let result: string | null;
-  if (sessionLabels) {
+  if (sessionWriteLabels) {
     // Replace-only by contract: unchanged content means the field is not in the
     // session section, which is a miss, not a write.
-    const replaced = stateReplaceFieldInSession(body, sessionLabels.primary, sessionLabels.fallback, intent.value);
+    const replaced = stateReplaceFieldInSession(body, sessionWriteLabels.primary, sessionWriteLabels.fallback, intent.value);
     result = replaced === body ? null : replaced;
   } else {
     result = stateReplaceField(body, intent.field, intent.value);
@@ -1981,8 +1994,9 @@ function updateCore(
     // reads is not a source, and suppressing on it left the document
     // unrepairable while pointing the user at a command that would rewrite the
     // wrong line. Same scope for read, write and probe, or they disagree.
-    const bodySourceExists = sessionLabels
-      ? sessionSourceExists(body, sessionLabels)
+    const sessionProbeLabels = sessionLabelsForKey(intent.field);
+    const bodySourceExists = sessionProbeLabels
+      ? sessionSourceExists(body, sessionProbeLabels)
       : (bodySource ?? []).some((f) => stateExtractField(body, f) !== null);
     if (bodySource && frontmatterCarriesKey && !bodySourceExists) {
       const nextFm = { ...existingFm, [intent.field]: intent.value };

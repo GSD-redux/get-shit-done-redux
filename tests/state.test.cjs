@@ -16741,50 +16741,82 @@ describe('#3699 state update — derived frontmatter keys explain themselves', (
   // ── the map cannot silently drift from the builder ───────────────────────
 
   test('every FRONTMATTER_BODY_SOURCE entry actually round-trips from its body field', () => {
-    // Real parity, per key. The first cut asserted only SET MEMBERSHIP against
-    // the emitted frontmatter — near-vacuous, because buildStateFrontmatter
-    // emits the whole schema key set regardless of body derivation, so a wrong
-    // mapping (or a non-body-derived key added to the map) would still pass.
+    // Real parity, per key. An earlier cut asserted only SET MEMBERSHIP against
+    // the emitted frontmatter — near-vacuous, because buildStateFrontmatter emits
+    // the whole schema key set regardless of body derivation, so a wrong mapping
+    // would still pass.
     //
-    // This drives each mapped key's BODY field to a unique sentinel and asserts
-    // the sentinel arrives in that frontmatter key. A mapping that names the
+    // This drives each mapped key's own BODY LABEL to a distinct value and
+    // asserts that value arrives in that frontmatter key. A mapping naming the
     // wrong body field cannot survive it.
-    const sessionScoped = new Set(['stopped_at', 'paused_at']);
-    const entries = Object.entries(stateTransitionMod.FRONTMATTER_BODY_SOURCE);
+    //
+    // Two fixtures, because `paused_at` is not independent: normalizeStateStatus
+    // forces `status: paused` whenever Paused At is set, so a single fixture
+    // could not assert both `status` and `paused_at`.
+    const expected = {
+      current_phase: '7',
+      current_phase_name: 'sentinel-name',
+      current_plan: '3',
+      status: 'executing', // normalized from the update below
+      stopped_at: 'sentinel-stopped',
+      last_activity: '2026-08-19',
+      last_activity_desc: 'sentinel-desc',
+    };
 
-    for (const [key, labels] of entries) {
-      const sentinel = `sentinel-${key.replace(/_/g, '-')}`;
-      // last_activity is parsed as a date + prose; give it a shape its reader accepts.
-      const value = key === 'last_activity' ? '2026-08-19'
-        : key === 'last_activity_desc' ? sentinel
-          : sentinel;
-      const line = `${labels[0]}: ${value}`;
-      const positionLines = sessionScoped.has(key) ? [] : [line];
-      const sessionLines = sessionScoped.has(key) ? [line] : [];
+    writeState([
+      '---', 'gsd_state_version: 1.0', '---', '',
+      '# Project State', '',
+      '## Current Position', '',
+      'Current Phase: 7',
+      'Current Phase Name: sentinel-name',
+      'Current Plan: 3',
+      'Status: Planning', // deliberately != the update below, or the #948 no-op guard skips the sync
+      'Last Activity: 2026-08-19',
+      'Last Activity Description: sentinel-desc',
+      '',
+      '## Session', '',
+      'Stopped at: sentinel-stopped',
+      '',
+    ]);
+    update('Status', 'Executing');
 
-      writeState([
-        '---', 'gsd_state_version: 1.0', '---', '',
-        '# Project State', '',
-        '## Current Position', '',
-        'Current Phase: 2',
-        'Status: Planning',
-        ...positionLines,
-        '',
-        '## Session', '',
-        ...sessionLines,
-        '',
-      ]);
-      // A real change, so the #948 no-op guard cannot skip the sync.
-      update('Status', 'Executing');
+    let fm = stateText().split('---')[1];
+    assert.match(fm, /^last_updated:/m, 'precondition: the update must have actually synced frontmatter');
 
-      const fm = stateText().split('---')[1];
-      const emitted = new RegExp(`^${key}:\\s*(.+)$`, 'm').exec(fm);
-      assert.ok(emitted, `${key} was not emitted at all from body field "${labels[0]}" — the mapping is wrong`);
+    for (const [key, want] of Object.entries(expected)) {
+      const hit = new RegExp(`^${key}:\\s*(.+)$`, 'm').exec(fm);
+      assert.ok(hit, `${key} was not emitted from its mapped body field — the mapping is wrong`);
       assert.match(
-        emitted[1],
-        new RegExp(escapeRegex(value)),
-        `${key} did not carry the value written to its mapped body field "${labels[0]}"`,
+        hit[1],
+        new RegExp(escapeRegex(want)),
+        `${key} did not carry the value written to its mapped body field`,
       );
+    }
+
+    // paused_at, in its own fixture for the reason above.
+    writeState([
+      '---', 'gsd_state_version: 1.0', '---', '',
+      '# Project State', '',
+      '## Current Position', '',
+      'Current Phase: 7',
+      'Status: Planning',
+      '',
+      '## Session', '',
+      'Paused At: sentinel-paused',
+      '',
+    ]);
+    update('Status', 'Executing');
+
+    fm = stateText().split('---')[1];
+    const paused = /^paused_at:\s*(.+)$/m.exec(fm);
+    assert.ok(paused, 'paused_at was not emitted from its mapped body field');
+    assert.match(paused[1], /sentinel-paused/);
+
+    // And the fixtures above must have covered the whole map — otherwise a key
+    // added to FRONTMATTER_BODY_SOURCE could go untested here forever.
+    const covered = new Set([...Object.keys(expected), 'paused_at']);
+    for (const key of Object.keys(stateTransitionMod.FRONTMATTER_BODY_SOURCE)) {
+      assert.ok(covered.has(key), `FRONTMATTER_BODY_SOURCE maps "${key}" but this round-trip test does not exercise it`);
     }
   });
 
