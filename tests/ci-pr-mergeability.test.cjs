@@ -739,6 +739,58 @@ describe('ci-pr-mergeability: workflow wiring', () => {
     assert.equal(withArgs['persist-credentials'], false, 'must not persist credentials');
   });
 
+  test('the preflight fails open when the script is absent at the base sha', () => {
+    // The checkout above pins ref: to pull_request.base.sha, so `node
+    // scripts/ci-pr-mergeability.cjs` runs the copy that exists on the BASE
+    // branch, not on the PR. On the very PR that introduces this script, the
+    // base has no such file; the same is true for any PR whose base predates
+    // it. An absent script is not evidence of a conflict — it is undetermined
+    // — so the run step must take the same fail-open path as an unknown
+    // `mergeable`, not fail the job. That arm only ever fires while the base
+    // lacks the script, so once the fix lands on the base it goes silent and
+    // looks, to a future reader, like dead code safe to delete. This test
+    // exists to keep it from being deleted.
+    const doc = loadWorkflow(PREFLIGHT_WORKFLOW);
+    const step = (doc.jobs.mergeability.steps || []).find((s) => s.id === 'check');
+    assert.ok(step, 'the mergeability job must have a step with id: check');
+    const { run } = step;
+    assert.equal(typeof run, 'string', 'the check step must have a run: script');
+
+    assert.match(
+      run,
+      /if\s+\[\s+!\s+-f\s+scripts\/ci-pr-mergeability\.cjs\s+\]/,
+      'the script must guard on the absence of scripts/ci-pr-mergeability.cjs before invoking it',
+    );
+    assert.ok(
+      run.includes('::warning::'),
+      'an absent script at the base sha must warn, not error',
+    );
+    assert.ok(
+      !run.includes('::error::'),
+      'an absent script at the base sha must not emit an error annotation',
+    );
+    assert.ok(
+      run.includes('verdict=INDETERMINATE'),
+      'the bootstrap arm must report verdict=INDETERMINATE, the same as any other unresolved read',
+    );
+    assert.ok(
+      run.includes('mergeable=true'),
+      'the bootstrap arm must fail open with mergeable=true so downstream gates are not blocked',
+    );
+    assert.ok(
+      run.includes('exit 0'),
+      'the bootstrap arm must exit 0 so the job itself does not go red on a missing script',
+    );
+    assert.ok(
+      run.includes('node scripts/ci-pr-mergeability.cjs'),
+      'the normal path must still invoke the real script once it exists at the base sha',
+    );
+    assert.ok(
+      !run.includes('${{'),
+      'CONTRIBUTING.md: run: blocks must not interpolate a GitHub expression',
+    );
+  });
+
   for (const [name, jobIds] of Object.entries(GATED)) {
     test(`${name} calls the preflight`, () => {
       const ids = preflightJobIds(loadWorkflow(name));

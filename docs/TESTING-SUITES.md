@@ -365,6 +365,15 @@ conflict runs no CI at all until the conflict is resolved** (#3833).
 | `CONFLICTED` | GitHub reported `mergeable: false` | **failure** | every gated job is skipped; `Required tests` and `Stryker mutation score` report **red** |
 | `INDETERMINATE` | mergeability still unknown after the retry budget, or the API read failed | success **(fails open)** | everything runs as normal; a `::warning::` is emitted |
 | `SKIPPED_NOT_A_PR` | the event is not `pull_request` (push, `workflow_dispatch`, a `release.yml` call into `install-smoke.yml`) | success | everything runs as normal; **zero** API calls |
+| `INDETERMINATE` (bootstrap) | `scripts/ci-pr-mergeability.cjs` is absent at the base sha | success **(fails open)** | everything runs as normal; a `::warning::` names the cause |
+
+The bootstrap row is a consequence of the checkout being pinned to the base sha:
+the preflight runs the script **as it exists on the base branch**, so the script
+is absent on the pull request that introduces it, and on any branch whose base
+predates it. Absent is not "conflicted" — it is one more thing the gate cannot
+determine, so it takes the same fail-open path. The arm is self-healing and
+never fires again once the script is on the base branch; a test pins it in place
+so a future reader does not mistake it for dead code.
 
 The verdict comes from `scripts/ci-pr-mergeability.cjs`, which polls
 `GET /repos/{owner}/{repo}/pulls/{number}` until `mergeable` is non-null.

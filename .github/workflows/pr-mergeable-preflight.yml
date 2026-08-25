@@ -110,4 +110,22 @@ jobs:
           # inside a `run:` block.
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node scripts/ci-pr-mergeability.cjs
+        run: |
+          # Bootstrap arm. The checkout above is of the BASE sha, so this step
+          # runs the script as it exists on the base branch — which is the whole
+          # point (trusted code, and a usable ref on a conflicted PR), but it
+          # means the script is absent on the one pull request that INTRODUCES
+          # it, and on any PR branched from a base predating it. Absent is not
+          # "conflicted": it is one more thing we cannot determine, so it takes
+          # the same fail-open path as an unknown `mergeable`, reusing the
+          # INDETERMINATE atom with its exact documented meaning. Self-healing —
+          # once the script is on the base branch this arm never fires again.
+          if [ ! -f scripts/ci-pr-mergeability.cjs ]; then
+            echo "::warning::scripts/ci-pr-mergeability.cjs is not present at the base sha; skipping the mergeability preflight (fail-open). Expected on the PR that introduces it, or on a branch whose base predates it. scripts/ci-rebase-check.cjs remains the in-job backstop."
+            {
+              echo "verdict=INDETERMINATE"
+              echo "mergeable=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node scripts/ci-pr-mergeability.cjs
