@@ -1,0 +1,131 @@
+name: PR Mergeability Preflight
+
+# Reusable gate (#3833). A pull request with a merge conflict must run NO CI
+# until the conflict is resolved.
+#
+# Before this existed, the only conflict detector was scripts/ci-rebase-check.cjs,
+# which runs INSIDE each job after checkout — so a conflicted PR provisioned the
+# whole 12-cell test matrix, both install-smoke jobs, the Stryker shards and the
+# docs-guard lane, and every one of them failed with the same annotation. The
+# lanes with no rebase check at all ran to completion against a tree that cannot
+# merge, producing verdicts about a state that will never exist.
+#
+# ci-rebase-check.cjs is deliberately UNCHANGED and remains the authoritative
+# in-job backstop, including the #2472 base-sha pin. This workflow is an
+# early-exit optimization layered above it, never a replacement: every path
+# except an explicit `mergeable: false` fails OPEN.
+#
+# Callers add one job:
+#
+#   preflight:
+#     uses: ./.github/workflows/pr-mergeable-preflight.yml
+#     permissions:
+#       contents: read
+#       pull-requests: read
+#
+# and `needs: preflight` on each compute job. A calling job's `permissions`
+# REPLACES the workflow default rather than merging with it, so both scopes must
+# be named — branch-naming.yml's workflow default is `{}`, which would otherwise
+# starve the API read.
+#
+# This job deliberately applies NO label. #3833 originally proposed adding and
+# removing `needs-review: merge-conflict` here; that was dropped during
+# implementation for two reasons. Eight caller workflows each invoke this
+# preflight, so eight jobs would race to add-or-remove one label on every PR
+# event — label thrash and API contention. And it would force
+# `pull-requests: write` into eight lanes that today hold `contents: read`
+# (and one that holds `permissions: {}`), widening the token everywhere to
+# write a signal the red check already carries. `needs-review: merge-conflict`
+# remains a maintainer triage label applied during PR sweeps.
+#
+# The job is NOT guarded with `if: github.event_name == 'pull_request'`. A
+# SKIPPED dependency skips its dependents exactly as a failed one does, so that
+# guard would skip the entire pipeline on every push to `next` and on every
+# release.yml run that calls install-smoke.yml. Instead the job always runs and
+# scripts/ci-pr-mergeability.cjs no-ops (zero API calls, exit 0) whenever the
+# event is not `pull_request`.
+
+on:
+  workflow_call:
+    outputs:
+      mergeable:
+        description: >-
+          'false' only when GitHub reported an explicit merge conflict.
+          'true' for a clean PR, for an indeterminate read, and for any
+          non-pull_request event — the gate is fail-open by design.
+        value: ${{ jobs.mergeability.outputs.mergeable }}
+      verdict:
+        description: >-
+          One of MERGEABLE | CONFLICTED | INDETERMINATE | SKIPPED_NOT_A_PR.
+        value: ${{ jobs.mergeability.outputs.verdict }}
+
+# Deliberately NO `concurrency:` block. A group name matching a caller's, with
+# cancel-in-progress on both sides, cancels the running CALLER.
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  mergeability:
+    name: mergeability
+    runs-on: ubuntu-latest
+    # The whole job is one sparse checkout plus at most five bounded API reads.
+    # The script's own backoff across the full budget stays under 60s.
+    timeout-minutes: 3
+    outputs:
+      mergeable: ${{ steps.check.outputs.mergeable }}
+      verdict: ${{ steps.check.outputs.verdict }}
+    steps:
+      - name: Check out the mergeability script from the base branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Pinned to the BASE sha, never the default ref, for two reasons.
+          #
+          # 1. Correctness — and this is the trap the whole design turns on.
+          #    For a pull_request event GitHub sets the default ref to
+          #    refs/pull/<n>/merge, which exists only "for open, MERGEABLE pull
+          #    requests". On a conflicted PR that ref is stale or absent, so a
+          #    default checkout fails on precisely the pull requests this job
+          #    exists to diagnose.
+          #
+          # 2. Security — the script that decides the gate then comes from a
+          #    trusted commit. No PR-supplied code is fetched or executed here,
+          #    which matches the base-context posture pr-template-format.yml
+          #    already uses ("Check out policy from base branch").
+          #
+          # Empty on a non-pull_request event, where actions/checkout falls back
+          # to the triggering ref. That is fine: the script no-ops before it
+          # reads anything.
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          sparse-checkout: |
+            scripts
+          persist-credentials: false
+
+      - name: Resolve pull request mergeability
+        id: check
+        env:
+          # Every value arrives through env. CONTRIBUTING.md forbids `${{ }}`
+          # inside a `run:` block.
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Bootstrap arm. The checkout above is of the BASE sha, so this step
+          # runs the script as it exists on the base branch — which is the whole
+          # point (trusted code, and a usable ref on a conflicted PR), but it
+          # means the script is absent on the one pull request that INTRODUCES
+          # it, and on any PR branched from a base predating it. Absent is not
+          # "conflicted": it is one more thing we cannot determine, so it takes
+          # the same fail-open path as an unknown `mergeable`, reusing the
+          # INDETERMINATE atom with its exact documented meaning. Self-healing —
+          # once the script is on the base branch this arm never fires again.
+          if [ ! -f scripts/ci-pr-mergeability.cjs ]; then
+            echo "::warning::scripts/ci-pr-mergeability.cjs is not present at the base sha; skipping the mergeability preflight (fail-open). Expected on the PR that introduces it, or on a branch whose base predates it. scripts/ci-rebase-check.cjs remains the in-job backstop."
+            {
+              echo "verdict=INDETERMINATE"
+              echo "mergeable=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node scripts/ci-pr-mergeability.cjs

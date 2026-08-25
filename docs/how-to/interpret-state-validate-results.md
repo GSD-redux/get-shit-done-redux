@@ -49,6 +49,25 @@ A freshly-initialized project is the clearest example of a **legitimate** non-`c
 
 ---
 
+## Gate on the result from a script
+
+By default `state validate` exits `0` whatever it finds, so a shell gate needs the
+JSON. Pass `--strict` and the exit status carries the verdict instead:
+
+```bash
+node gsd-tools.cjs state validate --strict
+```
+
+Exit `0` means `valid: true`; any other exit means the report was not clean (drift
+warnings, an unreadable STATE.md, or no STATE.md at all).
+
+`--strict` reads `valid`, **not** `scope` — so it stays silent about a scan that could
+not run. A degraded scope still reports `valid: true` and still exits `0`. Read `scope`
+yourself, exactly as the table above says, before treating a green `--strict` run as a
+guarantee the check actually looked.
+
+---
+
 ## Related
 
 - [`state validate`](../COMMANDS.md#state-validate) — command reference, flags, and the full output shape

@@ -75,6 +75,14 @@ import {
   shouldPreserveExistingProgress,
   stateExtractField,
   stateFieldValue,
+  // #3696: the `last_activity` invariant that `state validate` (S008/S009) now
+  // asserts. Both live in the field-semantics owner, not here, so `smart-entry`
+  // and `state validate` cannot drift apart about the same field.
+  // `leadingCalendarDate` wraps `isRealCalendarDate`, which smart-entry calls
+  // directly — one predicate, two callers, no copies.
+  isUnfilledFieldValue,
+  leadingCalendarDate,
+  stateFieldContinuation,
   stateReplaceField,
   KNOWN_TEMPLATE_DEFAULTS,
   stateReplaceFieldIfTemplate,
@@ -4279,10 +4287,30 @@ function stateDiagnostic(code: string, severity: Severity, message: string, advi
   return { code, severity, message, remedy: adviseRemedy(advice) };
 }
 
-function cmdStateValidate(cwd: string, raw: boolean): void {
+function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } = {}): void {
   const statePath = planningPaths(cwd).state;
+  // #3696: `valid: false` used to exit 0, so a CI step or git hook could not gate
+  // on state correctness without parsing JSON — every consumer had to
+  // re-implement the "is this actually valid" decision, which is the
+  // duplication #3473 is about.
+  //
+  // The DEFAULT is deliberately unchanged. `state validate`'s exit status is
+  // Tier-2 observable output reaching "downstream projects that cannot be
+  // enumerated" (ADR-3180 Decision 3, Hyrum's Law), so flipping 0 -> 1 for
+  // everyone would break every script that runs it unconditionally. `--strict`
+  // is the opt-in the issue itself offers as the alternative.
+  //
+  // Routed through one emit helper rather than a trailing assignment because
+  // three of the exit paths below (`STATE.md not found`, S001, and the four
+  // `return` branches in the phase-drift scan) emit and return early — a fix
+  // that only set the exit code at the end of the function would silently miss
+  // them, which is exactly the shape of the bug being fixed.
+  const emit = (payload: { valid?: boolean; error?: string; warnings?: Diagnostic[]; scope?: planningScopeMod.Scope }): void => {
+    if (opts.strict && payload.valid !== true) process.exitCode = 1;
+    output(payload, raw, undefined);
+  };
   if (!fs.existsSync(statePath)) {
-    output({ error: 'STATE.md not found' }, raw, undefined);
+    emit({ error: 'STATE.md not found' });
     return;
   }
 
@@ -4296,10 +4324,10 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
     // unconditionally and returned immediately, matching every other
     // error-class code, not a mere warning). Message reused verbatim from
     // `textEncodingError`, not paraphrased.
-    output({
+    emit({
       valid: false,
       warnings: [stateDiagnostic('S001', SEVERITY.ERROR, encErr, 'Re-save STATE.md as UTF-8 text with the embedded NUL byte(s) removed')],
-    }, raw, undefined);
+    });
     return;
   }
   const warnings: Diagnostic[] = [];
@@ -4326,7 +4354,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
       'Cannot validate phase drift: STATE.md has no usable current_phase, Current Phase, or Current Position Phase value',
       'Set current_phase (frontmatter) or Current Phase / Current Position Phase (body) in STATE.md',
     ));
-    output({ valid: false, warnings, scope }, raw, undefined);
+    emit({ valid: false, warnings, scope });
     return;
   }
   const selectedPhaseKey = phaseKeyFromToken(currentPhase);
@@ -4345,7 +4373,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
       `Cannot validate phase drift: phases directory is missing for phase ${currentPhase}`,
       'Create the phases directory or correct current_phase to a phase that exists on disk',
     ));
-    output({ valid: false, warnings, scope }, raw, undefined);
+    emit({ valid: false, warnings, scope });
     return;
   }
   let phaseDirPath: string;
@@ -4359,7 +4387,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
         `Cannot validate phase drift: no phase directory matches phase ${currentPhase}`,
         'Create a phase directory matching the current phase or correct current_phase',
       ));
-      output({ valid: false, warnings, scope }, raw, undefined);
+      emit({ valid: false, warnings, scope });
       return;
     }
     phaseDirPath = path.join(phasesDir, phaseDir.name);
@@ -4370,7 +4398,7 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
       `Cannot validate phase drift: phases directory is unreadable for phase ${currentPhase}`,
       'Check phases directory permissions and re-run validate',
     ));
-    output({ valid: false, warnings, scope }, raw, undefined);
+    emit({ valid: false, warnings, scope });
     return;
   }
   try {
@@ -4462,8 +4490,68 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
     ));
   }
 
+  // #3696 — the `last_activity` invariant. Three readers consumed this field
+  // and none of them checked it, so a value no reader can parse validated as
+  // `{valid:true, warnings:[], scope:'complete'}`: the scan ran to completion
+  // and simply never looked. Read through the same owner every other field here
+  // uses (ADR-3180 §7.7) — never a private `stateExtractField` call, which is
+  // what `scripts/lint-state-field-drift.cjs` counts.
+  const lastActivity = stateFieldValue(fm, body, 'last_activity', 'Last activity').value;
+  // NOT FILLED IN IS NOT DRIFT, and that covers three shapes, not one: absent,
+  // blank, and the shipped template's `[YYYY-MM-DD] — [What happened]`
+  // placeholder. Only a value a writer actually supplied can be wrong.
+  if (!isUnfilledFieldValue(lastActivity)) {
+    // Calendar validity, not merely `\d{4}-\d{2}-\d{2}` shape: smart-entry's
+    // reader rejects 2026-02-30 via isRealCalendarDate (ADR-227 — validate shape
+    // AND value). Accepting it here would leave the two surfaces disagreeing
+    // about whether the file is usable, which is the complaint #3696 opens with.
+    //
+    // Review round 2: this asserts the LEADING date token, not
+    // `parseProseLastActivityField`'s fully-anchored `date — description`
+    // grammar. That grammar is stricter than any real reader, and routing the
+    // check through it made S008 fire on values smart-entry parses fine (e.g.
+    // `2026-08-24 Shipped feature X`, no dash separator) — the same
+    // two-surfaces-disagree defect, pointing the other way. See
+    // `leadingCalendarDate`.
+    if (leadingCalendarDate(lastActivity) === null) {
+      warnings.push(stateDiagnostic(
+        'S008',
+        SEVERITY.WARNING,
+        `Unreadable last activity: "${lastActivity}" does not begin with a real calendar date, so no reader can date this project's activity`,
+        'Rewrite the Last activity line to begin with a date that exists, as "YYYY-MM-DD — what happened"',
+      ));
+    }
+
+    // The attached half of #3696: `templates/state.md` prescribes a single-line
+    // field, but writers emit descriptions long enough to wrap, and
+    // `stateExtractField`'s newline-excluding `(.+)` drops the remainder with no
+    // diagnostic. The DOCUMENT is what violates the template here, so this
+    // reports the violation rather than teaching the reader a multi-line grammar
+    // the template does not sanction (ADR-3180 §7.7 Rejected #1 forbids widening
+    // stateExtractField, which has 20 callers and a CRITICAL blast radius).
+    //
+    // Scan the body ONLY when the body is what was actually read. The ladder
+    // prefers the frontmatter scalar, so a document carrying a clean
+    // `last_activity:` in frontmatter AND a stale, wrapped `Last activity:` line
+    // in the body would otherwise report S009 — and exit 1 under `--strict` —
+    // over a remainder that no reader consumes and whose field is entirely
+    // valid. Asking the owner with an EMPTY body isolates the frontmatter rung
+    // without re-deriving the ladder here (which is what
+    // `scripts/lint-state-field-drift.cjs` counts).
+    const fromFrontmatter = stateFieldValue(fm, '', 'last_activity', 'Last activity').value;
+    const dropped = fromFrontmatter !== null ? null : stateFieldContinuation(body, 'Last activity');
+    if (dropped !== null) {
+      warnings.push(stateDiagnostic(
+        'S009',
+        SEVERITY.WARNING,
+        `Truncated last activity description: "${dropped}" follows the Last activity line and is silently dropped by every reader`,
+        'Fold the Last activity description onto one line — the template prescribes a single-line field',
+      ));
+    }
+  }
+
   const valid = warnings.length === 0;
-  output({ valid, warnings, scope }, raw, undefined);
+  emit({ valid, warnings, scope });
 }
 
 /**

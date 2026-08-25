@@ -4821,6 +4821,506 @@ describe('#3310 state validate — S0NN coded diagnostics', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3696 — the `last_activity` invariant is CHECKABLE, and `--strict` makes it
+// gateable.
+//
+// Before this, a STATE.md whose `Last activity:` value no reader can parse
+// validated as `{valid:true, warnings:[], scope:"complete"}` — the scan ran
+// fully and had nothing to say, because `cmdStateValidate` never read the field
+// at all. And `valid:false` still exited 0, so no CI step or git hook could gate
+// on state correctness without parsing JSON.
+//
+// S008 = the value is present but does not name a real calendar date.
+// S009 = the description was truncated by a line wrap.
+//
+// Calendar validity (not merely `\d{4}-\d{2}-\d{2}` shape) is the invariant on
+// purpose: `smart-entry`'s reader already rejects `2026-02-30` via
+// `isRealCalendarDate` (ADR-227 — validate shape AND value). Accepting it here
+// would leave the two surfaces disagreeing about whether the file is usable,
+// which is the defect #3696 opens with, not a fix for it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3696 state validate — last_activity invariant (S008/S009) and --strict', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // A document that validates CLEAN: phase resolves, phase dir exists, plan
+  // count agrees, no verification file. Extra body lines are appended verbatim
+  // so each case differs ONLY in the last_activity shape under test.
+  function writeCleanState(extraBodyLines = [], opts = {}) {
+    const eol = opts.crlf ? '\r\n' : '\n';
+    const head = opts.frontmatter ? ['---', ...opts.frontmatter, '---', ''] : [];
+    const lines = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 1',
+      '**Current Phase:** 1',
+      '**Total Plans in Phase:** 1',
+      ...extraBodyLines,
+      '',
+    ];
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [...head, ...lines].join(eol));
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+  }
+
+  function validate(args = 'state validate') {
+    const result = runGsdTools(args, tmpDir);
+    return { result, output: JSON.parse(result.output) };
+  }
+
+  // ── S008: the value must name a real calendar date ──────────────────────────
+
+  test('S008: an unparseable last_activity is reported instead of validating clean', () => {
+    writeCleanState(['Last activity: not-a-date — broke the date on purpose']);
+
+    const { output } = validate();
+    assert.strictEqual(output.scope, 'complete', 'the scan must have actually run — this is not a degraded-scope excuse');
+    assert.strictEqual(output.valid, false, 'an unreadable last_activity must not validate clean');
+    const s008 = findWarning(output, 'S008');
+    assert.ok(s008, `S008 must fire for an unparseable last_activity; got: ${JSON.stringify(output.warnings)}`);
+    assert.strictEqual(s008.severity, SEVERITY.WARNING);
+    assert.strictEqual(s008.remedy.action, 'advise');
+    assert.match(s008.message, /last activity/i);
+    assertNoDriftKey(output);
+  });
+
+  test('S008: a well-formed last_activity with a description stays clean', () => {
+    writeCleanState(['Last activity: 2026-08-19 — did a thing']);
+
+    const { output } = validate();
+    assert.strictEqual(output.valid, true, `well-formed control must stay clean; got: ${JSON.stringify(output.warnings)}`);
+    assert.deepStrictEqual(output.warnings, []);
+  });
+
+  test('S008: a bare well-formed date with no description stays clean', () => {
+    // parseProseLastActivityField returns description:null for this shape; it is
+    // a legitimate value, not a truncation.
+    writeCleanState(['Last activity: 2026-08-19']);
+
+    const { output } = validate();
+    assert.ok(!findWarning(output, 'S008'), `a bare date is a valid shape; got: ${JSON.stringify(output.warnings)}`);
+    assert.ok(!findWarning(output, 'S009'), 'a bare date is not a truncated description');
+  });
+
+  test('S008: an absent last_activity is not a defect (a fresh project must stay clean)', () => {
+    // The single most important negative case: a freshly-initialized STATE.md
+    // has no activity yet. Flagging absence would fire on every new project.
+    writeCleanState([]);
+
+    const { output } = validate();
+    assert.strictEqual(output.valid, true, `absence is not drift; got: ${JSON.stringify(output.warnings)}`);
+    assert.ok(!findWarning(output, 'S008'));
+  });
+
+  test('S008: a frontmatter-only last_activity is validated through the same owner', () => {
+    // Routes the read through stateFieldValue's frontmatter rung — the same owner
+    // cmdStateValidate already uses for status/total_plans_in_phase, so the
+    // fm-only shape is not a blind spot (ADR-3180 §7.7).
+    writeCleanState([], { frontmatter: ['current_phase: 1', 'status: executing', 'last_activity: not-a-date'] });
+
+    const { output } = validate();
+    const s008 = findWarning(output, 'S008');
+    assert.ok(s008, `S008 must fire for a frontmatter-only last_activity; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  test('S008: an ASCII-hyphen separator is accepted like an em dash', () => {
+    writeCleanState(['Last activity: 2026-08-19 - did a thing']);
+
+    const { output } = validate();
+    assert.ok(!findWarning(output, 'S008'), `the owner regex accepts an ASCII hyphen; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  test('S008: a shape-valid but calendar-impossible date is rejected (the two surfaces must not disagree)', () => {
+    // 2026-02-30 matches \d{4}-\d{2}-\d{2} but does not exist. smart-entry's
+    // isRealCalendarDate already rejects it (ADR-227). If state validate accepted
+    // it, the two readers would still disagree about whether the file is usable —
+    // the exact complaint #3696 opens with.
+    writeCleanState(['Last activity: 2026-02-30 — a day that does not exist']);
+
+    const { output } = validate();
+    const s008 = findWarning(output, 'S008');
+    assert.ok(s008, `S008 must fire for an impossible calendar date; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  test('S008: month and day boundaries fire on limit-1 and limit+1 only', () => {
+    const cases = [
+      ['2026-00-15', true],   // month limit-1
+      ['2026-01-15', false],  // month limit (low)
+      ['2026-12-15', false],  // month limit (high)
+      ['2026-13-15', true],   // month limit+1
+      ['2026-01-00', true],   // day limit-1
+      ['2026-01-01', false],  // day limit (low)
+      ['2026-01-31', false],  // day limit (high, 31-day month)
+      ['2026-01-32', true],   // day limit+1
+    ];
+    for (const [value, mustFire] of cases) {
+      writeCleanState([`Last activity: ${value} — boundary probe`]);
+      const { output } = validate();
+      const fired = Boolean(findWarning(output, 'S008'));
+      assert.strictEqual(fired, mustFire, `${value}: expected S008 fired=${mustFire}, got ${fired} (${JSON.stringify(output.warnings)})`);
+    }
+  });
+
+  test('isRealCalendarDate: state validate and smart-entry agree on calendar validity', () => {
+    // Parity assertion (CLAUDE.md "Generative Fix Divergence"): the predicate has
+    // ONE owner and both surfaces import it. This fails the moment a second copy
+    // appears and drifts.
+    const smartEntry = require('../gsd-core/bin/lib/smart-entry.cjs');
+    assert.strictEqual(
+      typeof stateDocument.isRealCalendarDate,
+      'function',
+      'state-document.cjs must own isRealCalendarDate',
+    );
+    for (const [y, m, d, expected] of [
+      [2026, 2, 30, false],
+      [2026, 2, 28, true],
+      [2024, 2, 29, true],
+      [2026, 2, 29, false],
+      [2026, 13, 1, false],
+      [2026, 12, 31, true],
+    ]) {
+      assert.strictEqual(
+        stateDocument.isRealCalendarDate(y, m, d),
+        expected,
+        `owner disagrees on ${y}-${m}-${d}`,
+      );
+    }
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(smartEntry, 'isRealCalendarDate')
+        || smartEntry.isRealCalendarDate === stateDocument.isRealCalendarDate,
+      'smart-entry must reuse the owner, never re-declare its own copy',
+    );
+  });
+
+  test('property: no real calendar date ever raises S008', () => {
+    fc.assert(
+      fc.property(
+        fc.date({ min: new Date(Date.UTC(2000, 0, 1)), max: new Date(Date.UTC(2099, 11, 31)) }),
+        (d) => {
+          const iso = d.toISOString().slice(0, 10);
+          // Suffix VARIES: a dashed description, a bare date, and a
+          // separator-less description. A fixed `— probe` suffix is what
+          // let the round-2 false positive through this property.
+          const suffix = ['', ' — property probe', ' property probe'][d.getUTCDate() % 3];
+          writeCleanState([`Last activity: ${iso}${suffix}`]);
+          const { output } = validate();
+          assert.ok(
+            !findWarning(output, 'S008'),
+            `S008 must never fire for the real calendar date ${iso}${suffix}; got: ${JSON.stringify(output.warnings)}`,
+          );
+        },
+      ),
+      { numRuns: 12 },
+    );
+  });
+
+  // ── S009: a wrapped description must not vanish ─────────────────────────────
+
+  test('S009: a wrapped last_activity description is reported instead of silently truncated', () => {
+    writeCleanState([
+      'Last activity: 2026-08-19 — Project initialized from ingest (SPEC-pal-restore.md); PROJECT.md,',
+      'REQUIREMENTS.md, ROADMAP.md written',
+    ]);
+
+    const { output } = validate();
+    assert.strictEqual(output.valid, false, 'a truncated description must not validate clean');
+    const s009 = findWarning(output, 'S009');
+    assert.ok(s009, `S009 must fire for a wrapped description; got: ${JSON.stringify(output.warnings)}`);
+    assert.strictEqual(s009.severity, SEVERITY.WARNING);
+    assert.strictEqual(s009.remedy.action, 'advise');
+    assertNoDriftKey(output);
+  });
+
+  test('S009: a blank line after last_activity is structure, not a wrap', () => {
+    writeCleanState(['Last activity: 2026-08-19 — done', '', 'Some later prose.']);
+
+    const { output } = validate();
+    assert.ok(!findWarning(output, 'S009'), `a blank line ends the field; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  test('S009: a following field line is structure, not a wrap', () => {
+    writeCleanState(['Last activity: 2026-08-19 — done', 'Blockers: none']);
+    assert.ok(!findWarning(validate().output, 'S009'), 'a sibling field is not a continuation');
+
+    writeCleanState(['Last activity: 2026-08-19 — done', '**Blockers:** none']);
+    assert.ok(!findWarning(validate().output, 'S009'), 'a bold sibling field is not a continuation');
+  });
+
+  test('S009: a following heading is structure, not a wrap', () => {
+    writeCleanState(['Last activity: 2026-08-19 — done', '## Next Up']);
+
+    assert.ok(!findWarning(validate().output, 'S009'));
+  });
+
+  test('S009: a following list marker is structure, not a wrap', () => {
+    for (const marker of ['- item', '* item', '+ item', '1. item', '2) item']) {
+      writeCleanState(['Last activity: 2026-08-19 — done', marker]);
+      const { output } = validate();
+      assert.ok(!findWarning(output, 'S009'), `"${marker}" is a list, not a continuation; got: ${JSON.stringify(output.warnings)}`);
+    }
+  });
+
+  test('S009: a following table row or horizontal rule is structure, not a wrap', () => {
+    // The `---` case is the horizontal-rule trap: a check that fires on
+    // legitimate Markdown structure is worse than no check at all.
+    for (const line of ['| Field | Value |', '---', '***', '___', '> quoted', '```']) {
+      writeCleanState(['Last activity: 2026-08-19 — done', line]);
+      const { output } = validate();
+      assert.ok(!findWarning(output, 'S009'), `"${line}" is structure, not a continuation; got: ${JSON.stringify(output.warnings)}`);
+    }
+  });
+
+  test('S009: last_activity as the final line with no trailing newline does not fire', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# Project State\n\n**Status:** Executing Phase 1\n**Current Phase:** 1\n**Total Plans in Phase:** 1\nLast activity: 2026-08-19 — done',
+    );
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+
+    const { output } = validate();
+    assert.ok(!findWarning(output, 'S009'), `end-of-file is not a continuation; got: ${JSON.stringify(output.warnings)}`);
+  });
+
+  test('S009: CRLF line endings produce the same verdict as LF', () => {
+    writeCleanState([
+      'Last activity: 2026-08-19 — Project initialized from ingest; PROJECT.md,',
+      'REQUIREMENTS.md written',
+    ], { crlf: true });
+    assert.ok(findWarning(validate().output, 'S009'), 'a CRLF wrap must fire exactly like LF');
+
+    writeCleanState(['Last activity: 2026-08-19 — done', 'Blockers: none'], { crlf: true });
+    assert.ok(!findWarning(validate().output, 'S009'), 'a CRLF sibling field must not fire');
+  });
+
+
+  // ── Review round 2 — cross-surface agreement and structure false positives ──
+
+  test('S008: a value the real reader parses is not reported unreadable (no separator before the description)', () => {
+    // The first cut asserted through parseProseLastActivityField, whose grammar
+    // is fully anchored and REQUIRES a dash separator. smart-entry's
+    // parseActivityTimestamp needs only a leading date, so this value parses
+    // fine there while S008 called it unreadable — the same
+    // two-surfaces-disagree defect #3696 exists to close, pointing the other
+    // way. Asserted against the real reader, not against a restatement of it.
+    const smartEntry = require('../gsd-core/bin/lib/smart-entry.cjs');
+    const value = '2026-08-24 Shipped feature X without a dash separator';
+
+    if (typeof smartEntry.parseActivityTimestamp === 'function') {
+      assert.ok(
+        Number.isFinite(smartEntry.parseActivityTimestamp(value)),
+        'precondition: the real reader must parse this value',
+      );
+    }
+
+    writeCleanState([`Last activity: ${value}`]);
+    const { output } = validate();
+    assert.ok(
+      !findWarning(output, 'S008'),
+      `S008 must not fire on a value the reader parses; got: ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test('S008: an ISO date-time prefix is accepted', () => {
+    writeCleanState(['Last activity: 2026-08-24T09:00:00Z shipped it']);
+
+    assert.ok(!findWarning(validate().output, 'S008'));
+  });
+
+  test('S008: a date-shaped run with no separators is still rejected', () => {
+    // Boundary on the leading-token rule itself: `20260824` is eight digits, not
+    // a date, and must not be admitted just because it starts with four.
+    writeCleanState(['Last activity: 20260824 shipped it']);
+
+    assert.ok(findWarning(validate().output, 'S008'), '`20260824` is not a leading ISO date token');
+  });
+
+  test('S009: a setext heading underneath last_activity is structure, not a wrap', () => {
+    // Both underline styles. `===` was missed entirely by the first cut, and
+    // `---` was missed differently: the rule stopped AT the underline, having
+    // already swallowed the heading TITLE above it as prose. Detection has to
+    // look ahead one line, so both are pinned here.
+    for (const underline of ['===', '---', '======', '- - -'.replace(/ /g, '')]) {
+      writeCleanState(['Last activity: 2026-08-19 — done', 'My Heading', underline]);
+      const { output } = validate();
+      assert.ok(
+        !findWarning(output, 'S009'),
+        `a setext heading underlined with "${underline}" is structure; got: ${JSON.stringify(output.warnings)}`,
+      );
+    }
+  });
+
+  test('S009: an indented code block is structure, not a wrap', () => {
+    for (const indented of ['    const x = 1;', '\tconst x = 1;']) {
+      writeCleanState(['Last activity: 2026-08-19 — done', indented]);
+      const { output } = validate();
+      assert.ok(
+        !findWarning(output, 'S009'),
+        `an indented code block is structure; got: ${JSON.stringify(output.warnings)}`,
+      );
+    }
+  });
+
+  test('S009: an HTML block is structure, not a wrap', () => {
+    writeCleanState(['Last activity: 2026-08-19 — done', '<div>a note</div>']);
+
+    assert.ok(!findWarning(validate().output, 'S009'));
+  });
+
+
+  test('S009: a frontmatter-sourced last_activity is not judged by a stale wrapped body line', () => {
+    // The ladder prefers the frontmatter scalar, so when frontmatter supplies
+    // last_activity NOBODY reads the body line. Scanning it anyway reported a
+    // dropped remainder that no reader consumes — and under --strict exited 1 —
+    // on a document whose actual last_activity is entirely valid.
+    writeCleanState(
+      [
+        'Last activity: 2026-01-01 — a stale body line that',
+        'wraps onto a second line',
+      ],
+      { frontmatter: ['current_phase: 1', 'status: executing', 'last_activity: 2026-08-19'] },
+    );
+
+    const { result, output } = validate('state validate --strict');
+    assert.ok(
+      !findWarning(output, 'S009'),
+      `the body line is shadowed by frontmatter and must not be judged; got: ${JSON.stringify(output.warnings)}`,
+    );
+    assert.strictEqual(output.valid, true);
+    assert.strictEqual(result.exitCode, 0, '--strict must not fail a document whose last_activity is valid');
+  });
+
+  test('S008: a frontmatter-sourced last_activity is still judged on its own value', () => {
+    // The complement of the test above: shadowing must suppress the BODY scan,
+    // never the check itself.
+    writeCleanState(
+      ['Last activity: 2026-08-19 — a clean body line'],
+      { frontmatter: ['current_phase: 1', 'status: executing', 'last_activity: not-a-date'] },
+    );
+
+    assert.ok(
+      findWarning(validate().output, 'S008'),
+      'the frontmatter value is the one every reader uses, so it is the one that must be checked',
+    );
+  });
+
+  test('S008: a last_activity line with only whitespace reads as not-yet-filled-in, not as drift', () => {
+    // stateExtractField's `[ \t]*(.+)` backtracks to hand back a single space,
+    // so the value arrives as '' — non-null, and it used to reach S008 and
+    // report the empty string back at the reader.
+    writeCleanState(['Last activity:   ']);
+
+    const { output } = validate();
+    assert.ok(
+      !findWarning(output, 'S008'),
+      `an empty value is indistinguishable from absence; got: ${JSON.stringify(output.warnings)}`,
+    );
+    assert.strictEqual(output.valid, true);
+  });
+
+
+  test('S008: the SHIPPED state template validates clean (its last_activity is an unfilled placeholder)', () => {
+    // templates/state.md:35 ships `Last activity: [YYYY-MM-DD] — [What happened]`,
+    // so this is the state of EVERY freshly-initialized project until something
+    // records activity. The first cut of S008 spared only the ABSENT form and
+    // fired on the shipped template itself — caught by the pre-existing
+    // "template-equivalent phase identities remain clean without disk drift"
+    // test. This pins the same invariant from the S008 side, where the
+    // regression would actually be introduced.
+    const stateContent = readShippedStateTemplateBody([
+      ['status: planning', ['current_phase: 2', 'status: planning'].join('\n')],
+      ['Phase: [X] of [Y] ([Phase name])', 'Phase: 02 of 2 (State Validation Drift Diagnostics)'],
+      ['Status: [Ready to plan / Planning / Ready to execute / In progress / Phase complete]', 'Status: Planning'],
+    ]);
+    assert.match(
+      stateContent,
+      /Last activity: \[YYYY-MM-DD\]/,
+      'precondition: the shipped template must still carry the placeholder this test is about',
+    );
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+    fs.mkdirSync(
+      path.join(tmpDir, '.planning', 'phases', '02-state-validation-drift-diagnostics'),
+      { recursive: true },
+    );
+
+    const { output } = validate();
+    assert.strictEqual(output.valid, true, `the shipped template must validate clean; got: ${JSON.stringify(output.warnings)}`);
+    assert.deepStrictEqual(output.warnings, []);
+  });
+
+  test('S008: a bracket placeholder only counts as unfilled at the START of the value', () => {
+    // Guard against the over-broad reading. A real description that cites a
+    // bracketed reference is a filled-in value, and its date must still be
+    // checked — otherwise the placeholder rule silently swallows genuine drift.
+    writeCleanState(['Last activity: not-a-date — see [#123] for context']);
+
+    assert.ok(
+      findWarning(validate().output, 'S008'),
+      'a bracket later in the value does not make the value unfilled',
+    );
+  });
+
+  // ── --strict: the exit status becomes gateable, opt-in only ─────────────────
+
+  test('--strict: a document with warnings exits non-zero', () => {
+    writeCleanState(['Last activity: not-a-date — broken']);
+
+    const { result, output } = validate('state validate --strict');
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(result.exitCode, 1, 'a CI step must be able to gate on the exit status');
+  });
+
+  test('--strict: a clean document still exits zero', () => {
+    writeCleanState(['Last activity: 2026-08-19 — done']);
+
+    const { result, output } = validate('state validate --strict');
+    assert.strictEqual(output.valid, true);
+    assert.strictEqual(result.exitCode, 0);
+  });
+
+  test('--strict: the default exit status is unchanged when the flag is absent', () => {
+    // Hyrum's Law guard (ADR-3180 Decision 3): state validate's exit status is
+    // observable behaviour reaching downstream consumers that cannot be
+    // enumerated. Flipping the DEFAULT would break every script that runs it
+    // unconditionally, so the new behaviour is opt-in — and this test fails if
+    // anyone later "simplifies" it into the default.
+    writeCleanState(['Last activity: not-a-date — broken']);
+
+    const { result, output } = validate();
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(result.exitCode, 0, 'the default exit status must NOT change');
+  });
+
+  test('--strict: the S001 early-return path also exits non-zero', () => {
+    // S001 returns early from its own output(...) call; a fix that only set the
+    // exit code at the end of the function would miss this branch.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), Buffer.from('# Project State\0corrupt'));
+
+    const { result, output } = validate('state validate --strict');
+    assert.strictEqual(output.valid, false);
+    assert.strictEqual(result.exitCode, 1);
+  });
+
+  test('--strict: a missing STATE.md exits non-zero', () => {
+    // createFixture() makes .planning/ but no STATE.md — the
+    // {error:'STATE.md not found'} pre-check shape, a third early return.
+    const { result, output } = validate('state validate --strict');
+    assert.ok(output.error, 'the not-found shape is unchanged');
+    assert.strictEqual(result.exitCode, 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // #3187 (ADR-3180 §7.7) — matrix section B: `state validate`'s scope field,
 // including the #3162 headline regression and #1255 frontmatter shadowing.
 // ─────────────────────────────────────────────────────────────────────────────
