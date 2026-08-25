@@ -173,8 +173,11 @@ function writeSummary(text) {
   }
 }
 
-async function main() {
-  parseArgs(process.argv.slice(2));
+// `argv` defaults to real CLI argv but is a parameter so tests can call
+// main() in-process (e.g. main([])) without inheriting the test runner's own
+// argv, which would otherwise trip parseArgs's "unknown argument" branch.
+async function main(argv = process.argv.slice(2)) {
+  parseArgs(argv);
 
   const eventName = process.env.GITHUB_EVENT_NAME;
   const repo = process.env.GITHUB_REPOSITORY || '';

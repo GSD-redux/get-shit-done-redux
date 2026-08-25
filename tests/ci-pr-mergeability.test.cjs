@@ -34,6 +34,7 @@ const {
   classifyMergeability,
   nextDelayMs,
   resolveMergeability,
+  main,
 } = require('../scripts/ci-pr-mergeability.cjs');
 
 // ---------------------------------------------------------------------------
@@ -410,6 +411,50 @@ function runCli(env, { outputPath } = {}) {
   });
 }
 
+// `runNode` (tests/helpers/process-seam.cjs) is spawnSync: it blocks this
+// process's event loop for the whole child lifetime. `startApiStub` is an
+// http.createServer living in THIS process, so while spawnSync blocks, the
+// stub can never accept the child's connection — the child's fetch hangs on
+// every attempt until its own AbortSignal.timeout fires, five attempts in a
+// row, blowing past PROBE_TIMEOUT_MS. The observed symptom was exitCode:null
+// with empty stdout/stderr (caught by the remote runner, not locally, since
+// the deadlock's exact timing depends on scheduler contention). Any test that
+// needs the stub must instead call main() in-process, which keeps this
+// process's event loop live so the stub can actually answer.
+/**
+ * Invoke main() in-process with a controlled environment, capturing writes.
+ * See the comment above for why this exists instead of routing through the
+ * runNode/spawnSync seam whenever an in-process HTTP stub is involved.
+ */
+async function callMain(t, env, { outputPath } = {}) {
+  const overrides = {
+    GITHUB_REPOSITORY: 'open-gsd/gsd-core',
+    GITHUB_TOKEN: SENTINEL_TOKEN,
+    GITHUB_BASE_REF: 'next',
+    PR_NUMBER: String(PR.number),
+    GSD_PR_MERGEABILITY_BASE_DELAY_MS: '1',
+    ...(outputPath ? { GITHUB_OUTPUT: outputPath } : {}),
+    ...env,
+  };
+  const saved = new Map();
+  for (const key of Object.keys(overrides)) saved.set(key, process.env[key]);
+  Object.assign(process.env, overrides);
+  t.after(() => {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  const stdout = [];
+  const stderr = [];
+  t.mock.method(process.stdout, 'write', (chunk) => { stdout.push(String(chunk)); return true; });
+  t.mock.method(process.stderr, 'write', (chunk) => { stderr.push(String(chunk)); return true; });
+
+  const code = await main([]);
+  return { code, stdout: stdout.join(''), stderr: stderr.join('') };
+}
+
 function readOutputs(outputPath) {
   const raw = fs.readFileSync(outputPath, 'utf8');
   const outputs = {};
@@ -420,6 +465,11 @@ function readOutputs(outputPath) {
   return outputs;
 }
 
+// Split by what each case actually needs: stub-backed cases call main()
+// in-process via callMain() (spawnSync would deadlock against the
+// in-process HTTP stub — see the comment above callMain()); the remaining
+// argv/exit-code-as-a-process cases stay on the runCli()/runNode seam since
+// they assert real process argv parsing and exit-code plumbing.
 describe('ci-pr-mergeability: CLI', () => {
   test('exits 0 and writes a skip verdict on a push event', (t) => {
     const dir = createTempDir('mergeability-skip-');
@@ -440,12 +490,13 @@ describe('ci-pr-mergeability: CLI', () => {
     t.after(async () => { await api.close(); cleanup(dir); });
     const outputPath = path.join(dir, 'gh-output');
 
-    const result = runCli(
+    const result = await callMain(
+      t,
       { GITHUB_EVENT_NAME: 'pull_request', GITHUB_API_URL: api.url },
       { outputPath },
     );
 
-    assert.equal(result.exitCode, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+    assert.equal(result.code, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
     const combined = `${result.stdout}${result.stderr}`;
     assert.ok(combined.includes('::error::'), 'must emit a workflow error annotation');
     assert.ok(combined.includes('next'), 'the annotation must name the base branch');
@@ -458,12 +509,13 @@ describe('ci-pr-mergeability: CLI', () => {
     t.after(async () => { await api.close(); cleanup(dir); });
     const outputPath = path.join(dir, 'gh-output');
 
-    const result = runCli(
+    const result = await callMain(
+      t,
       { GITHUB_EVENT_NAME: 'pull_request', GITHUB_API_URL: api.url },
       { outputPath },
     );
 
-    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.code, 0, result.stderr);
     const outputs = readOutputs(outputPath);
     assert.equal(outputs.verdict, VERDICT.MERGEABLE);
     assert.equal(outputs.mergeable, 'true');
@@ -475,12 +527,13 @@ describe('ci-pr-mergeability: CLI', () => {
     t.after(async () => { await api.close(); cleanup(dir); });
     const outputPath = path.join(dir, 'gh-output');
 
-    const result = runCli(
+    const result = await callMain(
+      t,
       { GITHUB_EVENT_NAME: 'pull_request', GITHUB_API_URL: api.url },
       { outputPath },
     );
 
-    assert.equal(result.exitCode, 0, `an unknown mergeability must not block: ${result.stderr}`);
+    assert.equal(result.code, 0, `an unknown mergeability must not block: ${result.stderr}`);
     const combined = `${result.stdout}${result.stderr}`;
     assert.ok(combined.includes('::warning::'), 'must warn');
     assert.ok(!combined.includes('::error::'), 'must not emit an error annotation');
@@ -494,12 +547,13 @@ describe('ci-pr-mergeability: CLI', () => {
     t.after(async () => { await api.close(); cleanup(dir); });
     const outputPath = path.join(dir, 'gh-output');
 
-    const result = runCli(
+    const result = await callMain(
+      t,
       { GITHUB_EVENT_NAME: 'pull_request', GITHUB_API_URL: api.url },
       { outputPath },
     );
 
-    assert.equal(result.exitCode, 0, 'an unreadable PR is not an unmergeable PR');
+    assert.equal(result.code, 0, 'an unreadable PR is not an unmergeable PR');
     assert.equal(readOutputs(outputPath).verdict, VERDICT.INDETERMINATE);
   });
 
@@ -509,12 +563,13 @@ describe('ci-pr-mergeability: CLI', () => {
     t.after(async () => { await api.close(); cleanup(dir); });
     const outputPath = path.join(dir, 'gh-output');
 
-    const result = runCli(
+    const result = await callMain(
+      t,
       { GITHUB_EVENT_NAME: 'pull_request', GITHUB_API_URL: api.url },
       { outputPath },
     );
 
-    assert.equal(result.exitCode, 0);
+    assert.equal(result.code, 0);
     assert.equal(readOutputs(outputPath).verdict, VERDICT.INDETERMINATE);
   });
 
@@ -536,12 +591,13 @@ describe('ci-pr-mergeability: CLI', () => {
     t.after(async () => { await api.close(); cleanup(dir); });
     const outputPath = path.join(dir, 'no-such-dir', 'gh-output');
 
-    const result = runCli(
+    const result = await callMain(
+      t,
       { GITHUB_EVENT_NAME: 'pull_request', GITHUB_API_URL: api.url },
       { outputPath },
     );
 
-    assert.equal(result.exitCode, 1, 'a conflict must still exit 1 when the output write fails');
+    assert.equal(result.code, 1, 'a conflict must still exit 1 when the output write fails');
   });
 
   test('never echoes the token', async (t) => {
@@ -549,7 +605,8 @@ describe('ci-pr-mergeability: CLI', () => {
     const api = await startApiStub(() => ({ status: 500, body: { message: 'boom' } }));
     t.after(async () => { await api.close(); cleanup(dir); });
 
-    const result = runCli(
+    const result = await callMain(
+      t,
       { GITHUB_EVENT_NAME: 'pull_request', GITHUB_API_URL: api.url },
       { outputPath: path.join(dir, 'gh-output') },
     );
@@ -562,7 +619,8 @@ describe('ci-pr-mergeability: CLI', () => {
     const api = await startApiStub(() => ({ status: 200, body: { mergeable: false } }));
     t.after(async () => { await api.close(); cleanup(dir); });
 
-    const result = runCli(
+    const result = await callMain(
+      t,
       { GITHUB_EVENT_NAME: 'pull_request', GITHUB_API_URL: api.url },
       { outputPath: path.join(dir, 'gh-output') },
     );
