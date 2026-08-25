@@ -322,7 +322,7 @@ describe('getConfigDirFromHome — spot-checks', () => {
     assert.strictEqual(getConfigDirFromHome('trae', true), "'.trae'");
   });
 
-  test('antigravity returns .agents (local) and legacy fallback global path when no 2.x dirs exist', () => {
+  test('antigravity returns .agents (local) and ~/.gemini/config global path when no dirs exist', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-antigravity-empty-'));
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
@@ -332,7 +332,7 @@ describe('getConfigDirFromHome — spot-checks', () => {
     process.env.USERPROFILE = home;
     try {
       assert.strictEqual(getConfigDirFromHome('antigravity', false), "'.agents'");
-      assert.strictEqual(getConfigDirFromHome('antigravity', true), "'.gemini', 'antigravity'");
+      assert.strictEqual(getConfigDirFromHome('antigravity', true), "'.gemini', 'config'");
     } finally {
       if (savedHome === undefined) delete process.env.HOME;
       else process.env.HOME = savedHome;
@@ -1317,7 +1317,7 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
       '.agent/ must not be created by a fresh install (new installs use .agents/)');
   });
 
-  test('global antigravity install still writes to ~/.gemini/antigravity (unchanged)', () => {
+  test('global antigravity install writes to ~/.gemini/config, not the deprecated ~/.gemini/antigravity path', () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-ag-global-'));
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
@@ -1328,17 +1328,22 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
     try {
       const result = install(true, 'antigravity');
       assert.strictEqual(result.runtime, 'antigravity');
+      assert.strictEqual(
+        result.configDir,
+        path.join(homeDir, '.gemini', 'config'),
+        `global antigravity install must default to ~/.gemini/config, got: ${result.configDir}`,
+      );
       assert.ok(
         result.configDir.startsWith(homeDir),
         `global antigravity install must go under HOME, got: ${result.configDir}`,
       );
       assert.ok(
         fs.existsSync(path.join(result.configDir, 'skills')),
-        'global antigravity install must create skills/ under ~/.gemini/antigravity',
+        'global antigravity install must create skills/ under ~/.gemini/config',
       );
       assert.ok(
         !fs.existsSync(path.join(homeDir, '.agents')),
-        '.agents/ must NOT be created by a global install (global path is ~/.gemini/antigravity)',
+        '.agents/ must NOT be created by a global install (global path is ~/.gemini/config)',
       );
     } finally {
       if (savedHome === undefined) delete process.env.HOME;

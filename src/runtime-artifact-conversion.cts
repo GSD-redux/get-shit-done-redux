@@ -925,7 +925,7 @@ function buildKimiAgentArtifacts({
 /**
  * Apply Antigravity-specific content conversion — path replacement + command name conversion.
  * Path mappings depend on install mode:
- *   Global: ~/.claude/ → ~/.gemini/antigravity/, ./.claude/ → ./.agents/
+ *   Global: ~/.claude/ → ~/.gemini/config/, ./.claude/ → ./.agents/
  *   Local:  ~/.claude/ → .agents/, ./.claude/ → ./.agents/
  * Applied to ALL Antigravity content (skills, agents, engine files).
  * @param {string} content - Source content to convert
@@ -934,11 +934,11 @@ function buildKimiAgentArtifacts({
 function convertClaudeToAntigravityContent(content, isGlobal = false) {
   let c = content;
   if (isGlobal) {
-    c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/antigravity/');
-    c = c.replace(/~\/\.claude\//g, '~/.gemini/antigravity/');
+    c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/config/');
+    c = c.replace(/~\/\.claude\//g, '~/.gemini/config/');
     // Bare form (no trailing slash) — must come after slash form to avoid double-replace
-    c = c.replace(/\$HOME\/\.claude\b/g, '$HOME/.gemini/antigravity');
-    c = c.replace(/~\/\.claude\b/g, '~/.gemini/antigravity');
+    c = c.replace(/\$HOME\/\.claude\b/g, '$HOME/.gemini/config');
+    c = c.replace(/~\/\.claude\b/g, '~/.gemini/config');
   } else {
     c = c.replace(/\$HOME\/\.claude\//g, '.agents/');
     c = c.replace(/~\/\.claude\//g, '.agents/');

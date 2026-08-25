@@ -991,9 +991,9 @@ describe('skills wrapper threads install scope into converter isGlobal (regressi
   // Bug: the skills wrapper in runtime-artifact-layout passed `runtime` (a truthy
   // string) as the converter's 3rd positional arg. For antigravity/copilot that
   // param was `isGlobal`, so LOCAL installs always took the GLOBAL path branch and
-  // leaked ~/.gemini/antigravity or ~/.copilot instead of the workspace path.
+  // leaked ~/.gemini/config or ~/.copilot instead of the workspace path.
   for (const { runtime, globalMarker, localMarker } of [
-    { runtime: 'antigravity', globalMarker: '~/.gemini/antigravity', localMarker: '.agents' },
+    { runtime: 'antigravity', globalMarker: '~/.gemini/config', localMarker: '.agents' },
     { runtime: 'copilot', globalMarker: '~/.copilot', localMarker: '.github' },
   ]) {
     test(`${runtime}: local skill content uses workspace path, not global home`, (t) => {
@@ -1055,12 +1055,12 @@ const { convertClaudeToAntigravityContent } = require('../bin/install.js');
 
 describe('convertClaudeToAntigravityContent bare path replacement (#2418)', () => {
   describe('global install', () => {
-    test('replaces ~/.claude (bare, no trailing slash) with ~/.gemini/antigravity', () => {
+    test('replaces ~/.claude (bare, no trailing slash) with ~/.gemini/config', () => {
       const input = 'configDir = ~/.claude';
       const result = convertClaudeToAntigravityContent(input, true);
       assert.ok(
-        result.includes('~/.gemini/antigravity'),
-        `Expected ~/.gemini/antigravity in output, got: ${result}`
+        result.includes('~/.gemini/config'),
+        `Expected ~/.gemini/config in output, got: ${result}`
       );
       assert.ok(
         !result.includes('~/.claude'),
@@ -1068,12 +1068,12 @@ describe('convertClaudeToAntigravityContent bare path replacement (#2418)', () =
       );
     });
 
-    test('replaces $HOME/.claude (bare, no trailing slash) with $HOME/.gemini/antigravity', () => {
+    test('replaces $HOME/.claude (bare, no trailing slash) with $HOME/.gemini/config', () => {
       const input = 'export DIR=$HOME/.claude';
       const result = convertClaudeToAntigravityContent(input, true);
       assert.ok(
-        result.includes('$HOME/.gemini/antigravity'),
-        `Expected $HOME/.gemini/antigravity in output, got: ${result}`
+        result.includes('$HOME/.gemini/config'),
+        `Expected $HOME/.gemini/config in output, got: ${result}`
       );
       assert.ok(
         !result.includes('$HOME/.claude'),
@@ -1094,7 +1094,7 @@ describe('convertClaudeToAntigravityContent bare path replacement (#2418)', () =
       const input = 'See ~/.claude/gsd-core/workflows/';
       const result = convertClaudeToAntigravityContent(input, true);
       assert.ok(
-        result.includes('~/.gemini/antigravity/gsd-core/workflows/'),
+        result.includes('~/.gemini/config/gsd-core/workflows/'),
         `Expected path with trailing slash to be replaced, got: ${result}`
       );
       assert.ok(!result.includes('~/.claude/'), `Expected ~/ .claude/ to be fully replaced, got: ${result}`);
@@ -1104,7 +1104,7 @@ describe('convertClaudeToAntigravityContent bare path replacement (#2418)', () =
       const input = 'See ~/.claude/gsd-core/';
       const result = convertClaudeToAntigravityContent(input, true);
       // Result should contain exactly one occurrence of the replacement path
-      const count = (result.match(/~\/.gemini\/antigravity\//g) || []).length;
+      const count = (result.match(/~\/.gemini\/config\//g) || []).length;
       assert.strictEqual(count, 1, `Expected exactly 1 replacement, got ${count} in: ${result}`);
     });
   });

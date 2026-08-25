@@ -92,7 +92,7 @@ const GOLDEN_DEFAULTS = {
   codex:       path.join(HOME, '.codex'),
   grok:        path.join(HOME, '.agents'),
   copilot:     path.join(HOME, '.copilot'),
-  antigravity: path.join(HOME, '.gemini', 'antigravity'),  // probe-miss → first candidate
+  antigravity: path.join(HOME, '.gemini', 'config'),  // probe-miss → first candidate
   windsurf:    path.join(HOME, '.codeium', 'windsurf'),
   augment:     path.join(HOME, '.augment'),
   trae:        path.join(HOME, '.trae'),
@@ -113,10 +113,10 @@ describe('descriptor-driven equivalence: defaults (no env vars, no probe hits)',
   // vary by machine). kimi probe scenarios are covered in the generic-agents-root suite
   // with injected existsSync.
   // antigravity is excluded: it also depends on real fs probing (probe candidates
-  // ~/.gemini/antigravity, ~/.gemini/antigravity-ide, ~/.gemini/antigravity-cli);
-  // a machine that has antigravity-ide or antigravity-cli but not antigravity gets a
-  // different result. antigravity probe scenarios are covered in the dot-home-nested
-  // suite with injected existsSync.
+  // ~/.gemini/config, ~/.gemini/antigravity, ~/.gemini/antigravity-ide,
+  // ~/.gemini/antigravity-cli); a machine that has any legacy dir but not config
+  // gets a different result. antigravity probe scenarios are covered in the
+  // dot-home-nested suite with injected existsSync.
   for (const [runtime, expected] of Object.entries(GOLDEN_DEFAULTS).filter(
     ([r]) => r !== 'antigravity',
   )) {
@@ -603,7 +603,7 @@ describe('descriptor-driven equivalence: xdg runtimes (opencode, kilo)', () => {
 // ── GOLDEN DOT-HOME-NESTED (antigravity probe) ────────────────────────────────
 
 describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/miss', () => {
-  test('antigravity probe-miss → ~/.gemini/antigravity (first candidate)', () => {
+  test('antigravity probe-miss → ~/.gemini/config (first candidate)', () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-equiv-antigravity-miss-'));
     try {
       // no candidates exist → fallback to first
@@ -613,11 +613,11 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
           name: 'antigravity',
           parent: '.gemini',
           env: ['ANTIGRAVITY_CONFIG_DIR'],
-          probe: ['antigravity', 'antigravity-ide', 'antigravity-cli'],
+          probe: ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'],
         },
         { env: {}, home: tmpHome, existsSync: () => false },
       );
-      assert.strictEqual(result, path.join(tmpHome, '.gemini', 'antigravity'));
+      assert.strictEqual(result, path.join(tmpHome, '.gemini', 'config'));
     } finally {
       cleanup(tmpHome);
     }
@@ -688,7 +688,7 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
   // user (antigravity-cli) who also had the IDE's ~/.gemini/antigravity dir
   // present was shadowed to the legacy dir (probed first). probeExists =
   // 'gsd-core/VERSION' makes the dir GSD actually owns win, regardless of order.
-  const AG_PROBE = ['antigravity', 'antigravity-ide', 'antigravity-cli'];
+  const AG_PROBE = ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'];
   const AG_MARKER = path.join('gsd-core', 'VERSION');
 
   function antigravityDescriptor(withMarker) {
@@ -783,7 +783,7 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
       home,
       existsSync: () => false,
     });
-    assert.strictEqual(result, path.join(home, '.gemini', 'antigravity'));
+    assert.strictEqual(result, path.join(home, '.gemini', 'config'));
   });
 
   test('antigravity: ANTIGRAVITY_CONFIG_DIR env override wins over any probe', () => {
@@ -990,12 +990,12 @@ describe('descriptor-driven equivalence: generic-agents-root kimi probe hit/miss
   });
 
   // Verify resolveAntigravityGlobalDir wrapper delegates correctly
-  test('resolveAntigravityGlobalDir wrapper: probe-miss → ~/.gemini/antigravity', () => {
+  test('resolveAntigravityGlobalDir wrapper: probe-miss → ~/.gemini/config', () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-equiv-ragd-miss-'));
     try {
       assert.strictEqual(
         resolveAntigravityGlobalDir({ env: {}, home: tmpHome, existsSync: () => false }),
-        path.join(tmpHome, '.gemini', 'antigravity'),
+        path.join(tmpHome, '.gemini', 'config'),
       );
     } finally {
       cleanup(tmpHome);
@@ -1138,9 +1138,9 @@ describe('descriptor-driven parity: 13 non-probe registry runtimes × no-env-var
   // the old switch. Any discrepancy means a regression.
   // kimi is excluded because its default depends on real filesystem probing.
   // antigravity is excluded because it also depends on real fs probing — a machine
-  // with ~/.gemini/antigravity-ide or ~/.gemini/antigravity-cli (but not
-  // ~/.gemini/antigravity) gets a different result. Probe scenarios are covered in
-  // the dot-home-nested suite with injected existsSync.
+  // with any legacy ~/.gemini/{antigravity,antigravity-ide,antigravity-cli} dir
+  // (but not ~/.gemini/config) gets a different result. Probe scenarios are
+  // covered in the dot-home-nested suite with injected existsSync.
   // grok is excluded because it is not in the registry (hardcoded branch).
   const registryRuntimes = Object.keys(GOLDEN_DEFAULTS).filter(
     r => r !== 'grok' && r !== 'antigravity',
@@ -1211,12 +1211,22 @@ function withEnv(key, value, fn) {
 }
 
 describe('bug #3126: runtime-homes getGlobalConfigDir — defaults', () => {
+  // antigravity is excluded from this real-filesystem loop: getGlobalConfigDir
+  // probes real fs.existsSync, and a machine with a pre-existing
+  // ~/.gemini/{config,antigravity,antigravity-ide,antigravity-cli} dir (e.g. a
+  // real local antigravity install) would make this assert on which of those
+  // happens to exist on disk rather than on probe[0]-fallback behavior itself
+  // (issue #3738 fix surfaced this: this dev machine has a real
+  // ~/.gemini/antigravity, so the old '.gemini/antigravity' expectation here
+  // was passing for the wrong reason — bare-existence, not true fallback).
+  // Hermetic probe-miss/hit coverage for antigravity already exists above in
+  // the "GOLDEN DOT-HOME-NESTED (antigravity probe)" describe block, which
+  // injects existsSync instead of hitting the real filesystem.
   const defaults = [
     ['claude',      path.join(os.homedir(), '.claude')],
     ['cursor',      path.join(os.homedir(), '.cursor')],
     ['codex',       path.join(os.homedir(), '.codex')],
     ['copilot',     path.join(os.homedir(), '.copilot')],
-    ['antigravity', path.join(os.homedir(), '.gemini', 'antigravity')],
     ['windsurf',    path.join(os.homedir(), '.codeium', 'windsurf')],
     ['augment',     path.join(os.homedir(), '.augment')],
     ['trae',        path.join(os.homedir(), '.trae')],
