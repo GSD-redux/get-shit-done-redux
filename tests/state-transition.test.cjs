@@ -3028,3 +3028,80 @@ describe('state transitions do not consult a progress provider (#3118)', () => {
     ));
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3871 / #3756 (ADR-3473 §8.6): the `preserve-always` executor for `progress`
+// (state-transition.cjs ~line 280) gates on `ctx.resync || !ctx.preFm ||
+// !ctx.preFm[field]` — it reads `ctx.preFm`, never `ctx.preFmSnapshot`. But
+// `applyPostSyncPreservation` (src/state.cts) computes
+// `const preFm = resync ? null : extractFrontmatter(...)`, and
+// `readModifyWriteStateMd` defaults `resync` to `true` — so on every
+// resyncing write (record-session, add-decision, etc.) `ctx.preFm` is
+// ALWAYS null and the preserve-always branch for `progress` returns
+// immediately without ever consulting the curated snapshot, even though the
+// snapshot (`ctx.preFmSnapshot`) still carries the pre-write curated block.
+// This is the root cause of #3756 (progress zeroed on an archived milestone).
+//
+// Written against TODAY's `applyStatePreservation` signature
+// (`{ preFm, postFm, preFmSnapshot, resync, bodyDeltas }`) so it fails for
+// the RIGHT reason (the policy not running) rather than an import/signature
+// mismatch. The signature is expected to change in the follow-up fix commit
+// (the executor should consult `preFmSnapshot` when `preFm` is null due to
+// resync), at which point this test migrates alongside it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3871 / #3756: preserve-always must still run on a resyncing write', () => {
+  test('preserveAlwaysRunsOnResyncingWrites', () => {
+    // #3756's exact repro shape: STATE.md carries a curated progress block
+    // (5/5/32/32/100%) but the post-sync disk-derived block from a
+    // milestone-scoped scan that found NONE of the current milestone's
+    // phases (they were archived to .planning/milestones/<v>-phases/) is
+    // all STRING zeros with `percent` entirely ABSENT — exactly what the
+    // real sync path emits (never numeric zeros).
+    const curatedSnapshot = {
+      progress: {
+        total_phases: 5,
+        completed_phases: 5,
+        total_plans: 32,
+        completed_plans: 32,
+        percent: 100,
+      },
+    };
+    const zeroedPostFm = {
+      progress: {
+        total_phases: '0',
+        completed_phases: '0',
+        total_plans: '0',
+        completed_plans: '0',
+      },
+    };
+    const unchangedBodyDeltas = {
+      status: { pre: 'x', post: 'x' },
+      stopped_at: { pre: 'x', post: 'x' },
+      current_phase_name: { pre: 'x', post: 'x' },
+      paused_at: { pre: 'x', post: 'x' },
+      current_phase: { pre: 'x', post: 'x' },
+      current_plan: { pre: 'x', post: 'x' },
+      last_activity_desc: { pre: 'x', post: 'x' },
+    };
+
+    const r = applyStatePreservation({
+      preFm: null,
+      preFmSnapshot: curatedSnapshot,
+      postFm: zeroedPostFm,
+      resync: true,
+      bodyDeltas: unchangedBodyDeltas,
+    });
+
+    // FAILS TODAY (#3756/#3871): the preserve-always executor for `progress`
+    // only ever consults `ctx.preFm` (always null on a resyncing write, per
+    // the root-cause comment above), so it returns immediately and the
+    // curated block above is NOT restored — `r.postFm.progress` stays the
+    // zeroed/percent-less disk-derived block instead.
+    assert.deepStrictEqual(
+      r.postFm.progress,
+      curatedSnapshot.progress,
+      'preserve-always for `progress` must restore the curated snapshot on a resyncing write, not just a non-resyncing one (#3756/#3871)',
+    );
+  });
+});

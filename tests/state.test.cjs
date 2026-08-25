@@ -16895,3 +16895,219 @@ describe('#3699 state update — derived frontmatter keys explain themselves', (
     }
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════
+// #3871 / #3756 (ADR-3473 §8.6): a curated `progress:` frontmatter block is
+// LOST on a write by verbs that have nothing to do with progress (state
+// record-session, state add-decision) once the CURRENT milestone's phase
+// dirs have been archived to `.planning/milestones/<version>-phases/` while
+// STATE.md/ROADMAP.md still identify that milestone as the current one
+// (ROADMAP heading "Current", Phase entries still listed in the ROADMAP
+// text — only the on-disk phase directories moved). The milestone-scoped
+// disk scan then finds none of the current milestone's phase directories
+// under `.planning/phases/` and derives an empty/zero progress projection —
+// verified empirically (see repro3756.js, run against the built lib): the
+// persisted frontmatter's `progress` key is dropped ENTIRELY after the
+// write (not merely zeroed-with-percent-omitted). Root cause is unchanged:
+// `applyPostSyncPreservation` (src/state.cts) computes
+// `const preFm = resync ? null : extractFrontmatter(...)` while
+// `readModifyWriteStateMd` defaults `resync` to `true`, so the declared
+// `preserve-always` policy row for `progress` never runs on this write path
+// and has no chance to restore the curated block before it is discarded.
+//
+// Fixture pattern mirrors `tests/health-validation.test.cjs`'s
+// `mkArchivePhases` (`.planning/milestones/<version>-phases/<NN>-phase-N/`)
+// and `tests/completion-ratio-scope-withholding.test.cjs`'s ROADMAP-heading
+// fixture builders — a "Current" milestone heading (so scope classifies as
+// SCOPE.COMPLETE / windowed rather than UNSCOPED — a "Shipped" heading gets
+// stripped by `stripShippedMilestones` and reproduces rule-4 withholding
+// instead, a different and pre-existing intentional behavior, NOT this
+// defect), phase dirs that exist ONLY under the archive path, and nothing
+// at all under `.planning/phases/` for the current milestone.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('#3871 / #3756: curated progress must survive a write on an archived milestone', () => {
+  // Builds an archived-milestone fixture: STATE.md asserts milestone v1.0
+  // and carries the curated progress block (5/5/32/32/100%) plus the body
+  // sections `record-session` and `add-decision` each need (Session
+  // Continuity, Decisions). ROADMAP.md shows v1.0 as the CURRENT milestone
+  // ("Current 🚧" heading, with all 5 Phase entries still listed in the
+  // ROADMAP text) with 5 phases. The phase dirs themselves live ONLY under
+  // `.planning/milestones/v1.0-phases/` — `.planning/phases/` has nothing
+  // for the current milestone, exactly as it is right after `milestone
+  // complete --archive-phases` runs while STATE.md has not yet been
+  // advanced to a new milestone.
+  function buildArchivedMilestoneFixture(cwd) {
+    const planningDir = path.join(cwd, '.planning');
+    fs.mkdirSync(planningDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(planningDir, 'ROADMAP.md'),
+      [
+        '## v1.0 Current 🚧',
+        '',
+        '### Phase 1: Foo',
+        '### Phase 2: Bar',
+        '### Phase 3: Baz',
+        '### Phase 4: Qux',
+        '### Phase 5: Quux',
+        '',
+      ].join('\n'),
+    );
+
+    // 5 archived phases totalling 32 plans, every plan paired with a
+    // SUMMARY (all complete) — mirrors mkArchivePhases in
+    // tests/health-validation.test.cjs, but with real PLAN/SUMMARY files
+    // rather than empty dirs, since this fixture is about the DISK SCAN
+    // finding zero CURRENT-milestone phases, not about archive discovery.
+    const archiveDir = path.join(planningDir, 'milestones', 'v1.0-phases');
+    const plansPerPhase = [7, 7, 6, 6, 6]; // sums to 32
+    plansPerPhase.forEach((count, i) => {
+      const phaseNum = String(i + 1).padStart(2, '0');
+      const phaseDir = path.join(archiveDir, `${phaseNum}-phase-${i + 1}`);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let p = 1; p <= count; p += 1) {
+        const planNum = String(p).padStart(2, '0');
+        fs.writeFileSync(path.join(phaseDir, `${phaseNum}-${planNum}-PLAN.md`), '# Plan\n');
+        fs.writeFileSync(path.join(phaseDir, `${phaseNum}-${planNum}-SUMMARY.md`), '# Summary\n');
+      }
+    });
+
+    // Deliberately NO .planning/phases/ directory at all for the current
+    // milestone — the archived-milestone shape this issue is about.
+
+    fs.writeFileSync(
+      path.join(planningDir, 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        'milestone: v1.0',
+        'status: executing',
+        'progress:',
+        '  total_phases: 5',
+        '  completed_phases: 5',
+        '  total_plans: 32',
+        '  completed_plans: 32',
+        '  percent: 100',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Session Continuity',
+        '',
+        '**Last session:** 2024-01-10',
+        '**Stopped at:** Phase 5, Plan 32',
+        '**Resume file:** None',
+        '',
+        '## Decisions',
+        'No decisions yet.',
+        '',
+        '## Blockers',
+        'None',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  function assertCuratedProgressSurvived(cwd) {
+    const statePath = path.join(cwd, '.planning', 'STATE.md');
+    const content = fs.readFileSync(statePath, 'utf-8');
+    const fm = frontmatterLib.extractFrontmatter(content);
+    assert.ok(fm && fm.progress, 'STATE.md frontmatter must still carry a progress block');
+    assert.strictEqual(Number(fm.progress.total_phases), 5, 'total_phases must remain the curated 5, not zeroed by the archived-milestone disk scan');
+    assert.strictEqual(Number(fm.progress.completed_phases), 5, 'completed_phases must remain the curated 5');
+    assert.strictEqual(Number(fm.progress.total_plans), 32, 'total_plans must remain the curated 32');
+    assert.strictEqual(Number(fm.progress.completed_plans), 32, 'completed_plans must remain the curated 32');
+    assert.strictEqual(Number(fm.progress.percent), 100, 'percent must remain the curated 100, not go missing');
+  }
+
+  // THIS TEST MUST FAIL TODAY (#3756): `state record-session` resyncs
+  // (readModifyWriteStateMd defaults resync:true), which forces `preFm` to
+  // null in applyPostSyncPreservation, which starves the preserve-always
+  // executor for `progress` of the one input (`ctx.preFm`) it actually
+  // reads — so the curated block is never restored and the persisted
+  // frontmatter's `progress` key is dropped entirely (verified via
+  // repro3756.js against the built lib, not merely inferred).
+  test('recordSessionOnArchivedMilestoneDoesNotZeroProgress', (t) => {
+    const cwd = createTempDir('gsd-3871-record-session-');
+    t.after(() => cleanup(cwd));
+    buildArchivedMilestoneFixture(cwd);
+
+    const result = runGsdTools(['state', 'record-session', '--stopped-at', 'Phase 5 complete'], cwd);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assertCuratedProgressSurvived(cwd);
+  });
+
+  // Same fixture, same failure mode, via `state add-decision` instead —
+  // pins that the defect is in the shared write seam (readModifyWriteStateMd
+  // / applyPostSyncPreservation), not something specific to record-session.
+  // THIS TEST MUST FAIL TODAY (#3756) for the same reason as above.
+  test('addDecisionOnArchivedMilestoneDoesNotZeroProgress', (t) => {
+    const cwd = createTempDir('gsd-3871-add-decision-');
+    t.after(() => cleanup(cwd));
+    buildArchivedMilestoneFixture(cwd);
+
+    const result = runGsdTools(
+      ['state', 'add-decision', '--phase', '05-01', '--summary', 'Ship v1.0', '--rationale', 'milestone complete'],
+      cwd,
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    assertCuratedProgressSurvived(cwd);
+  });
+
+  // The over-preservation guard: a genuinely empty project (no phases
+  // anywhere, no curated progress block at all) must still report zeros
+  // after the same verb — the fix for #3756 must not make
+  // applyStatePreservation invent a nonzero progress block out of nothing.
+  // This test MUST PASS both today and after the fix.
+  test('newProjectWithNoPhasesKeepsZeroProgress', (t) => {
+    const cwd = createTempProject('gsd-3871-empty-');
+    t.after(() => cleanup(cwd));
+
+    fs.writeFileSync(
+      path.join(cwd, '.planning', 'STATE.md'),
+      [
+        '# Project State',
+        '',
+        '## Session Continuity',
+        '',
+        '**Last session:** 2024-01-10',
+        '**Stopped at:** None',
+        '**Resume file:** None',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools(['state', 'record-session', '--stopped-at', 'Nothing started yet'], cwd);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const statePath = path.join(cwd, '.planning', 'STATE.md');
+    const written = fs.readFileSync(statePath, 'utf-8');
+    const fm = frontmatterLib.extractFrontmatter(written);
+    const progress = fm && fm.progress;
+
+    // No curated progress ever existed, so exactly one deterministic outcome
+    // is acceptable — the block is entirely absent, or every count in it is
+    // a genuine, well-formed 0. Some assertion MUST run either way (no `if`
+    // guard around the assertion itself); which branch it took is stated in
+    // the failure message so a silent pass-through cannot hide which case
+    // fired. `Number.isFinite` (not `Number(x) || 0`) so a garbage/NaN value
+    // is caught rather than laundered into a false 0.
+    if (!progress) {
+      assert.strictEqual(progress, undefined, 'case: no progress block at all — this is the accepted degraded outcome for a project with no curated progress');
+    } else {
+      const counters = {
+        total_phases: Number(progress.total_phases),
+        completed_phases: Number(progress.completed_phases),
+        total_plans: Number(progress.total_plans),
+        completed_plans: Number(progress.completed_plans),
+      };
+      for (const [key, value] of Object.entries(counters)) {
+        assert.ok(Number.isFinite(value), `case: progress block present — ${key} must coerce to a finite number, got ${JSON.stringify(progress[key])}`);
+        assert.strictEqual(value, 0, `case: progress block present — ${key} must be exactly 0 on an empty project, not inflated`);
+      }
+    }
+  });
+});
