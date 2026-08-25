@@ -3036,8 +3036,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         }
       }
 
-      // #3701 — ROADMAP ORDER decides WHICH phase is next; the disk decides only
-      // HOW it is spelled.
+      // #3701 — the ROADMAP decides WHICH phase is next; the disk decides only HOW it
+      // is spelled. Both scans select the numerically lowest phase above N.
       //
       // Both scans below are unchanged in what they match; what changed is that
       // the roadmap is no longer gated behind "the disk found nothing". It used
@@ -3082,10 +3082,15 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           if (dm) {
             // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
             if (isSentinelPhaseId(dm[1])) continue;
-            if (comparePhaseNum(dm[1], phaseNum) > 0) {
+            // Numeric MINIMUM above N, not "first encountered". `listMilestonePhaseDirs`
+            // does sort by `comparePhaseNum`, so a `break` on the first hit happens to be
+            // correct today — but that makes this scan's correctness depend on an
+            // upstream sort nothing here states. Selecting the minimum explicitly costs
+            // one comparison and removes the hidden coupling.
+            if (comparePhaseNum(dm[1], phaseNum) > 0
+              && (diskNextNum === null || comparePhaseNum(dm[1], diskNextNum) < 0)) {
               diskNextNum = dm[1];
               diskNextName = dm[2] || null;
-              break;
             }
           }
         }
@@ -3127,14 +3132,28 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
             // already skips sentinel dirs on disk via isSentinelPhaseId (#3185);
             // stage 2's heading scan must not advance into backlog headings either.
             if (isSentinelPhaseId(pm[1])) continue;
-            if (comparePhaseNum(pm[1], phaseNum) > 0) {
+            // #3701 review: the numeric MINIMUM above N, not the first row above N in
+            // DOCUMENT order. This scan walks raw roadmap text, and one global regex
+            // sweeps both the `## Phases` checklist and the `## Phase Details`
+            // headings, so "first match" is a statement about where a line sits in the
+            // file — not about which phase comes next.
+            //
+            // It mattered only once this scan started deciding the answer. Before, it
+            // ran solely when the disk scan found nothing; now it outranks the disk, so
+            // a roadmap listing rows out of numeric sequence (`1, 3, 2`) reported
+            // `next_phase: 3` and PERSISTED it, skipping Phase 2 — on an input the
+            // pre-#3701 code got right, because the disk scan is numerically sorted.
+            // Phase NUMBERS define sequence here, exactly as `comparePhaseNum` does for
+            // the disk scan and for #2028's lowest-outstanding override; the roadmap
+            // defines which phases EXIST and which milestone they belong to.
+            if (comparePhaseNum(pm[1], phaseNum) > 0
+              && (roadmapNextNum === null || comparePhaseNum(pm[1], roadmapNextNum) < 0)) {
               roadmapNextNum = pm[1];
               roadmapNextName = pm[2]
                 .replace(/\(INSERTED\)/i, '')
                 .trim()
                 .toLowerCase()
                 .replace(/\s+/g, '-');
-              break;
             }
           }
         } catch {

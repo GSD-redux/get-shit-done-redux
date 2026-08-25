@@ -12410,6 +12410,87 @@ describe('#3701 phase complete — next_phase follows roadmap order, not disk', 
     assert.strictEqual(output.next_phase, null);
   });
 
+  // ── ordering: phase NUMBERS decide sequence, not row position ─────────────
+
+  test('roadmapRowsOutOfNumericOrderStillResolveTheLowestSuccessor', () => {
+    // Review round 2 (blocker). The roadmap scan walks raw text and one global
+    // regex sweeps both the checklist and the detail headings, so "first match
+    // above N" is a statement about file position, not sequence. Once this scan
+    // started deciding the answer, a roadmap listing rows `1, 3, 2` reported
+    // next_phase 3 and PERSISTED it — skipping Phase 2 entirely, on an input the
+    // pre-fix code got right because the disk scan is numerically sorted.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' },
+      { num: '3', name: 'Gamma' },
+      { num: '2', name: 'Beta' },
+    ]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02', `Phase 2 is the lowest above 1 regardless of row position (got ${output.next_phase})`);
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('detailHeadingOrderDoesNotOverrideNumericOrder', () => {
+    // The checklist and the `## Phase Details` headings are swept by the same
+    // regex, so a details section ordered differently from the checklist is a
+    // second way row position could win.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap', '', '## Phases', '',
+        '- [ ] **Phase 1: Alpha** - Alpha',
+        '- [ ] **Phase 2: Beta** - Beta',
+        '- [ ] **Phase 3: Gamma** - Gamma',
+        '', '## Phase Details', '',
+        '### Phase 3: Gamma', '', '**Goal:** Gamma', '',
+        '### Phase 1: Alpha', '', '**Goal:** Alpha', '',
+        '### Phase 2: Beta', '', '**Goal:** Beta', '',
+      ].join('\n'),
+    );
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02');
+  });
+
+  test('outOfOrderRowsWithNoDirectoryStillResolveNumerically', () => {
+    // Same rule on the roadmap-only path, where no disk answer exists to mask a
+    // document-order mistake.
+    scaffoldPhaseDir('01-alpha');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' },
+      { num: '3', name: 'Gamma' },
+      { num: '2', name: 'Beta' },
+    ]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '2');
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('anInsertedDecimalListedOutOfOrderDoesNotWin', () => {
+    // The two hazards together: rows out of sequence AND an inserted decimal
+    // holding the only directory above N.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' },
+      { num: '3', name: 'Gamma' },
+      { num: '02.1', name: 'Inserted Thing', inserted: true },
+      { num: '2', name: 'Beta' },
+    ]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '2');
+  });
+
   // ── sentinels and the #2028 stage this change does not touch ──────────────
 
   test('sentinelBacklogAndDraftPhasesAreNeverSelected', () => {
