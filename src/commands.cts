@@ -741,21 +741,28 @@ function effortSurfaceForHost(cwd: string, host: string): string {
  * #488 — Replace or inject the `<key>:` value in YAML frontmatter.
  * Unlike injectEffortFrontmatter (install.js), this overwrites an existing value.
  * #3706: key-parameterised so the same line-editor serves both claude's
- * `effort:` and OpenCode's `variant:`.
+ * `effort:` and OpenCode's `variant:`. #3706: all offsets (eol, openLen,
+ * closingStart) are derived from the MATCHED BLOCK, not the start of the
+ * file, and the existing-key replace is scoped to the frontmatter span only.
  */
 function setFrontmatterKeyLine(content: string, key: string, value: string): string {
-  const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
   const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
   const match = fmRe.exec(content);
   if (!match) return content;
   const fmBody = match[1];
-  const keyRe = new RegExp(`^${key}:`, 'm');
-  const keyLineRe = new RegExp(`^(${key}:)[ \\t]*.*$`, 'm');
-  if (keyRe.test(fmBody)) {
-    return content.replace(keyLineRe, `$1 ${value}`);
-  }
+  // EOL comes from the MATCHED BLOCK, not the start of the file. With a
+  // preamble the two can disagree, and on a CRLF document that misaligns every
+  // offset below by one byte and mangles the opening fence.
+  const eol = /^---\r\n/.test(match[0]) ? '\r\n' : '\n';
   const openLen = 3 + eol.length;
-  const closingStart = match.index + openLen + fmBody.length;
+  const bodyStart = match.index + openLen;
+  const closingStart = bodyStart + fmBody.length;
+  const keyLineRe = new RegExp(`^(${key}:)[ \\t]*.*$`, 'm');
+  if (keyLineRe.test(fmBody)) {
+    // Replace INSIDE the frontmatter span only: a whole-file /m replace would
+    // rewrite an earlier preamble line that happens to start with this key.
+    return content.slice(0, bodyStart) + fmBody.replace(keyLineRe, `$1 ${value}`) + content.slice(closingStart);
+  }
   return content.slice(0, closingStart) + `${key}: ${value}${eol}` + content.slice(closingStart);
 }
 
@@ -765,7 +772,9 @@ function setFrontmatterKeyLine(content: string, key: string, value: string): str
  * codex-agent-toml strip discipline: targeted line removal, EOL-aware, every
  * other byte (comments, sibling keys, the body) untouched.
  * #3706: key-parameterised so the same line-editor serves both claude's
- * `effort:` and OpenCode's `variant:`.
+ * `effort:` and OpenCode's `variant:`. #3706: openLen is derived from the
+ * MATCHED BLOCK, not the start of the file — a preamble on a CRLF document
+ * would otherwise misalign every offset below.
  */
 function removeFrontmatterKeyLine(content: string, key: string): string {
   // Scoped to the FIRST frontmatter block (not a whole-file /m match): a
@@ -778,7 +787,10 @@ function removeFrontmatterKeyLine(content: string, key: string): string {
   const lineRe = new RegExp(`^${key}:[ \\t]*.*\\r?\\n?`, 'm');
   if (!lineRe.test(fmBody)) return content;
   const strippedFm = fmBody.replace(lineRe, '');
-  const openLen = 3 + (/^---\r\n/.test(content) ? 2 : 1);
+  // Same rule as setFrontmatterKeyLine: the EOL must come from the matched
+  // block, not the start of the file, or a preambled CRLF document misaligns.
+  const eol = /^---\r\n/.test(match[0]) ? '\r\n' : '\n';
+  const openLen = 3 + eol.length;
   const closingStart = match.index + openLen + fmBody.length;
   return content.slice(0, match.index + openLen) + strippedFm + content.slice(closingStart);
 }

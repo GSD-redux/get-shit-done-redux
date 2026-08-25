@@ -301,3 +301,121 @@ describe('#3706: effort sync maintains OpenCode variant: frontmatter', () => {
     }
   });
 });
+
+// #3706 — setFrontmatterKeyLine / removeFrontmatterKeyLine are not exported
+// directly; they are reached through the exported cmdEffortSync (claude
+// runtime, `effort:` key), the only public entry point that exercises them.
+describe('#3706: frontmatter line editors are scoped to the matched block', () => {
+  function makeSandbox() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-effort-sync-fm-scope-'));
+    const cwd = path.join(root, 'project');
+    const configDir = path.join(root, 'runtime-home');
+    const agentsDir = path.join(configDir, 'agents');
+    const home = path.join(root, 'home');
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.mkdirSync(home, { recursive: true });
+    return { root, cwd, configDir, agentsDir, home };
+  }
+
+  function writeProjectEffortConfig(cwd, override) {
+    fs.mkdirSync(path.join(cwd, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, '.planning', 'config.json'),
+      JSON.stringify({ effort: { agent_overrides: { 'gsd-executor': override } } }),
+    );
+  }
+
+  function runEffortSync({ cwd, home, configDir }) {
+    const opts = { dryRun: false, configDir, runtime: 'claude' };
+    const script = [
+      `const { cmdEffortSync } = require(${JSON.stringify(COMMANDS_CJS)});`,
+      `cmdEffortSync(${JSON.stringify(cwd)}, false, ${JSON.stringify(opts)});`,
+    ].join('\n');
+    const spawned = runNode(['-e', script], {
+      cwd,
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+    assert.strictEqual(
+      spawned.exitCode, 0,
+      `cmdEffortSync child process failed (outcome=${spawned.outcome}):\nstdout: ${spawned.stdout}\nstderr: ${spawned.stderr}`,
+    );
+  }
+
+  test('a CRLF document with a preamble keeps its opening fence intact', () => {
+    // Pre-fix: openLen was derived from `/^---\r\n/.test(content)` (start of
+    // file, which here is "Preamble line", not CRLF) rather than from the
+    // matched frontmatter block, so the CRLF fence misaligned by one byte.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, 'inherit');
+      const filePath = path.join(agentsDir, 'gsd-executor.md');
+      const before = 'Preamble line\r\n\r\n---\r\nname: x\r\neffort: high\r\n---\r\n\r\nBody.\r\n';
+      fs.writeFileSync(filePath, before);
+      runEffortSync({ cwd, home, configDir });
+      const after = fs.readFileSync(filePath, 'utf8');
+      assert.strictEqual(after, 'Preamble line\r\n\r\n---\r\nname: x\r\n---\r\n\r\nBody.\r\n');
+      assert.match(after, /^---\r\nname: x\r\n/);
+      assert.ok(after.startsWith('Preamble line\r\n\r\n'), 'preamble must survive untouched');
+      assert.ok(after.endsWith('\r\n\r\nBody.\r\n'), 'body must survive untouched');
+      assert.doesNotMatch(after, /^-{1,2}\r?\n/m, 'no truncated/stray fence');
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a preamble line starting with the key is not the line rewritten', () => {
+    // Pre-fix: `content.replace(keyLineRe, ...)` was a whole-file /m replace
+    // gated only on the key being present in fmBody, so the FIRST matching
+    // line in the whole file (the preamble) was rewritten instead of the
+    // frontmatter line.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, 'xhigh');
+      const filePath = path.join(agentsDir, 'gsd-executor.md');
+      const before = 'effort: not-the-frontmatter\n\n---\nname: x\neffort: high\n---\n\nBody.\n';
+      fs.writeFileSync(filePath, before);
+      runEffortSync({ cwd, home, configDir });
+      const after = fs.readFileSync(filePath, 'utf8');
+      assert.strictEqual(after, 'effort: not-the-frontmatter\n\n---\nname: x\neffort: xhigh\n---\n\nBody.\n');
+      // Bytes-based scoping (not a whole-file regex): the preamble line must
+      // precede the first `---` fence, and only the line AFTER that fence may
+      // read `effort: xhigh`.
+      const firstFence = after.indexOf('---');
+      assert.ok(after.slice(0, firstFence).includes('effort: not-the-frontmatter'), 'preamble line must be untouched');
+      assert.ok(after.slice(firstFence).includes('effort: xhigh'), 'frontmatter line must carry the new value');
+    } finally {
+      cleanup(root);
+    }
+  });
+
+  test('a document whose frontmatter starts at byte 0 is byte-identical to before', () => {
+    // No-regression control: a normal install-written agent (frontmatter at
+    // byte 0, LF) must see only the one targeted line change, nothing else.
+    const { root, cwd, configDir, agentsDir, home } = makeSandbox();
+    try {
+      writeProjectEffortConfig(cwd, 'xhigh');
+      const filePath = path.join(agentsDir, 'gsd-executor.md');
+      const before = ['---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.'].join('\n');
+      fs.writeFileSync(filePath, before);
+      runEffortSync({ cwd, home, configDir });
+      const afterSet = fs.readFileSync(filePath, 'utf8');
+      assert.strictEqual(
+        afterSet,
+        ['---', 'name: gsd-executor', 'description: x', 'mode: subagent', 'effort: xhigh', '---', '', 'Body.'].join('\n'),
+      );
+
+      writeProjectEffortConfig(cwd, 'inherit');
+      const beforeRemove = ['---', 'name: gsd-executor', 'description: x', 'mode: subagent', 'effort: high', '---', '', 'Body.'].join('\n');
+      fs.writeFileSync(filePath, beforeRemove);
+      runEffortSync({ cwd, home, configDir });
+      const afterRemove = fs.readFileSync(filePath, 'utf8');
+      assert.strictEqual(
+        afterRemove,
+        ['---', 'name: gsd-executor', 'description: x', 'mode: subagent', '---', '', 'Body.'].join('\n'),
+      );
+    } finally {
+      cleanup(root);
+    }
+  });
+});
