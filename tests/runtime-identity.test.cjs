@@ -74,6 +74,13 @@ describe('classifyIdentityProbe', () => {
     assert.equal(v.reason, 'unparseable');
   });
 
+  test('an empty-string packageName is unparseable, not a match', () => {
+    // Distinct path from "no packageName key at all": the key is present and is
+    // a string, so only the `.length > 0` guard rejects it.
+    const v = classifyIdentityProbe({ stdout: '{"packageName":"","version":"1.0.0"}', exitCode: 0 });
+    assert.equal(v.reason, 'unparseable');
+  });
+
   // JSON.parse accepts all of these. A naive truthiness check would let `[]`
   // through as a verified identity.
   for (const [label, raw] of [
@@ -169,6 +176,24 @@ describe('classifyIdentityProbe', () => {
   test('rejects a decoy that embeds the expected name in another field', () => {
     const stdout = JSON.stringify({ packageName: 'get-shit-done-cc', note: EXPECTED_PACKAGE_NAME });
     assert.equal(classifyIdentityProbe({ stdout, exitCode: 0 }).reason, 'identity_mismatch');
+  });
+
+  // ── Anchor parity on the classifier itself (#3841) ──────────────────────
+  test('a payload that names this package but is not anchored does not verify', () => {
+    const stdout = `{"note":"x","packageName":"${EXPECTED_PACKAGE_NAME}","version":"1.0.0"}`;
+    const v = classifyIdentityProbe({ stdout, exitCode: 0 });
+    assert.equal(v.reason, 'unparseable');
+  });
+
+  test('leading whitespace breaks the anchor', () => {
+    const v = classifyIdentityProbe({ stdout: `  ${okStdout()}`, exitCode: 0 });
+    assert.equal(v.reason, 'unparseable');
+  });
+
+  test('a foreign packageName is a mismatch wherever it appears in the object', () => {
+    const stdout = '{"note":"x","packageName":"get-shit-done-cc"}';
+    const v = classifyIdentityProbe({ stdout, exitCode: 0 });
+    assert.equal(v.reason, 'identity_mismatch');
   });
 
   // ── Parse-before-exit-code (#3841) ──────────────────────────────────────
@@ -470,10 +495,37 @@ describe('IDENTITY_RAW_PREFIX — the anchor the shell matches on', () => {
   });
 });
 
-describe('launcher preamble: identity assertion on a path-based branch (#3841)', () => {
+const skipOnWindows = (t) => {
+  if (process.platform !== 'win32') return false;
+  t.skip('POSIX shell preamble is not executed on Windows runtimes');
+  return true;
+};
+
+/**
+ * Per-describe fixture for driving the REAL launcher preamble against a fake
+ * `gsd-tools`. Shared by the two describes below rather than retyped: they need
+ * the same temp tree (a `bin/` holding only a `node` symlink, plus
+ * `gsd-core/bin/gsd-tools.cjs`) and the same restricted-PATH invocation, and a
+ * second copy is a place for the two to drift apart.
+ *
+ * Returns handles rather than installing its own beforeEach/afterEach, so each
+ * describe keeps its own fresh state and its own lifecycle hooks.
+ */
+function makeIdentityFixture() {
   let dir;
   let binDir;
   let toolsDir;
+
+  const setup = () => {
+    dir = createTempDir('gsd-3841-identity-');
+    binDir = path.join(dir, 'bin');
+    toolsDir = path.join(dir, 'gsd-core', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(toolsDir, { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
+  };
+
+  const teardown = () => cleanup(dir);
 
   // Resolution here goes through the RUNTIME_DIR-local branch — the branch
   // #3831 could NOT make safe structurally, and therefore the one this
@@ -512,22 +564,17 @@ describe('launcher preamble: identity assertion on a path-based branch (#3841)',
     });
   };
 
-  const skipOnWindows = (t) => {
-    if (process.platform !== 'win32') return false;
-    t.skip('POSIX shell preamble is not executed on Windows runtimes');
-    return true;
-  };
+  return { setup, teardown, installFakeTool, sourceAndReport };
+}
 
-  beforeEach(() => {
-    dir = createTempDir('gsd-3841-identity-');
-    binDir = path.join(dir, 'bin');
-    toolsDir = path.join(dir, 'gsd-core', 'bin');
-    fs.mkdirSync(binDir, { recursive: true });
-    fs.mkdirSync(toolsDir, { recursive: true });
-    fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
-  });
+describe('launcher preamble: identity assertion on a path-based branch (#3841)', () => {
+  const fx = makeIdentityFixture();
 
-  afterEach(() => cleanup(dir));
+  beforeEach(() => fx.setup());
+  afterEach(() => fx.teardown());
+
+  const installFakeTool = (identityBody) => fx.installFakeTool(identityBody);
+  const sourceAndReport = (extra = '') => fx.sourceAndReport(extra);
 
   const emit = (json) => `process.stdout.write(${JSON.stringify(json)} + '\\n'); process.exit(0);`;
 
@@ -680,54 +727,13 @@ describe('launcher preamble: identity assertion on a path-based branch (#3841)',
 });
 
 describe('shell preamble and classifier agree (cross-surface parity, #3841)', () => {
-  let dir;
-  let binDir;
-  let toolsDir;
+  const fx = makeIdentityFixture();
 
-  const installFakeTool = (identityBody) => {
-    fs.writeFileSync(
-      path.join(toolsDir, 'gsd-tools.cjs'),
-      '#!/usr/bin/env node\n' +
-        'const a = process.argv.slice(2);\n' +
-        "if (a[0] === 'runtime-identity') { " + identityBody + ' }\n' +
-        "process.stdout.write('RAN:' + a.join(',') + '\\n');\n",
-      { mode: 0o755 },
-    );
-  };
+  beforeEach(() => fx.setup());
+  afterEach(() => fx.teardown());
 
-  const sourceAndReport = () => {
-    const harness = path.join(dir, 'harness.sh');
-    fs.writeFileSync(
-      harness,
-      '#!/bin/sh\n' +
-        `. "${SNIPPET}"\n` +
-        "printf 'STATUS=%s\\n' \"$GSD_IDENTITY_STATUS\"\n",
-      { mode: 0o755 },
-    );
-    return runHook(harness, [], {
-      interpreter: '/bin/sh',
-      cwd: dir,
-      timeoutMs: PROBE_TIMEOUT_MS,
-      env: { PATH: binDir, HOME: dir, RUNTIME_DIR: dir },
-    });
-  };
-
-  const skipOnWindows = (t) => {
-    if (process.platform !== 'win32') return false;
-    t.skip('POSIX shell preamble is not executed on Windows runtimes');
-    return true;
-  };
-
-  beforeEach(() => {
-    dir = createTempDir('gsd-3841-parity-');
-    binDir = path.join(dir, 'bin');
-    toolsDir = path.join(dir, 'gsd-core', 'bin');
-    fs.mkdirSync(binDir, { recursive: true });
-    fs.mkdirSync(toolsDir, { recursive: true });
-    fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
-  });
-
-  afterEach(() => cleanup(dir));
+  const installFakeTool = (identityBody) => fx.installFakeTool(identityBody);
+  const sourceAndReport = () => fx.sourceAndReport();
 
   const matching = (extra = '') => `${IDENTITY_RAW_PREFIX},"version":"1.0.0"${extra}}`;
   const foreign = '{"packageName":"get-shit-done-cc","version":"1.0.0"}';
@@ -748,6 +754,9 @@ describe('shell preamble and classifier agree (cross-surface parity, #3841)', ()
     ['P8 payload followed by trailing garbage, exit 0', `${matching()}\nextra`, 0, false],
     ['P9 empty stdout, exit 0', '', 0, false],
     ['P10 additive unknown key, exit 0', matching(',"extra":true'), 0, true],
+    ['P11 packageName present but not first, exit 0', `{"note":"x","packageName":"${EXPECTED_PACKAGE_NAME}","version":"1.0.0"}`, 0, false],
+    ['P12 leading whitespace before the payload, exit 0', `  ${matching()}`, 0, false],
+    ['P13 foreign packageName not first, exit 0', `{"note":"x","packageName":"get-shit-done-cc"}`, 0, false],
   ];
 
   for (const [label, stdout, exitCode, verified] of CASES) {

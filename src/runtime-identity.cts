@@ -188,9 +188,26 @@ export function classifyIdentityProbe(
       // older check. The shell anchor is deliberately open in the middle for the
       // same reason, and the parity suite pins both halves of that (case P10).
       const version = typeof record.version === 'string' ? record.version : undefined;
-      return actual === expected
-        ? { reason: 'ok', expected, actual, version }
-        : { reason: 'identity_mismatch', expected, actual, version };
+      if (actual !== expected) return { reason: 'identity_mismatch', expected, actual, version };
+
+      // ANCHOR PARITY (#3841). The shell preamble cannot parse JSON; it matches
+      // a `case` pattern anchored at the START of stdout, so `packageName` must
+      // serialize first. A structural parse alone would accept
+      // `{"note":"x","packageName":"<us>"}` — a shape this package never emits —
+      // while the shell rejected it, so the two surfaces would disagree in the
+      // FAIL-OPEN direction. Honoring the anchor here is also what the module
+      // already claims to do: IDENTITY_RAW_PREFIX is documented as "ANCHORED,
+      // never a substring search", and buildIdentityPayload inserts packageName
+      // first precisely so a genuine payload always satisfies it.
+      if (!probe.stdout.startsWith(IDENTITY_RAW_PREFIX)) {
+        return {
+          reason: 'unparseable',
+          expected,
+          detail: 'payload names this package but is not in the anchored wire shape',
+        };
+      }
+
+      return { reason: 'ok', expected, actual, version };
     }
   }
 
