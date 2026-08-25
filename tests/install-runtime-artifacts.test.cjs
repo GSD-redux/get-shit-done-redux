@@ -2704,7 +2704,7 @@ const path = require('node:path');
 const {
   install,
 } = require('../bin/install.js');
-const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
+const { readGsdRuntimeProfileResolver, resolveAgentModelOverride } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const makeTmp = (prefix) => createTempDir(`gsd-2794-${prefix}-`);
@@ -2778,6 +2778,233 @@ describe('bug-2794: readGsdRuntimeProfileResolver resolves opencode tier overrid
     assert.ok(resolver !== null);
     const entry = resolver.resolve('gsd-nonexistent-agent');
     assert.strictEqual(entry, null, 'unknown agent name yields null');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #3705 — install-time bake honours model_policy, matching dispatch
+// ────────────────────────────────────────────────────────────────────────
+//
+// The install-time chain read `runtime` / `model_profile` /
+// `model_profile_overrides` and nothing else — `model_policy` appeared ZERO
+// times in bin/install.js and in install-model-override-resolver.cts, against 16
+// in the dispatch resolver. So a project configured for a non-Anthropic provider
+// had every agent's frontmatter rebaked to catalog `anthropic/claude-*` IDs on
+// each update, while `query resolve-model` returned the policy model. Only the
+// frontmatter is what a spawn uses, so the disagreement was silent — OpenCode
+// then falls back to the un-typed `general` subagent on the session model.
+//
+// Precedence here was MEASURED against dispatch on the same config, not assumed:
+// policy-only -> policy model; tier-overrides-only -> the override; BOTH ->
+// policy model. So `model_overrides` > `model_policy` > tier table > catalog.
+//
+// Home is sandboxed via HOME *and* USERPROFILE (the #2794 block's convention) —
+// `os.homedir()` reads both, and setting only HOME passes vacuously on Windows.
+describe('#3705: install-time bake honours model_policy', () => {
+  let projectDir;
+  let homeDir;
+  let origHome;
+  let origUP;
+
+  const POLICY = {
+    provider: 'generic',
+    high: 'synthetic/hf:moonshotai/Kimi-K3',
+    medium: 'synthetic/hf:zai-org/GLM-5.2',
+    low: 'synthetic/hf:zai-org/GLM-5.2',
+  };
+  const TIER_OVERRIDES = { opencode: { opus: 'TIEROVERRIDE-opus', sonnet: 'TIEROVERRIDE-sonnet' } };
+
+  beforeEach(() => {
+    projectDir = makeTmp('proj-3705');
+    homeDir = makeTmp('home-3705');
+    origHome = process.env.HOME;
+    origUP = process.env.USERPROFILE;
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+  });
+
+  afterEach(() => {
+    if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+    if (origUP === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = origUP;
+    cleanup(projectDir);
+    cleanup(homeDir);
+  });
+
+  const projectConfig = (cfg) => writeJson(path.join(projectDir, '.planning', 'config.json'), cfg);
+  const homeDefaults = (cfg) => writeJson(path.join(homeDir, '.gsd', 'defaults.json'), cfg);
+  const bake = (agent, overrides = null) =>
+    resolveAgentModelOverride(agent, overrides, readGsdRuntimeProfileResolver(projectDir));
+
+  // ── the defect ────────────────────────────────────────────────────────
+
+  test('a generic policy is baked instead of the catalog anthropic tier', () => {
+    projectConfig({ runtime: 'opencode', model_policy: POLICY });
+
+    // gsd-executor's balanced tier is sonnet -> the policy's `medium`.
+    assert.strictEqual(bake('gsd-executor'), POLICY.medium);
+    assert.doesNotMatch(String(bake('gsd-executor')), /^anthropic\/claude-/,
+      'the whole defect is the catalog Anthropic ID being baked over a configured provider');
+  });
+
+  test('tiers map to the policy the same way across agents', () => {
+    projectConfig({ runtime: 'opencode', model_policy: POLICY });
+
+    // gsd-planner is an opus-tier agent, gsd-code-reviewer a sonnet-tier one.
+    assert.strictEqual(bake('gsd-planner'), POLICY.high);
+    assert.strictEqual(bake('gsd-code-reviewer'), POLICY.medium);
+  });
+
+  test('policy outranks model_profile_overrides, matching dispatch', () => {
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: POLICY,
+      model_profile_overrides: TIER_OVERRIDES,
+    });
+
+    assert.strictEqual(bake('gsd-executor'), POLICY.medium,
+      'measured dispatch order: with both configured, policy wins');
+  });
+
+  test('an explicit per-agent model_overrides entry still outranks policy (#2256)', () => {
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: POLICY,
+      model_profile_overrides: TIER_OVERRIDES,
+    });
+
+    assert.strictEqual(bake('gsd-executor', { 'gsd-executor': 'EXPLICIT' }), 'EXPLICIT');
+  });
+
+  test('kilo is fixed by the same shared seam, not an opencode special case (#2794 J8)', () => {
+    // The docstring on this seam says kilo and opencode "can never diverge"
+    // because they route through one function. That claim is only worth
+    // anything if it is exercised.
+    projectConfig({ runtime: 'kilo', model_policy: POLICY });
+
+    assert.strictEqual(bake('gsd-executor'), POLICY.medium);
+  });
+
+  // ── negative space: no policy must bake EXACTLY as before ─────────────
+
+  test('without a policy, tier overrides bake exactly as they did', () => {
+    projectConfig({ runtime: 'opencode', model_profile_overrides: TIER_OVERRIDES });
+
+    assert.strictEqual(bake('gsd-executor'), 'TIEROVERRIDE-sonnet');
+  });
+
+  test('without a policy or overrides, the catalog tier bakes exactly as it did', () => {
+    // The load-bearing control: this change adds a step to a chain that runs on
+    // EVERY install for both static-frontmatter runtimes. If a project with no
+    // policy bakes anything different, the fix has silently re-baked every
+    // existing user.
+    projectConfig({ runtime: 'opencode' });
+
+    assert.match(String(bake('gsd-executor')), /^anthropic\/claude-/);
+  });
+
+  test('model_profile: inherit still omits the key, policy notwithstanding', () => {
+    // Policy must not resurrect a bake the user disabled (#3543's intent).
+    projectConfig({ runtime: 'opencode', model_profile: 'inherit', model_policy: POLICY });
+
+    assert.strictEqual(bake('gsd-executor'), null);
+  });
+
+  test('a policy that resolves to nothing falls through to the tier table, never to null', () => {
+    // Returning null here would OMIT a frontmatter key that used to be written —
+    // a different regression than the one being fixed.
+    projectConfig({ runtime: 'opencode', model_policy: { provider: 'not-a-real-provider' } });
+    assert.match(String(bake('gsd-executor')), /^anthropic\/claude-/, 'unknown provider');
+
+    projectConfig({ runtime: 'opencode', model_policy: { provider: 'generic', medium: 'M', low: 'L' } });
+    assert.match(String(bake('gsd-planner')), /^anthropic\/claude-/,
+      'policy declares no `high`, so the opus-tier agent falls through');
+    assert.strictEqual(bake('gsd-executor'), 'M', 'while the tiers it DOES declare still resolve');
+  });
+
+  test('an agent absent from MODEL_PROFILES yields null, not a throw', () => {
+    projectConfig({ runtime: 'opencode', model_policy: POLICY });
+
+    assert.strictEqual(bake('gsd-nonexistent-agent'), null);
+  });
+
+  // ── config precedence ────────────────────────────────────────────────
+
+  test('a policy in ~/.gsd/defaults.json is honoured', () => {
+    homeDefaults({ runtime: 'opencode', model_profile: 'balanced', model_policy: POLICY });
+    projectConfig({ runtime: 'opencode' });
+
+    assert.strictEqual(bake('gsd-executor'), POLICY.medium);
+  });
+
+  test('a project policy wins over a home-defaults policy', () => {
+    homeDefaults({ runtime: 'opencode', model_profile: 'balanced', model_policy: POLICY });
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: { provider: 'generic', high: 'P-high', medium: 'P-medium', low: 'P-low' },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'P-medium');
+  });
+
+  // ── the rest of resolveModelPolicy's contract, reached through the bake ──
+
+  test('a named provider preset resolves through the same owner', () => {
+    projectConfig({ runtime: 'opencode', model_policy: { provider: 'openai' } });
+
+    const baked = bake('gsd-executor');
+    assert.ok(baked, 'a known preset must resolve');
+    assert.doesNotMatch(String(baked), /^anthropic\/claude-/, 'the preset, not the catalog default');
+  });
+
+  test('the runtime_tiers escape hatch is honoured for the DOCUMENTED config shape', () => {
+    // Review finding (blocker). The first version of this test put a `runtime`
+    // key INSIDE `model_policy`, duplicating the top-level one. No real config
+    // does that — docs/CONFIGURATION.md puts `runtime` at the top level and keeps
+    // only `provider`/`runtime_tiers` inside the policy — and that one fabricated
+    // key was the only reason the test passed. `resolveModelPolicy`'s
+    // runtime_tiers branch reads `policy['runtime']`, which dispatch injects and
+    // the bake did not, so runtime_tiers was silently skipped for every real
+    // config. The fixture below is the documented shape verbatim.
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: {
+        provider: 'generic',
+        runtime_tiers: { opencode: { sonnet: 'runtime-tiers-model' } },
+        medium: 'GENERIC-medium',
+      },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'runtime-tiers-model',
+      'runtime_tiers must outrank the flat generic keys — and must be reached at all');
+  });
+
+  test('runtime_tiers accepts the object entry form the docs show', () => {
+    // docs/CONFIGURATION.md's own example uses `{ model, reasoning_effort }`
+    // rather than a bare string.
+    projectConfig({
+      runtime: 'codex',
+      model_policy: {
+        provider: 'openai',
+        runtime_tiers: { codex: { sonnet: { model: 'gpt-5.6-terra', reasoning_effort: 'medium' } } },
+      },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'gpt-5.6-terra');
+  });
+
+  test('a runtime_tiers block for a DIFFERENT runtime does not leak', () => {
+    // The injected runtime is what selects the block; a mismatch must fall
+    // through rather than borrow another runtime's pins.
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: {
+        provider: 'generic',
+        runtime_tiers: { codex: { sonnet: 'CODEX-only' } },
+        medium: 'GENERIC-medium',
+      },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'GENERIC-medium');
   });
 });
 
