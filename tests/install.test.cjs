@@ -1925,6 +1925,136 @@ describe('normalizeNodePath — mise versioned path → sibling shim (#1619)', (
   });
 });
 
+// ─── normalizeNodePath — fnm versioned path → alias (#3704) ──────────────────
+//
+// Bug #3704: the POSIX half of #977. fnm's branch matched only the SHIM
+// (`<multishell>/node`), but on macOS/Linux `process.execPath` is never that —
+// Node realpaths through `fnm_multishells` to
+// `<FNM_DIR>/node-versions/<ver>/installation/bin/node`. Two independent reasons
+// the old pattern missed: the realpath above, and the `bin/` segment (fnm's POSIX
+// shim is `<multishell>/bin/node`, the pattern required `<multishell>/node`).
+//
+// Consequence: the raw versioned path was baked into every managed hook, so
+// `fnm uninstall <ver>` — or fnm's own pruning — 404s all of them. That is the
+// ephemeral-path failure #977 exists to prevent, already fixed for mise (#1619),
+// Homebrew (#2185) and volta (#2335) by matching the VERSIONED path.
+//
+// NOTE ON THE STUBS: each test grants existence to exactly ONE candidate, the one
+// its platform would really have. A stub that grants both `aliases/default/node.exe`
+// and `aliases/default/bin/node` does not test candidate ORDER, it hides it — no
+// real machine has both.
+describe('normalizeNodePath — fnm versioned path → alias (#3704)', () => {
+  const FNM = '/Users/u/.local/share/fnm';
+  const FNM_POSIX_PINNED = `${FNM}/node-versions/v22.22.0/installation/bin/node`;
+  const FNM_POSIX_ALIAS = `${FNM}/aliases/default/bin/node`;
+  const FNM_POSIX_SHIM = '/Users/u/.local/state/fnm_multishells/55303_1787205798690/bin/node';
+
+  const FNM_WIN = 'C:/Users/u/AppData/Roaming/fnm';
+  const FNM_WIN_PINNED = `${FNM_WIN}/node-versions/v22.22.0/installation/node.exe`;
+  const FNM_WIN_ALIAS = `${FNM_WIN}/aliases/default/node.exe`;
+  const FNM_WIN_SHIM = 'C:/Users/u/AppData/Local/fnm_multishells/1234_5678/node.exe';
+
+  test('POSIX versioned install path + alias exists → alias (the reported bug)', () => {
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_PINNED, { env: {}, existsSync: p => p === FNM_POSIX_ALIAS }),
+      FNM_POSIX_ALIAS);
+  });
+
+  test('Windows versioned install path → aliases/default/node.exe (.exe preserved)', () => {
+    assert.equal(
+      normalizeNodePath(FNM_WIN_PINNED, { env: {}, existsSync: p => p === FNM_WIN_ALIAS }),
+      FNM_WIN_ALIAS);
+  });
+
+  test('backslash Windows path normalizes the same as forward-slash', () => {
+    assert.equal(
+      normalizeNodePath(FNM_WIN_PINNED.replace(/\//g, '\\'),
+        { env: {}, existsSync: p => p === FNM_WIN_ALIAS }),
+      FNM_WIN_ALIAS);
+  });
+
+  test('POSIX shim carries a bin/ segment and is now matched too', () => {
+    // Reason 2. This path never arrives as process.execPath on POSIX, but #3662's
+    // `execPath` option exists so a caller can normalize a path from another
+    // environment — and it could not match before.
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_SHIM, { env: { FNM_DIR: FNM }, existsSync: p => p === FNM_POSIX_ALIAS }),
+      FNM_POSIX_ALIAS);
+  });
+
+  test('no regression (#977): the Windows shim still resolves through FNM_DIR', () => {
+    // The one fnm shape that already worked, and the one that is genuinely
+    // process.execPath on Windows — Windows does not realpath the shim away.
+    assert.equal(
+      normalizeNodePath(FNM_WIN_SHIM, { env: { FNM_DIR: FNM_WIN }, existsSync: p => p === FNM_WIN_ALIAS }),
+      FNM_WIN_ALIAS);
+  });
+
+  test('FNM_DIR unset → root derived from execPath (#2185 rule)', () => {
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_PINNED, { env: {}, existsSync: p => p === FNM_POSIX_ALIAS }),
+      FNM_POSIX_ALIAS);
+  });
+
+  test('FNM_DIR pointing at a different install → the path-derived root wins', () => {
+    const other = '/opt/other-fnm';
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_PINNED, {
+        env: { FNM_DIR: other },
+        // BOTH aliases exist; the one belonging to the path must be chosen.
+        existsSync: p => p === FNM_POSIX_ALIAS || p === `${other}/aliases/default/bin/node`,
+      }),
+      FNM_POSIX_ALIAS);
+  });
+
+  test('no regression: alias absent → falls back to raw execPath unchanged', () => {
+    // Rewriting to an alias that is not there would turn a stale-but-working pin
+    // into an immediately broken one — worse than the bug.
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_PINNED, { env: {}, existsSync: () => false }),
+      FNM_POSIX_PINNED);
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_SHIM, { env: { FNM_DIR: FNM }, existsSync: () => false }),
+      FNM_POSIX_SHIM);
+  });
+
+  test('a non-fnm path containing node-versions is left unchanged', () => {
+    for (const foreign of [
+      '/opt/custom/node-versions/v1/bin/node',
+      '/srv/node-versions/v22/installation-notes/bin/node', // `installation` must be a whole segment
+    ]) {
+      assert.equal(
+        normalizeNodePath(foreign, { env: {}, existsSync: () => true }),
+        foreign,
+        `${foreign} is not an fnm layout`);
+    }
+  });
+
+  test('sibling managers are untouched by the fnm branch', () => {
+    const cases = [
+      ['/Users/u/.local/share/mise/installs/node/22.1.0/bin/node', '/Users/u/.local/share/mise/shims/node'],
+      ['/Users/u/.volta/tools/image/node/22.1.0/bin/node', '/Users/u/.volta/bin/node'],
+      ['/opt/homebrew/Cellar/node/26.7.0/bin/node', '/opt/homebrew/bin/node'],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(
+        normalizeNodePath(input, { env: { FNM_DIR: FNM }, existsSync: p => p === expected }),
+        expected,
+        `${input} must still resolve through its own manager's branch`);
+    }
+  });
+
+  test('the rewrite is always an absolute path, never a bare node (#3022/#3002)', () => {
+    const out = normalizeNodePath(FNM_POSIX_PINNED, { env: {}, existsSync: () => true });
+    assert.ok(out.includes('/'), `expected an absolute path, got ${out}`);
+    assert.notEqual(out, 'node');
+  });
+
+  test('empty execPath is returned unchanged without throwing', () => {
+    assert.equal(normalizeNodePath('', { env: {}, existsSync: () => true }), '');
+  });
+});
+
 // ─── normalizeNodePath — volta versioned image path → stable shim (#2335) ────
 //
 // Bug #2335: the volta analog of #977 (fnm) / #1619 (mise) / #2185 (Homebrew).
