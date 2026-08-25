@@ -136,6 +136,26 @@ interface ReadModifyWriteOptions {
    * callers that do not report per-field arrays; costs nothing extra.
    */
   divergedFields?: string[];
+  /**
+   * ADR-3473 §8.6 (found while diagnosing a regression against the
+   * pre-existing #3242 "resyncs progress frontmatter from the updated body"
+   * spec): true ONLY when `resync` was set to true BECAUSE the caller
+   * explicitly named a progress-affecting field (`Progress`, `Total Plans in
+   * Phase`, `Total Phases` — see `shouldResyncStateProgress`), as opposed to
+   * `resync` defaulting true for an unrelated write (e.g. `state
+   * add-decision`, `state advance-plan`). The `preserve-always` /
+   * `progress-ratchet` unmeasured-scan guard (`applyPreserveAlways`,
+   * state-transition.cts) exists to stop an INCIDENTAL resync from dropping a
+   * real curated block when the disk scan measured nothing (#3756, an
+   * archived-milestone side effect nobody asked for). It must NOT also block
+   * a write the user pointed AT `progress` on purpose — `preserve-always`'s
+   * own contract is "never overwrite unless the caller explicitly names this
+   * field" (FIELD_CLASSIFICATION doc comment), and `state update Progress` /
+   * `state patch Progress=...` are exactly that explicit naming. Set only by
+   * `cmdStateUpdate` / `cmdStatePatch`, the only two call sites where
+   * `resync` is driven by `shouldResyncStateProgress` rather than defaulting.
+   */
+  explicitProgressField?: boolean;
 }
 
 /**
@@ -563,7 +583,7 @@ function cmdStatePatch(cwd: string, patches: Record<string, string>, raw: boolea
       precomputed = (result.data as { updated: string[]; failed: string[] }) ?? precomputed;
       preSyncContent = result.content;
       return result.content;
-    }, cwd, { resync: shouldResync, divergedFields });
+    }, cwd, { resync: shouldResync, divergedFields, explicitProgressField: shouldResync });
 
     // ADR-3408 §8.4 (D4, fix(#3351) generalized — see `reconcileReportedFields`):
     // patchCore's bookkeeping says whether the stateReplaceField text-replace
@@ -697,7 +717,7 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
       }
       preSyncContent = result.content;
       return result.content;
-    }, cwd, { resync: shouldResync, divergedFields, authoritativeFm });
+    }, cwd, { resync: shouldResync, divergedFields, authoritativeFm, explicitProgressField: shouldResync });
 
     // ADR-3408 §8.4 (D4): reconcile against the bytes actually persisted —
     // `updateCore`'s own match does not know whether sync/preservation later
@@ -3305,7 +3325,7 @@ function applyPostSyncPreservation(
   options: StatePreservationOptions,
 ): string {
   assertStatePreservationOptions(options, 'applyPostSyncPreservation');
-  const { resync, authoritativeFm, deriveProgressKeys, divergedFields } = options;
+  const { resync, authoritativeFm, deriveProgressKeys, divergedFields, explicitProgressField } = options;
 
   // Bug #1230: delta heuristic — snapshot pre-transform body source fields so
   // we can detect whether THIS write changed them. syncStateFrontmatter
@@ -3432,6 +3452,7 @@ function applyPostSyncPreservation(
     resync,
     deriveProgressKeys: deriveProgressKeys === true,
     bodyDeltas,
+    explicitProgressField: explicitProgressField === true,
   });
   const preservation = applyStatePreservation({ transaction, postFm });
   if (divergedFields && preservationInputSnapshot) {
@@ -3597,6 +3618,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
         authoritativeFm: options?.authoritativeFm,
         deriveProgressKeys: options?.deriveProgressKeys === true,
         divergedFields: options?.divergedFields,
+        explicitProgressField: options?.explicitProgressField === true,
       },
     );
 

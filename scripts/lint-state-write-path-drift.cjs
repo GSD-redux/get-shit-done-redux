@@ -561,7 +561,42 @@ function findUnstrippedContentWrites(rel, text) {
 // used to scan for by function name; it cannot close a call site that skips
 // those functions ENTIRELY and reaches for Node's raw `fs` module directly —
 // that residual risk is what this axis stays alive to catch.
-const RAW_WRITE_CALL_RE = /\bfs\.writeFileSync\s*\(\s*([^,]+),/g;
+const RAW_WRITE_CALL_START_RE = /\bfs\.writeFileSync\s*\(/g;
+
+/**
+ * Capture `fs.writeFileSync`'s first-argument text starting at `startIdx`
+ * (the offset right after its opening `(`), stopping at the first TOP-LEVEL
+ * comma or the call's own closing paren — bracket/paren/brace depth and
+ * string-literal spans are tracked so a nested call in the target expression
+ * (e.g. `path.join(cwd, 'STATE.md')`) does not stop the scan at ITS internal
+ * comma. A naive `[^,]+` capture (the guard's prior encoding) stopped at
+ * `path.join(cwd` for exactly that shape, silently missing every
+ * `fs.writeFileSync(path.join(cwd, 'STATE.md'), …)` call in the wild
+ * (found via `tests/state-write-path-drift-guard.test.cjs` F1: "guard:
+ * fs.writeFileSync against a STATE.md literal is reported").
+ */
+function captureFirstArg(line, startIdx) {
+  let depth = 0;
+  let inStr = null;
+  let i = startIdx;
+  for (; i < line.length; i++) {
+    const c = line[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === inStr) inStr = null;
+      continue;
+    }
+    if (c === '\'' || c === '"' || c === '`') { inStr = c; continue; }
+    if (c === '(' || c === '[' || c === '{') { depth++; continue; }
+    if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) break; // the call's own closing paren — no comma found
+      depth--;
+      continue;
+    }
+    if (c === ',' && depth === 0) break;
+  }
+  return line.slice(startIdx, i);
+}
 
 // True when the captured target-path expression plausibly names the STATE.md
 // path: either the canonical `statePath` identifier this codebase uses at
@@ -590,10 +625,11 @@ function findRawStateWrites(rel, text) {
   for (let i = 0; i < stripped.length; i++) {
     const line = stripped[i];
     if (!line.trim()) continue;
-    RAW_WRITE_CALL_RE.lastIndex = 0;
+    RAW_WRITE_CALL_START_RE.lastIndex = 0;
     let m;
-    while ((m = RAW_WRITE_CALL_RE.exec(line)) !== null) {
-      const targetArg = m[1].trim();
+    while ((m = RAW_WRITE_CALL_START_RE.exec(line)) !== null) {
+      const argStart = m.index + m[0].length;
+      const targetArg = captureFirstArg(line, argStart).trim();
       if (!targetsStatePath(targetArg)) continue;
       // `file`/`source` sanitized for the same fork-PR reason as every other
       // finding in this guard.

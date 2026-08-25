@@ -298,6 +298,17 @@ export type StateTransactionInit = {
   resync?: boolean;
   deriveProgressKeys?: boolean;
   bodyDeltas?: Record<string, StateBodyDelta>;
+  /**
+   * True ONLY when `resync` is true BECAUSE the caller explicitly named a
+   * progress-affecting field (`state update Progress`, `state patch
+   * Progress=...` / `Total Plans in Phase` / `Total Phases` —
+   * `shouldResyncStateProgress`, state.cts), as opposed to `resync`
+   * defaulting true for an unrelated write. See `applyPreserveAlways`'s use
+   * of this flag for why the distinction matters (found while diagnosing a
+   * regression against the pre-existing #3242 "resyncs progress frontmatter
+   * from the updated body" spec, tests/frontmatter.test.cjs).
+   */
+  explicitProgressField?: boolean;
 };
 
 export type StateTransaction = {
@@ -306,6 +317,7 @@ export type StateTransaction = {
   readonly resync: boolean;
   readonly deriveProgressKeys: boolean;
   readonly bodyDeltas?: Readonly<Record<string, StateBodyDelta>>;
+  readonly explicitProgressField: boolean;
 };
 
 /**
@@ -357,6 +369,7 @@ function createStateTransaction(kind: StateTransactionKind, init: StateTransacti
     resync: init.resync === true,
     deriveProgressKeys: init.deriveProgressKeys === true,
     bodyDeltas: init.bodyDeltas,
+    explicitProgressField: init.explicitProgressField === true,
   });
 }
 
@@ -433,6 +446,11 @@ export type PreservationCtx = {
   deriveProgressKeys: boolean;
   bodyDeltas: Record<string, { pre: string | null; post: string | null }> | undefined;
   mutated: boolean;
+  /** See `StateTransactionInit.explicitProgressField`. Defaults false for a
+   * plain `PreservationCtx` built outside a `StateTransaction` (e.g.
+   * `cmdStateJson`'s direct `applyPreserveWhenUnchanged` call, row 19 of the
+   * behavior table) — that read path never reaches `applyPreserveAlways`. */
+  explicitProgressField?: boolean;
 };
 
 /**
@@ -587,8 +605,21 @@ function applyPreserveAlways(field: string, cls: FieldClassification, ctx: Prese
   const derivedMeasured = scanMeasuredSomething(cls, derived);
   const curatedMeasured = scanMeasuredSomething(cls, curated);
   // On a resyncing write the fresh derivation is authoritative — UNLESS it
-  // measured nothing while the curated block did. (#3756)
-  if (ctx.resync && (derivedMeasured || !curatedMeasured)) return;
+  // measured nothing while the curated block did (#3756), AND the caller did
+  // not explicitly name a progress-affecting field this write. The
+  // unmeasured-scan guard exists to stop an INCIDENTAL resync (e.g. `state
+  // add-decision`, whose `resync` defaults true for reasons that have
+  // nothing to do with `progress`) from dropping a real curated block when a
+  // milestone-scoped disk scan measures nothing (#3756's archived-milestone
+  // case). It must not also block a write the user pointed AT `progress` on
+  // purpose: `preserve-always`'s own contract is "never overwrite unless the
+  // caller explicitly names this field" (FIELD_CLASSIFICATION doc comment),
+  // and `state update Progress` / `state patch Progress=...` are exactly
+  // that naming — the resync they trigger must win even when the disk scan
+  // it also drives (e.g. because there are no phase dirs at all) reads as
+  // "unmeasured" (tests/frontmatter.test.cjs: "state.update \"Progress\"
+  // resyncs progress frontmatter from the updated body", pre-existing, #3242).
+  if (ctx.resync && (derivedMeasured || !curatedMeasured || ctx.explicitProgressField)) return;
 
   let next: unknown;
   if (cls.mergeStrategy === 'progress-ratchet' && ctx.deriveProgressKeys && derived && derivedMeasured) {
@@ -714,6 +745,7 @@ export function applyStatePreservation(input: StatePreservationInput): StatePres
     deriveProgressKeys: transaction.deriveProgressKeys === true,
     bodyDeltas: transaction.bodyDeltas,
     mutated: false,
+    explicitProgressField: transaction.explicitProgressField === true,
   };
 
   for (const field of Object.keys(FIELD_CLASSIFICATION)) {
