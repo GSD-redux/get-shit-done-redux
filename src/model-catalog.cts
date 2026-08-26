@@ -352,6 +352,33 @@ export interface RenderedEffortArgv {
 }
 
 /**
+ * Clamp a universal effort level to what a host actually accepts, or null.
+ *
+ * #3706 — extracted from `renderEffortArgv` so the two effort CHANNELS can share
+ * one capability table without one pretending to be the other. `EFFORT_ARGV[host]`
+ * describes what levels the host understands (`supported` + `clamp`); whether that
+ * reaches the host as a CLI flag or as a baked frontmatter key is the caller's
+ * business. The install-time OpenCode `variant:` writer needs the former without
+ * the latter, and hardcoding `'argv'` at that call site to borrow this logic read
+ * as if the frontmatter key were gated on the invocation-time axis. It is not —
+ * claude declares `effortSurface: "argv"` and independently bakes an `effort:` key.
+ *
+ * Returns null for a level the host does not accept, which every caller treats as
+ * "emit nothing". `inherit` lands here too: per #3533 (10d) it is not a wire level
+ * on any runtime, so it is in no `supported` set and must never be written out.
+ */
+export function clampEffortForHost(host: string, universalEffort: string): string | null {
+  // Own-property lookup only: a plain `EFFORT_ARGV[host]` resolves `__proto__`
+  // and friends to inherited members that carry no clamp/render.
+  if (typeof host !== 'string' || !Object.prototype.hasOwnProperty.call(EFFORT_ARGV, host)) return null;
+  const spec = EFFORT_ARGV[host];
+  if (!spec || typeof spec.clamp !== 'function') return null;
+  if (typeof universalEffort !== 'string' || universalEffort.length === 0) return null;
+  const clamped = spec.clamp(universalEffort);
+  return spec.supported.has(clamped) ? clamped : null;
+}
+
+/**
  * Render the invocation-time effort argument for a host.
  *
  * `effortSurface` is the host's negotiated axis value. Only `argv` produces an
@@ -369,12 +396,13 @@ export function renderEffortArgv(
   // (and `constructor`/`toString`) to inherited members, which are truthy but
   // carry no `clamp`/`render` — a hostile host id would throw instead of
   // degrading. The host id reaches here from a descriptor, i.e. untrusted JSON.
-  if (typeof host !== 'string' || !Object.prototype.hasOwnProperty.call(EFFORT_ARGV, host)) return empty;
+  // #3706: the clamp/supported half lives in clampEffortForHost so the
+  // install-time channel can reuse it; this function keeps the axis gate and
+  // the argv rendering. One table, one clamp, two channels.
+  const clamped = clampEffortForHost(host, universalEffort);
+  if (clamped === null) return empty;
   const spec = EFFORT_ARGV[host];
-  if (!spec || typeof spec.clamp !== 'function' || typeof spec.render !== 'function') return empty;
-  if (typeof universalEffort !== 'string' || universalEffort.length === 0) return empty;
-  const clamped = spec.clamp(universalEffort);
-  if (!spec.supported.has(clamped)) return empty;
+  if (typeof spec.render !== 'function') return empty;
   return { argv: spec.render(clamped), value: clamped, host };
 }
 

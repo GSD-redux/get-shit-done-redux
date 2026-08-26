@@ -1,0 +1,313 @@
+# ADR-3473: Enforcement by Construction — One Owner per Invariant
+
+- **Status:** Accepted. Phase 0 ships this file alone; every rule in §8 is *Required — Phase N* until its phase lands.
+- **Date:** 2026-08-25
+- **Issue:** [#3473](https://github.com/open-gsd/gsd-core/issues/3473) is the **scope authority** (`epic` + `approved-enhancement` + `area: core`), which is why this ADR carries its number. [#3868](https://github.com/open-gsd/gsd-core/issues/3868) is the Phase-0 tracking sub-issue this PR closes — the epic stays open until the final phase merges. Convention follows [ADR-3180](3180-planning-semantic-model-single-owner.md) and [ADR-3408](3408-state-write-path-preservation.md).
+- **Supersedes:** nothing.
+- **Relationship to prior work:** the **third** application of ADR-3180's mechanism. [ADR-3180](3180-planning-semantic-model-single-owner.md) gave each read-side derivation one owner; [ADR-3408](3408-state-write-path-preservation.md) applied the same mechanism to the STATE.md write path. Both succeeded on their declared surface. This ADR owns the invariants that sit **outside both** — document parsing, enumeration, and the return contract of every routine that can fail — and adds the step neither took: **retiring the guard once the seam makes it redundant.**
+
+Symbol names are the durable anchors throughout. Line references are as of `next` @ `e40e9670f` and will drift.
+
+## Context
+
+Three mechanisms, one shape — **the invariant is not representable in code, so every consumer re-derives it by hand.**
+
+The evidence base is #3473's filing (a systemic root-cause review of all 30 open `confirmed-bug` issues on 2026-08-14) plus a re-verification against `next` @ `e40e9670f` on 2026-08-25. Where the two disagree, this section carries the later reading and says so.
+
+### A. Policy declared once, enforcement hand-rolled per call site
+
+| Invariant | Canonical owner | Reality on `next` |
+|---|---|---|
+| slug rule | `generateSlugInternal`, `src/core-utils.cts` | 13 inline copies across 5 modules; copies and generator already disagree on Cyrillic transliteration and trim-vs-truncate order (#2986) |
+| `isSentinelPhaseId` | `src/phase-id.cts` | consumed by 11 modules, absent from 4 phase-enumerating commands (#3372) |
+| verification-file discovery | *(none)* | independently implemented twice, both alphabetical-first (#3357) |
+| runtime identity | `bin/install.js` persists it | `resolveRuntime` never reads it back (#3364) |
+| Codex sandbox policy | the managed role contract | installer map lists a subset; absent roles fall back to `read-only`, and `validate agents` passes anyway (#2540) |
+| decision phase | `fm.current_phase` | `cmdStateAddDecision` never consults frontmatter, persists a literal `[Phase ?]` (#3231) |
+| `depends_on` resolution | `resolveDependencyId`, `src/phase.cts` | the retired SDK lineage carried a third `shortFormToId` tier the surviving lineage never had (#3427) |
+
+### B. A hand-rolled YAML dialect
+
+`parseYamlRegion` (`src/frontmatter.cts`) strips surrounding quote characters but never inverts the `escapeDoubleQuoted` that `reconstructFrontmatter` applies on write. A quoted field's byte length roughly **doubles per read-modify-write cycle** until any command that loads the file OOMs (#3349).
+
+Two `/m`-anchored patterns in the same module use `\s` at a `^` position. Per ECMA-262, `\r` is a LineTerminator in its own right, so under `/m` the `^` asserts *between* the `\r` and the `\n` of a CRLF pair and the `\s` swallows the `\n` — `parseMustHavesBlock` returns `[]` for all four `must_haves` blocks in every CRLF plan file (#3360).
+
+`js-yaml` is already a devDependency and already in the lockfile. Production ships the hand-rolled parser.
+
+### C. Absence, emptiness and failure all encode as success
+
+- `parseNamedArgs` discards unrecognized and positional tokens with no error; the flag resolves `null` and `cmdStatePlannedPhase` runs anyway (#3358).
+- `phases.list --pick summaries_total` returns an empty string with **exit 0**, so the `$(… || echo "0")` idiom never fires (#3365).
+- `routeQuickTasksAppend` writes a row that contradicts the row `quick.md` specifies (#3356).
+- `review.md` writes `REVIEWS.md` even when every reviewer lane fails, then deletes the evidence (#3352).
+- `resolveDependencyId` returns `null` for an unresolvable `depends_on` token; every call site treats it as `continue`, every short-form edge is dropped, and the tool then emits a wave-mismatch verdict **manufactured by its own data loss** (#3427).
+- `phase.complete`'s Requirements-line tokenizer silently under-selects: a spaced range marks only its two endpoints, a tight range marks nothing, and neither warns (#3697).
+- `acknowledgeDeferredItem` returns `ok` having written nothing when a U+2028 sits in a deferred item's status line (recorded on #3473, 2026-08-23 — the same ECMA-262 LineTerminator shape as #3360 with a different terminator).
+
+### D. The STATE.md family — the surface two ADRs left between them
+
+This family is the reason Phases 1–3 exist and is recorded here rather than inferred later.
+
+ADR-3408 shipped completely: all five phases closed, `scripts/lint-state-write-path-drift.cjs` is live, and its write-path drift baseline stood at **two entries, both `owner: sanctioned-permanent`** — zero debt. The seam is real and it held. *(That baseline was retired, file and all, by Phase 1 — see §8.6's amendment. This paragraph records the state at filing.)*
+
+Eleven state defects were nonetheless filed between 2026-08-21 and 2026-08-25 (#3853, #3836, #3835, #3834, #3830, #3818, #3812, #3807, #3784, #3756, #3743). **None is a bypass of that seam.** They sit at four places it does not reach:
+
+| Location | Mechanism | Issues |
+|---|---|---|
+| the seam's **input** | `applyStatePreservation`'s precondition — a populated pre-write snapshot — is unexpressed. When it is absent every declared row silently no-ops, so a `preserve-always` field is destroyed by verbs unrelated to it | #3756, #3834, #3835, #3836 |
+| the seam's **output** | `reconcileReportedFields` excludes `progress` **by classification** to dodge the #1264 regression; the same exclusion suppresses the case where the field genuinely changed | #3743, #3818 |
+| the **schema** | the key set, its types, its enums and its cardinality are transcribed by hand into nine artifacts, so no writer can consult a declared enum and no reader can consult a declared cardinality | #3853, #3812 |
+| **derivation authority** | which source is authoritative for a fact. Owned by neither ADR — ADR-3408 §7 scopes it out, ADR-3180 covers read derivations only | #3830, #3807, #3784 |
+
+The fourth row is **not in this ADR's scope.** It is [ADR-3180 Amendment 8](3180-planning-semantic-model-single-owner.md), which generalizes §7.5's already-locked sentence — *"Prose is not a lifecycle signal … a caller may not compensate by reading prose locally"* — from plan-lifecycle to every derivation in Decision 7, on read **and** write. Recorded here so a future reader does not file it against this epic a third time.
+
+The first three rows are instances of §8.4 (failure is a value) and §8.3 (one implementation per rule) at a surface specific enough to phase, and they are Phases 1, 2 and 3 respectively.
+
+### The failure mode that hides all of it
+
+This is ADR-3180's signature shape, one layer out: **the failure and the success are output-identical.** Every row above returns a plausible value no caller can distinguish from a real one. #3258 is the proof the trap works as designed — a careful reporter read the `FIELD_CLASSIFICATION` table, correctly identified an unimplemented row, and filed #3234 for a symptom that does not occur, because the policy was enforced ~1300 lines away in a different module.
+
+### Why a contract, and not twenty point fixes
+
+25 of the 30 open `confirmed-bug` issues surveyed in the 2026-08-14 filing cite a prior issue by number, and **10 state explicitly that an earlier fix landed on one branch, one call site or one input shape and left the family alive.** The intake rate is not discovery. It is one issue per unpatched call site.
+
+The response to each family so far has been a **detector**: 22 custom ESLint rules and 43 lint/drift-guard scripts, 18 with `drift` in the filename (counted at `next` @ `e40e9670f`; #3473's filing said 20 / 45 / 12 on 2026-08-14 and the mix has drifted since). A detector encodes the fingerprint of the last bug, not the class. Two demonstrations, both verified:
+
+1. `local/no-crlf-fragile-split` is registered at **error** on `src/**/*.cts`, widened from tests to source by ADR-3212 Phase 2 *specifically to stop CRLF parse bugs*. #3360 is a CRLF parse bug in `src/frontmatter.cts` that shipped under it — the rule fingerprints a bare `\n` in a regex; the defect is `\s` at a `^` under `/m`, which matches `\n` but contains none. **The guard structurally cannot see it, and lint is green.**
+2. `local/no-adhoc-markdown-parsing` is registered in exactly one config block, `src/**/*.cts` — not `tests/`, not `scripts/`, not `bin/`. #3426 and #3239 are hand-rolled section and table scans inside `tests/package-legitimacy-gate.test.cjs`, outside its glob. **A gate's own parsing is now a defect that can false-pass.**
+
+## Decision
+
+### 1. Every invariant in §8 has exactly one owner, and the wrong call site is unrepresentable
+
+Not *detectable* — unrepresentable. Where a seam can make a call site impossible to write, that is the fix; a guard is the fallback, not the goal.
+
+### 2. A declared policy with no executor is a LOUD failure — and this line does not extend to user documents
+
+ADR-3408 Decision 2's bright line is adopted verbatim and extended to this ADR's surface:
+
+| Bad input | Response |
+|---|---|
+| **Internal invariant violation** — a declared row with no wired executor, or a pipeline stage reached without its required input | **throw.** Both ends are gsd-core's own source; it is a programming error unreachable from any user document |
+| **User-document defect** — a drifted, malformed, or unparseable `.planning/` file | **never throw.** Degrade per policy and *warn*; behavior otherwise unchanged |
+
+Getting this backwards would turn every desynced project's `phase.complete` into a hard failure. It is a rule, not a note.
+
+### 3. Failure is a value
+
+Every routine that can fail returns the hub's existing `Result = {ok,data} | {ok:false,kind,…}`. `[]`, `""`, `null` and `exit 0` stop being legal ways to say "I could not parse this."
+
+### 4. Where a routine discards an input, it says so, naming the input
+
+A derived conclusion may not be reported as authoritative when the derivation dropped input it could not resolve. An unresolved `depends_on` token surfaces its own warning rather than hiding behind a wave-mismatch verdict (#3427).
+
+### 5. The anti-divergence contract
+
+ADR-3180 Decision 4 (a)–(e) is adopted verbatim and not restated. Two constraints are made explicit here rather than inherited, because both have already failed once in this repo:
+
+- **The scan surface is declared and includes the prompt layer** (`gsd-core/workflows`, `commands`, `agents`, `skills`), which can shell out to a query and post-process. A guard registered only on `src/**/*.cts` is how #3426 and #3239 shipped.
+- **Owner *functions* are exempt; the owner *file* is not.** ADR-3180 Amendment 4 records a whole-file owner exemption failing in `roadmap-parser.cts`.
+
+Per ADR-3180 Amendment 3's standing rule, each phase states its copy count as **"N found by the guard", never "N per the epic."**
+
+### 6. Guards are retired, not accumulated — with a truthful ledger
+
+Each landed phase names the guard it makes redundant and **deletes it in the same PR**. This is the first epic in this repo whose success metric includes a **shrinking** guard surface.
+
+**The ledger is per-phase-set and honest, not per-PR and gamed.** A phase that legitimately *grows* a guard records the growth in the same ledger rather than omitting it. A net fall that is achieved by not counting an increase is the "measure became the target" outcome Decision 5 exists to prevent.
+
+### 7. Migration order
+
+**Locked for the assigned phases:** Phase 0 (this ADR) → Phase 1 (§8.6) → Phase 2 (§8.7) → Phase 3 (§8.8).
+
+Phases 1–3 are **stacked and sequential**: Phase 2 diffs the snapshot Phase 1 makes mandatory, and Phase 3 generates a table whose executor Phase 1 changes.
+
+`get_impact(applyStatePreservation, direction=upstream, depth=5)` against `next` @ `e40e9670f` rates **LOW** (2 affected symbols, routers only), so Phases 1–3 do **not** inherit ADR-3408 §6's blanket "never parallel" constraint — that constraint was scoped to `readModifyWriteStateMd` (185) and `syncStateFrontmatter` (154), both **CRITICAL**. ADR-3180 Amendment 8 (`advancePlanCore`, **MEDIUM**, 16 affected) is therefore free to run as a concurrent lane; its direct radius and Phase 1's are disjoint, meeting only at the command routers.
+
+**Unassigned.** §8.1–§8.5 carry no phase number yet. They are as binding as the assigned rules; only the tree's conformance differs.
+
+### 8. The behavior contract — THIS SECTION IS THE SOURCE OF TRUTH
+
+Decisions 1–7 answer *how* this epic is organized. This section says *what the right answer is*, and it is what the guards and identity tests of Decision 5 test **against**.
+
+- **Where this section and the code disagree, the code is the defect** — not this section, and not a caller's local expectation.
+- A behavior not stated here is **not decided**. It is recorded as an open question with a forcing function, never resolved silently inside an implementation PR.
+- Amending a rule here is an amendment to this ADR, not a code change with a comment.
+- Each rule carries a **status**: *Enforced* or *Required — Phase N*.
+
+#### 8.1 One YAML parser — *Required — phase unassigned*
+
+**Question.** What parses and serializes `.planning/` frontmatter?
+
+**Owner.** A single vendored parser. `parseYamlRegion` and `escapeDoubleQuoted` are **deleted, not patched**.
+
+**Rule.** Escaping, quoting, CRLF handling and indentation leave this repo's maintenance surface. Round-trip *values* are identical; a property-based `fast-check` round-trip test is the gate.
+
+**Rule — packaging.** `gsd-core/bin/**` is copied by the installer into runtime dirs that have **no `node_modules`**, so it must contain zero external requires. The dependency is **vendored** to `gsd-core/bin/lib/vendor/js-yaml.cjs` and imported relatively; `js-yaml` stays in `devDependencies`; `scripts/lint-vendored-deps.cjs` byte-compares it against `node_modules` in `lint:ci`. `local/no-external-require-in-bin` (from #3496) fails the build if this is done the naive way. **Promoting `js-yaml` to `dependencies` breaks every installed tree** — this was learned the expensive way in #3496 (100 test failures across 8 install-surface suites) and is recorded as a rule so it is not re-derived.
+
+**OPEN QUESTION — the type contract. Forcing function: this question is answered in §8.1 before any implementation PR for this rule is opened.**
+
+`extractFrontmatter` is deliberately lossy and a large amount of machinery exists to compensate:
+
+- **Every scalar parses as a string.** `gap_closure: true` becomes `"true"`, and `FRONTMATTER_SCHEMAS['plan-gap-closure'].requiredValues` is written as `{ gap_closure: 'true' }` with a comment saying so. A faithful parser returns a boolean and that check silently stops matching.
+- **Object-lists are deliberately flattened** to scalar strings. `sliceTopLevelFrontmatterSegments` (#1572), `regenerateFrontmatterKey`'s fail-closed `[object Object]` guard, `frontmatterDeepEqual`, and `noOpObjectListSetError` (#1660) all exist *because* of that flattening.
+- **A comment channel** (#3257) attaches column-0 `#` comments to the following key. A faithful parser discards comments.
+
+So this is a **type-contract migration across ~50 call sites**, not a parser substitution. Two answers are admissible:
+
+**(a)** keep a string-coercing adapter over the parser so the existing contract holds, fixing only the escaping and CRLF defects; or
+**(b)** migrate consumers to real types and retire the compensating machinery with them.
+
+Both close #3349 and #3360, which are **read-side** defects a real parser fixes regardless of the value types it hands back. (b) is the larger prize and is its own epic-sized change.
+
+**Sequencing note, decided 2026-08-25.** This rule lands **after** Phases 1–3. §8.8's schema declares each key's real type, cardinality and enum — which is precisely the artifact that makes (b) tractable rather than epic-sized. Answering the fork before the schema exists means guessing the type contract; answering it after means reading it off the schema.
+
+#### 8.2 Enumerations return correct values by construction — *Required — phase unassigned*
+
+**Question.** What does an enumeration of phases, plans or artifacts return?
+
+**Rule.** `listPhaseDirs()` and every phase/artifact enumerator returns sentinel-filtered ids. A caller that wants sentinels asks for them explicitly. **An unfiltered enumeration does not exist to be forgotten.**
+
+**Rule.** Verification-file discovery has one resolver, **canonical-filename-first, never alphabetical** (#3357).
+
+#### 8.3 One implementation per rule — *Required — phase unassigned*
+
+**Rule.** Every slug call site delegates to `core-utils`. `resolveRuntime` reads the install marker in one place with one cache. The Codex sandbox derives from the role's declared tool contract rather than a maintained subset map, and `validate agents` fails on semantic drift, not just on missing files.
+
+**Rule — consolidation carries invariants forward explicitly.** A lineage consolidation may not delete an invariant along with the surface that held it. The `shortFormToId` tier existed in the retired SDK lineage; the surviving lineage never received it, the gap was recorded only in an archived changeset and a `// KNOWN GAP:` comment, and both went away with the surface (#3427). **A parity note in an archived changeset is not a tracking mechanism.**
+
+#### 8.4 Failure is a value — *Required — phase unassigned*
+
+**Rule.** Every routine that can fail returns `Result`. `parseNamedArgs` rejects unrecognized and positional tokens with a non-zero exit — it is called by agents that will drift again.
+
+**Rule.** A count query returns `0`, not `""`, and never `""` with exit 0 (#3365).
+
+#### 8.5 No silent swallow, and no verdict manufactured from dropped data — *Required — phase unassigned*
+
+**Rule.** A swallowed `catch` may not fold a fatal errno into a retry set. A synthesis step may not emit its artifact when its inputs failed (#3352). A derived conclusion may not be reported as authoritative when the derivation dropped input it could not resolve (#3427).
+
+**Rule.** `searchJsonEntries` / `matchesInValue` restore the `MAX_JSON_SEARCH_DEPTH = 48` recursion bound lost in the ADR-0174 consolidation. `src/intel.cts` recurses through arrays and objects with **no depth parameter at all**, so deeply nested intel JSON overflows the stack. This has no issue of its own — it is tracked HERE and nowhere else.
+
+#### 8.6 The state transaction — *Required — Phase 1*
+
+**Question.** What may apply the STATE.md sync-and-preservation pipeline, and under what precondition?
+
+**Owner.** `src/state-transition.cts` · the transaction type, constructed by `open()` or `rebuild()`.
+
+**Rule — the snapshot is mandatory in both constructors.** A transaction cannot be constructed without the pre-write frontmatter snapshot. An absent snapshot is a **construction failure**, per Decision 2's first row — not a runtime no-op. Today the executor reaches a declared `preserve-always` row with a null snapshot and skips it silently, which is how a curated `progress` block is zeroed by verbs that have nothing to do with progress (#3756).
+
+**Rule — the two constructors differ in preservation, not in snapshot.** `open()` applies preservation. `rebuild()` does not. Both carry the snapshot, because §8.7's reporting needs it regardless of whether preservation ran.
+
+**Rule — `rebuild()` is the typed expression of the sanctioned exceptions.** ADR-3408 §8.3's closed list of commands whose contract is to let the body win — `cmdStateSync` (#905: `state sync` re-derives frontmatter *from* the body) and `/gsd-health --repair`'s `REGENERATE_STATE` (a factory reset) — call `rebuild()`. They are **not** debt: a guard reporting them is reporting correctly, and a change that removes one is a regression. Adding to the list is an amendment to ADR-3408 §8.3.
+
+**Consequence for the guard.** The write-path drift baseline's two `sanctioned-permanent` entries are retired, and the baseline file with them: the exception becomes a constructor the type system names, not a ratcheted string match. `scripts/lint-state-write-path-drift.cjs` keeps every check the type does **not** make unrepresentable.
+
+> **Amendment, 2026-08-25 (Phase 1, #3871) — this paragraph originally read "keeps only its raw-write check (`fs.writeFileSync` against the state path)", and that sentence was wrong on both halves.** Verified against `next` while implementing: the guard contained **no raw-write check at all**, and it contained **four** checks besides the one §8.6 retires — policy-dispatch drift, unimplemented policies, unstripped content writes, and prompt-layer state writes. None of those is named by §8.6 and none is made unrepresentable by the transaction type, so all four are retained; the raw-write check is **net-new**.
+
+> It is kept — rather than dropped along with the sentence that mis-described it — because of what it covers, not because §8.6 named it. `writeStateMd` acquires the STATE.md lockfile before it writes; a raw `fs.writeFileSync` against the state path acquires nothing. That is not a preservation bypass, it is a **lock** bypass, and lost-update is the #500/#905/#1230 family. Every other route into the file is now closed by construction — an `open()` transaction preserves, a `rebuild()` transaction is the typed exception, and a re-assembled composition is caught by the axis above — so the raw write is the one remaining reachable path that nothing covers. Zero occurrences to date is not the test; reachability and blast radius are.
+>
+> The tempting counter-precedent does **not** apply. ADR-3408 §8.6's amendment deleted the `clear` preservation policy when it turned out no row used it and no executor existed — contract names X, X does not exist, delete the naming. `clear` was dead *vocabulary* in a closed enum: deleting it removed a way to express something meaningless. This is coverage of a *reachable path*. The two look alike and are not the same shape.
+>
+> The retired axis was the **seam-bypass** scan, and only half of it was redundant. Its `writeStateMd(` arm is genuinely replaced by the type and is gone with its ratchet. Its **composition-bypass** arm — a new call site re-assembling `syncStateFrontmatter` + `applyPostSyncPreservation` instead of routing through the owned composition, which is ADR-3408 §8.3's rule and the exact shape #3469 found live in `cmdPhaseComplete` — is **not** replaced by the type, which gates one parameter of one function and nothing more. It is retained, made terminal rather than ratcheted, and carries its own reason code. Decision 6 sanctions retiring a guard the change makes **redundant**; deleting this arm would have been a silent coverage regression dressed as a guard-count win, which is precisely the Goodhart outcome Decision 6 exists to prevent.
+
+#### 8.7 What a command reports it wrote — *Required — Phase 2*
+
+**Question.** Which fields appear in a command's `updated` array?
+
+**Owner.** `src/state.cts` · the transaction diff.
+
+**Rule.** `updated` is derived by comparing persisted frontmatter against the transaction's snapshot. **A field appears in `updated` iff its persisted value changed.** This restates ADR-3408 Decision 4 and is not new; what is new is that it holds for *every* field.
+
+**Rule — no field is excluded by classification.** `reconcileReportedFields`'s `progress` exclusion is **deleted, not relocated.** It exists to dodge the #1264 regression where `progress` was reported as `updated` on every write that merely preserved it — but under a real diff a preserved field is unchanged and does not appear, so the diff fixes #1264 by construction. The exclusion's only remaining effect is to suppress genuine changes (#3743).
+
+**Rule — reporting granularity is the dotted leaf path.** `progress.total_plans`, not `progress`. This is already the output convention (#3818, #3743).
+
+**Consequence.** "Reported but not persisted" (#3351) was made unrepresentable by ADR-3408 Phase 3. "Persisted but not reported" (#3345, #3743, #3818, #3835, #3836) survived through the exclusion list, and this rule closes it.
+
+**Prior art — the mechanism is already proven at one site.** `fix(#3685)` (`7b2f2c89f`, `src/phase.cts`) replaced `phase complete`'s `fs.existsSync`-derived `roadmap_updated` / `state_updated` flags with flags derived from the transaction's content diff, so a no-op write stopped being indistinguishable from a successful one. That is this rule at file granularity. Phase 2 applies the same derivation at **field** granularity in `reconcileReportedFields`, and should be read as generalizing #3685 rather than re-deriving it.
+
+#### 8.8 The STATE.md schema — *Required — Phase 3*
+
+**Question.** Where is the set of STATE.md keys, their types, enums, cardinality, preservation policy and accepted parse shapes declared?
+
+**Owner.** One `.cts` schema module. `FIELD_CLASSIFICATION` becomes a projection of it, not a sibling of it.
+
+**Rule — generated artifacts.** `gsd-core/templates/state.md` and `docs/reference/state-md.md` are **generated and committed**, with a CI drift check. This follows the repo's established pattern (`gen-inventory-manifest.cjs`, `gen-section-manifest.cjs`, `gen-context-index.cjs`, `gen-health-docs.cjs`).
+
+**Rule — the locales.** The schema-derived tables (field reference, status values, cardinality) and the **section skeletons** are generated into all five locales — `docs/reference/state-md.md` and its `ja-JP`, `zh-CN`, `ko-KR`, `pt-BR` siblings. Column headers come from a per-locale string table; prose sections stay hand-translated. A locale missing a section the schema declares **fails CI** rather than going unnoticed.
+
+*Why this rule is normative rather than a nicety:* on `next` @ `e40e9670f` the English reference is 225 lines and all four translations are 203. The English `### Status lifecycle (ADR-2207)` section is **absent from every translation** — and it documents the `status` enum whose clobbering is #3853. The drift is not hypothetical and it is not cosmetic.
+
+**Rule — parsers are checked, not generated.** Parse functions stay hand-written. A test asserts they accept **exactly** the shapes the schema declares — no more, no fewer. Generating a parser is a substrate decision this epic does not take; the shape-proliferation family (#3784's three spellings of "plan N of M") is closed by declaring the accepted set, not by emitting the matcher.
+
+**Consequence for the guard.** Field drift between the schema, the template and the docs stops being *representable*, because the artifacts are generated from the schema and a drift check refuses a stale one.
+
+> **Amendment, 2026-08-26 (Phase 3, #3873) — this paragraph originally instructed deleting `scripts/lint-state-field-drift.cjs` (805 lines) on the grounds that it detected that drift. Verified against `next`: it does not, and never did.** That script's own header declares it the drift guard for the **STATE.md field-extraction fallback chain** — epic #3180, issue #3187, ADR-3180 Decision 4 §7.7. It detects re-derivations of the *"prefer the frontmatter scalar, else fall back to the body field"* coercion ladder across `src/**` and the prompt layer. It contains no reference to `FIELD_CLASSIFICATION`, to the template, or to the reference docs. Nor does any **other** script own field/template/docs drift — the full `scripts/` inventory carries none. The instruction named a guard surface that did not exist.
+>
+> **The guard is therefore retained**, and `tests/lint-state-field-drift-retained.test.cjs` pins that decision so a future reader does not delete it on this ADR's earlier word. A key-set schema makes a *key-set disagreement* unrepresentable; it does nothing about a *code-shape* re-derivation of a coercion ladder. Those are orthogonal, and Decision 6 sanctions retiring a guard the change makes **redundant** — which this one is not.
+>
+> **This is the second guard-retirement claim in this ADR to rest on a wrong premise**, after §8.6's (see its own amendment). Both described a guard surface their author believed existed. The pattern is worth naming: a retirement claim in this ADR is a *hypothesis about a guard's contents*, and Decision 6's ledger requirement should be read as obliging the implementing phase to verify that hypothesis before acting on it — not merely to count the result.
+
+#### 8.9 Each subsumed child is driven fail-first — *Required — every phase*
+
+**Rule.** #2986, #3372, #3364, #2540, #3231, #3349, #3360, #3358, #3365, #3356, #3352, #3427 — and the STATE.md set #3756, #3743, #3818, #3835, #3836, #3853, #3812 — each get a failing-first regression test driven green via `gsd-test`, **plus** a behavioral identity test asserting at the *consumer's* output per ADR-3180 Decision 4(b). A structural guard alone would not have caught these.
+
+**Rule.** Following ADR-3180 §6's precedent, each phase **names** the issues it subsumes and records the evidence the symptom is gone; it does **not** unilaterally close them. Whether a subsumed issue is closed, re-scoped, or kept open for its own regression test is the maintainer's call at merge time.
+
+## Consequences
+
+**Breaking changes.**
+
+- **`parseNamedArgs` becomes strict** (§8.4). A previously-silent typo now exits non-zero. Intended — the silent path corrupts STATE.md — but it changes observable CLI behavior. Needs a changeset and a `Changed` entry.
+- **`--pick` returns `0` rather than empty** for absent counts. Anything distinguishing empty-from-zero changes.
+- **Frontmatter serialization output may differ cosmetically** once a real parser owns it (§8.1). Round-trip values must be identical; golden fixtures will need regeneration.
+- **`updated` arrays grow** (§8.7). Callers that assumed `progress` never appears will now see `progress.*` leaves when it genuinely changed. This is the fix, not a regression.
+
+**Guard ledger, Phases 1–3.**
+
+| Phase | Guard | Δ |
+|---|---|---|
+| 1 (§8.6) | `lint-state-write-path-drift.cjs` — seam-bypass `writeStateMd(` arm and its whole ratchet apparatus retired, baseline file deleted; composition-bypass arm retained and made terminal; raw-write check **added net-new** | **−665 lines, −1 file, +1 check** — net shrink |
+| 2 (§8.7) | none — the reporting diff makes no guard redundant | **0**, stated rather than omitted |
+| 3 (§8.8) | `lint-state-field-drift.cjs` — **retained**, see §8.8's amendment; a generated-artifact drift check and a locale-parity check are **added** | **+2 checks, 0 retired — this phase GROWS** |
+| — | `lint-planning-snapshot-bypass-drift.cjs` — extended to the write side by ADR-3180 Amendment 8 | **growth, declared** |
+
+Net across the set: one guard retired, one increase recorded honestly. The increase belongs to a concurrent lane under a different ADR and is listed here so the accounting is complete rather than flattering.
+
+**Everything else is internal.** Deleting an inline copy in favour of the canonical implementation changes behavior only where the copy was already wrong, which is the defect being fixed.
+
+## Alternatives considered
+
+- **Keep fixing them individually.** This is the status quo and is what produced the queue: 10 of the 30 surveyed issues are re-filings of an already-closed fix. Rejected on evidence.
+- **Add more drift guards.** Tried, at scale — 65 rules and guards. Decision 5's two demonstrations show a guard live at `error`, aimed at the exact defect class, that the shipped defect walked past. Detection matches the fingerprint of the last bug; it cannot cover a class. Rejected.
+- **Keep the hand-rolled YAML to preserve the near-zero-dependency posture.** The posture is defensible for an `npx`-distributed CLI, but the cost was never priced: owning the parser means owning escaping, CRLF, quoting and indentation permanently. §8.1's vendoring rule preserves the posture *and* retires the dialect. Rejected as stated; preserved as amended.
+- **Adopt `remark`/`mdast` for the markdown half.** Rejected: `src/markdown-sectionizer.cts` and `src/markdown-table.cts` already exist as canonical seams. The markdown problem is not a missing seam, it is a **non-mandatory** one — #3426/#3239 sit outside the enforcing glob. A coverage fix, not a substrate decision.
+- **Fold derivation authority into this ADR.** Rejected. ADR-3180 §7.5 already locks the sentence this rule generalizes, and splitting the derivation contract across two ADRs is the exact drift shape both epics exist to stop. It lands as ADR-3180 Amendment 8.
+- **One epic per family (three epics).** Rejected by the maintainer: a single owner prevents the three mechanisms from being fixed against each other while the work is in flight.
+
+## Software laws applied
+
+- **Greenspun's Tenth Rule** — the hand-rolled YAML dialect (§8.1) and the `FIELD_CLASSIFICATION` table's five accretions are both a general-purpose language being reinvented inside the application. §8.6's closed guard vocabulary exists so the table does not become an interpreter.
+- **Goodhart's Law** — Decision 6's ledger rule. "Net guard count falls" is a measure one phase away from becoming a target; the defence is that an increase must be declared in the same ledger.
+- **Postel's Law** — Decision 2's bright line. Strict on internal system-to-system boundaries where both ends are controlled; liberal on user documents.
+- **Hyrum's Law** — the `updated` array's growth under §8.7 is an observable-behavior change even though it is a bug fix, and is called out under Consequences rather than assumed benign.
+
+## Cross-references
+
+- [ADR-3180](3180-planning-semantic-model-single-owner.md) — read-side derivation ownership; Decision 4 (a)–(e) adopted verbatim; Amendment 8 owns derivation authority.
+- [ADR-3408](3408-state-write-path-preservation.md) — STATE.md write path; §8.3's sanctioned-exception list is normative for §8.6.
+- [ADR-2143](2143-markdown-table-and-mutation-consolidation.md) / [ADR-1372](1372-markdown-sectionizer-seam.md) — the document-parsing layer beneath this one.
+- [ADR-3212](3212-lexical-seam-consolidation.md) — the lexical layer beneath that.
+
+## Guard roster
+
+| Guard | Status under this ADR |
+|---|---|
+| `scripts/lint-state-write-path-drift.cjs` | retained, shrunk (§8.6) — seam-bypass `writeStateMd(` arm and its ratchet retired at Phase 1; composition-bypass arm retained and made terminal; raw-write check added net-new. See §8.6's amendment. |
+| `scripts/lint-state-field-drift.cjs` | **RETAINED** — the Phase-3 retirement instruction rested on a wrong premise about what this guard does; see §8.8's amendment. It guards the ADR-3180 §7.7 / #3187 coercion ladder, which no schema makes unrepresentable. |
+| `scripts/lint-vendored-deps.cjs` | reused as-is for §8.1's vendoring rule |
+| `local/no-external-require-in-bin` | reused as-is; enforces §8.1's packaging rule |
+| `local/no-adhoc-markdown-parsing` | widened past `src/**/*.cts` per Decision 5 (coverage fix, tracked on #3426/#3239) |
+| `local/no-adhoc-regex-escape` | widened to `MemberExpression`/`TSAsExpression` with a `.source`-aware exemption (§8.3) |
+| `scripts/lint-frontmatter-scalar-broad-grep.cjs` | expected casualty of §8.1; phase unassigned |
+| `scripts/lint-phase-enumeration-drift.cjs` | expected casualty of §8.2; phase unassigned |

@@ -17,7 +17,16 @@ import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
 
-function toFiniteNumber(value: unknown): number | null {
+/**
+ * Coerce an arbitrary frontmatter scalar to a finite number, or `null` if it
+ * is not one. Exported per ADR-3473 §8.6: `state-transition.cts`'s
+ * progress-ratchet unmeasured-scan check ("is this derived total a real
+ * measurement?") must ask through the SAME coercion this module already uses
+ * for `existingProgressExceedsDerived`, rather than growing a second private
+ * copy. This matters because frontmatter scalars arrive as STRINGS
+ * (`"0"`, not `0`) — a raw `=== 0` test is wrong at both call sites.
+ */
+export function toFiniteNumber(value: unknown): number | null {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

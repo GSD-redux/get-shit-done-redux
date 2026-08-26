@@ -153,12 +153,16 @@ The differential attribution check reports the file and the byte delta. To resol
    ack sources naming the same path is a hard, loudly-reported error.
    The legacy single `tests/emitted-drift-ack.json` is still read and unioned
    in for branches that carry it, but new acknowledgments never go there.
-3. **Delete your fragment once it has merged (#3078).** A fragment on `next` is
-   spent by definition — its prose is already at the base, so it can no longer
+3. **Your fragment is deleted once it has merged (#3078).** A fragment on `next`
+   is spent by definition — its prose is already at the base, so it can no longer
    clear anything — while still owning its path keys, which walls off the next PR
    that grows one of them. The `guard-no-ack-on-next` job reds `next` and prints
    the exact `git rm` for every fully-spent fragment. A *partially* spent fragment
-   is deliberately left alone.
+   is deliberately left alone. Since #3875 you do not have to run that `git rm`:
+   the `ack-fragment-sweep` workflow (`.github/workflows/ack-fragment-sweep.yml`)
+   asks the guard for its own sweep list every six hours and opens a PR deleting
+   exactly what it named, holding back any fragment an open PR still touches
+   (#3842).
 4. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
    is incidental: for a workflow, move per-mode bodies to
    `workflows/<name>/modes/`, templates to `workflows/<name>/templates/`, and

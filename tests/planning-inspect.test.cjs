@@ -1122,6 +1122,199 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     assert.deepStrictEqual(sortedKeys(phase), EXPECTED_PHASE_ROW_KEYS);
   });
 
+  test('uatParseGapNeverClaimsCompleteScopeWithEmptyUnresolved', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Security review finding 1 (#3707 second surface): a `### N.` test block
+    // with no `result:` line is a genuine parse gap — the audit-uat side
+    // (`cmdAuditUat`) already flags this file as `parse_gap: true`. Before
+    // the fix, planning-inspect's `buildUatRows` called `parseUatItems`
+    // (which silently drops a gap-only heading from BOTH items and any
+    // scope signal), so this exact file was reported as `uat: { unresolved:
+    // [], scope: 'complete' }` — an affirmative completeness claim over rows
+    // it never actually derived.
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    writeUatDoc(phaseDir, '1', [
+      '### 1. Check something',
+      'expected: it works',
+      '',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.deepStrictEqual(phase.uat.unresolved, []);
+    assert.notStrictEqual(phase.uat.scope, 'complete');
+    assert.strictEqual(phase.uat.scope, 'truncated');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')));
+  });
+
+  // ─── #3078 round-8: no frontmatter kill switch over the parse-gap detector ──
+  //
+  // `buildUatRows` used to carry `&& status !== 'complete'` alongside its
+  // `headingsSeen > 0` check, long after `cmdAuditUat` dropped the identical
+  // guard. Nothing pinned this arm: the fixture above writes no frontmatter
+  // `status` at all, so the clause was unreachable from the test suite and one
+  // word of frontmatter silently switched off the detector on the real CLI.
+  // These four rows are that pin. Each asserts the SCOPE VALUE and the
+  // DIAGNOSTIC explicitly — "something came back" is what let this survive.
+
+  /** A UAT document with `status:` frontmatter, for the kill-switch rows below. */
+  function writeUatDocWithStatus(phaseDir, phaseToken, status, bodyLines) {
+    writeUatDoc(phaseDir, phaseToken, ['---', `status: ${status}`, '---', '', ...bodyLines]);
+  }
+
+  /**
+   * A closed fence that OPENS after test 1 and CLOSES after test 2, hiding
+   * test 2's `result: blocked` from the heading tokenizer entirely
+   * (`src/uat.cts`'s fence-straddle case — the row is absent from the token
+   * stream, not merely unparseable).
+   */
+  const FENCE_STRADDLED_BLOCKED_BODY = [
+    '### 1. Alpha',
+    'expected: a',
+    'result: pass',
+    '',
+    '```',
+    '### 2. Beta',
+    'expected: b',
+    'result: blocked',
+    '```',
+    '',
+  ];
+
+  for (const status of ['complete', 'in_progress']) {
+    test(`reportsAFenceStraddledBlockedRowOnAUatFileMarkedStatus_${status}`, (t) => {
+      const tmpDir = createTempProject();
+      t.after(() => cleanup(tmpDir));
+      const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+      writeVerification(phaseDir, '1', 'passed');
+      writeUatDocWithStatus(phaseDir, '1', status, FENCE_STRADDLED_BLOCKED_BODY);
+
+      const payload = parseInspect(tmpDir);
+      const phase = payload.phases[0];
+      // The hidden row yields no item — it was never in the token stream — so
+      // the DIAGNOSTIC is the only channel that reports it. Under the old
+      // guard, `status: complete` produced `scope: "complete"` with ZERO
+      // diagnostics: an affirmative completeness claim over a `blocked` row
+      // the tool never read.
+      assert.strictEqual(phase.uat.scope, 'truncated');
+      assert.deepStrictEqual(phase.uat.unresolved, []);
+      assert.ok(payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')));
+    });
+
+    test(`claimsCompleteUatScopeWithNoDiagnosticWhenEveryRowParsesAndPassesAtStatus_${status}`, (t) => {
+      const tmpDir = createTempProject();
+      t.after(() => cleanup(tmpDir));
+      const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+      writeVerification(phaseDir, '1', 'passed');
+      writeUatDocWithStatus(phaseDir, '1', status, [
+        '### 1. Alpha',
+        'expected: a',
+        'result: pass',
+        '',
+      ]);
+
+      const payload = parseInspect(tmpDir);
+      const phase = payload.phases[0];
+      // The other half of the pin: removing the status guard must NOT make
+      // every file noisy. A file with nothing unread still claims `complete`
+      // and raises nothing — otherwise the detector would be uninformative.
+      assert.strictEqual(phase.uat.scope, 'complete');
+      assert.deepStrictEqual(phase.uat.unresolved, []);
+      assert.strictEqual(payload.diagnostics.filter((d) => d.code === 'uat_unreadable').length, 0);
+    });
+  }
+
+  // ─── #3078 round-8: a shortfall is REPORTED, it does not WITHHOLD ──────────
+  //
+  // `phase.uat.scope` (what this phase's UAT evidence is worth) and
+  // `phase.scope` (the `worstScope` fold, which gates `phase_scope_degraded`
+  // and — via `progress.*` — the milestone's percentages) are separate
+  // decisions. The fence-suppression shortfall is `src/uat.cts`'s documented
+  // ACCEPTED OVER-REPORT class: a closed-fence documentation sample with
+  // literal digits is indistinguishable from a straddled row. A COMPLETED
+  // phase is terminal, so letting that class withhold percentages would make a
+  // paragraph of prose suppress the project's numbers in every future audit
+  // forever.
+
+  test('shortfallAloneReportsTheGapWithoutDegradingThePhaseOrWithholdingThePercentage', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    // A `## Notes` section documenting the row format inside a CLOSED fence —
+    // literal digits, so `TEST_HEADING_LINE_RE` counts it and the shortfall
+    // fires. This is prose, not an outstanding row.
+    writeUatDocWithStatus(phaseDir, '1', 'complete', [
+      '# UAT',
+      '',
+      '## Notes',
+      '',
+      'How to write a row:',
+      '',
+      '```',
+      '### 1. Example Row',
+      'expected: x',
+      'result: pass',
+      '```',
+      '',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    // REPORTED …
+    assert.ok(payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')));
+    assert.strictEqual(phase.uat.scope, 'truncated');
+    // … but NOT degraded, and the numbers still publish.
+    assert.strictEqual(phase.scope, 'complete');
+    assert.strictEqual(payload.diagnostics.filter((d) => d.code === 'phase_scope_degraded').length, 0);
+    assert.strictEqual(payload.diagnostics.filter((d) => d.code === 'percent_withheld').length, 0);
+    assert.strictEqual(payload.progress.accepted_phases.percent, 100);
+  });
+
+  test('aNonShortfallParseGapStillDegradesThePhaseAndWithholdsThePercentage', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    // A column-0 `### N.` block with no `result:` line — visible to the
+    // tokenizer, so it is NOT a shortfall. No accepted-over-report story
+    // exists for it, so the teeth stay on.
+    writeUatDocWithStatus(phaseDir, '1', 'complete', [
+      '### 1. Alpha',
+      'expected: a',
+      '',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.uat.scope, 'truncated');
+    assert.strictEqual(phase.scope, 'truncated');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'phase_scope_degraded'));
+    assert.strictEqual(payload.progress.accepted_phases.percent, null);
+  });
+
+  test('anUnreadableUatFileStillDegradesThePhaseAndWithholdsThePercentage', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    // The pre-existing genuinely-truncated derivation: the UAT path exists and
+    // is selected, but reading it yields nothing. A DIRECTORY at the file path
+    // makes the read fail deterministically on every OS and as root — no mode
+    // bits, which root bypasses (CLAUDE.md, IO-failure injection).
+    fs.mkdirSync(path.join(phaseDir, '1-UAT.md'));
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.uat.scope, 'truncated');
+    assert.strictEqual(phase.scope, 'truncated');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')));
+    assert.ok(payload.diagnostics.some((d) => d.code === 'phase_scope_degraded'));
+    assert.strictEqual(payload.progress.accepted_phases.percent, null);
+  });
+
   test('roadmapAcceptanceIsNeverAuthoritativeOnAnyPhaseRow', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));

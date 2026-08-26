@@ -194,7 +194,7 @@ const RATCHET_BASELINE = {
   'context-utilization':     80,
   'context-composer':        66,  // #2929: extracted from prompt-budget; same floor as prompt-budget
   'prompt-budget':           66,  // CI 68.33% 2026-06-14; was 90 (timeout-inflated local)
-  'frontmatter':             62,
+  'frontmatter':             65,  // #3706: raised from 62; measured 66.67 on PR 3867
   'adr-parser':              68,
   'config-schema':           52,  // CI 54.55% 2026-06-14; was 68 (timeout-inflated local)
   'active-workstream-store': 80,
