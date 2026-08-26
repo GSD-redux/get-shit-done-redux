@@ -206,11 +206,11 @@ function cmdGenerateSlug(text: string | undefined, raw: boolean): void {
     error('text required for slug generation');
   }
 
-  const slug = (text as string)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .substring(0, 60);
+  // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+  // (generateSlugInternal, core-utils.cts) instead of re-implementing it —
+  // this call site previously diverged from it (Cyrillic collapsed to "",
+  // and truncation could leave a trailing hyphen; #2848/#2849).
+  const slug = coreUtilsMod.generateSlugInternal(text) ?? '';
 
   const result = { slug };
   output(result, raw, slug);

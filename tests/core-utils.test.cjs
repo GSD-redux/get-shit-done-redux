@@ -29,7 +29,85 @@ const os = require('node:os');
 
 const coreUtils = require('../gsd-core/bin/lib/core-utils.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
-const { cleanup } = require('./helpers.cjs');
+const {
+  cleanup, runGsdTools, scrubConfigLocationEnv,
+  saveSessionEnv, restoreSessionEnv, clearSessionEnv, TEST_HOME_SANDBOX_MARKER,
+} = require('./helpers.cjs');
+const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
+const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
+const workstreamNamePolicy = require('../gsd-core/bin/lib/workstream-name-policy.cjs');
+const activeWorkstreamStore = require('../gsd-core/bin/lib/active-workstream-store.cjs');
+const gsd2Import = require('../gsd-core/bin/lib/gsd2-import.cjs');
+const commandsMod = require('../gsd-core/bin/lib/commands.cjs');
+const initMod = require('../gsd-core/bin/lib/init.cjs');
+
+// #3883/Stryker shard budget (scripts/mutation-matrix.cjs `core-utils` entry,
+// `tests/state-contract.test.cjs`'s header documents the same mechanism):
+// Stryker's command-runner bills one `node --test <file>` invocation as a
+// single unit costing whatever the file's slowest run costs, re-run once per
+// mutant. A3/A5 originally drove every CLI-reachable slug site through
+// `runGsdTools` (a real child-process spawn per call, ~85-170ms each across
+// ~70 calls) — ~7.5s of the file's ~7.9s wall time, which blew the 15-minute
+// shard cap. `cmdGenerateSlug` / `cmdInitExecutePhase` / `cmdInitPhaseOp` /
+// `cmdInitProgress` are plain functions reachable in-process from the built
+// `gsd-core/bin/lib/*.cjs` — calling them directly removes the spawn
+// entirely instead of moving the cost to a sibling file. `captureFd1Sync`
+// intercepts the fd-level write these commands make via io.cjs's
+// `writeAllSync` → `fs.writeSync(1, ...)` (bug #1008's pattern, already
+// established in tests/io.test.cjs and tests/init.test.cjs's
+// `captureInitVerifyWork` — NOT `process.stdout.write`, which silently
+// captures nothing here). `withHermeticInProcessEnv` reproduces the isolation
+// `runGsdTools(..., { HOME: tmpDir })` + `testEnvBase()` gave the child
+// process (HOME/USERPROFILE sandbox + config-location env scrub + session-
+// identity env clear) so an in-process call can't read the developer's real
+// `~/.gsd` config or leak real session-identity env into the slug output.
+
+function captureFd1Sync(fn) {
+  const chunks = [];
+  const origWriteSync = fs.writeSync.bind(fs);
+  fs.writeSync = (fd, data, offset, length) => {
+    if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+    if (fd !== 1) return origWriteSync(fd, data, offset, length);
+    const chunk = Buffer.isBuffer(data)
+      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+      : String(data);
+    chunks.push(chunk);
+    return Buffer.byteLength(chunk, 'utf8');
+  };
+  try {
+    fn();
+  } finally {
+    fs.writeSync = origWriteSync;
+  }
+  return chunks.join('');
+}
+
+function withHermeticInProcessEnv(dir, fn) {
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  const savedMarker = process.env[TEST_HOME_SANDBOX_MARKER];
+  const savedSession = saveSessionEnv();
+  const restoreConfigEnv = scrubConfigLocationEnv();
+  clearSessionEnv();
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env[TEST_HOME_SANDBOX_MARKER] = dir;
+  try {
+    return fn();
+  } finally {
+    restoreConfigEnv();
+    restoreSessionEnv(savedSession);
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+    if (savedMarker === undefined) delete process.env[TEST_HOME_SANDBOX_MARKER];
+    else process.env[TEST_HOME_SANDBOX_MARKER] = savedMarker;
+  }
+}
+
+function cmdGenerateSlugInProcess(text) {
+  const captured = captureFd1Sync(() => commandsMod.cmdGenerateSlug(text, false));
+  return JSON.parse(captured).slug;
+}
 
 // ─── toPosixPath ─────────────────────────────────────────────────────────────
 
@@ -762,5 +840,501 @@ describe('countMatchedSummaries — stray non-plan summaries excluded (#1988)', 
   test('absolute path (leading slash) still pairs via the dir split', () => {
     // Guards the lastIndexOf('/') >= 0 boundary (slash at index 0).
     assert.strictEqual(countMatchedSummaries(['/abs/PLAN-01.md'], ['/abs/SUMMARY-01.md']), 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3883 (ADR-3473 §8.3) — one slug implementation per rule
+//
+// generateSlugInternal (this file's own subject, above) is the canonical slug
+// formula. 11 independent inline re-implementations were found by grep across
+// src/ (file:line evidence in the PR description). This block drives each
+// reachable site the way production reaches it and proves today's code
+// disagrees with the canonical — failing-first, per the phase 6 test matrix
+// (.gsd/phase/feat-3883-one-impl-per-rule/50-test-matrix.md section A/B).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
+  // ── A1: commands.cts cmdGenerateSlug (CLI `generate-slug`) ──────────────────
+
+  test('A1 cyrillicSlugIsNotEmpty: cmdGenerateSlug on Cyrillic yields the canonical value, not ""', () => {
+    const observedSlug = cmdGenerateSlugInProcess('Привет мир');
+    // Pinned to a concrete value (not merely "non-empty") so this cannot be
+    // satisfied by an unrelated fallback string — and pinned to the
+    // canonical's OWN live output so a future change to the transliteration
+    // map cannot silently desync this expectation from generateSlugInternal.
+    const canonical = coreUtils.generateSlugInternal('Привет мир');
+    assert.strictEqual(canonical, 'privet-mir', 'sanity: canonical must itself transliterate to privet-mir');
+    assert.notStrictEqual(observedSlug, '', 'cmdGenerateSlug must not collapse a Cyrillic title to an empty slug (#2848-class regression)');
+    assert.strictEqual(observedSlug, canonical, 'cmdGenerateSlug must delegate to (or agree with) generateSlugInternal');
+  });
+
+  // ── A2: commands.cts cmdGenerateSlug truncation-boundary trailing hyphen ────
+
+  test('A2 truncationBoundaryLeavesNoTrailingHyphen: no trailing separator at the truncation boundary', () => {
+    // #2849: strip-then-truncate (cmdGenerateSlug's current order) can
+    // reintroduce a trailing hyphen when truncation lands exactly on an
+    // internal separator that strip-then-truncate never revisits.
+    // generateSlugInternal fixed this by truncating BEFORE the final strip
+    // pass (see its own comment, above in this file). The boundary is
+    // reproduced with 59 'a's + ' b': the collapsed separator sits exactly
+    // at the canonical's substring(0, 60) cut point.
+    const input = 'a'.repeat(59) + ' b';
+    const observedSlug = cmdGenerateSlugInProcess(input);
+    const canonical = coreUtils.generateSlugInternal(input);
+    assert.strictEqual(canonical, 'a'.repeat(59), 'sanity: canonical must not leave a trailing hyphen at the boundary');
+    assert.ok(!observedSlug.endsWith('-'), `cmdGenerateSlug must not emit a trailing hyphen at the truncation boundary; got: ${JSON.stringify(observedSlug)}`);
+    assert.strictEqual(observedSlug, canonical, 'cmdGenerateSlug must agree with generateSlugInternal at the truncation boundary');
+  });
+
+  // ── A3/A4: every reachable slug call site vs. the canonical ─────────────────
+
+  // Shared input corpus: ASCII, Cyrillic, CJK, emoji, punctuation runs,
+  // leading/trailing separators. Boundary-length inputs are a SEPARATE
+  // corpus (below) because not every site truncates (A4).
+  const CORPUS = [
+    ['ascii-simple', 'Hello World'],
+    ['ascii-punctuation-run', 'Test@#$%^Special!!!'],
+    ['ascii-leading-trailing-separators', '---Leading Trailing---'],
+    ['ascii-numbers', 'Phase 3 Plan'],
+    ['cyrillic', 'Привет мир'],
+    ['cjk-non-transliterable', '中文测试'],
+    ['emoji', 'hello 😀 world'],
+    ['latin-diacritics', 'Café münchen'],
+  ];
+
+  // Boundary corpus: the separator sits one-under / exactly-at / one-over the
+  // canonical's substring(0, 60) cut point (see A2 and B1 below).
+  const BOUNDARY_CORPUS = [
+    ['boundary-under', 'a'.repeat(58) + ' b'],
+    ['boundary-exact', 'a'.repeat(59) + ' b'],
+    ['boundary-over', 'a'.repeat(60) + ' b'],
+  ];
+
+  // #3883 regression corpus: inputs well past the OLD hard-coded 60-char cap,
+  // for sites whose pre-migration contract never truncated (cap === null).
+  // Proves the untruncated tail actually survives, not merely that the
+  // truncation boundary is handled.
+  const LONG_UNCAPPED_CORPUS = [
+    ['long-ascii-70', 'a'.repeat(70)],
+    ['long-ascii-100-with-separators', `${'word-'.repeat(20)}tail`],
+    ['long-ascii-90-mixed-case', 'The Quick Brown Fox Jumps Over The Lazy Dog Many Many Many Times In A Row'],
+  ];
+
+  // cmdInitExecutePhase / cmdInitPhaseOp emit `phase_slug: phaseInfo?.['phase_slug'] || null`
+  // (init.cts:1880 and neighbors) — an output-shaping `|| null` that coerces
+  // ANY empty-string slug to null, independent of whether the slugification
+  // itself was correct. Comparing the raw JSON value against the canonical's
+  // real string output would flag every all-non-transliterable corpus entry
+  // (e.g. CJK, where the canonical ALSO produces "") as a false divergence.
+  // Normalizing null back to "" here isolates the axis this test actually
+  // cares about — the slug ALGORITHM's output — from that unrelated
+  // presentation choice.
+  function phaseSlugField(json) {
+    return json.phase_slug === null ? '' : json.phase_slug;
+  }
+
+  // Each site: { name, cap, call(text) => observed slug value }. `cap` is the
+  // site's OWN pre-#3883-migration truncation contract (60, or null for
+  // "never truncated") — the value it must now be compared against, not a
+  // single global 60. #3883-remediation (this file, security-review finding):
+  // the original A3/A4 harness compared every migrated site to
+  // generateSlugInternal(text) with the DEFAULT 60 cap baked in, which could
+  // only ever prove "truncates like the default" — it structurally could not
+  // catch the two sites (phase-id.cts toDir, workstream-name-policy.cts
+  // toWorkstreamSlug) that the migration silently truncated for the first
+  // time, because a false-positive "matches the canonical" was the only
+  // possible outcome once BOTH sides shared the same hard-coded 60. `call`
+  // drives the site exactly the way production reaches it.
+  const SITES = [
+    {
+      name: 'commands.cts:209 cmdGenerateSlug (CLI generate-slug)',
+      cap: 60,
+      call(text) {
+        return cmdGenerateSlugInProcess(text);
+      },
+    },
+    {
+      name: 'init.cts:176 slugifyPhaseName (CLI init execute-phase, ROADMAP-only phase)',
+      cap: null,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-ep-'));
+        try {
+          fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+          fs.writeFileSync(
+            path.join(tmpDir, '.planning', 'ROADMAP.md'),
+            `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
+          );
+          const json = withHermeticInProcessEnv(tmpDir, () => {
+            const captured = captureFd1Sync(() => initMod.cmdInitExecutePhase(tmpDir, '1', false));
+            return JSON.parse(captured);
+          });
+          return phaseSlugField(json);
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'init.cts:1957 cmdInitPhaseOp !phaseInfo fallback (CLI init phase-op, no directory)',
+      cap: null,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-po-fb-'));
+        try {
+          fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+          fs.writeFileSync(
+            path.join(tmpDir, '.planning', 'ROADMAP.md'),
+            `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
+          );
+          const json = withHermeticInProcessEnv(tmpDir, () => {
+            const captured = captureFd1Sync(() => initMod.cmdInitPhaseOp(tmpDir, '1', false));
+            return JSON.parse(captured);
+          });
+          return phaseSlugField(json);
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'init.cts:1935 cmdInitPhaseOp archived branch (CLI init phase-op, archived dir + current ROADMAP)',
+      cap: null,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-po-ar-'));
+        try {
+          const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-old');
+          fs.mkdirSync(archiveDir, { recursive: true });
+          fs.writeFileSync(path.join(archiveDir, '01-CONTEXT.md'), '# old');
+          fs.writeFileSync(
+            path.join(tmpDir, '.planning', 'ROADMAP.md'),
+            `# Roadmap\n\n<details>\n<summary>Shipped v1.0</summary>\n\n### Phase 1: Old\n**Goal:** old\n</details>\n\n## Current\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
+          );
+          const json = withHermeticInProcessEnv(tmpDir, () => {
+            const captured = captureFd1Sync(() => initMod.cmdInitPhaseOp(tmpDir, '1', false));
+            return JSON.parse(captured);
+          });
+          return phaseSlugField(json);
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'init.cts:3109 cmdInitProgress unstarted ROADMAP phase (CLI init progress)',
+      cap: null,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-prog-'));
+        try {
+          fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+          fs.writeFileSync(
+            path.join(tmpDir, '.planning', 'ROADMAP.md'),
+            `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
+          );
+          const json = withHermeticInProcessEnv(tmpDir, () => {
+            const captured = captureFd1Sync(() => initMod.cmdInitProgress(tmpDir, false));
+            return JSON.parse(captured);
+          });
+          return json.phases[0].name;
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'phase-id.cts:229 getPhaseDirFromPhaseId (direct require, exported)',
+      cap: null,
+      call(text) {
+        // The rendered dir is `<milestone>-<sub>-<slug>`; strip the fixed
+        // numeric prefix this call always emits to isolate the slug component.
+        const dir = phaseId.getPhaseDirFromPhaseId('01-01', text, null);
+        return dir.replace(/^01-01-?/, '');
+      },
+    },
+    {
+      name: 'phase-id.cts:380 toDir safeSlug guard (direct require, exported)',
+      cap: null,
+      call(text) {
+        try {
+          const dir = phaseId.toDir({ project: 'GSD', milestone: '01', phase: '01' }, text);
+          return dir.replace(/^GSD\.01-01-?/, '');
+        } catch (e) {
+          // #3883 declared difference (axis: empty-sanitize-guard,
+          // phase-id.cts:380 toDir docstring, "toDir: slug sanitizes to
+          // empty"): toDir intentionally THROWS rather than emit an unusable
+          // directory name when a slug sanitizes to "" — deliberate, not a
+          // bug to consolidate away, because a slug here becomes a real
+          // on-disk path segment (parsePhaseId's dir<->identity bijection;
+          // every other slug call site just accepts "" silently). Post-
+          // migration, toDir now shares the canonical's OWN transliteration
+          // + truncation, so it throws in exactly the cases the canonical
+          // itself would produce "" (CJK-only / punctuation-only / emoji-
+          // only input — see B3) and NOT in any case the canonical succeeds
+          // (Cyrillic — the #2848-class defect this migration fixes).
+          // Surfaced as the canonical's own "" here so the corpus loop still
+          // demands real agreement everywhere the canonical succeeds, and
+          // only tolerates the throw where the canonical's answer is itself
+          // "". Assert the SPECIFIC sentinel throw, not any exception — a
+          // row that accepted an unrelated crash (e.g. a TypeError from a
+          // regression elsewhere in toDir) as if it were the declared
+          // empty-sanitize guard would pass while testing nothing.
+          assert.ok(
+            e instanceof Error && e.message.startsWith('toDir: slug sanitizes to empty'),
+            `expected toDir's declared "toDir: slug sanitizes to empty" guard, got: ${e && e.message}`,
+          );
+          const canonical = coreUtils.generateSlugInternal(text, null);
+          if (canonical === '' || canonical === null) return canonical ?? '';
+          return `__THREW__:${e.message}`;
+        }
+      },
+    },
+    {
+      name: 'phase-locator.cts:269 findPhaseInternal phase_slug (direct require, exported)',
+      cap: null,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-pl-'));
+        try {
+          const phaseDir = path.join(tmpDir, '.planning', 'phases', `01-${text}`);
+          fs.mkdirSync(phaseDir, { recursive: true });
+          const result = phaseLocator.findPhaseInternal(tmpDir, '1');
+          return result ? result.phase_slug : undefined;
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'workstream-name-policy.cts:75 toWorkstreamSlug (direct require, exported)',
+      // #3883 regression (fixed): this site never truncated pre-migration.
+      // generateSlugInternal's `maxLen` parameter now lets it opt out of the
+      // 60-char default instead of colliding distinct >60-char names.
+      cap: null,
+      call(text) {
+        return workstreamNamePolicy.toWorkstreamSlug(text);
+      },
+    },
+  ];
+
+  // A4: sites intentionally different from the canonical, with their reason.
+  // A3 skips these for the axis named, an UNDECLARED divergence still fails.
+  const DECLARED_DIFFERENT = [
+    {
+      site: 'gsd2-import.cts:97 slugify (direct require, exported)',
+      axis: 'truncation',
+      reason:
+        'Documented distinct contract (gsd2-import.cts:97-102, tests/gsd2-import.test.cjs '
+        + '"#2848 row 11"): slugify shares the transliteration primitive with '
+        + 'generateSlugInternal but deliberately does NOT truncate at 60 chars — '
+        + 'GSD-2 import titles are not filesystem path segments the way phase '
+        + 'directory slugs are.',
+    },
+    {
+      site: 'active-workstream-store.cts:97 getWorkstreamSessionKey (direct require, exported)',
+      axis: 'input-domain',
+      reason:
+        'The slugified text is never caller-supplied: it is always one of a '
+        + 'fixed ASCII whitelist of environment-variable KEY NAMES '
+        + '(WORKSTREAM_SESSION_ENV_KEYS, all 13 entries: GSD_SESSION_KEY, '
+        + 'CODEX_THREAD_ID, CLAUDE_SESSION_ID, CLAUDE_CODE_SESSION_ID, '
+        + 'CLAUDE_CODE_SSE_PORT, OPENCODE_SESSION_ID, GEMINI_SESSION_ID, '
+        + 'CURSOR_SESSION_ID, WINDSURF_SESSION_ID, TERM_SESSION_ID, WT_SESSION, '
+        + 'TMUX_PANE, ZELLIJ_SESSION_NAME). The shared unicode/CJK/emoji/'
+        + 'boundary-length corpus can never reach this call site in '
+        + 'production, so it is checked separately below against its own real '
+        + 'input domain rather than run through the shared CORPUS loop.',
+    },
+    {
+      site: 'phase-id.cts:380 toDir safeSlug guard (direct require, exported)',
+      axis: 'empty-sanitize-guard',
+      reason:
+        'toDir (phase-id.cts:380, docstring above toDir) intentionally THROWS '
+        + '"toDir: slug sanitizes to empty" instead of emitting an unusable '
+        + 'on-disk directory name — this is a disk-naming call site that '
+        + 'protects the parsePhaseId dir<->identity bijection (an empty slug '
+        + 'would leave a dangling trailing hyphen; every other slug call site '
+        + 'silently accepts ""). Migrated to share the canonical\'s own '
+        + 'transliteration + truncation, so the throw now fires in EXACTLY the '
+        + 'cases the canonical itself reduces to "" (CJK/punctuation/emoji-only '
+        + '— see B3), and never in a case the canonical succeeds (Cyrillic — '
+        + 'the #2848-class defect this migration fixes for every other site).',
+    },
+  ];
+
+  test('A4 deliberatelyDifferentSitesAreDeclared: the declared-divergence list names real sites with real reasons', () => {
+    // This mechanism must exist even though today it is non-empty (both
+    // entries above are load-bearing — remove either and A3 below starts
+    // failing for the corresponding site/axis, which is exactly the point:
+    // A3 cannot be silently satisfied by exempting the hard cases).
+    assert.ok(Array.isArray(DECLARED_DIFFERENT));
+    for (const entry of DECLARED_DIFFERENT) {
+      assert.strictEqual(typeof entry.site, 'string');
+      assert.ok(entry.site.length > 0);
+      assert.strictEqual(typeof entry.reason, 'string');
+      assert.ok(entry.reason.length > 20, 'a declared-different entry needs a real reason, not a placeholder');
+    }
+    const declaredForTruncation = DECLARED_DIFFERENT.filter((e) => e.axis === 'truncation').map((e) => e.site);
+    assert.deepStrictEqual(
+      declaredForTruncation,
+      ['gsd2-import.cts:97 slugify (direct require, exported)'],
+      'exactly one site is declared to skip the truncation axis — an undeclared truncation gap must fail A3',
+    );
+  });
+
+  describe('A3 everySlugCallSiteAgreesWithTheCanonical', () => {
+    for (const site of SITES) {
+      describe(site.name, () => {
+        for (const [label, text] of CORPUS) {
+          test(`corpus:${label} agrees with generateSlugInternal`, () => {
+            const canonical = coreUtils.generateSlugInternal(text);
+            const observed = site.call(text);
+            assert.strictEqual(
+              observed,
+              canonical,
+              `site "${site.name}" on ${JSON.stringify(text)}: expected canonical ${JSON.stringify(canonical)}, got ${JSON.stringify(observed)}`,
+            );
+          });
+        }
+
+        if (site.cap !== null) {
+          for (const [label, text] of BOUNDARY_CORPUS) {
+            test(`boundary:${label} agrees with generateSlugInternal(text, ${site.cap})`, () => {
+              const canonical = coreUtils.generateSlugInternal(text, site.cap);
+              const observed = site.call(text);
+              assert.strictEqual(
+                observed,
+                canonical,
+                `site "${site.name}" at truncation boundary ${JSON.stringify(text)}: expected canonical ${JSON.stringify(canonical)}, got ${JSON.stringify(observed)}`,
+              );
+            });
+          }
+        } else {
+          // #3883 regression coverage: a site whose pre-migration contract
+          // never truncated must still never truncate post-migration — prove
+          // it on inputs well past the OLD hard-coded 60-char cap, not just
+          // at the boundary. This is the exact axis the original harness
+          // could not see (it always compared against a 60-capped canonical).
+          for (const [label, text] of LONG_UNCAPPED_CORPUS) {
+            test(`long:${label} agrees with generateSlugInternal(text, null) and is not truncated to 60`, () => {
+              const canonical = coreUtils.generateSlugInternal(text, null);
+              const observed = site.call(text);
+              assert.strictEqual(
+                observed,
+                canonical,
+                `site "${site.name}" on long input ${JSON.stringify(text)}: expected untruncated canonical ${JSON.stringify(canonical)}, got ${JSON.stringify(observed)}`,
+              );
+            });
+          }
+        }
+      });
+    }
+
+    // #3883 collision regression: the two concrete collisions the security
+    // review proved by execution (workstream-name-policy.cts toWorkstreamSlug,
+    // phase-id.cts toDir) — driven through the REAL surfaces, not the
+    // canonical directly, and asserted RED against 01cc283da / GREEN after
+    // generateSlugInternal gained the maxLen parameter and these sites opted
+    // out of the 60-char default.
+    describe('A5 uncappedSitesDoNotCollideOnLongInputs (#3883 collision regression)', () => {
+      const COLLISION_PAIRS = [
+        [`${'a'.repeat(60)}alpha`, `${'a'.repeat(60)}beta`],
+        [
+          'migrate the legacy billing subsystem onto the new distributed queue system today',
+          'migrate the legacy billing subsystem onto the new distributed queue system tomorrow',
+        ],
+      ];
+      for (const site of SITES.filter((s) => s.cap === null)) {
+        describe(site.name, () => {
+          for (const [textA, textB] of COLLISION_PAIRS) {
+            test(`"${textA.slice(0, 20)}..." vs "${textB.slice(0, 20)}..." produce distinct slugs`, () => {
+              const slugA = site.call(textA);
+              const slugB = site.call(textB);
+              assert.notEqual(
+                slugA,
+                slugB,
+                `site "${site.name}": distinct >60-char inputs collided on slug ${JSON.stringify(slugA)}`,
+              );
+            });
+          }
+        });
+      }
+    });
+
+    // gsd2-import.cts:97 slugify — compared on the general corpus (must still
+    // transliterate correctly) but NOT the boundary corpus (declared, A4).
+    describe('gsd2-import.cts:97 slugify (direct require, exported)', () => {
+      for (const [label, text] of CORPUS) {
+        test(`corpus:${label} agrees with generateSlugInternal`, () => {
+          const canonical = coreUtils.generateSlugInternal(text);
+          const observed = gsd2Import.slugify(text);
+          assert.strictEqual(observed, canonical, `slugify on ${JSON.stringify(text)}: expected ${JSON.stringify(canonical)}, got ${JSON.stringify(observed)}`);
+        });
+      }
+    });
+
+    // active-workstream-store.cts:97 getWorkstreamSessionKey — checked against
+    // its own real, restricted input domain (declared, A4), not the shared corpus.
+    describe('active-workstream-store.cts:97 getWorkstreamSessionKey (real input domain only)', () => {
+      const REAL_ENV_KEYS = [
+        'GSD_SESSION_KEY', 'CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID',
+        'CLAUDE_CODE_SSE_PORT', 'OPENCODE_SESSION_ID', 'GEMINI_SESSION_ID', 'CURSOR_SESSION_ID',
+        'WINDSURF_SESSION_ID', 'TERM_SESSION_ID', 'WT_SESSION', 'TMUX_PANE', 'ZELLIJ_SESSION_NAME',
+      ];
+      for (const envKey of REAL_ENV_KEYS) {
+        test(`${envKey} slugifies identically to generateSlugInternal(${envKey})`, () => {
+          const saved = {};
+          for (const k of REAL_ENV_KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+          process.env[envKey] = 'token123';
+          try {
+            const observedKey = activeWorkstreamStore.getWorkstreamSessionKey();
+            const canonicalPrefix = coreUtils.generateSlugInternal(envKey);
+            assert.strictEqual(
+              observedKey,
+              `${canonicalPrefix}-token123`,
+              `getWorkstreamSessionKey(${envKey}): expected the envKey portion to equal generateSlugInternal(${envKey})`,
+            );
+          } finally {
+            for (const k of REAL_ENV_KEYS) {
+              if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+            }
+          }
+        });
+      }
+    });
+  });
+
+  // ── B. Boundaries (repo rule: limit-1, limit, limit+1) ───────────────────────
+
+  describe('B1 slug truncation length: one-under / exact / one-over — no trailing separator at any', () => {
+    for (const [label, text] of BOUNDARY_CORPUS) {
+      test(`canonical: ${label}`, () => {
+        const slug = coreUtils.generateSlugInternal(text);
+        assert.ok(!slug.endsWith('-'), `generateSlugInternal(${JSON.stringify(text)}) must not end in a hyphen; got ${JSON.stringify(slug)}`);
+      });
+    }
+  });
+
+  describe('B2 empty and whitespace-only input', () => {
+    test('generateSlugInternal("") → null', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal(''), null);
+    });
+    test('generateSlugInternal("   ") → "" (whitespace collapses, not null — falsy check is on the input, not the output)', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal('   '), '');
+    });
+    test('cmdGenerateSlug rejects empty input with an explicit error (not a silent empty slug)', () => {
+      const result = runGsdTools(['generate-slug', ''], process.cwd(), { HOME: os.tmpdir() });
+      assert.ok(!result.success, 'generate-slug must fail on empty text');
+      assert.ok(result.error.includes('text required'), `expected "text required" error, got: ${result.error}`);
+    });
+  });
+
+  describe('B3 input that is entirely non-transliterable (Cyrillic-to-empty class, generalized)', () => {
+    test('CJK-only title → canonical produces "" (not an error, not a crash)', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal('中文测试'), '');
+    });
+    test('punctuation-only title → canonical produces ""', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal('!!!@@@###'), '');
+    });
+    test('emoji-only title → canonical produces ""', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal('😀😁😂'), '');
+    });
   });
 });
