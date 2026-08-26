@@ -83,7 +83,12 @@ describe('response-language workflow coverage lint (#2529)', () => {
       fs.writeFileSync(file, `${INLINE_RESPONSE_LANGUAGE_DIRECTIVE}\n`);
     }
 
-    assert.strictEqual(EXACT_INLINE_DIRECTIVE_WORKFLOWS.size, 35);
+    // Not a count. The size of this set is a consequence of the rule enforced in
+    // "a pinned workflow is one that could not have inherited instead" — it moves
+    // whenever the catalog does, and a number here would only record when it last
+    // moved. What has to hold is that the set is non-empty (an empty set would make
+    // every assertion below vacuous) and that every member pins to the one line.
+    assert.ok(EXACT_INLINE_DIRECTIVE_WORKFLOWS.size > 0, "the pinned set is empty");
     assert.deepStrictEqual(findViolations(root), []);
 
     const drifted = path.join(root, 'discuss-phase', 'modes', 'advisor.md');
@@ -399,17 +404,21 @@ describe('response-language workflow coverage lint (#2529)', () => {
   test('no shipped workflow or reference still carries the pre-#2558 weak directive sentence', () => {
     const WEAK_SENTENCE =
       'All user-facing questions, prompts, and explanations in this workflow MUST be presented in';
-    const scanned = [
-      ...findMarkdownFilesRecursive(WORKFLOWS_DIR),
-      ...findMarkdownFilesRecursive(path.join(REFERENCE_ROOT, 'references')),
-    ];
+    const workflows = findMarkdownFilesRecursive(WORKFLOWS_DIR);
+    const references = findMarkdownFilesRecursive(path.join(REFERENCE_ROOT, 'references'));
+    const scanned = [...workflows, ...references];
     const offenders = scanned
       .filter((file) => fs.readFileSync(file, 'utf8').includes(WEAK_SENTENCE))
       .map((file) => path.relative(REFERENCE_ROOT, file).replaceAll(path.sep, '/'));
 
     assert.deepStrictEqual(offenders, []);
     // A scan that inspected nothing proves nothing — the same rule main() applies.
-    assert.ok(scanned.length > 152, `scan covered only ${scanned.length} file(s)`);
+    // Stated as "each source produced files" rather than as a floor. A numeric
+    // floor here reads as the workflow count, is stale the moment the catalog
+    // moves, and would still pass a scan that lost one of the two directories
+    // entirely — the failure it exists to catch.
+    assert.ok(workflows.length > 0, 'the workflow catalog scan produced no files');
+    assert.ok(references.length > 0, 'the reference directory scan produced no files');
   });
 
   test('main returns a failure code and reports each violation', () => {
@@ -696,5 +705,61 @@ describe('response-language workflow coverage lint (#2529)', () => {
     const pinned = [...EXACT_INLINE_DIRECTIVE_WORKFLOWS].sort();
 
     assert.deepStrictEqual(pinned.filter((relative) => !discovered.has(relative)), []);
+  });
+
+  test('a pinned workflow is one that could not have inherited instead', () => {
+    // The rule this set encodes: a lazy-loaded mode/step/template carries its own
+    // directive only where inheritance cannot be PROVEN for it — no parent
+    // dispatches it from a read/execute context, or the parent is uncovered. Where
+    // inheritance is proven, the pin is a second copy of one sentence with no
+    // coverage behind it, and the two forms then look arbitrary to the next author.
+    // This PR shipped 14 such pins before review measured them. Assert the rule
+    // rather than the count, so the set cannot re-grow the noise.
+    const redundant = [...EXACT_INLINE_DIRECTIVE_WORKFLOWS]
+      .filter((relative) => inheritsParentCoverage(WORKFLOWS_DIR, relative))
+      .sort();
+
+    assert.deepStrictEqual(redundant, []);
+  });
+
+  test('a pinned workflow that converts to the shared reference is not a violation', () => {
+    // The pin means "this file cannot take the eager @-reference", not "the
+    // reference is worse than the pin". A fragment that becomes eagerly loaded and
+    // takes the reference is strictly better off, and an early return on the pinned
+    // path alone would red that improvement — a gate stricter than the contract it
+    // enforces, with no escape but editing the set.
+    const pinned = [...EXACT_INLINE_DIRECTIVE_WORKFLOWS].find((p) => !p.includes("/"));
+    assert.ok(pinned, "expected at least one top-level pinned workflow");
+
+    const converted = referenceFixture(STRONG_REFERENCE);
+    fs.writeFileSync(
+      path.join(converted.workflows, pinned),
+      '@~/.claude/gsd-core/references/response-language-directive.md\n',
+    );
+    assert.deepStrictEqual(findViolations(converted.workflows, converted.root), []);
+
+    // The pin still holds against everything else. A reworded inline line is a
+    // violation exactly as before, and so is the reference form when the shared
+    // file itself has been weakened — the swap inherits the reference's validation,
+    // it does not escape validation.
+    const reworded = referenceFixture(STRONG_REFERENCE);
+    fs.writeFileSync(
+      path.join(reworded.workflows, pinned),
+      'Apply response_language to user-facing prose, narration included.\n',
+    );
+    assert.deepStrictEqual(
+      findViolations(reworded.workflows, reworded.root).map((file) => path.basename(file)),
+      [pinned],
+    );
+
+    const weakened = referenceFixture(WEAK_REFERENCE);
+    fs.writeFileSync(
+      path.join(weakened.workflows, pinned),
+      '@~/.claude/gsd-core/references/response-language-directive.md\n',
+    );
+    assert.deepStrictEqual(
+      findViolations(weakened.workflows, weakened.root).map((file) => path.basename(file)).sort(),
+      [pinned, 'takes-the-reference.md'].sort(),
+    );
   });
 });

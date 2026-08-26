@@ -53,9 +53,17 @@ const DIRECTIVE_REFS = [
 // output #2529 was never about.
 const INLINE_RESPONSE_LANGUAGE_DIRECTIVE =
   'Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.';
-// These lazy-loaded modes/steps/templates cannot rely on an eager @-reference.
-// Pin their shared wording (plus settings-advanced's former bare field mention)
-// so a partial typo or rewording cannot silently split the contract.
+// THE RULE THAT DECIDES THIS SET (#2529, restated in review round 29).
+// A lazy-loaded mode/step/template carries its own directive only when it cannot
+// PROVE inheritance -- no parent dispatches it from a read/execute context, or the
+// parent is itself uncovered. Where inheritance is proven, the parent's directive is
+// already in the loaded context by the time the fragment is read, so a second copy
+// buys no coverage and adds a sentence that can drift. Pinning the exact wording is
+// what makes the first case safe: these files cannot take the eager @-reference (an
+// @-line inside a later Read is inert), so the sentence lives inline, and a partial
+// typo or rewording would otherwise split the contract silently.
+//  enforces the rule in both directions:
+// no member of this set may be one that would inherit anyway.
 const EXACT_INLINE_DIRECTIVE_WORKFLOWS = new Set([
   'discuss-phase/modes/advisor.md',
   'discuss-phase/modes/all.md',
@@ -70,27 +78,13 @@ const EXACT_INLINE_DIRECTIVE_WORKFLOWS = new Set([
   'discuss-phase/templates/discussion-log.md',
   'execute-phase/steps/codebase-drift-gate.md',
   'execute-phase/steps/executor-isolation-dispatch.md',
-  'execute-phase/steps/per-plan-worktree-gate.md',
-  'execute-phase/steps/post-merge-gate.md',
-  'execute-phase/steps/gap-closure-artifacts.md',
-  'execute-phase/steps/partial-wave.md',
-  'execute-phase/steps/regression-gate.md',
   'execute-phase/steps/regression-gate-run.md',
   'execute-phase/steps/worktree-recovery-policy.md',
   'help/modes/brief.md',
   'help/modes/default.md',
   'help/modes/full.md',
   'help/modes/topic.md',
-  'plan-phase/steps/adr-ingest-express-path.md',
-  'plan-phase/steps/chunked-planning-mode.md',
-  'plan-phase/steps/closed-phase-gate.md',
-  'plan-phase/steps/prd-express-gate.md',
-  'plan-phase/steps/research-only-early-exit.md',
-  'plan-phase/steps/research-only-modifiers.md',
-  'plan-phase/steps/reviews-prerequisite.md',
-  'plan-phase/steps/stall-detection-helpers.md',
   'plan-phase/steps/prd-express-path.md',
-  'plan-phase/steps/windows-troubleshooting.md',
   'settings-advanced.md',
 ]);
 // This lint once carried a third coverage form, for `verify-phase.md`: a
@@ -228,7 +222,18 @@ function importedDirectiveReference(content) {
   return null;
 }
 
-/** The four-predicate test for an actionable directive on a single line. */
+/**
+ * The four-predicate test for an actionable directive on a single line.
+ *
+ * LIMITATION (text, not AST): the four hits are independent, so the predicate
+ * reads vocabulary and not polarity. A line that negates the instruction —
+ * "Do not translate narration; apply response_language to code only." — satisfies
+ * all four and reads as coverage. Contrived rather than plausible: the wording is
+ * pinned byte-for-byte in the files that cannot take the reference, and the shared
+ * reference is validated against this same predicate, so a negated line would have
+ * to be authored deliberately in one of the 44 files that carry their own sentence.
+ * Named here because a predicate that cannot see "not" should say so.
+ */
 function carriesInlineDirective(content) {
   return content.split(/\r?\n/).some((line) =>
     /\bresponse_language\b/i.test(line) &&
@@ -253,12 +258,24 @@ function carriesInlineDirective(content) {
  * reference covers nobody, and `main()` reports it as one systemic failure
  * rather than as 43 identical per-file violations.
  */
+// Keyed by identity AND version, not by path alone. A path-only key is correct
+// for a one-shot CLI and for the tests, where every fixture gets a fresh mkdtemp
+// root — but it makes the verdict for a path permanent within the process, so a
+// caller that rewrites a reference and re-asks gets the stale answer. Stamping
+// size and mtime into the key costs one stat and removes the class rather than
+// documenting it.
 const referenceDirectiveCache = new Map();
 function referenceCarriesDirective(ref, refRoot) {
-  const key = refRoot + '\u0000' + ref;
+  const file = path.join(refRoot, ref);
+  let stamp = 'missing';
+  try {
+    const stat = fs.statSync(file);
+    stamp = `${stat.size}:${stat.mtimeMs}`;
+  } catch { /* keep the missing stamp; the read below decides the verdict */ }
+  const key = [refRoot, ref, stamp].join('\u0000');
   if (!referenceDirectiveCache.has(key)) {
     let ok = false;
-    try { ok = carriesInlineDirective(fs.readFileSync(path.join(refRoot, ref), 'utf8')); }
+    try { ok = carriesInlineDirective(fs.readFileSync(file, 'utf8')); }
     catch { ok = false; }
     referenceDirectiveCache.set(key, ok);
   }
@@ -375,7 +392,15 @@ function findViolations(workflowsDir, refRoot = REFERENCE_ROOT) {
     const relative = path.relative(workflowsDir, file).replaceAll(path.sep, '/');
     const content = fs.readFileSync(file, 'utf8');
     if (EXACT_INLINE_DIRECTIVE_WORKFLOWS.has(relative)) {
-      return !content.split(/\r?\n/).includes(INLINE_RESPONSE_LANGUAGE_DIRECTIVE);
+      if (content.split(/\r?\n/).includes(INLINE_RESPONSE_LANGUAGE_DIRECTIVE)) return false;
+      // The pin exists because these files cannot take the eager @-reference, not
+      // because the reference is worse. If one ever CAN take it -- a fragment that
+      // becomes eagerly loaded -- that conversion is strictly better than the pin and
+      // must not read as a violation. Only the reference form is admitted here: its
+      // wording is validated in turn by findBrokenDirectiveReferences, so the contract
+      // survives the swap. An arbitrary reworded inline line stays a violation, which
+      // is the whole point of pinning.
+      return !importsDirectiveReference(content) || !hasResponseLanguageCoverage(content, refRoot);
     }
     if (hasResponseLanguageCoverage(content, refRoot)) return false;
     return !inheritsParentCoverage(workflowsDir, relative, refRoot);

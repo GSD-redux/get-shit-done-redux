@@ -1,5 +1,3 @@
-Apply response_language to all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code, paths, and identifiers.
-
 # Bounded Stall-Detection Helpers (#2650)
 
 Every planner/plan-checker spawn in `plan-phase.md` dispatches with
