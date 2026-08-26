@@ -706,3 +706,53 @@ describe('F3 frontmatter size boundary', () => {
     });
   });
 });
+
+// Relocated from tests/frontmatter.test.cjs (mutation-matrix piece 1, #3881 follow-up): the
+// mutation shard dropped tests/frontmatter.test.cjs (2932 lines, 3132ms of the shard's 4800ms
+// per-run cost, ~96 minutes of the frontmatter shard's 180-minute budget for that one file) to
+// stay inside CI's time budget, but that file was the ONLY place two assertion classes lived —
+// the anchor-alias-bomb refusal (ADR-3473 §8.1 consequence 6, row A8) and the B1/B2 block-scalar
+// assertions. Both are relocated here verbatim (not re-derived) so the mutants they kill stay
+// killed after frontmatter.test.cjs leaves the shard's `tests` list. frontmatter.test.cjs itself
+// keeps these exact assertions too (not deleted there) — it still runs in the normal (non-mutation)
+// suite, so this is a second, mutation-scoped copy, not a move.
+describe('anchor-alias-bomb refusal (relocated from tests/frontmatter.test.cjs for mutation-matrix piece 1)', () => {
+  const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'adversarial', 'frontmatter');
+  function readFixture(name) {
+    return fs.readFileSync(path.join(FIXTURE_DIR, name), 'utf8');
+  }
+
+  test('anchor-alias-bomb.md: refused rather than expanded (ADR-3473 §8.1 consequence 6, row A8)', () => {
+    const parsed = extractFrontmatter(readFixture('anchor-alias-bomb.md'), 'anchor-alias-bomb.md');
+    assert.equal(Object.keys(parsed).length, 0);
+    assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+    assert.ok(Buffer.byteLength(JSON.stringify(parsed), 'utf8') < 1024);
+  });
+
+  test('anchor-alias-bomb-quoted.md: refused identically, even quoted-key-spelled (#3881 review, finding 1)', () => {
+    const parsed = extractFrontmatter(readFixture('anchor-alias-bomb-quoted.md'), 'anchor-alias-bomb-quoted.md');
+    assert.equal(Object.keys(parsed).length, 0);
+    assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+    assert.ok(Buffer.byteLength(JSON.stringify(parsed), 'utf8') < 1024);
+  });
+});
+
+describe('B1/B2 block-scalar assertions (relocated from tests/frontmatter.test.cjs for mutation-matrix piece 1)', () => {
+  const ADD_TESTS_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'add-tests.md');
+
+  test('B1 blockScalarValueIsNotTheBlockIndicator: argument-instructions is the instruction text, not "|"', () => {
+    const content = fs.readFileSync(ADD_TESTS_PATH, 'utf8');
+    const parsed = extractFrontmatter(content, ADD_TESTS_PATH);
+    const value = parsed['argument-instructions'];
+    assert.equal(typeof value, 'string');
+    assert.notEqual(value, '|');
+    assert.ok(value.length > 1, 'block scalar value must be the multi-line instruction body');
+    assert.ok(value.includes('Parse the argument as a phase number'), 'block scalar value must retain the source instruction text');
+  });
+
+  test('B2 blockScalarDoesNotInventATopLevelKey: parsing add-tests.md produces no phantom "Example" key', () => {
+    const content = fs.readFileSync(ADD_TESTS_PATH, 'utf8');
+    const parsed = extractFrontmatter(content, ADD_TESTS_PATH);
+    assert.ok(!Object.prototype.hasOwnProperty.call(parsed, 'Example'), 'parser must not scrape a top-level "Example" key out of the block scalar body');
+  });
+});

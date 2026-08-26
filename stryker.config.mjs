@@ -25,7 +25,12 @@ import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);
 // resolveMutationBreak: fail-closed resolver for MUTATION_BREAK env var.
 // undefined → 60 (local backstop); set-but-empty or non-numeric → throws.
-const { resolveMutationBreak } = _require('./scripts/mutation-matrix.cjs');
+// COVERED: the same derived-tests registry CI's per-shard MUTATION_TEST_CMD is built from
+// (mutation.yml's `matrix.tests`) — DEFAULT_TEST_CMD below derives from it too, rather than
+// hand-duplicating the union in a second literal (#3881 follow-up, mutation-matrix piece 2:
+// this exact split — six modules' tests missing from the old hand-written DEFAULT_TEST_CMD,
+// plus two entries belonging to no module — is what this derivation removes).
+const { resolveMutationBreak, COVERED } = _require('./scripts/mutation-matrix.cjs');
 
 // ADR-457: bin/lib/*.cjs are gitignored build artifacts (compiled from
 // src/*.cts by `npm run build:lib`, which the mutation CI job runs via `npm ci`
@@ -59,10 +64,18 @@ const UNMUTATED = [
   '!gsd-core/bin/lib/gsd2-import.cjs',
 ];
 
-// Full test command used by local runs and as the fallback when CI does not
-// inject a per-shard command via MUTATION_TEST_CMD.
-// Keep this list in sync with the tests arrays in scripts/mutation-matrix.cjs COVERED.
-const DEFAULT_TEST_CMD = 'node --test tests/context-utilization.property.test.cjs tests/prompt-budget.property.test.cjs tests/frontmatter.property.test.cjs tests/adr-parser.property.test.cjs tests/config-schema.property.test.cjs tests/adr-parser.test.cjs tests/active-workstream-store.test.cjs tests/active-workstream-store.unit.test.cjs tests/prompt-budget.unit.test.cjs tests/adr-parser.unit.test.cjs tests/frontmatter.unit.test.cjs tests/unusable-input.test.cjs tests/feat-3881-yaml-parser-consequences.test.cjs tests/frontmatter-golden-parity.test.cjs tests/frontmatter-roundtrip.property.test.cjs tests/frontmatter.test.cjs tests/core-utils.test.cjs tests/broken-windows.test.cjs tests/complexity-trigger.test.cjs';
+// Full test command used by local runs and as the fallback when CI does not inject a
+// per-shard command via MUTATION_TEST_CMD. DERIVED — never hand-edit this list; it is the
+// sorted union of every COVERED module's `tests` array (itself derived by
+// scripts/mutation-matrix.cjs's computeModuleTests from direct `require()`s of each
+// module's built artifact — see that file's derivation-engine header). A previous
+// hand-maintained literal here drifted independently of COVERED's own hand-written `tests`
+// arrays: six modules' tests were missing from it, plus two entries (broken-windows.test.cjs,
+// complexity-trigger.test.cjs) belonging to no COVERED module at all. Deriving both from the
+// same COVERED object makes that class of drift structurally impossible.
+const DEFAULT_TEST_CMD = `node --test ${
+  [...new Set(Object.values(COVERED).flatMap((mod) => mod.tests))].sort().join(' ')
+}`;
 
 /** @type {import('@stryker-mutator/core').PartialStrykerOptions} */
 export default {
@@ -109,7 +122,12 @@ export default {
   incrementalFile: '.stryker-incremental.json',
 
   // ── Reporters ────────────────────────────────────────────────────────────────
-  reporters: ['html', 'clear-text', 'progress'],
+  // 'json' (default path reports/mutation/mutation.json) is the machine-readable score
+  // source for scripts/check-mutation-score-ratchet.cjs (#3881 follow-up, mutation-matrix
+  // piece 3) — mutation.yml's `mutate` job reads it after `npx stryker run` to detect a
+  // module whose achieved score has drifted above its floor by more than the documented
+  // slack, so a stale-but-passing floor gets a loud CI failure instead of sitting forever.
+  reporters: ['html', 'json', 'clear-text', 'progress'],
   htmlReporter: {
     fileName: 'reports/mutation/mutation.html',
   },
