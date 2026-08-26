@@ -160,40 +160,47 @@ function parseUatResultItems(cleanContent: string): Array<{ test: number; name: 
   const items: Array<{ test: number; name: string; result: string }> = [];
 
   // Find all ### N. Name headings.
-  // #3078-CR MEDIUM: split-then-match, not a `/m`-anchored scan over unsplit
-  // text (same fix as src/uat.cts:1496's RESULT_LINE_RE) — the ECMA-262
-  // LineTerminator set `^`/`$` honor under `/m` includes U+2028/U+2029, which
-  // `String.prototype.split('\n')` does NOT treat as a boundary. Scanning
-  // already-split lines keeps this heading scan in agreement with every
-  // other line-based consumer of the same text.
+  // #3078-CR MEDIUM (security review follow-up): STRUCTURE and ATTRIBUTION
+  // need different split frames. This is a STRUCTURE scan — finding where a
+  // heading block begins — and there is no attribution distinction to
+  // preserve, so split on any of `\n`, U+2028, U+2029: a heading delimited by
+  // an exotic line separator (origin/next's `/m`-anchored scan found these;
+  // a naive `split('\n')`-only port silently stopped finding them, making the
+  // gate MORE permissive than origin/next) is found exactly like a
+  // `\n`-delimited one. Contrast the `result:` scan below, which is an
+  // ATTRIBUTION scan and must NOT do this.
   const HEADING_LINE_RE = /^###\s*(\d+)\.\s*(.+)$/;
-  const headings: Array<{ index: number; test: number; name: string }> = [];
+  const headings: Array<{ index: number; lineStart: number; test: number; name: string }> = [];
   {
-    const lines = cleanContent.split('\n');
+    // All three separators are exactly one UTF-16 code unit, so the
+    // `line.length + 1` offset arithmetic below stays valid regardless of
+    // which separator terminated a given line.
+    const lines = cleanContent.split(/[\n\u2028\u2029]/);
     let offset = 0;
     for (const line of lines) {
       const hMatch = line.match(HEADING_LINE_RE);
       if (hMatch) {
         headings.push({
           index: offset + hMatch[0].length,
+          lineStart: offset,
           test: parseInt(hMatch[1], 10),
           name: hMatch[2].trim(),
         });
       }
-      offset += line.length + 1; // +1 for the '\n' consumed by split
+      offset += line.length + 1; // +1 for the separator consumed by split
     }
   }
 
   for (let i = 0; i < headings.length; i++) {
     const h = headings[i];
     const blockStart = h.index;
-    // More precise: find next heading's position in the original string
-    // We'll slice from current heading end to the position just before next heading's "###"
-    const nextHeadingMatch = i + 1 < headings.length
-      ? cleanContent.lastIndexOf('\n###', headings[i + 1].index)
-      : -1;
-    const blockContent = nextHeadingMatch >= blockStart
-      ? cleanContent.slice(blockStart, nextHeadingMatch)
+    // A block spans until the START of the next heading's line (tracked
+    // directly from the same split-frame scan above), not a re-search for a
+    // literal '\n###' over unsplit text -- the latter would silently miss a
+    // next heading delimited by U+2028/U+2029 instead of '\n' and swallow
+    // every subsequent block into this one.
+    const blockContent = i + 1 < headings.length
+      ? cleanContent.slice(blockStart, headings[i + 1].lineStart)
       : cleanContent.slice(blockStart);
 
     // Column-0 result line, split-then-match (#3078-CR MEDIUM — same fix as

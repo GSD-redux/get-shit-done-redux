@@ -1195,6 +1195,32 @@ describe('FIX B — cross-line result: value must be on the same line', () => {
       'cross-line result must yield missing (blocker)');
   });
 
+  test('result: whose value sits on a following INDENTED line → missing (pinned #3078-CR divergence)', () => {
+    // #3078-CR (security review follow-up): on origin/next, the old
+    // `/^result:\s*\[?(\w+)\]?.*$/im` regex's `\s*` is greedy and matches
+    // ACROSS a newline, so `result:\n  blocked` parsed as `blocked` — a real
+    // row this shape reported 1/blocked. The split-then-match rewrite tests
+    // `result:` against a SINGLE already-split line, per the documented
+    // "value must sit on the SAME line as result:" contract (see the comment
+    // above RESULT_LINE_RE), so this now yields 'missing' (a parse gap, with
+    // the percentage withheld) instead of silently crossing the newline.
+    // This is a DELIBERATE, FAIL-SAFE divergence from the old cross-newline
+    // `\s*` behavior — pinned here so it is never "fixed" back by accident.
+    const content = [
+      '### 1. Indented-continuation Test',
+      'expected: Y',
+      'result:',
+      '  blocked',
+      '',
+    ].join('\n');
+    const items = parseUatResultItems(content);
+    assert.strictEqual(items.length, 1);
+    assert.notStrictEqual(items[0].result, 'blocked',
+      'a value on a following indented line must not be captured across the newline');
+    assert.strictEqual(items[0].result, 'missing',
+      'result: with its value on the next (even indented) line must yield missing, not the old cross-newline capture');
+  });
+
   test('evaluateUatPassed → passed:false for cross-line result:passed', () => {
     const tmpDir = makeTmpDir();
     try {
@@ -1478,7 +1504,7 @@ describe('#3078-CR: evaluateUatPassed agrees with the audit surface (parseUatIte
     // an `expected: |` block-scalar body must not be read as a genuine
     // column-0 match by EITHER surface. The real, later `result: blocked` line
     // is the one that must win.
-    const LS = ' ';
+    const LS = String.fromCharCode(0x2028);  // never a raw separator in source: a formatter that normalizes line separators would silently turn this fixture into an ordinary-character control that still passes
     const body = [
       '---',
       'status: passed',
@@ -1508,6 +1534,68 @@ describe('#3078-CR: evaluateUatPassed agrees with the audit surface (parseUatIte
     assert.equal(gateCheck.passing, false);
     // Cross-surface identity: same test number, same result token.
     assert.equal(gateCheck.result, auditReport.items[0].result, 'gate and audit surface must agree on the result token');
+  });
+
+  test('H-U28 restored: a heading delimited by U+2028 (not \n) is still found and blocks', () => {
+    // #3078-CR MEDIUM 1 (security review follow-up): origin/next found this
+    // heading via an /m-anchored scan whose LineTerminator set includes
+    // U+2028/U+2029; a naive split('\n')-only port of that scan silently
+    // stopped finding it, making the gate MORE PERMISSIVE than origin/next
+    // (measured: HEAD passed:true/0 blockers, origin/next passed:false/1
+    // blocker, for this exact shape). The heading scan now splits on
+    // \n/U+2028/U+2029 (a STRUCTURE frame) while the result: scan below it
+    // stays \n-only (an ATTRIBUTION frame, unchanged) -- so the heading is
+    // found, but its result: line -- separated from the heading by the same
+    // exotic separator -- is correctly NOT read across that boundary (that is
+    // the attribution guard I-U28 below exists to prove), yielding
+    // 'missing' rather than 'blocked'. Either token is a non-passing,
+    // blocking state, so the gate still BLOCKS -- the outcome origin/next
+    // produced, restored.
+    const LS = String.fromCharCode(0x2028);  // never a raw separator in source: a formatter that normalizes line separators would silently turn this fixture into an ordinary-character control that still passes
+    const content = 'Notes.' + LS + '### 2. B' + LS + 'result: blocked';
+    const items = parseUatResultItems(content);
+    assert.strictEqual(items.length, 1, 'a U+2028-delimited heading must still be found');
+    assert.strictEqual(items[0].test, 2);
+    assert.strictEqual(items[0].name, 'B');
+    assert.notStrictEqual(items[0].result, 'passed', 'must not read as a passing result');
+  });
+
+  test('H-U28 restored: evaluateUatPassed BLOCKS on the U+2028-delimited heading shape', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const LS = String.fromCharCode(0x2028);  // never a raw separator in source: a formatter that normalizes line separators would silently turn this fixture into an ordinary-character control that still passes
+      const content = 'Notes.' + LS + '### 2. B' + LS + 'result: blocked';
+      const body = ['---', 'status: passed', '---', '', '# UAT', '', content, ''].join('\n');
+      writeFile(tmpDir, '01-h28-UAT.md', body);
+      const report = evaluateUatPassed(tmpDir);
+      assert.strictEqual(report.passed, false, 'gate must block on the U+2028-delimited heading -- origin/next parity');
+      assert.ok(report.blockers.length > 0, 'a blocker must be recorded');
+    } finally {
+      rmDir(tmpDir);
+    }
+  });
+
+  test('CR-fenced case: gate and audit surface (parseUatItemsWithStats) agree -- neither silently clean', () => {
+    // #3078-CR MEDIUM 1 follow-up evidence: a lone-CR document
+    // (see:CRfenceCR### 2. BCRresult: blockedCRfence) has its CRs normalized
+    // to \n before parsing, which turns a literal fence-marker sequence into
+    // a REAL fence delimiter it was not before normalization -- the row ends
+    // up fenced and stripped on the gate side. Both surfaces must agree this
+    // phase is NOT clean (the gate must not pass while the audit surface
+    // reports a shortfall/gap for the same document).
+    const crBody = ['see:', '```', '### 2. B', 'result: blocked', '```'].join('\r');
+    const tmpDir = makeTmpDir();
+    try {
+      writeFile(tmpDir, '01-crfence-UAT.md', crBody);
+      const gateReport = evaluateUatPassed(tmpDir);
+      const auditReport = parseUatItemsWithStats(crBody);
+      assert.strictEqual(gateReport.passed, false, 'gate must not report a clean pass for this document');
+      assert.ok(auditReport.headingsSeen > 0, 'audit surface must see the heading exists');
+      assert.ok(auditReport.items.length === 0 && auditReport.shortfallBlocks > 0,
+        'audit surface must record the fenced row as an unresolved shortfall, not silently drop it');
+    } finally {
+      rmDir(tmpDir);
+    }
   });
 
   test('lone-CR frontmatter: gate no longer silently drops a blocking status hidden by an unnormalized read', () => {
