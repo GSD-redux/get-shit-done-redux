@@ -1514,8 +1514,34 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // indented by construction), so neither is miscounted as a second
     // occurrence.
     const RESULT_LINE_RE = /^result:\s*\[?(\w+)\]?.*$/i;
-    const resultLineMatches = fenceStrippedBlock
-      .split('\n')
+    // Bound the ambiguity scan to lines that are genuinely THIS heading's own
+    // body (#3078-CR fix-forward, follow-up to the B1/B2 split-scan). `block`
+    // runs to the NEXT TOKENIZED heading (`next`) — but when the real next row
+    // is untokenized (hidden by an unterminated/straddling fence, or refused
+    // by the column-0 gate for being indented), `next` is undefined or points
+    // past it, so `block` silently absorbs that row's own `result:` line too.
+    // That row is ALREADY counted once elsewhere — the whole-document
+    // shortfall scan (`shapedHeadingLines` vs `subHeadings.length`), the
+    // unterminated-fence flag, or `countUnattributedIndentedRows` — so letting
+    // its leaked `result:` line register as a SECOND occurrence here for THIS
+    // heading double-counts the identical missing row under two different
+    // headings' tallies. Truncate the scan at the first line (after the
+    // block's own opening heading line) that is shaped like ANY test heading —
+    // column-0 (`TEST_HEADING_LINE_RE`) or indented
+    // (`INDENTED_TEST_HEADING_LINE_RE`) — so a genuinely ambiguous block (B1/B2:
+    // two `result:` lines with NO other heading between them) is unaffected,
+    // while a `result:` line that actually belongs to a later, separately
+    // counted row is excluded from this heading's own ambiguity tally.
+    const blockLines = fenceStrippedBlock.split('\n');
+    let resultScanBoundary = blockLines.length;
+    for (let li = 1; li < blockLines.length; li += 1) {
+      if (TEST_HEADING_LINE_RE.test(blockLines[li]) || INDENTED_TEST_HEADING_LINE_RE.test(blockLines[li])) {
+        resultScanBoundary = li;
+        break;
+      }
+    }
+    const resultLineMatches = blockLines
+      .slice(0, resultScanBoundary)
       .map((line) => line.match(RESULT_LINE_RE))
       .filter((m): m is RegExpMatchArray => m !== null);
     if (resultLineMatches.length !== 1) {
