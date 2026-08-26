@@ -35,7 +35,7 @@ const {
   _HOST_INTEGRATION_VOCAB,
   validateCapability,
 } = require('../gsd-core/bin/lib/capability-validator.cjs');
-const { cleanup, readFileNormalized } = require('./helpers.cjs');
+const { cleanup, createTempDir, readFileNormalized } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -1965,7 +1965,6 @@ describe('#2627 dispatch-isolation CLI route', () => {
 // the resolver in isolation was never the broken part.
 // ---------------------------------------------------------------------------
 describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () => {
-  const os = require('node:os');
   const { runNode } = require('./helpers/process-seam.cjs');
   const { throwIfFailed } = require('./helpers/git-fixture.cjs');
   const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
@@ -1996,7 +1995,7 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
    * then hand the result to the dispatch route. Returns the parsed decision.
    */
   function dispatch(t, modelOverrides) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3714-'));
+    const dir = createTempDir('gsd-3714-');
     t.after(() => cleanup(dir));
     fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
     // `runtime` is load-bearing: without it the no-override case would resolve
@@ -2095,14 +2094,28 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     // dispatch time with `invalid_model_flag` on every wave. #2627 set this
     // pattern for promptFlag; modelFlag must not be the odd one out.
     const { validateRuntimeBody } = require('../gsd-core/bin/lib/capability-validator.cjs');
-    const errorsFor = (flag) => validateRuntimeBody({
-      id: 'x', role: 'runtime', runtime: { orchestratorExec: { command: 'codex', [flag]: 42 } },
-    }).filter((e) => e.includes('orchestratorExec'));
+    // Differential on the error COUNT, never a substring match on the
+    // free-form error prose: the same descriptor is validated with the flag
+    // absent, with a valid string, and with a non-string, so the delta
+    // isolates exactly this flag's contribution regardless of what else the
+    // minimal body reports or how the message is worded.
+    const errorCount = (orchestratorExec) => validateRuntimeBody({
+      id: 'x', role: 'runtime', runtime: { orchestratorExec },
+    }).length;
+    const baseline = errorCount({ command: 'codex' });
 
     for (const flag of ['cwdFlag', 'promptFlag', 'modelFlag']) {
       assert.equal(
-        errorsFor(flag).length, 1,
-        `${flag}: a non-string flag must produce exactly one validator error`,
+        errorCount({ command: 'codex', [flag]: '--x' }), baseline,
+        `${flag}: a string value must be accepted`,
+      );
+      assert.equal(
+        errorCount({ command: 'codex', [flag]: null }), baseline,
+        `${flag}: null must be accepted (the host declares no such channel)`,
+      );
+      assert.equal(
+        errorCount({ command: 'codex', [flag]: 42 }), baseline + 1,
+        `${flag}: a non-string value must add exactly one validator error`,
       );
     }
   });
@@ -2111,7 +2124,7 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     // Run from a temp dir, never REPO_ROOT: `dispatch-isolation` records its
     // decision to `<cwd>/.gsd/` as an unconditional side effect, and a test
     // must not stamp a sentinel into the working repo.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3714-hosts-'));
+    const dir = createTempDir('gsd-3714-hosts-');
     t.after(() => cleanup(dir));
 
     const args = (id, extra) => {
@@ -2147,11 +2160,18 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
 
   /**
    * Run the workflow step's real bash block with `gsd_run` stubbed, and return
-   * every stubbed call's argv (pipe-delimited so an EMPTY argument stays
-   * visible — `--model||` vs `--model|gpt-5.6-sol|` is the whole point here).
+   * every stubbed call as a typed `string[]` argv.
+   *
+   * The stub writes a NUL-delimited, record-separated argv wire format that
+   * this helper deserializes into real arrays, so the assertions below compare
+   * typed values instead of pattern-matching rendered text. NUL and RS are the
+   * two bytes an argv can never contain, which makes the framing exact: an
+   * argument that is the EMPTY STRING survives the round trip and stays
+   * distinguishable from an absent flag — the distinction the unpinned case
+   * turns on, and one a regex over a delimited line cannot make reliably.
    */
   function stepCalls(t, override) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3714-step-'));
+    const dir = createTempDir('gsd-3714-step-');
     t.after(() => cleanup(dir));
 
     // CRLF-free by construction: the body is handed to bash, which treats an
@@ -2165,8 +2185,8 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     const log = path.join(dir, 'calls.log');
     const harness = [
       'set -u',
-      `gsd_run() { for a in "$@"; do printf '%s|' "$a" >> ${JSON.stringify(log)}; done;`,
-      `  printf '\\n' >> ${JSON.stringify(log)};`,
+      `gsd_run() { for a in "$@"; do printf '%s\\0' "$a" >> ${JSON.stringify(log)}; done;`,
+      `  printf '\\036' >> ${JSON.stringify(log)};`,
       '  case "$*" in',
       `    *"config-get model_overrides.gsd-executor"*) printf '%s' ${JSON.stringify(override)} ;;`,
       // Mirrors the real resolver's observed behavior for an explicit pin: it
@@ -2191,18 +2211,26 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     assert.equal(res.outcome, 'exited', `step block did not complete: ${res.stderr || ''}`);
     assert.equal(res.exitCode, 0, `step block exited ${res.exitCode}: ${res.stderr}`);
 
-    return fs.readFileSync(log, 'utf-8').split(/\r?\n/).filter(Boolean);
+    // Each record is `arg\0` repeated then RS, so splitting yields exactly one
+    // trailing empty field per record — dropped by slice(0, -1). Every
+    // surviving element is a real argument, empty ones included.
+    return fs.readFileSync(log, 'utf-8')
+      .split('\x1e')
+      .filter((rec) => rec.length > 0)
+      .map((rec) => rec.split('\0').slice(0, -1));
   }
 
-  const dispatchCall = (calls) => calls.find((c) => c.includes('dispatch-isolation|'));
+  /** The argv of the verb's call, by array membership — never a text scan. */
+  const callTo = (calls, verb) => calls.find((argv) => argv.includes(verb));
+  /** The value a flag carried, or `undefined` if the flag was never passed. */
+  const flagValue = (argv, flag) => (
+    argv.indexOf(flag) === -1 ? undefined : argv[argv.indexOf(flag) + 1]
+  );
 
   test('the workflow shell forwards an explicit pin to dispatch', (t) => {
     const calls = stepCalls(t, 'gpt-5.6-sol');
-    assert.ok(
-      calls.some((c) => c.includes('resolve-model|gsd-executor|')),
-      'an explicit override must be run through the model resolver',
-    );
-    assert.match(dispatchCall(calls), /\|--model\|gpt-5\.6-sol\|/);
+    assert.ok(callTo(calls, 'resolve-model'), 'an explicit override must reach the model resolver');
+    assert.equal(flagValue(callTo(calls, 'dispatch-isolation'), '--model'), 'gpt-5.6-sol');
   });
 
   test('the workflow shell forwards an empty model when nothing is pinned', (t) => {
@@ -2210,11 +2238,14 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     // The gate is the whole point: resolve-model always answers with a
     // concrete model, so calling it unpinned would pin one for a user who
     // pinned nothing. A substring test could never catch that inversion.
-    assert.ok(
-      !calls.some((c) => c.includes('resolve-model|')),
+    assert.equal(
+      callTo(calls, 'resolve-model'), undefined,
       'with no override the resolver must not be consulted at all',
     );
-    assert.match(dispatchCall(calls), /\|--model\|\|/);
+    // Empty STRING, not absent: the flag is always forwarded and the route
+    // normalizes the value. Distinguishing these two is why the argv is
+    // deserialized rather than matched as text.
+    assert.equal(flagValue(callTo(calls, 'dispatch-isolation'), '--model'), '');
   });
 });
 
