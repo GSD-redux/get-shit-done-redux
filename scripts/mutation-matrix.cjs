@@ -182,6 +182,23 @@ const COVERED = {
       'tests/unusable-input.test.cjs',
     ],
     minScore: 65,
+    // #3881 (vendored-YAML-parser migration) grew src/frontmatter.cts from ~825 to 1496
+    // lines (+671/-187), proportionally growing the mutant count Stryker generates for
+    // gsd-core/bin/lib/frontmatter.cjs. That alone pushed the shard from a documented 9m46s
+    // baseline (see the model-catalog comment above) past the 15-minute cap — measured
+    // locally: the three test files' OWN logic totals ~413ms (356+30+27ms via `node
+    // tests/<file>.test.cjs`), so the per-mutant cost is dominated by process-fork overhead
+    // in Stryker's `node --test <3 files>` command, NOT by slow test rows (contrast the
+    // #2790/core-utils precedent, which was slow *rows* inside one file). Node's default
+    // test isolation forks one child process PER FILE ARGUMENT; measured via node:test's
+    // run() API on this exact 3-file set: isolation:'process' took ~593ms vs isolation:'none'
+    // ~478ms for the same 392 passing assertions — a ~19-57% cut in per-mutant billed cost
+    // depending on how much of the raw CLI's own startup is counted. `node --test` cannot be
+    // invoked directly in this environment (hard-blocked locally), so the true CI-shard
+    // number is confirmed on the GitHub Actions run, not locally. Scoped to this module only
+    // (not a blanket change) because the other 8 shards were not individually audited for
+    // cross-file state leakage under shared-process execution.
+    isolation: 'none',
   },
   'adr-parser': {
     cjs: 'gsd-core/bin/lib/adr-parser.cjs',
@@ -439,6 +456,9 @@ function buildResult(moduleNames) {
     mutate: COVERED[name].cjs,
     tests: COVERED[name].tests.join(' '),
     minScore: COVERED[name].minScore,
+    // node:test's default per-file process isolation; only modules that document a
+    // measured, audited need for 'none' (see the frontmatter entry above) opt out.
+    isolation: COVERED[name].isolation || 'process',
   }));
 
   return {
@@ -458,6 +478,7 @@ function printHuman(result, changedFiles) {
     console.log(`    mutate:   ${shard.mutate}`);
     console.log(`    tests:    ${shard.tests}`);
     console.log(`    minScore: ${shard.minScore}`);
+    console.log(`    isolation:${shard.isolation}`);
   }
 }
 

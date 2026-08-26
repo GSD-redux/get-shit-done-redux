@@ -143,7 +143,7 @@ jobs:
         # repo's no-defer rule.
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
-          MUTATION_TEST_CMD: node --test ${{ matrix.tests }}
+          MUTATION_TEST_CMD: node --test --test-isolation=${{ matrix.isolation }} ${{ matrix.tests }}
           MUTATION_BREAK: ${{ matrix.minScore }}
           MODULE_NAME: ${{ matrix.name }}
           MUTATE_GLOB: ${{ matrix.mutate }}
