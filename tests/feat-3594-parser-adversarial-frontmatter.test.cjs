@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+const { extractFrontmatter, FRONTMATTER_UNPARSEABLE } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'adversarial', 'frontmatter');
 
@@ -107,6 +107,19 @@ const MATRIX = {
             for (const item of parsed.plans) {
                 assert.equal(typeof item, 'string');
             }
+        },
+    },
+    'anchor-alias-bomb.md': {
+        invariant: 'refused rather than expanded (ADR-3473 §8.1 consequence 6, row A8)',
+        check(parsed) {
+            // A naive port that let js-yaml resolve anchors/aliases would expand this 7-line
+            // fixture to tens of megabytes. The parser must refuse it outright instead: zero
+            // keys, and the unparseable marker set rather than a bare, indistinguishable {}.
+            assert.equal(Object.keys(parsed).length, 0);
+            assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+            // Bounded via a size assertion on the RESULT, never on elapsed wall-clock time
+            // (repo rule): the serialized form of a refused parse must stay tiny.
+            assert.ok(Buffer.byteLength(JSON.stringify(parsed), 'utf8') < 1024);
         },
     },
 };
