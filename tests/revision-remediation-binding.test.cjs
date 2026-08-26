@@ -63,6 +63,7 @@ const QUICK_LOOP = read('gsd-core', 'workflows', 'quick', 'steps', 'plan-checker
 const UI_PHASE = read('gsd-core', 'workflows', 'ui-phase.md');
 const DIAGNOSE = read('gsd-core', 'workflows', 'diagnose-issues.md');
 const CONVERGENCE = read('gsd-core', 'workflows', 'plan-review-convergence.md');
+const VERIFY_WORK = read('gsd-core', 'workflows', 'verify-work.md');
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -266,6 +267,9 @@ const ORCHESTRATORS = [
   ['plan-phase', PLAN_PHASE, 'iteration_count'],
   ['quick plan-checker-loop', QUICK_LOOP, 'iteration_count'],
   ['ui-phase', UI_PHASE, 'revision_count'],
+  // verify-work's gap-plan revision hands <revision_context> to gsd-planner, so it inherits the
+  // contract whether or not it states it. It was missed in the first pass (#3771 round-2 review).
+  ['verify-work gap-plan revision', VERIFY_WORK, 'iteration_count'],
 ];
 
 describe('#3771 every revision orchestrator routes conflicts instead of retrying', () => {
@@ -306,6 +310,18 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
         `${name} must increment ${counter} only once the reviser has returned`);
     });
 
+    // Not incrementing the counter removes the bound the counter provided. Something must
+    // replace it, or an agent returning the same conflict forever loops unattended.
+    test(`${name} bounds conflict recurrence so the un-incremented path cannot spin`, () => {
+      assert.match(
+        flat(content),
+        /same `required_property` (a second time in a row|twice in a row)/i,
+        `${name} must detect a repeated conflict rather than re-spawning forever`
+      );
+      assert.match(flat(content), /the resolution did not take/,
+        `${name} must name why a repeated conflict is a stall`);
+    });
+
     // The conflict gate resolves the conflict; it must not become an early exit from a blocker.
     test(`${name} does not offer accepting the output with the blocker still open`, () => {
       assert.match(
@@ -318,20 +334,35 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     });
   }
 
-  test('plan-phase routes to convergence through the channel convergence already reads', () => {
+  test('plan-phase records the conflict on a channel it can actually test for', () => {
     assert.match(PLAN_PHASE, /workflow\.plan_review_convergence/,
       'plan-phase must consult the convergence config');
-    assert.match(flat(PLAN_PHASE), /REVIEWS\.md` under `## Plan-Revision Conflicts`/,
-      'the hand-off must use REVIEWS.md rather than inventing a new mechanism');
-    assert.match(flat(PLAN_PHASE), /Routing back into convergence from a run convergence itself started would be a cycle/,
-      'plan-phase must not route back into the loop that invoked it');
+    assert.match(flat(PLAN_PHASE), /REVIEWS_FILE=\$\(ls "\$\{PHASE_DIR\}"\/\*-REVIEWS\.md/,
+      'the record branch must be gated on a condition the orchestrator can evaluate at runtime');
+    assert.match(flat(PLAN_PHASE), /plan-phase never invokes `\/gsd:plan-review-convergence` for a conflict/,
+      'plan-phase runs inside that loop; invoking it would be a cycle');
+    assert.match(flat(PLAN_PHASE), /plan-phase wrote the row, so plan-phase owns closing it; convergence only reads/,
+      'closure must have exactly one named owner, or a row can be orphaned open');
   });
 
-  test('convergence consumes the conflicts plan-phase records, and will not converge over them', () => {
+  test('convergence gates on the conflicts BEFORE it writes state or prints success', () => {
     assert.match(CONVERGENCE, /## Plan-Revision Conflicts/,
       'the convergence loop must know about the section plan-phase writes');
-    assert.match(flat(CONVERGENCE), /whose entries are not marked resolved, convergence has NOT been achieved/,
-      'an open conflict must block the converged exit');
+    assert.match(CONVERGENCE, /OPEN_CONFLICTS=/,
+      'the count must be read from REVIEWS.md — CYCLE_SUMMARY does not carry it');
+    assert.match(
+      CONVERGENCE,
+      /\*\*If HIGH_COUNT == 0 and ACTIONABLE_COUNT == 0 and OPEN_CONFLICTS == 0 \(converged\):\*\*/,
+      'an open conflict must be part of the converged CONDITION, not a note after the banner'
+    );
+    // Ordering is the whole finding: the gate placed after `state planned-phase` would write
+    // and announce convergence over a conflict nobody resolved.
+    const gateAt = CONVERGENCE.indexOf('OPEN_CONFLICTS=$(awk');
+    const writeAt = CONVERGENCE.indexOf('gsd_run state planned-phase');
+    const bannerAt = CONVERGENCE.indexOf('GSD ► CONVERGENCE COMPLETE');
+    assert.ok(gateAt > 0 && writeAt > 0 && bannerAt > 0, 'all three anchors must exist');
+    assert.ok(gateAt < writeAt, 'the conflict gate must precede the planned-phase state write');
+    assert.ok(gateAt < bannerAt, 'the conflict gate must precede the convergence banner');
     assert.match(flat(CONVERGENCE), /Re-running the planner against an unchanged conflict cannot resolve it/,
       'the replan step must be told that re-running alone cannot clear a conflict');
   });

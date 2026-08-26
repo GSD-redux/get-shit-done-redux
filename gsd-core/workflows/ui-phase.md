@@ -271,6 +271,10 @@ Do NOT re-ask the user questions that are already answered.
   resolves the conflict — accepting the spec with the BLOCK still open is NOT offered here, because
   the blocking `required_property` still fails; that choice belongs to the cap escalation below.
   Re-spawn the researcher with the chosen resolution and return to this step.
+
+  **Bounded:** if the researcher returns a conflict naming the SAME `required_property` twice in a
+  row, the resolution did not take — stop re-spawning and escalate as a stall, so declining to
+  spend an iteration cannot make this path unbounded.
 - **On any other return:** increment `revision_count`, then re-spawn checker (step 7)
 
 **If `revision_count` >= 2:**

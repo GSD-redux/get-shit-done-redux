@@ -1277,23 +1277,36 @@ Agent(
 must not consume retry budget. Do NOT increment `iteration_count`, do NOT update
 `prev_issue_count`, and do NOT re-spawn the checker yet.
 
+**Record it, then resolve it here.** plan-phase never invokes
+`/gsd:plan-review-convergence` for a conflict — plan-phase runs *inside* that loop, so invoking it
+would be a cycle, and "was I invoked by convergence?" is not a question this orchestrator can
+answer at runtime. Instead:
+
 ```bash
 CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence 2>/dev/null || echo "false")
+REVIEWS_FILE=$(ls "${PHASE_DIR}"/*-REVIEWS.md 2>/dev/null | head -1)
 ```
 
-**If `CONVERGENCE_ENABLED` is `true` AND this plan-phase run was NOT itself invoked by
-`/gsd:plan-review-convergence`:** append the conflict table and its Alternatives Considered to
-`{PHASE_DIR}/{padded_phase}-REVIEWS.md` under `## Plan-Revision Conflicts`, then run
-`/gsd:plan-review-convergence {phase_number}` and let its arbitration cycle settle it. REVIEWS.md
-is the channel that loop already consumes, so no new hand-off mechanism is introduced. Routing
-back into convergence from a run convergence itself started would be a cycle — in that case, and
-whenever convergence is disabled, ask the user directly instead.
+1. **Record** — if `CONVERGENCE_ENABLED` is `true` and `REVIEWS_FILE` is non-empty, append the
+   planner's conflict table and its Alternatives Considered to that file under
+   `## Plan-Revision Conflicts`, one row per conflict. REVIEWS.md is the channel the convergence
+   loop already consumes, so no new hand-off mechanism is introduced: an open row blocks that
+   loop's converged exit even if this run is abandoned.
+2. **Resolve** — present the conflict table and its alternatives to the user and ask which to
+   take: adopt a named alternative / override the named constraint and apply the hint / amend the
+   constraint itself. Every option resolves the conflict. Accepting the plans with the blocker
+   still open is NOT offered here — the blocking `required_property` still fails, and that choice
+   belongs to the iteration-cap escalation below, which is unchanged.
+3. **Close** — after the planner has applied the chosen resolution, plan-phase marks the row it
+   wrote as resolved (strike the row's first cell: `| ~~{dimension}/{plan}~~ |`). plan-phase wrote
+   the row, so plan-phase owns closing it; convergence only reads. A row left open is a live
+   blocker, never a stale artifact.
 
-**Otherwise:** present the conflict table and its alternatives to the user and ask which to take:
-adopt a named alternative / override the named constraint and apply the hint / amend the
-constraint itself. Every option resolves the conflict. Accepting the plans with the blocker still
-open is NOT offered here — the blocking `required_property` still fails, and that choice belongs
-to the iteration-cap escalation below, which is unchanged.
+**Conflict recurrence is bounded.** Re-spawning after a resolution does not increment
+`iteration_count` — the conflict was not a failed attempt. But if the planner returns a conflict
+naming the SAME `required_property` a second time in a row, the resolution did not take: stop
+re-spawning, report it as a stall, and hand it to the same escalation the iteration cap uses.
+Without that bound the conflict path could loop unattended.
 
 Re-spawn the planner with the chosen resolution, then continue below.
 

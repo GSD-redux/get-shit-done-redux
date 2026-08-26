@@ -31,8 +31,10 @@ LOOP:
      d. prev_issue_count = issue_count
      e. Re-spawn the producing agent with checker feedback appended
      f. If the agent returns REVISION_CONFLICT:
-        -> Resolve it (see "Conflict Return" below) and go to step e.
-           Do NOT increment iteration — the conflict was not a failed attempt.
+        -> If it names the same required_property as the previous conflict:
+             escalate as a stall (the resolution did not take) -- bounds this path
+           Else: resolve it (see "Conflict Return" below) and go to step e.
+             Do NOT increment iteration -- the conflict was not a failed attempt.
      g. iteration += 1
      h. After revision completes, go to LOOP
 
@@ -105,6 +107,10 @@ same loop, so spending retry budget on it only exhausts the cap:
    resolves the conflict. Accepting the output with the blocker still open is NOT offered here —
    the blocking `required_property` still fails, and that choice belongs to the cap escalation.
 3. Re-spawn the producing agent with the chosen resolution, then resume the loop.
+
+**Bounded.** Not incrementing `iteration` must not make this path unbounded: if the agent returns
+a conflict naming the SAME `required_property` twice in a row, the chosen resolution did not take.
+Stop re-spawning, report it as a stall, and escalate through the same gate the iteration cap uses.
 
 Where the host workflow has a configured arbitration loop, it may route there instead of asking
 directly — `plan-phase` records the conflict in REVIEWS.md for `workflow.plan_review_convergence`.

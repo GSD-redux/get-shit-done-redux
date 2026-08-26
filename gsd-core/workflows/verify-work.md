@@ -890,6 +890,17 @@ ${AGENT_SKILLS_PLANNER}
 
 <instructions>
 Read existing PLAN.md files. Make targeted updates to address checker issues.
+
+Each issue's `required_property` + evidence + severity are BINDING. Its `fix_hint` is ONE
+example route to that property and is NON-BINDING: a smaller or different mechanism that makes
+the same property true addresses the issue in full — say which mechanism you used.
+
+Before editing, re-check locked decisions, active capability guidance (CLAUDE.md, project
+skills), and constraints the existing plans already encode. If a `fix_hint` would contradict one,
+or the property is unreachable without breaking one, do NOT apply it and do NOT work around it —
+return `## REVISION_CONFLICT` with the conflict and the alternatives considered, after addressing
+every non-conflicting issue.
+
 Do NOT replan from scratch unless issues are fundamental.
 </instructions>
 """,
@@ -901,7 +912,17 @@ Do NOT replan from scratch unless issues are fundamental.
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
 
-After planner returns → spawn checker again (verify_gap_plans logic)
+**If the planner returns `## REVISION_CONFLICT`:** do NOT increment `iteration_count` and do NOT
+re-spawn the checker — a conflict is not resolvable by re-running the same loop, so it must not
+consume retry budget. Present the conflict table and its alternatives to the user and ask which
+to take: adopt a named alternative / override the named constraint and apply the hint / amend the
+constraint itself. Every option resolves the conflict; accepting the plans with the blocker still
+open is NOT offered here — that choice belongs to the max-iteration escalation below. Re-spawn
+the planner with the chosen resolution. **Bounded:** if the planner returns a conflict naming the
+SAME `required_property` twice in a row, the resolution did not take — stop re-spawning and
+escalate as a stall.
+
+**On any other return** → spawn checker again (verify_gap_plans logic)
 Increment iteration_count
 
 **If iteration_count >= 3:**

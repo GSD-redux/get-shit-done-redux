@@ -129,6 +129,10 @@ lives.
 
 Re-spawn the planner with the chosen resolution, then continue below.
 
+**Bounded:** if the planner returns a conflict naming the SAME `required_property` twice in a
+row, the resolution did not take — stop re-spawning and escalate as a stall, so declining to
+spend an iteration cannot make this path unbounded.
+
 After planner returns → spawn checker again, increment iteration_count.
 
 **If iteration_count >= 2:**

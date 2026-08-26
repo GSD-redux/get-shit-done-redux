@@ -398,7 +398,25 @@ if [ "${ACTIONABLE_COUNT}" -gt 0 ] && [ -z "${ACTIONABLE_LINES}" ]; then
 fi
 ```
 
-**If HIGH_COUNT == 0 and ACTIONABLE_COUNT == 0 (converged):**
+**Open plan-revision conflicts are part of the converged condition (#3771).** An entry under
+`## Plan-Revision Conflicts` in REVIEWS.md is a checker `fix_hint` that contradicted a locked
+decision, capability guidance, or an existing plan constraint, recorded by `/gsd:plan-phase`
+together with the alternatives the planner considered. It is NOT counted by `CYCLE_SUMMARY`, so
+it must be read from the file directly — evaluate this BEFORE the converged branch below, or a
+run would write `planned-phase` and print the success banner over a conflict nobody resolved:
+
+```bash
+OPEN_CONFLICTS=$(awk '/^## Plan-Revision Conflicts/{f=1;next} f&&/^## /{exit} f' "${REVIEWS_FILE}" 2>/dev/null \
+  | grep -c '^| ' | tr -d '[:space:]')
+OPEN_CONFLICTS=${OPEN_CONFLICTS:-0}
+```
+
+Count only rows not marked resolved (`/gsd:plan-phase` strikes a resolved row's leading `|` cell
+to `| ~~…~~ |`, so a `grep -v '~~'` filter drops them). If `OPEN_CONFLICTS` > 0, convergence has
+NOT been achieved regardless of the counts: skip the converged branch and continue to 5c so the
+next cycle arbitrates. Escalation at `MAX_CYCLES` is unchanged and still terminates the loop.
+
+**If HIGH_COUNT == 0 and ACTIONABLE_COUNT == 0 and OPEN_CONFLICTS == 0 (converged):**
 
 ```bash
 gsd_run state planned-phase --phase "${PHASE}" --name "${phase_name}" --plans "${PLAN_COUNT}"
@@ -416,18 +434,9 @@ Display:
  Next: /gsd:execute-phase {PHASE}
 ```
 
-**Before declaring convergence:** if `REVIEWS.md` carries a `## Plan-Revision Conflicts` section
-whose entries are not marked resolved, convergence has NOT been achieved. Those entries are
-plan-revision conflicts recorded by `/gsd:plan-phase` (#3771): a checker `fix_hint` that
-contradicts a locked decision, capability guidance, or an existing plan constraint, together with
-the alternatives the planner considered. Treat each open entry as a current actionable concern —
-skip this exit, and continue to 5c so the next cycle arbitrates it. An arbitrated conflict is
-resolved by adopting one of its alternatives, overriding the named constraint, or amending the
-constraint, and marking the entry resolved in `REVIEWS.md`.
-
 Exit — convergence achieved.
 
-**If HIGH_COUNT > 0 or ACTIONABLE_COUNT > 0:** Continue to 5c.
+**If HIGH_COUNT > 0 or ACTIONABLE_COUNT > 0 or OPEN_CONFLICTS > 0:** Continue to 5c.
 
 ### 5c. Stall Detection + Escalation Check
 
@@ -514,7 +523,8 @@ After plan-phase completes → go back to **step 5a** (review again).
 - [ ] Abort with clear error if current_actionable is absent or malformed
 - [ ] Warn if ACTIONABLE_COUNT > 0 but ## Current Actionable Non-HIGH Concerns section is absent from return message
 - [ ] The review Agent fully completes gsd-review before returning (plan-phase runs inline — no Agent wrap)
-- [ ] Loop exits on: no HIGH concerns, no actionable non-HIGH concerns, and no open `## Plan-Revision Conflicts` entry (converged) OR max cycles (escalation)
+- [ ] Loop exits on: no HIGH concerns, no actionable non-HIGH concerns, and OPEN_CONFLICTS == 0 (converged) OR max cycles (escalation)
+- [ ] OPEN_CONFLICTS read from REVIEWS.md and evaluated BEFORE the converged branch writes state or prints the banner
 - [ ] Stall detection reported when total unresolved review concern count is not decreasing
 - [ ] STATE.md updated on convergence completion
 </success_criteria>
