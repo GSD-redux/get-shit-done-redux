@@ -4478,6 +4478,12 @@ describe('git-cmd.js resolveCommitSubject', () => {
   test('accepts the opener spellings bash accepts', () => {
     assert.strictEqual(resolveCommitSubject(sub('<<EOF', 'fix: bare', 'EOF')), 'fix: bare');
     assert.strictEqual(resolveCommitSubject(sub('<< EOF', 'fix: spaced', 'EOF')), 'fix: spaced');
+    // no space before << is legal bash too (review of #3816, round 3)
+    assert.strictEqual(resolveCommitSubject("$(cat<<'EOF'\nfix: nospace\nEOF\n)"), 'fix: nospace');
+    // NOTE: resolvable HERE, but unreachable through gsd-validate-commit.sh —
+    // its `-m` capture stops at this spelling's own delimiter quote. The
+    // hook-level row in tests/hooks-opt-in.test.cjs pins that limit; both are
+    // correct together (review of #3816).
     assert.strictEqual(resolveCommitSubject(sub('<<"EOF"', 'fix: dquoted', 'EOF')), 'fix: dquoted');
     // A delimiter that is not identifier-shaped is still a valid bash word.
     assert.strictEqual(resolveCommitSubject(sub("<<'END-MSG'", 'fix: hyphen tag', 'END-MSG')),
@@ -4571,6 +4577,26 @@ describe('git-cmd.js resolveCommitSubject', () => {
       'a complete subject line stays measurable even when the capture truncates later');
     assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'"), "$(cat <<'EOF'",
       'an opener with no body at all is likewise unresolvable');
+  });
+
+  test('BLOCKER (round 3): text after the terminator is part of the real message', () => {
+    // `-m "$(cat <<'EOF'\nfeat: ok\nEOF\n) <200 a's>"` expands to ONE long
+    // subject; discarding the tail measured a PREFIX (8 chars vs 200+) and
+    // dodged COMMIT_SUBJECT_TOO_LONG — the truncation-guard class from the
+    // other side of the terminator (review of #3816, round 3). Only the
+    // canonical single closing-paren line may follow the terminator; anything
+    // else falls back to the opener and the format gate.
+    assert.strictEqual(resolveCommitSubject(`$(cat <<'EOF'\nfeat: ok\nEOF\n) ${'a'.repeat(200)}`),
+      "$(cat <<'EOF'", 'a substitution composed with more text cannot have its body trusted');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: ok\nEOF\n)$(printf x)"),
+      "$(cat <<'EOF'", 'a second substitution after the close is the same composition');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nEOF\n)feat: sneaky"),
+      "$(cat <<'EOF'", 'text glued straight onto the closing paren too');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: ok\nEOF"),
+      "$(cat <<'EOF'", 'a terminator with NO closing line at all is not the canonical shape either');
+    // the canonical tail still resolves — including an indented or space-padded close
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: ok\nEOF\n)"), 'feat: ok');
+    assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nfeat: ok\nEOF\n\t) "), 'feat: ok');
   });
 
   test('MINOR 1: leading blank body lines are skipped, as git does', () => {

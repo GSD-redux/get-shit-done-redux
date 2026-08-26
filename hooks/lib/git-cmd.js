@@ -229,7 +229,12 @@ function isGitSubcommand(cmd, sub) {
  * false positive on one rare spelling), and widening the bash capture to span
  * inner quotes would change what is captured for EVERY message containing one —
  * a regression class this fix deliberately does not touch (Codex review of
- * #3816).
+ * #3816). The same capture truncation blocks a `"` anywhere in the MESSAGE
+ * itself, subject line included. Two more legal-but-unrecognized spellings
+ * stay blocked the same fail-closed way: an env-prefixed cat
+ * (`$(A=1 cat <<'EOF'`) and an option-terminated cat (`$(cat -- <<'EOF'`) —
+ * recognizing either would mean modelling bash prefix words here, cost with
+ * no reported user (review of #3816, round 3).
  *
  * @param {string} messageArg - the raw `-m` argument, already selected by the caller
  * @returns {string} the subject to validate
@@ -255,7 +260,10 @@ function resolveCommitSubject(messageArg) {
   // `<NBSP>/bin/cat` as the executable NAME, so recognition claimed a
   // substitution that does not run cat (Codex review of #3816, round 2). The
   // same ASCII rule as the blank-line skip below, for the same reason.
-  const opener = /^\$\([ \t]*(?:[\w./-]*\/)?cat[ \t]+<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))[ \t]*$/
+  // `cat[ \t]*<<`, not `+`: bash accepts `cat<<'EOF'` with no space (review of
+  // #3816, round 3), and recognizing it costs nothing — the token before `<<`
+  // is still literally `cat`.
+  const opener = /^\$\([ \t]*(?:[\w./-]*\/)?cat[ \t]*<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))[ \t]*$/
     .exec(lines[0]);
   if (!opener) return lines[0];
 
@@ -273,6 +281,20 @@ function resolveCommitSubject(messageArg) {
   // gate, which is exactly what this whole form did before the fix. The fix
   // applies where the capture is complete and changes nothing where it is not.
   const end = body.indexOf(delimiter);
+
+  // POST-TERMINATOR GUARD (review of #3816, round 3 — BLOCKER). Everything
+  // after the terminator is still part of the real message once bash
+  // substitutes: `-m "$(cat <<'EOF'\nfeat: ok\nEOF\n) <200 a's>"` expands to a
+  // single 200+ char subject, but discarding the tail measured 8 and DODGED
+  // COMMIT_SUBJECT_TOO_LONG — the same prefix-measurement class the truncation
+  // guard below exists for, missed on the other side of the terminator. The
+  // canonical idiom's tail is exactly one closing-paren line; anything else
+  // means the substitution is composed with more text, so fall back to the
+  // opener line — blocked, the pre-fix behaviour for the whole form.
+  if (end !== -1) {
+    const tail = body.slice(end + 1);
+    if (tail.length !== 1 || !/^[ \t]*\)[ \t]*$/.test(tail[0])) return lines[0];
+  }
 
   // git's default `cleanup=whitespace` strips leading blank lines, so the subject
   // is the first NON-EMPTY body line, not blindly the first one. Taking lines[1]

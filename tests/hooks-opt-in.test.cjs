@@ -445,6 +445,21 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
     }
   });
 
+  test('validate-commit blocks a substitution composed with more text (round-3 BLOCKER)', () => {
+    // Review of #3816, round 3. bash expands this -m argument to a SINGLE
+    // 200+ char subject, but the resolver discarded everything after the
+    // terminator and measured `feat: ok` (8 chars) — a live length-gate
+    // bypass the base did not have. The post-terminator guard now falls back
+    // to the opener line, so the form is blocked by the FORMAT gate, the
+    // pre-fix behaviour for the whole form.
+    const result = runHookCmd(`git commit -m "$(cat <<'EOF'\nfeat: ok\nEOF\n) ${'a'.repeat(200)}"`);
+    assert.strictEqual(result.status, 2,
+      'a heredoc substitution composed with trailing text is one long real subject — resolving '
+      + 'the body alone dodges COMMIT_SUBJECT_TOO_LONG');
+    assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION',
+      'fail-closed via the format gate on the opener fallback, matching every other unresolvable shape');
+  });
+
   test('validate-commit blocks a command smuggled before the cat', () => {
     // Codex review of #3816. `$(id;/bin/cat <<'EOF' ...` runs `id` FIRST, so
     // git's real subject is id's output — but the resolver read the heredoc
@@ -465,6 +480,10 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
     // and even a conforming message is blocked — the pre-fix behaviour for the
     // whole form, fail closed. If this row ever starts passing, the capture
     // changed: re-review every embedded-quote case before celebrating.
+    // Counterpart: the UNIT row in tests/worktree-safety.test.cjs proves the
+    // pure resolver CAN resolve this spelling — the limit is the capture,
+    // not the parser; the two rows are correct together (review of #3816,
+    // round 3, N2).
     const result = runHookCmd(heredoc('feat(api): conforming subject', '<<"EOF"', 'EOF'));
     assert.strictEqual(result.status, 2,
       'documented residual false-positive on the double-quoted delimiter spelling');
