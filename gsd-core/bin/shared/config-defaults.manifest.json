@@ -99,6 +99,9 @@
     "source_grounding": true,
     "source_grounding_authority": "grep"
   },
+  "review": {
+    "max_prompt_tokens": null
+  },
   "capabilities": {
     "strict_known_registries": null,
     "auto_update": false

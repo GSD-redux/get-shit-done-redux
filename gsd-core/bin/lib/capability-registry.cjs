@@ -227,7 +227,7 @@ const capabilities = {
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
     },
@@ -236,6 +236,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      },
+      "review.max_prompt_tokens_per_reviewer.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
       }
     }
   },
@@ -631,7 +636,7 @@ const capabilities = {
       "reviewsSection": "Claude",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
       "handler": null
     },
@@ -640,6 +645,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Claude reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -1038,9 +1048,16 @@ const capabilities = {
       "reviewsSection": "CodeRabbit",
       "evidenceClass": "diff-only",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.coderabbit",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.coderabbit": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "codex": {
@@ -1187,7 +1204,7 @@ const capabilities = {
       "reviewsSection": "Codex",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
       "handler": null
     },
@@ -1196,6 +1213,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Codex reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -1445,9 +1467,16 @@ const capabilities = {
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.cursor": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "drift": {
@@ -1690,7 +1719,7 @@ const capabilities = {
       "reviewsSection": "Gemini",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.gemini",
       "modelConfigKey": "review.models.gemini",
       "handler": null
     },
@@ -1699,6 +1728,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Gemini reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.gemini": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -2278,7 +2312,7 @@ const capabilities = {
       "reviewsSection": "Kimi Code",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
       "handler": null
     },
@@ -2287,6 +2321,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Kimi Code reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -2905,7 +2944,7 @@ const capabilities = {
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
       "handler": "opencode"
     },
@@ -2914,6 +2953,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the OpenCode reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -3251,9 +3295,16 @@ const capabilities = {
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.qwen": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "refactor-trigger": {
@@ -4654,15 +4705,20 @@ const configKeys = {
   "workflow.ai_integration_phase": "ai-integration",
   "workflow.api_coverage_gate": "ai-integration",
   "review.models.agy": "antigravity",
+  "review.max_prompt_tokens_per_reviewer.antigravity": "antigravity",
   "workflow.assumption_delta": "assumption-delta",
   "workflow.windows_enforce": "broken-windows",
   "review.models.claude": "claude",
+  "review.max_prompt_tokens_per_reviewer.claude": "claude",
   "claude_orchestration.enabled": "claude-orchestration",
   "claude_orchestration.execution_backend": "claude-orchestration",
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
+  "review.max_prompt_tokens_per_reviewer.coderabbit": "coderabbit",
   "review.models.codex": "codex",
+  "review.max_prompt_tokens_per_reviewer.codex": "codex",
+  "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
@@ -4674,9 +4730,11 @@ const configKeys = {
   "external_job.poll_timeout_ms": "external-job",
   "workflow.post_planning_gaps": "gap-analysis",
   "review.models.gemini": "gemini",
+  "review.max_prompt_tokens_per_reviewer.gemini": "gemini",
   "graphify.enabled": "graphify",
   "intel.enabled": "intel",
   "review.models.kimi-code": "kimi-code",
+  "review.max_prompt_tokens_per_reviewer.kimi-code": "kimi-code",
   "workflow.live_dom_uat": "live-dom-uat",
   "review.models.llama_cpp": "llama-cpp",
   "review.llama_cpp_host": "llama-cpp",
@@ -4699,8 +4757,10 @@ const configKeys = {
   "review.ollama_host": "ollama",
   "review.max_prompt_tokens_per_reviewer.ollama": "ollama",
   "review.models.opencode": "opencode",
+  "review.max_prompt_tokens_per_reviewer.opencode": "opencode",
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
+  "review.max_prompt_tokens_per_reviewer.qwen": "qwen",
   "refactor.trigger_enabled": "refactor-trigger",
   "refactor.complexity_threshold": "refactor-trigger",
   "refactor.complexity_jump_delta": "refactor-trigger",
@@ -4735,6 +4795,12 @@ const configSchema = {
     "default": "",
     "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
   },
+  "review.max_prompt_tokens_per_reviewer.antigravity": {
+    "owner": "antigravity",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
+  },
   "workflow.assumption_delta": {
     "owner": "assumption-delta",
     "type": "boolean",
@@ -4752,6 +4818,12 @@ const configSchema = {
     "type": "string",
     "default": "",
     "description": "Model passed to the Claude reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.claude": {
+    "owner": "claude",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "claude_orchestration.enabled": {
     "owner": "claude-orchestration",
@@ -4793,11 +4865,29 @@ const configSchema = {
       "deep"
     ]
   },
+  "review.max_prompt_tokens_per_reviewer.coderabbit": {
+    "owner": "coderabbit",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
   "review.models.codex": {
     "owner": "codex",
     "type": "string",
     "default": "",
     "description": "Model passed to the Codex reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.codex": {
+    "owner": "codex",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.max_prompt_tokens_per_reviewer.cursor": {
+    "owner": "cursor",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "workflow.drift_threshold": {
     "owner": "drift",
@@ -4872,6 +4962,12 @@ const configSchema = {
     "default": "",
     "description": "Model passed to the Gemini reviewer lane."
   },
+  "review.max_prompt_tokens_per_reviewer.gemini": {
+    "owner": "gemini",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
   "graphify.enabled": {
     "owner": "graphify",
     "type": "boolean",
@@ -4889,6 +4985,12 @@ const configSchema = {
     "type": "string",
     "default": "",
     "description": "Model passed to the Kimi Code reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.kimi-code": {
+    "owner": "kimi-code",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "workflow.live_dom_uat": {
     "owner": "live-dom-uat",
@@ -5027,6 +5129,12 @@ const configSchema = {
     "default": "",
     "description": "Model passed to the OpenCode reviewer lane."
   },
+  "review.max_prompt_tokens_per_reviewer.opencode": {
+    "owner": "opencode",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
   "workflow.pattern_mapper": {
     "owner": "pattern-mapper",
     "type": "boolean",
@@ -5038,6 +5146,12 @@ const configSchema = {
     "type": "boolean",
     "default": false,
     "description": "Enable the developer profiling pipeline commands (scan-sessions, extract-messages, profile-sample, write-profile, etc.)."
+  },
+  "review.max_prompt_tokens_per_reviewer.qwen": {
+    "owner": "qwen",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "refactor.trigger_enabled": {
     "owner": "refactor-trigger",
@@ -5262,7 +5376,7 @@ const runtimes = {
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
     },
@@ -5271,6 +5385,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      },
+      "review.max_prompt_tokens_per_reviewer.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
       }
     }
   },
@@ -5537,7 +5656,7 @@ const runtimes = {
       "reviewsSection": "Claude",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
       "handler": null
     },
@@ -5546,6 +5665,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Claude reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -5902,7 +6026,7 @@ const runtimes = {
       "reviewsSection": "Codex",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
       "handler": null
     },
@@ -5911,6 +6035,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Codex reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -6160,9 +6289,16 @@ const runtimes = {
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.cursor": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "hermes": {
@@ -6648,7 +6784,7 @@ const runtimes = {
       "reviewsSection": "Kimi Code",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
       "handler": null
     },
@@ -6657,6 +6793,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Kimi Code reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -6824,7 +6965,7 @@ const runtimes = {
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
       "handler": "opencode"
     },
@@ -6833,6 +6974,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the OpenCode reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -7039,9 +7185,16 @@ const runtimes = {
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.qwen": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "trae": {

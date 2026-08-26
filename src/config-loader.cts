@@ -134,6 +134,7 @@ const CONFIG_DEFAULTS = {
   security_block_on: _getNestedConfigDefault('workflow', 'security_block_on'),
   post_planning_gaps: _getNestedConfigDefault('workflow', 'post_planning_gaps'),
   smart_zone_tokens: _getNestedConfigDefault('workflow', 'smart_zone_tokens'),
+  max_prompt_tokens: _getNestedConfigDefault('review', 'max_prompt_tokens'),
 };
 
 /**
@@ -903,6 +904,13 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
       claude_md_path: get('claude_md_path') || null,
       claude_md_assembly: (parsed['claude_md_assembly']) || null,
       phase_id_convention: get('phase_id_convention') ?? null,
+      // #3691: the documented central review key. Declared here (not federated —
+      // it is central, see config-schema.manifest.json validKeys) so the existing
+      // `review.*` per-lane keys the federated overlay below adds land as SIBLINGS
+      // on this same object rather than being clobbered by it.
+      review: {
+        max_prompt_tokens: get('max_prompt_tokens', { section: 'review', field: 'max_prompt_tokens' }) ?? defaults.max_prompt_tokens,
+      },
     };
 
     // ADR-857 phase 3b: federated config overlay

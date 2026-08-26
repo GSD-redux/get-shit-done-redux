@@ -295,6 +295,7 @@ const estimateCli = require('./lib/estimate-cli.cjs');
 const template = require('./lib/template.cjs');
 const milestone = require('./lib/milestone.cjs');
 const commands = require('./lib/commands.cjs');
+const runtimeIdentity = require('./lib/runtime-identity.cjs');
 const init = require('./lib/init.cjs');
 const frontmatter = require('./lib/frontmatter.cjs');
 const workstream = require('./lib/workstream.cjs');
@@ -1077,6 +1078,15 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // in tight subprocess loops where Windows CI has shown intermittent
           // native crashes (0xC0000005 / 3221225477).
           commands.cmdCurrentTimestamp(args[1] || 'full', raw);
+  }
+
+  function routeRuntimeIdentity({ raw }) {
+    // #3146: report this runtime's package identity so a shipped workflow can
+    // tell whether it reached THIS package's gsd-tools or a colliding one.
+    // Kept on the CJS fast path for the same reason as current-timestamp — the
+    // launcher preamble spawns it once per workflow run, so SDK bridge startup
+    // would be a per-run tax on every workflow.
+    runtimeIdentity.cmdRuntimeIdentity(raw);
   }
 
   function routeSkillsRoot({ args, raw, error }) {
@@ -3722,6 +3732,7 @@ const HOST_COMMAND_ROUTERS = {
     'verification': routeVerification,
     'generate-slug': routeGenerateSlug,
     'current-timestamp': routeCurrentTimestamp,
+    'runtime-identity': routeRuntimeIdentity,
     'project-instruction-file': routeProjectInstructionFile,
     'list-todos': routeListTodos,
     'list-seeds': routeListSeeds,
@@ -3989,7 +4000,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'from-gsd2, frontmatter, gap-analysis, generate-claude-md, generate-claude-profile, ' +
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, planning, profile-questionnaire, ' +
-  'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
+  'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, runtime-identity, scaffold, smart-entry, state, ' +
   'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, inspect-dispatch-isolation, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-agent, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
@@ -4017,6 +4028,10 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
 // below (never as the live Set itself; see that function's doc comment).
 const SKIP_ROOT_RESOLUTION = new Set([
   'generate-slug', 'current-timestamp', 'verify-path-exists',
+  // #3146: runtime-identity is a pure local read of baked package coordinates.
+  // It is probed from whatever cwd a workflow happens to be in — including
+  // outside any project — so it must never require a resolvable project root.
+  'runtime-identity',
   // #2844: verify-summary was previously skipped, leaving relative file-claim
   // paths resolved against the raw process.cwd() — invoking from a subdirectory
   // manufactured "missing files" on an otherwise-correct SUMMARY. It now goes

@@ -1,8 +1,0 @@
-{
-  "$comment": "Growth ack (#2914 fragment). Reason: #2845 makes a UI-SPEC component inventory falsifiable. gsd-ui-checker.md gains Dimension 7 (Inventory Provenance) — BLOCK/FLAG/PASS criteria, the two-shape provenance grammar it keys on, an unfilled-placeholder BLOCK rule, an example issue, and the allowlist-downgrade rule; 14118 -> 18180 LF bytes (+4062, DEFAULT cap 24576). gsd-ui-researcher.md gains the <component_inventory_gate> enumeration ladder and the identical grammar line it must record; 19557 -> 21474 (+1917, DEFAULT cap 24576). gsd-core/workflows/ui-phase.md is byte-unchanged (6->7 is same-width). The grammar line is byte-identical across template, checker and researcher, and the dimension roster is pinned across thirteen surfaces, by tests/ui-spec-inventory-provenance.test.cjs.",
-  "version": 1,
-  "paths": {
-    "gsd-ui-checker.md": "agents/gsd-ui-checker.md +4062B: Dimension 7 Inventory Provenance — an unsourced component inventory is a defect and is downgraded from a closed allowlist to a non-exhaustive list (#2845)",
-    "gsd-ui-researcher.md": "agents/gsd-ui-researcher.md +1917B: component-inventory enumeration gate — enumerate from the installed package and record command, count, resolved package@version and date (#2845)"
-  }
-}

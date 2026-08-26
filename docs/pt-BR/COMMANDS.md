@@ -219,7 +219,7 @@ Loop de convergência de planos cross-AI — replaneja com feedback de revisão 
 |------------------|-------------|-----------|
 | `N` | **Sim** | Número da fase a planejar e revisar |
 | Flags de revisor | Não | Repassa todas as flags de lane de revisor: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code` |
-| `--all` | Não | Executa todos os revisores configurados em paralelo |
+| `--all` | Não | Executa todos os revisores configurados. As lanes são despachadas **sequencialmente** por padrão; defina `review.parallel_lanes` como `true` para despachá-las simultaneamente em uma única passagem de revisão |
 | `--max-cycles N` | Não | Substitui o limite de ciclos (padrão 3) |
 
 **Comportamento de saída:** O loop termina quando a contagem HIGH chega a zero. A detecção de estagnação avisa quando a contagem HIGH não diminui entre ciclos. O portão de escalação solicita ao usuário que prossiga ou revise manualmente quando `--max-cycles` é atingido com preocupações HIGH ainda em aberto.

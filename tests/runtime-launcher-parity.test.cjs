@@ -167,6 +167,49 @@ function delegatesToResolverReference(content) {
 }
 
 describe('runtime-launcher-parity (#373)', () => {
+  // ─── (#3146) Deliberate bootstrap-only preamble placement is preserved ────
+  test('sync preserves a deliberate bootstrap-only preamble placement (#3146)', () => {
+    // gsd-core/workflows/explore.md deliberately places the preamble in a
+    // Step 1 block that DEFINES gsd_run but never CALLS it — its own comment
+    // explains why: "Placed in Step 1 rather than Step 3 so declining the
+    // research offer cannot leave Step 5's commit call unbootstrapped."
+    // transformFile strips all blocks before re-inserting the preamble, so a
+    // naive "first block that CALLS gsd_run" target would silently relocate
+    // the preamble into the second block, breaking define-before-use. This
+    // fixture reproduces that shape with two blocks: the first containing
+    // ONLY the preamble (no gsd_run call), the second containing a gsd_run
+    // call.
+    const preamble = expectedPreamble();
+    const preambleText = preamble.join('\n');
+
+    const fixture =
+      '# Fixture\n\n' +
+      '```bash\n' +
+      preambleText + '\n' +
+      '```\n\n' +
+      '```bash\n' +
+      'gsd_run query something\n' +
+      '```\n';
+
+    const { transformFile } = require('../scripts/sync-runtime-launcher.cjs');
+    const result = transformFile(fixture, preamble);
+
+    // transformFile returns null when no changes are needed (already correct
+    // and idempotent); otherwise the transformed content.
+    const finalContent = result === null ? fixture : result;
+
+    const markerIdx = finalContent.indexOf('_GSD_SHIM_NAME=');
+    const useIdx = finalContent.indexOf('gsd_run query something');
+
+    assert.ok(markerIdx >= 0, 'expected the preamble marker to be present in the transformed fixture');
+    assert.ok(useIdx >= 0, 'expected the gsd_run call to be present in the transformed fixture');
+    assert.ok(
+      markerIdx < useIdx,
+      `expected preamble (index ${markerIdx}) to remain in the FIRST block, before the gsd_run call ` +
+        `(index ${useIdx}) — the sync script must not relocate a deliberately-placed bootstrap-only preamble`,
+    );
+  });
+
   // ─── (A) No retired GSD_SDK token ────────────────────────────────────────
   test('(A) no GSD_SDK token in any workflow .md file', () => {
     const files = collectWorkflowFiles();
@@ -365,17 +408,22 @@ describe('runtime-launcher-parity (#373)', () => {
   });
 
   // ─── (E) PATH fallback behavioral (#3668) ────────────────────────────────
-  test('(E) PATH fallback: uses installed gsd-tools when no local gsd-tools.cjs present', () => {
+  test('(E) PATH fallback: uses installed gsd_run when no local gsd-tools.cjs present', () => {
     // Create a temp dir with NO local gsd-core/bin/gsd-tools.cjs.
-    // Place an executable gsd-tools stub on a dedicated PATH dir.
+    // Place an executable gsd_run stub on a dedicated PATH dir.
     // RUNTIME_DIR points somewhere that has no gsd-tools.cjs.
+    //
+    // #3146: the PATH-fallback target changed from `gsd-tools` to `gsd_run`.
+    // The predecessor package `get-shit-done-cc` publishes a colliding
+    // `gsd-tools` bin, so the launcher resolves `gsd_run`, which only this
+    // package publishes.
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd 373 pathfb '));
     try {
       const pathBinDir = path.join(base, 'bin');
       fs.mkdirSync(pathBinDir, { recursive: true });
 
-      // Stub installed gsd-tools binary that prints a marker
-      const stubPath = path.join(pathBinDir, 'gsd-tools');
+      // Stub installed gsd_run binary that prints a marker
+      const stubPath = path.join(pathBinDir, 'gsd_run');
       fs.writeFileSync(stubPath, '#!/bin/sh\necho "installed:$*"\n');
       fs.chmodSync(stubPath, 0o755);
 
@@ -397,14 +445,14 @@ describe('runtime-launcher-parity (#373)', () => {
       // The PATH fallback must have resolved GSD_TOOLS to the stub binary.
       // Normalize backslashes → forward slashes so the assertion works on Windows
       // (git-bash emits POSIX paths while Node's os.tmpdir() returns the Windows form).
-      // Assert by suffix (/bin/gsd-tools, no .cjs extension) rather than absolute prefix
+      // Assert by suffix (/bin/gsd_run, no .cjs extension) rather than absolute prefix
       // because the prefix differs between Windows and POSIX.
       // Use .+ (not \S*) to tolerate paths that contain spaces.
       const normStdout = stdout.replace(/\\/g, '/');
       assert.match(
         normStdout,
-        /GSD_TOOLS=.+\/bin\/gsd-tools(?:\s|$)/m,
-        `Expected GSD_TOOLS to resolve to the installed PATH stub (suffix /bin/gsd-tools), got: ${stdout.trim()}`,
+        /GSD_TOOLS=.+\/bin\/gsd_run(?:\s|$)/m,
+        `Expected GSD_TOOLS to resolve to the installed PATH stub (suffix /bin/gsd_run), got: ${stdout.trim()}`,
       );
       assert.doesNotMatch(
         normStdout,
@@ -558,6 +606,46 @@ describe('runtime-launcher-parity (#373)', () => {
       cleanup(fakeHome);
       cleanup(fakeRuntime);
     }
+  });
+
+  // ─── (F0) Brace balance — the preamble is inlined into brace-counted files ──
+  //
+  // Regression for the #3841 red matrix run. The preamble is inlined into 112
+  // shipped files, and several downstream guards balance braces by scanning raw
+  // TEXT with no string-context awareness — tests/new-project-mvp-prompt.test.cjs's
+  // "balanced braces" guard (mirroring #3784 bd53925f) counts every `{` and `}`
+  // across new-project.md plus its steps/. new-project.md and
+  // new-project/steps/auto-mode-config.md each carry one preamble copy, so a
+  // snippet that is off by one reports a combined net depth of TWO, in a test whose
+  // name mentions neither the launcher nor this issue.
+  //
+  // The identity assertion's `case` pattern legitimately contains a `{` inside a
+  // single-quoted shell literal. It is paired by requiring the payload to be a
+  // CLOSED object (`*'}'`) — which is also a real strengthening, since a truncated
+  // payload then fails. Pin the balance HERE, at the snippet, so the next edit to
+  // that pattern fails on the file it broke rather than three files downstream.
+  test('(F0) the snippet has balanced braces (#3841 — inlined into brace-counted files)', () => {
+    const snippetContent = fs.readFileSync(SNIPPET_FILE, 'utf8');
+    let depth = 0;
+    let minDepth = 0;
+    for (const ch of snippetContent) {
+      if (ch === '{') depth++;
+      if (ch === '}') depth--;
+      if (depth < minDepth) minDepth = depth;
+    }
+    assert.equal(
+      depth,
+      0,
+      `_runtime-launcher.snippet.sh has unbalanced braces: net depth ${depth}. ` +
+        `The preamble is inlined into 112 shipped files, and downstream guards ` +
+        `(tests/new-project-mvp-prompt.test.cjs) balance braces over raw text with no ` +
+        `awareness of shell quoting — an unpaired brace here fails there instead, ` +
+        `multiplied by the number of inlined copies in the scanned file set. ` +
+        `Pair the brace in the snippet; do not relax the downstream guard.`,
+    );
+    // Never dips below zero: a `}` that precedes its `{` would still net to 0 while
+    // being unbalanced at every prefix, which is what a text scanner actually reports.
+    assert.equal(minDepth, 0, `brace depth went negative (min ${minDepth}) — a closing brace precedes its opener`);
   });
 
   // ─── (F) Regression locks: no /gsd-tools substring; no do.md dispatcher false-positive ──
@@ -1564,10 +1652,15 @@ function writeExecutable(file, content) {
 }
 
 describe('bug-3668: workflow SDK resolver supports installed user projects', { skip: process.platform === 'win32' }, () => {
-  test('falls back to installed gsd-tools when project-local runtime copy is absent', () => {
+  test('falls back to installed gsd_run when project-local runtime copy is absent', () => {
     // Bug #3668: when a user project has no local gsd-core/bin/gsd-tools.cjs,
-    // the elif branch must resolve to the gsd-tools binary on PATH.
+    // the elif branch must resolve to the gsd_run binary on PATH.
     // RUNTIME_DIR points to a dir that has no gsd-tools.cjs.
+    //
+    // #3146: the PATH-fallback target changed from `gsd-tools` to `gsd_run`.
+    // The predecessor package `get-shit-done-cc` publishes a colliding
+    // `gsd-tools` bin, so the launcher resolves `gsd_run`, which only this
+    // package publishes.
     const tmp = makeTempDir();
     const project = path.join(tmp, 'user-project');
     const runtimeNoLocal = path.join(tmp, 'runtime-no-local');
@@ -1575,9 +1668,9 @@ describe('bug-3668: workflow SDK resolver supports installed user projects', { s
     fs.mkdirSync(project, { recursive: true });
     fs.mkdirSync(runtimeNoLocal, { recursive: true });
 
-    // Place gsd-tools stub on PATH (installed binary)
+    // Place gsd_run stub on PATH (installed binary)
     writeExecutable(
-      path.join(pathBin, 'gsd-tools'),
+      path.join(pathBin, 'gsd_run'),
       '#!/bin/sh\nprintf "installed:%s %s\\n" "$1" "$2"\n',
     );
 
@@ -1585,18 +1678,23 @@ describe('bug-3668: workflow SDK resolver supports installed user projects', { s
     const output = runResolver({ cwd: project, runtimeDir: runtimeNoLocal, pathDir: pathBin });
 
     // GSD_TOOLS must have been reassigned to the PATH binary (not the missing .cjs)
-    assert.match(output, /GSD_TOOLS=.+gsd-tools(?:\s|$)/m);
+    assert.match(output, /GSD_TOOLS=.+gsd_run(?:\s|$)/m);
     // The PATH stub must have been invoked
     assert.match(output, /installed:query state\.json/);
   });
 
   test('preserves RUNTIME_DIR local gsd-tools.cjs preference over PATH fallback', () => {
+    // #3146: the PATH-fallback target changed from `gsd-tools` to `gsd_run`
+    // (the predecessor package `get-shit-done-cc` publishes a colliding
+    // `gsd-tools` bin, so the launcher resolves `gsd_run` instead), but the
+    // point of this test is unchanged: a RUNTIME_DIR-local gsd-tools.cjs must
+    // win over the PATH stub, and the PATH stub must never be invoked.
     const tmp = makeTempDir();
     const project = path.join(tmp, 'user-project');
     const runtime = path.join(tmp, 'runtime');
     const pathBin = path.join(tmp, 'bin');
     fs.mkdirSync(project, { recursive: true });
-    writeExecutable(path.join(pathBin, 'gsd-tools'), '#!/bin/sh\nprintf "path-installed:%s %s\\n" "$1" "$2"\n');
+    writeExecutable(path.join(pathBin, 'gsd_run'), '#!/bin/sh\nprintf "path-installed:%s %s\\n" "$1" "$2"\n');
     writeExecutable(
       path.join(runtime, 'gsd-core', 'bin', 'gsd-tools.cjs'),
       '#!/usr/bin/env node\nconsole.log(`runtime:${process.argv[2]} ${process.argv[3]}`);\n',

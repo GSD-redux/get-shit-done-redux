@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "edit-phase.md": "#3262: adds the mechanical milestone-scope guard the issue says this workflow lacks. `write_updated_phase` now captures `gsd_run query roadmap milestone-scope` (the new read-only window-identity probe: scope + declared phase ids) BEFORE the in-place section splice, re-derives it AFTER, and on any `scope`/`phases` difference restores the original section text and exits with an explicit ERROR — the same block-before-write shape as the workflow's existing `validate_depends_on` gate, which is untouched. One success-criteria checkbox and one anti-pattern line accompany it. Net growth is the two small probe invocations plus the rollback/error contract (~1.1 KB over the 12,927-byte base, well inside the DEFAULT 40 KiB hard cap); no prose was extracted or moved. Companion code changes (src/roadmap-parser.cts, src/roadmap.cts, src/phase.cts, src/command-aliases.cts, src/roadmap-command-router.cts) are self-attributing."
-  }
-}

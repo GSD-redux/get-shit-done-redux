@@ -1,6 +1,6 @@
 # Git Planning Commit
 
-Commit planning artifacts via `gsd-tools query commit`, which checks `commit_docs` config and gitignore status (same behavior as legacy `gsd-tools.cjs commit`).
+Commit planning artifacts via `gsd_run query commit`, which checks `commit_docs` config and gitignore status.
 
 ## Commit via CLI
 
@@ -9,7 +9,7 @@ Pass the message first, then file paths via `--files`. Both `commit` and `commit
 Always use this for `.planning/` files — it handles `commit_docs` and gitignore checks automatically:
 
 ```bash
-gsd-tools query commit "docs({scope}): {description}" --files .planning/STATE.md .planning/ROADMAP.md
+gsd_run query commit "docs({scope}): {description}" --files .planning/STATE.md .planning/ROADMAP.md
 ```
 
 The CLI will return `skipped` (with reason) if `commit_docs` is `false`, `.planning/` is gitignored, or a per-phase `phase_commit_docs.<phase-id>` override resolves `false` for the phase being committed. No manual conditional checks needed.
@@ -19,7 +19,7 @@ The CLI will return `skipped` (with reason) if `commit_docs` is `false`, `.plann
 To fold `.planning/` file changes into the previous commit:
 
 ```bash
-gsd-tools query commit "" --files .planning/codebase/*.md --amend
+gsd_run query commit "" --files .planning/codebase/*.md --amend
 ```
 
 ## Commit Message Patterns

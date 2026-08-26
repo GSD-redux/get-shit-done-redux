@@ -47,7 +47,7 @@ interface StateModule {
   cmdSignalWaiting(cwd: string, type: string | null | undefined, question: string | null | undefined, options: string | null | undefined, phase: string | null | undefined, raw: boolean): void;
   cmdSignalResume(cwd: string, raw: boolean): void;
   cmdStatePlannedPhase(cwd: string, phase: string | null | undefined, name: string | null | undefined, plans: number | null, raw: boolean): void;
-  cmdStateValidate(cwd: string, raw: boolean): void;
+  cmdStateValidate(cwd: string, raw: boolean, opts?: { strict?: boolean }): void;
   cmdStateSync(cwd: string, opts: { verify: string | boolean | null | undefined }, raw: boolean): void;
   cmdStatePrune(cwd: string, opts: { keepRecent: string; dryRun: boolean }, raw: boolean): void;
   cmdStateRebuild(cwd: string, opts: { dryRun: boolean; verbose: boolean }, raw: boolean): void;
@@ -186,7 +186,13 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
         // the authoritative current_phase_name, mirroring begin-phase.
         state.cmdStatePlannedPhase(cwd, strArg(a, 'phase'), strArg(a, 'name'), parsePlans(strArg(a, 'plans')), raw);
       },
-      validate: () => state.cmdStateValidate(cwd, raw),
+      validate: () => {
+        // #3696: --strict makes the verdict gateable by exit status. The
+        // default stays exit 0 — the exit code is Tier-2 observable output
+        // reaching unenumerable downstream consumers (ADR-3180 Decision 3).
+        const a = parseNamedArgs(args, [], ['strict']);
+        state.cmdStateValidate(cwd, raw, { strict: a['strict'] === true });
+      },
       sync: () => {
         const a = parseNamedArgs(args, [], ['verify']);
         state.cmdStateSync(cwd, { verify: a['verify'] }, raw);

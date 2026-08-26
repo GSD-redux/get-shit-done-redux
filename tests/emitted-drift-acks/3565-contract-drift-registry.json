@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "gsd-user-profiler.md": "#3565: gained the standard <required_reading> MUST-Read gate clause. profile-user.md sends a required-reading block; the agent's instructions never referenced the gate, so the clause could not fire — the F8 defect one layer up, caught by the new read-tag arm. +~200 bytes."
-  }
-}
