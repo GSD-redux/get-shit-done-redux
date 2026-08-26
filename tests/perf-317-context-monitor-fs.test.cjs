@@ -1523,5 +1523,12 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     assert.strictEqual(r.exitCode, 0, 'refusing the symlink is a give-up, never a hook failure');
     assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious victim bytes',
       'the symlink TARGET must be untouched — a truncating write that follows links empties it');
+    // Non-vacuity (Codex round 2): if the EPERM injection ever stops matching,
+    // the ordinary unlink simply REMOVES the symlink and the two assertions
+    // above still pass without the fallback ever running. The link surviving is
+    // the proof this row actually drove the refuse-to-follow branch.
+    assert.ok(fs.lstatSync(s.warnPath).isSymbolicLink(),
+      'the planted symlink must still be there — its absence means the unlink succeeded and the '
+      + 'fallback under test never executed');
   });
 });

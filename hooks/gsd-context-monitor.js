@@ -137,19 +137,24 @@ process.stdin.on('end', () => {
           // and 0 is falsy), so the flow reaches emit with
           // remaining === undefined.
           //
-          // O_NOFOLLOW, not writeFileSync: these paths live in a shared sticky
-          // tmpdir, where an unlink of a file another user planted is exactly
-          // what EPERM looks like — and a planted SYMLINK would make a plain
-          // truncating write empty out its TARGET instead (Codex review of
-          // #3808). Refusing to follow (ELOOP) lands in the same give-up arm.
-          // On Windows the constant is absent; `|| 0` keeps the fallback alive
-          // there, where the held-handle case it exists for actually occurs
-          // and temp dirs are per-user.
+          // Refuse to truncate through a LINK: these paths live in a shared
+          // sticky tmpdir, where an unlink of a file another user planted is
+          // exactly what EPERM looks like — and a planted SYMLINK would make a
+          // plain truncating write empty out its TARGET instead (Codex review
+          // of #3808). Two guards, because neither alone covers every
+          // platform: the lstat rejects anything that is not a regular file
+          // everywhere — including Windows, where O_NOFOLLOW does not exist
+          // and TEMP/TMP overrides mean the tmpdir is not guaranteed
+          // per-user — and O_NOFOLLOW (ELOOP), where the platform has it,
+          // closes the lstat→open substitution race as well. Every refusal
+          // lands in the same give-up arm.
           try {
-            fs.closeSync(fs.openSync(
-              stale,
-              fs.constants.O_WRONLY | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0)
-            ));
+            if (fs.lstatSync(stale).isFile()) {
+              fs.closeSync(fs.openSync(
+                stale,
+                fs.constants.O_WRONLY | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0)
+              ));
+            }
           } catch (e2) { /* give up, never throw */ }
         }
       }
