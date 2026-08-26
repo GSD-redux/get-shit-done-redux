@@ -364,6 +364,13 @@ function cmdRenderCheckpoint(cwd: string, options: { file?: string } = {}, raw: 
 // ─── parseCurrentTest ─────────────────────────────────────────────────────────
 
 function parseCurrentTest(content: string): CurrentTest {
+  // #3707-CR: this is the render-checkpoint path's own independent ingress
+  // into `tokenizeHeadings` (via the `parseFirstPendingTest` fallback below),
+  // separate from `parseUatItemsWithStats`'s. Normalize here too, ONCE, so a
+  // lone-CR document cannot hide its first pending row from this path either
+  // — see `normalizeLineEndings` for why.
+  content = normalizeLineEndings(content);
+
   // Use the seam to locate the ## Current Test section (ADR-1372 T5).
   // HTML-comment stripping within the section body is UAT-specific, so we keep
   // the comment removal caller-side after extracting the body.
@@ -1211,6 +1218,40 @@ function countUnattributedIndentedRows(surface: string): number {
 }
 
 /**
+ * Normalize every line ending in `content` to a bare `\n`, ONCE, at the point
+ * the document text enters this parser (#3707-CR).
+ *
+ * CommonMark treats a lone CR (no paired LF) as a line ending — such a
+ * document RENDERS as separate lines to a human reader — but every split site
+ * in this module (`content.split('\n')`, `tokenizeHeadings`, the
+ * `TEST_HEADING_LINE_RE` shortfall scan) keyed on `\n` alone, so a lone CR was
+ * invisible to BOTH sides of the round-7 symmetry invariant at once: no item,
+ * no shortfall, no `headingsSeen`. A phase hiding a `result: blocked` row this
+ * way reported 100% with zero diagnostics — a TOTAL false-clean, the exact
+ * class this issue exists to close.
+ *
+ * `/\r\n?/g` is deliberately ONE alternation, not two separate replaces: a
+ * two-pass `replace(/\r\n/g,'\n').replace(/\r/g,'\n')` is equivalent here
+ * because the first pass already consumes every CRLF pair before the second
+ * pass ever runs, but a single regex avoids relying on pass ORDER and matches
+ * greedily left-to-right in one scan, so a CRLF is always consumed as ONE
+ * unit (never left as a stray trailing `\r` after the `\n` half is matched
+ * first) and a lone CR — including one immediately followed by nothing, i.e.
+ * at EOF, or by another lone CR — is still replaced.
+ *
+ * Applied to `content` BEFORE any split, tokenize, or offset-bearing scan
+ * runs, and every one of those consumers reads the SAME reassigned `content`
+ * — never a mix of normalized and raw — so offsets/spans computed against it
+ * (`heading.offset`, `content.slice(...)`) stay self-consistent. This is
+ * deliberately NOT a length-preserving transform (CRLF, two UTF-16 units,
+ * becomes LF, one), so offsets are only ever compared against THIS normalized
+ * string, never against the original raw text.
+ */
+function normalizeLineEndings(content: string): string {
+  return content.replace(/\r\n?/g, '\n');
+}
+
+/**
  * `headingsSeen` is the TOTAL parse-gap tally (every heading-shaped thing this
  * parser could not turn into an item). `shortfallBlocks` is the SUBSET of it
  * contributed by the fence-suppression shortfall scan below — the one gap class
@@ -1220,10 +1261,21 @@ function countUnattributedIndentedRows(surface: string): number {
  * Reported separately so a consumer that must decide whether to WITHHOLD a
  * derived number — as opposed to merely REPORT the gap — can tell "a row I
  * definitely could not read" from "a row I possibly mis-counted".
- * `src/planning-inspect.cts`'s `buildUatRows` is that consumer; `cmdAuditUat`
- * is not, and still gates `parse_gap` on the total.
+ *
+ * #3707-CR: `src/planning-inspect.cts`'s `buildUatRows` does NOT destructure
+ * this field (verified — it and `cmdAuditUat` both consume only `items` and
+ * `headingsSeen`), correcting an earlier stated instruction that it did.
+ * `shortfallBlocks` currently has NO production consumer outside this
+ * function's own computation. It is retained on the return value anyway,
+ * deliberately, as part of this function's published stats contract — tests
+ * assert on the full `{ items, headingsSeen, shortfallBlocks }` shape, and
+ * dropping a returned field is a wider, unrelated change than a line-ending
+ * fix warrants. A future consumer that needs to distinguish an
+ * accepted-over-report shortfall from the rest of `headingsSeen` (the
+ * original design intent above) can still do so.
  */
 function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number; shortfallBlocks: number } {
+  content = normalizeLineEndings(content);
   const items: UatItem[] = [];
   let headingsSeen = 0;
   let shortfallBlocks = 0;

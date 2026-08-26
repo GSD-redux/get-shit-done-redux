@@ -1418,30 +1418,34 @@ describe('planning inspect — evidence kept separate, never folded', () => {
 
   // ─── #3707-CR security review MEDIUM ────────────────────────────────────────
   //
-  // [FAILING-FIRST, DO NOT "FIX" src/ TO MAKE THIS PASS — see dispatch brief]
+  // A lone CR (`String.fromCharCode(13)`, no paired LF) is a CommonMark line
+  // ending — a document using it renders as separate lines to a human reader.
+  // `src/uat.cts` now normalizes every line ending at parse ingress
+  // (`normalizeLineEndings`), so the row is no longer hidden: it is parsed and
+  // surfaces as a visible outstanding `uat.unresolved` item, exactly like its
+  // LF twin. See `tests/uat.test.cjs`'s "#3707-CR" describe block for the
+  // parser-level pin this end-to-end case is downstream of.
   //
-  // `writeUatDoc`'s `eol` parameter lets a fixture join its body lines on a
-  // separator OTHER than `\n` (see `writeUatDoc`/`writeVerification` above,
-  // already exercised for CRLF elsewhere in this suite). Passing a LONE CR
-  // (`String.fromCharCode(13)`, no paired LF) produces a UAT document that
-  // CommonMark still renders as separate lines to a human reader, but that
-  // `gsd-core/bin/lib/uat.cjs`'s `content.split('\n')`-based scan (both the
-  // heading tokenizer and the whole-document shortfall comparison) cannot see
-  // as line-separated at all — see `tests/uat.test.cjs`'s
-  // "#3707-CR" describe block for the parser-level reproduction this
-  // end-to-end case is downstream of. The outstanding `result: blocked` row
-  // must not silently roll up into an affirmative 100%.
-  test('[RED] a lone-CR UAT document hides a blocked row and must not report an affirmative percentage', (t) => {
-    const tmpDir = createTempProject();
-    t.after(() => cleanup(tmpDir));
-    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
-    writeVerification(phaseDir, '1', 'passed');
+  // This test does NOT assert `percent === null` (an earlier version of this
+  // test did, and was wrong — reasoning from the PRE-fix symptom instead of
+  // the post-fix behavior). A surfaced `result: blocked` row is VISIBLE
+  // outstanding work, not unreadable evidence, and this module's pinned
+  // invariant is that visible outstanding UAT work deliberately does NOT
+  // withhold percentages or degrade scope — only genuinely UNREADABLE
+  // evidence does (`keepsUnresolvedUatAndPassingVerificationSeparateWithNoCombinedVerdict`,
+  // `uatAbsenceDoesNotAffectAcceptedPhases`, "evidence kept separate, never
+  // folded"). Do not "fix" this test back to `percent === null` — the
+  // asymmetry it once demanded would be the bug, not the fix.
+  //
+  // The contract that actually matters, and is much harder to satisfy
+  // accidentally, is PARITY: a line-ending convention must not change what
+  // the audit reports. Both documents below are derived from ONE source
+  // string, differing only in which separator carries the line break, so the
+  // two fixtures cannot drift apart under later editing.
+  test('lineEndingConventionDoesNotChangeUatAuditOutputLoneCrMatchesLf', () => {
+    const LF = '\n';
     const CR = String.fromCharCode(13);
-    // Same content shape as `FENCE_STRADDLED_BLOCKED_BODY` above (a passing
-    // row followed by an outstanding `result: blocked` row), but separated
-    // by a lone CR instead of `\n` — the `eol` this file's own `writeUatDoc`
-    // helper already supports for CRLF fixtures.
-    writeUatDoc(phaseDir, '1', [
+    const sourceLines = [
       '---',
       'status: complete',
       '---',
@@ -1455,21 +1459,47 @@ describe('planning inspect — evidence kept separate, never folded', () => {
       'expected: the export works',
       'result: blocked',
       '',
-    ], CR);
+    ];
 
-    const payload = parseInspect(tmpDir);
-    const phase = payload.phases[0];
-    const describeAll = () => JSON.stringify({ phase, diagnostics: payload.diagnostics }, null, 2);
+    function runWithEol(eol) {
+      const tmpDir = createTempProject();
+      const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+      writeVerification(phaseDir, '1', 'passed');
+      writeUatDoc(phaseDir, '1', sourceLines, eol);
+      const payload = parseInspect(tmpDir);
+      cleanup(tmpDir);
+      return payload;
+    }
 
-    // What must be ABSENT: the hidden `blocked` row must not roll up into an
-    // affirmative, fully-accepted milestone.
-    assert.notStrictEqual(payload.progress.accepted_phases.percent, 100, describeAll());
-    assert.strictEqual(payload.progress.accepted_phases.percent, null, describeAll());
-    assert.notStrictEqual(phase.uat.scope, 'complete', describeAll());
-    assert.ok(
-      payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')),
+    const lfPayload = runWithEol(LF);
+    const crPayload = runWithEol(CR);
+    const lfPhase = lfPayload.phases[0];
+    const crPhase = crPayload.phases[0];
+    const describeAll = () => JSON.stringify({ lf: lfPhase, cr: crPhase }, null, 2);
+
+    const rowIdentity = (row) => ({ test: row.test, name: row.name, result: row.result });
+    const diagnosticCodes = (payload) => [...new Set(payload.diagnostics.map((d) => d.code))].sort();
+
+    assert.strictEqual(crPhase.uat.scope, lfPhase.uat.scope, describeAll());
+    assert.strictEqual(crPhase.scope, lfPhase.scope, describeAll());
+    assert.strictEqual(
+      crPayload.progress.accepted_phases.percent,
+      lfPayload.progress.accepted_phases.percent,
       describeAll(),
     );
+    assert.deepStrictEqual(
+      crPhase.uat.unresolved.map(rowIdentity),
+      lfPhase.uat.unresolved.map(rowIdentity),
+      describeAll(),
+    );
+    assert.deepStrictEqual(diagnosticCodes(crPayload), diagnosticCodes(lfPayload), describeAll());
+
+    // Sanity: the row is genuinely surfaced on both sides, not vacuously
+    // absent from both (which would make the equality checks above trivially
+    // pass without proving anything).
+    assert.strictEqual(lfPhase.uat.scope, 'complete', describeAll());
+    assert.strictEqual(lfPayload.progress.accepted_phases.percent, 100, describeAll());
+    assert.ok(lfPhase.uat.unresolved.some((r) => r.name === 'Beta' && r.result === 'blocked'), describeAll());
   });
 
   // ─── Multi-file degrade ─────────────────────────────────────────────────────
