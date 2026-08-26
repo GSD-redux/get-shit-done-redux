@@ -1,5 +1,5 @@
 // Guards the dispatch model-pin VALUE policy in gsd-core/bin/gsd-tools.cjs
-// (`resolveDispatchModelPin`, `MODEL_ID_CHARSET_RE`,
+// (`resolveDispatchModelPin`, `MODEL_ID_CHARSET_RE`, `MODEL_ID_CHARSET_BODY`,
 // `MODEL_ID_SANITIZE_STRIP_RE`, `MODEL_ID_MAX_LENGTH`):
 //
 //  - Item 1: the accept-class (matcher) and the render-class (sanitizer)
@@ -27,6 +27,7 @@ const gsdTools = require('../gsd-core/bin/gsd-tools.cjs');
 const {
   resolveDispatchModelPin,
   MODEL_ID_CHARSET_RE,
+  MODEL_ID_CHARSET_BODY,
   MODEL_ID_SANITIZE_STRIP_RE,
   MODEL_ID_MAX_LENGTH,
 } = gsdTools;
@@ -164,11 +165,14 @@ describe('#3714 follow-up: dispatch model-pin VALUE policy', () => {
       const sanitized = value.replace(MODEL_ID_SANITIZE_STRIP_RE, '?');
       assert.strictEqual(sanitized, value, `"${ch}" is accepted but was sanitized away`);
     }
-    // Sanity check the referenced literal class body matches what the
-    // production regexes were actually built from, so this test fails if
-    // gsd-tools.cjs's MODEL_ID_CHARSET_BODY is edited without updating
-    // this test's expectations.
-    void acceptedNonLeadingChars;
+    // Assert the literal class body above EQUALS the exported production
+    // value, so this test fails if gsd-tools.cjs's MODEL_ID_CHARSET_BODY is
+    // edited (e.g. widened) without updating this test's expectations.
+    assert.strictEqual(
+      acceptedNonLeadingChars,
+      MODEL_ID_CHARSET_BODY,
+      'this test\'s expected charset has drifted from gsd-tools.cjs\'s MODEL_ID_CHARSET_BODY',
+    );
   });
 
   test('item 1 (property): fast-check — any string accepted by MODEL_ID_CHARSET_RE is unchanged by the sanitizer', () => {
