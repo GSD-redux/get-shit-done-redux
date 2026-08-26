@@ -445,6 +445,32 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
     }
   });
 
+  test('validate-commit blocks a command smuggled before the cat', () => {
+    // Codex review of #3816. `$(id;/bin/cat <<'EOF' ...` runs `id` FIRST, so
+    // git's real subject is id's output — but the resolver read the heredoc
+    // body and the conforming `fix: smuggled` sailed through: an enforcement
+    // bypass end to end. Recognition now rejects a path prefix carrying shell
+    // metacharacters and the whole form falls back to blocked.
+    const result = runHookCmd(`git commit -m "$(id;/bin/cat <<'EOF'\nfix: smuggled\nEOF\n)"`);
+    assert.strictEqual(result.status, 2,
+      'a command substitution that runs anything besides cat cannot have its heredoc body '
+      + 'trusted as the subject');
+    assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+  });
+
+  test('KNOWN LIMIT: the <<"TAG" spelling stays blocked — the capture cannot deliver it', () => {
+    // This row pins a LIMIT, not desired behaviour (Codex review of #3816).
+    // The `-m` capture stops at the first `"`, which in this spelling is the
+    // delimiter's own quote, so the resolver only ever sees a truncated opener
+    // and even a conforming message is blocked — the pre-fix behaviour for the
+    // whole form, fail closed. If this row ever starts passing, the capture
+    // changed: re-review every embedded-quote case before celebrating.
+    const result = runHookCmd(heredoc('feat(api): conforming subject', '<<"EOF"', 'EOF'));
+    assert.strictEqual(result.status, 2,
+      'documented residual false-positive on the double-quoted delimiter spelling');
+    assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+  });
+
   test('validate-commit does not treat a message ENDING in <<WORD as a heredoc', () => {
     // Enforcement bypass found in review of #3802: an earlier revision recognised
     // the opener without anchoring it to a command substitution, so this resolved

@@ -4521,6 +4521,33 @@ describe('git-cmd.js resolveCommitSubject', () => {
       'fix(parser): handle a << b shifts');
   });
 
+  test('a COMMAND smuggled before the cat is not a path — recognition must fail closed', () => {
+    // Codex review of #3816: `\S*` as the path prefix accepted `id;/bin/cat`,
+    // so the resolver validated the heredoc BODY while bash runs `id` first and
+    // git's real subject is id's OUTPUT — an enforcement bypass. A prefix
+    // carrying any shell metacharacter now fails recognition and falls back to
+    // the opener line, which the format gate rejects.
+    assert.strictEqual(resolveCommitSubject("$(id;/bin/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
+      "$(id;/bin/cat <<'EOF'");
+    assert.strictEqual(resolveCommitSubject("$(x&&/bin/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
+      "$(x&&/bin/cat <<'EOF'");
+    assert.strictEqual(resolveCommitSubject("$(a|b/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
+      "$(a|b/cat <<'EOF'");
+    // the legitimate path-qualified form is unchanged
+    assert.strictEqual(resolveCommitSubject("$(/usr/bin/cat <<'EOF'\nfix: pathed\nEOF\n)"),
+      'fix: pathed');
+  });
+
+  test('a Unicode-blank first line is the SUBJECT — git keeps what trim() skips', () => {
+    // Codex review of #3816, verified against `git stripspace`: git's blank is
+    // ASCII space/tab, so a NBSP line is PRESERVED and is the real subject.
+    // JavaScript's trim() treated it as blank and resolved to the second line —
+    // validating a line git never uses, an enforcement bypass.
+    const nbsp = '\u00a0';
+    assert.strictEqual(resolveCommitSubject(`$(cat <<'EOF'\n${nbsp}\nfix: smuggled\nEOF\n)`), nbsp,
+      'the NBSP line must be returned (and fail the format gate), never skipped past');
+  });
+
   test('MAJOR 3: a TRUNCATED capture is not resolved at all', () => {
     // The `-m` capture stops at the first `"`, so a message containing one
     // arrives here without its tail — and without its terminator. Resolving
@@ -4645,7 +4672,15 @@ describe('git-cmd.js resolveCommitSubject', () => {
         const untabbed = l.replace(/^\t+/, '');
         return [l, untabbed, untabbed.replace(/[ \t]+$/, '')];
       };
-      assert.ok(out === '' || lines.some((l) => derivations(l).includes(out)),
+      // '' is only a legitimate result for a HEREDOC-shaped input (an empty
+      // resolved message); a plain message's subject is its first line
+      // verbatim, so a resolver degrading to '' anywhere else must fail here.
+      // Unconditional acceptance let a conditional constant-'' regression pass
+      // every property while also feeding the corpus floor (Codex review of
+      // #3816). The shape probe is deliberately loose — recognition itself is
+      // pinned by the example rows, not re-derived here.
+      const emptyAllowed = /^\$\(\s*\S*cat\s+<</.test(lines[0]);
+      assert.ok((out === '' && emptyAllowed) || lines.some((l) => derivations(l).includes(out)),
         `result ${JSON.stringify(out)} is not derived from any line of the input`);
       if (out !== firstLineOf(input)) resolved += 1;
     }));

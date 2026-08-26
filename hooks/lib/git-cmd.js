@@ -221,6 +221,16 @@ function isGitSubcommand(cmd, sub) {
  * argument, and the anchored recognition above is unaffected by it (review of
  * #3816).
  *
+ * KNOWN LIMIT: the DOUBLE-QUOTED delimiter spelling (`<<"EOF"`) is resolvable
+ * here but unreachable through the caller — `gsd-validate-commit.sh`'s `-m`
+ * capture stops at the first `"`, which in that spelling is the delimiter's own
+ * quote, so the resolver only ever sees a truncated opener and the commit stays
+ * blocked. That is the pre-fix behaviour for the whole form (fail closed, a
+ * false positive on one rare spelling), and widening the bash capture to span
+ * inner quotes would change what is captured for EVERY message containing one —
+ * a regression class this fix deliberately does not touch (Codex review of
+ * #3816).
+ *
  * @param {string} messageArg - the raw `-m` argument, already selected by the caller
  * @returns {string} the subject to validate
  */
@@ -231,7 +241,14 @@ function resolveCommitSubject(messageArg) {
   // and a real 72-char subject measured 73 (review of #3816). Splitting on
   // /\r?\n/ is the repo-wide remedy for this recurring defect class.
   const lines = String(messageArg == null ? '' : messageArg).split(/\r?\n/);
-  const opener = /^\$\(\s*(?:\S*\/)?cat\s+<<(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))\s*$/
+  // The path prefix is a PATH-CHARACTER class, not \S*: `\S*` accepted
+  // `id;/bin/cat`, so `$(id;/bin/cat <<'EOF' ...` was resolved to its heredoc
+  // body while bash actually runs `id` first and git's real subject is `id`'s
+  // OUTPUT — an enforcement bypass (Codex review of #3816). A prefix carrying
+  // any shell metacharacter now fails recognition, which falls back to the
+  // opener line and the format gate: fail closed, exactly the pre-fix
+  // behaviour for the whole form.
+  const opener = /^\$\(\s*(?:[\w./-]*\/)?cat\s+<<(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))\s*$/
     .exec(lines[0]);
   if (!opener) return lines[0];
 
@@ -255,7 +272,14 @@ function resolveCommitSubject(messageArg) {
   // returned '' for a body that starts blank and falsely blocked a conforming
   // commit — the very defect class #3802 reports (review of #3802).
   const scan = end === -1 ? body : body.slice(0, end);
-  const idx = scan.findIndex((l) => l.trim() !== '');
+  // "Blank" is git's ASCII definition — space and tab — never JavaScript's
+  // trim(), whose Unicode whitespace class skips lines git KEEPS: a body whose
+  // first line is a NBSP resolved to the SECOND line while git's real subject
+  // is the NBSP line — an enforcement bypass (Codex review of #3816, verified
+  // against `git stripspace`, which preserves the c2a0 bytes). A Unicode-blank
+  // first line is now returned as the subject and fails the format gate: the
+  // same fail-closed direction git itself takes.
+  const idx = scan.findIndex((l) => !/^[ \t]*$/.test(l));
   if (idx === -1) return end === -1 ? lines[0] : '';
 
   // Truncation is only fatal to the line it lands IN. A captured line is complete
