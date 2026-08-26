@@ -5869,6 +5869,12 @@ export = {
   _resolveFrontmatterPath: resolveFrontmatterPath,
   _stateFieldValuesDiffer: stateFieldValuesDiffer,
   _STATE_UPDATED_PROVENANCE_EXCLUSION: STATE_UPDATED_PROVENANCE_EXCLUSION,
+  // Test seam (#3873 phase-3 test matrix row 9): `bodyLabelFor` itself is not
+  // otherwise reachable from outside this module. Exposed so a test can drive
+  // the real STATE_BODY_LABEL_UNWIRED_ROW throw directly, rather than only
+  // pinning the table it reads (`_FRONTMATTER_KEY_TO_BODY_LABEL`) against
+  // itself.
+  _bodyLabelFor: bodyLabelFor,
   // Test seam (audit M1): inject a deterministic isPidAlive so the liveness-gated
   // steal decision is exercised without real pids. Mirrors capability-lock.cts.
   _setLockProbes(probes: Partial<{ isPidAlive: (pid: number) => boolean }>): void {

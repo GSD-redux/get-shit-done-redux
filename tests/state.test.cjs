@@ -7183,6 +7183,136 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
   });
 });
 
+// ─── #3873 row 9: bodyLabelFor still throws STATE_BODY_LABEL_UNWIRED_ROW for ──
+// an unwired preserve-when-unchanged row, now that FRONTMATTER_KEY_TO_BODY_LABEL
+// (state.cts) is a projection of STATE_FIELD_SCHEMA (src/state-md-schema.cts)
+// rather than a hand-maintained literal. Every real preserve-when-unchanged
+// row is fully wired today (pinned by the parity tests above), so this test
+// cannot reach the throw through a genuine schema key — it simulates the
+// "future row added to FIELD_CLASSIFICATION without a matching label" case
+// #3471 review names, by overriding getFieldClassification on the shared,
+// cached module object for the duration of one test, restored via t.after()
+// (never try/finally in the test body per repo convention).
+describe('#3873 row 9: bodyLabelFor still throws for an unwired preserve-when-unchanged row', () => {
+  test('unwiredLabelRowStillThrowsFromTheSchema', (t) => {
+    const FAKE_FIELD = '__gsd_3873_unwired_probe__';
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL, FAKE_FIELD),
+      false,
+      'probe field name must not collide with a real label row',
+    );
+
+    const original = stateTransitionMod.getFieldClassification;
+    t.after(() => {
+      stateTransitionMod.getFieldClassification = original;
+    });
+    stateTransitionMod.getFieldClassification = (field) =>
+      (field === FAKE_FIELD
+        ? { source: 'body', preservation: 'preserve-when-unchanged' }
+        : original(field));
+
+    assert.throws(
+      () => stateLib._bodyLabelFor(FAKE_FIELD),
+      (err) => {
+        assert.strictEqual(err.code, 'STATE_BODY_LABEL_UNWIRED_ROW');
+        assert.strictEqual(err.field, FAKE_FIELD);
+        return true;
+      },
+    );
+  });
+});
+
+// ─── #3873 row 29 (property): every projection agrees with its schema row ───
+// For every STATE_FIELD_SCHEMA row, each of the three derived tables either
+// omits the key entirely or agrees with that row's corresponding value —
+// the bijective contract CLAUDE.md's property-test rule requires for a
+// consolidation like this one. fast-check v4: the arbitrary is declared
+// INSIDE the property (a describe-body arbitrary kills the whole block), the
+// seed is pinned and numRuns bounded for a deterministic, bounded run, and a
+// failure re-throws with the seed spelled out so it names its own replay.
+describe('#3873 row 29 (property): every projection agrees with its schema row', () => {
+  test('everyProjectionAgreesWithItsSchemaRow', () => {
+    const { STATE_FIELD_SCHEMA } = require('../gsd-core/bin/lib/state-md-schema.cjs');
+    const schemaKeys = Object.keys(STATE_FIELD_SCHEMA);
+    // Sanity: a property over zero keys would pass vacuously (CLAUDE.md's
+    // Test Cleanup rule against vacuous-truth tests).
+    assert.ok(schemaKeys.length > 0, 'STATE_FIELD_SCHEMA must be non-empty for this property to be meaningful');
+
+    const SEED = 38730029;
+    try {
+      fc.assert(
+        fc.property(fc.constantFrom(...schemaKeys), (key) => {
+          const row = STATE_FIELD_SCHEMA[key];
+
+          if (Object.prototype.hasOwnProperty.call(stateTransitionMod.FIELD_CLASSIFICATION, key)) {
+            const cls = stateTransitionMod.FIELD_CLASSIFICATION[key];
+            assert.strictEqual(cls.source, row.source, `FIELD_CLASSIFICATION[${key}].source disagrees with schema`);
+            assert.strictEqual(cls.preservation, row.preservation, `FIELD_CLASSIFICATION[${key}].preservation disagrees with schema`);
+            assert.strictEqual(cls.guard, row.guard, `FIELD_CLASSIFICATION[${key}].guard disagrees with schema`);
+            assert.strictEqual(cls.mergeStrategy, row.mergeStrategy, `FIELD_CLASSIFICATION[${key}].mergeStrategy disagrees with schema`);
+          }
+          if (Object.prototype.hasOwnProperty.call(stateTransitionMod.FRONTMATTER_BODY_SOURCE, key)) {
+            assert.deepStrictEqual(
+              Array.from(stateTransitionMod.FRONTMATTER_BODY_SOURCE[key]),
+              Array.from(row.bodySource || []),
+              `FRONTMATTER_BODY_SOURCE[${key}] disagrees with schema`,
+            );
+          }
+          if (Object.prototype.hasOwnProperty.call(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL, key)) {
+            assert.strictEqual(
+              stateLib._FRONTMATTER_KEY_TO_BODY_LABEL[key],
+              row.bodyLabel,
+              `FRONTMATTER_KEY_TO_BODY_LABEL[${key}] disagrees with schema`,
+            );
+          }
+          return true;
+        }),
+        { seed: SEED, numRuns: 200 },
+      );
+    } catch (err) {
+      throw new Error(`everyProjectionAgreesWithItsSchemaRow failed (seed=${SEED} — replay: fc.assert(..., { seed: ${SEED} })): ${err.message}`, { cause: err });
+    }
+  });
+});
+
+// ─── #3873 phase-3 row 26: statusEnumIsExactlyTheLifecycleSet ──────────────
+// CORRECTED contract (verified by executing `normalizeStateStatus`, not by
+// reading `STATUS_LIFECYCLE_ENUM`'s prior docstring claim): the enum's seven
+// members are the values the normalizer maps recognized input TO — they are
+// NOT a runtime-enforced closed set for the `status` key. `normalizeStateStatus`
+// (`src/state-document.cts`) is deliberately lenient: its fallback is
+// `status || 'unknown'`, so an input matching none of its substring branches
+// passes straight through, unrejected and uncoerced. This test asserts the
+// real, non-vacuous contract that IS true: every canonical value normalizes
+// to itself, and an unrecognized value passes through unchanged — it does
+// not assert a closure the normalizer does not enforce.
+describe('#3873 phase-3 row 26: status enum matches the real normalizer contract', () => {
+  test('statusEnumIsExactlyTheLifecycleSet', () => {
+    const { STATUS_LIFECYCLE_ENUM } = require('../gsd-core/bin/lib/state-md-schema.cjs');
+    const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');
+
+    assert.ok(STATUS_LIFECYCLE_ENUM.length > 0, 'STATUS_LIFECYCLE_ENUM must be non-empty for this test to be meaningful');
+
+    for (const member of STATUS_LIFECYCLE_ENUM) {
+      assert.strictEqual(
+        normalizeStateStatus(member, null),
+        member,
+        `canonical value ${JSON.stringify(member)} must normalize to itself`,
+      );
+    }
+
+    // A non-member is NOT rejected or coerced — it passes through unchanged,
+    // because the normalizer is lenient, not closed.
+    const nonMember = 'totally-unrecognized-status-text';
+    assert.ok(!STATUS_LIFECYCLE_ENUM.includes(nonMember), 'probe value must genuinely be a non-member');
+    assert.strictEqual(
+      normalizeStateStatus(nonMember, null),
+      nonMember,
+      'an unrecognized status value must pass through unchanged, not be coerced into the enum',
+    );
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Bug #2444: stopped_at frontmatter must not be overwritten by historical body prose
 // ─────────────────────────────────────────────────────────────────────────────

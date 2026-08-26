@@ -65,15 +65,26 @@ export type FieldGuard = 'non-sentinel-unknown';
 export type FieldMergeStrategy = 'progress-ratchet';
 
 /**
- * `status`'s closed lifecycle, as `normalizeStateStatus` (`src/state-document.cts`)
- * actually computes it — the function's default fallback plus each branch's
- * literal output, in the order the function tests them. This is NOT the raw
- * body prose vocabulary `CONTEXT.md`'s "STATE.md Status Lifecycle (ADR-2207)"
- * entry documents (`Ready to plan` → `All phases complete` → `<version>
- * milestone complete` → `Awaiting next milestone`, plus the handler-authored
- * strings in `KNOWN_TEMPLATE_DEFAULTS['Status']`) — that is free-form prose
- * `normalizeStateStatus` READS. This is the closed, seven-member set the
- * FRONTMATTER `status` key can actually hold once that function has run.
+ * The seven CANONICAL values `normalizeStateStatus` (`src/state-document.cts`)
+ * maps recognized raw status prose TO — the function's default fallback plus
+ * each branch's literal output, in the order the function tests them. This is
+ * NOT the raw body prose vocabulary `CONTEXT.md`'s "STATE.md Status Lifecycle
+ * (ADR-2207)" entry documents (`Ready to plan` → `All phases complete` →
+ * `<version> milestone complete` → `Awaiting next milestone`, plus the
+ * handler-authored strings in `KNOWN_TEMPLATE_DEFAULTS['Status']`) — that is
+ * free-form prose `normalizeStateStatus` READS.
+ *
+ * CORRECTED (#3873 phase-3 test-matrix row 26 — verified by executing
+ * `normalizeStateStatus`, not by reading this docstring's prior claim):
+ * this is NOT a closed set the `status` frontmatter key is restricted to at
+ * runtime. `normalizeStateStatus` is deliberately LENIENT: its fallback is
+ * `normalizedStatus = status || 'unknown'`, and when none of its
+ * substring-match branches recognize the raw input, that fallback — the
+ * caller's raw, UNRECOGNIZED prose — is returned unchanged. A status value
+ * outside this seven-member set is not rejected, coerced, or normalized; it
+ * passes straight through into the frontmatter. `STATUS_LIFECYCLE_ENUM` is
+ * therefore the set of values the normalizer maps recognized input ONTO, not
+ * a runtime-enforced closed vocabulary for the field.
  */
 export const STATUS_LIFECYCLE_ENUM = Object.freeze([
   'unknown',
@@ -157,19 +168,37 @@ export const STATE_FIELD_SCHEMA: Readonly<Record<string, StateFieldSchema>> = Ob
       current_plan: {
         type: 'string', cardinality: 'optional', source: 'body', preservation: 'preserve-when-unchanged',
         bodySource: Object.freeze(['Current Plan']), bodyLabel: 'Current Plan',
-        // #3784 (fixed 180d0dd0c): `advancePlanCore` reads the `Current Plan`
-        // body field in exactly two value shapes — a bare number (`N`, paired
-        // with a separate `Total Plans in Phase` field) and the hybrid compound
-        // `N of M` (same field name, no `Total Plans in Phase` sibling — the
-        // shape an agent wrote unprompted and every subsequent run inherited
-        // the parse failure on). A THIRD spelling exists in the same fix —
-        // `Plan: N of M` — but that is a DIFFERENT body field name
-        // (`Plan`, not `Current Plan`) that `buildStateFrontmatter` never
-        // reads into `current_plan` at all (verified: it calls
-        // `stateExtractField(bodyContent, 'Current Plan')` only), so it is
-        // deliberately NOT declared here — declaring it would assert a
-        // frontmatter derivation this key does not have.
-        acceptedShapes: Object.freeze(['N', 'N of M']),
+        // #3873 phase-3 test-matrix row 25 (verified by executing
+        // `advancePlanCore`, `src/state-transition.cts:1306`, not by reading
+        // its docstring): TODAY the `Current Plan` body field parses in
+        // exactly ONE shape — a bare number `N`, paired with a separate
+        // `Total Plans in Phase` field. The hybrid compound `N of M` written
+        // directly into `Current Plan` (no `Total Plans in Phase` sibling)
+        // does NOT parse: `legacyTotal` is absent, `planField` reads the
+        // DIFFERENT `Plan` field (also absent), so the function falls to its
+        // NaN/NaN error branch. Feeding `Current Plan: 2 of 5` WITH a
+        // `Total Plans in Phase` sibling present does not change this — it
+        // "succeeds" only because `parseInt("2 of 5", 10)` truncates to `2`
+        // and the sibling supplies the total; the `of 5` half is silently
+        // discarded, which is `parseInt` coincidence, not shape recognition.
+        // `Plan: N of M` (a DIFFERENT field name) DOES parse the hybrid shape,
+        // but `buildStateFrontmatter` never reads `Plan` into `current_plan`
+        // (verified: it calls `stateExtractField(bodyContent, 'Current Plan')`
+        // only), so that shape is out of scope for this row regardless.
+        //
+        // #3784 is the open issue for teaching `Current Plan` to read the
+        // hybrid shape; **PR #3791** ("fix(#3784): read the hybrid
+        // `Current Plan: N of M` shape, keep zero-padding, and name the
+        // accepted shapes on failure") is the in-flight fix. Do NOT widen
+        // this row speculatively — that would assert a shape the shipped
+        // parser does not accept, which is the exact defect class §8.8
+        // exists to make impossible. When #3791 merges, `acceptedShapes`
+        // MUST widen to `['N', 'N of M']` — until then, the row 23/24/25
+        // parser-shape tests (`tests/state-transition.test.cjs`) will go RED
+        // the moment the parser changes underneath it. That failure is the
+        // forcing function working as designed, not a broken test: it is
+        // what stops the schema and the parser from drifting apart silently.
+        acceptedShapes: Object.freeze(['N']),
         emitted: 'when-present',
       } as StateFieldSchema,
 

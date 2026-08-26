@@ -623,6 +623,113 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
   });
 });
 
+// ─── #3873 phase-3 test-matrix rows 23/24/25: parser accepts EXACTLY the ────
+// schema-declared shapes — no more, no fewer.
+//
+// Table-driven over every STATE_FIELD_SCHEMA row carrying `acceptedShapes`
+// (today: only `current_plan`), so declaring `acceptedShapes` on a future row
+// gets gated automatically. A row with a driver missing from PARSER_DRIVERS
+// fails loudly (row24/row23 below) rather than silently skipping — that is
+// what keeps the table-driven claim honest as rows are added.
+//
+// The declaration itself was corrected against OBSERVED parser behavior
+// (verified by executing `advancePlanCore`, not by reading its prior
+// docstring's claim): `current_plan.acceptedShapes` is `['N']` only.
+// `Current Plan: N of M` standalone does NOT parse today — `advancePlanCore`
+// (`src/state-transition.cts:1306`) requires a `Total Plans in Phase`
+// sibling for the bare-`N` path; with no sibling and no separate `Plan`
+// field, it falls to its NaN/NaN error branch. #3784 is the open issue for
+// teaching it the hybrid shape; **PR #3791** ("fix(#3784): read the hybrid
+// `Current Plan: N of M` shape, keep zero-padding, and name the accepted
+// shapes on failure") is the in-flight fix. When #3791 merges,
+// `acceptedShapes` MUST widen to `['N', 'N of M']` — until then, this suite
+// pins today's reality, and it is EXPECTED to go RED the moment the parser
+// changes underneath it. That is the forcing function working as designed
+// (§8.8 "checked, not generated"), not a broken test.
+describe('#3873 phase-3 rows 23/24/25: parser accepts exactly the schema-declared shapes', () => {
+  const deps = { clock: fixedClock };
+
+  // Bare `N` only ever appears in a real STATE.md paired with a sibling
+  // `Total Plans in Phase` field (that pairing is what supplies the total
+  // `advancePlanCore` needs). `N of M` / `N/M` are driven WITHOUT that
+  // sibling, because the entire point of a hybrid shape is that it is
+  // self-contained in the `Current Plan` field alone — pairing it with a
+  // sibling would let the sibling's total paper over a value `parseInt`
+  // cannot fully read, which is the exact coincidence row 25 exists to catch.
+  function driveCurrentPlanShape(shapeValue, { withTotalSibling = false } = {}) {
+    const lines = ['# Project State', '', `**Current Plan:** ${shapeValue}`];
+    if (withTotalSibling) lines.push('**Total Plans in Phase:** 5');
+    lines.push('**Status:** Executing Phase 3', '');
+    const result = transitionCore(lines.join('\n'), { kind: 'advancePlan' }, deps);
+    return !(result.data && result.data.error === true);
+  }
+
+  // field -> (shape value, drive opts) -> boolean "did it parse"
+  const PARSER_DRIVERS = {
+    current_plan: driveCurrentPlanShape,
+  };
+
+  // shape name -> [example value, drive opts]
+  const SHAPE_EXAMPLES = {
+    'N': ['3', { withTotalSibling: true }],
+    'N of M': ['3 of 5', {}],
+    'N/M': ['3/5', {}],
+  };
+
+  const rowsWithAcceptedShapes = Object.entries(STATE_FIELD_SCHEMA).filter(
+    ([, row]) => Array.isArray(row.acceptedShapes),
+  );
+
+  test('sanity: at least one schema row declares acceptedShapes (else this suite is vacuous)', () => {
+    assert.ok(rowsWithAcceptedShapes.length > 0, 'expected at least one acceptedShapes row to pin');
+  });
+
+  test('unsupportedDeclaredShapeFails: every declared shape parses via the real parser (row 24)', () => {
+    for (const [field, row] of rowsWithAcceptedShapes) {
+      const driver = PARSER_DRIVERS[field];
+      assert.ok(driver, `no PARSER_DRIVERS entry for field ${JSON.stringify(field)} — register one before declaring acceptedShapes on it`);
+      for (const shape of row.acceptedShapes) {
+        const example = SHAPE_EXAMPLES[shape];
+        assert.ok(example, `no SHAPE_EXAMPLES entry for shape ${JSON.stringify(shape)} (field ${JSON.stringify(field)})`);
+        const [value, opts] = example;
+        const parsed = driver(value, opts);
+        assert.strictEqual(parsed, true, `declared shape ${JSON.stringify(shape)} for field ${JSON.stringify(field)} did not parse`);
+      }
+    }
+  });
+
+  test('undeclaredParserShapeFails: a shape outside the declared set is rejected (row 23)', () => {
+    // 'N of M' is deliberately excluded from current_plan's declared set
+    // today (the #3784/#3791 boundary); 'N/M' is a fourth spelling that has
+    // never been declared for any row. Both must fail to parse.
+    for (const [field, row] of rowsWithAcceptedShapes) {
+      const driver = PARSER_DRIVERS[field];
+      const undeclaredCandidates = Object.keys(SHAPE_EXAMPLES).filter((shape) => !row.acceptedShapes.includes(shape));
+      assert.ok(undeclaredCandidates.length > 0, `no undeclared shape candidate available to probe field ${JSON.stringify(field)}`);
+      for (const shape of undeclaredCandidates) {
+        const [value, opts] = SHAPE_EXAMPLES[shape];
+        const parsed = driver(value, opts);
+        assert.strictEqual(parsed, false, `undeclared shape ${JSON.stringify(shape)} for field ${JSON.stringify(field)} was accepted by the parser`);
+      }
+    }
+  });
+
+  // The worked case (#3784's three spellings): current_plan specifically.
+  test('planNofMShapesAreExactlyTheDeclaredSet', () => {
+    assert.deepStrictEqual(Array.from(STATE_FIELD_SCHEMA.current_plan.acceptedShapes), ['N']);
+
+    // Declared shape parses.
+    assert.strictEqual(driveCurrentPlanShape('3', { withTotalSibling: true }), true, '"N" (paired with Total Plans in Phase) should parse');
+
+    // The hybrid shape is NOT declared today (#3784/#3791 boundary) and does
+    // NOT parse standalone in the Current Plan field.
+    assert.strictEqual(driveCurrentPlanShape('3 of 5'), false, '"N of M" standalone in Current Plan should NOT parse today');
+
+    // A fourth, never-declared spelling fails rather than quietly joining.
+    assert.strictEqual(driveCurrentPlanShape('3/5'), false, '"N/M" should NOT parse — it has never been declared');
+  });
+});
+
 describe('ADR-1769 Phase 2: advancePlan with frontmatter (#1255 pattern — codex review)', () => {
   const deps = { clock: fixedClock };
 

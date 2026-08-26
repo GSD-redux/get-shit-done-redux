@@ -75,10 +75,14 @@ describe('gen-state-md-docs.cjs CLI (#3873 rows 10-22, 27)', () => {
     assert.notEqual(mutated, original, 'fixture setup sanity');
     fs.writeFileSync(abs, mutated);
 
-    const r = runGen(['--check'], tmpDir);
+    const r = runGen(['--json'], tmpDir);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /stale/i);
-    assert.match(r.stderr, /gen-state-md-docs\.cjs --write/);
+    const report = JSON.parse(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.staleCount, 1);
+    assert.deepEqual(report.violations, [
+      { reason: gen.REASON.REGION_STALE, file: target.relPath, region: 'status-lifecycle' },
+    ]);
   });
 
   test('writeIsFailClosedOverAViolation', () => {
@@ -117,11 +121,17 @@ describe('gen-state-md-docs.cjs CLI (#3873 rows 10-22, 27)', () => {
 
     const withoutForce = runGen(['--write'], tmpDir);
     assert.equal(withoutForce.code, 1);
-    assert.match(withoutForce.stderr, /refusing to write/i);
 
     const withForce = runGen(['--write', '--force'], tmpDir);
     assert.equal(withForce.code, 1, 'a broken marker has nothing to splice into — --force cannot help');
-    assert.match(withForce.stderr, /broken markers/i);
+
+    // Neither invocation touched the tree (both refused before writing), so
+    // a single --json read of the still-broken fixture proves WHAT both
+    // refusals were about: the exact file/region whose marker is unclosed.
+    const report = JSON.parse(runGen(['--json'], tmpDir).stdout);
+    assert.deepEqual(report.violations, [
+      { reason: gen.REASON.MARKER_UNCLOSED, file: target.relPath, region: 'status-lifecycle' },
+    ]);
   });
 
   test('writeIsIdempotent', () => {
@@ -131,8 +141,10 @@ describe('gen-state-md-docs.cjs CLI (#3873 rows 10-22, 27)', () => {
 
     const second = runGen(['--write'], tmpDir);
     assert.equal(second.code, 0);
-    assert.match(second.stdout, /Wrote 0 of \d+ target/);
 
+    // Byte-for-byte equality below is a strictly stronger, per-target proof
+    // that the second --write was a no-op than matching the aggregate
+    // "Wrote 0 of N target(s)." stdout line would be.
     gen.TARGETS.forEach((t, i) => {
       const after = fs.readFileSync(path.join(tmpDir, t.relPath), 'utf8');
       assert.equal(after, snapshot[i], `${t.relPath} must be byte-identical on a second --write`);
@@ -145,9 +157,12 @@ describe('gen-state-md-docs.cjs CLI (#3873 rows 10-22, 27)', () => {
     const original = fs.readFileSync(abs, 'utf8');
     fs.writeFileSync(abs, original.replace('status: planning', 'status: HAND-EDITED'));
 
-    const r = runGen(['--check'], tmpDir);
+    const r = runGen(['--json'], tmpDir);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /frontmatter.*stale|stale.*frontmatter/i);
+    const report = JSON.parse(r.stdout);
+    assert.deepEqual(report.violations, [
+      { reason: gen.REASON.REGION_STALE, file: target.relPath, region: 'frontmatter' },
+    ]);
   });
 
   test('proseOutsideAGeneratedRegionSurvivesWrite', () => {
@@ -175,7 +190,12 @@ describe('gen-state-md-docs.cjs CLI (#3873 rows 10-22, 27)', () => {
 
     const r = runGen(['--write'], tmpDir);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /broken markers/i);
+
+    const report = JSON.parse(runGen(['--json'], tmpDir).stdout);
+    assert.deepEqual(report.violations, [
+      { reason: gen.REASON.MARKER_UNCLOSED, file: target.relPath, region: 'status-lifecycle' },
+    ]);
+
     // Never rewrites the whole file on a hostile marker — byte-identical to the malformed input.
     const after = fs.readFileSync(abs, 'utf8');
     assert.equal(after, malformed);
@@ -190,9 +210,12 @@ describe('gen-state-md-docs.cjs CLI (#3873 rows 10-22, 27)', () => {
       .replace(gen.endMarker('status-lifecycle'), '');
     fs.writeFileSync(abs, stripped);
 
-    const r = runGen(['--check'], tmpDir);
+    const r = runGen(['--json'], tmpDir);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, new RegExp(target.relPath.replace(/[\\/]/g, '.')));
+    const report = JSON.parse(r.stdout);
+    assert.deepEqual(report.violations, [
+      { reason: gen.REASON.MARKERS_MISSING, file: target.relPath, region: 'status-lifecycle' },
+    ]);
   });
 
   test('crlfLocaleFileRoundTrips', () => {
@@ -338,9 +361,8 @@ describe('gen-state-md-docs.cjs cardinality region (#3873 follow-up: ADR-3473 §
     const before = fs.readFileSync(path.join(tmpDir, target.relPath), 'utf8');
     const r2 = runGen(['--write'], tmpDir);
     assert.equal(r2.code, 0);
-    assert.match(r2.stdout, /Wrote 0 of \d+ target/);
     const after = fs.readFileSync(path.join(tmpDir, target.relPath), 'utf8');
-    assert.equal(after, before);
+    assert.equal(after, before, 'a second --write must be byte-identical — the same no-op proof used in writeIsIdempotent');
   });
 });
 
