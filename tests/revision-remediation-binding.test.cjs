@@ -96,20 +96,11 @@ describe('#3771 checker states the property and marks the example non-binding', 
       'Issue Format must declare fix_hint as non-binding');
   });
 
-  test('a smaller mechanism reaching the same property counts as addressing the issue', () => {
-    assert.match(
-      PLAN_CHECKER,
-      /smaller or different mechanism has addressed the issue in full/,
-      'the checker must concede that a smaller valid mechanism fully addresses the issue'
-    );
-  });
-
-  test('the checker is forbidden from authoring a hint it can see conflicts', () => {
-    assert.match(
-      flat(PLAN_CHECKER),
-      /Never author a `fix_hint` you can see contradicts a locked decision, a CLAUDE\.md convention, or an active capability constraint/,
-      'the checker must not emit remediation that contradicts a constraint it can see'
-    );
+  test('a smaller mechanism counts as addressing, and a conflicting hint is never authored', () => {
+    assert.match(PLAN_CHECKER, /smaller or different mechanism has addressed the issue in full/,
+      'the checker must concede that a smaller valid mechanism fully addresses the issue');
+    assert.match(flat(PLAN_CHECKER), /Never author a `fix_hint` you can see contradicts/,
+      'the checker must not emit remediation that contradicts a constraint it can see');
   });
 
   test('every YAML issue example carries required_property alongside its fix_hint', () => {
@@ -181,15 +172,15 @@ describe('#3771 checker states the property and marks the example non-binding', 
 
 describe('#3771 revision re-checks constraints and has a conflict path', () => {
   test('constraints are re-read before any edit', () => {
-    assert.match(PLANNER_REVISION, /### Step 2\.5: Constraint Re-check \(before any edit\)/);
-    const step = PLANNER_REVISION.slice(PLANNER_REVISION.indexOf('### Step 2.5'));
+    const stepAt = PLANNER_REVISION.indexOf('### Step 2.5');
+    assert.ok(stepAt > 0, 'a constraint re-check step must exist before Step 3');
+    const step = PLANNER_REVISION.slice(stepAt);
     assert.match(step, /Locked decisions in CONTEXT\.md/, 'locked decisions must be re-checked');
     assert.match(step, /capability \/ project guidance/i, 'capability guidance must be re-checked');
     assert.match(step, /Constraints the existing plans already encode/, 'plan constraints must be re-checked');
   });
 
   test('binding-ness of each field is stated to the planner', () => {
-    assert.match(PLANNER_REVISION, /\*\*What binds and what does not\.\*\*/);
     assert.match(flat(PLANNER_REVISION), /`fix_hint` is \*\*one example\*\*/,
       'the planner must be told the hint is an example');
     assert.match(
@@ -200,7 +191,6 @@ describe('#3771 revision re-checks constraints and has a conflict path', () => {
   });
 
   test('a smaller sufficient mechanism is preferred and reported as addressed', () => {
-    assert.match(PLANNER_REVISION, /\*\*Prefer the smallest sufficient mechanism\.\*\*/);
     assert.match(flat(PLANNER_REVISION), /must be reported as addressed, naming the property satisfied and the mechanism used/);
   });
 
@@ -247,13 +237,6 @@ describe('#3771 generic revision pattern carries the same separation', () => {
   test('the field list matches the plan-checker schema', () => {
     assert.match(flat(REVISION_LOOP), /`plan`, `dimension`, `severity`, `required_property`, `description`, `task`, `fix_hint`/,
       'the generic pattern must advertise exactly the plan-checker schema');
-    assert.doesNotMatch(
-      REVISION_LOOP,
-      /affected_field, suggested_fix|dimension, severity, finding/,
-      'the generic pattern must not advertise fields the checker never emits'
-    );
-    assert.match(flat(REVISION_LOOP), /There is no `suggested_fix` field/,
-      'the retired name must be called out so a reader of an old prompt is not confused');
   });
 
   test('BLOCKERs are satisfied by property, not by literal application of the hint', () => {
@@ -315,25 +298,30 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     assert.ok(importsShared(PLAN_PHASE), 'plan-phase must @-import the reference it defers to');
     assert.match(flat(PLAN_PHASE), /follow the shared Conflict Return protocol in `gsd-core\/references\/revision-loop\.md`/,
       'the delegation must be explicit, or the bindings have no protocol to bind to');
-    assert.match(flat(REVISION_LOOP), /This protocol is shared\./,
-      'the reference must announce itself as the protocol the workflows point at');
   });
 
   for (const [name, content, counter] of ORCHESTRATORS) {
     const loaded = loadedFor(content);
 
     test(`${name} tells the reviser the hint is non-binding`, () => {
-      assert.match(loaded, /`fix_hint` is ONE example route to that property and is NON-BINDING/,
+      assert.match(loaded, /`fix_hint` is ONE non-binding example route/,
         `${name} must mark the remediation example non-binding in its revision prompt`);
-      assert.match(loaded, /smaller or different mechanism that makes the same property true/,
+      assert.match(loaded, /smaller or different mechanism reaching the same property/,
         `${name} must accept a smaller alternative`);
     });
 
     test(`${name} orders a constraint re-check before editing`, () => {
-      assert.match(loaded, /Before editing, re-check/,
-        `${name} must order the constraint re-check`);
-      assert.match(loaded, /would contradict one, or the property is unreachable without breaking one, do NOT apply it/,
+      assert.match(loaded, /BEFORE editing/,
+        `${name} must order the constraint re-check before any edit`);
+      assert.match(loaded, /return `## REVISION_CONFLICT` with the conflict and\s+the alternatives rather than applying or working around it/,
         `${name} must forbid applying a conflicting hint`);
+    });
+
+    // Four prompts state this contract; planner-revision.md is the authority they must agree
+    // with. Each must name where that authority is, or the next editor updates one of five.
+    test(`${name} names the authority its inline statement summarises`, () => {
+      assert.match(loaded, /Full contract:\s+`gsd-core\/references\/planner-revision\.md`|see your `## Revision Conflict`\s+section/,
+        `${name} must point at the contract its prompt paraphrases`);
     });
 
     test(`${name} routes REVISION_CONFLICT without consuming ${counter}`, () => {

@@ -1246,15 +1246,13 @@ ${AGENT_SKILLS_PLANNER}
 <instructions>
 Make targeted updates to address checker issues.
 
-Each issue's `required_property` + evidence + severity are BINDING. Its `fix_hint` is ONE
-example route to that property and is NON-BINDING: a smaller or different mechanism that makes
-the same property true addresses the issue in full — say which mechanism you used.
-
-Before editing, re-check locked decisions in CONTEXT.md, active capability guidance (CLAUDE.md,
-project skills), and constraints the existing plans already encode. If a `fix_hint` would
-contradict one, or the property is unreachable without breaking one, do NOT apply it and do NOT
-work around it — return `## REVISION_CONFLICT` with the conflict and the alternatives
-considered, after addressing every non-conflicting issue.
+`required_property` + evidence + severity BIND. `fix_hint` is ONE non-binding example route: a
+smaller or different mechanism reaching the same property addresses the issue in full — say which
+you used. Re-check locked decisions in CONTEXT.md, capability guidance (CLAUDE.md, project skills) and the
+constraints these plans already encode BEFORE editing; if a hint would contradict one, or the
+property is unreachable without breaking one, return `## REVISION_CONFLICT` with the conflict and
+the alternatives rather than applying or working around it. Full contract:
+`gsd-core/references/planner-revision.md`, which you load in revision mode.
 
 Do NOT replan from scratch unless issues are fundamental.
 Return what changed.

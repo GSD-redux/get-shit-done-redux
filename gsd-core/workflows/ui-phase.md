@@ -249,15 +249,13 @@ The UI checker found issues with the current UI-SPEC.md.
 ### Issues to Fix
 {paste blocking issues from checker return}
 
-Each issue's `required_property` + evidence + severity are BINDING. Its `fix_hint` is ONE
-example route to that property and is NON-BINDING: a smaller or different mechanism that makes
-the same property true resolves the issue in full — say which mechanism you used.
-
-Before editing, re-check the user's locked answers, active capability guidance (CLAUDE.md,
-project skills), and constraints this UI-SPEC already encodes. If a `fix_hint` would contradict
-one, or the property is unreachable without breaking one, do NOT apply it and do NOT work around
-it — return `## REVISION_CONFLICT` naming the conflict and the alternatives considered, after
-resolving every non-conflicting issue.
+`required_property` + evidence + severity BIND. `fix_hint` is ONE non-binding example route: a
+smaller or different mechanism reaching the same property resolves the issue in full — say which
+you used. Re-check the user's locked answers, capability guidance (CLAUDE.md, project skills) and
+the constraints this UI-SPEC already encodes BEFORE editing; if a hint would contradict one, or
+the property is unreachable without breaking one, return `## REVISION_CONFLICT` with the conflict
+and the alternatives rather than applying or working around it — see your `## Revision Conflict`
+section for its shape.
 
 Read the existing UI-SPEC.md, resolve ONLY the listed issues, re-write the file.
 Do NOT re-ask the user questions that are already answered.
