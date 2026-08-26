@@ -12,6 +12,7 @@ const path = require('node:path');
 const {
   extractFrontmatter,
   reconstructFrontmatter,
+  spliceFrontmatter,
   UNTERMINATED_KEY_THRESHOLD,
   FRONTMATTER_UNPARSEABLE,
 } = require('../gsd-core/bin/lib/frontmatter.cjs');
@@ -754,5 +755,125 @@ describe('B1/B2 block-scalar assertions (relocated from tests/frontmatter.test.c
     const content = fs.readFileSync(ADD_TESTS_PATH, 'utf8');
     const parsed = extractFrontmatter(content, ADD_TESTS_PATH);
     assert.ok(!Object.prototype.hasOwnProperty.call(parsed, 'Example'), 'parser must not scrape a top-level "Example" key out of the block scalar body');
+  });
+});
+
+// Frontmatter mutation-gap closure (#3881 follow-up, CI run 33012034388): the frontmatter
+// shard measured 63.03% against its 65 floor. These tests close the gap by constraining real
+// behavior in the four highest-value survivor clusters — canonical flattening's no-op guard
+// (frontmatterDeepEqual, gates spliceFrontmatter's whole-document identity check), the writer's
+// double-quoting decision (scalarNeedsDoubleQuoting), the reader's ambiguous-colon repair
+// (repairAmbiguousColonValues), and the null-byte round-trip (escapeNullBytesForParse). Each
+// case below is paired with a documented near-miss so a mutant that weakens the real condition
+// (not just a syntactically different one) is observably wrong, not merely re-typed.
+
+describe('frontmatterDeepEqual (via spliceFrontmatter no-op detection)', () => {
+  test('key order is insignificant for objects: a same-value, reordered-keys write is a byte-exact no-op', () => {
+    const doc = '---\na: 1\nb: 2\n---\n\nbody\n';
+    assert.equal(spliceFrontmatter(doc, { b: '2', a: '1' }), doc);
+  });
+
+  test('array order IS significant: same elements in a different order is NOT a no-op', () => {
+    // Near-miss for the .every -> .some mutant: index 0 matches ("x"==="x") but index 1 does
+    // not ("y" !== "z"). The real .every-based comparison must see this as unequal (regenerate);
+    // a .some-based mutant would short-circuit true on the matching index-0 element alone and
+    // wrongly report a no-op.
+    const doc = '---\ntags:\n  - x\n  - y\n---\n\nbody\n';
+    const result = spliceFrontmatter(doc, { tags: ['x', 'z'] });
+    assert.notEqual(result, doc, 'a value-changed array must not be treated as a no-op write');
+  });
+
+  test('a new array value that differs only in length is NOT a no-op', () => {
+    const doc = '---\ntags:\n  - x\n---\n\nbody\n';
+    assert.notEqual(spliceFrontmatter(doc, { tags: ['x', 'y'] }), doc);
+  });
+
+  test('two empty arrays of matching (zero) length ARE a no-op', () => {
+    const doc = '---\ntags: []\n---\n\nbody\n';
+    assert.equal(spliceFrontmatter(doc, { tags: [] }), doc);
+  });
+
+  test('an array-valued field replaced with a same-text scalar is NOT a no-op (array vs non-array must never compare equal)', () => {
+    const doc = '---\ntags:\n  - x\n---\n\nbody\n';
+    assert.notEqual(spliceFrontmatter(doc, { tags: 'x' }), doc);
+  });
+
+  test('nested-object key order is insignificant: a same-value, reordered-keys nested object is a no-op', () => {
+    const doc = '---\nmeta:\n  a: "1"\n  b: "2"\n---\n\nbody\n';
+    assert.equal(spliceFrontmatter(doc, { meta: { b: '2', a: '1' } }), doc);
+  });
+
+  test('a nested object with a genuinely different key set is NOT a no-op', () => {
+    const doc = '---\nmeta:\n  a: "1"\n  b: "2"\n---\n\nbody\n';
+    assert.notEqual(spliceFrontmatter(doc, { meta: { a: '1', c: '2' } }), doc);
+  });
+});
+
+describe('scalarNeedsDoubleQuoting (via reconstructFrontmatter double-quoting decisions)', () => {
+  test('a value with internal (non-leading, non-trailing) whitespace is NOT quoted', () => {
+    // Near-miss for the /^\s|\s$/ -> /^\s|\s/ mutant (dropped end-anchor): a mutant that tests
+    // for whitespace ANYWHERE rather than only leading/trailing would wrongly quote this.
+    assert.equal(reconstructFrontmatter({ key: 'mid dle' }), 'key: mid dle');
+  });
+
+  test('trailing whitespace alone (no leading whitespace) IS quoted', () => {
+    assert.equal(reconstructFrontmatter({ key: 'trailing ' }), 'key: "trailing "');
+  });
+
+  test('a leading dash followed by a space IS quoted (reads as a YAML list indicator)', () => {
+    assert.equal(reconstructFrontmatter({ key: '- item' }), 'key: "- item"');
+  });
+
+  test('a leading dash with NO following space is NOT quoted (near-miss control for the above)', () => {
+    assert.equal(reconstructFrontmatter({ key: '-item' }), 'key: -item');
+  });
+
+  test('a lone UTF-16 surrogate is quoted (bare emission is invalid YAML and would not re-parse)', () => {
+    const reconstructed = reconstructFrontmatter({ key: '\uD800' });
+    assert.equal(reconstructed, 'key: "\\uD800"');
+  });
+});
+
+describe('repairAmbiguousColonValues (via extractFrontmatter reader-side repair)', () => {
+  test('an unquoted mid-value colon+space is repaired and the full value survives', () => {
+    const parsed = extractFrontmatter('---\ntitle: value: extra\n---\n');
+    assert.equal(parsed.title, 'value: extra');
+  });
+
+  test('an already-quoted value with an embedded colon is left alone and parses natively', () => {
+    // Near-miss for the /^["\'[{]/  ->  /^[^"\'[{]/  mutant (negated already-safe check): a
+    // mutant that inverts this class would try to re-repair an already-quoted line, corrupting
+    // the value with an extra layer of quoting.
+    const parsed = extractFrontmatter('---\ntitle: "value: extra"\n---\n');
+    assert.equal(parsed.title, 'value: extra');
+  });
+
+  test('a trailing bare colon at the end of the value is repaired and survives', () => {
+    const parsed = extractFrontmatter('---\ntitle: value:\n---\n');
+    assert.equal(parsed.title, 'value:');
+  });
+
+  test('a value with no ambiguous colon at all is left untouched (control: repair must not over-fire)', () => {
+    const parsed = extractFrontmatter('---\ntitle: value#nocolon\n---\n');
+    assert.equal(parsed.title, 'value#nocolon');
+  });
+});
+
+describe('escapeNullBytesForParse (null-byte round-trip through the sentinel swap)', () => {
+  test('a NUL byte inside a key survives extractFrontmatter byte-for-byte, including at region offset 1', () => {
+    // Region offset 1 specifically distinguishes the `indexOf(...) === -1` -> `=== +1` mutant:
+    // for THIS input the mutant's condition is true (index really is 1), so it takes the
+    // "no substitution needed" branch and hands js-yaml a raw, unescaped NUL — which js-yaml
+    // rejects outright under every schema, collapsing the whole parse to {}. The same input
+    // also kills the sentinel StringLiteral "" mutant (deletes the byte instead of escaping it):
+    // that mutant would parse successfully but produce key "x" instead of "x ".
+    const NUL = ' ';
+    const doc = `---\nx${NUL}: y\n---\n\nbody\n`;
+    const parsed = extractFrontmatter(doc);
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(parsed, `x${NUL}`),
+      `NUL byte must survive as part of the key, not be dropped or crash the parse; got keys ${JSON.stringify(Object.keys(parsed))}`
+    );
+    assert.equal(parsed[`x${NUL}`], 'y');
   });
 });

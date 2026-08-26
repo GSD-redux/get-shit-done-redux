@@ -323,7 +323,10 @@ const COVERED = {
     // minScore raised to TARGET (80) — module now meets ADR-456 goal. Not yet
     // re-measured against the wider (derived) test list; the added file only adds
     // assertions, never removes any, so the floor cannot have fallen.
-    minScore: 80,
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): measured 92.31% (unchanged from
+    // the #1187 measurement above — same test list, re-confirmed by the mutation
+    // ratchet's own audit). Floor = floor(92.31) - 1 = 91.
+    minScore: 91,
   },
   // context-composer: extracted from prompt-budget by #2929. Needs its own entry because
   // mutation coverage does not migrate with relocated code — scoring only prompt-budget.cjs
@@ -337,7 +340,9 @@ const COVERED = {
       'prompt-budget-parity.test.cjs',
       'prompt-budget.unit.test.cjs',
     ],
-    minScore: 66,
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): measured 79.92%. Floor =
+    // floor(79.92) - 1 = 78.
+    minScore: 78,
   },
   'prompt-budget': {
     cjs: 'gsd-core/bin/lib/prompt-budget.cjs',
@@ -350,7 +355,9 @@ const COVERED = {
     // local was 99.6% — timeout inflation. Floor = 68 - 2 margin. Not yet re-measured
     // against the wider (derived) test list; both added files only add assertions, never
     // remove any, so the floor cannot have fallen.
-    minScore: 66,
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): re-measured against the wider
+    // (derived) test list at 88.95%. Floor = floor(88.95) - 1 = 87.
+    minScore: 87,
   },
   frontmatter: {
     cjs: 'gsd-core/bin/lib/frontmatter.cjs',
@@ -434,11 +441,15 @@ const COVERED = {
     cjs: 'gsd-core/bin/lib/config-schema.cjs',
     // CI 54.55% timeout-free (18 killed / 0 timeout / 33 total) 2026-06-14;
     // local was 69.7% — timeout inflation. Floor = 54 - 2 margin.
-    minScore: 52,
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): measured 75.51%. Floor =
+    // floor(75.51) - 1 = 74.
+    minScore: 74,
   },
   'active-workstream-store': {
     cjs: 'gsd-core/bin/lib/active-workstream-store.cjs',
-    minScore: 80,
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): measured 87.42%. Floor =
+    // floor(87.42) - 1 = 86.
+    minScore: 86,
   },
   'core-utils': {
     cjs: 'gsd-core/bin/lib/core-utils.cjs',
