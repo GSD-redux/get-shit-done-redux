@@ -23,6 +23,11 @@ const path = require('node:path');
 
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 const est = require('../gsd-core/bin/lib/phase-estimation.cjs');
+const estimateCli = require('../gsd-core/bin/lib/estimate-cli.cjs');
+// io.cjs owns error()/ERROR_REASON/JSON-error-mode — driven directly here so
+// H1 below can assert a typed `reason`, mirroring tests/config-get-default.test.cjs's
+// established in-process CLI-error-path pattern.
+const io = require('../gsd-core/bin/lib/io.cjs');
 
 /** Write a phase dir containing a PLAN with an estimate and a SUMMARY with actuals. */
 function writePhase(tmpDir, phaseDir, { estTokens, actTokens, tasks = 3, commits = 4 }) {
@@ -361,6 +366,255 @@ describe('multi-plan phases pair per plan, not per phase', () => {
 
     const out = JSON.parse(runGsdTools('query estimate-calibrate', tmpDir).output);
     assert.equal(out.sample_count, 3, 'two plans in phase 1 plus one in phase 2');
+    assert.equal(out.applied, true);
+  });
+});
+
+// ─── sentinel phases must not skew calibration (#3882, ADR-3473 §8.2) ──────
+//
+// collectCalibrationSamples enumerates .planning/phases with a raw readdirSync
+// and treats every directory as a completed phase — it never routes through
+// the phase-directory owner and never applies isSentinelPhaseId, so a sentinel
+// directory (milestone 0 or 999 — SENTINEL_RANGES in src/phase-id.cts) whose
+// PLAN/SUMMARY pair carries an estimate/actuals block contributes a phantom
+// calibration sample.
+//
+// Governing constraint (.gsd/phase/feat-3882-enumerations/50-test-matrix.md
+// row A1): computeCalibration is MEDIAN-based, so a single outlier sample does
+// not move a 3-sample factor at all — asserting "the factor is unchanged" against
+// exactly one sentinel would pass on the broken code for the wrong reason. The
+// real, measured damage is the MIN_CALIBRATION_SAMPLES threshold crossing
+// (applied flips false -> true, confidence low -> med on phantom evidence) and,
+// once two sentinels are present, actual factor corruption. Every assertion
+// below compares the WHOLE computed CalibrationResult object between a
+// sentinel-free project and its sentinel-injected twin, reached the same way
+// production reaches it (collectCalibrationSamples -> computeCalibration, the
+// exact pair cmdEstimateCalibrate calls).
+describe('sentinel phases must not skew calibration (#3882)', () => {
+  // Two genuine phases with DIFFERING ratios (1x and 2x), so A3 can pin each
+  // one's own unchanged value rather than two indistinguishable duplicates.
+  const REAL_PHASES = [
+    ['01-alpha', 1000, 1000],
+    ['02-beta', 2000, 4000],
+  ];
+  // A deliberately extreme, fabricated ratio (50x) — the shape of what a
+  // sentinel's PLAN/SUMMARY pair would carry.
+  const SENTINEL_SAMPLE = { estTokens: 1000, actTokens: 50000 };
+
+  function buildRealOnlyProject() {
+    const tmpDir = createTempProject();
+    for (const [dir, estTokens, actTokens] of REAL_PHASES) {
+      writePhase(tmpDir, dir, { estTokens, actTokens });
+    }
+    return tmpDir;
+  }
+
+  /** Reached the way production reaches it — see cmdEstimateCalibrate above. */
+  function calibrationResultFor(tmpDir) {
+    return est.computeCalibration(estimateCli.collectCalibrationSamples(tmpDir));
+  }
+
+  test('A1a: sentinelPhaseDoesNotActivateCalibration', (t) => {
+    const realOnly = buildRealOnlyProject();
+    t.after(() => cleanup(realOnly));
+    const withSentinel = buildRealOnlyProject();
+    t.after(() => cleanup(withSentinel));
+    // milestone 999 — reserved icebox sentinel range (SENTINEL_RANGES).
+    writePhase(withSentinel, '999-icebox', SENTINEL_SAMPLE);
+
+    const realOnlyResult = calibrationResultFor(realOnly);
+    const withSentinelResult = calibrationResultFor(withSentinel);
+
+    assert.deepEqual(
+      withSentinelResult, realOnlyResult,
+      'a single sentinel phase must not change the computed calibration at all — '
+      + `real-only=${JSON.stringify(realOnlyResult)} with-sentinel=${JSON.stringify(withSentinelResult)}`,
+    );
+  });
+
+  test('A1b: sentinelPhasesDoNotCorruptTheFactor', (t) => {
+    const realOnly = buildRealOnlyProject();
+    t.after(() => cleanup(realOnly));
+    const withTwoSentinels = buildRealOnlyProject();
+    t.after(() => cleanup(withTwoSentinels));
+    // milestone 999 and milestone 0 — both reserved sentinel ranges.
+    writePhase(withTwoSentinels, '999-icebox', SENTINEL_SAMPLE);
+    writePhase(withTwoSentinels, '0-backlog', SENTINEL_SAMPLE);
+
+    const realOnlyResult = calibrationResultFor(realOnly);
+    const withSentinelsResult = calibrationResultFor(withTwoSentinels);
+
+    assert.deepEqual(
+      withSentinelsResult, realOnlyResult,
+      'sentinel phases must not corrupt the calibration factor — '
+      + `real-only=${JSON.stringify(realOnlyResult)} with-sentinels=${JSON.stringify(withSentinelsResult)}`,
+    );
+  });
+
+  test('A2: sentinelPhaseContributesNoCalibrationSample', (t) => {
+    const withTwoSentinels = buildRealOnlyProject();
+    t.after(() => cleanup(withTwoSentinels));
+    writePhase(withTwoSentinels, '999-icebox', SENTINEL_SAMPLE);
+    writePhase(withTwoSentinels, '0-backlog', SENTINEL_SAMPLE);
+
+    const samples = estimateCli.collectCalibrationSamples(withTwoSentinels);
+    const sentinelHits = samples.filter(
+      (s) => s.estimateTokens === SENTINEL_SAMPLE.estTokens && s.actualTokens === SENTINEL_SAMPLE.actTokens,
+    );
+    assert.equal(
+      sentinelHits.length, 0,
+      `the sentinel phases' sample must be absent from the returned list; got ${JSON.stringify(samples)}`,
+    );
+  });
+
+  test('A3: realPhasesStillContribute', (t) => {
+    const withTwoSentinels = buildRealOnlyProject();
+    t.after(() => cleanup(withTwoSentinels));
+    writePhase(withTwoSentinels, '999-icebox', SENTINEL_SAMPLE);
+    writePhase(withTwoSentinels, '0-backlog', SENTINEL_SAMPLE);
+
+    const samples = estimateCli.collectCalibrationSamples(withTwoSentinels);
+    const realSamples = samples.filter(
+      (s) => !(s.estimateTokens === SENTINEL_SAMPLE.estTokens && s.actualTokens === SENTINEL_SAMPLE.actTokens),
+    );
+    assert.deepEqual(
+      realSamples.sort((a, b) => a.estimateTokens - b.estimateTokens),
+      [
+        { estimateTokens: 1000, actualTokens: 1000 },
+        { estimateTokens: 2000, actualTokens: 4000 },
+      ],
+      'the two genuine phases must still contribute their own, unchanged samples',
+    );
+  });
+});
+
+// ─── PhasesUnreadableError / estimate_phases_unreadable (#3882, ADR-3473 §8.5,
+// review finding #2) ─────────────────────────────────────────────────────
+//
+// `collectCalibrationSamples` now routes through `listMilestonePhaseDirs`
+// (the #3882 fix above), which means an unreadable phases directory is no
+// longer output-identical to a genuinely empty one — it surfaces as
+// `scope: SCOPE.UNREADABLE`. `cmdEstimateCalibrate` converts that into a
+// refusal (`PhasesUnreadableError`, `process.exit(1)`,
+// `ERROR_REASON.ESTIMATE_PHASES_UNREADABLE`) instead of silently persisting
+// a phantom empty calibration document — a real behavior change (previously
+// silent-empty), disclosed and tested here rather than left as an
+// undocumented side effect of the routing fix.
+//
+// H1 drives the real `cmdEstimateCalibrate` IN-PROCESS: `runGsdTools` spawns
+// a real subprocess, and neither `fs.readdirSync` monkeypatching nor
+// `process.exit` interception crosses that process boundary. The pattern
+// below is the two established repo idioms composed, not invented: the
+// process.exit-interception + `--json-errors`-mode capture from
+// tests/config-get-default.test.cjs, and the `fs.readdirSync` method
+// monkeypatch (never chmod, which root/CI bypasses — CLAUDE.md's
+// cross-platform IO-failure-injection rule) already used in
+// tests/phase-locator.test.cjs for `listAllPhaseDirs`'s own unreadable case.
+describe('unreadable phases directory refuses calibration (#3882, ADR-3473 §8.5)', () => {
+  class _ExitSignal extends Error {
+    constructor(code, message) {
+      super(message ?? `process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  /** Runs cmdEstimateCalibrate in-process with process.exit + stderr(fd 2) captured. */
+  function runCalibrateExpectError(tmpDir) {
+    const origExit = process.exit;
+    const origWriteSync = fs.writeSync;
+    io.setJsonErrorMode(true);
+    let exitCount = 0;
+    let exitCode;
+    let stderr = '';
+    fs.writeSync = (fd, ...rest) => {
+      if (fd !== 2) return origWriteSync.call(fs, fd, ...rest);
+      const [data, offset = 0, length] = rest;
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset, offset + (length ?? data.length - offset)).toString('utf8')
+        : String(data);
+      stderr += chunk;
+      return Buffer.byteLength(chunk);
+    };
+    const lastError = () => {
+      const parts = stderr.split('\n').filter(Boolean);
+      try { return JSON.parse(parts[parts.length - 1]); } catch { return {}; }
+    };
+    process.exit = (code) => {
+      exitCount++;
+      exitCode = code;
+      throw new _ExitSignal(code, lastError().message);
+    };
+    try {
+      estimateCli.cmdEstimateCalibrate(tmpDir, [], false);
+    } catch (e) {
+      if (!(e instanceof _ExitSignal)) throw e;
+    } finally {
+      process.exit = origExit;
+      fs.writeSync = origWriteSync;
+      io.setJsonErrorMode(false);
+    }
+    assert.ok(exitCode !== 0 && exitCode !== undefined, 'expected a non-zero exit code');
+    assert.equal(exitCount, 1, 'error() must fire exactly once (production process.exit terminates)');
+    return { status: exitCode, ...lastError() };
+  }
+
+  test('H1: unreadable phases directory exits non-zero with estimate_phases_unreadable', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+
+    const originalReaddirSync = fs.readdirSync;
+    fs.readdirSync = (...args) => {
+      if (args[0] === phasesDir) {
+        const err = new Error('EACCES: permission denied, scandir');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReaddirSync.apply(fs, args);
+    };
+    let result;
+    try {
+      result = runCalibrateExpectError(tmpDir);
+    } finally {
+      fs.readdirSync = originalReaddirSync;
+    }
+
+    assert.equal(result.status, 1);
+    assert.equal(result.reason, io.ERROR_REASON.ESTIMATE_PHASES_UNREADABLE);
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'estimation-calibration.json')),
+      'refusing the rebuild must not persist a phantom empty calibration document',
+    );
+  });
+
+  test('H2: a genuinely-empty phases directory still succeeds with empty calibration (boundary the H1 guard must not cross)', (t) => {
+    // Real CLI as a subprocess (runGsdTools) — this is the boundary case:
+    // .planning/phases/ EXISTS and is READABLE, but has zero entries. Must
+    // succeed, not be caught by the unreadable-directory refusal above.
+    // Overlaps the pre-existing "no phases at all is a clean no-op" test
+    // above; kept as its own named row because it pins THIS boundary
+    // specifically (see 50-test-matrix.md row H2), not incidentally.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    const r = runGsdTools('query estimate-calibrate', tmpDir);
+    assert.ok(r.success, `a readable, genuinely-empty phases dir must succeed: ${r.error}`);
+    const out = JSON.parse(r.output);
+    assert.equal(out.sample_count, 0);
+    assert.equal(out.applied, false);
+  });
+
+  test('H3: a normal project with real phases is unaffected by the unreadable-dir guard', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writePhase(tmpDir, '01-a', { estTokens: 100, actTokens: 200 });
+    writePhase(tmpDir, '02-b', { estTokens: 100, actTokens: 200 });
+    writePhase(tmpDir, '03-c', { estTokens: 100, actTokens: 200 });
+
+    const r = runGsdTools('query estimate-calibrate', tmpDir);
+    assert.ok(r.success, `a normal readable project must not be affected by the guard: ${r.error}`);
+    const out = JSON.parse(r.output);
+    assert.equal(out.sample_count, 3);
     assert.equal(out.applied, true);
   });
 });

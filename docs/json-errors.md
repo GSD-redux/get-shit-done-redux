@@ -200,6 +200,12 @@ text (unstable).
 | `phase_not_found` | Phase directory lookup returns no match |
 | `summary_no_planning` | Summary operation when no `.planning/` directory exists |
 
+### Estimate errors
+
+| Code | When emitted |
+|------|-------------|
+| `estimate_phases_unreadable` | `estimate-calibrate` when `.planning/phases/` exists but could not be read (EACCES/EIO) — refused rather than silently rebuilding calibration from a phantom empty sample set (#3882, ADR-3473 §8.5) |
+
 ### Graphify errors
 
 | Code | When emitted |
