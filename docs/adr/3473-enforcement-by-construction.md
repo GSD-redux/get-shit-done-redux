@@ -185,10 +185,75 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 > that say why it stays epic-sized, so a future reader inherits the measurement rather than the
 > intuition.
 >
-> Implementation note: fork (a) needs **no hand-written coercion layer.** js-yaml's `FAILSAFE_SCHEMA`
-> resolves only `!!str`/`!!seq`/`!!map`, so every scalar returns a string by spec — today's contract
-> exactly. `gap_closure: true` stays `"true"` and
-> `FRONTMATTER_SCHEMAS['plan-gap-closure'].requiredValues` keeps matching with no call site changed.
+> Implementation note: fork (a) needs **no hand-written coercion layer** for scalars. js-yaml's
+> `FAILSAFE_SCHEMA` resolves only `!!str`/`!!seq`/`!!map`, so every scalar returns a string by spec.
+> `gap_closure: true` stays `"true"` and `FRONTMATTER_SCHEMAS['plan-gap-closure'].requiredValues`
+> keeps matching with no call site changed. Verified across `true`, `null`, `~`, `1.5`, `0x10`, a
+> date, `yes`, `on`, `.inf`, `NaN` and quoted-vs-unquoted numbers: all agree with legacy.
+
+> **CORRECTION to the answer above, 2026-08-26 (Phase 4, #3881) — fork (a) as this ADR specifies it
+> is NOT IMPLEMENTABLE, and the fork itself is ill-posed.** An adversarial pass on the Phase 4 design
+> established this by execution, and it supersedes the "(a)" answer recorded above.
+>
+> (a) is defined as *"keep a string-coercing adapter over the parser so the existing contract holds."*
+> That presumes the existing contract is expressible as a function of a parsed YAML tree. **It is
+> not.** `extractFrontmatter` is not a YAML parser; it is a **line-oriented scanner whose output is a
+> function of the raw source text.** Four spellings of the same value:
+>
+> | source line | legacy | js-yaml |
+> |---|---|---|
+> | `  - test: "a b"` | `["test: \"a b"]` | `[{"test":"a b"}]` |
+> | `  - test: a b` | `["test: a b"]` | `[{"test":"a b"}]` |
+> | `  - test: 'a b'` | `["test: 'a b"]` | `[{"test":"a b"}]` |
+> | `  - {test: a b}` | `["{test: a b}"]` | `[{"test":"a b"}]` |
+>
+> One tree, four legacy strings — one of them mangled, with the closing quote stripped. **No adapter
+> over a tree can choose among four outputs that the tree does not distinguish.** Reproducing them
+> requires keeping the legacy line scanner, which is the surface §8.1 exists to delete.
+>
+> The consequence for the fork: **for any document with a non-scalar value, (a) collapses into (b).**
+> Structured values cannot be flattened back to their source spelling, so consumers must either accept
+> a canonicalized string or move to real types. There is no third option, and roughly 26% of
+> frontmatter-carrying documents (230 of 897 by the adversarial count; 239 of 901 by mine — the
+> denominators differ by fence-detection edge cases and are reconciled during implementation) hold at
+> least one non-scalar top-level value.
+>
+> **Three further defects in the design this correction replaces**, all confirmed by execution:
+>
+> 1. **Returning `{}` on a parse failure is destructive, not benign.** Eight call sites across
+>    `state-transition.cjs` and `state.cjs` compute `hasFrontmatter =
+>    Object.keys(extractFrontmatter(...)).length > 0` and, when false, reassemble the document
+>    **without a frontmatter block**. A STATE.md carrying a git merge-conflict marker, a tab indent or
+>    a duplicate key parses today and would, under a catch-and-return-`{}` adapter, have its
+>    frontmatter **deleted on the next write**. The caller conflates "empty" with "unparseable"; the
+>    adapter must not feed that conflation. (Not a live bug today: the only four tracked documents
+>    legacy parses to empty are archived changesets, which never reach the state write path.)
+> 2. **An empty value silently drops its key.** Legacy parses `progress:` to `{}`; js-yaml yields
+>    `null`; `reconstructFrontmatter` **omits any null-valued key**. `gsd-core/templates/state.md`
+>    ships an empty `progress:`, so passing null through deletes it on the next write.
+> 3. **The truncation probe is not a pre-parse heuristic — it IS `parseYamlRegion`.** #1882's
+>    diagnostic cannot both "stay unchanged" and survive that function's deletion. Pointing it at
+>    js-yaml silences it on the dominant real shape (fence opened, body follows: legacy sees 2 keys
+>    and fires; js-yaml raises `bad indentation` and yields 0 keys, so it stays silent). Keeping it
+>    hand-rolled recreates precisely the parallel-surface divergence `frontmatter.cts`'s own comment
+>    warns against.
+>
+> **A new attack surface the fork never considered.** `FAILSAFE_SCHEMA` still resolves anchors and
+> aliases. A 7-line frontmatter block expands to a **22.8 MB** structure in 0 ms, and one further
+> nesting level is ~200 MB — which `frontmatterDeepEqual` and `reconstructFrontmatter` then walk.
+> The legacy scanner is immune, because `&a [...]` is just a string to it. `.planning/` documents are
+> **user documents**, so this is a real regression vector that any implementation must close, not a
+> theoretical one. Current corpus occurrences of anchors, aliases and merge keys: **zero**, so nothing
+> is lost by refusing them outright.
+>
+> **Verified clean, and worth recording as negatives:** top-level key **order** agrees across all
+> frontmatter-carrying tracked documents (0 disagreements); the never-throw claim holds (legacy threw
+> on 0 of 11 hostile inputs, including a 200 KB scalar, 20k keys and 5k nested opens); and the ten
+> scalar spellings above all agree.
+>
+> **Status: §8.1 requires re-scoping and the rule is therefore NOT delivered by Phase 4 as designed.**
+> It is not silently deferred — the measurement above is the deliverable, and the re-scoping decision
+> is recorded as an open question with a forcing function, per §8's own rule.
 
 > **Amendment, 2026-08-26 (Phase 4, #3881) — the justifying sentence above is wrong, and this is the
 > THIRD wrong premise in this ADR.** The claim *"Both close #3349 and #3360, which are read-side
