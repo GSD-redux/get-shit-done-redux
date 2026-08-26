@@ -3,16 +3,19 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 
 const { ExitError, runMain } = require('../scripts/lib/cli-exit.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { createTempDir, cleanup } = require('./helpers.cjs');
 
 // Paths to the compiled product seam (src/cli-exit.cts → gsd-core/bin/lib/cli-exit.cjs)
 // used for json-error mode regression tests which require io.cjs integration.
 const BUILT_CLI_EXIT_PATH = path.resolve(__dirname, '../gsd-core/bin/lib/cli-exit.cjs');
 const IO_PATH = path.resolve(__dirname, '../gsd-core/bin/lib/io.cjs');
+const SCRIPTS_CLI_EXIT_PATH = path.resolve(__dirname, '../scripts/lib/cli-exit.cjs');
 
 /** Settle the runMain promise chain before asserting. */
 async function settle() {
@@ -283,6 +286,321 @@ describe('regressions', () => {
       assert.strictEqual(envParsed.ok, false);
       assert.strictEqual(envParsed.reason, 'sdk_fail_fast');
       assert.ok(envParsed.message, 'envelope must carry a message');
+    });
+  });
+
+  /**
+   * #3904 (epic #3889, ADR-3889 P0) — scripts/lib/cli-exit.cjs was a SECOND
+   * hand-written implementation of this seam, and it had no json-error arm at
+   * all: an unexpected throw printed a raw stack trace where the documented
+   * contract promises { ok:false, reason, message }. 64+ files under scripts/
+   * require that copy.
+   *
+   * Fix: scripts/lib/cli-exit.cjs is now GENERATED from src/cli-exit.cts's
+   * compiled output and byte-compared by scripts/gen-scripts-cli-exit.cjs
+   * --check, so the two cannot diverge again.
+   *
+   * These run against the SCRIPTS copy specifically — the sibling bug-965 block
+   * above deliberately targets the built copy, which is exactly how the drift
+   * stayed invisible.
+   */
+  describe('bug-3904: the scripts copy is the same artifact as the built one', () => {
+    /** Build a one-shot driver script for whichever copy is under test. */
+    function driver(modulePath, { jsonMode, throwExpr }) {
+      return [
+        `const cliExit = require(${JSON.stringify(modulePath)});`,
+        `const { runMain, ExitError } = cliExit;`,
+        `void ExitError;`,
+        `cliExit.setJsonErrorMode(${jsonMode});`,
+        `runMain(() => { throw ${throwExpr}; });`,
+        `setImmediate(() => {});`,
+      ].join('\n');
+    }
+
+    /**
+     * Drive the SCRIPTS copy. json-error mode is set through the scripts copy's
+     * own accessor, because a scripts/ consumer on an unbuilt clone has no
+     * io.cjs to reach for — that independence is part of what is under test.
+     */
+    function spawnScriptsRun(opts) {
+      return toLegacyResult(
+        runNode(['-e', driver(SCRIPTS_CLI_EXIT_PATH, opts)], { timeoutMs: PROBE_TIMEOUT_MS }),
+      );
+    }
+
+    /** The same driver, pointed at the BUILT copy, for the parity row. */
+    function spawnBuiltRun(opts) {
+      return toLegacyResult(
+        runNode(['-e', driver(BUILT_CLI_EXIT_PATH, opts)], { timeoutMs: PROBE_TIMEOUT_MS }),
+      );
+    }
+
+    /** Run a snippet that prints JSON on stdout, and return the parsed value. */
+    function readJsonFromChild(lines) {
+      const r = toLegacyResult(runNode(['-e', lines.join('\n')], { timeoutMs: PROBE_TIMEOUT_MS }));
+      assert.strictEqual(r.status, 0, `child exited ${r.status}; stderr: ${r.stderr}`);
+      return JSON.parse(r.stdout);
+    }
+
+    /** Parse stderr as a single JSON object, failing with the raw text if it is not one. */
+    function parseEnvelope(result) {
+      const trimmed = result.stderr.trim();
+      try {
+        return JSON.parse(trimmed);
+      } catch (e) {
+        return assert.fail(
+          `stderr is NOT a single JSON object (raw stack leaked through):\n${trimmed}\nparse error: ${e.message}`,
+        );
+      }
+    }
+
+    // ── Matrix rows 1-3: the reported defect, at the consumer's output ────────
+    test('scripts copy emits the structured envelope on an unexpected throw under json mode', () => {
+      const result = spawnScriptsRun({ jsonMode: true, throwExpr: `new TypeError('unexpected boom')` });
+      assert.strictEqual(result.status, 1, `expected exit 1; stderr: ${result.stderr}`);
+      const parsed = parseEnvelope(result);
+      assert.strictEqual(parsed.ok, false);
+      assert.strictEqual(parsed.reason, 'sdk_fail_fast');
+      assert.ok(
+        String(parsed.message).includes('unexpected boom'),
+        `expected the thrown text in message, got: ${JSON.stringify(parsed.message)}`,
+      );
+    });
+
+    test('scripts copy envelope covers RangeError as well as TypeError', () => {
+      const result = spawnScriptsRun({ jsonMode: true, throwExpr: `new RangeError('out of bounds')` });
+      assert.strictEqual(result.status, 1);
+      const parsed = parseEnvelope(result);
+      assert.strictEqual(parsed.reason, 'sdk_fail_fast');
+      assert.ok(String(parsed.message).includes('out of bounds'));
+    });
+
+    test('scripts copy writes the envelope to stderr and leaves stdout empty', () => {
+      const result = spawnScriptsRun({ jsonMode: true, throwExpr: `new TypeError('boom')` });
+      assert.strictEqual(result.stdout, '', `expected empty stdout, got: ${result.stdout}`);
+    });
+
+    // ── Matrix rows 4-5: negative space — what must NOT become an envelope ────
+    test('scripts copy preserves the raw stack trace when json mode is off', () => {
+      const result = spawnScriptsRun({ jsonMode: false, throwExpr: `new TypeError('unexpected boom')` });
+      assert.strictEqual(result.status, 1);
+      const trimmed = result.stderr.trim();
+      let parsed = null;
+      try { parsed = JSON.parse(trimmed); } catch { /* expected — not JSON */ }
+      assert.strictEqual(parsed, null, `expected a raw stack in plain mode, got JSON: ${trimmed.slice(0, 200)}`);
+      assert.ok(trimmed.includes('unexpected boom'), `expected the thrown text; got: ${trimmed.slice(0, 200)}`);
+    });
+
+    test('scripts copy keeps ExitError plain-text under json mode', () => {
+      const result = spawnScriptsRun({
+        jsonMode: true,
+        throwExpr: `new ExitError(1, 'Usage: gsd-tools <command> [args]')`,
+      });
+      assert.strictEqual(result.status, 1, 'ExitError exits with its own code');
+      const trimmed = result.stderr.trim();
+      let parsed = null;
+      try { parsed = JSON.parse(trimmed); } catch { /* expected — plain text */ }
+      assert.strictEqual(parsed, null, `ExitError must stay plain text; got JSON: ${trimmed.slice(0, 200)}`);
+      assert.ok(trimmed.includes('Usage'), `plain-text message must reach stderr; got: ${trimmed.slice(0, 200)}`);
+    });
+
+    // ── Matrix rows 6-10: non-Error throws reach String(err) ─────────────────
+    for (const [label, throwExpr, expectedMessage] of [
+      ['a thrown string', `'a bare string'`, 'a bare string'],
+      ['a thrown null', `null`, 'null'],
+      ['a thrown undefined', `undefined`, 'undefined'],
+      ['an Error with an empty message', `new Error('')`, 'Error'],
+    ]) {
+      test(`scripts copy envelope handles ${label}`, () => {
+        const result = spawnScriptsRun({ jsonMode: true, throwExpr });
+        assert.strictEqual(result.status, 1, `expected exit 1; stderr: ${result.stderr}`);
+        const parsed = parseEnvelope(result);
+        assert.strictEqual(parsed.ok, false);
+        assert.strictEqual(parsed.reason, 'sdk_fail_fast');
+        assert.ok(
+          String(parsed.message).includes(expectedMessage),
+          `expected ${JSON.stringify(expectedMessage)} in message, got ${JSON.stringify(parsed.message)}`,
+        );
+      });
+    }
+
+    test('scripts copy envelope stays parseable when the message contains quotes and newlines', () => {
+      // Proves JSON.stringify is doing the encoding rather than string concatenation:
+      // an unescaped quote or newline would split stderr into something JSON.parse rejects.
+      const hostile = 'he said "hi"\nthen \\left\ttab';
+      const result = spawnScriptsRun({ jsonMode: true, throwExpr: `new Error(${JSON.stringify(hostile)})` });
+      assert.strictEqual(result.status, 1);
+      const parsed = parseEnvelope(result);
+      assert.strictEqual(parsed.message, hostile, 'the message must round-trip byte-for-byte');
+    });
+
+    // ── Matrix row 11: the two copies are one artifact ───────────────────────
+    test('the built copy and the scripts copy produce identical verdicts for every throw class', () => {
+      const cases = [
+        { jsonMode: true, throwExpr: `new TypeError('same boom')` },
+        { jsonMode: false, throwExpr: `new TypeError('same boom')` },
+        { jsonMode: true, throwExpr: `new ExitError(3, 'same usage')` },
+      ];
+      for (const c of cases) {
+        const fromScripts = spawnScriptsRun(c);
+        const fromBuilt = spawnBuiltRun(c);
+        assert.strictEqual(
+          fromScripts.status, fromBuilt.status,
+          `exit status must match for ${c.throwExpr} (json=${c.jsonMode})`,
+        );
+        // Normalize the module path that necessarily differs between the two
+        // copies, then require the remaining diagnostic bytes to be identical.
+        const norm = (s) => s.replace(/[^\s:]*cli-exit\.cjs/g, '<cli-exit>').trim();
+        assert.strictEqual(
+          norm(fromScripts.stderr), norm(fromBuilt.stderr),
+          `stderr must match for ${c.throwExpr} (json=${c.jsonMode})`,
+        );
+      }
+    });
+
+    // ── Matrix rows 13-15: ONE json-error-mode cell, not two ─────────────────
+    // This is the hazard the fix INTRODUCES and must therefore be tested rather
+    // than reasoned about: after generation there are two module instances of
+    // the same artifact, and a module-level `let` would give them two flags.
+    test('the mode set through io is visible through the scripts copy', () => {
+      assert.deepStrictEqual(
+        readJsonFromChild([
+          `const io = require(${JSON.stringify(IO_PATH)});`,
+          `const cliExit = require(${JSON.stringify(SCRIPTS_CLI_EXIT_PATH)});`,
+          `io.setJsonErrorMode(true);`,
+          `process.stdout.write(JSON.stringify({ viaCliExit: cliExit.getJsonErrorMode() }));`,
+        ]),
+        { viaCliExit: true },
+      );
+    });
+
+    test('the mode set through the scripts copy is visible through io', () => {
+      assert.deepStrictEqual(
+        readJsonFromChild([
+          `const io = require(${JSON.stringify(IO_PATH)});`,
+          `const cliExit = require(${JSON.stringify(SCRIPTS_CLI_EXIT_PATH)});`,
+          `cliExit.setJsonErrorMode(true);`,
+          `process.stdout.write(JSON.stringify({ viaIo: io.getJsonErrorMode() }));`,
+        ]),
+        { viaIo: true },
+      );
+    });
+
+    test('both copies of the exit module share one json-error-mode cell', () => {
+      assert.deepStrictEqual(
+        readJsonFromChild([
+          `const io = require(${JSON.stringify(IO_PATH)});`,
+          `const built = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+          `const scripts = require(${JSON.stringify(SCRIPTS_CLI_EXIT_PATH)});`,
+          // Two distinct module instances of the same artifact.
+          `if (built === scripts) throw new Error('expected two distinct module instances');`,
+          `io.setJsonErrorMode(true);`,
+          `process.stdout.write(JSON.stringify({`,
+          `  built: built.getJsonErrorMode(),`,
+          `  scripts: scripts.getJsonErrorMode(),`,
+          `  io: io.getJsonErrorMode(),`,
+          `}));`,
+        ]),
+        { built: true, scripts: true, io: true },
+        'all three views must read one cell — two module-level flags would diverge here',
+      );
+    });
+
+    // ── Matrix rows 16-17: coercion and default, preserved exactly ───────────
+    test('setJsonErrorMode keeps its truthiness coercion', () => {
+      const seen = readJsonFromChild([
+        `const c = require(${JSON.stringify(SCRIPTS_CLI_EXIT_PATH)});`,
+        `const seen = [];`,
+        `for (const v of [0, '', 'false', null, undefined, 1, 'x']) {`,
+        `  c.setJsonErrorMode(v); seen.push(c.getJsonErrorMode());`,
+        `}`,
+        `process.stdout.write(JSON.stringify(seen));`,
+      ]);
+      // `!!v` — note 'false' is a NON-EMPTY string and is therefore true.
+      assert.deepStrictEqual(seen, [false, false, true, false, false, true, true]);
+    });
+
+    test('json-error mode defaults to false when never set', () => {
+      assert.deepStrictEqual(
+        readJsonFromChild([
+          `const c = require(${JSON.stringify(SCRIPTS_CLI_EXIT_PATH)});`,
+          `const v = c.getJsonErrorMode();`,
+          `process.stdout.write(JSON.stringify({ v, type: typeof v }));`,
+        ]),
+        { v: false, type: 'boolean' },
+        'an unset cell must read as boolean false, never undefined',
+      );
+    });
+
+    // ── Matrix rows 18-21: io's export surface must not move (Hyrum) ─────────
+    test('io still exports both json-error-mode accessors and an unchanged ERROR_REASON', () => {
+      const seen = readJsonFromChild([
+        `const io = require(${JSON.stringify(IO_PATH)});`,
+        `process.stdout.write(JSON.stringify({`,
+        `  setter: typeof io.setJsonErrorMode,`,
+        `  getter: typeof io.getJsonErrorMode,`,
+        `  failFast: io.ERROR_REASON.SDK_FAIL_FAST,`,
+        `  frozen: Object.isFrozen(io.ERROR_REASON),`,
+        `  reasonCount: Object.keys(io.ERROR_REASON).length,`,
+        `}));`,
+      ]);
+      assert.strictEqual(seen.setter, 'function');
+      assert.strictEqual(seen.getter, 'function');
+      assert.strictEqual(seen.failFast, 'sdk_fail_fast', 'the literal must survive moving to cli-exit');
+      assert.strictEqual(seen.frozen, true);
+      assert.strictEqual(seen.reasonCount, 25, 'ERROR_REASON must keep all 25 members');
+    });
+
+    // ── Matrix rows 22-23: the unbuilt-clone constraint ──────────────────────
+    test('the scripts copy loads with no gsd-core tree in scope at all', (t) => {
+      // The generated file is COMMITTED and 64+ scripts/ consumers require it,
+      // including scripts/check-env.cjs which runs before any build. It must
+      // therefore not reach into gsd-core/bin/lib/, which is gitignored tsc
+      // output absent on a fresh clone.
+      //
+      // Proven by copying the file into an isolated temp directory that has no
+      // gsd-core sibling and no node_modules — a require of the built tree is
+      // MODULE_NOT_FOUND there. Deliberately NOT done by renaming the real
+      // gsd-core/bin/lib: test files run in parallel, so mutating a shared
+      // production directory would break every sibling suite mid-run.
+      const dir = createTempDir('gsd-3904-standalone-');
+      t.after(() => cleanup(dir));
+      const copied = path.join(dir, 'cli-exit.cjs');
+      fs.copyFileSync(SCRIPTS_CLI_EXIT_PATH, copied);
+
+      const r = toLegacyResult(runNode(['-e', [
+        `const c = require(${JSON.stringify(copied)});`,
+        `c.setJsonErrorMode(true);`,
+        `c.runMain(() => { throw new TypeError('still works'); });`,
+        `setImmediate(() => {});`,
+      ].join('\n')], { cwd: dir, timeoutMs: PROBE_TIMEOUT_MS }));
+
+      assert.ok(
+        !r.stderr.includes('MODULE_NOT_FOUND'),
+        `the scripts copy must not require anything outside node: builtins; got: ${r.stderr.slice(0, 400)}`,
+      );
+      assert.strictEqual(r.status, 1, `expected exit 1; stderr: ${r.stderr}`);
+      assert.strictEqual(JSON.parse(r.stderr.trim()).reason, 'sdk_fail_fast');
+    });
+
+    test('the scripts copy requires nothing outside node builtins', () => {
+      // allow-test-rule: architectural-invariant (#3904)
+      // Parses the file's require() specifiers as data via the same extractor the
+      // #2858 packaging guard uses — it does not substring-match source text. The
+      // constraint (never reach into gitignored build output) cannot be observed
+      // from outputs, only from the resolved specifier set.
+      const { extractRequires } = require('./helpers/copy-script-fixture.cjs');
+      const src = fs.readFileSync(SCRIPTS_CLI_EXIT_PATH, 'utf8');
+      const offenders = extractRequires(src).filter((spec) => !spec.startsWith('node:'));
+      assert.deepStrictEqual(offenders, [], 'the generated scripts copy must depend only on node: builtins');
+    });
+
+    test('the build sentinel is still emitted', () => {
+      // gsd-core/bin/ensure-runtime-build.cjs keys isBuilt() on this exact filename.
+      assert.ok(
+        fs.statSync(BUILT_CLI_EXIT_PATH).isFile(),
+        'gsd-core/bin/lib/cli-exit.cjs must remain tsc output — it is the build sentinel',
+      );
     });
   });
 });
