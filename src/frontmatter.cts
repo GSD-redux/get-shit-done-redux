@@ -4,6 +4,16 @@
  * ADR-457 build-at-publish: the hand-written bin/lib/frontmatter.cjs collapsed
  * to a TypeScript source of truth. Behaviour is preserved byte-for-behaviour
  * from the prior hand-written .cjs; only strict types are added.
+ *
+ * ADR-3473 §8.1 (#3881): the read path is no longer a hand-rolled line
+ * scanner. `parseYamlRegion` now parses through the vendored `js-yaml`
+ * (`./vendor/js-yaml.cjs`, verbatim `node_modules/js-yaml/dist/js-yaml.js`)
+ * under `FAILSAFE_SCHEMA` + `json: true` — every scalar comes back a string
+ * (today's contract, no adapter needed) and duplicate keys overwrite
+ * (last-wins, the documented invariant). What js-yaml does NOT do —
+ * anchors/alias refusal, the #3257 comment channel, the #1882 truncation
+ * probe, null-byte preservation and object-list flattening for the existing
+ * string-shaped value contract — is layered on top, in one place, below.
  */
 
 import fs from 'node:fs';
@@ -17,6 +27,7 @@ import { splitLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInputMod = require('./unusable-input.cjs');
 const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
+import { load as yamlLoad, dump as yamlDump, FAILSAFE_SCHEMA, YAMLException } from './vendor/js-yaml.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,36 +37,14 @@ type Frontmatter = Record<string, FrontmatterValue>;
 // ─── Parsing engine ───────────────────────────────────────────────────────────
 
 /**
- * Split a YAML inline array body on commas, respecting quoted strings.
- * e.g. '"a, b", c' → ['a, b', 'c']
+ * Base js-yaml options for every parse in this module (ADR-3473 §8.1 §3.1/§3.3).
+ * `FAILSAFE_SCHEMA` resolves only `!!str`/`!!seq`/`!!map` — every scalar comes
+ * back a string, which is today's contract and needs no coercion layer.
+ * `json: true` makes duplicate keys overwrite (last-wins) instead of throwing,
+ * which is the documented behavior `tests/fixtures/adversarial/frontmatter/
+ * duplicate-keys.md` pins.
  */
-function splitInlineArray(body: string): string[] {
-  const items: string[] = [];
-  let current = '';
-  let inQuote: string | null = null;
-
-  for (let i = 0; i < body.length; i++) {
-    const ch = body[i];
-    if (inQuote) {
-      if (ch === inQuote) {
-        inQuote = null;
-      } else {
-        current += ch;
-      }
-    } else if (ch === '"' || ch === "'") {
-      inQuote = ch;
-    } else if (ch === ',') {
-      const trimmed = current.trim();
-      if (trimmed) items.push(trimmed);
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-  const trimmed = current.trim();
-  if (trimmed) items.push(trimmed);
-  return items;
-}
+const YAML_LOAD_OPTS = { schema: FAILSAFE_SCHEMA, json: true };
 
 /**
  * How many parsed keys an unterminated region must yield before it is reported as a
@@ -82,7 +71,9 @@ const UNTERMINATED_KEY_THRESHOLD = 2;
  * a frontmatter block ends mid-block, so *every* line in the region is still frontmatter-shaped,
  * whereas a document merely opening with a rule goes on to prose. So the region must be
  * uniformly frontmatter-shaped AND carry enough keys to be worth reporting; either test alone
- * has a false-positive class the other closes.
+ * has a false-positive class the other closes. This heuristic is deliberately a raw-text scan,
+ * independent of whichever parser counts the keys (see `countKeysBeforeTruncation`) — it is the
+ * guard that keeps a stricter parser from turning "opens with a rule" into a false positive.
  */
 function isFrontmatterShaped(region: string): boolean {
   const lines = splitLines(region).filter((line) => line.trim() !== '');
@@ -109,164 +100,231 @@ const FULL_LINE_COMMENTS = Symbol('fullLineComments');
 type FullLineCommentChannel = { leading: Record<string, string[]>; trailing: string[] };
 
 /**
- * Unescape the interior of a YAML double-quoted scalar — the exact inverse of
- * `escapeDoubleQuoted` (#3497). The writer has escaped `\`/`"`/`\n`/`\t`/`\r`/
- * `\xHH` since #1779, but the reader only stripped the delimiters, so
- * parse(serialize(x)) ≠ x for any quoted scalar carrying a `"` or `\`: each
- * read-modify-write round-trip doubled the backslashes (b → 2b+1), growing a
- * repeatedly-synced field — and its document — without bound until tooling
- * OOMed. Recognized escapes decode per YAML double-quoted semantics; an
- * unrecognized `\c` is kept literally (backslash + char), matching the
- * strip-only behavior hand-authored files had before this fix.
+ * ADR-3473 §8.1 §0.3 (#3881, consequence 2): a Symbol-keyed marker carried on the `{}`
+ * `extractFrontmatter` returns when the region failed to parse (malformed YAML, or a refused
+ * anchor/alias/merge key — consequence 6). Mirrors `FULL_LINE_COMMENTS` exactly: invisible to
+ * `Object.keys`/`Object.entries`/`JSON.stringify`/`for-in`, so the 70 call sites that never
+ * inspect it are unaffected, while the 8 `hasFrontmatter = Object.keys(...).length > 0` sites can
+ * consult it to tell "genuinely empty" apart from "unparseable" and avoid reassembling the
+ * document without its (unparsed but still present) frontmatter block. Wiring those 8 call sites
+ * is a separate change — this module only sets and exports the marker.
  */
-function unescapeDoubleQuoted(s: string): string {
-  let out = '';
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (ch !== '\\' || i === s.length - 1) {
-      out += ch;
-      continue;
+const FRONTMATTER_UNPARSEABLE = Symbol('frontmatterUnparseable');
+
+function unparseableResult(): Frontmatter {
+  const fm: Frontmatter = {};
+  (fm as Record<symbol, unknown>)[FRONTMATTER_UNPARSEABLE as unknown as symbol] = true;
+  return fm;
+}
+
+/**
+ * ADR-3473 §8.1 (consequence 6): `FAILSAFE_SCHEMA` still resolves anchors, aliases and merge
+ * keys — that is core YAML mechanics, not tag resolution, so no schema choice disables it. A
+ * hostile 7-line frontmatter (`&a [...]` fanned out through nested aliases) expands to tens of
+ * megabytes in a few milliseconds, and `.planning/` documents are user-authored, untrusted input.
+ * Corpus occurrences of anchors/aliases/merge keys today: zero, so refusing them costs nothing.
+ * This is a raw-text pre-scan (not a full YAML grammar check) — false positives are cheap
+ * (the document is treated as unparseable, its frontmatter block preserved verbatim by the
+ * caller), so it is deliberately conservative rather than spec-precise.
+ */
+const MERGE_KEY_LINE_RE = /^\s*<<\s*:/;
+const ANCHOR_OR_ALIAS_LINE_RE = /^\s*(?:-\s+|[^\s:'"][^:]*:\s*)[&*][A-Za-z_][\w-]*/;
+
+function refuseAnchorsAndAliases(yaml: string): void {
+  for (const line of splitLines(yaml)) {
+    if (MERGE_KEY_LINE_RE.test(line) || ANCHOR_OR_ALIAS_LINE_RE.test(line)) {
+      throw new YAMLException(
+        'frontmatter: anchors, aliases and merge keys are refused (ADR-3473 §8.1) — ' +
+          `offending line: ${JSON.stringify(line)}`,
+      );
     }
-    const next = s[++i];
-    if (next === '\\' || next === '"') {
-      out += next;
-    } else if (next === 'n') {
-      out += '\n';
-    } else if (next === 't') {
-      out += '\t';
-    } else if (next === 'r') {
-      out += '\r';
-    } else if (next === 'x') {
-      const hex = s.slice(i + 1, i + 3);
-      if (/^[0-9a-fA-F]{2}$/.test(hex)) {
-        out += String.fromCharCode(parseInt(hex, 16));
-        i += 2;
-      } else {
-        out += '\\x'; // not \xHH — keep literally
+  }
+}
+
+/**
+ * ADR-3473 §8.1 (consequence 7): js-yaml rejects a literal U+0000 unconditionally, under every
+ * schema. The fixture invariant (`null-byte-value.md`) is "preserve or normalize; never truncate
+ * silently", so the byte is swapped for a private-use sentinel before the parse and restored in
+ * every resulting string afterward — preserving the exact byte rather than normalizing it away.
+ */
+const NULL_BYTE_SENTINEL = String.fromCharCode(0xE000);
+
+function escapeNullBytesForParse(yaml: string): string {
+  return yaml.indexOf('\u0000') === -1 ? yaml : yaml.split('\u0000').join(NULL_BYTE_SENTINEL);
+}
+
+function restoreNullBytesDeep(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.includes(NULL_BYTE_SENTINEL) ? value.split(NULL_BYTE_SENTINEL).join('\u0000') : value;
+  }
+  if (Array.isArray(value)) return value.map(restoreNullBytesDeep);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const restoredKey = k.includes(NULL_BYTE_SENTINEL) ? k.split(NULL_BYTE_SENTINEL).join('\u0000') : k;
+      out[restoredKey] = restoreNullBytesDeep(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * ADR-3473 §8.1 (consequence 3): js-yaml resolves `- test: a b` (and the three other spellings
+ * of the same value — `"a b"`, `'a b'`, `{test: a b}`) to ONE tree shape, `[{test: "a b"}]` —
+ * unlike the legacy scanner, whose output was a function of the raw source line and therefore
+ * produced four different strings for those four spellings (ADR-3473 40-design.md §0.1). No
+ * adapter over a tree can recover a distinction the tree does not carry, so this renders a single
+ * canonical string per object-list item instead, keeping the existing value SHAPE (an array of
+ * strings) that `sliceTopLevelFrontmatterSegments`, the `[object Object]` guard and
+ * `noOpObjectListSetError` all depend on. Choosing structured (non-string) values is fork (b) —
+ * out of scope for this phase.
+ */
+function flattenScalarForDisplay(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return `[${value.map(flattenScalarForDisplay).join(', ')}]`;
+  if (typeof value === 'object') return flattenObjectListItem(value as Record<string, unknown>);
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
+  return String(value);
+}
+
+function flattenObjectListItem(item: Record<string, unknown>): string {
+  return Object.entries(item)
+    .map(([k, v]) => `${k}: ${flattenScalarForDisplay(v)}`)
+    .join(', ');
+}
+
+/**
+ * Recursively normalize a parsed js-yaml tree to this module's historical contract:
+ *  - `null`/`undefined` in an object-value slot becomes `{}` (consequence 1 — matches the
+ *    legacy scanner's empty-value handling exactly, so `reconstructFrontmatter` — which omits
+ *    null-valued keys — still round-trips a bare `key:` line instead of deleting it);
+ *  - `null`/`undefined` inside an array becomes `''` (arrays are always string[] in this
+ *    module's contract);
+ *  - a map or nested array found as an array ITEM is flattened to a canonical string
+ *    (consequence 3);
+ *  - every other scalar is already a string under `FAILSAFE_SCHEMA` and passes through.
+ */
+function normalizeParsedValue(value: unknown, inArray: boolean): unknown {
+  if (value === null || value === undefined) return inArray ? '' : {};
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (item !== null && typeof item === 'object') {
+        return Array.isArray(item) ? flattenScalarForDisplay(item) : flattenObjectListItem(item as Record<string, unknown>);
       }
-    } else {
-      out += '\\' + next; // unrecognized escape — keep literally
+      return normalizeParsedValue(item, true);
+    });
+  }
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = normalizeParsedValue(v, false);
     }
+    return out;
   }
-  return out;
+  return value;
 }
 
 /**
- * Strip the quote delimiters off a parsed YAML scalar, un-escaping the interior
- * when the scalar is double-quoted (#3497 — the parse-side complement of
- * `escapeDoubleQuoted`). Single-quoted scalars keep the historical strip-only
- * behavior (the writer never emits them; `''` → `'` folding is out of scope).
- * A scalar wrapped in double quotes un-escapes; anything else keeps the exact
- * prior delimiter-strip behavior, including a stray unpaired boundary quote.
+ * ADR-3473 §8.1 (consequence 5): the #3257 comment scan used to key off the legacy parser's own
+ * `[a-zA-Z0-9_-]+:` key regex — a Unicode key (e.g. `相:`) never matched it, so a comment above
+ * one silently attached to the WRONG key once js-yaml owns the real (Unicode-inclusive) key set.
+ * This attributes each pending column-0 comment block against js-yaml's own parsed top-level key
+ * list, in document order, by matching the literal key text at column 0 rather than re-deriving a
+ * key shape independently — so it can never disagree with what was actually parsed.
  */
-function parseQuotedScalar(value: string): string {
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return unescapeDoubleQuoted(value.slice(1, -1));
-  }
-  return value.replace(/^["']|["']$/g, '');
-}
-
-/**
- * Parse one already-delimited YAML region into a Frontmatter object.
- *
- * Extracted from `extractFrontmatter` (#1882) so the truncation probe below and the real
- * parse run the *same* parser. A second, simpler "does this look like YAML?" matcher would
- * be a parallel surface that drifts — exactly the generative-fix-divergence class.
- */
-function parseYamlRegion(yaml: string): Frontmatter {
-  const frontmatter: Frontmatter = {};
+function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCommentChannel | undefined {
   const lines = splitLines(yaml);
-
-  // #3257: pending column-0 full-line comments, attached to the next top-level key.
-  let pendingComments: string[] = [];
-  let commentChannel: FullLineCommentChannel | undefined;
-
-  // Stack to track nested objects: [{obj, key, indent}]
-  type StackEntry = { obj: Record<string, unknown> | unknown[]; key: string | null; indent: number };
-  const stack: StackEntry[] = [{ obj: frontmatter, key: null, indent: -1 }];
+  let pending: string[] = [];
+  let channel: FullLineCommentChannel | undefined;
+  let keyIdx = 0;
 
   for (const line of lines) {
-    // Skip empty lines
     if (line.trim() === '') continue;
-
-    // #3257: capture column-0 full-line comments; attach them to the next top-level key.
     if (/^#/.test(line)) {
-      pendingComments.push(line);
+      pending.push(line);
       continue;
     }
-
-    // Calculate indentation (number of leading spaces)
-    const indentMatch = line.match(/^(\s*)/);
-    const indent = indentMatch ? indentMatch[1].length : 0;
-
-    // Pop stack back to appropriate level
-    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
-      stack.pop();
-    }
-
-    const current = stack[stack.length - 1];
-
-    // Check for key: value pattern
-    const keyMatch = line.match(/^(\s*)([a-zA-Z0-9_-]+):\s*(.*)/);
-    if (keyMatch) {
-      const key = keyMatch[2];
-      // #3257: attach any pending comments to this (top-level) key.
-      if (pendingComments.length) {
-        if (!commentChannel) commentChannel = { leading: {}, trailing: [] };
-        commentChannel.leading[key] = pendingComments;
-        pendingComments = [];
-      }
-      const value = keyMatch[3].trim();
-
-      if (value === '' || value === '[') {
-        // Key with no value or opening bracket — could be nested object or array
-        const newObj: Record<string, unknown> | unknown[] = value === '[' ? [] : {};
-        (current.obj as Record<string, unknown>)[key] = newObj;
-        current.key = null;
-        // Push new context for potential nested content
-        stack.push({ obj: newObj, key: null, indent });
-      } else if (value.startsWith('[') && value.endsWith(']')) {
-        // Inline array: key: [a, b, c] — quote-aware split (REG-04 fix)
-        (current.obj as Record<string, unknown>)[key] = splitInlineArray(value.slice(1, -1));
-        current.key = null;
-      } else {
-        // Simple key: value
-        (current.obj as Record<string, unknown>)[key] = parseQuotedScalar(value);
-        current.key = null;
-      }
-    } else if (line.trim().startsWith('- ')) {
-      // Array item
-      const itemValue = parseQuotedScalar(line.trim().slice(2));
-
-      // If current context is an empty object, convert to array
-      if (typeof current.obj === 'object' && !Array.isArray(current.obj) && Object.keys(current.obj).length === 0) {
-        // Find the key in parent that points to this object and convert it
-        const parent = stack.length > 1 ? stack[stack.length - 2] : null;
-        if (parent) {
-          for (const k of Object.keys(parent.obj)) {
-            if ((parent.obj as Record<string, unknown>)[k] === current.obj) {
-              (parent.obj as Record<string, unknown>)[k] = [itemValue];
-              current.obj = (parent.obj as Record<string, unknown>)[k] as unknown[];
-              break;
-            }
-          }
+    if (!/^\s/.test(line) && keyIdx < orderedKeys.length) {
+      const key = orderedKeys[keyIdx];
+      if (line.startsWith(`${key}:`) || line.startsWith(`"${key}"`) || line.startsWith(`'${key}'`)) {
+        if (pending.length) {
+          if (!channel) channel = { leading: {}, trailing: [] };
+          channel.leading[key] = pending;
+          pending = [];
         }
-      } else if (Array.isArray(current.obj)) {
-        current.obj.push(itemValue);
+        keyIdx++;
+        continue;
       }
     }
+    // A non-comment line that is not the next expected top-level key start: any comments
+    // pending before it were not actually leading a key (malformed/unusual input) — drop
+    // rather than misattach, matching the prior scan's "attach only when a key follows" shape.
+    pending = [];
   }
 
-  // #3257: trailing comments (after the last key) + attach the channel if any comment was seen.
-  if (pendingComments.length) {
-    if (!commentChannel) commentChannel = { leading: {}, trailing: [] };
-    commentChannel.trailing = pendingComments;
+  if (pending.length) {
+    if (!channel) channel = { leading: {}, trailing: [] };
+    channel.trailing = pending;
   }
+  return channel;
+}
+
+/**
+ * Parse one already-delimited YAML region into a Frontmatter object, via the vendored js-yaml
+ * (ADR-3473 §8.1). Throws (a `YAMLException`, or a plain `Error` from `refuseAnchorsAndAliases`)
+ * on anything js-yaml itself cannot parse or that this module refuses outright; callers decide
+ * whether to surface that as `unparseableResult()` or use it as a truncation signal.
+ */
+function parseYamlRegion(yaml: string): Frontmatter {
+  refuseAnchorsAndAliases(yaml);
+  const escaped = escapeNullBytesForParse(yaml);
+  const raw: unknown = yamlLoad(escaped, YAML_LOAD_OPTS);
+  const normalized = normalizeParsedValue(raw, false);
+  const root: Record<string, unknown> =
+    normalized && typeof normalized === 'object' && !Array.isArray(normalized)
+      ? (normalized as Record<string, unknown>)
+      : {};
+  const restored = restoreNullBytesDeep(root) as Frontmatter;
+
+  const commentChannel = extractCommentChannel(yaml, Object.keys(restored));
   if (commentChannel) {
-    (frontmatter as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = commentChannel;
+    (restored as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = commentChannel;
   }
+  return restored;
+}
 
-  return frontmatter;
+/**
+ * ADR-3473 §8.1 (consequence 4): the #1882 truncation probe used to run the SAME parser
+ * (`parseYamlRegion`) over an unterminated region and count its keys — deliberately, so a second
+ * "does this look like YAML?" matcher could never drift from the real parser. js-yaml is stricter
+ * than the old scanner, though: the dominant real truncation shape (fence opened, well-formed
+ * keys, then the document body follows with no closing fence) is *invalid* YAML — a plain-text
+ * paragraph at column 0 right after a block mapping raises `bad indentation of a mapping entry`
+ * — so a naive "parse the whole region, count keys on success" port yields 0 keys and goes
+ * silent on exactly the case #1882 exists for.
+ *
+ * This still runs the one real parser, just twice on failure: first over the whole region: on
+ * success, count its keys directly. On a `YAMLException` carrying a `mark`, js-yaml's own error
+ * position names the line where the well-formed frontmatter prefix ends; re-parsing just that
+ * prefix (which is valid YAML on its own) recovers the same key count the legacy scanner would
+ * have reported, derived from js-yaml's own error rather than a hand-rolled second matcher.
+ */
+function countKeysBeforeTruncation(region: string): number {
+  try {
+    return Object.keys(parseYamlRegion(region)).length;
+  } catch (e) {
+    if (e instanceof YAMLException && e.mark && typeof e.mark.line === 'number') {
+      const prefix = splitLines(region).slice(0, e.mark.line).join('\n');
+      if (prefix.trim() === '') return 0;
+      try {
+        return Object.keys(parseYamlRegion(prefix)).length;
+      } catch {
+        return 0;
+      }
+    }
+    return 0;
+  }
 }
 
 /**
@@ -281,8 +339,9 @@ function parseYamlRegion(yaml: string): Frontmatter {
  * The discriminator is the reason this is not simply "opened but never closed". A Markdown
  * document whose first line is a thematic break (`---`) takes that exact branch, so flagging
  * on the missing fence alone reports corruption on perfectly good Markdown. Instead the
- * unterminated region is run through this module's own parser and reported only when it
- * yields **two or more** keys.
+ * unterminated region's key count (see `countKeysBeforeTruncation`) is reported only when it
+ * yields **two or more** keys AND the region is uniformly frontmatter-shaped raw text
+ * (`isFrontmatterShaped`).
  *
  * Two, not one, and the extra key is doing real work. A single `key: value` line is genuinely
  * ambiguous: `---` followed by `Note: this is a paragraph.` — or `Author:`, `TODO:`, `See:` —
@@ -296,13 +355,17 @@ function parseYamlRegion(yaml: string): Frontmatter {
  * (STATE.md, PLAN.md, ROADMAP.md, SUMMARY.md, agent/command docs) carries two or more
  * frontmatter keys, so the realistic interruption window stays covered.
  *
+ * A closed region that js-yaml itself cannot parse (malformed YAML, or a refused
+ * anchor/alias/merge key — ADR-3473 §8.1 consequence 6) returns `{}` carrying the
+ * `FRONTMATTER_UNPARSEABLE` Symbol (consequence 2) rather than a bare, indistinguishable `{}`.
+ *
  * @param content Raw document text.
  * @param sourcePath Optional resolved path, used to name the file in the diagnostic and to
  *   key its deduplication. Optional because this function has 50-odd call sites and several
  *   hold only an in-memory string; those dedup on a content digest instead.
  */
 function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
-  // #2977: tolerate a single leading UTF-8 BOM (\uFEFF), which Windows tooling
+  // #2977: tolerate a single leading UTF-8 BOM (﻿), which Windows tooling
   // (PowerShell `>`/`Out-File` on PS 5.1, several editors) writes by default. Without this
   // strip, the byte-0 `startsWith('---')` fence check below fails on the BOM and the whole
   // parse collapses to {} — every frontmatter field silently disappears, and the engine
@@ -322,8 +385,8 @@ function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
   const closingLineStart = content.indexOf('\n---', headerEnd);
   if (closingLineStart === -1) {
     const region = content.slice(headerEnd);
-    const probe = parseYamlRegion(region);
-    if (Object.keys(probe).length >= UNTERMINATED_KEY_THRESHOLD && isFrontmatterShaped(region)) {
+    const keyCount = countKeysBeforeTruncation(region);
+    if (keyCount >= UNTERMINATED_KEY_THRESHOLD && isFrontmatterShaped(region)) {
       warnUnusableInput({
         reason: UNUSABLE_REASON.FRONTMATTER_UNTERMINATED,
         source: sourcePath,
@@ -334,27 +397,29 @@ function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
   }
 
   const yamlEnd = content[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
-  return parseYamlRegion(content.slice(headerEnd, yamlEnd));
+  const region = content.slice(headerEnd, yamlEnd);
+  try {
+    return parseYamlRegion(region);
+  } catch {
+    return unparseableResult();
+  }
 }
 
 /**
- * Escape a string for emission inside a YAML double-quoted scalar (#1779).
- * Backslash must be escaped first so the backslashes added for embedded quotes
- * (and control chars) are not themselves doubled. Without this, a value
- * carrying an indicator (`:`/`#`) that also contains a literal `"` serializes
- * to invalid YAML, e.g. `upstream: "https://x (Tom; "Git. Ship. Done")"`. A
- * literal newline/tab/control char inside the quotes likewise breaks (or
- * silently alters) the scalar, so those are escaped to their YAML forms too.
+ * Escape a string for emission inside a YAML double-quoted scalar (#1779). ADR-3473 §8.1
+ * (#3881): routed through the vendored js-yaml's `dump()` (forced double-quoted style) rather
+ * than a hand-rolled character-class replace chain, so the writer shares the same escaping
+ * engine the reader now uses. js-yaml emits control-char escapes as uppercase hex (`\x1F`);
+ * this repo has emitted lowercase (`\x1f`) since #1779, so the hex digits are lowercased after
+ * dump to keep serialized output byte-stable across the migration. Still exported under the
+ * same name for its three existing call sites (`reconstructFrontmatter` here, plus
+ * `commands.cts` and `runtime-artifact-conversion.cts`), which need no change.
  */
 function escapeDoubleQuoted(s: string): string {
-  return s
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\t/g, '\\t')
-    .replace(/\r/g, '\\r')
-    // Remaining C0 controls + DEL → \xHH (a valid YAML double-quoted escape).
-    .replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+  const dumped = yamlDump(s, { schema: FAILSAFE_SCHEMA, forceQuotes: true, quotingType: '"', lineWidth: -1 });
+  const withoutTrailingNewline = dumped.endsWith('\n') ? dumped.slice(0, -1) : dumped;
+  const interior = withoutTrailingNewline.slice(1, -1); // strip the outer double-quote pair
+  return interior.replace(/\\x([0-9A-Fa-f]{2})/g, (_m, hex: string) => `\\x${hex.toLowerCase()}`);
 }
 
 /**
@@ -993,6 +1058,9 @@ export = {
   agentScalarNeedsDoubleQuoting,
   extractFrontmatter,
   UNTERMINATED_KEY_THRESHOLD,
+  // ADR-3473 §8.1 (#3881, consequence 2): the unparseable-vs-empty marker Symbol. Exported so
+  // the 8 `hasFrontmatter` call sites named in the design can consult it in a follow-up change.
+  FRONTMATTER_UNPARSEABLE,
   // Additive alias (#644 prohibition-probe schema contract): the probe round-trip seam reads a
   // frontmatter object via `parseFrontmatter` (the name the contract test pins). It is the SAME
   // function as `extractFrontmatter` — a bare-object parse with no behavior change — exposed under
