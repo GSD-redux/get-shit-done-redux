@@ -6,7 +6,7 @@
 
 `Use response_language {response_language} for all user-facing prose — narration between tool calls, status updates, progress notes, and findings included; preserve code and paths.`
 
-It lives here rather than inline in `workflows/execute-phase.md` for the same reason the rest of this file does — that workflow has 2 bytes of headroom under the ceiling named below, and this `@-reference` is eager, so the orchestrator loads this instruction with the workflow either way.
+It lives here rather than inline in `workflows/execute-phase.md` for the same reason the rest of this file does — that workflow is held under the frozen byte ceiling named below, and this `@-reference` is eager, so the orchestrator loads this instruction with the workflow either way.
 
 The literal report templates embedded in this workflow (`## Execution Plan`, `## Phase {X}: {Name} Execution Complete`, `## ⚠ Phase {X}: {Name} — Gaps Found`, etc.) are a structural source, not literal output to copy verbatim — render their prose translated into `{response_language}` while keeping headings' structural markers, table columns, IDs, commands, and file paths unchanged.
 
