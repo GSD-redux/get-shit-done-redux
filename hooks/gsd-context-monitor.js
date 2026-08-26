@@ -143,11 +143,14 @@ process.stdin.on('end', () => {
           // plain truncating write empty out its TARGET instead (Codex review
           // of #3808). Two guards, because neither alone covers every
           // platform: the lstat rejects anything that is not a regular file
-          // everywhere — including Windows, where O_NOFOLLOW does not exist
-          // and TEMP/TMP overrides mean the tmpdir is not guaranteed
-          // per-user — and O_NOFOLLOW (ELOOP), where the platform has it,
-          // closes the lstat→open substitution race as well. Every refusal
-          // lands in the same give-up arm.
+          // everywhere — including Windows, where libuv defines O_NOFOLLOW
+          // as 0 (a no-op) and TEMP/TMP overrides mean the tmpdir is not
+          // guaranteed per-user — and O_NOFOLLOW (ELOOP), where the platform
+          // honors it, closes the lstat→open substitution race as well. Every
+          // refusal lands in the same give-up arm — including a Windows
+          // runner refusing the write-open outright for a freshly written
+          // file (share mode allows delete, not write), which is why the
+          // whole fallback is best-effort rather than asserted-on.
           try {
             if (fs.lstatSync(stale).isFile()) {
               fs.closeSync(fs.openSync(

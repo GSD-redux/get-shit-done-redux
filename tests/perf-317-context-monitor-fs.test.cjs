@@ -1469,18 +1469,39 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
   // and pin each half at its observable consequence. The '' assertions are also
   // the proof the injection fired: a preload that failed to match would let the
   // unlink succeed and leave `null`, not ''.
+  //
+  // WINDOWS: the truncating write-open itself fails DETERMINISTICALLY on the CI
+  // runners (observed on both windows-latest lanes: files freshly written by
+  // the parent are held with a share mode that allows DELETE — every
+  // real-unlink row passes — but refuses a write-open, so the give-up arm
+  // engages). The fallback is best-effort BY DESIGN, so the rows tolerate the
+  // give-up there, but still pin the Blocker-1 class on every platform: the
+  // only legal states are TRUNCATED or UNTOUCHED — a parseable neutral value
+  // ('{}' / '{"timestamp":0}') is never legal anywhere. The behavioural
+  // follow-ons are asserted only where the truncation actually landed.
   test('Blocker: sentinel unlink EPERM → truncated to empty, and AC2 still holds on this path', (t) => {
     const s = makeSession(t);
-    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const seeded = { callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true };
+    s.seed(seeded);
     const r = s.call('PreCompact', 20, { failUnlinkMatching: '-warned.json' });
     assert.strictEqual(r.exitCode, 0, 'a failed unlink must never fail the compaction');
-    assert.strictEqual(s.warnRaw(), '',
-      'the sentinel must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral {} '
-      + 'parsed fine, so firstWarn was false and the first post-compaction warning was debounced: '
-      + 'AC2 of #3709 still unfixed on exactly the path the fallback exists for');
-    const { stdout } = s.call('PostToolUse', 30);
-    assert.match(stdout, /CONTEXT WARNING/,
-      'an unparseable sentinel IS the reset: the first warning of the new cycle fires immediately');
+    const raw = s.warnRaw();
+    if (process.platform === 'win32') {
+      assert.ok(raw === '' || raw === JSON.stringify(seeded),
+        `sentinel must be truncated or untouched, never a neutral value; got ${JSON.stringify(raw)} — `
+        + 'the old {} parsed fine, so firstWarn was false and the first post-compaction warning '
+        + 'was debounced: AC2 of #3709 undone on exactly the path the fallback exists for');
+    } else {
+      assert.strictEqual(raw, '',
+        'the sentinel must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral {} '
+        + 'parsed fine, so firstWarn was false and the first post-compaction warning was debounced: '
+        + 'AC2 of #3709 still unfixed on exactly the path the fallback exists for');
+    }
+    if (raw === '') {
+      const { stdout } = s.call('PostToolUse', 30);
+      assert.match(stdout, /CONTEXT WARNING/,
+        'an unparseable sentinel IS the reset: the first warning of the new cycle fires immediately');
+    }
   });
 
   test('Blocker: bridge unlink EPERM → truncated to empty, silent — never "Usage at undefined%"', (t) => {
@@ -1488,17 +1509,27 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
     const r = s.call('PreCompact', 20, { failUnlinkMatching: s.bridgeMatch });
     assert.strictEqual(r.exitCode, 0, 'a failed unlink must never fail the compaction');
-    assert.strictEqual(s.metricsRaw(), '',
-      'the bridge must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral '
-      + '{"timestamp":0} was NEVER stale (the staleness guard is `metrics.timestamp && ...` and 0 '
-      + 'is falsy), so the flow reached emit with remaining === undefined');
-    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
-    assert.strictEqual(stdout, '',
-      'the next tool use must be SILENT: an unreadable bridge falls to the outer catch and exits 0 '
-      + '— re-entering the prior round\'s Major as a literal "CONTEXT WARNING: Usage at undefined%" '
-      + 'injection is the failure mode this row pins shut');
-    assert.strictEqual(s.warn(), null,
-      'and no sentinel may be rebuilt off the truncated bridge — criticalRecorded stays un-re-armed');
+    const raw = s.metricsRaw();
+    if (process.platform === 'win32') {
+      assert.ok(raw === '' || (raw !== null && (JSON.parse(raw).timestamp || 0) > 0),
+        `bridge must be truncated or untouched, never a neutral value; got ${JSON.stringify(raw)} — `
+        + 'the old {"timestamp":0} was NEVER stale (the staleness guard is falsy at 0), so the '
+        + 'flow reached emit with remaining === undefined');
+    } else {
+      assert.strictEqual(raw, '',
+        'the bridge must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral '
+        + '{"timestamp":0} was NEVER stale (the staleness guard is `metrics.timestamp && ...` and 0 '
+        + 'is falsy), so the flow reached emit with remaining === undefined');
+    }
+    if (raw === '') {
+      const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+      assert.strictEqual(stdout, '',
+        'the next tool use must be SILENT: an unreadable bridge falls to the outer catch and exits 0 '
+        + '— re-entering the prior round\'s Major as a literal "CONTEXT WARNING: Usage at undefined%" '
+        + 'injection is the failure mode this row pins shut');
+      assert.strictEqual(s.warn(), null,
+        'and no sentinel may be rebuilt off the truncated bridge — criticalRecorded stays un-re-armed');
+    }
   });
 
   test('the truncation fallback refuses to follow a planted symlink', (t) => {
