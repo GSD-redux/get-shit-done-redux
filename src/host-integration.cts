@@ -875,7 +875,12 @@ function resolveOrchestratorExec(
   if (prompt !== undefined && (typeof prompt !== 'string' || prompt.length === 0)) {
     return { ok: false, reason: 'invalid_prompt' };
   }
-  if (model !== undefined && (typeof model !== 'string' || model.length === 0)) {
+  // Unlike `prompt` — where empty is a hang, not a degraded run, hence the
+  // fail-closed check above — an absent/null/empty model is simply "use the
+  // host default", the same benign degradation `cwdFlag: null` already
+  // expresses. Only a present-but-non-string value (number/bool/array/object)
+  // is a caller error; null/undefined/'' fall through to "omit the flag".
+  if (model !== undefined && model !== null && typeof model !== 'string') {
     return { ok: false, reason: 'invalid_model' };
   }
   // Leading-dash guard, mirroring worktree-safety.cts's `unsafe_leading_dash`

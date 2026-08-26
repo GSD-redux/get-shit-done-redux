@@ -2047,7 +2047,8 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
   const { runNode } = require('./helpers/process-seam.cjs');
   const { throwIfFailed } = require('./helpers/git-fixture.cjs');
   const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
-  const { createTempProject, cleanup } = require('./helpers.cjs');
+  const { createTempProject, cleanup, TEST_HOME_SANDBOX_MARKER } = require('./helpers.cjs');
+  const os = require('node:os');
   const GSD_TOOLS = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 
   function writeConfig(projectDir, config) {
@@ -2057,29 +2058,68 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
     );
   }
 
-  function queryCodexJson(projectDir, extraEnv = {}) {
-    const r = runNode(
-      [GSD_TOOLS, 'query', 'dispatch-isolation', '--json', '--cwd-target', '/tmp/wt', '--prompt', 'do the thing'],
-      { cwd: projectDir, env: { ...process.env, GSD_RUNTIME: 'codex', ...extraEnv }, timeoutMs: PROBE_TIMEOUT_MS },
-    );
-    throwIfFailed(r, 'gsd-tools query dispatch-isolation --json (codex, model policy)');
-    return JSON.parse(r.stdout);
+  // Hermeticity: `queryCodexJson` used to inherit the DEVELOPER's real
+  // HOME/USERPROFILE with no override, so any row that writes no
+  // `model_overrides` key at all was silently reading (and could red
+  // against) the operator's own ~/.gsd/defaults.json — exactly the surface
+  // the BLOCKER regression test below needs to control precisely. Every
+  // call now gets a fresh, per-call temp HOME (removed synchronously after
+  // the CLI returns, since the call is a blocking spawn). USERPROFILE is
+  // set alongside HOME because os.homedir() reads USERPROFILE on Windows;
+  // omitting it would make the isolation vacuous there. The sandbox marker
+  // satisfies the same passwd-less-host fallback installSpawnEnv documents.
+  // `beforeSpawn`, when provided, is called with the sandbox HOME dir path
+  // BEFORE the CLI spawns — the seam a caller needs to seed a GLOBAL
+  // ~/.gsd/defaults.json (see writeGlobalDefaults below) for a
+  // global-only-pin row.
+  function queryCodexJson(projectDir, extraEnv = {}, beforeSpawn = null) {
+    const sandboxHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3714-home-'));
+    try {
+      if (typeof beforeSpawn === 'function') beforeSpawn(sandboxHomeDir);
+      const r = runNode(
+        [GSD_TOOLS, 'query', 'dispatch-isolation', '--json', '--cwd-target', '/tmp/wt', '--prompt', 'do the thing'],
+        {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            GSD_RUNTIME: 'codex',
+            HOME: sandboxHomeDir,
+            USERPROFILE: sandboxHomeDir,
+            [TEST_HOME_SANDBOX_MARKER]: sandboxHomeDir,
+            ...extraEnv,
+          },
+          timeoutMs: PROBE_TIMEOUT_MS,
+        },
+      );
+      throwIfFailed(r, 'gsd-tools query dispatch-isolation --json (codex, model policy)');
+      return { json: JSON.parse(r.stdout), stderr: r.stderr };
+    } finally {
+      cleanup(sandboxHomeDir);
+    }
+  }
+
+  // Writes ~/.gsd/defaults.json (the GLOBAL model_overrides store) into the
+  // per-call sandbox HOME so a test can exercise "global-only pin, no
+  // per-project override" — the exact shape the BLOCKER describes.
+  function writeGlobalDefaults(homeDir, defaults) {
+    const gsdDir = path.join(homeDir, '.gsd');
+    fs.mkdirSync(gsdDir, { recursive: true });
+    fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify(defaults));
   }
 
   function hasModelFlag(execArgs) {
     return execArgs.includes('--model');
   }
 
-  // MATRIX row 1 [FAIL] (CLI-level counterpart of the unit-level row 1
-  // above): an explicit gsd-executor override must reach argv as --model.
+  // MATRIX row 1: an explicit real-Codex gsd-executor override reaches argv
+  // as --model.
   test('row 1: explicit model_overrides["gsd-executor"] -> exec.args contains ["--model","gpt-5.6-terra"] at the correct position', () => {
     const dir = createTempProject('gsd-3714-row1-');
     try {
       writeConfig(dir, { model_overrides: { 'gsd-executor': 'gpt-5.6-terra' } });
-      const result = queryCodexJson(dir);
+      const { json: result } = queryCodexJson(dir);
       assert.equal(result.isolation, 'orchestrator-worktree');
-      assert.deepEqual(result.exec.args, ['exec', '--model', 'gpt-5.6-terra', '--cd', '/tmp/wt', 'do the thing'],
-        'today gsd-tools.cjs never wires a model into orchestratorExec — exec.args is ["exec","--cd","/tmp/wt","do the thing"], no --model at all');
+      assert.deepEqual(result.exec.args, ['exec', '--model', 'gpt-5.6-terra', '--cd', '/tmp/wt', 'do the thing']);
     } finally {
       cleanup(dir);
     }
@@ -2092,7 +2132,7 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
     const dir = createTempProject('gsd-3714-row2-');
     try {
       writeConfig(dir, {});
-      const result = queryCodexJson(dir);
+      const { json: result } = queryCodexJson(dir);
       assert.equal(result.isolation, 'orchestrator-worktree');
       assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
       assert.ok(!hasModelFlag(result.exec.args));
@@ -2107,7 +2147,7 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
     const dir = createTempProject('gsd-3714-row3-');
     try {
       writeConfig(dir, { model_overrides: { 'gsd-executor': 'inherit' } });
-      const result = queryCodexJson(dir);
+      const { json: result } = queryCodexJson(dir);
       assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
       assert.ok(!hasModelFlag(result.exec.args));
       assert.ok(!result.exec.args.join(' ').includes('inherit'));
@@ -2121,7 +2161,7 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
     const dir = createTempProject('gsd-3714-row4-');
     try {
       writeConfig(dir, { model_overrides: { 'gsd-executor': '' } });
-      const result = queryCodexJson(dir);
+      const { json: result } = queryCodexJson(dir);
       assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
       assert.ok(!hasModelFlag(result.exec.args));
     } finally {
@@ -2137,7 +2177,7 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
     const dir = createTempProject('gsd-3714-row5-');
     try {
       writeConfig(dir, { runtime: 'codex', model_profile: 'balanced' });
-      const result = queryCodexJson(dir);
+      const { json: result } = queryCodexJson(dir);
       assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
       assert.ok(!hasModelFlag(result.exec.args));
       assert.ok(!result.exec.args.join(' ').includes('sonnet'));
@@ -2146,12 +2186,111 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
     }
   });
 
-  // MATRIX row 8 [FAIL]: the dispatch predicate (what gsd-tools.cjs's caller
-  // decides to pass) must agree, on every config shape below, with what the
-  // shared resolveAgentModelOverride('gsd-executor', overrides, null)
-  // function returns (dropping only the 'inherit' sentinel). Fails today
-  // because the explicit-pin shape's predicate says "emit --model" while the
-  // unwired CLI never does.
+  // BLOCKER regression test: a GLOBAL (~/.gsd/defaults.json) Anthropic-flavored
+  // pin must NOT reach codex's argv, and must produce a stderr warning. Before
+  // this fix, presence-only gating let this straight through to
+  // `codex exec --model sonnet` — the documented #2310/#2311 400.
+  test('BLOCKER: global-only model_overrides["gsd-executor"]="sonnet" -> NO --model, and a stderr warning', () => {
+    const dir = createTempProject('gsd-3714-blocker-global-anthropic-');
+    try {
+      writeConfig(dir, {});
+      const { json: result, stderr } = queryCodexJson(dir, {}, (homeDir) => {
+        writeGlobalDefaults(homeDir, { model_overrides: { 'gsd-executor': 'sonnet' } });
+      });
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+      assert.ok(!result.exec.args.join(' ').includes('sonnet'));
+      assert.match(stderr, /gsd-executor.*sonnet.*Anthropic/i);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('global-only model_overrides["gsd-executor"]="gpt-5.6-terra" (real Codex pin) -> IS emitted', () => {
+    const dir = createTempProject('gsd-3714-global-real-');
+    try {
+      writeConfig(dir, {});
+      const { json: result, stderr } = queryCodexJson(dir, {}, (homeDir) => {
+        writeGlobalDefaults(homeDir, { model_overrides: { 'gsd-executor': 'gpt-5.6-terra' } });
+      });
+      assert.deepEqual(result.exec.args, ['exec', '--model', 'gpt-5.6-terra', '--cd', '/tmp/wt', 'do the thing']);
+      assert.equal(stderr, '');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('whitespace-only override "   " -> no --model, no warning', () => {
+    const dir = createTempProject('gsd-3714-ws-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': '   ' } });
+      const { json: result, stderr } = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.equal(stderr, '');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('"Inherit" and " inherit " (case/whitespace-insensitive sentinel) -> no --model', () => {
+    for (const value of ['Inherit', ' inherit ']) {
+      const dir = createTempProject('gsd-3714-inherit-ci-');
+      try {
+        writeConfig(dir, { model_overrides: { 'gsd-executor': value } });
+        const { json: result, stderr } = queryCodexJson(dir);
+        assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing'], `value=${JSON.stringify(value)}`);
+        assert.equal(stderr, '');
+      } finally {
+        cleanup(dir);
+      }
+    }
+  });
+
+  test('injection-shaped override values -> no --model, and a stderr warning', () => {
+    const injectionValues = [
+      'gpt-5 -c approval_policy=never',
+      'gpt-5$(touch /tmp/x)',
+      'gpt-5; touch /tmp/x',
+      'gpt-5\nHOST_INJECTED',
+      'gpt-5 HOST_INJECTED',
+    ];
+    for (const value of injectionValues) {
+      const dir = createTempProject('gsd-3714-injection-');
+      try {
+        writeConfig(dir, { model_overrides: { 'gsd-executor': value } });
+        const { json: result, stderr } = queryCodexJson(dir);
+        assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing'],
+          `value=${JSON.stringify(value)} must never reach argv`);
+        assert.ok(!hasModelFlag(result.exec.args));
+        assert.match(stderr, /gsd-executor/, `value=${JSON.stringify(value)} must warn`);
+      } finally {
+        cleanup(dir);
+      }
+    }
+  });
+
+  test('legitimate real-Codex ids survive: "gpt-5.6-terra" and "synthetic/hf:zai-org/GLM-5.2"', () => {
+    for (const value of ['gpt-5.6-terra', 'synthetic/hf:zai-org/GLM-5.2']) {
+      const dir = createTempProject('gsd-3714-legit-');
+      try {
+        writeConfig(dir, { model_overrides: { 'gsd-executor': value } });
+        const { json: result, stderr } = queryCodexJson(dir);
+        assert.deepEqual(result.exec.args, ['exec', '--model', value, '--cd', '/tmp/wt', 'do the thing']);
+        assert.equal(stderr, '');
+      } finally {
+        cleanup(dir);
+      }
+    }
+  });
+
+  // MATRIX row 8: the dispatch predicate (what gsd-tools.cjs's caller decides
+  // to pass) must agree, on every config shape below, with what the shared
+  // resolveAgentModelOverride('gsd-executor', overrides, null) function
+  // returns (dropping only the 'inherit' sentinel). This row is a resolver
+  // TAUTOLOGY — it agrees with the presence-only predicate and does not
+  // exercise the VALUE policy (Anthropic-flavored / charset) at all. It is
+  // kept as a presence-level regression guard; the real divergence guard is
+  // the CROSS-SURFACE PARITY test below.
   test('row 8: dispatch predicate agrees with resolveAgentModelOverride(..., null) on every config shape', () => {
     const installModelOverrideResolver = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
     const shapes = [
@@ -2172,7 +2311,7 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
         const expectedModel = (resolved && resolved !== 'inherit') ? resolved : null;
         const expectedHasModel = expectedModel !== null;
 
-        const result = queryCodexJson(dir);
+        const { json: result } = queryCodexJson(dir);
         const actualHasModel = hasModelFlag(result.exec.args);
 
         assert.equal(actualHasModel, expectedHasModel,
@@ -2181,6 +2320,78 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
         if (expectedHasModel) {
           assert.deepEqual(result.exec.args, ['exec', '--model', expectedModel, '--cd', '/tmp/wt', 'do the thing']);
         }
+      } finally {
+        cleanup(dir);
+      }
+    }
+  });
+
+  // DIVERGENCE GUARD — real cross-surface parity test. For each value below,
+  // assert that dispatch (this describe's CLI, driven for real end-to-end)
+  // and the install-side .toml policy (bin/install.js generateCodexAgentToml,
+  // NOT reachable in-process here — it lives in the generated installer
+  // module and is exercised only via `npm run build` / the install test
+  // suite) would reach the SAME emit-vs-drop decision for the identical
+  // model_overrides["gsd-executor"] value.
+  //
+  // What is asserted DIRECTLY (real code path, in-process): the dispatch
+  // side, via the real `gsd-tools query dispatch-isolation` CLI spawn.
+  // What is MIRRORED (not independently re-executed): the install-side half
+  // is derived from `isAnthropicFlavoredModel` (the single-sourced #3241
+  // predicate, imported for real from bin/lib/model-catalog.cjs — so THAT
+  // predicate call is real, not re-implemented) plus the documented
+  // install-side rules from bin/install.js's generateCodexAgentToml
+  // (trim; drop empty/whitespace-only; drop Anthropic-flavored). Install-side
+  // does NOT apply a charset check — that is dispatch-only, added because
+  // dispatch crosses a shell-argv boundary that a static .toml string never
+  // does. A future reader: if bin/install.js's trim/drop rules for this key
+  // change without a matching update here, this comment is the thing that
+  // goes stale, not a shared executable — that is the acknowledged limit.
+  test('DIVERGENCE GUARD: dispatch model-pin decision matches install-side Codex .toml policy for the same value', () => {
+    const { isAnthropicFlavoredModel } = require('../gsd-core/bin/lib/model-catalog.cjs');
+    function installSideWouldEmit(rawValue) {
+      if (typeof rawValue !== 'string') return false;
+      const trimmed = rawValue.trim();
+      if (trimmed === '') return false;
+      if (isAnthropicFlavoredModel(trimmed)) return false;
+      return true;
+    }
+    const table = [
+      'gpt-5.6-terra',
+      'synthetic/hf:zai-org/GLM-5.2',
+      'sonnet',
+      'opus',
+      'claude-sonnet-4-5',
+      '',
+      '   ',
+      'inherit',
+      'Inherit',
+      '-p',
+      'gpt-5 -c approval_policy=never',
+    ];
+    for (const value of table) {
+      const dir = createTempProject('gsd-3714-parity-');
+      try {
+        writeConfig(dir, { model_overrides: { 'gsd-executor': value } });
+        const { json: result } = queryCodexJson(dir);
+        const dispatchEmitted = hasModelFlag(result.exec.args);
+        // Dispatch additionally drops 'inherit' (case/whitespace-insensitive)
+        // and non-model-id-charset values — neither is an install-side .toml
+        // concern (install never sees the literal string "inherit" as a
+        // meaningful sentinel, and a static TOML string is not a shell argv
+        // boundary), so those two are excluded from the parity assertion
+        // itself and asserted directly instead.
+        const trimmedLower = typeof value === 'string' ? value.trim().toLowerCase() : value;
+        if (trimmedLower === 'inherit') {
+          assert.equal(dispatchEmitted, false, `value=${JSON.stringify(value)}: inherit sentinel must never emit`);
+          continue;
+        }
+        if (value === '-p' || value === 'gpt-5 -c approval_policy=never') {
+          assert.equal(dispatchEmitted, false, `value=${JSON.stringify(value)}: unsafe-charset value must never emit`);
+          continue;
+        }
+        assert.equal(dispatchEmitted, installSideWouldEmit(value),
+          `value=${JSON.stringify(value)}: dispatch emit=${dispatchEmitted} but install-side policy says emit=${installSideWouldEmit(value)}`);
       } finally {
         cleanup(dir);
       }

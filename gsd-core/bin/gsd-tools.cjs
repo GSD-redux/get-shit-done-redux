@@ -1778,6 +1778,68 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
   }
 
+  // #3714 follow-up — the dispatch seam gated only on PRESENCE of an explicit
+  // pin, never on its VALUE, so an Anthropic-flavored global default
+  // (~/.gsd/defaults.json model_overrides["gsd-executor"] = "sonnet"/"opus"/
+  // "claude-*") reached `codex exec --model sonnet`: the documented #2310/
+  // #2311 400 on a passive-posture host (ADR-1239/ADR-2313). It also let a
+  // repo-committed .planning/config.json inject shell-hostile argv (a
+  // `-c approval_policy=never` suffix, `$(...)`/`;` command injection,
+  // embedded control characters) straight onto exec's argv.
+  //
+  // This mirrors — deliberately, not by re-derivation — the same VALUE
+  // policy bin/install.js's generateCodexAgentToml() already applies to the
+  // identical model_overrides["gsd-executor"] config key for the .toml
+  // surface (bin/install.js ~3983-4046): trim; a whitespace-only value drops
+  // silently (#3241, no warning); an Anthropic-flavored value
+  // (isAnthropicFlavoredModel, single-sourced on bin/lib/model-catalog.cjs
+  // per #3241 specifically so it cannot diverge across Codex-posture
+  // surfaces) drops WITH a warning; a real pin survives verbatim. Two
+  // additions beyond the .toml surface, both specific to this seam: the
+  // 'inherit' sentinel (case/whitespace-insensitive) is a no-op here already
+  // and must stay one, and a value that doesn't look like a model id at all
+  // (the injection case above — the .toml surface never had to consider this
+  // because TOML string-quoting isn't a shell argv boundary) is dropped with
+  // a warning rather than ever reaching child_process argv.
+  const _dispatchModelPinDropWarned = new Set();
+  function _warnDispatchModelPinDropped(agentName, rawValue, reason) {
+    const key = `${agentName}::${rawValue}::${reason}`;
+    if (_dispatchModelPinDropWarned.has(key)) return;
+    _dispatchModelPinDropWarned.add(key);
+    const safe = String(rawValue).length > 64 ? `${String(rawValue).slice(0, 64)}…` : String(rawValue);
+    process.stderr.write(
+      `gsd: warning — dispatch model pin for agent "${agentName}" (value "${safe}") ${reason}; ` +
+      `dropping it so the spawned executor falls back to the session model.\n`,
+    );
+  }
+  const MODEL_ID_CHARSET_RE = /^[A-Za-z0-9._:/-]+$/;
+  /**
+   * Resolve the VALUE policy for an explicit dispatch model pin. `rawValue`
+   * is whatever resolveAgentModelOverride(..., null) returned — a string
+   * pin, the 'inherit' sentinel, or null/''/undefined for "no explicit pin".
+   * Returns the trimmed model string to embed, or `undefined` to emit no
+   * --model flag at all. Never throws; never fails closed to an error —
+   * every rejection degrades to "no model" (drop-and-warn), matching the
+   * documented desired behavior of falling back to the session model rather
+   * than aborting the wave.
+   */
+  function resolveDispatchModelPin(agentName, rawValue) {
+    if (typeof rawValue !== 'string') return undefined; // not a string -> no model
+    const trimmed = rawValue.trim();
+    if (trimmed === '') return undefined; // whitespace-only -> no model, no warning (#3241)
+    if (trimmed.toLowerCase() === 'inherit') return undefined; // sentinel -> no model, no warning
+    const { isAnthropicFlavoredModel } = require('./lib/model-catalog.cjs');
+    if (isAnthropicFlavoredModel(trimmed)) {
+      _warnDispatchModelPinDropped(agentName, rawValue, 'is an Anthropic-flavored model/alias, not a valid Codex model');
+      return undefined;
+    }
+    if (!MODEL_ID_CHARSET_RE.test(trimmed)) {
+      _warnDispatchModelPinDropped(agentName, rawValue, 'does not look like a model id (unsafe characters)');
+      return undefined;
+    }
+    return trimmed;
+  }
+
   const DISPATCH_ISOLATION_VOCABULARY = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
 
   /**
@@ -1856,21 +1918,30 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // and emitting that on Codex's exec argv is exactly the documented
           // #2310/#2311 regression (a model unknown to Codex forced into a
           // passive-posture host).
+          //
+          // Presence of a pin is necessary but not sufficient: resolveDispatchModelPin
+          // applies the same VALUE policy the install-side .toml surface already
+          // applies to this config key (trim / drop-inherit / drop-Anthropic-flavored
+          // with a warning / drop-non-model-id-charset with a warning) so a global
+          // Anthropic-flavored default or an injected config value never reaches argv.
           const { readGsdEffectiveModelOverrides, resolveAgentModelOverride } =
             require('./lib/install-model-override-resolver.cjs');
           const pinned = resolveAgentModelOverride(
             'gsd-executor', readGsdEffectiveModelOverrides(cwd), null);
-          const model = (typeof pinned === 'string' && pinned.length > 0 && pinned !== 'inherit')
-            ? pinned : undefined;
+          const model = resolveDispatchModelPin('gsd-executor', pinned);
           const resolution = hostIntegration.resolveOrchestratorExec(
             runtimeEntry?.runtime?.orchestratorExec,
             cwdTarget,
             promptArg,
             model,
           );
-          // A host declaring orchestrator-worktree whose exec descriptor does
-          // not resolve cannot be spawned — degrade to sequential rather than
-          // hand the scheduler an unusable command.
+          // A host declaring orchestrator-worktree whose exec descriptor does not
+          // resolve halts THIS wave's dispatch: isolation is forced to 'none' here,
+          // and executor-isolation-dispatch.md:299-303 treats a null exec as FATAL
+          // (exit 1) after the worktree has already been created — it does not
+          // degrade to sequential execution. resolveDispatchModelPin never causes
+          // this path: an unresolvable model value degrades to "no --model" (session
+          // model fallback) rather than to resolution.ok === false.
           if (resolution.ok) {
             exec = { command: resolution.command, args: resolution.args, cwd: resolution.cwd };
           } else {
