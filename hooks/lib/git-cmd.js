@@ -248,7 +248,14 @@ function resolveCommitSubject(messageArg) {
   // any shell metacharacter now fails recognition, which falls back to the
   // opener line and the format gate: fail closed, exactly the pre-fix
   // behaviour for the whole form.
-  const opener = /^\$\(\s*(?:[\w./-]*\/)?cat\s+<<(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))\s*$/
+  //
+  // Whitespace inside the recognition is ASCII space/tab — [ \t], never \s —
+  // because JavaScript \s includes Unicode whitespace bash does NOT split on:
+  // `$(<NBSP>/bin/cat <<'EOF'` was recognized here while bash reads
+  // `<NBSP>/bin/cat` as the executable NAME, so recognition claimed a
+  // substitution that does not run cat (Codex review of #3816, round 2). The
+  // same ASCII rule as the blank-line skip below, for the same reason.
+  const opener = /^\$\([ \t]*(?:[\w./-]*\/)?cat[ \t]+<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))[ \t]*$/
     .exec(lines[0]);
   if (!opener) return lines[0];
 

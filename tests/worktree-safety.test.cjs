@@ -4533,6 +4533,12 @@ describe('git-cmd.js resolveCommitSubject', () => {
       "$(x&&/bin/cat <<'EOF'");
     assert.strictEqual(resolveCommitSubject("$(a|b/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
       "$(a|b/cat <<'EOF'");
+    // Round 2: Unicode whitespace after `$(` is NOT bash whitespace — bash
+    // reads `<NBSP>/bin/cat` as the executable NAME, so recognizing it here
+    // claimed a substitution that does not run cat. Recognition whitespace is
+    // ASCII space/tab only.
+    assert.strictEqual(resolveCommitSubject("$(\u00a0/bin/cat <<'EOF'\nfix: smuggled\nEOF\n)"),
+      "$(\u00a0/bin/cat <<'EOF'");
     // the legitimate path-qualified form is unchanged
     assert.strictEqual(resolveCommitSubject("$(/usr/bin/cat <<'EOF'\nfix: pathed\nEOF\n)"),
       'fix: pathed');
@@ -4611,13 +4617,28 @@ describe('git-cmd.js resolveCommitSubject', () => {
     const opener = `$(${catPath} <<${dash ? '-' : ''}${spaced ? ' ' : ''}${word}`;
     const parts = [opener, ...body.map((l) => (dash ? `\t${l}` : l))];
     if (terminated) parts.push(dash ? `\t${delim}` : delim, ')');
-    return parts.join(eol);
+    // GENERATION-TIME oracle for the one result the derivation check cannot
+    // classify by membership: ''. Computed from what the generator KNOWS it
+    // built — never by re-running resolver logic — so a resolver degrading to
+    // '' anywhere it should not fails the property (Codex review of #3816,
+    // rounds 1+2). '' is legitimate exactly when a terminator is reachable
+    // (appended, or a body line that reads as the delimiter — after tab
+    // stripping under <<-) and every scanned line before it is ASCII-blank.
+    const seesDelim = (l) => (dash ? l.replace(/^\t+/, '') : l) === delim;
+    const inBody = body.findIndex(seesDelim);
+    const stop = inBody !== -1 ? inBody : (terminated ? body.length : -1);
+    const expectEmpty = stop !== -1
+      && body.slice(0, stop).every((l) => /^[ \t]*$/.test(dash ? l.replace(/^\t+/, '') : l));
+    return { text: parts.join(eol), expectEmpty };
   });
   const messageArb = fc.oneof(
     { weight: 3, arbitrary: heredocArb },
-    fc.string({ maxLength: 400 }),
+    // plain single- and multi-line messages: the subject is the first line
+    // verbatim, so '' is legitimate only when the first line IS ''.
+    fc.string({ maxLength: 400 }).map((s) => ({ text: s, expectEmpty: s.split(/\r?\n/)[0] === '' })),
     // multi-line plain messages — the old generator never produced a newline
-    fc.array(bodyLineArb, { minLength: 1, maxLength: 4 }).map((ls) => ls.join('\n')),
+    fc.array(bodyLineArb, { minLength: 1, maxLength: 4 })
+      .map((ls) => ({ text: ls.join('\n'), expectEmpty: ls[0] === '' })),
   );
   const firstLineOf = (input) => String(input).split(/\r?\n/)[0];
   // Floor for the resolved-input count across the seeded corpus. Deliberately
@@ -4633,10 +4654,10 @@ describe('git-cmd.js resolveCommitSubject', () => {
     // the parser, which is what makes the claim about the PARSER and not about
     // fc.string pass-through.
     let resolved = 0;
-    fc.assert(fc.property(messageArb, (input) => {
-      const out = resolveCommitSubject(input);
+    fc.assert(fc.property(messageArb, (m) => {
+      const out = resolveCommitSubject(m.text);
       assert.strictEqual(typeof out, 'string');
-      if (out !== firstLineOf(input)) resolved += 1;
+      if (out !== firstLineOf(m.text)) resolved += 1;
     }));
     assert.ok(resolved >= MIN_RESOLVED,
       `only ${resolved} corpus inputs were actually resolved past the first line — the property is `
@@ -4648,10 +4669,10 @@ describe('git-cmd.js resolveCommitSubject', () => {
 
   test('property: idempotent — resolving a resolved subject changes nothing', () => {
     let resolved = 0;
-    fc.assert(fc.property(messageArb, (input) => {
-      const once = resolveCommitSubject(input);
+    fc.assert(fc.property(messageArb, (m) => {
+      const once = resolveCommitSubject(m.text);
       assert.strictEqual(resolveCommitSubject(once), once);
-      if (once !== firstLineOf(input)) resolved += 1;
+      if (once !== firstLineOf(m.text)) resolved += 1;
     }));
     assert.ok(resolved >= MIN_RESOLVED,
       `only ${resolved} corpus inputs were actually resolved — vacuous corpus (review of #3816)`);
@@ -4662,27 +4683,29 @@ describe('git-cmd.js resolveCommitSubject', () => {
     // must be one of the input's own lines, modulo exactly the transformations
     // git itself performs — `<<-` leading-tab stripping and cleanup=whitespace
     // trailing-whitespace stripping. A resolver that concatenated lines or
-    // trimmed anything MORE than that would fail this.
+    // trimmed anything MORE than that would fail this. The one result
+    // membership cannot classify — '' — is judged by the GENERATOR's own
+    // metadata (`expectEmpty`, computed from what it built, not from resolver
+    // logic), so a resolver conditionally degrading to '' fails loudly (Codex
+    // review of #3816, rounds 1+2).
     let resolved = 0;
-    fc.assert(fc.property(messageArb, (input) => {
-      const out = resolveCommitSubject(input);
+    fc.assert(fc.property(messageArb, (m) => {
+      const out = resolveCommitSubject(m.text);
       assert.ok(!/[\n\r]/.test(out), 'a subject is one line');
-      const lines = String(input).split(/\r?\n/);
+      const lines = String(m.text).split(/\r?\n/);
       const derivations = (l) => {
         const untabbed = l.replace(/^\t+/, '');
         return [l, untabbed, untabbed.replace(/[ \t]+$/, '')];
       };
-      // '' is only a legitimate result for a HEREDOC-shaped input (an empty
-      // resolved message); a plain message's subject is its first line
-      // verbatim, so a resolver degrading to '' anywhere else must fail here.
-      // Unconditional acceptance let a conditional constant-'' regression pass
-      // every property while also feeding the corpus floor (Codex review of
-      // #3816). The shape probe is deliberately loose — recognition itself is
-      // pinned by the example rows, not re-derived here.
-      const emptyAllowed = /^\$\(\s*\S*cat\s+<</.test(lines[0]);
-      assert.ok((out === '' && emptyAllowed) || lines.some((l) => derivations(l).includes(out)),
-        `result ${JSON.stringify(out)} is not derived from any line of the input`);
-      if (out !== firstLineOf(input)) resolved += 1;
+      if (out === '') {
+        assert.ok(m.expectEmpty,
+          `resolved to '' for an input the generator did NOT build as an empty message: `
+          + JSON.stringify(m.text));
+      } else {
+        assert.ok(lines.some((l) => derivations(l).includes(out)),
+          `result ${JSON.stringify(out)} is not derived from any line of the input`);
+      }
+      if (out !== firstLineOf(m.text)) resolved += 1;
     }));
     assert.ok(resolved >= MIN_RESOLVED,
       `only ${resolved} corpus inputs were actually resolved — vacuous corpus (review of #3816)`);
