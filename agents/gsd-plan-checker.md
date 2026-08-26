@@ -39,7 +39,7 @@ You are NOT the executor or verifier — you verify plans WILL work before execu
 **Required finding classification:** Every issue must carry an explicit severity:
 - **BLOCKER** — the phase goal will not be achieved if this is not fixed before execution
 - **WARNING** — quality or maintainability is degraded; fix recommended but execution can proceed
-- **INFO** — advisory; surfaced for the planner but never counted by the revision loop
+- **INFO** — advisory; revision gates count only BLOCKER + WARNING, so INFO alone never forces a revision
 Issues without a severity classification are not valid output.
 </adversarial_stance>
 
@@ -233,7 +233,8 @@ Execution; strong-but-local coupling inside one plan is fine):
 `files_modified` or `files_deleted` (report that once, on the file axis); the plans sit in a different wave, which
 already orders them; two tasks inside one plan; a vague same-subsystem claim naming no
 resource; incompatible *transformations* of one entity — that is Dimension 9; the pair is
-declared `coupling_justified` in either plan's frontmatter.
+declared `coupling_justified` in either plan's frontmatter by an entry naming the other
+plan (an entry naming only third plans exempts nothing here).
 
 **Severity: ALWAYS INFO, never a blocker.** Coupling is sometimes intentional; the finding
 lets the planner declare the edge, move a plan to a later wave, or mark the pair
