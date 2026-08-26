@@ -1840,11 +1840,22 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         if (cwdTarget) {
           const promptIdx = args.indexOf('--prompt');
           const promptArg = promptIdx !== -1 ? args[promptIdx + 1] : undefined;
+          // #3714: an explicit executor model pin. Normalized to `undefined`
+          // when absent or empty so an unpinned run reaches the resolver
+          // exactly as it did before this channel existed — the resolver
+          // treats an empty model as a caller bug and fails closed, which
+          // would degrade isolation to none for every unpinned user.
+          const modelIdx = args.indexOf('--model');
+          const modelRaw = modelIdx !== -1 ? args[modelIdx + 1] : undefined;
+          const modelArg = typeof modelRaw === 'string' && modelRaw.length > 0
+            ? modelRaw
+            : undefined;
           const hostIntegration = require('./lib/host-integration.cjs');
           const resolution = hostIntegration.resolveOrchestratorExec(
             runtimeEntry?.runtime?.orchestratorExec,
             cwdTarget,
             promptArg,
+            modelArg,
           );
           // A host declaring orchestrator-worktree whose exec descriptor does
           // not resolve cannot be spawned — degrade to sequential rather than

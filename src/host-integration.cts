@@ -798,6 +798,7 @@ interface OrchestratorExec {
   args?: string[];
   cwdFlag?: string | null;
   promptFlag?: string | null;
+  modelFlag?: string | null;
 }
 
 type OrchestratorExecResolution =
@@ -823,13 +824,21 @@ type OrchestratorExecResolution =
  * per-host branch ADR-1239 exists to remove. Omit `prompt` entirely and the
  * resolution is byte-identical to Phase 2's (the unconsumed-resolver shape).
  *
- * Argv order is base args → cwd flag → prompt, so the prompt stays the final
- * positional token for the hosts that read it that way.
+ * Model passing (#3714) is descriptor data for the same reason: a host that
+ * accepts a per-invocation model declares the flag it reads it behind, and a
+ * host that does not declares nothing and gets byte-identical argv. This seam
+ * carries whatever model it is handed and judges only its SHAPE — deciding
+ * that a given model is appropriate for a given host is the caller's rule,
+ * not this resolver's, which holds no host knowledge by ADR-1239 design.
+ *
+ * Argv order is base args → cwd flag → model → prompt, so the prompt stays
+ * the final positional token for the hosts that read it that way.
  */
 function resolveOrchestratorExec(
   orchestratorExec: OrchestratorExec | undefined,
   cwd: string,
   prompt?: string,
+  model?: string,
 ): OrchestratorExecResolution {
   if (!orchestratorExec || typeof orchestratorExec !== 'object' || Array.isArray(orchestratorExec)) {
     return { ok: false, reason: 'missing_command' };
@@ -850,21 +859,34 @@ function resolveOrchestratorExec(
   if (oe.promptFlag !== undefined && oe.promptFlag !== null && typeof oe.promptFlag !== 'string') {
     return { ok: false, reason: 'invalid_prompt_flag' };
   }
+  if (oe.modelFlag !== undefined && oe.modelFlag !== null && typeof oe.modelFlag !== 'string') {
+    return { ok: false, reason: 'invalid_model_flag' };
+  }
   // An executor spawned with no instruction is a hang, not a degraded run —
   // fail closed rather than launching a prompt-less process.
   if (prompt !== undefined && (typeof prompt !== 'string' || prompt.length === 0)) {
     return { ok: false, reason: 'invalid_prompt' };
   }
+  // Same fail-closed posture for the model: an empty string is not "no pin",
+  // it is a caller that lost its value on the way here. Callers that mean
+  // "no pin" omit the argument.
+  if (model !== undefined && (typeof model !== 'string' || model.length === 0)) {
+    return { ok: false, reason: 'invalid_model' };
+  }
   // Leading-dash guard, mirroring worktree-safety.cts's `unsafe_leading_dash`
-  // check on git arguments. A positional prompt (or a cwd) beginning with '-'
-  // is parsed by the spawned CLI as a FLAG, not a value — the same failure the
-  // git path already rejects, and for the same reason: `--` end-of-options
-  // support is inconsistent across these CLIs, so rejecting outright is the
-  // portable fix rather than relying on a separator. Applied to the resolver
-  // (not just its current caller) because this is a general descriptor->argv
-  // seam: a future caller must not have to rediscover the hazard.
+  // check on git arguments. A positional prompt (or a cwd, or a model) that
+  // begins with '-' is parsed by the spawned CLI as a FLAG, not a value — the
+  // same failure the git path already rejects, and for the same reason: `--`
+  // end-of-options support is inconsistent across these CLIs, so rejecting
+  // outright is the portable fix rather than relying on a separator. Applied
+  // to the resolver (not just its current caller) because this is a general
+  // descriptor->argv seam: a future caller must not have to rediscover the
+  // hazard.
   if (typeof prompt === 'string' && prompt.startsWith('-')) {
     return { ok: false, reason: 'unsafe_leading_dash_prompt' };
+  }
+  if (typeof model === 'string' && model.startsWith('-')) {
+    return { ok: false, reason: 'unsafe_leading_dash_model' };
   }
   if (cwd.startsWith('-')) {
     return { ok: false, reason: 'unsafe_leading_dash_cwd' };
@@ -874,6 +896,13 @@ function resolveOrchestratorExec(
   const args = typeof oe.cwdFlag === 'string' && oe.cwdFlag.length > 0
     ? [...baseArgs, oe.cwdFlag, cwd]
     : baseArgs;
+
+  // A host that declares no model channel silently omits the argument — the
+  // same documented shape as `cwdFlag: null`, and what keeps every host but
+  // the declaring one byte-identical.
+  if (typeof oe.modelFlag === 'string' && oe.modelFlag.length > 0 && typeof model === 'string') {
+    args.push(oe.modelFlag, model);
+  }
 
   if (typeof prompt === 'string') {
     if (typeof oe.promptFlag === 'string' && oe.promptFlag.length > 0) {

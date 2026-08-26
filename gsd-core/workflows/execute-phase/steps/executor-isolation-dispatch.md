@@ -282,14 +282,27 @@ CREATE_JSON=$(gsd_run query worktree.create \
     exit 1
   }
 
-# 2. Resolve the host's headless-exec argv for that worktree. Descriptor
-#    data — command, args, cwd flag and prompt flag all come from the
-#    capability descriptor, so no host is named here.
+# 2. Resolve the executor's model pin, if there is one. The raw override is
+#    read FIRST and gates the resolver: `resolve-model` walks the tier ladder
+#    and always answers with a concrete model, so resolving straight through
+#    would pin a model for users who pinned nothing. Only an explicit override
+#    earns a resolved value; everything else stays empty.
+EXECUTOR_MODEL=""
+if [ -n "$(gsd_run query config-get model_overrides.gsd-executor --default '' --raw 2>/dev/null)" ]; then
+  EXECUTOR_MODEL=$(gsd_run query resolve-model gsd-executor --raw 2>/dev/null)
+fi
+
+# 3. Resolve the host's headless-exec argv for that worktree. Descriptor
+#    data — command, args, cwd flag, prompt flag and model flag all come from
+#    the capability descriptor, so no host is named here. The model is
+#    forwarded unconditionally: the route treats an empty value as no pin, and
+#    a host that declares no model channel omits it regardless.
 EXEC_JSON=$(gsd_run query dispatch-isolation --json \
   --cwd-target "$WT_PATH" \
-  --prompt "$EXECUTOR_PROMPT")
+  --prompt "$EXECUTOR_PROMPT" \
+  --model "$EXECUTOR_MODEL")
 
-# 3. MANDATORY fail-closed check. `dispatch-isolation` degrades to
+# 4. MANDATORY fail-closed check. `dispatch-isolation` degrades to
 #    isolation:"none" / exec:null rather than exiting non-zero, so the
 #    command substitution above ALWAYS "succeeds" — the exit code proves
 #    nothing. A worktree already exists at this point (step 1 is a real side
