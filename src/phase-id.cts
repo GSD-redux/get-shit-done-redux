@@ -10,6 +10,17 @@
  * Dependencies:
  *   - ./pattern.cjs (escapeRegex — #3212 Phase 1 seam; this module is no
  *     longer the owner of pattern-escaping, only a consumer)
+ *   - ./core-utils.cjs (generateSlugInternal — #3883/ADR-3473 §8.3: the
+ *     canonical slug formula). core-utils.cjs also requires THIS module
+ *     (comparePhaseNum, scopeToPhase), so a top-level require here would be
+ *     circular and — per this codebase's compiled-.cjs convention of a
+ *     single `module.exports = {...}` reassignment at the bottom of each
+ *     file — a top-level circular require captures a stale, still-empty
+ *     exports object forever (verified live: it throws
+ *     "generateSlugInternal is not a function" when core-utils.cjs happens
+ *     to load first). The require is deferred (lazy, inside each function
+ *     body) instead, mirroring the same cycle-break already used by
+ *     core-utils.cts's own getPhaseFileStats/plan-scan.cjs seam.
  */
 
 import { escapeRegex } from './pattern.cjs';
@@ -226,9 +237,12 @@ function getPhaseDirFromPhaseId(phaseId: unknown, phaseName: string | null | und
   const milestone = String(parseInt(m[1], 10)).padStart(2, '0');
   const subParts = m[2].split('-').map(p => String(parseInt(p, 10)).padStart(2, '0'));
   const sub = subParts.join('-');
-  const slug = phaseName
-    ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-    : '';
+  // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+  // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
+  // Lazy require to break the core-utils.cjs <-> phase-id.cjs cycle (see the
+  // module dependency doc comment above).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
+  const slug = phaseName ? ((require('./core-utils.cjs').generateSlugInternal(phaseName) as string | null) ?? '') : '';
   const parts = [milestone, sub, slug].filter(Boolean);
   const base = parts.join('-');
   return projectCode ? `${projectCode}-${base}` : base;
@@ -377,7 +391,19 @@ function toDir(id: PhaseId, slug: string): string {
   const sub = id.subphase ? `.${id.subphase}` : '';
   // Slug guard: the slug becomes an on-disk path segment, so collapse it to a
   // safe lowercase token — never a path separator or `..` traversal.
-  const safeSlug = slug.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  // #3883 (ADR-3473 §8.3): delegate the sanitize formula itself to the
+  // canonical (generateSlugInternal, core-utils.cts) — this fixes the
+  // Cyrillic-collapses-to-empty defect (#2848-class) that toDir carried
+  // before (it never transliterated). The empty-sanitize and all-digit
+  // throw guards below stay: they are a DECLARED DIFFERENCE from every
+  // other slug call site, not a bug — a slug here becomes a real directory
+  // name, and toDir protects the parsePhaseId dir↔identity bijection
+  // (see the toDir docstring above) by refusing to emit an unusable name,
+  // where every other site silently accepts "" or a re-truncated value.
+  // Lazy require to break the core-utils.cjs <-> phase-id.cjs cycle (see the
+  // module dependency doc comment above).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
+  const safeSlug = (require('./core-utils.cjs').generateSlugInternal(slug) as string | null) ?? '';
   // A slug that sanitizes to nothing (e.g. '!!!') would otherwise emit a
   // dangling trailing hyphen.
   if (!safeSlug) {

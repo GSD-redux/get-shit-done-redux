@@ -961,10 +961,24 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
           const dir = phaseId.toDir({ project: 'GSD', milestone: '01', phase: '01' }, text);
           return dir.replace(/^GSD\.01-01-?/, '');
         } catch (e) {
-          // Current behavior throws "sanitizes to empty" for input the
-          // canonical transliterates successfully — surface that as a
-          // sentinel the corpus comparison can see (never equal to the
-          // canonical's real, non-empty slug).
+          // #3883 declared difference (axis: empty-sanitize-guard,
+          // phase-id.cts:380 toDir docstring, "toDir: slug sanitizes to
+          // empty"): toDir intentionally THROWS rather than emit an unusable
+          // directory name when a slug sanitizes to "" — deliberate, not a
+          // bug to consolidate away, because a slug here becomes a real
+          // on-disk path segment (parsePhaseId's dir<->identity bijection;
+          // every other slug call site just accepts "" silently). Post-
+          // migration, toDir now shares the canonical's OWN transliteration
+          // + truncation, so it throws in exactly the cases the canonical
+          // itself would produce "" (CJK-only / punctuation-only / emoji-
+          // only input — see B3) and NOT in any case the canonical succeeds
+          // (Cyrillic — the #2848-class defect this migration fixes).
+          // Surfaced as the canonical's own "" here so the corpus loop still
+          // demands real agreement everywhere the canonical succeeds, and
+          // only tolerates the throw where the canonical's answer is itself
+          // "".
+          const canonical = coreUtils.generateSlugInternal(text);
+          if (canonical === '' || canonical === null) return canonical ?? '';
           return `__THREW__:${e.message}`;
         }
       },
@@ -1017,6 +1031,21 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
         + 'emoji/boundary-length corpus can never reach this call site in '
         + 'production, so it is checked separately below against its own real '
         + 'input domain rather than run through the shared CORPUS loop.',
+    },
+    {
+      site: 'phase-id.cts:380 toDir safeSlug guard (direct require, exported)',
+      axis: 'empty-sanitize-guard',
+      reason:
+        'toDir (phase-id.cts:380, docstring above toDir) intentionally THROWS '
+        + '"toDir: slug sanitizes to empty" instead of emitting an unusable '
+        + 'on-disk directory name — this is a disk-naming call site that '
+        + 'protects the parsePhaseId dir<->identity bijection (an empty slug '
+        + 'would leave a dangling trailing hyphen; every other slug call site '
+        + 'silently accepts ""). Migrated to share the canonical\'s own '
+        + 'transliteration + truncation, so the throw now fires in EXACTLY the '
+        + 'cases the canonical itself reduces to "" (CJK/punctuation/emoji-only '
+        + '— see B3), and never in a case the canonical succeeds (Cyrillic — '
+        + 'the #2848-class defect this migration fixes for every other site).',
     },
   ];
 

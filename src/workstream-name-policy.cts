@@ -5,6 +5,20 @@
  * byte-for-behaviour from the prior hand-written .cjs; only types are added.
  *
  * Used by active-workstream-store.cjs, planning-workspace.cjs, workstream.cjs.
+ *
+ * #3883 (ADR-3473 §8.3): toWorkstreamSlug delegates to core-utils.cjs's
+ * generateSlugInternal (the canonical slug formula). core-utils.cjs already
+ * requires (transitively, at module-init time) THIS module:
+ * core-utils.cjs -> planning-workspace.cjs -> active-workstream-store.cjs ->
+ * workstream-name-policy.cjs. A top-level require of core-utils.cjs here
+ * would therefore close that cycle and — per this codebase's compiled-.cjs
+ * convention of a single `module.exports = {...}` reassignment at the bottom
+ * of core-utils.cjs — capture a stale, still-empty exports object forever
+ * (verified live: "generateSlugInternal is not a function" whichever module
+ * loads first). The require is deferred (lazy, inside toWorkstreamSlug's
+ * body) instead, mirroring the same cycle-break already used by
+ * core-utils.cts's own getPhaseFileStats/plan-scan.cjs seam and by
+ * phase-id.cts's toDir/getPhaseDirFromPhaseId.
  */
 
 export const INVALID_ACTIVE_WORKSTREAM_NAME_MESSAGE =
@@ -73,10 +87,13 @@ export function validateWorkstreamName(name: string | null | undefined): boolean
  * Lowercases, collapses non-alphanumeric runs to hyphens, strips leading/trailing hyphens.
  */
 export function toWorkstreamSlug(name: string | null | undefined): string {
-  return String(name ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+  // (generateSlugInternal, core-utils.cts) rather than re-implementing it —
+  // this call site previously diverged from it (no transliteration, no
+  // 60-char truncation). Lazy require to break the core-utils.cjs cycle
+  // (see the module dependency doc comment above).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
+  return (require('./core-utils.cjs').generateSlugInternal(String(name ?? '')) as string | null) ?? '';
 }
 
 /**

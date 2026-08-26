@@ -14,13 +14,20 @@
  *   - node:fs / node:path (stdlib)
  *   - ./phase-id.cjs       (comparePhaseNum, used by readSubdirectories)
  *   - ./planning-workspace.cjs (findContextMdIn, used by getPhaseFileStats)
+ *
+ * #3883 (ADR-3473 §8.3): phase-id.cjs also requires this module (it calls
+ * generateSlugInternal, the canonical slug formula) — a genuine circular
+ * require. It is safe ONLY because both sides access the other's exports
+ * lazily, through the live module-namespace object (`phaseIdModule.foo(...)`
+ * inside a function body), never via a top-level destructure — a top-level
+ * `const { foo } = require(...)` copies the binding at import time and would
+ * silently capture `undefined` whichever module loses the load-order race.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdModule = require('./phase-id.cjs');
-const { comparePhaseNum, scopeToPhase } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { findContextMdIn } = planningWorkspace;
@@ -234,7 +241,7 @@ function getPhaseFileStats(phaseDir: string): PhaseFileStats {
     };
   }
 
-  const scopedFiles = scopeToPhase(files, path.basename(phaseDir));
+  const scopedFiles = phaseIdModule.scopeToPhase(files, path.basename(phaseDir));
 
   return {
     plans: scan.planFiles,
@@ -256,7 +263,7 @@ function readSubdirectories(dirPath: string, sort = false): string[] {
   try {
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
     const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
-    return sort ? dirs.sort((a, b) => comparePhaseNum(a, b)) : dirs;
+    return sort ? dirs.sort((a, b) => phaseIdModule.comparePhaseNum(a, b)) : dirs;
   } catch {
     return [];
   }

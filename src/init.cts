@@ -174,9 +174,9 @@ function guardedGetRoadmapPhase(
 // directory exists yet) identically at every synthetic-fallback call site
 // below — factored out once so the slugification formula itself cannot drift.
 function slugifyPhaseName(phaseName: string | null): string | null {
-  return phaseName
-    ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-    : null;
+  // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+  // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
+  return phaseName ? coreUtils.generateSlugInternal(phaseName) : null;
 }
 
 /**
@@ -1931,9 +1931,9 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
         directory: null,
         phase_number: roadmapPhase['phase_number'],
         phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
+        // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
+        phase_slug: phaseName ? coreUtils.generateSlugInternal(phaseName) : null,
         plans: [],
         summaries: [],
         incomplete_plans: [],
@@ -1953,9 +1953,9 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
         directory: null,
         phase_number: roadmapPhase['phase_number'],
         phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
+        // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
+        phase_slug: phaseName ? coreUtils.generateSlugInternal(phaseName) : null,
         plans: [],
         summaries: [],
         incomplete_plans: [],
@@ -3106,7 +3106,9 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
       const status = 'not_started';
       const phaseInfo: Record<string, unknown> = {
         number: num,
-        name: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+        // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
+        name: coreUtils.generateSlugInternal(name) ?? '',
         directory: null,
         status,
         plan_count: 0,
