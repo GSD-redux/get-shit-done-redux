@@ -1162,7 +1162,8 @@ const capabilities = {
           "exec"
         ],
         "cwdFlag": "--cd",
-        "promptFlag": null
+        "promptFlag": null,
+        "modelFlag": "--model"
       },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
@@ -5984,7 +5985,8 @@ const runtimes = {
           "exec"
         ],
         "cwdFlag": "--cd",
-        "promptFlag": null
+        "promptFlag": null,
+        "modelFlag": "--model"
       },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
