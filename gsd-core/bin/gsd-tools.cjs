@@ -4195,7 +4195,7 @@ function runWithTimeout(argv) {
 // this string and HOST_COMMAND_ROUTERS/SKIP_ROOT_RESOLUTION are three
 // independently hand-maintained sites and nothing previously caught them
 // drifting apart when a query command was added to only one or two.
-const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--ws <name>] [--json-errors]\n' +
+const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--project-dir <path>] [--ws <name>] [--json-errors]\n' +
   'Commands: agent, agent-skills, assumption-delta, audit-open, audit-uat, check, check-commit, commit, commit-docs-guard, commit-to-subrepo, pr-subrepo, ' +
   'config-ensure-section, config-get, config-new-project, config-path, config-set, migrate-config, normalize-test-command, ' +
   'context-predicates, current-timestamp, detect-custom-files, docs-init, drift-guard, effort, extract-messages, find-phase, ' +
@@ -4210,6 +4210,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   '  --raw              Emit raw output without post-processing\n' +
   '  --pick <field>     Extract a single field from JSON output (dot/bracket notation)\n' +
   '  --cwd <path>       Override working directory for project-root resolution\n' +
+  '  --project-dir <path>  Explicit project root; skips the ancestor walk-up entirely (must already contain .planning/)\n' +
   '  --ws <name>        Override active workstream (or set GSD_WORKSTREAM)\n' +
   '  --json-errors      Emit structured JSON error objects on stderr (or set GSD_JSON_ERRORS=1)\n\n' +
   'For command-specific argument requirements, invoke the command without args ' +
@@ -4356,6 +4357,39 @@ async function main() {
     error(`Invalid --cwd: ${cwd}`, ERROR_REASON.USAGE);
   }
 
+  // #3881: --project-dir <path> is a documented (docs/CONFIGURATION.md,
+  // "Project-Root Resolution in Multi-Repo Workspaces") explicit override of
+  // the project root. It is idempotent under findProjectRoot's ancestor
+  // walk-up — i.e. it short-circuits the walk-up rather than seeding it —
+  // so it MUST be validated and applied here, before findProjectRoot ever
+  // runs, and its result must skip that call entirely below. A relative
+  // value resolves against process.cwd(), matching --cwd's own resolution.
+  let projectDirExplicit = false;
+  const projectDirEqArg = args.find(arg => arg.startsWith('--project-dir='));
+  const projectDirIdx = args.indexOf('--project-dir');
+  let projectDirValue;
+  if (projectDirEqArg) {
+    projectDirValue = projectDirEqArg.slice('--project-dir='.length).trim();
+    if (!projectDirValue) error('Missing value for --project-dir', ERROR_REASON.USAGE);
+    args.splice(args.indexOf(projectDirEqArg), 1);
+  } else if (projectDirIdx !== -1) {
+    projectDirValue = args[projectDirIdx + 1];
+    if (!projectDirValue || projectDirValue.startsWith('--')) error('Missing value for --project-dir', ERROR_REASON.USAGE);
+    args.splice(projectDirIdx, 2);
+  }
+  if (projectDirValue !== undefined) {
+    const resolvedProjectDir = path.resolve(projectDirValue);
+    if (!fs.existsSync(resolvedProjectDir) || !fs.statSync(resolvedProjectDir).isDirectory()) {
+      error(`Invalid --project-dir: ${resolvedProjectDir} (path does not exist or is not a directory)`, ERROR_REASON.USAGE);
+    }
+    const resolvedProjectDirPlanning = path.join(resolvedProjectDir, '.planning');
+    if (!fs.existsSync(resolvedProjectDirPlanning) || !fs.statSync(resolvedProjectDirPlanning).isDirectory()) {
+      error(`Invalid --project-dir: ${resolvedProjectDir} (no .planning/ directory found — --project-dir must name the project root itself, not an ancestor to walk up from)`, ERROR_REASON.USAGE);
+    }
+    cwd = resolvedProjectDir;
+    projectDirExplicit = true;
+  }
+
   // Resolve worktree root: in a linked worktree, .planning/ lives in the main worktree.
   // However, in monorepo worktrees where the subdirectory itself owns .planning/,
   // skip worktree resolution — the CWD is already the correct project root.
@@ -4468,7 +4502,10 @@ async function main() {
     }
   }
 
-  if (!SKIP_ROOT_RESOLUTION.has(command)) {
+  // #3881: an explicit --project-dir already IS the resolved project root
+  // (validated above) — findProjectRoot's ancestor walk-up must not run
+  // over it, per docs/CONFIGURATION.md's documented idempotence.
+  if (!projectDirExplicit && !SKIP_ROOT_RESOLUTION.has(command)) {
     cwd = findProjectRoot(cwd);
   }
 

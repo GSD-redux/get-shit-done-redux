@@ -1,10 +1,10 @@
 ---
-phase: {N}
-slug: {phase-slug}
+phase: "{N}"
+slug: "{phase-slug}"
 status: draft
 shadcn_initialized: false
 preset: none
-created: {date}
+created: "{date}"
 ---
 
 # Phase {N} — UI Design Contract

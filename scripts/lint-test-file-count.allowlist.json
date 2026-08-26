@@ -32,12 +32,14 @@
     "frontmatter": {
       "files": [
         "frontmatter-cli.test.cjs",
+        "frontmatter-golden-parity.test.cjs",
+        "frontmatter-roundtrip.property.test.cjs",
         "frontmatter.property.test.cjs",
         "frontmatter.test.cjs",
         "frontmatter.unit.test.cjs"
       ],
-      "issue": "3227",
-      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+      "issue": "3881",
+      "justification": "Grandfathered by #3227 for the original 4-file cluster (pre-existing over-cap, not new sprawl). #3881 (ADR-3473 §8.1, the js-yaml parser migration) adds two more: frontmatter-golden-parity.test.cjs (D-series golden-corpus diff against the legacy parser, ~900 real documents — cannot be folded into an existing file without losing its independent-of-current-parser provenance) and frontmatter-roundtrip.property.test.cjs (fast-check property coverage the migration's bijective-contract rule requires). Both are migration-specific, not incidental sprawl."
     },
     "graphify": {
       "files": [
