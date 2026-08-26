@@ -3031,7 +3031,7 @@ function syncStateFrontmatter(
   // #3257: propagate full-line frontmatter comments from the extracted source onto the
   // rebuilt derivedFm (buildStateFrontmatter + the Object.keys carry-forward above both
   // skip the Symbol-keyed channel, so without this the comments would be lost here even
-  // though parseYamlRegion/reconstructFrontmatter preserve them in isolation).
+  // though parseGuardedYamlRegion/reconstructFrontmatter preserve them in isolation).
   propagateCommentChannel(existingFm as unknown as Frontmatter, derivedFm as unknown as Frontmatter);
 
   const yamlStr = reconstructFrontmatter(derivedFm as unknown as Frontmatter);

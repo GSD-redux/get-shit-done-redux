@@ -139,7 +139,7 @@ Decisions 1–7 answer *how* this epic is organized. This section says *what the
 
 **Question.** What parses and serializes `.planning/` frontmatter?
 
-**Owner.** A single vendored parser. `parseYamlRegion` and `escapeDoubleQuoted` are **deleted, not patched**.
+**Owner.** A single vendored parser. `parseYamlRegion` and `escapeDoubleQuoted` are **deleted, not patched**. (Post-#3881-review, finding 2: the hand-rolled implementations behind both names are gone — `src/frontmatter.cts` now renames them to `parseGuardedYamlRegion` and `escapeDoubleQuotedScalar` so no function still answers to the deleted scanner's name; see those functions' docblocks for the full reasoning, including why `escapeDoubleQuotedScalar`'s rename required updating its three call sites rather than being treated as an ADR-amendment matter.)
 
 **Rule.** Escaping, quoting, CRLF handling and indentation leave this repo's maintenance surface. Round-trip *values* are identical; a property-based `fast-check` round-trip test is the gate.
 

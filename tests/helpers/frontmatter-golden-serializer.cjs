@@ -14,20 +14,28 @@
  *
  * This serializer instead walks every own enumerable property (`Object.keys`, which
  * includes non-index array properties) and folds arrays into a `[items]{named}` form so
- * the named-property tail is always represented in the output string. Object keys are
- * sorted for determinism (property insertion order is not part of either parser's
- * documented contract). Symbol-keyed properties (e.g. the #3257 comment channel, the
- * unparseable marker) are deliberately excluded: Object.keys never returns them, so they
- * were already invisible to the legacy line-scanner's output shape this golden pins.
+ * the named-property tail is always represented in the output string. Symbol-keyed
+ * properties (e.g. the #3257 comment channel, the unparseable marker) are deliberately
+ * excluded: Object.keys never returns them, so they were already invisible to the legacy
+ * line-scanner's output shape this golden pins.
+ *
+ * CORRECTED (post-#3881-review, finding 7): object keys were previously SORTED here,
+ * "for determinism" — but ADR-3473 §8.1's stated contract is key-ORDER parity between the
+ * legacy scanner and js-yaml, and a sorted serialization cannot see a key-order regression:
+ * two objects with the SAME keys in DIFFERENT orders serialize identically once sorted, so
+ * D1 was structurally blind to the exact invariant the ADR names. `Object.keys` already
+ * returns string keys in a well-defined, deterministic order (insertion order, with the
+ * usual integer-index-first carve-out that does not apply to frontmatter's non-numeric
+ * keys) — sorting was never needed for determinism, only for (accidentally) hiding order.
+ * Now order-preserving: `Object.keys(value)` is used as-is, for both objects and an
+ * array's named (non-index) properties.
  */
 function serializeFrontmatterValue(value) {
   if (value === null) return 'null';
   if (value === undefined) return 'undefined';
   if (Array.isArray(value)) {
     const items = value.map((item) => serializeFrontmatterValue(item));
-    const namedKeys = Object.keys(value)
-      .filter((k) => !/^\d+$/.test(k))
-      .sort();
+    const namedKeys = Object.keys(value).filter((k) => !/^\d+$/.test(k));
     let out = `[${items.join(',')}]`;
     if (namedKeys.length) {
       out += `{${namedKeys
@@ -37,7 +45,7 @@ function serializeFrontmatterValue(value) {
     return out;
   }
   if (typeof value === 'object') {
-    const keys = Object.keys(value).sort();
+    const keys = Object.keys(value);
     return `{${keys.map((k) => `${JSON.stringify(k)}:${serializeFrontmatterValue(value[k])}`).join(',')}}`;
   }
   return JSON.stringify(value);

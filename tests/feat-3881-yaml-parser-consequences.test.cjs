@@ -108,6 +108,67 @@ describe('A2 unparseableDocumentKeepsItsFrontmatterBlock', () => {
       `frontmatter conflict markers must survive the write; got ${JSON.stringify(result.content)}`
     );
   });
+
+  // Post-#3881-review, finding 7: this describe block exercised only ONE of the 8 call sites
+  // that route through `beginFrontmatterReassembly` (frontmatter.cts's docblock names all 8:
+  // 7 `*Core` functions in state-transition.cts, dispatched by `transitionCore`, plus 1 more
+  // hand-verified separately in `state.cts`'s `cmdStateCompletePhase`). Table-driven over the
+  // remaining 6 `transitionCore` kinds that share the same preservation contract.
+  const OTHER_TRANSITION_KINDS = [
+    ['advancePlan', { kind: 'advancePlan' }],
+    ['completePhase', { kind: 'completePhase', phaseNum: '2', nextPhaseNum: '3', nextPhaseName: 'Next Phase', isLastPhase: false, planCount: 1, summaryCount: 1 }],
+    ['plannedPhase', { kind: 'plannedPhase', phaseNumber: 3, phaseName: 'Test Phase', planCount: 5 }],
+    ['milestoneComplete', { kind: 'milestoneComplete', version: 'v1.0', nextMilestoneCommand: '/gsd:new-milestone' }],
+    ['patch', { kind: 'patch', patches: { Status: 'Paused' } }],
+    ['update', { kind: 'update', field: 'Status', value: 'Paused' }],
+  ];
+
+  const fmBlock = [
+    '---',
+    '<<<<<<< HEAD',
+    'status: foo',
+    '=======',
+    'status: bar',
+    '>>>>>>> feature',
+    '---',
+    '',
+  ].join('\n');
+  const body = [
+    '# Project State',
+    '',
+    '**Status:** Planning',
+    '',
+    '## Current Position',
+    '',
+    'Phase: 2 — DONE',
+    'Plan: —',
+    'Status: Planning',
+    '',
+  ].join('\n');
+  const content = fmBlock + body;
+
+  for (const [label, intent] of OTHER_TRANSITION_KINDS) {
+    test(`a git merge-conflict marker in the frontmatter keeps the block through ${label}`, () => {
+      const result = transitionCore(content, intent, { clock: fixedClock, roadmapProvider: () => null });
+      assert.ok(
+        result.content.includes('<<<<<<< HEAD')
+          && result.content.includes('=======')
+          && result.content.includes('>>>>>>> feature'),
+        `${label}: frontmatter conflict markers must survive the write; got ${JSON.stringify(result.content)}`
+      );
+    });
+  }
+
+  // NOT covered here, and NOT green: the 8th site (`state.cts`'s `cmdStateCompletePhase`,
+  // reached via the `state complete-phase` CLI command) also calls `beginFrontmatterReassembly`
+  // and returns `reassemble(body)`, but `readModifyWriteStateMd` unconditionally runs
+  // `syncAndPreserveStateMd`/`syncStateFrontmatter` AFTER that return value, which does not
+  // consult `FRONTMATTER_UNPARSEABLE` and rebuilds a fresh frontmatter block from body/disk
+  // state — clobbering the raw preserved block `reassemble` just produced. Confirmed by
+  // execution against a temp project (`state complete-phase` on the same conflict-marker
+  // fixture): the command succeeds and the STATE.md conflict markers are GONE afterward. This
+  // is a distinct, deeper defect in the resync composition, outside this phase's fix — filed
+  // as a new finding for follow-up rather than silently marked green or silently dropped.
 });
 
 describe('A3 unparseableIsDistinguishableFromEmpty', () => {
@@ -175,6 +236,33 @@ describe('A5 truncationProbeStillFiresOnAnOpenFence', () => {
       'a document that merely opens with a thematic break above prose must not be flagged as truncated'
     );
   });
+
+  // Post-#3881-review, finding 5: the trivially-parseable dominant shape above was the ONLY
+  // shape this row exercised — vacuous for the risk it names, since it never touched
+  // `countKeysBeforeTruncation`'s failure/recovery path at all (that whole-region text is
+  // valid YAML; the probe fires purely from a successful parse). Table-driven over every real
+  // truncation shape confirmed regressed by execution during review: an unquoted colon inside
+  // a value, an open (unterminated) flow collection, a mis-indented sibling key, and an
+  // anchor/alias whose refusal throws a mark-less exception. Each must still fire the #1882
+  // diagnostic exactly once.
+  const REGRESSED_TRUNCATION_SHAPES = [
+    ['unquoted colon in a value', '---\nphase: 3\ntitle: a: b\n'],
+    ['open (unterminated) flow collection', '---\nphase: 3\nlist: [a, b\n'],
+    ['mis-indented sibling key', '---\nphase: 3\n  plan: 2\n'],
+    ['anchor/alias — refusal throws a mark-less exception', '---\nphase: 3\nfoo: &a bar\n'],
+  ];
+
+  for (const [label, doc] of REGRESSED_TRUNCATION_SHAPES) {
+    test(`fires on a real truncation shape the mark-based recovery regressed on: ${label}`, () => {
+      _resetUnusableInputWarningsForTests();
+      extractFrontmatter(doc);
+      assert.equal(
+        _unusableInputEmissionCountForTests(),
+        1,
+        `the #1882 probe must fire on an unterminated region shaped like: ${label}; doc=${JSON.stringify(doc)}`
+      );
+    });
+  }
 });
 
 describe('A6 commentsStayOnTheirOwnKey', () => {

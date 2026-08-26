@@ -6,7 +6,7 @@
  * from the prior hand-written .cjs; only strict types are added.
  *
  * ADR-3473 §8.1 (#3881): the read path is no longer a hand-rolled line
- * scanner. `parseYamlRegion` now parses through the vendored `js-yaml`
+ * scanner. `parseGuardedYamlRegion` now parses through the vendored `js-yaml`
  * (`./vendor/js-yaml.cjs`, verbatim `node_modules/js-yaml/dist/js-yaml.js`)
  * under `FAILSAFE_SCHEMA` + `json: true` — every scalar comes back a string
  * (today's contract, no adapter needed) and duplicate keys overwrite
@@ -114,7 +114,10 @@ type FullLineCommentChannel = { leading: Record<string, string[]>; trailing: str
 const FRONTMATTER_UNPARSEABLE = Symbol('frontmatterUnparseable');
 
 function unparseableResult(): Frontmatter {
-  const fm: Frontmatter = {};
+  // Null-prototype (post-#3881-review, finding 3): consistent with every other Frontmatter
+  // object this module hands back, so a bracket read/`in` check against it never resolves an
+  // inherited Object.prototype member (constructor, toString, hasOwnProperty, valueOf, ...).
+  const fm: Frontmatter = Object.create(null) as Frontmatter;
   (fm as Record<symbol, unknown>)[FRONTMATTER_UNPARSEABLE as unknown as symbol] = true;
   return fm;
 }
@@ -168,7 +171,7 @@ function refuseAnchorsAndAliases(yaml: string): void {
       );
     }
     // Any other failure (malformed YAML unrelated to anchors) is reported by the real parse
-    // in parseYamlRegion; this pre-pass only exists to refuse anchors/aliases early.
+    // in parseGuardedYamlRegion; this pre-pass only exists to refuse anchors/aliases early.
   }
 }
 
@@ -211,9 +214,17 @@ function restoreNullBytesDeep(value: unknown): unknown {
   }
   if (Array.isArray(value)) return value.map(restoreNullBytesDeep);
   if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
+    // Null-prototype (post-#3881-review, finding 3): an ordinary {} here silently DROPS a
+    // top-level key literally named __proto__ -- out['__proto__'] = v on a normal object
+    // invokes the inherited Object.prototype.__proto__ SETTER (reassigning the object's own
+    // prototype) instead of creating a data property, so key: __proto__ in a document
+    // vanishes from the parsed result with no error. Confirmed by execution: ---\n__proto__:
+    // hello\nz: 1\n---\n parsed to {z: "1"}, silently dropping the __proto__ key entirely.
+    // Object.create(null) has no such setter, so the assignment below is always a genuine
+    // own data property, for every key including __proto__ itself.
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      const restoredKey = k.includes(NULL_BYTE_SENTINEL) ? k.split(NULL_BYTE_SENTINEL).join('\u0000') : k;
+      const restoredKey = k.includes(NULL_BYTE_SENTINEL) ? k.split(NULL_BYTE_SENTINEL).join(String.fromCharCode(0)) : k;
       out[restoredKey] = restoreNullBytesDeep(v);
     }
     return out;
@@ -268,7 +279,15 @@ function normalizeParsedValue(value: unknown, inArray: boolean): unknown {
     });
   }
   if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
+    // Null-prototype (post-#3881-review, finding 3): a top-level YAML key named `constructor`,
+    // `__proto__`, `toString`, `valueOf` or `hasOwnProperty` is ordinary user-authored input
+    // (`.planning/` frontmatter), not an attack — but on an ordinary `{}` it resolves to the
+    // inherited Object.prototype member instead of `undefined`, which crashes downstream
+    // bracket reads (`commentChannel?.leading[key]`) and silently mis-answers `fm[field]`
+    // lookups in `cmdFrontmatterGet`. `Object.create(null)` severs the prototype chain so every
+    // reader of a parsed Frontmatter object gets a real bracket-read contract: present or
+    // `undefined`, never an inherited function.
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       out[k] = normalizeParsedValue(v, false);
     }
@@ -301,7 +320,14 @@ function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCom
       const key = orderedKeys[keyIdx];
       if (line.startsWith(`${key}:`) || line.startsWith(`"${key}"`) || line.startsWith(`'${key}'`)) {
         if (pending.length) {
-          if (!channel) channel = { leading: {}, trailing: [] };
+          // Null-prototype `leading` (post-#3881-review, finding 3): `key` is an arbitrary
+          // user-authored YAML key — `constructor`, `__proto__`, `toString`, `valueOf`,
+          // `hasOwnProperty` all round-trip through here. On an ordinary `{}` those resolve
+          // to inherited Object.prototype members, and `reconstructFrontmatter`'s
+          // `commentChannel?.leading[key]` read then finds e.g. the `Object.prototype.toString`
+          // FUNCTION instead of `undefined`, throwing when it is iterated as if it were an
+          // array of comment strings.
+          if (!channel) channel = { leading: Object.create(null) as Record<string, string[]>, trailing: [] };
           channel.leading[key] = pending;
           pending = [];
         }
@@ -316,7 +342,7 @@ function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCom
   }
 
   if (pending.length) {
-    if (!channel) channel = { leading: {}, trailing: [] };
+    if (!channel) channel = { leading: Object.create(null) as Record<string, string[]>, trailing: [] };
     channel.trailing = pending;
   }
   return channel;
@@ -327,8 +353,15 @@ function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCom
  * (ADR-3473 §8.1). Throws (a `YAMLException`, or a plain `Error` from `refuseAnchorsAndAliases`)
  * on anything js-yaml itself cannot parse or that this module refuses outright; callers decide
  * whether to surface that as `unparseableResult()` or use it as a truncation signal.
+ *
+ * Renamed from `parseYamlRegion` (post-#3881-review, finding 2): §8.1 says `parseYamlRegion` is
+ * "deleted, not patched" — the hand-rolled line scanner that name identified IS gone, but the
+ * name itself survived on a new function with two callers (`extractFrontmatter` and
+ * `countKeysBeforeTruncation`) that could not be inlined without duplicating the
+ * refusal/null-byte/comment-channel glue below. Renaming closes that gap literally: nothing in
+ * this module still answers to the old hand-rolled scanner's name.
  */
-function parseYamlRegion(yaml: string): Frontmatter {
+function parseGuardedYamlRegion(yaml: string): Frontmatter {
   refuseAnchorsAndAliases(yaml);
   refuseIfSentinelPresent(yaml);
   const escaped = escapeNullBytesForParse(yaml);
@@ -337,7 +370,7 @@ function parseYamlRegion(yaml: string): Frontmatter {
   const root: Record<string, unknown> =
     normalized && typeof normalized === 'object' && !Array.isArray(normalized)
       ? (normalized as Record<string, unknown>)
-      : {};
+      : (Object.create(null) as Record<string, unknown>);
   const restored = restoreNullBytesDeep(root) as Frontmatter;
 
   const commentChannel = extractCommentChannel(yaml, Object.keys(restored));
@@ -349,7 +382,7 @@ function parseYamlRegion(yaml: string): Frontmatter {
 
 /**
  * ADR-3473 §8.1 (consequence 4): the #1882 truncation probe used to run the SAME parser
- * (`parseYamlRegion`) over an unterminated region and count its keys — deliberately, so a second
+ * (`parseGuardedYamlRegion`) over an unterminated region and count its keys — deliberately, so a second
  * "does this look like YAML?" matcher could never drift from the real parser. js-yaml is stricter
  * than the old scanner, though: the dominant real truncation shape (fence opened, well-formed
  * keys, then the document body follows with no closing fence) is *invalid* YAML — a plain-text
@@ -357,27 +390,79 @@ function parseYamlRegion(yaml: string): Frontmatter {
  * — so a naive "parse the whole region, count keys on success" port yields 0 keys and goes
  * silent on exactly the case #1882 exists for.
  *
- * This still runs the one real parser, just twice on failure: first over the whole region: on
- * success, count its keys directly. On a `YAMLException` carrying a `mark`, js-yaml's own error
- * position names the line where the well-formed frontmatter prefix ends; re-parsing just that
- * prefix (which is valid YAML on its own) recovers the same key count the legacy scanner would
- * have reported, derived from js-yaml's own error rather than a hand-rolled second matcher.
+ * CORRECTED (post-#3881-review, finding 5): the original recovery — re-parse ONLY the exact
+ * prefix named by `e.mark.line` — regressed on every realistic truncation shape actually
+ * checked by execution: an unquoted-colon value (`title: a: b`) and a mis-indented sibling
+ * key (`  plan: 2`) both raise "bad indentation of a mapping entry" ON the offending line
+ * itself, so `mark.line` names that SAME line and slicing BEFORE it drops the offending
+ * line's own key entirely — undercounting by exactly the key the probe most needs to see. An
+ * open flow collection (`list: [a, b`) raises its error on the (nonexistent) line AFTER the
+ * region's end, so the "marked prefix" still contains the same unterminated `[` and the retry
+ * parse fails too, falling through to a hard `0`. And a refused anchor/alias/merge key throws
+ * a mark-LESS `YAMLException` (`refuseAnchorsAndAliases`, thrown from inside the parse
+ * `listener` before js-yaml attaches position info) — the `e.mark` guard was never entered at
+ * all, hard `0` again, even though every other key in the region is perfectly valid.
+ *
+ * A first fix attempt tried shrinking the region line-by-line and re-parsing through the SAME
+ * real parser only — still no second matcher. It did NOT recover any of the three shapes above:
+ * the offending line in the first two IS the malformed token, at every possible prefix boundary
+ * that includes it, so no amount of shrinking ever makes it parse; the only prefix that ever
+ * succeeds is the one line BEFORE it, i.e. exactly the original bug's undercount. A parser-only
+ * strategy cannot report a key whose own line is genuinely invalid YAML — the same limitation
+ * that made the mark-based recovery fail in the first place. This means "the one real parser,
+ * never a hand-rolled matcher" is unreachable for the truncation-probe's actual job (a lower-
+ * bound COUNT of what looks like a key line, not a validity judgment) — this file already
+ * accepts an independent raw-text matcher for the adjacent question of "is this shaped like
+ * frontmatter" (`isFrontmatterShaped`, used by this probe's only caller), so `countKeysBeforeTruncation`
+ * takes the MAX of two lower bounds: how many keys the real parser can recover from the longest
+ * parseable line-prefix (still the primary signal — correct on the dominant fence-then-prose
+ * shape, and on any prefix boundary that genuinely IS the truncation point), and how many
+ * column-0 `key:`-shaped lines the raw text contains (recovers the three regressed shapes,
+ * whose offending key line the parser can never count). Neither alone is sufficient; together
+ * they never under-report a key that either signal can see.
  */
 function countKeysBeforeTruncation(region: string): number {
+  const parsed = parsedKeyCount(region);
+  const textual = countTopLevelKeyShapedLines(region);
+  return Math.max(parsed, textual);
+}
+
+/** How many keys the real parser recovers from the longest line-prefix of `region` that parses
+ * cleanly (the whole region itself, when it parses outright). Bounded to at most `region`'s own
+ * line count re-parses — no worse than the whole-region parse already paid for on the caller's
+ * unterminated-region path, which is itself bounded by ordinary `.planning/` document sizes (the
+ * huge-bounded fixture parses successfully on the FIRST try and never reaches the shrink loop).
+ */
+function parsedKeyCount(region: string): number {
   try {
-    return Object.keys(parseYamlRegion(region)).length;
-  } catch (e) {
-    if (e instanceof YAMLException && e.mark && typeof e.mark.line === 'number') {
-      const prefix = splitLines(region).slice(0, e.mark.line).join('\n');
-      if (prefix.trim() === '') return 0;
+    return Object.keys(parseGuardedYamlRegion(region)).length;
+  } catch {
+    const lines = splitLines(region);
+    for (let n = lines.length - 1; n >= 1; n--) {
+      const prefix = lines.slice(0, n).join('\n');
+      if (prefix.trim() === '') continue;
       try {
-        return Object.keys(parseYamlRegion(prefix)).length;
+        return Object.keys(parseGuardedYamlRegion(prefix)).length;
       } catch {
-        return 0;
+        continue;
       }
     }
     return 0;
   }
+}
+
+/** How many `key:`-shaped lines `region` textually contains — the raw-text lower bound that
+ * recovers a key whose OWN line is malformed YAML (an unquoted colon in the value, or a
+ * mis-indented sibling that reads as an "indented continuation" to the real parser), which no
+ * re-parse of any prefix can ever count (see `countKeysBeforeTruncation`'s docblock). Matches
+ * ANY indentation, not only column 0 — the mis-indented-sibling shape is, by construction, a key
+ * the author intended as top-level but indented by mistake; requiring column 0 here would just
+ * relocate the exact undercount finding 5 reports. Deliberately the SAME key-shape pattern this
+ * file already uses for the sibling shape check (`isFrontmatterShaped`'s first branch) — ASCII-
+ * only is an accepted, precedented scope limit for this raw-text heuristic, not a new one.
+ */
+function countTopLevelKeyShapedLines(region: string): number {
+  return splitLines(region).filter((line) => /^\s*[A-Za-z0-9_-]+:/.test(line)).length;
 }
 
 /**
@@ -452,7 +537,7 @@ function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
   const yamlEnd = content[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
   const region = content.slice(headerEnd, yamlEnd);
   try {
-    return parseYamlRegion(region);
+    return parseGuardedYamlRegion(region);
   } catch {
     return unparseableResult();
   }
@@ -464,11 +549,29 @@ function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
  * than a hand-rolled character-class replace chain, so the writer shares the same escaping
  * engine the reader now uses. js-yaml emits control-char escapes as uppercase hex (`\x1F`);
  * this repo has emitted lowercase (`\x1f`) since #1779, so the hex digits are lowercased after
- * dump to keep serialized output byte-stable across the migration. Still exported under the
- * same name for its three existing call sites (`reconstructFrontmatter` here, plus
- * `commands.cts` and `runtime-artifact-conversion.cts`), which need no change.
+ * dump to keep serialized output byte-stable across the migration FOR THE CASES the old
+ * hand-rolled chain actually covered (backslash/quote/newline/tab/CR, and every C0 control
+ * plus DEL via \xHH). It is NOT byte-stable end-to-end (post-#3881-review, finding 4,
+ * verified by execution): the old chain left BEL/NUL unescaped-as-hex (`\x07`/`\x00`) and
+ * left NEL/NBSP/LINE SEPARATOR/PARAGRAPH SEPARATOR/BOM as raw literal bytes entirely (they
+ * fall outside its `\u0000-\u001f\u007f` class); js-yaml's dump instead emits the YAML-named
+ * escapes `\a`/`\0`/`\N`/`\_`/`\L`/`\P` for those six, and a `\uXXXX` escape for the BOM and
+ * any lone UTF-16 surrogate. The serialized TEXT differs from pre-migration output for these
+ * codepoints, but the round-trip is equivalence-preserving, not merely byte-preserving: every
+ * one of `\a`/`\0`/`\N`/`\_`/`\L`/`\P`/`\uXXXX` is a YAML double-quoted-scalar escape that
+ * resolves back to the EXACT source codepoint on re-parse (confirmed by execution — see
+ * `tests/frontmatter.unit.test.cjs`'s pinned cases). scalarNeedsDoubleQuoting was extended in
+ * the same review round to also route lone surrogates through this quoted+escaped path,
+ * because they were previously emitted bare and produced genuinely UNPARSEABLE YAML.
+ *
+ * Renamed from `escapeDoubleQuoted` (post-#3881-review, finding 2): §8.1 says this function is
+ * "deleted, not patched" — like `parseGuardedYamlRegion`, the hand-rolled character-class chain
+ * is gone, but unlike that function this one HAS no other caller inside this module to hide the
+ * old name's survival behind, so the rename is a straight mechanical propagation to its three
+ * call sites (`reconstructFrontmatter` here, plus `commands.cts` and
+ * `runtime-artifact-conversion.cts`, both updated in this change — no ADR amendment needed).
  */
-function escapeDoubleQuoted(s: string): string {
+function escapeDoubleQuotedScalar(s: string): string {
   const dumped = yamlDump(s, { schema: FAILSAFE_SCHEMA, forceQuotes: true, quotingType: '"', lineWidth: -1 });
   const withoutTrailingNewline = dumped.endsWith('\n') ? dumped.slice(0, -1) : dumped;
   const interior = withoutTrailingNewline.slice(1, -1); // strip the outer double-quote pair
@@ -482,7 +585,7 @@ function escapeDoubleQuoted(s: string): string {
  * or control char, a leading YAML indicator (quote, `&`/`*`/`!` anchor/alias/
  * tag, `|`/`>` block scalar, flow `[]{},`, `#`, reserved `%`/`@`/backtick, or
  * `-`/`?`/`:` before a space), or leading/trailing whitespace. This helper is
- * the correctness complement of `escapeDoubleQuoted`: it broadens the *trigger*
+ * the correctness complement of `escapeDoubleQuotedScalar`: it broadens the *trigger*
  * for quoting without broadening the lossy object-list handling deferred to
  * #1572/#1660.
  */
@@ -493,6 +596,18 @@ function scalarNeedsDoubleQuoting(s: string): boolean {
   if (/^[,[\]{}#&*!|>'"%@`]/.test(s) || /^\s|\s$/.test(s)) return true;
   // `-` `?` `:` only start a plain scalar safely when NOT followed by a space.
   if (/^[-?:](\s|$)/.test(s)) return true;
+  // Post-#3881-review, finding 4 (found while verifying escapeDoubleQuotedScalar's byte-
+  // stability claim): an unpaired UTF-16 surrogate (U+D800-U+DFFF) is outside YAML's
+  // printable-character set, so js-yaml's loader refuses it ("the stream contains
+  // non-printable characters") the instant it is emitted bare. No other trigger above
+  // catches it -- not whitespace, not a C0/C1 control, not a leading indicator -- so a bare
+  // emission was genuinely invalid YAML: reconstructFrontmatter produced text
+  // extractFrontmatter could not re-parse, silently collapsing to {} via
+  // unparseableResult(). Confirmed by execution: reconstructFrontmatter({weird: '\uD800'})
+  // round-tripped to undefined before this fix. Routing it through the quoted +
+  // escapeDoubleQuotedScalar path (which already emits the \uD800 escape) fixes the
+  // round-trip.
+  if (/[\uD800-\uDFFF]/.test(s)) return true;
   return false;
 }
 
@@ -546,7 +661,7 @@ function agentScalarNeedsDoubleQuoting(s: string): boolean {
 
 function reconstructFrontmatter(obj: Frontmatter): string {
   const lines: string[] = [];
-  // #3257: read the full-line-comment channel (set by parseYamlRegion when comments
+  // #3257: read the full-line-comment channel (set by parseGuardedYamlRegion when comments
   // were present). Object.entries skips the Symbol key, so the data loop is unchanged.
   const commentChannel = (obj as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] as FullLineCommentChannel | undefined;
   for (const [key, value] of Object.entries(obj)) {
@@ -562,7 +677,7 @@ function reconstructFrontmatter(obj: Frontmatter): string {
       } else {
         lines.push(`${key}:`);
         for (const item of value) {
-          lines.push(`  - ${typeof item === 'string' && (item.includes(':') || item.includes('#') || scalarNeedsDoubleQuoting(item)) ? `"${escapeDoubleQuoted(item)}"` : item}`);
+          lines.push(`  - ${typeof item === 'string' && (item.includes(':') || item.includes('#') || scalarNeedsDoubleQuoting(item)) ? `"${escapeDoubleQuotedScalar(item)}"` : item}`);
         }
       }
     } else if (typeof value === 'object') {
@@ -577,7 +692,7 @@ function reconstructFrontmatter(obj: Frontmatter): string {
           } else {
             lines.push(`  ${subkey}:`);
             for (const item of subval) {
-              lines.push(`    - ${typeof item === 'string' && (item.includes(':') || item.includes('#') || scalarNeedsDoubleQuoting(item)) ? `"${escapeDoubleQuoted(item)}"` : item}`);
+              lines.push(`    - ${typeof item === 'string' && (item.includes(':') || item.includes('#') || scalarNeedsDoubleQuoting(item)) ? `"${escapeDoubleQuotedScalar(item)}"` : item}`);
             }
           }
         } else if (typeof subval === 'object') {
@@ -601,13 +716,13 @@ function reconstructFrontmatter(obj: Frontmatter): string {
         } else {
           // eslint-disable-next-line @typescript-eslint/no-base-to-string
           const sv = String(subval);
-          lines.push(`  ${subkey}: ${sv.includes(':') || sv.includes('#') || scalarNeedsDoubleQuoting(sv) ? `"${escapeDoubleQuoted(sv)}"` : sv}`);
+          lines.push(`  ${subkey}: ${sv.includes(':') || sv.includes('#') || scalarNeedsDoubleQuoting(sv) ? `"${escapeDoubleQuotedScalar(sv)}"` : sv}`);
         }
       }
     } else {
       const sv = String(value);
       if (sv.includes(':') || sv.includes('#') || sv.startsWith('[') || sv.startsWith('{') || scalarNeedsDoubleQuoting(sv)) {
-        lines.push(`${key}: "${escapeDoubleQuoted(sv)}"`);
+        lines.push(`${key}: "${escapeDoubleQuotedScalar(sv)}"`);
       } else {
         lines.push(`${key}: ${sv}`);
       }
@@ -626,15 +741,21 @@ function reconstructFrontmatter(obj: Frontmatter): string {
  * it — AC5). No-op when `source` carries no channel. Consumers that rebuild their
  * target object fresh (syncStateFrontmatter builds derivedFm via buildStateFrontmatter
  * and copies keys with Object.keys, which skips the Symbol) MUST call this before
- * reconstructFrontmatter, or the channel parseYamlRegion attached to the extracted
+ * reconstructFrontmatter, or the channel parseGuardedYamlRegion attached to the extracted
  * source is lost.
  */
 function propagateCommentChannel(source: Frontmatter, target: Frontmatter): void {
   const channel = (source as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] as FullLineCommentChannel | undefined;
   if (!channel) return;
-  const filtered: FullLineCommentChannel = { leading: {}, trailing: channel.trailing };
+  // Null-prototype `leading` (post-#3881-review, finding 3) — same rationale as
+  // `extractCommentChannel`. `target` may be a plain `{}` built by a caller outside this
+  // module (e.g. `buildStateFrontmatter`), so `key in target` is checked via
+  // `hasOwnProperty`, not the `in` operator: `in` walks target's OWN prototype chain too,
+  // and a target key named `constructor`/`toString`/etc. would otherwise read as "present"
+  // even when it was never actually set.
+  const filtered: FullLineCommentChannel = { leading: Object.create(null) as Record<string, string[]>, trailing: channel.trailing };
   for (const [key, comments] of Object.entries(channel.leading)) {
-    if (key in target) filtered.leading[key] = comments;
+    if (Object.prototype.hasOwnProperty.call(target, key)) filtered.leading[key] = comments;
   }
   if (filtered.trailing.length || Object.keys(filtered.leading).length) {
     (target as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = filtered;
@@ -1107,7 +1228,7 @@ export = {
   // #3706: shared with the agent-frontmatter writers so a config-supplied
   // `model:`/`variant:` value cannot break out of its scalar. Previously private
   // here while those writers interpolated raw — one escaper, three call sites.
-  escapeDoubleQuoted,
+  escapeDoubleQuotedScalar,
   agentScalarNeedsDoubleQuoting,
   extractFrontmatter,
   UNTERMINATED_KEY_THRESHOLD,

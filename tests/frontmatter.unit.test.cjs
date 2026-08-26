@@ -26,7 +26,7 @@ const {
   parseMustHavesBlock,
   FRONTMATTER_SCHEMAS,
   agentScalarNeedsDoubleQuoting,
-  escapeDoubleQuoted,
+  escapeDoubleQuotedScalar,
 } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
 // ─── extractFrontmatter ───────────────────────────────────────────────────────
@@ -1256,8 +1256,8 @@ describe('reconstructFrontmatter: strict-YAML round-trip (#1779)', () => {
   });
 });
 
-// #3497 — escape amplification. `escapeDoubleQuoted` escapes `\`/`"`/control
-// chars on every serialize (#1779), but `parseYamlRegion` only stripped the
+// #3497 — escape amplification. `escapeDoubleQuotedScalar` escapes `\`/`"`/control
+// chars on every serialize (#1779), but `parseGuardedYamlRegion` only stripped the
 // outer quote delimiters and never un-escaped the interior, so parse ∘ serialize
 // was NOT the identity: every read-modify-write cycle doubled the backslashes
 // (b → 2b+1, i.e. 2ⁿ−1 after n round-trips). A `last_activity_desc` containing
@@ -1699,9 +1699,9 @@ describe('agentScalarNeedsDoubleQuoting: real-world values that must stay unquot
   }
 });
 
-// ─── escapeDoubleQuoted (#1779 / #3497) ────────────────────────────────────────
+// ─── escapeDoubleQuotedScalar (#1779 / #3497) ────────────────────────────────────────
 
-describe('escapeDoubleQuoted: exact output strings', () => {
+describe('escapeDoubleQuotedScalar: exact output strings', () => {
   test('backslash is escaped before the quote it precedes (ordering matters)', () => {
     // Input: a, \, ", b. If the quote were escaped BEFORE the backslash, the
     // backslash added in front of the quote would then itself get doubled by
@@ -1710,40 +1710,40 @@ describe('escapeDoubleQuoted: exact output strings', () => {
     // followed by the quote.
     const input = 'a' + '\\' + '"' + 'b';
     const expected = 'a' + '\\'.repeat(3) + '"' + 'b';
-    assert.equal(escapeDoubleQuoted(input), expected);
+    assert.equal(escapeDoubleQuotedScalar(input), expected);
   });
 
   test('double quote alone', () => {
-    assert.equal(escapeDoubleQuoted('"'), '\\"');
+    assert.equal(escapeDoubleQuotedScalar('"'), '\\"');
   });
 
   test('newline alone', () => {
-    assert.equal(escapeDoubleQuoted('\n'), '\\n');
+    assert.equal(escapeDoubleQuotedScalar('\n'), '\\n');
   });
 
   test('tab alone', () => {
-    assert.equal(escapeDoubleQuoted('\t'), '\\t');
+    assert.equal(escapeDoubleQuotedScalar('\t'), '\\t');
   });
 
   test('carriage return alone', () => {
-    assert.equal(escapeDoubleQuoted('\r'), '\\r');
+    assert.equal(escapeDoubleQuotedScalar('\r'), '\\r');
   });
 
   test('a C0 control char (0x01) becomes lowercase zero-padded \\xHH', () => {
-    assert.equal(escapeDoubleQuoted('\u0001'), '\\x01');
+    assert.equal(escapeDoubleQuotedScalar('\u0001'), '\\x01');
   });
 
   test('DEL (0x7f) becomes \\x7f', () => {
-    assert.equal(escapeDoubleQuoted('\u007f'), '\\x7f');
+    assert.equal(escapeDoubleQuotedScalar('\u007f'), '\\x7f');
   });
 
   test('plain string with no specials is returned unchanged', () => {
-    assert.equal(escapeDoubleQuoted('plain'), 'plain');
+    assert.equal(escapeDoubleQuotedScalar('plain'), 'plain');
   });
 
   test('combined input exercising every escape in one pass', () => {
     const input = 'a\\b"c\nd\te\rf\u0001g\u007fh';
     const expected = 'a\\\\b\\"c\\nd\\te\\rf\\x01g\\x7fh';
-    assert.equal(escapeDoubleQuoted(input), expected);
+    assert.equal(escapeDoubleQuotedScalar(input), expected);
   });
 });
