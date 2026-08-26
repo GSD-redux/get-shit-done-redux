@@ -2325,3 +2325,292 @@ describe('#2766 parseGapsItems: GFM table shape', () => {
     assert.strictEqual(items[0].reason, 'because');
   });
 });
+
+describe("#3707: audit-uat must not silently drop outstanding UAT rows", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Shared harness: write one UAT file into a phase directory using the same
+  // naming convention (`.planning/phases/01-foundation/01-UAT.md`) the
+  // existing `audit-uat command` tests above use. Phase dirs are
+  // milestone-window filtered from ROADMAP.md, so an unlisted/invented phase
+  // name risks being excluded for an unrelated reason — reusing the
+  // established name avoids that entirely.
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const ISSUE_ROW = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Login Form
+expected: Form displays with email and password fields
+result: issue
+reported: "Button color is wrong"
+severity: major
+`;
+
+  const BLOCK_SCALAR_ROW = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Wrapped Expected
+expected: |
+  Line one of the expected behavior.
+  Line two of the expected behavior.
+result: pending
+`;
+
+  const WRAPPED_INLINE_ROW = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Wrapped Inline
+expected: Some behavior that wraps onto
+  a second indented line
+result: blocked
+blocked_by: physical-device
+`;
+
+  const ALL_UNPARSEABLE_ROWS = `---
+status: partial
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Wrapped Expected
+expected: |
+  Line one of the expected behavior.
+  Line two of the expected behavior.
+result: pending
+
+### 2. Wrapped Inline
+expected: Some behavior that wraps onto
+  a second indented line
+result: blocked
+blocked_by: physical-device
+`;
+
+  const UNRECOGNISED_RESULT_ROW = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Odd Result
+expected: Something happens
+result: wibble
+`;
+
+  const PASS_AND_PENDING_ROWS = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Passing Test
+expected: Works fine
+result: pass
+
+### 2. Pending Test
+expected: Still pending
+result: pending
+`;
+
+  const ALL_PASS_ROWS = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Passing Test
+expected: Works fine
+result: pass
+
+### 2. Also Passing
+expected: Also works fine
+result: pass
+`;
+
+  const CLASSIC_PENDING_ROW = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Classic Row
+expected: Displays correctly
+result: pending
+`;
+
+  // Defect 1: parseUatItems's result filter is a DROP-list
+  // (`pending|skipped|blocked`) that never recognises the template-sanctioned
+  // `result: issue` token, so a genuinely outstanding issue row is matched by
+  // the regex and then thrown away by the filter. Pre-fix: total_items is 0.
+  test("a template-sanctioned `result: issue` row is surfaced", () => {
+    writeUat(ISSUE_ROW);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    assert.strictEqual(output.results[0].items[0].result, "issue");
+  });
+
+  // Defect 1 (categorization half): categorizeItem has no branch for
+  // `result === 'issue'` and falls through to the catch-all 'unknown'.
+  // Pre-fix: this never even runs the assertion path because the row above
+  // is dropped before categorizeItem sees it — so this too is red pre-fix.
+  test("an issue row categorizes as issue, not unknown", () => {
+    writeUat(ISSUE_ROW);
+    const output = runAudit();
+    assert.strictEqual(output.results[0].items[0].category, "issue");
+  });
+
+  // Defect 2: the `testPattern` regex requires `expected:` and `result:` to
+  // be ADJACENT single lines (`expected:\s*([^\n]+)\nresult:\s*...`), so a
+  // `expected: |` block-scalar row — whose continuation lines sit BETWEEN
+  // `expected:` and `result:` — never matches the pattern at all. Pre-fix:
+  // total_items is 0, the row is invisible with no trace.
+  test("a block-scalar `expected: |` row is surfaced", () => {
+    writeUat(BLOCK_SCALAR_ROW);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+  });
+
+  // Defect 2 again, inline-wrap variant: an `expected:` value that wraps onto
+  // a second indented line also breaks the adjacency the regex requires.
+  // Pre-fix: total_items is 0.
+  test("a wrapped inline `expected:` row is surfaced", () => {
+    writeUat(WRAPPED_INLINE_ROW);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+  });
+
+  // Same defect 2 fixture — pins that once surfaced, the row's own
+  // `blocked_by` field (which the regex's failure to match currently
+  // discards entirely) is preserved. Pre-fix: there is no item to read
+  // `blocked_by` off of.
+  test("a wrapped row keeps its blocked_by", () => {
+    writeUat(WRAPPED_INLINE_ROW);
+    const output = runAudit();
+    assert.strictEqual(output.results[0].items[0].blocked_by, "physical-device");
+  });
+
+  // Same defect 2 fixture — pins categorizeItem's existing
+  // `/device|physical/i` mapping on `blocked_by` still applies once the row
+  // is actually surfaced. Pre-fix: there is no item to categorize.
+  test("a wrapped blocked row categorizes by its blocked_by", () => {
+    writeUat(WRAPPED_INLINE_ROW);
+    const output = runAudit();
+    assert.strictEqual(output.results[0].items[0].category, "device_needed");
+  });
+
+  // Defect 3: cmdAuditUat only pushes a file's result entry when
+  // `items.length > 0`. A file whose every row happens to be unparseable
+  // (both defect-2 shapes above) parses to zero items and the WHOLE FILE
+  // vanishes from the audit — taking its phase and frontmatter `status:`
+  // with it. Pre-fix: `by_phase` has no '01' key and `results` is empty.
+  test("a file whose rows are all unparseable still reports its phase", () => {
+    writeUat(ALL_UNPARSEABLE_ROWS);
+    const output = runAudit();
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(output.summary.by_phase, "01"),
+      `expected phase '01' in by_phase, got ${JSON.stringify(output.summary.by_phase)}`,
+    );
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry for 01-UAT.md, got ${JSON.stringify(output.results)}`);
+  });
+
+  // Defect 3, frontmatter half: the same vanished-file entry would have
+  // carried the file's own `status: partial` frontmatter. Pre-fix: there is
+  // no entry to read `status` off of.
+  test("that entry carries the frontmatter status", () => {
+    writeUat(ALL_UNPARSEABLE_ROWS);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry for 01-UAT.md, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.status, "partial");
+  });
+
+  // Defect 1, design-decision case: the fix inverts the DROP-list filter to a
+  // PASS set, so an unrecognised token like `result: wibble` — neither a
+  // known passing nor a known non-passing token — is surfaced rather than
+  // silently dropped. Pre-fix: total_items is 0.
+  test("an unrecognised result token is surfaced rather than dropped", () => {
+    writeUat(UNRECOGNISED_RESULT_ROW);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+  });
+
+  // CONTROL: `result: pass` must never be surfaced, today or after the fix.
+  // This constrains the defect-1 fix — inverting the filter to a PASS set
+  // must not swing so far that passing rows become "outstanding".
+  test("`result: pass` rows are never surfaced", () => {
+    writeUat(PASS_AND_PENDING_ROWS);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    assert.strictEqual(output.results[0].items[0].result, "pending");
+  });
+
+  // CONTROL: a file where every row passes must contribute zero items (and
+  // therefore, pre-fix, is exactly the case defect 3's `items.length > 0`
+  // guard is legitimately protecting — a fully-passing file SHOULD vanish).
+  test("a fully passing file contributes no items", () => {
+    writeUat(ALL_PASS_ROWS);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 0);
+  });
+
+  // CONTROL: the plain, pre-existing single-line `expected:` + `result:
+  // pending` shape must keep working unchanged.
+  test("an existing single-line expected + result: pending file is unchanged", () => {
+    writeUat(CLASSIC_PENDING_ROW);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    assert.strictEqual(output.results[0].items[0].category, "pending");
+  });
+});
