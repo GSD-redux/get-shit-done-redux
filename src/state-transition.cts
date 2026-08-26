@@ -1289,6 +1289,23 @@ function mutateCurrentPositionResume(
 }
 
 /**
+ * Advance the leading integer of a written plan value, preserving everything
+ * the author wrote around it: the zero-padding width ("04" -> "05") and any
+ * trailing remainder ("2 of 99" -> "3 of 99", and the `\r` of a CRLF file).
+ *
+ * The three parse branches disagree about the field NAME and about whether a
+ * total is carried inline, but they agree completely about this: only the
+ * leading digits are the plan number, and nothing else on the line belongs to
+ * this transition. Writing `String(newPlan)` instead — as the legacy branch
+ * did — discards the author's text on a branch nobody was reading.
+ *
+ * padStart never truncates, so 09 -> 10 widens rather than clipping.
+ */
+function bumpLeadingNumber(raw: string, next: number): string {
+  return raw.replace(/^\d+/, (digits) => String(next).padStart(digits.length, '0'));
+}
+
+/**
  * Update fields within the ## Current Position section for advancePlan.
  * Mirrors `updateCurrentPositionFields` (state.cts:496) byte-for-behaviour:
  * only replaces Status / Last Activity when the existing value is a known
@@ -1301,7 +1318,19 @@ function mutateCurrentPositionResume(
  */
 function mutateCurrentPositionForAdvance(
   content: string,
-  fields: { phase?: string; status?: string; lastActivity?: string; plan?: string },
+  fields: {
+    phase?: string;
+    status?: string;
+    lastActivity?: string;
+    plan?: string;
+    /**
+     * Which field name in the section carries the plan position. Defaults to
+     * `Plan` so the two callers that pass no plan at all stay byte-identical.
+     * A hybrid file writes `Current Plan:` here instead; without this the
+     * section was never reached and drifted a plan behind the header.
+     */
+    planField?: 'Plan' | 'Current Plan';
+  },
   statusDefaults: string[] | null | undefined,
   lastActivityDefaults: string[] | null | undefined,
 ): string {
@@ -1340,7 +1369,18 @@ function mutateCurrentPositionForAdvance(
 
   if (fields.plan) {
     // Plan is always replaced — system-derived, not executor-authored.
-    if (/^Plan:/m.test(sectionBody)) {
+    // Dispatch on the discriminator but pass Title-Case LITERALS to both the
+    // regex and stateReplaceField (ADR-3408 8.3(b)): a literal cannot collide
+    // with a lowercase/snake_case frontmatter key, whatever the caller passed.
+    if (fields.planField === 'Current Plan') {
+      if (/^Current Plan:/m.test(sectionBody)) {
+        sectionBody = sectionBody.replace(/^Current Plan:.*$/m, `Current Plan: ${fields.plan}`);
+        mutated = true;
+      } else {
+        const replaced = stateReplaceField(sectionBody, 'Current Plan', fields.plan);
+        if (replaced !== null) { sectionBody = replaced; mutated = true; }
+      }
+    } else if (/^Plan:/m.test(sectionBody)) {
       sectionBody = sectionBody.replace(/^Plan:.*$/m, `Plan: ${fields.plan}`);
       mutated = true;
     } else {
@@ -1485,13 +1525,7 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   const newPlan = currentPlan + 1;
   let planDisplayValue: string;
   if (useCompoundFormat) {
-    // Preserve the written zero-padding: "04 of 06" advances to "05 of 06",
-    // not "5 of 06". Only the leading half was being rewritten, so a padded
-    // file drifted into a lopsided one, which is the kind of untidiness that
-    // invites the next writer to "fix" the line into a shape nothing parses.
-    // padStart never truncates, so 09 -> 10 widens correctly.
-    planDisplayValue = (planRawValue as string).replace(/^\d+/, (digits) =>
-      String(newPlan).padStart(digits.length, '0'));
+    planDisplayValue = bumpLeadingNumber(planRawValue as string, newPlan);
     // Dispatch on the discriminator but pass a Title-Case LITERAL field name,
     // never the variable. ADR-3408 §8.3(b): a literal cannot collide with a
     // lowercase/snake_case frontmatter key, so it is safe regardless of how
@@ -1505,8 +1539,11 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
       body = stateReplaceField(body, 'Plan', planDisplayValue) || body;
     }
   } else {
+    // The section keeps the compound rendering it has always had; the body
+    // field keeps whatever the author wrote, advanced in place. These two are
+    // deliberately different values, which is why they are computed apart.
     planDisplayValue = `${newPlan} of ${totalPlans}`;
-    body = stateReplaceField(body, 'Current Plan', String(newPlan)) || body;
+    body = stateReplaceField(body, 'Current Plan', bumpLeadingNumber(legacyPlan as string, newPlan)) || body;
   }
   body = stateReplaceFieldIfTemplate(body, 'Status', statusDefaults, 'Ready to execute') || body;
   body = stateReplaceFieldIfTemplate(body, 'Last Activity', lastActivityDefaults, today) || body;
@@ -1515,6 +1552,11 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     status: 'Ready to execute',
     lastActivity: today,
     plan: planDisplayValue,
+    // A hybrid file names the section line `Current Plan:`. Without this the
+    // body-level write (single-shot, bold-preferring) updated the header and
+    // the section silently stayed a plan behind — two sites disagreeing about
+    // where execution is, which is worse than either one simply being wrong.
+    planField: planSourceField === 'Current Plan' ? 'Current Plan' : 'Plan',
   }, statusDefaults, lastActivityDefaults);
   updated.push('Current Plan', 'Status', 'Last Activity', 'Current Position');
 

@@ -578,7 +578,11 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
       '',
     ].join('\n');
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
-    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3');
+    // #3784: was '3'. The dropped zero-padding this used to pin is the defect
+    // the issue reports, not behaviour worth preserving — a fixture written
+    // "02" must not come back "3". The characterization is updated rather than
+    // worked around, because the old value WAS the bug.
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '03');
     assert.strictEqual(result.data && result.data.advanced, true);
     assert.strictEqual(result.data && result.data.current_plan, 3);
     assert.strictEqual(result.data && result.data.total_plans, 5);
@@ -746,6 +750,137 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
     assert.strictEqual(result.data && result.data.advanced, true);
     assert.strictEqual(result.data && result.data.total_plans, 5);
+    // Assert the WRITE, not just the parse. Reading `data` alone cannot see a
+    // lossy write-back, and a regression test that cannot observe the
+    // regression is not coverage. The legacy branch used to write
+    // `String(newPlan)`, which turned "2 of 99" into a bare "3" — silently
+    // destroying the reader's own text on a branch nobody was looking at.
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3 of 99');
+    assert.strictEqual(stateExtractField(result.content, 'Total Plans in Phase'), '5');
+  });
+
+  test('legacy pair preserves zero-padding on write-back', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 04',
+      '**Total Plans in Phase:** 06',
+      '**Status:** Executing Phase 3',
+      '**Last Activity:** 2026-06-26',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '05');
+  });
+
+  // Findings 2+3 are one defect seen twice: the body-level write is single-shot
+  // and bold-preferring, so on a file carrying the field at BOTH the bold header
+  // and the `## Current Position` line it updates the header only — and
+  // `mutateCurrentPositionForAdvance` could not pick up the slack because its
+  // plan arm only ever looked for `Plan:`, never `Current Plan:`. The earlier
+  // hybrid write-back test passed only because its fixture was single-site.
+  test('hybrid format: header and Current Position both advance, no drift', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 04 of 06',
+      '**Status:** Executing Phase 7',
+      '**Last Activity:** 2026-06-26',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 04 of 06',
+      'Status: Executing Phase 7',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    const advanced = result.content.match(/05 of 06/g) || [];
+    assert.strictEqual(advanced.length, 2, 'both sites must advance');
+    assert.ok(!/04 of 06/.test(result.content), 'no site may be left behind');
+  });
+
+  // Boundary coverage (RULESET.TESTS.boundary-coverage) around the
+  // `currentPlan >= totalPlans` limit, on the newly readable hybrid shape.
+  // limit itself ("6 of 6") is covered by the phase-complete test above.
+  test('hybrid boundary: limit-1 advances', () => {
+    const input = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 5 of 6',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(result.data && result.data.current_plan, 6);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '6 of 6');
+  });
+
+  test('hybrid boundary: limit+1 takes the phase-complete branch', () => {
+    const input = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 7 of 6',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    // Mirrors the compound branch's existing `>= totalPlans` semantics — an
+    // over-limit value is past the end, not a new advance.
+    assert.strictEqual(result.data && result.data.advanced, false);
+    assert.strictEqual(result.data && result.data.reason, 'last_plan');
+  });
+
+  // CRLF: regexes matching only \n are a recurring defect class here, and the
+  // write path's `(.*)` capture eats a trailing \r. A file that arrives CRLF
+  // must not leave with one line silently converted to LF.
+  test('hybrid format: CRLF line endings survive the write-back', () => {
+    const input = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Current Plan: 04 of 06',
+      'Status: Executing Phase 7',
+      '',
+    ].join('\r\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    assert.ok(/Current Plan: 05 of 06\r\n/.test(result.content),
+      'the advanced line must keep its CRLF terminator');
+    assert.ok(!/[^\r]\n/.test(result.content), 'no line may be downgraded to bare LF');
+  });
+
+  // RULESET.TESTS.property-based-testing: this is a parsing/transformation with
+  // a format-preserving contract, so the contract gets a property, not just
+  // examples. Contract: advancing rewrites ONLY the leading integer, pads it to
+  // at least the original digit width, and leaves the rest of the value byte-
+  // identical.
+  test('property: advancing preserves padding width and the " of M" remainder', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 97 }),
+        fc.integer({ min: 1, max: 4 }),
+        fc.integer({ min: 1, max: 4 }),
+        (n, planWidth, totalWidth) => {
+          const total = n + 2; // strictly greater, so the advance branch is taken
+          const planStr = String(n).padStart(planWidth, '0');
+          const totalStr = String(total).padStart(totalWidth, '0');
+          const input = [
+            '# Project State',
+            '',
+            `**Plan:** ${planStr} of ${totalStr}`,
+            '**Status:** Executing Phase 7',
+            '',
+          ].join('\n');
+          const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+          const expected = `${String(n + 1).padStart(planStr.length, '0')} of ${totalStr}`;
+          assert.strictEqual(stateExtractField(result.content, 'Plan'), expected);
+        },
+      ),
+      { numRuns: 200 },
+    );
   });
 
   test('compound format: "Plan: 2 of 6" preserves compound shape', () => {
@@ -895,8 +1030,8 @@ describe('ADR-1769 Phase 2: advancePlan with frontmatter (#1255 pattern — code
       '',
     ].join('\n');
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
-    // Body Current Plan must advance to 3.
-    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3');
+    // Body Current Plan must advance to 3, keeping the written width (#3784).
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '03');
     // Body Status must be updated (not the YAML status key).
     const bodyStatus = stateExtractField(result.content, 'Status');
     assert.ok(
