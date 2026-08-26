@@ -1487,12 +1487,26 @@ describe('planning inspect — evidence kept separate, never folded', () => {
       lfPayload.progress.accepted_phases.percent,
       describeAll(),
     );
+    assert.deepStrictEqual(diagnosticCodes(crPayload), diagnosticCodes(lfPayload), describeAll());
+
+    // LOAD-BEARING (#3707-CR MINOR 2): with normalization stripped from
+    // src/uat.cts, `uat.scope`, `phase.scope`, `accepted_phases.percent`, and
+    // `diagnosticCodes` above are ALL identical between the lone-CR and LF
+    // payloads even while the bug is present — a lone-CR document degrades
+    // scope to 'truncated' on BOTH sides identically (the CR document simply
+    // fails to parse either row, LF parses both), so those four assertions
+    // pass regardless of whether the CR fix exists. The ONLY assertion below
+    // that actually discriminates the fix from the bug is the
+    // `uat.unresolved` row-identity `deepStrictEqual`: pre-fix, `crPhase.uat.
+    // unresolved` is `[]` while `lfPhase.uat.unresolved` contains the "Beta"
+    // row, so this is the one comparison that fails without the fix. Do NOT
+    // remove this assertion as "redundant" with the four above — removing it
+    // makes this whole test vacuously green under the pre-fix behavior.
     assert.deepStrictEqual(
       crPhase.uat.unresolved.map(rowIdentity),
       lfPhase.uat.unresolved.map(rowIdentity),
       describeAll(),
     );
-    assert.deepStrictEqual(diagnosticCodes(crPayload), diagnosticCodes(lfPayload), describeAll());
 
     // Sanity: the row is genuinely surfaced on both sides, not vacuously
     // absent from both (which would make the equality checks above trivially
@@ -1500,6 +1514,30 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     assert.strictEqual(lfPhase.uat.scope, 'complete', describeAll());
     assert.strictEqual(lfPayload.progress.accepted_phases.percent, 100, describeAll());
     assert.ok(lfPhase.uat.unresolved.some((r) => r.name === 'Beta' && r.result === 'blocked'), describeAll());
+  });
+
+  // ─── #3707-CR follow-up MINOR 1 ─────────────────────────────────────────────
+  //
+  // A lone-CR VERIFICATION.md with `status: passed` was read by
+  // `readVerificationStatus` (src/verification.cts) as `status: "missing"` —
+  // `extractFrontmatter`'s byte-0 `---\n` / `---\r\n` fence check never
+  // matches a lone-CR `---\r`, so the frontmatter block was invisible and the
+  // completed verification was reported as though the step never ran.
+  // Under-reports rather than over-reports (fail-safe direction), but the
+  // same root cause as the false-clean class fixed above: a line-ending
+  // convention must not change what `planning.inspect` reports.
+  test('loneCrVerificationStatusPassedIsNotReportedAsMissing', () => {
+    const tmpDir = createTempProject();
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    const CR = String.fromCharCode(13);
+    writeVerification(phaseDir, '1', 'passed', CR);
+
+    const payload = parseInspect(tmpDir);
+    cleanup(tmpDir);
+    const phase = payload.phases[0];
+
+    assert.strictEqual(phase.verification.status, 'passed',
+      `lone-CR VERIFICATION.md with status: passed must not report as missing: ${JSON.stringify(phase.verification)}`);
   });
 
   // ─── Multi-file degrade ─────────────────────────────────────────────────────

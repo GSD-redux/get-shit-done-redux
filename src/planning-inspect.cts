@@ -89,6 +89,9 @@ const { collectSection, iterateBullets } = markdownSectionizer;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import markdownTable = require('./markdown-table.cjs');
 const { parseMarkdownTable, matchTableSchema } = markdownTable;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import coreUtilsMod = require('./core-utils.cjs');
+const { normalizeLineEndings } = coreUtilsMod;
 
 /**
  * The wire schema version. A consumer MUST reject any value other than this
@@ -263,7 +266,16 @@ function readDocument(filePath: string, root: string): { text: string | null; ex
   }
 
   try {
-    return { text: fs.readFileSync(filePath, 'utf-8'), exists: true, readable: true };
+    // #3707-CR follow-up MAJOR: normalize line endings HERE, at this module's
+    // one shared document-read seam, so a lone-CR document (CommonMark line
+    // ending; a document using it renders as separate lines to a human
+    // reader) is normalized by construction for every current and future
+    // caller of `readDocument` (`buildRequirements`, `buildUatRows`, the
+    // ROADMAP.md read above) — not only the ones a parser author remembered
+    // to fix individually. Mirrors `src/uat.cts`'s `readNormalizedDocument`,
+    // the equivalent boundary for `cmdAuditUat`; both now delegate to the
+    // same `normalizeLineEndings` in `core-utils.cts`.
+    return { text: normalizeLineEndings(fs.readFileSync(filePath, 'utf-8')), exists: true, readable: true };
   } catch {
     return { text: null, exists: true, readable: false };
   }

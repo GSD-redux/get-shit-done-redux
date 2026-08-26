@@ -22,7 +22,7 @@ import markdownTable = require('./markdown-table.cjs');
 const { splitTableRow, isDelimiterRow } = markdownTable;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtils = require('./core-utils.cjs');
-const { toPosixPath } = coreUtils;
+const { toPosixPath, normalizeLineEndings } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
@@ -114,6 +114,25 @@ function selectPhaseUatFiles(files: string[], phaseDirName: string): string[] {
   return scopeToPhase(files.filter((f) => f.includes('-UAT') && f.endsWith('.md')), phaseDirName);
 }
 
+/**
+ * The ONE read boundary for every document `cmdAuditUat` scans off disk
+ * (#3707-CR follow-up MAJOR). Wraps `fs.readFileSync` +
+ * `normalizeLineEndings` in a single seam so a lone-CR-separated
+ * `*-UAT.md`, `*-VERIFICATION.md`, or `deferred-items.md` is normalized BY
+ * CONSTRUCTION before it reaches ANY downstream parser — current
+ * (`parseUatItemsWithStats`, `parseVerificationItems`, `parseDeferredItems`)
+ * or future. Fixing this per-parser was the original (#3707-CR) MEDIUM fix's
+ * mistake: two of the four ingresses in this function were normalized by
+ * editing their own parsers directly, and the other two (VERIFICATION,
+ * deferred-items.md) were missed precisely because nothing forced a new call
+ * site to remember the step. Routing every read through this function
+ * removes that failure mode: a parser added later needs no line-ending logic
+ * of its own, because the text it receives is already normalized.
+ */
+function readNormalizedDocument(filePath: string): string {
+  return normalizeLineEndings(fs.readFileSync(filePath, 'utf-8'));
+}
+
 function cmdAuditUat(cwd: string, raw: boolean): void {
   const phasesDir = path.join(planningDir(cwd), 'phases');
   const hasActivePhases = fs.existsSync(phasesDir);
@@ -174,7 +193,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // the reason scopeToPhase has no unfiltered fallback.
     for (const file of selectPhaseUatFiles(files, dir)) {
       const uatFilePath = path.join(phaseDir, file);
-      const content = fs.readFileSync(uatFilePath, 'utf-8');
+      const content = readNormalizedDocument(uatFilePath);
       const { items, headingsSeen } = parseUatItemsWithStats(content);
       const status = (extractFrontmatter(content, uatFilePath).status as string || 'unknown');
       // `parse_gap` means the file contained `### N.` test blocks that
@@ -235,7 +254,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // for the same reason as the UAT loop above.
     for (const file of scopeToPhase(files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md')), dir)) {
       const verificationFilePath = path.join(phaseDir, file);
-      const content = fs.readFileSync(verificationFilePath, 'utf-8');
+      const content = readNormalizedDocument(verificationFilePath);
       const status = extractFrontmatter(content, verificationFilePath).status as string || 'unknown';
       if (status === 'human_needed' || status === 'gaps_found') {
         const items = parseVerificationItems(content, status, verificationFilePath);
@@ -263,7 +282,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // required.
     const deferredFile = 'deferred-items.md';
     if (files.includes(deferredFile)) {
-      const content = fs.readFileSync(path.join(phaseDir, deferredFile), 'utf-8');
+      const content = readNormalizedDocument(path.join(phaseDir, deferredFile));
       const items = parseDeferredItems(content);
       if (items.length > 0) {
         results.push({
@@ -1218,38 +1237,21 @@ function countUnattributedIndentedRows(surface: string): number {
 }
 
 /**
- * Normalize every line ending in `content` to a bare `\n`, ONCE, at the point
- * the document text enters this parser (#3707-CR).
+ * `normalizeLineEndings` itself now lives in `core-utils.cts` (#3707-CR
+ * follow-up MAJOR) and is imported above alongside `toPosixPath`, so it can
+ * also be applied at the READ boundary in `cmdAuditUat` (see
+ * `readNormalizedDocument`) — not just inside this module's own parsers. See
+ * that shared copy's doc comment for the full CommonMark lone-CR rationale.
  *
- * CommonMark treats a lone CR (no paired LF) as a line ending — such a
- * document RENDERS as separate lines to a human reader — but every split site
- * in this module (`content.split('\n')`, `tokenizeHeadings`, the
- * `TEST_HEADING_LINE_RE` shortfall scan) keyed on `\n` alone, so a lone CR was
- * invisible to BOTH sides of the round-7 symmetry invariant at once: no item,
- * no shortfall, no `headingsSeen`. A phase hiding a `result: blocked` row this
- * way reported 100% with zero diagnostics — a TOTAL false-clean, the exact
- * class this issue exists to close.
- *
- * `/\r\n?/g` is deliberately ONE alternation, not two separate replaces: a
- * two-pass `replace(/\r\n/g,'\n').replace(/\r/g,'\n')` is equivalent here
- * because the first pass already consumes every CRLF pair before the second
- * pass ever runs, but a single regex avoids relying on pass ORDER and matches
- * greedily left-to-right in one scan, so a CRLF is always consumed as ONE
- * unit (never left as a stray trailing `\r` after the `\n` half is matched
- * first) and a lone CR — including one immediately followed by nothing, i.e.
- * at EOF, or by another lone CR — is still replaced.
- *
- * Applied to `content` BEFORE any split, tokenize, or offset-bearing scan
- * runs, and every one of those consumers reads the SAME reassigned `content`
- * — never a mix of normalized and raw — so offsets/spans computed against it
- * (`heading.offset`, `content.slice(...)`) stay self-consistent. This is
- * deliberately NOT a length-preserving transform (CRLF, two UTF-16 units,
- * becomes LF, one), so offsets are only ever compared against THIS normalized
- * string, never against the original raw text.
+ * It is still called directly inside `parseUatItemsWithStats` and
+ * `parseCurrentTest` below: `parseUatItemsWithStats` is also reached from
+ * `src/planning-inspect.cts`'s `buildUatRows` via its own `readDocument` seam
+ * (a DIFFERENT read boundary this module does not own), and
+ * `parseCurrentTest` is reached from `cmdRenderCheckpoint`'s own independent
+ * `readFileSync` (a third read site, never touched by `cmdAuditUat`'s
+ * boundary). Both calls stay so neither ingress can regress if its own
+ * boundary is ever skipped.
  */
-function normalizeLineEndings(content: string): string {
-  return content.replace(/\r\n?/g, '\n');
-}
 
 /**
  * `headingsSeen` is the TOTAL parse-gap tally (every heading-shaped thing this

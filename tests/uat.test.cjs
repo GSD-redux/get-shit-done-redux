@@ -6221,3 +6221,210 @@ describe('#3707-CR: a lone CR line ending must not hide an outstanding UAT row',
     assert.strictEqual(beta.result, 'blocked', describeAll());
   });
 });
+
+// ─── #3707-CR follow-up MAJOR: the two OTHER cmdAuditUat ingresses ─────────────
+//
+// The original #3707-CR fix normalized line endings inside two of
+// `cmdAuditUat`'s FOUR parsers (`parseUatItemsWithStats`, `parseCurrentTest`)
+// and declared the class closed. It was not: `parseVerificationItems`
+// (VERIFICATION.md) and `parseDeferredItems` (deferred-items.md) are reached
+// from the SAME function via their own, separately unnormalized
+// `fs.readFileSync` calls, so a lone-CR VERIFICATION.md or deferred-items.md
+// hit the identical total false-clean this issue exists to close. The fix
+// this time is at the READ BOUNDARY (`readNormalizedDocument` in
+// src/uat.cts), not per-parser — these tests drive the full CLI end-to-end so
+// they exercise that boundary, not a parser function directly.
+describe('#3707-CR follow-up MAJOR: VERIFICATION.md and deferred-items.md ingresses normalize at the read boundary', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function audit() {
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  function deferredBody(eol) {
+    return [
+      '## Deferred Items',
+      '',
+      '- First deferred item, still open.',
+      '- Second deferred item, still open.',
+    ].join(eol);
+  }
+
+  test('[RED] a lone-CR deferred-items.md surfaces both items by identity', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferredBody(CR));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.file === 'deferred-items.md');
+    assert.ok(entry, `deferred-items.md entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => ({ name: i.name, result: i.result }));
+    assert.deepStrictEqual(names, [
+      { name: 'First deferred item, still open.', result: 'unresolved' },
+      { name: 'Second deferred item, still open.', result: 'unresolved' },
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  test('[GREEN] CONTROL: the LF twin of the same deferred-items.md surfaces the identical items', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferredBody(LF));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.file === 'deferred-items.md');
+    assert.ok(entry, `deferred-items.md entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => ({ name: i.name, result: i.result }));
+    assert.deepStrictEqual(names, [
+      { name: 'First deferred item, still open.', result: 'unresolved' },
+      { name: 'Second deferred item, still open.', result: 'unresolved' },
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  test('[GREEN] CONTROL: a CRLF deferred-items.md is unchanged (no double-count, no strip)', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferredBody(CRLF));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.file === 'deferred-items.md');
+    assert.ok(entry, `deferred-items.md entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => ({ name: i.name, result: i.result }));
+    assert.deepStrictEqual(names, [
+      { name: 'First deferred item, still open.', result: 'unresolved' },
+      { name: 'Second deferred item, still open.', result: 'unresolved' },
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  function verificationBody(eol) {
+    return [
+      '---',
+      'status: human_needed',
+      'phase: 02-auth',
+      '---',
+      '',
+      '## Human Verification',
+      '',
+      '1. Test SSO login with Google account',
+      '2. Test password reset flow end-to-end',
+      '',
+    ].join(eol);
+  }
+
+  test('[RED] a lone-CR VERIFICATION.md (status: human_needed) surfaces both human-verification items by identity', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '02-VERIFICATION.md'), verificationBody(CR));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.type === 'verification');
+    assert.ok(entry, `VERIFICATION entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => i.name);
+    assert.deepStrictEqual(names, [
+      'Test SSO login with Google account',
+      'Test password reset flow end-to-end',
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  test('[GREEN] CONTROL: the LF twin of the same VERIFICATION.md surfaces the identical items', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '02-VERIFICATION.md'), verificationBody(LF));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.type === 'verification');
+    assert.ok(entry, `VERIFICATION entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => i.name);
+    assert.deepStrictEqual(names, [
+      'Test SSO login with Google account',
+      'Test password reset flow end-to-end',
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  test('[GREEN] CONTROL: a CRLF VERIFICATION.md is unchanged (no double-count, no strip)', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '02-VERIFICATION.md'), verificationBody(CRLF));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.type === 'verification');
+    assert.ok(entry, `VERIFICATION entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => i.name);
+    assert.deepStrictEqual(names, [
+      'Test SSO login with Google account',
+      'Test password reset flow end-to-end',
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  // The end-to-end phase carrying BOTH a VERIFICATION.md and a
+  // deferred-items.md, written twice from one source (LF and lone-CR),
+  // exercising ALL FOUR ingresses in one audit-uat run at once.
+  test('[RED] a phase with both VERIFICATION.md and deferred-items.md: lone-CR and LF produce identical audit output', () => {
+    function build(eol) {
+      const dir = createTempProject();
+      const phaseDir = path.join(dir, '.planning', 'phases', '03-combo');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '03-VERIFICATION.md'), verificationBody(eol));
+      fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferredBody(eol));
+      return dir;
+    }
+
+    const lfDir = build(LF);
+    const crDir = build(CR);
+    try {
+      const lfResult = runGsdTools('audit-uat --raw', lfDir);
+      const crResult = runGsdTools('audit-uat --raw', crDir);
+      assert.ok(lfResult.success, `LF run failed: ${lfResult.error}`);
+      assert.ok(crResult.success, `CR run failed: ${crResult.error}`);
+      const lfOutput = JSON.parse(lfResult.output);
+      const crOutput = JSON.parse(crResult.output);
+      const describeAll = () => JSON.stringify({ lf: lfOutput, cr: crOutput }, null, 2);
+
+      assert.strictEqual(lfOutput.summary.total_files, 2, describeAll());
+      assert.strictEqual(lfOutput.summary.total_items, 4, describeAll());
+      assert.strictEqual(crOutput.summary.total_files, lfOutput.summary.total_files, describeAll());
+      assert.strictEqual(crOutput.summary.total_items, lfOutput.summary.total_items, describeAll());
+      assert.strictEqual(crOutput.summary.parse_gap_files, lfOutput.summary.parse_gap_files, describeAll());
+
+      const rowIdentity = (r) => ({
+        type: r.type,
+        items: r.items.map((i) => ({ name: i.name, result: i.result })).sort((a, b) => a.name.localeCompare(b.name)),
+      });
+      assert.deepStrictEqual(
+        crOutput.results.map(rowIdentity).sort((a, b) => a.type.localeCompare(b.type)),
+        lfOutput.results.map(rowIdentity).sort((a, b) => a.type.localeCompare(b.type)),
+        describeAll(),
+      );
+    } finally {
+      cleanup(lfDir);
+      cleanup(crDir);
+    }
+  });
+});
