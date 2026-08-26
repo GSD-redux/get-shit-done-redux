@@ -15,13 +15,21 @@
  *   - ./phase-id.cjs       (comparePhaseNum, used by readSubdirectories)
  *   - ./planning-workspace.cjs (findContextMdIn, used by getPhaseFileStats)
  *
- * #3883 (ADR-3473 §8.3): phase-id.cjs also requires this module (it calls
- * generateSlugInternal, the canonical slug formula) — a genuine circular
- * require. It is safe ONLY because both sides access the other's exports
- * lazily, through the live module-namespace object (`phaseIdModule.foo(...)`
- * inside a function body), never via a top-level destructure — a top-level
+ * #3883 (ADR-3473 §8.3): two of this module's cyclic partners require
+ * generateSlugInternal, the canonical slug formula:
+ *   - phase-id.cjs requires this module directly.
+ *   - planning-workspace.cjs is a cyclic partner via a longer path:
+ *     core-utils.cjs -> planning-workspace.cjs -> active-workstream-store.cjs
+ *     -> workstream-name-policy.cjs -> core-utils.cjs.
+ * Both are genuine circular requires. They are safe ONLY because every side
+ * accesses the other's exports lazily, through the live module-namespace
+ * object (`phaseIdModule.foo(...)` / `planningWorkspace.foo(...)`) inside a
+ * function body, never via a top-level destructure — a top-level
  * `const { foo } = require(...)` copies the binding at import time and would
  * silently capture `undefined` whichever module loses the load-order race.
+ * This is an absolute rule with no exception in this file: every cyclic
+ * partner's export is accessed through its module-namespace object, never
+ * destructured at the top level.
  */
 
 import fs from 'node:fs';
@@ -30,7 +38,6 @@ import path from 'node:path';
 import phaseIdModule = require('./phase-id.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { findContextMdIn } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import shellCommandProjection = require('./shell-command-projection.cjs');
 
@@ -261,7 +268,7 @@ function getPhaseFileStats(phaseDir: string): PhaseFileStats {
     plans: scan.planFiles,
     summaries: scan.summaryFiles,
     hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
-    hasContext: findContextMdIn(scopedFiles) !== null,
+    hasContext: planningWorkspace.findContextMdIn(scopedFiles) !== null,
     hasVerification: scopedFiles.some(f => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md'),
     hasReviews: scopedFiles.some(f => f.endsWith('-REVIEWS.md') || f === 'REVIEWS.md'),
     scope: scan.scope,

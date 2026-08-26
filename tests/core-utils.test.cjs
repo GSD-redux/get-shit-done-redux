@@ -996,7 +996,14 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
           // Surfaced as the canonical's own "" here so the corpus loop still
           // demands real agreement everywhere the canonical succeeds, and
           // only tolerates the throw where the canonical's answer is itself
-          // "".
+          // "". Assert the SPECIFIC sentinel throw, not any exception — a
+          // row that accepted an unrelated crash (e.g. a TypeError from a
+          // regression elsewhere in toDir) as if it were the declared
+          // empty-sanitize guard would pass while testing nothing.
+          assert.ok(
+            e instanceof Error && e.message.startsWith('toDir: slug sanitizes to empty'),
+            `expected toDir's declared "toDir: slug sanitizes to empty" guard, got: ${e && e.message}`,
+          );
           const canonical = coreUtils.generateSlugInternal(text, null);
           if (canonical === '' || canonical === null) return canonical ?? '';
           return `__THREW__:${e.message}`;
@@ -1049,9 +1056,12 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
       reason:
         'The slugified text is never caller-supplied: it is always one of a '
         + 'fixed ASCII whitelist of environment-variable KEY NAMES '
-        + '(WORKSTREAM_SESSION_ENV_KEYS: GSD_SESSION_KEY, CODEX_THREAD_ID, '
-        + 'CLAUDE_SESSION_ID, CLAUDE_CODE_SESSION_ID). The shared unicode/CJK/'
-        + 'emoji/boundary-length corpus can never reach this call site in '
+        + '(WORKSTREAM_SESSION_ENV_KEYS, all 13 entries: GSD_SESSION_KEY, '
+        + 'CODEX_THREAD_ID, CLAUDE_SESSION_ID, CLAUDE_CODE_SESSION_ID, '
+        + 'CLAUDE_CODE_SSE_PORT, OPENCODE_SESSION_ID, GEMINI_SESSION_ID, '
+        + 'CURSOR_SESSION_ID, WINDSURF_SESSION_ID, TERM_SESSION_ID, WT_SESSION, '
+        + 'TMUX_PANE, ZELLIJ_SESSION_NAME). The shared unicode/CJK/emoji/'
+        + 'boundary-length corpus can never reach this call site in '
         + 'production, so it is checked separately below against its own real '
         + 'input domain rather than run through the shared CORPUS loop.',
     },
@@ -1186,7 +1196,11 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     // active-workstream-store.cts:97 getWorkstreamSessionKey — checked against
     // its own real, restricted input domain (declared, A4), not the shared corpus.
     describe('active-workstream-store.cts:97 getWorkstreamSessionKey (real input domain only)', () => {
-      const REAL_ENV_KEYS = ['GSD_SESSION_KEY', 'CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'];
+      const REAL_ENV_KEYS = [
+        'GSD_SESSION_KEY', 'CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID',
+        'CLAUDE_CODE_SSE_PORT', 'OPENCODE_SESSION_ID', 'GEMINI_SESSION_ID', 'CURSOR_SESSION_ID',
+        'WINDSURF_SESSION_ID', 'TERM_SESSION_ID', 'WT_SESSION', 'TMUX_PANE', 'ZELLIJ_SESSION_NAME',
+      ];
       for (const envKey of REAL_ENV_KEYS) {
         test(`${envKey} slugifies identically to generateSlugInternal(${envKey})`, () => {
           const saved = {};
