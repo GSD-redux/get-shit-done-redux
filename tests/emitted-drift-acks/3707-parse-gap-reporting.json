@@ -1,0 +1,12 @@
+{
+  "$comment": "Growth ack (#2914 fragment). Reason: #3707 fixed `audit-uat` reporting zero outstanding items for a UAT file that had three, then dropping the phase from the report entirely. Fixing the parser alone was not enough — both reviewers found independently that the fix was invisible end to end. A file that parses to zero items is now reported with `parse_gap: true` and counted in a new `summary.parse_gap_files`, but parse-gap entries carry no items, and BOTH of these workflows gated their user-visible output on `summary.total_items === 0`. audit-uat.md printed '## All Clear ... Stop here.' and progress.md suppressed its Verification Debt section, so the headline symptom — the phase vanishing — still reproduced for a reader while only the raw JSON had changed. The growth in each file is the widened gate plus the branch that actually reports the unparsed files, with their phase and path, so the reader gets the cue to go and look. Prose is the product here: these steps ARE what an executing agent reads and acts on, so a smaller form would just move the omission. audit-uat.md 5582 -> 6136 (+554), progress.md 24791 -> 25106 (+315).",
+  "version": 1,
+  "paths": {
+    "audit-uat.md": {
+      "reason": "#3707: the all-clear gate widens from `total_items === 0` to `total_items === 0 && parse_gap_files === 0`, and a new branch reports unparsed UAT files with phase and path. Without it the command still prints 'All Clear' for a phase whose rows it could not parse, which is the exact symptom this issue reports; +554 bytes"
+    },
+    "progress.md": {
+      "reason": "#3707: the Verification Debt section no longer gates on outstanding items alone, so a phase whose UAT rows failed to parse is surfaced as debt instead of silently absent, and the table gains a row naming the unparsed file; +315 bytes"
+    }
+  }
+}
