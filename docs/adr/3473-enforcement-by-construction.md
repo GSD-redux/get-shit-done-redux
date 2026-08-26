@@ -251,9 +251,29 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 > on 0 of 11 hostile inputs, including a 200 KB scalar, 20k keys and 5k nested opens); and the ten
 > scalar spellings above all agree.
 >
-> **Status: §8.1 requires re-scoping and the rule is therefore NOT delivered by Phase 4 as designed.**
-> It is not silently deferred — the measurement above is the deliverable, and the re-scoping decision
-> is recorded as an open question with a forcing function, per §8's own rule.
+> **RESOLUTION, 2026-08-26 (maintainer decision).** Presented with three options — split §8.1 into
+> its own epic, take the full semantic migration now, or patch the scanner and drop the vendoring —
+> the maintainer chose **the full semantic migration**. Phase 4 therefore adopts js-yaml's semantics
+> as truth and carries all seven consequences above, rather than attempting the contract-preservation
+> that §0.1 proves impossible. The fork is not answered as (a) or as (b); it is answered as **"the
+> fork was ill-posed, and the migration is semantic."**
+>
+> **Guard ledger, counted rather than estimated — Phase 4 GROWS.** Excluding the 3,014 vendored
+> third-party lines, the hand-maintained surface is **+307 lines** net: `src/frontmatter.cts` alone is
+> +248/−180 = **+68**, growing *despite* deleting four functions, because the compatibility layer that
+> reproduces this repo's bespoke contract on top of js-yaml is larger than the scanner it replaced.
+>
+> So §8.1's stated benefit — *"escaping, quoting, CRLF handling and indentation leave this repo's
+> maintenance surface"* — **is not delivered as written.** Those concerns did leave; a compatibility
+> layer replaced them and the line count rose. What genuinely improved is the *kind* of code
+> maintained: this repo no longer owns YAML spec conformance, whose bugs were #1779, #1882, #1572,
+> #1660, #3257 and #3497. It owns a thin adapter over a parser whose correctness is upstream's
+> problem. That is a real gain, and a smaller one than the rule claimed.
+>
+> Decision 6 requires the growth be recorded rather than netted away — a net fall achieved by not
+> counting an increase is the Goodhart outcome Decision 5 exists to prevent. Across the epic: Phase 1
+> shrank (−665 lines, −1 file); Phase 2 was flat; Phase 3 grew (+2 guard surfaces); Phase 4 grows
+> (+307 lines). **Only one of four phases delivered the shrink this epic was framed around.**
 
 > **Amendment, 2026-08-26 (Phase 4, #3881) — the justifying sentence above is wrong, and this is the
 > THIRD wrong premise in this ADR.** The claim *"Both close #3349 and #3360, which are read-side
