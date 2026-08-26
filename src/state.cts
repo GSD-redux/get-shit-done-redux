@@ -54,6 +54,10 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateTransitionMod = require('./state-transition.cjs');
+// #3873 (ADR-3473 §8.8): FRONTMATTER_KEY_TO_BODY_LABEL below is now a
+// projection of this leaf schema rather than a hand-maintained literal.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import stateMdSchemaMod = require('./state-md-schema.cjs');
 
 // #2573 D5: used to pin `git rev-parse` to the project's own repo. Imports only
 // node builtins, so it introduces no cycle on this path.
@@ -3728,15 +3732,38 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
  * exactly that closed, tested set (`tests/state.test.cjs` A2f pins
  * `divergedFields` reporting bare `'progress'`).
  */
-const FRONTMATTER_KEY_TO_BODY_LABEL: Readonly<Record<string, string>> = Object.freeze({
-  current_phase: 'Current Phase',
-  current_phase_name: 'Current Phase Name',
-  current_plan: 'Current Plan',
-  stopped_at: 'Stopped At',
-  paused_at: 'Paused At',
-  status: 'Status',
-  last_activity_desc: 'Last Activity Description',
-});
+/**
+ * #3873 (ADR-3473 §8.8): PROJECTED from `STATE_FIELD_SCHEMA`
+ * (`src/state-md-schema.cts`)'s `bodyLabel` field, in this EXPLICIT key
+ * order — the pre-#3873 literal's own order, which puts `status` AFTER
+ * `stopped_at`/`paused_at` (the opposite of `FRONTMATTER_BODY_SOURCE`'s order
+ * in `state-transition.cts`; the two pre-existing tables disagreed with each
+ * other's order too, so each projection reproduces its OWN table's order
+ * rather than a shared derivation). Byte-identical to the pre-#3873 literal:
+ * same 7 keys, same order, same frozen (NOT null-prototype — this table was
+ * a plain `Object.freeze({...})` literal before #3873 and stays one) shape.
+ * `last_activity` is deliberately excluded — see `STATE_FIELD_SCHEMA`'s
+ * `last_activity` row docstring for the resolved disagreement. Pinned by
+ * `tests/state.test.cjs`'s `bodyLabelProjectionMatchesTodaysTable` and
+ * `lastActivityLabelResolutionMatchesShippedBehavior`.
+ */
+const FRONTMATTER_KEY_TO_BODY_LABEL_KEY_ORDER = Object.freeze([
+  'current_phase',
+  'current_phase_name',
+  'current_plan',
+  'stopped_at',
+  'paused_at',
+  'status',
+  'last_activity_desc',
+] as const);
+
+const FRONTMATTER_KEY_TO_BODY_LABEL: Readonly<Record<string, string>> = Object.freeze(
+  FRONTMATTER_KEY_TO_BODY_LABEL_KEY_ORDER.reduce((acc, key) => {
+    const row = stateMdSchemaMod.STATE_FIELD_SCHEMA[key];
+    if (row.bodyLabel !== undefined) acc[key] = row.bodyLabel;
+    return acc;
+  }, {} as Record<string, string>),
+);
 
 /**
  * ADR-3408 §8.4 (D4) / #3471 review: label lookup for a `divergedFields`
@@ -5842,6 +5869,12 @@ export = {
   _resolveFrontmatterPath: resolveFrontmatterPath,
   _stateFieldValuesDiffer: stateFieldValuesDiffer,
   _STATE_UPDATED_PROVENANCE_EXCLUSION: STATE_UPDATED_PROVENANCE_EXCLUSION,
+  // Test seam (#3873 phase-3 test matrix row 9): `bodyLabelFor` itself is not
+  // otherwise reachable from outside this module. Exposed so a test can drive
+  // the real STATE_BODY_LABEL_UNWIRED_ROW throw directly, rather than only
+  // pinning the table it reads (`_FRONTMATTER_KEY_TO_BODY_LABEL`) against
+  // itself.
+  _bodyLabelFor: bodyLabelFor,
   // Test seam (audit M1): inject a deterministic isPidAlive so the liveness-gated
   // steal decision is exercised without real pids. Mirrors capability-lock.cts.
   _setLockProbes(probes: Partial<{ isPidAlive: (pid: number) => boolean }>): void {

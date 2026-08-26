@@ -215,6 +215,13 @@ const DOCS_GUARD_TESTS = {
   // Walks docs/*.md and every docs/<locale>/*.md dir dynamically
   // (docs-parity-live-registry.test.cjs:42, 428) — deliberately generic.
   'tests/docs-parity-live-registry.test.cjs': ['*'],
+  'tests/docs-state-md-locale-parity.test.cjs': [
+    'docs/reference/state-md.md',
+    'docs/ja-JP/reference/state-md.md',
+    'docs/zh-CN/reference/state-md.md',
+    'docs/ko-KR/reference/state-md.md',
+    'docs/pt-BR/reference/state-md.md',
+  ],
   'tests/drift-detection.test.cjs': ['docs/CONFIGURATION.md', 'docs/AGENTS.md'],
   'tests/edge-probe-docs-fixtures.test.cjs': ['docs/adr/550-spec-phase-probe-contract.md'],
   'tests/edit-phase.test.cjs': [
@@ -236,6 +243,19 @@ const DOCS_GUARD_TESTS = {
   'tests/fragment-single-edit-propagation.install.test.cjs': [
     'docs/registries/eos.json',
     'docs/adr/0001-dispatch-policy-module.md',
+  ],
+  // Seeds a temp fixture copy of these five files (never mutates the real
+  // tree) to exercise scripts/gen-state-md-docs.cjs's marked-region splicing
+  // against them — #3873 (ADR-3473 §8.8), rows 10-22/27. Read for fixture
+  // seeding, so a content edit to any of them (e.g. renaming a landmark
+  // heading/string a hostile-input test targets) can change this test's
+  // fixture assumptions.
+  'tests/gen-state-md-docs.test.cjs': [
+    'docs/reference/state-md.md',
+    'docs/ja-JP/reference/state-md.md',
+    'docs/zh-CN/reference/state-md.md',
+    'docs/ko-KR/reference/state-md.md',
+    'docs/pt-BR/reference/state-md.md',
   ],
   'tests/gsd-write-guard.test.cjs': ['docs/USER-GUIDE.md'],
   'tests/host-integration-descriptors.test.cjs': [

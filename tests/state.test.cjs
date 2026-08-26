@@ -7088,6 +7088,229 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       assert.deepStrictEqual(wrongPolicy, [], `FRONTMATTER_KEY_TO_BODY_LABEL row(s) whose FIELD_CLASSIFICATION policy is not preserve-when-unchanged: ${JSON.stringify(wrongPolicy)}`);
     });
   });
+
+  // ─── #3873 row 3: FRONTMATTER_KEY_TO_BODY_LABEL is now a byte-identical ──────
+  // projection of STATE_FIELD_SCHEMA (src/state-md-schema.cts). Comparand is
+  // today's literal copied VERBATIM (not re-derived from the schema — see
+  // 50-test-matrix.md's "writer-seeded fixture trap" note), captured by direct
+  // read of `src/state.cts` on this branch's base before the projection
+  // replaced it.
+  describe('ADR-3473 §8.8 (#3873): FRONTMATTER_KEY_TO_BODY_LABEL is a byte-identical projection', () => {
+    // This exact key order — deliberately NOT the same order as
+    // FRONTMATTER_BODY_SOURCE (state-transition.cts): the two pre-existing
+    // tables disagreed with each other's order (status sits AFTER
+    // stopped_at/paused_at here, BEFORE them there).
+    const TODAYS_FRONTMATTER_KEY_TO_BODY_LABEL = Object.freeze({
+      current_phase: 'Current Phase',
+      current_phase_name: 'Current Phase Name',
+      current_plan: 'Current Plan',
+      stopped_at: 'Stopped At',
+      paused_at: 'Paused At',
+      status: 'Status',
+      last_activity_desc: 'Last Activity Description',
+    });
+
+    test('bodyLabelProjectionMatchesTodaysTable', () => {
+      assert.deepStrictEqual(
+        Object.keys(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL),
+        Object.keys(TODAYS_FRONTMATTER_KEY_TO_BODY_LABEL),
+        'FRONTMATTER_KEY_TO_BODY_LABEL key order must be unchanged',
+      );
+      assert.deepStrictEqual(
+        stateLib._FRONTMATTER_KEY_TO_BODY_LABEL,
+        TODAYS_FRONTMATTER_KEY_TO_BODY_LABEL,
+      );
+      // Byte-identical also means NOT null-prototype: this table was a plain
+      // `Object.freeze({...})` object literal before #3873 (unlike
+      // FIELD_CLASSIFICATION / FRONTMATTER_BODY_SOURCE, which are
+      // null-prototype), and the projection reproduces that exactly.
+      assert.ok(Object.isFrozen(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL));
+      assert.strictEqual(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL['toString'], Object.prototype.toString);
+    });
+  });
+
+  // ─── #3873 pin: last_activity's TWO-TABLE disagreement, resolved by what SHIPS ──
+  // `FRONTMATTER_BODY_SOURCE` (state-transition.cts) carries a `last_activity`
+  // row; `FRONTMATTER_KEY_TO_BODY_LABEL` (state.cts, above) does not. ADR-3473
+  // §8.8 / issue #3873 Phase 3 collapses both tables into one schema and must
+  // declare a single answer for `last_activity` rather than picking whichever
+  // table looks tidier. This test pins the OBSERVED behavior that ships
+  // today, so the consolidation cannot silently change it.
+  //
+  // Observed: `last_activity`'s `FIELD_CLASSIFICATION` policy is
+  // `{ source: 'body', preservation: 'derive' }` — NOT `preserve-when-unchanged`.
+  // `bodyLabelFor` (state.cts) is only ever invoked, inside
+  // `reconcileReportedFields`'s `divergedFields` loop, for fields whose
+  // classification IS `preserve-when-unchanged` (every other field is
+  // `continue`d past before `bodyLabelFor` is reached). Because
+  // `last_activity` is `derive`, `bodyLabelFor('last_activity')` is
+  // unreachable in production today: the field never surfaces a Title-Case
+  // body label through that path, regardless of `FRONTMATTER_KEY_TO_BODY_LABEL`
+  // lacking a row for it. Meanwhile `FRONTMATTER_BODY_SOURCE['last_activity']`
+  // IS populated and IS live — it drives body-value reads for the frontmatter
+  // key (`getFrontmatterBodySource`, `frontmatterKeyForBodyField`). The two
+  // tables' disagreement is real, but only one of them is reachable for this
+  // key today; a consolidated schema resolves `last_activity` as "has a body
+  // SOURCE, has no reportable body LABEL" — matching what ships, not the
+  // tidier "it should have a label too" answer.
+  describe('#3873: last_activity label resolution matches shipped behavior', () => {
+    test('lastActivityLabelResolutionMatchesShippedBehavior', () => {
+      const cls = stateTransitionMod.getFieldClassification('last_activity');
+      assert.deepStrictEqual(
+        cls,
+        { source: 'body', preservation: 'derive' },
+        'last_activity must remain classified as derive (never preserve-when-unchanged) — ' +
+          'this is what makes bodyLabelFor unreachable for it today',
+      );
+
+      const bodySource = stateTransitionMod.getFrontmatterBodySource('last_activity');
+      assert.deepStrictEqual(
+        bodySource,
+        ['Last Activity', 'Last activity'],
+        'FRONTMATTER_BODY_SOURCE must still carry a body source for last_activity',
+      );
+
+      const hasBodyLabel = Object.prototype.hasOwnProperty.call(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL, 'last_activity');
+      assert.strictEqual(
+        hasBodyLabel,
+        false,
+        'FRONTMATTER_KEY_TO_BODY_LABEL must NOT carry a last_activity row — the schema resolves ' +
+          'the two-table disagreement by declaring "no reportable body label", matching today\'s ' +
+          'shipped behavior (unreachable via bodyLabelFor because the field is derive, not ' +
+          'preserve-when-unchanged), not by inventing one because FRONTMATTER_BODY_SOURCE has an entry',
+      );
+    });
+  });
+});
+
+// ─── #3873 row 9: bodyLabelFor still throws STATE_BODY_LABEL_UNWIRED_ROW for ──
+// an unwired preserve-when-unchanged row, now that FRONTMATTER_KEY_TO_BODY_LABEL
+// (state.cts) is a projection of STATE_FIELD_SCHEMA (src/state-md-schema.cts)
+// rather than a hand-maintained literal. Every real preserve-when-unchanged
+// row is fully wired today (pinned by the parity tests above), so this test
+// cannot reach the throw through a genuine schema key — it simulates the
+// "future row added to FIELD_CLASSIFICATION without a matching label" case
+// #3471 review names, by overriding getFieldClassification on the shared,
+// cached module object for the duration of one test, restored via t.after()
+// (never try/finally in the test body per repo convention).
+describe('#3873 row 9: bodyLabelFor still throws for an unwired preserve-when-unchanged row', () => {
+  test('unwiredLabelRowStillThrowsFromTheSchema', (t) => {
+    const FAKE_FIELD = '__gsd_3873_unwired_probe__';
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL, FAKE_FIELD),
+      false,
+      'probe field name must not collide with a real label row',
+    );
+
+    const original = stateTransitionMod.getFieldClassification;
+    t.after(() => {
+      stateTransitionMod.getFieldClassification = original;
+    });
+    stateTransitionMod.getFieldClassification = (field) =>
+      (field === FAKE_FIELD
+        ? { source: 'body', preservation: 'preserve-when-unchanged' }
+        : original(field));
+
+    assert.throws(
+      () => stateLib._bodyLabelFor(FAKE_FIELD),
+      (err) => {
+        assert.strictEqual(err.code, 'STATE_BODY_LABEL_UNWIRED_ROW');
+        assert.strictEqual(err.field, FAKE_FIELD);
+        return true;
+      },
+    );
+  });
+});
+
+// ─── #3873 row 29 (property): every projection agrees with its schema row ───
+// For every STATE_FIELD_SCHEMA row, each of the three derived tables either
+// omits the key entirely or agrees with that row's corresponding value —
+// the bijective contract CLAUDE.md's property-test rule requires for a
+// consolidation like this one. fast-check v4: the arbitrary is declared
+// INSIDE the property (a describe-body arbitrary kills the whole block), the
+// seed is pinned and numRuns bounded for a deterministic, bounded run, and a
+// failure re-throws with the seed spelled out so it names its own replay.
+describe('#3873 row 29 (property): every projection agrees with its schema row', () => {
+  test('everyProjectionAgreesWithItsSchemaRow', () => {
+    const { STATE_FIELD_SCHEMA } = require('../gsd-core/bin/lib/state-md-schema.cjs');
+    const schemaKeys = Object.keys(STATE_FIELD_SCHEMA);
+    // Sanity: a property over zero keys would pass vacuously (CLAUDE.md's
+    // Test Cleanup rule against vacuous-truth tests).
+    assert.ok(schemaKeys.length > 0, 'STATE_FIELD_SCHEMA must be non-empty for this property to be meaningful');
+
+    const SEED = 38730029;
+    try {
+      fc.assert(
+        fc.property(fc.constantFrom(...schemaKeys), (key) => {
+          const row = STATE_FIELD_SCHEMA[key];
+
+          if (Object.prototype.hasOwnProperty.call(stateTransitionMod.FIELD_CLASSIFICATION, key)) {
+            const cls = stateTransitionMod.FIELD_CLASSIFICATION[key];
+            assert.strictEqual(cls.source, row.source, `FIELD_CLASSIFICATION[${key}].source disagrees with schema`);
+            assert.strictEqual(cls.preservation, row.preservation, `FIELD_CLASSIFICATION[${key}].preservation disagrees with schema`);
+            assert.strictEqual(cls.guard, row.guard, `FIELD_CLASSIFICATION[${key}].guard disagrees with schema`);
+            assert.strictEqual(cls.mergeStrategy, row.mergeStrategy, `FIELD_CLASSIFICATION[${key}].mergeStrategy disagrees with schema`);
+          }
+          if (Object.prototype.hasOwnProperty.call(stateTransitionMod.FRONTMATTER_BODY_SOURCE, key)) {
+            assert.deepStrictEqual(
+              Array.from(stateTransitionMod.FRONTMATTER_BODY_SOURCE[key]),
+              Array.from(row.bodySource || []),
+              `FRONTMATTER_BODY_SOURCE[${key}] disagrees with schema`,
+            );
+          }
+          if (Object.prototype.hasOwnProperty.call(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL, key)) {
+            assert.strictEqual(
+              stateLib._FRONTMATTER_KEY_TO_BODY_LABEL[key],
+              row.bodyLabel,
+              `FRONTMATTER_KEY_TO_BODY_LABEL[${key}] disagrees with schema`,
+            );
+          }
+          return true;
+        }),
+        { seed: SEED, numRuns: 200 },
+      );
+    } catch (err) {
+      throw new Error(`everyProjectionAgreesWithItsSchemaRow failed (seed=${SEED} — replay: fc.assert(..., { seed: ${SEED} })): ${err.message}`, { cause: err });
+    }
+  });
+});
+
+// ─── #3873 phase-3 row 26: statusEnumIsExactlyTheLifecycleSet ──────────────
+// CORRECTED contract (verified by executing `normalizeStateStatus`, not by
+// reading `STATUS_LIFECYCLE_ENUM`'s prior docstring claim): the enum's seven
+// members are the values the normalizer maps recognized input TO — they are
+// NOT a runtime-enforced closed set for the `status` key. `normalizeStateStatus`
+// (`src/state-document.cts`) is deliberately lenient: its fallback is
+// `status || 'unknown'`, so an input matching none of its substring branches
+// passes straight through, unrejected and uncoerced. This test asserts the
+// real, non-vacuous contract that IS true: every canonical value normalizes
+// to itself, and an unrecognized value passes through unchanged — it does
+// not assert a closure the normalizer does not enforce.
+describe('#3873 phase-3 row 26: status enum matches the real normalizer contract', () => {
+  test('statusEnumIsExactlyTheLifecycleSet', () => {
+    const { STATUS_LIFECYCLE_ENUM } = require('../gsd-core/bin/lib/state-md-schema.cjs');
+    const { normalizeStateStatus } = require('../gsd-core/bin/lib/state-document.cjs');
+
+    assert.ok(STATUS_LIFECYCLE_ENUM.length > 0, 'STATUS_LIFECYCLE_ENUM must be non-empty for this test to be meaningful');
+
+    for (const member of STATUS_LIFECYCLE_ENUM) {
+      assert.strictEqual(
+        normalizeStateStatus(member, null),
+        member,
+        `canonical value ${JSON.stringify(member)} must normalize to itself`,
+      );
+    }
+
+    // A non-member is NOT rejected or coerced — it passes through unchanged,
+    // because the normalizer is lenient, not closed.
+    const nonMember = 'totally-unrecognized-status-text';
+    assert.ok(!STATUS_LIFECYCLE_ENUM.includes(nonMember), 'probe value must genuinely be a non-member');
+    assert.strictEqual(
+      normalizeStateStatus(nonMember, null),
+      nonMember,
+      'an unrecognized status value must pass through unchanged, not be coerced into the enum',
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

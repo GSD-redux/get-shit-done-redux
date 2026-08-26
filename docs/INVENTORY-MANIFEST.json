@@ -510,6 +510,7 @@
       "state-contract.cjs",
       "state-document.cjs",
       "state-io.cjs",
+      "state-md-schema.cjs",
       "state-transition.cjs",
       "state.cjs",
       "surface.cjs",

@@ -240,7 +240,13 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 **Rule — parsers are checked, not generated.** Parse functions stay hand-written. A test asserts they accept **exactly** the shapes the schema declares — no more, no fewer. Generating a parser is a substrate decision this epic does not take; the shape-proliferation family (#3784's three spellings of "plan N of M") is closed by declaring the accepted set, not by emitting the matcher.
 
-**Consequence for the guard.** `scripts/lint-state-field-drift.cjs` (805 lines) is **deleted** in the same PR. Field drift between the table, the template and the docs stops being detectable because it stops being representable.
+**Consequence for the guard.** Field drift between the schema, the template and the docs stops being *representable*, because the artifacts are generated from the schema and a drift check refuses a stale one.
+
+> **Amendment, 2026-08-26 (Phase 3, #3873) — this paragraph originally instructed deleting `scripts/lint-state-field-drift.cjs` (805 lines) on the grounds that it detected that drift. Verified against `next`: it does not, and never did.** That script's own header declares it the drift guard for the **STATE.md field-extraction fallback chain** — epic #3180, issue #3187, ADR-3180 Decision 4 §7.7. It detects re-derivations of the *"prefer the frontmatter scalar, else fall back to the body field"* coercion ladder across `src/**` and the prompt layer. It contains no reference to `FIELD_CLASSIFICATION`, to the template, or to the reference docs. Nor does any **other** script own field/template/docs drift — the full `scripts/` inventory carries none. The instruction named a guard surface that did not exist.
+>
+> **The guard is therefore retained**, and `tests/lint-state-field-drift-retained.test.cjs` pins that decision so a future reader does not delete it on this ADR's earlier word. A key-set schema makes a *key-set disagreement* unrepresentable; it does nothing about a *code-shape* re-derivation of a coercion ladder. Those are orthogonal, and Decision 6 sanctions retiring a guard the change makes **redundant** — which this one is not.
+>
+> **This is the second guard-retirement claim in this ADR to rest on a wrong premise**, after §8.6's (see its own amendment). Both described a guard surface their author believed existed. The pattern is worth naming: a retirement claim in this ADR is a *hypothesis about a guard's contents*, and Decision 6's ledger requirement should be read as obliging the implementing phase to verify that hypothesis before acting on it — not merely to count the result.
 
 #### 8.9 Each subsumed child is driven fail-first — *Required — every phase*
 
@@ -261,8 +267,9 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 | Phase | Guard | Δ |
 |---|---|---|
-| 1 (§8.6) | `lint-state-write-path-drift.cjs` — two `sanctioned-permanent` baseline entries retired; raw-write check retained | shrinks |
-| 3 (§8.8) | `lint-state-field-drift.cjs` — **deleted** | **−805 lines, −1 guard** |
+| 1 (§8.6) | `lint-state-write-path-drift.cjs` — seam-bypass `writeStateMd(` arm and its whole ratchet apparatus retired, baseline file deleted; composition-bypass arm retained and made terminal; raw-write check **added net-new** | **−665 lines, −1 file, +1 check** — net shrink |
+| 2 (§8.7) | none — the reporting diff makes no guard redundant | **0**, stated rather than omitted |
+| 3 (§8.8) | `lint-state-field-drift.cjs` — **retained**, see §8.8's amendment; a generated-artifact drift check and a locale-parity check are **added** | **+2 checks, 0 retired — this phase GROWS** |
 | — | `lint-planning-snapshot-bypass-drift.cjs` — extended to the write side by ADR-3180 Amendment 8 | **growth, declared** |
 
 Net across the set: one guard retired, one increase recorded honestly. The increase belongs to a concurrent lane under a different ADR and is listed here so the accounting is complete rather than flattering.
@@ -297,7 +304,7 @@ Net across the set: one guard retired, one increase recorded honestly. The incre
 | Guard | Status under this ADR |
 |---|---|
 | `scripts/lint-state-write-path-drift.cjs` | retained, shrunk (§8.6) — seam-bypass `writeStateMd(` arm and its ratchet retired at Phase 1; composition-bypass arm retained and made terminal; raw-write check added net-new. See §8.6's amendment. |
-| `scripts/lint-state-field-drift.cjs` | **retired at Phase 3** (§8.8) |
+| `scripts/lint-state-field-drift.cjs` | **RETAINED** — the Phase-3 retirement instruction rested on a wrong premise about what this guard does; see §8.8's amendment. It guards the ADR-3180 §7.7 / #3187 coercion ladder, which no schema makes unrepresentable. |
 | `scripts/lint-vendored-deps.cjs` | reused as-is for §8.1's vendoring rule |
 | `local/no-external-require-in-bin` | reused as-is; enforces §8.1's packaging rule |
 | `local/no-adhoc-markdown-parsing` | widened past `src/**/*.cts` per Decision 5 (coverage fix, tracked on #3426/#3239) |
