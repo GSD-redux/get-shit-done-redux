@@ -2512,10 +2512,22 @@ describe('#3830 facet 2: state advance-plan rejects options instead of discardin
     // main() splices each of these out of argv before any router runs, so the
     // strict check must never see them. Exercised individually rather than
     // asserted collectively — a false rejection on any one breaks its callers.
-    for (const flag of ['--json-errors', '--ws default']) {
+    //
+    // #3862 review (Minor): this asserted ONLY the negative, so it passed if the
+    // command failed for any other reason at all. `result.success` is the
+    // assertion that actually pins "was accepted"; the message check now just
+    // localises a regression when it fires.
+    //
+    // And the list is widened to the whole splice set (self-found alongside that
+    // finding): main() removes --json-errors, --cwd, --cwd=, --raw, --pick and
+    // --default, and resolveActiveWorkstream removes --ws/--ws=. This test is the
+    // only guard that the router's now-stricter index-2 rule cannot falsely
+    // reject one of them, and it was covering two of the seven.
+    for (const flag of ['--json-errors', '--ws default', `--cwd ${tmpDir}`, `--cwd=${tmpDir}`, '--default x']) {
       seedSimpleState();
       const result = runGsdTools(`state advance-plan ${flag}`, tmpDir);
       const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(result.success, `${flag} must still be accepted; got: ${combined}`);
       assert.ok(!combined.includes('takes no options'),
         `${flag} must not be rejected as a command option; got: ${combined}`);
     }
@@ -2528,6 +2540,9 @@ describe('#3830 facet 2: state advance-plan rejects options instead of discardin
     seedSimpleState();
     const result = runGsdTools(['state', 'advance-plan', '--'], tmpDir);
     const combined = `${result.output || ''}${result.error || ''}`;
+    // #3862 review (Minor): assert the positive too. Without it this passed
+    // whenever the command failed for a reason other than option rejection.
+    assert.ok(result.success, `bare -- must still be accepted; got: ${combined}`);
     assert.ok(!combined.includes('takes no options'),
       `bare -- must not be rejected; got: ${combined}`);
   });
