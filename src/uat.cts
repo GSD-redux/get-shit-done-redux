@@ -417,8 +417,10 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
   // <= 3 spaces INSIDE an `expected: |` value is value text, and must not
   // register as a phantom heading and steal the real row's `result:` token.
   //
-  // #3078 follow-up: tokenize a copy with every wholly-INDENTED fenced BLOCK
-  // blanked out first — see `blankIndentedFenceBlocks`. Without this, an
+  // #3078 follow-up: tokenize a copy with the DELIMITER LINES of every
+  // wholly-INDENTED fenced block blanked out first (bodies untouched — column
+  // 0 is structure, indentation is content) — see
+  // `blankIndentedFenceDelimiters`. Without this, an
   // indented ` ``` ` opener inside an `expected: |` value still reads as a
   // real fence to `tokenizeHeadings` (CommonMark tolerates 1-3 leading
   // spaces), which then hides every heading up to the next matching closer —
@@ -429,7 +431,7 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
   // `/^\d+\.\s+/` here while the audit path read `/^\d+\.(?!\d)/`, so
   // `### 3.Foo` WAS a row on one path and was NOT on the other — two parse
   // paths in one module disagreeing about the same grammar.
-  const subHeadings = tokenizeHeadings(blankIndentedFenceBlocks(sectionBody)).filter(
+  const subHeadings = tokenizeHeadings(blankIndentedFenceDelimiters(sectionBody)).filter(
     (h) => h.level === 3 && isTestRowHeadingText(h.text) && isColumnZeroHeading(sectionBody, h),
   );
 
@@ -830,10 +832,12 @@ function isColumnZeroHeading(content: string, heading: { offset: number }): bool
 const INDENTED_FENCE_DELIM_RE = /^ {1,3}(?:`{3,}|~{3,})/;
 
 /**
- * Return `content` with every wholly-INDENTED fenced BLOCK — its delimiter
- * lines AND every line of its body — overwritten by spaces, byte-length- and
- * line-count-preserving, so every downstream offset and line index still lines
- * up against the original document.
+ * Return `content` with the two DELIMITER LINES of every wholly-INDENTED
+ * fenced block overwritten by spaces, byte-length- and line-count-preserving,
+ * so every downstream offset and line index still lines up against the
+ * original document. The block's BODY is left verbatim — see "COLUMN 0 IS
+ * STRUCTURE, INDENTATION IS CONTENT" below for why that is the point, not an
+ * oversight.
  *
  * Why (#3078 follow-up, escalated design call, answered as option (b)):
  * dropping `maskBlockScalarBodies` in favor of the column-0 heading filter
@@ -878,9 +882,21 @@ const INDENTED_FENCE_DELIM_RE = /^ {1,3}(?:`{3,}|~{3,})/;
  * fence pair living wholly inside an `expected: |` block-scalar value, which
  * is why the helper exists; any block with a column-0 delimiter at either end
  * is left completely alone so its pairing reaches the tokenizer unchanged.
- * WHICH blocks are neutralised is unchanged by the round-5 blocker fix; only
- * WHAT gets blanked within a chosen block widened, from its two delimiter
- * lines to the whole block (see the inline note at the `blank.add` loop).
+ *
+ * COLUMN 0 IS STRUCTURE, INDENTATION IS CONTENT — and that rule is applied in
+ * ONE direction only, to the DELIMITERS. Only the two delimiter lines of a
+ * neutralised block are blanked; its body is left exactly as written. A
+ * column-0 `### N.` sitting between two indented delimiters therefore becomes
+ * a real heading, and a `result:` line after it belongs to that heading. That
+ * is CORRECT under this rule, not theft: by the very rule that selected the
+ * block for neutralisation, an indented delimiter is not a fence at all, so
+ * there is no fence for the column-0 line to be "inside" of. The document is
+ * malformed; reading it this way is the consistent reading, and it is PINNED
+ * by test (see "#3078 round 5: column 0 is structure" in tests/uat.test.cjs).
+ * Blanking the whole block open-to-close was tried and REVERTED: it destroys
+ * content legitimately living between the delimiters, and — for the
+ * unterminated-opener case, where the "body" runs to EOF — silently deletes
+ * the entire remainder of the document, dropping every later row.
  *
  * NO SECOND FENCE DIALECT: the blocks come from `scanFencedBlocks`
  * (markdown-sectionizer.cts), the SAME exported CommonMark state machine
@@ -904,7 +920,7 @@ const INDENTED_FENCE_DELIM_RE = /^ {1,3}(?:`{3,}|~{3,})/;
  * `\r` with a space exactly like every other character on it — `join('\n')`
  * then reproduces the original line count and total length exactly.
  */
-function blankIndentedFenceBlocks(content: string): string {
+function blankIndentedFenceDelimiters(content: string): string {
   const lines = content.split('\n');
   const isIndentedDelimiter = (idx: number): boolean =>
     idx >= 0 && idx < lines.length && INDENTED_FENCE_DELIM_RE.test(lines[idx].replace(/\r$/, ''));
@@ -918,18 +934,17 @@ function blankIndentedFenceBlocks(content: string): string {
     // structure at its far end — blanking the opener would promote that closer
     // into an opener and hide everything after it.
     if (block.closeLineIdx !== -1 && !isIndentedDelimiter(block.closeLineIdx)) continue;
-    // WHOLE BLOCK, delimiters AND body (#3078 round-5 blocker). Blanking only
-    // the two delimiter lines UN-HID whatever they enclosed: a column-0
-    // `### N.` line living in the body of a neutralised indented fence was
-    // correctly invisible to `tokenizeHeadings` while the fence stood, and
-    // became a REAL heading the moment its delimiters were blanked — opening a
-    // phantom block that stole the preceding row's `result:` line and dropped
-    // that row from `items` entirely (the exact theft `isColumnZeroHeading`
-    // exists to prevent, reintroduced one layer down). An indented fence pair
-    // is CONTENT of a scalar by the very rule that selected it for
-    // neutralisation, so NOTHING inside it may produce document structure.
-    const lastIdx = block.closeLineIdx !== -1 ? block.closeLineIdx : lines.length - 1;
-    for (let i = block.openLineIdx; i <= lastIdx; i += 1) blank.add(i);
+    // DELIMITERS ONLY — never the body. THE RULE: column 0 is structure,
+    // indentation is content. An indented delimiter therefore neutralises
+    // ITSELF, but it never hides column-0 structure sitting between
+    // delimiters: a column-0 `### N.` there IS a heading, and a `result:`
+    // after it IS that heading's. Widening this to the whole block was tried
+    // (#3078 round 5) and reverted — it deletes content that legitimately
+    // lives between the delimiters, and on an UNTERMINATED indented opener it
+    // blanks to EOF, taking every later row with it. Pinned by test; do not
+    // "fix" it back.
+    blank.add(block.openLineIdx);
+    if (block.closeLineIdx !== -1) blank.add(block.closeLineIdx);
   }
   if (blank.size === 0) return content;
 
@@ -1095,7 +1110,7 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // every heading up to its closer from the token stream entirely — a LATER,
   // genuinely column-0 `### N.` row is never returned as a token at all, so
   // no post-hoc filter over the token stream could recover it.
-  const allHeadings = tokenizeHeadings(blankIndentedFenceBlocks(content)).filter((h) => isColumnZeroHeading(content, h));
+  const allHeadings = tokenizeHeadings(blankIndentedFenceDelimiters(content)).filter((h) => isColumnZeroHeading(content, h));
   // #3707 follow-up MINOR: `^\d+\.` alone — a trailing name is OPTIONAL
   // (`### 3.` and `### 3.Foo`, without the space the old `\s+`-anchored
   // pattern required, both count) so a heading missing or squishing its name

@@ -4147,8 +4147,7 @@ result: pending
 
 // ─── #3078 round 4 MAJOR 1: an indented delimiter may be a COLUMN-0 fence's closer ──
 //
-// `blankIndentedFenceBlocks` (then named `blankIndentedFenceDelimiters`)
-// blanked every indented delimiter LINE on
+// `blankIndentedFenceDelimiters` blanked every indented delimiter LINE on
 // sight, with no notion of open/closed state. CommonMark lets a column-0 fence
 // be CLOSED by a delimiter indented up to three spaces, so the pass perturbed
 // fence pairing in BOTH directions and swallowed a genuinely outstanding row:
@@ -4445,29 +4444,30 @@ result: pending
   });
 });
 
-// ─── #3078 round 5 BLOCKER: neutralising a fence must blank its BODY too ──────
+// ─── #3078 round 5: COLUMN 0 IS STRUCTURE, INDENTATION IS CONTENT (PINNED) ────
 //
-// `blankIndentedFenceDelimiters` blanked only the two DELIMITER lines of a
-// neutralised indented fence block. Its BODY was left verbatim — so a COLUMN-0
-// `### N.` line living INSIDE that block, correctly invisible to
-// `tokenizeHeadings` while the fence stood, was UN-HIDDEN the instant the
-// delimiters were blanked. The tokenizer then emitted it as a real heading, it
-// opened a block, and it STOLE the preceding row's `result:` line:
+// THE RULE, stated once so it stops being re-litigated: a delimiter at COLUMN 0
+// is document structure; anything indented is content. `blankIndentedFenceDelimiters`
+// therefore blanks the DELIMITER LINES of a wholly-indented fenced block and
+// NOTHING ELSE — never the body.
 //
-//     ### 1. Alpha        →  pre-fix: [{test: 9, name: 'Phantom',
-//     expected: x                                 result: 'pending'}]
-//       ```                  Row 1 "Alpha" GONE, phantom holding its result.
-//     ### 9. Phantom
-//       ```
-//     result: pending
+// The consequence, which LOOKS like a bug and is not: a column-0 `### N.` line
+// sitting BETWEEN two indented delimiters genuinely IS a heading, and a
+// `result:` line after it genuinely belongs to it. There is no fence for that
+// line to be "inside" of, because by the very rule that neutralised the block,
+// an indented delimiter is not a fence. The document below is malformed; the
+// parser reading it this way is CONSISTENT, not thieving.
 //
-// This is the exact theft `isColumnZeroHeading` exists to prevent, reintroduced
-// one layer down by the neutralisation pass itself. An indented fence pair is
-// CONTENT of a scalar by the very rule that selected it for neutralisation, so
-// nothing inside it may produce document structure. Assertions are on row
-// IDENTITY (number AND name) — a count-only assertion passes on the pre-fix
-// output, which also returns exactly one item.
-describe('#3078 round 5 BLOCKER: a neutralised indented fence must not expose a column-0 heading in its body', () => {
+// This was once "fixed" by blanking the whole block open-to-close. That was
+// REVERTED: it destroys content legitimately living between the delimiters, and
+// on an UNTERMINATED indented opener it blanks to EOF, dropping every later row
+// in the file. The tests below therefore PIN the consistent reading by ROW
+// IDENTITY so the next person does not flip it back — if you are here because
+// this "looks wrong", read `blankIndentedFenceDelimiters`'s comment first.
+//
+// Nothing vanishes silently either way: the row that loses its `result:` is
+// counted in `headingsSeen`, i.e. it surfaces as a parse gap.
+describe('#3078 round 5: column 0 is structure, so a column-0 heading between indented delimiters is a heading', () => {
   const BACKTICK = '```';
   const TILDE = '~~~';
   const LONG_BACKTICK = '`````';
@@ -4484,41 +4484,46 @@ result: pending
 `;
   }
 
-  function assertAlphaKeptItsResult(content) {
+  // Measured, not assumed: row 9 is real and owns the `result: pending` that
+  // follows it, row 1 has no `result:` of its own left and is reported as an
+  // unparsed block rather than dropped.
+  function assertColumnZeroHeadingWon(content) {
     const { items, headingsSeen } = parseUatItemsWithStats(content);
     const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
 
-    const phantom = items.find((i) => i.test === 9);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 9, describeAll());
+    assert.strictEqual(items[0].name, 'Phantom', describeAll());
+    assert.strictEqual(items[0].result, 'pending', describeAll());
+    assert.strictEqual(items[0].category, 'pending', describeAll());
+    assert.strictEqual(items[0].expected, undefined, describeAll());
     assert.strictEqual(
-      phantom,
+      items.find((i) => i.test === 1),
       undefined,
-      `a phantom row 9 was emitted from inside a neutralised fence: ${describeAll()}`,
+      `row 1 lost its result: line to the column-0 heading and must not yield an item: ${describeAll()}`,
     );
-    const alpha = items.find((i) => i.test === 1);
-    assert.ok(alpha, `row 1 "Alpha" was stolen by the phantom: ${describeAll()}`);
-    assert.strictEqual(alpha.name, 'Alpha', describeAll());
-    assert.strictEqual(alpha.result, 'pending', describeAll());
-    assert.strictEqual(alpha.category, 'pending', describeAll());
-    assert.strictEqual(alpha.expected, 'x', describeAll());
+    // The pin that keeps this from being a silent drop.
+    assert.strictEqual(headingsSeen, 1, describeAll());
     return { items, headingsSeen, describeAll };
   }
 
-  test('a column-0 `### 9.` inside a 2-space-indented fence pair does not steal row 1', () => {
-    assertAlphaKeptItsResult(documentWith(`  ${BACKTICK}`, `  ${BACKTICK}`));
+  test('a column-0 `### 9.` inside a 2-space-indented backtick pair IS a heading', () => {
+    assertColumnZeroHeadingWon(documentWith(`  ${BACKTICK}`, `  ${BACKTICK}`));
   });
 
-  test('the same document with a `~~~` indented pair behaves identically', () => {
-    assertAlphaKeptItsResult(documentWith(`  ${TILDE}`, `  ${TILDE}`));
+  test('the same document with an indented `~~~` pair behaves identically', () => {
+    assertColumnZeroHeadingWon(documentWith(`  ${TILDE}`, `  ${TILDE}`));
   });
 
   test('the same document with an indented 5-backtick pair behaves identically', () => {
-    assertAlphaKeptItsResult(documentWith(`   ${LONG_BACKTICK}`, `   ${LONG_BACKTICK}`));
+    assertColumnZeroHeadingWon(documentWith(`   ${LONG_BACKTICK}`, `   ${LONG_BACKTICK}`));
   });
 
-  // The other neutralised shape: an indented opener that never closes at all.
-  // Its "body" runs to EOF, so widening the blanking must reach the end of the
-  // document, not stop at a closer that does not exist.
-  test('a column-0 `### 9.` after an UNTERMINATED indented opener does not steal row 1', () => {
+  // The UNTERMINATED indented opener — the case that makes whole-block blanking
+  // untenable, because its "body" is the whole rest of the file. Row 1 keeps its
+  // own `result:` (which precedes the opener) and the later column-0 row keeps
+  // ITS `result:`; blanking to EOF would have deleted both rows below the opener.
+  test('an unterminated indented opener neutralises only itself: both later rows survive', () => {
     const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
 
 ### 1. Alpha
@@ -4530,20 +4535,23 @@ result: blocked
 `);
     const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
     const alpha = items.find((i) => i.test === 1);
+    const phantom = items.find((i) => i.test === 9);
     assert.ok(alpha, `row 1 "Alpha" absent: ${describeAll()}`);
     assert.strictEqual(alpha.name, 'Alpha', describeAll());
     assert.strictEqual(alpha.result, 'pending', describeAll());
-    assert.strictEqual(
-      items.find((i) => i.test === 9),
-      undefined,
-      `a phantom row 9 was emitted from inside an unterminated indented fence: ${describeAll()}`,
-    );
+    assert.strictEqual(alpha.expected, 'x', describeAll());
+    assert.ok(phantom, `the column-0 row after the opener was swallowed: ${describeAll()}`);
+    assert.strictEqual(phantom.name, 'Phantom', describeAll());
+    assert.strictEqual(phantom.result, 'blocked', describeAll());
+    assert.strictEqual(items.length, 2, describeAll());
+    // The unterminated opener is still reported on the RAW document.
+    assert.strictEqual(headingsSeen, 1, describeAll());
   });
 
-  // The case the helper EXISTS for must survive the widening: blanking is done
-  // on a tokenizer-only COPY, so `parseExpectedFromTestBlock` still reads the
-  // RAW block and a legitimate `expected: |` scalar containing a fenced sample
-  // still publishes that sample verbatim.
+  // The case the helper EXISTS for, unchanged: blanking is done on a
+  // tokenizer-only COPY, so `parseExpectedFromTestBlock` still reads the RAW
+  // block and a legitimate `expected: |` scalar containing an indented fenced
+  // sample still publishes that sample verbatim.
   test('a legitimate `expected: |` scalar with an indented fenced sample still yields its full text', () => {
     const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
 
