@@ -4641,21 +4641,25 @@ describe('git-cmd.js resolveCommitSubject', () => {
   }).map(({ delim, quote, dash, spaced, catPath, body, terminated, eol }) => {
     const word = quote === '\\' ? `\\${delim}` : quote ? `${quote}${delim}${quote}` : delim;
     const opener = `$(${catPath} <<${dash ? '-' : ''}${spaced ? ' ' : ''}${word}`;
-    const parts = [opener, ...body.map((l) => (dash ? `\t${l}` : l))];
-    if (terminated) parts.push(dash ? `\t${delim}` : delim, ')');
+    const emitted = [...body.map((l) => (dash ? `\t${l}` : l))];
+    if (terminated) emitted.push(dash ? `\t${delim}` : delim, ')');
     // GENERATION-TIME oracle for the one result the derivation check cannot
     // classify by membership: ''. Computed from what the generator KNOWS it
     // built — never by re-running resolver logic — so a resolver degrading to
     // '' anywhere it should not fails the property (Codex review of #3816,
-    // rounds 1+2). '' is legitimate exactly when a terminator is reachable
-    // (appended, or a body line that reads as the delimiter — after tab
-    // stripping under <<-) and every scanned line before it is ASCII-blank.
-    const seesDelim = (l) => (dash ? l.replace(/^\t+/, '') : l) === delim;
-    const inBody = body.findIndex(seesDelim);
-    const stop = inBody !== -1 ? inBody : (terminated ? body.length : -1);
-    const expectEmpty = stop !== -1
-      && body.slice(0, stop).every((l) => /^[ \t]*$/.test(dash ? l.replace(/^\t+/, '') : l));
-    return { text: parts.join(eol), expectEmpty };
+    // rounds 1+2). '' is legitimate exactly when the FIRST reachable
+    // terminator is followed by the one canonical closing-paren line (the
+    // round-3 post-terminator guard: any other tail must fall back to the
+    // opener, never to '') and every scanned line before that terminator is
+    // ASCII-blank. A body line that reads as the delimiter after <<- tab
+    // stripping terminates early, and whatever follows it is its tail.
+    const seen = emitted.map((l) => (dash ? l.replace(/^\t+/, '') : l));
+    const stop = seen.indexOf(delim);
+    const tail = stop === -1 ? null : seen.slice(stop + 1);
+    const canonicalTail = tail !== null && tail.length === 1 && /^[ \t]*\)[ \t]*$/.test(tail[0]);
+    const expectEmpty = canonicalTail
+      && seen.slice(0, stop).every((l) => /^[ \t]*$/.test(l));
+    return { text: [opener, ...emitted].join(eol), expectEmpty };
   });
   const messageArb = fc.oneof(
     { weight: 3, arbitrary: heredocArb },

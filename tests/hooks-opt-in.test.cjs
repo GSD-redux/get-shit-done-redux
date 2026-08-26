@@ -460,6 +460,33 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
       'fail-closed via the format gate on the opener fallback, matching every other unresolvable shape');
   });
 
+  test('validate-commit blocks a suffix glued OUTSIDE the closing quote (adjacency guard)', () => {
+    // Codex review of #3816, round 3. bash concatenates `"$(…)"aaaa…` into ONE
+    // argument, but the capture holds only the quoted part — so the resolver
+    // measured `feat: ok` (8 chars) for a 200+ char real subject: a net-new
+    // length-gate bypass the base did not have (base measured the opener and
+    // blocked). Glued text after the closing quote now skips the resolver and
+    // keeps the pre-fix first-line subject, which for the heredoc form is the
+    // opener — blocked, base parity restored.
+    const result = runHookCmd(`git commit -m "$(cat <<'EOF'\nfeat: ok\nEOF\n)"${'a'.repeat(200)}`);
+    assert.strictEqual(result.status, 2,
+      'a quoted substitution with an adjacent unquoted suffix is one long real subject — the '
+      + 'captured prefix must not be resolved and measured on its own');
+    assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+  });
+
+  test('adjacency on a PLAIN single-line message keeps base behavior (pre-existing, unchanged)', () => {
+    // Differential pin: on base, `-m "feat: ok"zzz` captured `feat: ok`,
+    // validated it, and ALLOWED the commit even though bash's real argument is
+    // `feat: okzzz`. That is a pre-existing capture limit (same family as
+    // rows 16-20 of the round-3 review's table), and the adjacency guard
+    // deliberately preserves it rather than widening scope: the guard's job is
+    // to stop the RESOLVER from measuring a prefix, not to fix the capture.
+    const result = runHookCmd('git commit -m "feat: ok"zzz');
+    assert.strictEqual(result.status, 0,
+      'base allowed this shape; the adjacency guard must not silently change plain-form behavior');
+  });
+
   test('validate-commit blocks a command smuggled before the cat', () => {
     // Codex review of #3816. `$(id;/bin/cat <<'EOF' ...` runs `id` FIRST, so
     // git's real subject is id's output — but the resolver read the heredoc

@@ -55,10 +55,26 @@ if GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" node -e "
     # subject-from-message step is delegated. Falls back to the previous `head -1`
     # if node or the library is unavailable, so a broken extractor degrades to the
     # old behavior instead of becoming a new silent-allow path.
-    SUBJECT=$(GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" MSG="$MSG" node -e "
-      const {resolveCommitSubject}=require(process.env.GIT_CMD_LIB);
-      process.stdout.write(resolveCommitSubject(process.env.MSG));
-    " 2>/dev/null) || SUBJECT=$(echo "$MSG" | head -1)
+    #
+    # ADJACENCY GUARD (review of #3816): text glued to the CLOSING quote —
+    # `-m "$(cat <<'EOF' ... )"suffix` — is concatenated by bash into the SAME
+    # argument, so the capture above holds only a PREFIX of the real message.
+    # Resolving a heredoc from a prefix hands the length gate a fraction of the
+    # real subject: a net-new bypass relative to base, which measured the
+    # opener line and blocked. When the quote is not followed by whitespace or
+    # the end of the command, skip the resolver and keep the pre-fix subject
+    # (first captured line): the heredoc form then fails the format gate
+    # exactly as it did on base, and the plain single-line form keeps base
+    # behavior unchanged.
+    if [[ "$CMD" =~ -m[[:space:]]+\"[^\"]+\"[^[:space:]] ]] \
+      || [[ "$CMD" =~ -m[[:space:]]+\'[^\']+\'[^[:space:]] ]]; then
+      SUBJECT=$(echo "$MSG" | head -1)
+    else
+      SUBJECT=$(GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" MSG="$MSG" node -e "
+        const {resolveCommitSubject}=require(process.env.GIT_CMD_LIB);
+        process.stdout.write(resolveCommitSubject(process.env.MSG));
+      " 2>/dev/null) || SUBJECT=$(echo "$MSG" | head -1)
+    fi
     # Validate Conventional Commits format
     if ! [[ "$SUBJECT" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\(.+\))?:[[:space:]].+ ]]; then
       # Emit a typed `code` field alongside `reason` (#2974). Tests assert
