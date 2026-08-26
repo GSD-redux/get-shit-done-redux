@@ -106,7 +106,7 @@
     "gen:registry": "node scripts/gen-registry.cjs --write",
     "gen:install-tree": "node scripts/gen-install-tree-fixtures.cjs",
     "gen:section-manifest": "node scripts/gen-section-manifest.cjs --write",
-    "regen:derived": "npm run build && npm run gen:registry && node scripts/gen-adr-index.cjs --write && node scripts/gen-features.cjs --write && node scripts/gen-capability-matrix.cjs --write && node scripts/gen-inventory-manifest.cjs --write && node scripts/gen-context-index.cjs --write && npm run gen:section-manifest && node scripts/sync-manifest-versions.cjs && npm run gen:install-tree",
+    "regen:derived": "npm run build && npm run gen:registry && node scripts/gen-adr-index.cjs --write && node scripts/gen-features.cjs --write && node scripts/gen-capability-matrix.cjs --write && node scripts/gen-inventory-manifest.cjs --write && node scripts/gen-context-index.cjs --write && node scripts/gen-state-md-docs.cjs --write && npm run gen:section-manifest && node scripts/sync-manifest-versions.cjs && npm run gen:install-tree",
     "validate:registry": "node scripts/validate-registry.cjs",
     "prepack": "npm run build:lib",
     "prepare": "npm run build:lib",
@@ -127,7 +127,7 @@
     "lint:test-file-count": "node scripts/lint-test-file-count.cjs",
     "lint:pr-checks": "node scripts/lint-pr-check-project-dir.cjs",
     "lint:changeset": "node scripts/changeset/lint.cjs",
-    "lint:generated-sync": "node scripts/gen-capability-registry.cjs --check && node scripts/gen-loop-host-contract.cjs --check && node scripts/gen-capability-matrix.cjs --check && node scripts/sync-manifest-versions.cjs --check && node scripts/gen-inventory-manifest.cjs --check && node scripts/generate-package-identity.cjs --check && node scripts/gen-plugin-skills.cjs --check && node scripts/gen-registry.cjs --check && node scripts/gen-adr-index.cjs --check && node scripts/gen-features.cjs --check && node scripts/check-glossary-refs.cjs --check && node scripts/lint-compiled-artifact-sync.cjs --check && node scripts/gen-context-index.cjs --check && node scripts/gen-section-manifest.cjs --check && node scripts/gen-health-docs.cjs --check",
+    "lint:generated-sync": "node scripts/gen-capability-registry.cjs --check && node scripts/gen-loop-host-contract.cjs --check && node scripts/gen-capability-matrix.cjs --check && node scripts/sync-manifest-versions.cjs --check && node scripts/gen-inventory-manifest.cjs --check && node scripts/generate-package-identity.cjs --check && node scripts/gen-plugin-skills.cjs --check && node scripts/gen-registry.cjs --check && node scripts/gen-adr-index.cjs --check && node scripts/gen-features.cjs --check && node scripts/check-glossary-refs.cjs --check && node scripts/lint-compiled-artifact-sync.cjs --check && node scripts/gen-context-index.cjs --check && node scripts/gen-section-manifest.cjs --check && node scripts/gen-health-docs.cjs --check && node scripts/gen-state-md-docs.cjs --check",
     "lint:docs": "node scripts/lint-docs-required.cjs",
     "lint:qa-smells": "node scripts/qa-smell-ratchet.cjs",
     "lint:legacy-name": "node scripts/lint-legacy-dir-name.cjs",
@@ -152,7 +152,8 @@
     "test:coverage:all": "npm run test:coverage",
     "test:mutation": "stryker run",
     "test:mutation:since": "stryker run --incremental --since origin/next",
-    "gen:features": "node scripts/gen-features.cjs"
+    "gen:features": "node scripts/gen-features.cjs",
+    "gen:state-md-docs": "node scripts/gen-state-md-docs.cjs"
   },
   "allowScripts": {
     "fallow@2.70.0": true

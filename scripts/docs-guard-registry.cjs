@@ -244,6 +244,19 @@ const DOCS_GUARD_TESTS = {
     'docs/registries/eos.json',
     'docs/adr/0001-dispatch-policy-module.md',
   ],
+  // Seeds a temp fixture copy of these five files (never mutates the real
+  // tree) to exercise scripts/gen-state-md-docs.cjs's marked-region splicing
+  // against them — #3873 (ADR-3473 §8.8), rows 10-22/27. Read for fixture
+  // seeding, so a content edit to any of them (e.g. renaming a landmark
+  // heading/string a hostile-input test targets) can change this test's
+  // fixture assumptions.
+  'tests/gen-state-md-docs.test.cjs': [
+    'docs/reference/state-md.md',
+    'docs/ja-JP/reference/state-md.md',
+    'docs/zh-CN/reference/state-md.md',
+    'docs/ko-KR/reference/state-md.md',
+    'docs/pt-BR/reference/state-md.md',
+  ],
   'tests/gsd-write-guard.test.cjs': ['docs/USER-GUIDE.md'],
   'tests/host-integration-descriptors.test.cjs': [
     'docs/reference/host-integration-capability-matrix.md',
