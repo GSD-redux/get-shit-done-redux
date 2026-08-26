@@ -6757,19 +6757,27 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       assert.deepStrictEqual(output.preserved, [], '`current_phase_name` round-trips to its ORIGINAL curated value ("Curated Name" before and after) — not a change under the §8.7 diff');
     });
 
-    // MOVED under ADR-3473 §8.7 (#3872), TWO additive rows, not a regression:
-    // (a) `Current Position` — advancePlanCore rewrites text INSIDE the
-    // `## Current Position` section (the Current Plan line), so the section
-    // genuinely changed on disk. It was silently dropped before this phase
-    // (the same "Current Position undercount" class as row 27/#3818,
-    // generalized here beyond `plannedPhaseCore` — `reconcileReportedFields`'s
-    // `valueOf` could not resolve the WHOLE-SECTION field name against a
-    // single `Label: value` line, so `intended !== null` never held).
-    // (b) `progress.total_plans` — this fixture starts with NO `progress`
-    // block in frontmatter at all; `syncStateFrontmatter`'s disk-derived
-    // resync creates one, which is a key going from ABSENT to PRESENT
-    // (design doc row 15: "a field absent from snapshot, present in
-    // persisted -> reported — deletion/addition is a change").
+    // MOVED under ADR-3473 §8.7 (#3872): `Current Position` — advancePlanCore
+    // rewrites text INSIDE the `## Current Position` section (the Current
+    // Plan line), so the section genuinely changed on disk. It was silently
+    // dropped before this phase (the same "Current Position undercount"
+    // class as row 27/#3818, generalized here beyond `plannedPhaseCore` —
+    // `reconcileReportedFields`'s `valueOf` could not resolve the
+    // WHOLE-SECTION field name against a single `Label: value` line, so
+    // `intended !== null` never held).
+    //
+    // This fixture's frontmatter has no `progress` block at all, and
+    // `syncStateFrontmatter`'s disk-derived resync (an empty `.planning/
+    // phases/` from `createFixture`) materializes one — every leaf
+    // (`total_plans` included: `advancePlanCore` never pushes it to its own
+    // `reported` list, so it has no caller-attributable source here at all)
+    // is the generalized provenance rule's case (2): a declared derived leaf
+    // (`source: 'disk'`, state-transition.cts:136-140) appearing from a
+    // source that did not change during this write is the scanner catching a
+    // never-synced document up, not the caller's action — the SAME principle
+    // `STATE_UPDATED_PROVENANCE_EXCLUSION` applies to `last_updated`,
+    // generalized rather than special-cased per leaf. None of the four
+    // `progress.*` leaves are reported here.
     test('E2: cmdStateAdvancePlan — `updated` names only the fields whose persisted value actually changed (happy path)', () => {
       const content = [
         '---', 'gsd_state_version: 1.0', '---', '',
@@ -6780,7 +6788,7 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const result = runGsdTools(['state', 'advance-plan'], tmpDir);
       assert.ok(result.success, `Command failed: ${result.error}`);
       const output = JSON.parse(result.output);
-      assert.deepStrictEqual(output.updated.slice().sort(), ['Current Plan', 'Current Position', 'Status', 'progress.total_plans']);
+      assert.deepStrictEqual(output.updated.slice().sort(), ['Current Plan', 'Current Position', 'Status']);
     });
 
     // MOVED under ADR-3473 §8.7 (#3872). advance-plan NEVER touches the body
@@ -6811,7 +6819,13 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       const output = JSON.parse(result.output);
       assert.ok(!output.updated.includes('Current Phase'), `'Current Phase' round-trips to its original value and must not be reported: ${JSON.stringify(output.updated)}`);
       assert.ok(!output.updated.includes('Current Phase Name'), `'Current Phase Name' round-trips to its original value and must not be reported: ${JSON.stringify(output.updated)}`);
-      assert.deepStrictEqual(output.updated.slice().sort(), ['Current Position', 'Status', 'progress.total_plans']);
+      // Generalized provenance rule (same as E2 above): this fixture also
+      // starts with no `progress` block, `advancePlanCore` never pushes
+      // `progress.total_plans` to its own `reported` list, and the disk
+      // scan materializing a fresh (zero-valued) `progress` block is the
+      // scanner catching up, not this write's action — none of the four
+      // leaves are reported.
+      assert.deepStrictEqual(output.updated.slice().sort(), ['Current Position', 'Status']);
 
       const fm = frontmatterLib.extractFrontmatter(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8'));
       assert.strictEqual(fm.current_phase, '99', 'the curated value must still survive the write even though it is not reported as a change');
@@ -17625,6 +17639,121 @@ describe('#3872 / ADR-3473 §8.7: what a command reports it wrote', () => {
 
       assert.notStrictEqual(fm1.state_head, fm2.state_head, 'state_head must change once HEAD actually moved');
       assert.strictEqual(fm2.state_head, newHead, 'state_head must track the real, current HEAD sha');
+    });
+  });
+
+  // Generalized provenance rule (coordinator directive, folded into this
+  // phase alongside rows 4/5/27 above): a DECLARED derived leaf
+  // (`declaredLeavesOf`, e.g. every `progress.*` row — `source: 'disk'`,
+  // state-transition.cts:136-140) materializing from ABSENT in the pre-write
+  // snapshot to PRESENT in persisted is the disk scan catching a
+  // never-synced document up, not the caller's action — the same
+  // provenance principle `STATE_UPDATED_PROVENANCE_EXCLUSION` already
+  // applies to `last_updated` one field up, generalized rather than turned
+  // into a second `progress`-specific classification exclusion (that would
+  // be exactly what §8.7 bans). A leaf already PRESENT in the snapshot gets
+  // no such pass — a genuine move is still reported (the sibling test
+  // below, and rows 4/5 above).
+  describe('generalized provenance rule: a derived leaf materializing from nothing is not a change, but one that genuinely moves still is', () => {
+    test('derivedLeafMaterializationIsNotAChange', (t) => {
+      const cwd = createTempDir('gsd-3872-materialize-');
+      t.after(() => cleanup(cwd));
+      const planningDir = path.join(cwd, '.planning');
+      // Empty phases/ dir (present, zero subdirectories) + a STATE.md with NO
+      // `progress:` frontmatter block at all — the exact shape every one of
+      // the 11 failing fixtures reproduced.
+      fs.mkdirSync(path.join(planningDir, 'phases'), { recursive: true });
+      fs.writeFileSync(
+        path.join(planningDir, 'STATE.md'),
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          'status: executing',
+          '---',
+          '',
+          '# Project State',
+          '',
+          '## Session',
+          '',
+          '**Last session:** 2024-01-10',
+          '**Stopped at:** None',
+          '',
+        ].join('\n'),
+      );
+      const statePath = path.join(planningDir, 'STATE.md');
+      const before = frontmatterLib.extractFrontmatter(fs.readFileSync(statePath, 'utf-8'));
+      assert.strictEqual(before.progress, undefined, 'setup: no progress block before this write');
+
+      const result = runGsdTools(['state', 'record-session', '--stopped-at', 'Now stopped'], cwd);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+
+      // The block really did land on disk — this can never pass vacuously by
+      // nothing being written; buildStateFrontmatter's disk scan of the empty
+      // phases/ dir materializes a real (zero-valued) progress block.
+      const after = frontmatterLib.extractFrontmatter(fs.readFileSync(statePath, 'utf-8'));
+      assert.ok(after.progress && typeof after.progress === 'object', 'progress must actually materialize on disk for this test to mean anything');
+
+      assert.ok(
+        !output.updated.some((f) => f === 'progress' || f.startsWith('progress.')),
+        `materialization from an absent snapshot must not be reported; got ${JSON.stringify(output.updated)}`,
+      );
+    });
+
+    test('changedDerivedLeafIsStillAChange', (t) => {
+      const cwd = createTempDir('gsd-3872-genuine-change-');
+      t.after(() => cleanup(cwd));
+      const planningDir = path.join(cwd, '.planning');
+      const phaseDir = path.join(planningDir, 'phases', '01-foo');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      // 3 real PLAN.md files on disk — the curated block below UNDER-reports
+      // total_plans (1), so this write's disk scan disagrees with it and
+      // (source: 'disk', preserve-always/progress-ratchet) the fresh value wins.
+      for (let p = 1; p <= 3; p += 1) {
+        fs.writeFileSync(path.join(phaseDir, `01-${String(p).padStart(2, '0')}-PLAN.md`), '# Plan\n');
+      }
+      fs.writeFileSync(
+        path.join(planningDir, 'ROADMAP.md'),
+        ['## v1.0 Current', '', '### Phase 1: Foo', ''].join('\n'),
+      );
+      const statePath = path.join(planningDir, 'STATE.md');
+      fs.writeFileSync(
+        statePath,
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          'milestone: v1.0',
+          'status: executing',
+          'progress:',
+          '  total_phases: 1',
+          '  completed_phases: 0',
+          '  total_plans: 1',
+          '  completed_plans: 0',
+          '---',
+          '',
+          '# Project State',
+          '',
+          '## Session',
+          '',
+          '**Last session:** 2024-01-10',
+          '**Stopped at:** None',
+          '',
+        ].join('\n'),
+      );
+      const before = frontmatterLib.extractFrontmatter(fs.readFileSync(statePath, 'utf-8'));
+      assert.strictEqual(Number(before.progress.total_plans), 1, 'setup: curated total_plans starts at 1, present in the snapshot');
+
+      const result = runGsdTools(['state', 'record-session', '--stopped-at', 'Now stopped'], cwd);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+
+      const after = frontmatterLib.extractFrontmatter(fs.readFileSync(statePath, 'utf-8'));
+      assert.strictEqual(Number(after.progress.total_plans), 3, 'progress.total_plans must actually move 1 -> 3 on disk for this test to mean anything');
+
+      assert.ok(
+        output.updated.includes('progress.total_plans'),
+        `a leaf already present in the snapshot that genuinely moved must still be reported; got ${JSON.stringify(output.updated)}`,
+      );
     });
   });
 });

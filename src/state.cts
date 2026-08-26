@@ -3910,6 +3910,24 @@ function declaredLeavesOf(key: string): string[] {
  * `current_phase` (the body source did move) while staying SILENT on a
  * merely-backfilled, body-unchanged key (the #1264 false positive this
  * function's first cut produced).
+ *
+ * **A declared dotted-leaf (`declaredLeavesOf`, e.g. every `progress.*` row)
+ * absent from the snapshot and present in persisted is materialization, not
+ * a change.** Found the same way as the paragraph above, one layer down:
+ * `progress` is `source: 'disk'` (state-transition.cts), re-derived by
+ * `buildStateFrontmatter`'s phase-directory scan on every write regardless
+ * of whether the caller's own action touched it — and the phases directory
+ * cannot move during a STATE.md write, so a fresh `progress` block appearing
+ * where the snapshot had none is the scanner catching a never-synced
+ * document up, not the caller changing anything. This is the SAME
+ * provenance principle `STATE_UPDATED_PROVENANCE_EXCLUSION` applies to
+ * `last_updated` (a field stamped by the write's occurrence, not its
+ * action) — generalized to the declared-leaf case, deliberately NOT a
+ * second classification-based exclusion: `progress`'s `preserve-always`
+ * policy plays no part in the check below, and a leaf already PRESENT in
+ * the snapshot is diffed exactly as every other field is, including
+ * reporting its outright disappearance (row 16) — only the absent-in-
+ * snapshot-but-materialized-in-persisted transition is suppressed.
  */
 function computeChangedFrontmatterFields(
   snapshotFm: Record<string, unknown>,
@@ -3934,6 +3952,21 @@ function computeChangedFrontmatterFields(
       for (const leaf of leaves) {
         const before = resolveFrontmatterPath(snapshotFm, leaf);
         const after = resolveFrontmatterPath(persistedFm, leaf);
+        // Generalizes the SAME provenance principle STATE_UPDATED_PROVENANCE_EXCLUSION
+        // applies to `last_updated` one level up — this is NOT a classification-based
+        // exclusion (progress's `preserve-always` policy plays no part here; that filter
+        // stays deleted per §8.7). It is a fact about the DECLARED LEAF SET: every key
+        // enumerated by `declaredLeavesOf` is `source: 'disk'` (state-transition.cts),
+        // re-derived from a scan that cannot move during a STATE.md write (the write only
+        // touches STATE.md, never the phases directory). So a leaf ABSENT from the
+        // pre-write snapshot and PRESENT in persisted is the scanner catching a document
+        // up to a derivation it had never synced before — the write's own OCCURRENCE
+        // produced the bytes, not the caller's ACTION, exactly the `last_updated` shape.
+        // A leaf already PRESENT in the snapshot behaves normally: any difference
+        // (including disappearing entirely, row 16) is reported, because there the
+        // snapshot proves the derivation had already run once, so a new persisted value
+        // can only come from something genuinely moving (#3743/#3818).
+        if (before === STATE_FIELD_ABSENT && after !== STATE_FIELD_ABSENT) continue;
         if (stateFieldValuesDiffer(before, after)) changed.push(leaf);
       }
       continue;
@@ -4036,7 +4069,28 @@ function reconcileReportedFields(
     return null;
   };
 
+  // A field in `reported` can itself be a declared derived leaf (e.g.
+  // `plannedPhaseCore` pushing `'progress.total_plans'` — state-
+  // transition.cts:1752). `valueOf`'s null-vs-string convention cannot tell
+  // "absent from the frontmatter" apart from "resolved to the literal string
+  // 'null'/''", so it cannot carry the same materialization rule
+  // `computeChangedFrontmatterFields` applies below. Route these fields
+  // through the SAME primitives (`resolveFrontmatterPath` + the
+  // `STATE_FIELD_ABSENT` sentinel + `stateFieldValuesDiffer`) instead of a
+  // second, parallel absence convention — one rule, reused, not duplicated.
+  const isDeclaredDerivedLeaf = (candidate: string): boolean =>
+    candidate.includes('.') && Object.prototype.hasOwnProperty.call(FIELD_CLASSIFICATION, candidate);
+
   const changed = (field: string): boolean => {
+    if (isDeclaredDerivedLeaf(field)) {
+      const before = resolveFrontmatterPath(snapshotFm, field);
+      const after = resolveFrontmatterPath(persistedFm, field);
+      // Same generalized provenance rule as computeChangedFrontmatterFields:
+      // absent-in-snapshot-materializing-in-persisted is the disk scan
+      // catching a never-synced document up, not this write's own action.
+      if (before === STATE_FIELD_ABSENT && after !== STATE_FIELD_ABSENT) return false;
+      return stateFieldValuesDiffer(before, after);
+    }
     const before = valueOf(snapshotFm, snapshotBody, field);
     const after = valueOf(persistedFm, persistedBody, field);
     if (before === null && after === null) return false;

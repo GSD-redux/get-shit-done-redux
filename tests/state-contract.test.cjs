@@ -328,7 +328,16 @@ describe('state contract — call-site wiring (integration, real CLI)', () => {
       '| 1. A | 0/1 | Not started | - |',
       '',
     ]);
-    writeState(tmpDir, ['status: planning'], [
+    // ADR-3473 §8.7 (#3872) / test-matrix row 17 (D15): `gsd_state_version`
+    // is pre-seeded here so this fixture isolates the ONE thing it is meant
+    // to prove (zero recognized Current Position labels is a genuine no-op)
+    // from an UNRELATED, already-correct §8.7 behavior — a frontmatter block
+    // synthesizing `gsd_state_version` for the first time on a document that
+    // never had one IS a real, reportable addition (row 17/D15, pinned
+    // separately by "state patch accepts JSON object input from workflows"
+    // above). Omitting it here would make THIS no-op test fail for a reason
+    // that has nothing to do with recognized labels.
+    writeState(tmpDir, ['gsd_state_version: 1.0', 'status: planning'], [
       '# Project State', '',
       '(no recognized labels here)',
     ]);
@@ -358,12 +367,19 @@ describe('state contract — call-site wiring (integration, real CLI)', () => {
   // Additional no-op path found while auditing `state advance-plan`
   // (cmdStateAdvancePlan, src/state.cts): re-invoking advance-plan while
   // already parked at "last plan, ready for verification" reproduces
-  // byte-identical STATE.md content on the SECOND call — `updated` still
-  // reports `Status`/`Last Activity` (reconcileReportedFields matches
-  // against the value ALREADY persisted from the first call), but nothing
-  // is written on the second call, so publishing on `updated.length > 0`
-  // alone would be wrong here; the fix gates on
-  // `readModifyWriteStateMd`'s own write-happened return value instead.
+  // byte-identical STATE.md content on the SECOND call. MOVED under
+  // ADR-3473 §8.7 (#3872): before that change, `reconcileReportedFields`
+  // compared the transform's OWN reported fields against the FINAL
+  // persisted bytes, so `Status`/`Last Activity` (values the transform
+  // always names, which trivially still matched the byte-identical file)
+  // came back non-empty even though nothing was written. §8.7 replaced
+  // that with a diff against the transaction's PRE-WRITE snapshot, so a
+  // genuinely byte-identical second call now correctly reconciles to
+  // `updated: []` — a true no-op is reported as a true no-op. Publishing
+  // still does not fire on this call: `cmdStateAdvancePlan` gates on
+  // `readModifyWriteStateMd`'s own write-happened return value, never on
+  // `updated.length`, so this remains a no-op-does-not-publish regression
+  // test — only the expected shape of the (now-correct) `updated` moved.
   test('advancePlanNoOpDoesNotPublish', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
@@ -385,7 +401,7 @@ describe('state contract — call-site wiring (integration, real CLI)', () => {
     const second = runGsdTools(['state', 'advance-plan'], tmpDir);
     assert.ok(second.success, `second (no-op) advance-plan call must genuinely succeed: ${second.error}`);
     const output = JSON.parse(second.output);
-    assert.ok(Array.isArray(output.updated) && output.updated.length > 0, 'reconciled updated[] is non-empty even though nothing was written this call');
+    assert.deepStrictEqual(output.updated, [], 'ADR-3473 §8.7: a byte-identical second call is a genuine no-op — `updated` must reconcile to empty, not merely reflect fields the transform always names');
     assert.strictEqual(fs.existsSync(statePathOf(tmpDir)), false, 'the second, no-op advance-plan call must not publish state.json');
   });
 
