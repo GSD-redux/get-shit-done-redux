@@ -64,6 +64,9 @@ const UI_PHASE = read('gsd-core', 'workflows', 'ui-phase.md');
 const DIAGNOSE = read('gsd-core', 'workflows', 'diagnose-issues.md');
 const CONVERGENCE = read('gsd-core', 'workflows', 'plan-review-convergence.md');
 const VERIFY_WORK = read('gsd-core', 'workflows', 'verify-work.md');
+const PLANNER = read('agents', 'gsd-planner.md');
+const UI_RESEARCHER = read('agents', 'gsd-ui-researcher.md');
+const CONTRACTS = read('gsd-core', 'references', 'agent-contracts.md');
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -197,6 +200,25 @@ describe('#3771 revision re-checks constraints and has a conflict path', () => {
   test('a smaller sufficient mechanism is preferred and reported as addressed', () => {
     assert.match(PLANNER_REVISION, /\*\*Prefer the smallest sufficient mechanism\.\*\*/);
     assert.match(flat(PLANNER_REVISION), /must be reported as addressed, naming the property satisfied and the mechanism used/);
+  });
+
+  // A marker four workflows dispatch on must be declared and emitted where the agent is
+  // defined, not only in the shared reference — otherwise nothing produces what they match.
+  test('the producing agents declare and emit REVISION_CONFLICT', () => {
+    for (const [name, agent] of [['gsd-planner', PLANNER], ['gsd-ui-researcher', UI_RESEARCHER]]) {
+      assert.match(agent, /```markdown\r?\n## REVISION_CONFLICT/,
+        `${name} must emit the marker in-fence, or check:contract-drift reports an orphan consumer`);
+    }
+    const plannerRow = CONTRACTS.split(/\r?\n/).find((l) => l.startsWith('| gsd-planner |'));
+    const uiRow = CONTRACTS.split(/\r?\n/).find((l) => l.startsWith('| gsd-ui-researcher |'));
+    assert.ok(plannerRow && uiRow, 'both registry rows must exist');
+    for (const [name, row] of [['gsd-planner', plannerRow], ['gsd-ui-researcher', uiRow]]) {
+      assert.match(row, /`## REVISION_CONFLICT`/, `${name}'s registry row must declare the marker`);
+    }
+    for (const consumer of ['quick/steps/plan-checker-loop.md', 'verify-work.md']) {
+      assert.ok(plannerRow.includes(consumer),
+        `gsd-planner's Consumed by must list ${consumer} — it dispatches on the marker`);
+    }
   });
 
   test('conflicts return REVISION_CONFLICT carrying conflicts and alternatives', () => {
