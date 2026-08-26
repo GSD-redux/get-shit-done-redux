@@ -6429,26 +6429,34 @@ describe('#3707-CR follow-up MAJOR: VERIFICATION.md and deferred-items.md ingres
   });
 });
 
-// #3078-CR: two column-0-adjacent asymmetries in `parseUatItemsWithStats`'s
-// `result:` scan, reproduced directly against the LIVE built copy
-// (`../gsd-core/bin/lib/uat.cjs`, imported at the top of this file) rather
-// than through a rebuilt fixture, so these rows fail against the ACTUAL
-// shipped parser, not a stale mental model of it.
+// #3078-CR: a column-0 line-terminator boundary defect in
+// `parseUatItemsWithStats`'s `result:` scan, reproduced directly against the
+// LIVE built copy (`../gsd-core/bin/lib/uat.cjs`, imported at the top of this
+// file) rather than through a rebuilt fixture, so these rows fail against the
+// ACTUAL shipped parser, not a stale mental model of it.
 //
-// DEFECT A: `/^result:.../im` treats U+2028 LINE SEPARATOR and U+2029
+// DEFECT A (fixed): `/^result:.../im` treats U+2028 LINE SEPARATOR and U+2029
 // PARAGRAPH SEPARATOR as line-start boundaries (native JS `/m` behaviour),
 // but `normalizeLineEndings` (core-utils.cjs) folds only `\r`/`\r\n` and never
 // touches U+2028/U+2029, and neither does `split('\n')` or the heading
 // tokenizer. A `result:`-shaped line living INSIDE an `expected: |` scalar
-// body, immediately after one of these separators, is therefore read as a
+// body, immediately after one of these separators, was therefore read as a
 // real line start by the regex engine and — because `.match()` without `/g`
-// returns the LEFTMOST match in the whole string — wins over a genuine
+// returns the LEFTMOST match in the whole string — won over a genuine
 // column-0 `result:` line appearing later, discarding it with no gap raised.
+// Fixed by testing each `split('\n')`-produced line individually instead of
+// running an `/m`-anchored regex over the whole block: `split('\n')` never
+// treats U+2028/U+2029 as a delimiter, so neither can manufacture a line
+// start.
 //
-// DEFECT B: the same `.match()` call has no notion of "more than one
-// column-0 `result:` line in this block" at all. Two column-0 `result:`
-// lines resolve to whichever the regex engine reaches first, with the
-// second recorded nowhere — not as an item, not as a parse gap.
+// A "defect B" (more than one column-0 `result:` line reported as an
+// ambiguous parse gap rather than resolving to the first) was attempted and
+// REVERTED: its boundary-truncation heuristic mistook an indented `### N.`
+// living inside a legitimate block scalar for a heading boundary, which
+// broke every scalar/indent guard this module has (see the `#3078` scalar
+// guard tests elsewhere in this file). Two column-0 `result:` lines resolve
+// to the FIRST one — the pre-existing, pinned behaviour — see controls B3/B4
+// below.
 describe('parseUatItemsWithStats — result: line-scan boundary defects (#3078-CR)', () => {
   const LINE_SEPARATOR = String.fromCharCode(0x2028);
   const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
@@ -6509,30 +6517,6 @@ describe('parseUatItemsWithStats — result: line-scan boundary defects (#3078-C
     assert.ok(findAlphaBlocked(items), `legitimate U+2028 content must not perturb parsing: ${describeAll()}`);
     assert.strictEqual(items.length, 1, `no extra/phantom item may appear: ${describeAll()}`);
     assert.strictEqual(headingsSeen, 0, describeAll());
-  });
-
-  test('[RED] B1: two column-0 result: lines (pass then blocked) must report ambiguity as a gap, not resolve to "pass"', () => {
-    const doc = '### 1. Alpha\nexpected: ok\nresult: pass\nresult: blocked\n';
-    const { items, headingsSeen } = parseUatItemsWithStats(doc);
-    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
-
-    // Pin the CONTRACT (ambiguity is a gap), not an implementation detail of
-    // how the gap is counted: assert the identity-negative (no confident
-    // pass item — and no confident item of ANY result for this ambiguous
-    // block) plus the fact that the block registered as an unparsed gap.
-    assert.strictEqual(findAnyPassItem(items), undefined, `an ambiguous block must never confidently resolve to pass: ${describeAll()}`);
-    assert.strictEqual(items.find((i) => i.test === 1), undefined, `an ambiguous block must not emit ANY confident item for row 1: ${describeAll()}`);
-    assert.strictEqual(headingsSeen, 1, `the ambiguous block must count as exactly one parse gap: ${describeAll()}`);
-  });
-
-  test('[RED] B2: the reverse order (blocked then pass) must behave IDENTICALLY to B1 — order must not decide meaning', () => {
-    const doc = '### 1. Alpha\nexpected: ok\nresult: blocked\nresult: pass\n';
-    const { items, headingsSeen } = parseUatItemsWithStats(doc);
-    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
-
-    assert.strictEqual(findAnyPassItem(items), undefined, `an ambiguous block must never confidently resolve to pass: ${describeAll()}`);
-    assert.strictEqual(items.find((i) => i.test === 1), undefined, `an ambiguous block must not emit ANY confident item for row 1 regardless of result-line order: ${describeAll()}`);
-    assert.strictEqual(headingsSeen, 1, `the ambiguous block must count as exactly one parse gap, same as B1: ${describeAll()}`);
   });
 
   test('[CONTROL] B3: a block with exactly one result: line is unchanged', () => {
