@@ -266,7 +266,12 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
       directory: toPosixPath(path.join(relBase, match)),
       phase_number: phaseNumber,
       phase_name: phaseName,
-      phase_slug: phaseName ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : null,
+      // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+      // (generateSlugInternal, core-utils.cts) rather than re-implementing
+      // it. `maxLen: null` preserves this site's pre-migration untruncated
+      // contract — the 60-char default would drop an on-disk phase slug's
+      // reported value out of sync with the real directory name.
+      phase_slug: phaseName ? coreUtilsModule.generateSlugInternal(phaseName, null) : null,
       plans,
       summaries,
       incomplete_plans: incompletePlans,

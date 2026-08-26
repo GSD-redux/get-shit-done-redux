@@ -18,7 +18,7 @@ The evidence base is #3473's filing (a systemic root-cause review of all 30 open
 
 | Invariant | Canonical owner | Reality on `next` |
 |---|---|---|
-| slug rule | `generateSlugInternal`, `src/core-utils.cts` | 13 inline copies across 5 modules; copies and generator already disagree on Cyrillic transliteration and trim-vs-truncate order (#2986) |
+| slug rule | `generateSlugInternal`, `src/core-utils.cts` | **11** inline copies across **7** files (measured in Phase 6, #3883 — the "13 across 5" written here was wrong twice over: two of the thirteen were an unrelated tokenizer regex, and the file count was never taken); copies and generator disagree on Cyrillic transliteration and trim-vs-truncate order (#2986) |
 | `isSentinelPhaseId` | `src/phase-id.cts` | consumed by 11 modules, absent from 4 phase-enumerating commands (#3372) |
 | verification-file discovery | *(none)* | independently implemented twice, both alphabetical-first (#3357) |
 | runtime identity | `bin/install.js` persists it | `resolveRuntime` never reads it back (#3364) |
@@ -317,9 +317,23 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 **Rule.** Verification-file discovery has one resolver, **canonical-filename-first, never alphabetical** (#3357).
 
-#### 8.3 One implementation per rule — *Required — phase unassigned*
+#### 8.3 One implementation per rule — *Required — Phase 6*
 
 **Rule.** Every slug call site delegates to `core-utils`. `resolveRuntime` reads the install marker in one place with one cache. The Codex sandbox derives from the role's declared tool contract rather than a maintained subset map, and `validate agents` fails on semantic drift, not just on missing files.
+
+> **Correction, 2026-08-26 (Phase 6, #3883) — I wrote this section as if it described decisions already taken. Measured against `next` @ `832dcbb75`, it describes unbuilt work, and three of its statements are wrong.** These are my errors, not inherited ones: I authored this ADR in Phase 0 (#3868/#3870) and stated these as rules without executing against the tree.
+>
+> | As written | Measured |
+> |---|---|
+> | "13 inline copies across 5 modules" | **11 copies across 7 files** (`commands.cts` ×1, `init.cts` ×4, `phase-id.cts` ×2, `phase-locator.cts` ×1, `workstream-name-policy.cts` ×1, `active-workstream-store.cts` ×1, `gsd2-import.cts` ×1). Two of the thirteen I counted were an unrelated tokenizer regex. The file count in my first correction (2026-08-26, same day) was itself wrong — I corrected 13→11 without recounting files and repeated the same class of error I was correcting. The divergence itself is real and reproduced: on Cyrillic input the canonical `generateSlugInternal` (`src/core-utils.cts:107`) yields `privet-mir` while `cmdGenerateSlug` (`src/commands.cts:200`) yields `""`; at the truncation boundary the copy leaves a trailing hyphen (#2849's regression, still live in the copy). |
+> | "`resolveRuntime` reads the install marker in one place with one cache" | **It reads no marker at all.** `src/runtime-slash.cts:132` resolves `GSD_RUNTIME > config.runtime > 'claude'`, with no marker read and no cache. PR **#3382**, which I cited as prior art implementing this rung, is **CLOSED and unmerged**. |
+> | "The Codex sandbox derives from the role's declared tool contract… and `validate agents` fails on semantic drift" | **Both halves false.** `generateCodexAgentToml` (`bin/install.js`) still reads `CODEX_AGENT_SANDBOX[agentName] \|\| 'read-only'` — a hand-maintained subset map with a silent fallback. `checkAgentsInstalled` (`src/agent-install-check.cts:156`) checks file presence and manifest completeness only; it has no `sandbox_mode` or tool-contract assertion. |
+>
+> The `shortFormToId` rule below is **accurate** — no such tier exists on `next`, and `resolveDependencyId` (`src/phase.cts:609`) remains two-tier.
+>
+> **The guard roster names no §8.3 casualty.** Its only §8.3-tagged row is `local/no-adhoc-regex-escape`, marked *widened*, not retired. Nothing is retired by this rule.
+>
+> **What this means for the phase:** unlike §8.2, this section is genuinely unbuilt — the rewrites it asserts have not happened. It is a work list, not a conformance check, and it should be read that way.
 
 **Rule — consolidation carries invariants forward explicitly.** A lineage consolidation may not delete an invariant along with the surface that held it. The `shortFormToId` tier existed in the retired SDK lineage; the surviving lineage never received it, the gap was recorded only in an archived changeset and a `// KNOWN GAP:` comment, and both went away with the surface (#3427). **A parity note in an archived changeset is not a tracking mechanism.**
 
