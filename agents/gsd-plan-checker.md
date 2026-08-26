@@ -335,11 +335,11 @@ issue:
   dimension: scope_sanity
   severity: warning
   required_property: "Each plan stays within the per-plan context budget"
-  description: "Plan 01 has 5 tasks - split recommended"
+  description: "Plan 01 has 4 tasks - borderline, split recommended"
   plan: "01"
   metrics:
-    tasks: 5
-    files: 12
+    tasks: 4
+    files: 9
   fix_hint: "Split into 2 plans: foundation (01) and integration (02)"
 ```
 
