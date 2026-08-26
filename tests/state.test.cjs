@@ -7089,6 +7089,46 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
     });
   });
 
+  // ─── #3873 row 3: FRONTMATTER_KEY_TO_BODY_LABEL is now a byte-identical ──────
+  // projection of STATE_FIELD_SCHEMA (src/state-md-schema.cts). Comparand is
+  // today's literal copied VERBATIM (not re-derived from the schema — see
+  // 50-test-matrix.md's "writer-seeded fixture trap" note), captured by direct
+  // read of `src/state.cts` on this branch's base before the projection
+  // replaced it.
+  describe('ADR-3473 §8.8 (#3873): FRONTMATTER_KEY_TO_BODY_LABEL is a byte-identical projection', () => {
+    // This exact key order — deliberately NOT the same order as
+    // FRONTMATTER_BODY_SOURCE (state-transition.cts): the two pre-existing
+    // tables disagreed with each other's order (status sits AFTER
+    // stopped_at/paused_at here, BEFORE them there).
+    const TODAYS_FRONTMATTER_KEY_TO_BODY_LABEL = Object.freeze({
+      current_phase: 'Current Phase',
+      current_phase_name: 'Current Phase Name',
+      current_plan: 'Current Plan',
+      stopped_at: 'Stopped At',
+      paused_at: 'Paused At',
+      status: 'Status',
+      last_activity_desc: 'Last Activity Description',
+    });
+
+    test('bodyLabelProjectionMatchesTodaysTable', () => {
+      assert.deepStrictEqual(
+        Object.keys(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL),
+        Object.keys(TODAYS_FRONTMATTER_KEY_TO_BODY_LABEL),
+        'FRONTMATTER_KEY_TO_BODY_LABEL key order must be unchanged',
+      );
+      assert.deepStrictEqual(
+        stateLib._FRONTMATTER_KEY_TO_BODY_LABEL,
+        TODAYS_FRONTMATTER_KEY_TO_BODY_LABEL,
+      );
+      // Byte-identical also means NOT null-prototype: this table was a plain
+      // `Object.freeze({...})` object literal before #3873 (unlike
+      // FIELD_CLASSIFICATION / FRONTMATTER_BODY_SOURCE, which are
+      // null-prototype), and the projection reproduces that exactly.
+      assert.ok(Object.isFrozen(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL));
+      assert.strictEqual(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL['toString'], Object.prototype.toString);
+    });
+  });
+
   // ─── #3873 pin: last_activity's TWO-TABLE disagreement, resolved by what SHIPS ──
   // `FRONTMATTER_BODY_SOURCE` (state-transition.cts) carries a `last_activity`
   // row; `FRONTMATTER_KEY_TO_BODY_LABEL` (state.cts, above) does not. ADR-3473

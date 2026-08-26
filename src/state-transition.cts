@@ -22,6 +22,10 @@ import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { deriveProgressFromRoadmap, clampPercent } from './phase-lifecycle.cjs';
 import { escapeRegex } from './pattern.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import stateMdSchemaMod = require('./state-md-schema.cjs');
+const { STATE_FIELD_SCHEMA } = stateMdSchemaMod;
+type StateFieldSchema = stateMdSchemaMod.StateFieldSchema;
 
 const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
 
@@ -40,33 +44,21 @@ const STOP_H2_PLUS = (lv: number): boolean => lv >= 2;
 // the collapsed-enum shape as a substrate defect that wouldn't survive
 // Phases 2–7.
 
-export type FieldSource =
-  | 'body' // value is derived from a body field (Phase:, Status:, etc.)
-  | 'disk' // value is derived from a disk scan (.planning/phases/* counts)
-  | 'external' // value is derived from an external file (ROADMAP.md milestone)
-  | 'curated' // value is set by humans/tools; preserve unless explicitly overwritten
-  | 'free'; // caller's word is law (no preservation)
-
-export type FieldPreservation =
-  | 'derive' // always re-derive from source
-  | 'preserve-when-unchanged' // #1230 delta heuristic: keep existing if body source field unchanged
-  | 'preserve-always' // never overwrite unless the caller explicitly names this field
-  | 'preserve-if-placeholder'; // overwrite only when derived value is a known placeholder (#948)
-// ADR-3408 §8.6 amendment: 'clear' was deleted (no row used it, no executor
-// existed) rather than implemented — Speculative Generality, a policy
-// invented for a need that never arrived.
-
 /**
- * ADR-3408 Decision 1 (Greenspun's Tenth Rule): guards and merge strategies
- * are named members of a CLOSED vocabulary, never an open predicate slot. The
- * table has already accreted five times (`preserve-always` #1743/#1695,
- * `preserve-if-placeholder` #948/#2135, `state_head` #2573, `deriveProgressKeys`
- * #2440, `bodyDeltas` #3258) — an open per-row predicate is what would turn
- * this table into an interpreter. Adding a member to either union below is an
- * amendment to ADR-3408, not a table edit.
+ * #3873 (ADR-3473 §8.8): the four closed vocabularies below moved to
+ * `src/state-md-schema.cts` — the leaf module `FIELD_CLASSIFICATION`'s
+ * projection is now derived from — and are re-exported here BY THE SAME NAME
+ * so no existing importer of this module needs to change (`state.cts`
+ * consumes them via `stateTransitionMod.FieldSource` etc., the namespace
+ * access pattern this module's plain `export type` already supported before
+ * this move). See `state-md-schema.cts` for the full ADR-3408 Decision 1
+ * ("Greenspun's Tenth Rule" — closed vocabulary, never an open predicate slot)
+ * docstring these four used to carry directly.
  */
-export type FieldGuard = 'non-sentinel-unknown';
-export type FieldMergeStrategy = 'progress-ratchet';
+export type FieldSource = stateMdSchemaMod.FieldSource;
+export type FieldPreservation = stateMdSchemaMod.FieldPreservation;
+export type FieldGuard = stateMdSchemaMod.FieldGuard;
+export type FieldMergeStrategy = stateMdSchemaMod.FieldMergeStrategy;
 
 export type FieldClassification = {
   source: FieldSource;
@@ -91,55 +83,30 @@ export type FieldClassification = {
  * (`FIELD_CLASSIFICATION['toString']` returns undefined, not the inherited
  * function). Use `getFieldClassification()` for lookups.
  */
+/**
+ * #3873 (ADR-3473 §8.8): PROJECTED from `STATE_FIELD_SCHEMA`
+ * (`src/state-md-schema.cts`) rather than hand-maintained here. Byte-identical
+ * to the pre-#3873 literal table — same 19 keys, same key ORDER (walks
+ * `Object.keys(STATE_FIELD_SCHEMA)` directly; see that module's row-order
+ * comment for why this is the one projection allowed to do that), same
+ * per-row shape (`{source, preservation, guard?, mergeStrategy?}`, in that
+ * key order, `guard`/`mergeStrategy` present only when the schema row carries
+ * them — never as an `undefined` own-property), same frozen null-prototype
+ * container. Pinned by `tests/state-transition.test.cjs`'s
+ * `fieldClassificationProjectionMatchesTodaysTable`, whose comparand is
+ * today's literal copied VERBATIM into the test (never re-derived from this
+ * schema — see that test's own docstring on why a self-referential parity
+ * test proves nothing).
+ */
 export const FIELD_CLASSIFICATION: Readonly<Record<string, FieldClassification>> = Object.freeze(
-  Object.assign(
-    Object.create(null) as Record<string, FieldClassification>,
-    {
-      // Schema
-      gsd_state_version: { source: 'free', preservation: 'derive' } as FieldClassification,
-
-      // Milestone (external — from ROADMAP.md)
-      milestone: { source: 'external', preservation: 'preserve-if-placeholder' } as FieldClassification,
-      milestone_name: { source: 'external', preservation: 'preserve-if-placeholder' } as FieldClassification,
-
-      // Phase / plan position (body-derived)
-      current_phase: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
-      // #1743, #1695. #3468: row corrected to match its long-standing behavior
-      // — was declared preserve-always, has always been delta-gated (only
-      // restores when the body `Phase:` source is unchanged this write).
-      current_phase_name: { source: 'curated', preservation: 'preserve-when-unchanged' } as FieldClassification,
-      current_plan: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
-
-      // Status / lifecycle (body-derived; #1230 delta heuristic applies)
-      // guard: the 'unknown' sentinel is the ONLY true executor-side guard in
-      // this table (stopped_at's `## Session` scoping is caller-side delta
-      // extraction, not an executor condition) — ADR-3408 Decision 1.
-      status: { source: 'body', preservation: 'preserve-when-unchanged', guard: 'non-sentinel-unknown' } as FieldClassification,
-      stopped_at: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
-      paused_at: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
-
-      // Activity log
-      last_updated: { source: 'free', preservation: 'derive' } as FieldClassification, // realClock.nowIso()
-      last_activity: { source: 'body', preservation: 'derive' } as FieldClassification, // always refresh on transition
-      last_activity_desc: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
-
-      // Commit provenance (#2573) — ambient git read, recomputed on every write,
-      // exactly like last_updated. Never preserved: a stale stamp would claim
-      // STATE.md was written against a commit it wasn't.
-      state_head: { source: 'free', preservation: 'derive' } as FieldClassification, // #2573
-
-      // Progress block (disk-derived, except the curated progress ratchet)
-      // mergeStrategy: 'progress-ratchet' — completed_plans/completed_phases
-      // only ever ratchet UP toward the derived value (#2969); everything
-      // else in the merge is either always-derived (#2440) or always-curated.
-      progress: { source: 'curated', preservation: 'preserve-always', mergeStrategy: 'progress-ratchet' } as FieldClassification, // #3242, #1446
-      'progress.total_phases': { source: 'disk', preservation: 'derive' } as FieldClassification,
-      'progress.completed_phases': { source: 'disk', preservation: 'derive' } as FieldClassification,
-      'progress.total_plans': { source: 'disk', preservation: 'derive' } as FieldClassification,
-      'progress.completed_plans': { source: 'disk', preservation: 'derive' } as FieldClassification,
-      'progress.percent': { source: 'disk', preservation: 'derive' } as FieldClassification,
-    } satisfies Record<string, FieldClassification>,
-  ),
+  Object.keys(STATE_FIELD_SCHEMA).reduce((acc, key) => {
+    const row: StateFieldSchema = STATE_FIELD_SCHEMA[key];
+    const projected: FieldClassification = { source: row.source, preservation: row.preservation };
+    if (row.guard !== undefined) projected.guard = row.guard;
+    if (row.mergeStrategy !== undefined) projected.mergeStrategy = row.mergeStrategy;
+    acc[key] = projected;
+    return acc;
+  }, Object.create(null) as Record<string, FieldClassification>),
 );
 
 /**
@@ -163,19 +130,36 @@ export const FIELD_CLASSIFICATION: Readonly<Record<string, FieldClassification>>
  * builder derives from disk, an external file, or the clock have no body source
  * and are deliberately ABSENT here rather than mapped to a lie.
  */
+/**
+ * #3873 (ADR-3473 §8.8): PROJECTED from `STATE_FIELD_SCHEMA`
+ * (`src/state-md-schema.cts`)'s `bodySource` field, in this EXPLICIT key
+ * order. This order is NOT `STATE_FIELD_SCHEMA`'s own row order filtered down
+ * to the body-sourced keys — the pre-#3873 literal already put `status`
+ * before `stopped_at`/`paused_at` here while `FRONTMATTER_KEY_TO_BODY_LABEL`
+ * (`src/state.cts`) put it AFTER them, i.e. the two pre-existing tables
+ * disagreed with each other's order too, and this projection must reproduce
+ * ITS table's order specifically. Byte-identical to the pre-#3873 literal —
+ * same 8 keys, same order, same frozen null-prototype container with frozen
+ * per-key arrays. Pinned by `tests/state-transition.test.cjs`'s
+ * `bodySourceProjectionMatchesTodaysTable`.
+ */
+const FRONTMATTER_BODY_SOURCE_KEY_ORDER = Object.freeze([
+  'current_phase',
+  'current_phase_name',
+  'current_plan',
+  'status',
+  'stopped_at',
+  'paused_at',
+  'last_activity',
+  'last_activity_desc',
+] as const);
+
 export const FRONTMATTER_BODY_SOURCE: Readonly<Record<string, readonly string[]>> = Object.freeze(
-  Object.assign(Object.create(null) as Record<string, readonly string[]>, {
-    current_phase: Object.freeze(['Current Phase']),
-    current_phase_name: Object.freeze(['Current Phase Name']),
-    current_plan: Object.freeze(['Current Plan']),
-    status: Object.freeze(['Status']),
-    // Scoped to `## Session` by the builder; see the presence check in
-    // `updateCore` for why the lookup here is deliberately unscoped.
-    stopped_at: Object.freeze(['Stopped At', 'Stopped at']),
-    paused_at: Object.freeze(['Paused At']),
-    last_activity: Object.freeze(['Last Activity', 'Last activity']),
-    last_activity_desc: Object.freeze(['Last Activity Description']),
-  } satisfies Record<string, readonly string[]>),
+  FRONTMATTER_BODY_SOURCE_KEY_ORDER.reduce((acc, key) => {
+    const row: StateFieldSchema = STATE_FIELD_SCHEMA[key];
+    acc[key] = Object.freeze([...(row.bodySource ?? [])]);
+    return acc;
+  }, Object.create(null) as Record<string, readonly string[]>),
 );
 
 /**

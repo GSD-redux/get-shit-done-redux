@@ -123,6 +123,8 @@ build/
 /gsd-core/bin/lib/external-job.cjs
 /gsd-core/bin/lib/runtime-artifact-install-plan.cjs
 /gsd-core/bin/lib/state-transition.cjs
+# #3873: schema leaf module (ADR-3473 §8.8) — emitted artifact, never edited.
+/gsd-core/bin/lib/state-md-schema.cjs
 /gsd-core/bin/lib/resolution.cjs
 /gsd-core/bin/lib/research-store.cjs
 /gsd-core/bin/lib/research-provider.cjs

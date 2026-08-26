@@ -17,11 +17,14 @@ const {
   openStateTransaction,
   rebuildStateTransaction,
   FIELD_CLASSIFICATION,
+  FRONTMATTER_BODY_SOURCE,
   getFieldClassification,
+  getPreserveWhenUnchangedFields,
   STATE_MD_SECTIONS,
   sliceCurrentPositionSection,
 } = require('../gsd-core/bin/lib/state-transition.cjs');
 const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
+const { STATE_FIELD_SCHEMA } = require('../gsd-core/bin/lib/state-md-schema.cjs');
 
 const fixedClock = Object.freeze({
   today: () => '2026-06-27',
@@ -112,6 +115,132 @@ describe('ADR-1769 substrate: field-classification table', () => {
     assert.strictEqual(getFieldClassification('hasOwnProperty'), null);
     assert.strictEqual(getFieldClassification('__proto__'), null);
     assert.strictEqual(getFieldClassification('not-a-real-field'), null);
+  });
+});
+
+// #3873 (ADR-3473 §8.8): `FIELD_CLASSIFICATION` and `FRONTMATTER_BODY_SOURCE`
+// are now PROJECTIONS of `STATE_FIELD_SCHEMA` (src/state-md-schema.cts),
+// derived at module load rather than hand-maintained beside it. The
+// comparands below are today's literal tables, copied VERBATIM (not
+// re-derived from the schema — a parity test that builds both sides from the
+// same source proves nothing; see 50-test-matrix.md's "writer-seeded fixture
+// trap" note), captured by direct read of `src/state-transition.cts` on this
+// branch's base (pre-#3873) before the projection replaced them. Any drift
+// here is a silently-changed preservation policy — the #3427 failure this
+// epic is named after.
+describe('ADR-3473 §8.8 (#3873): the three tables are byte-identical projections of STATE_FIELD_SCHEMA', () => {
+  // Verbatim copy of `FIELD_CLASSIFICATION`'s pre-#3873 literal (19 rows, this
+  // exact key order — key order is observable: the preservation dispatch loop
+  // and `getPreserveWhenUnchangedFields` both iterate it).
+  const TODAYS_FIELD_CLASSIFICATION = Object.freeze({
+    gsd_state_version: { source: 'free', preservation: 'derive' },
+    milestone: { source: 'external', preservation: 'preserve-if-placeholder' },
+    milestone_name: { source: 'external', preservation: 'preserve-if-placeholder' },
+    current_phase: { source: 'body', preservation: 'preserve-when-unchanged' },
+    current_phase_name: { source: 'curated', preservation: 'preserve-when-unchanged' },
+    current_plan: { source: 'body', preservation: 'preserve-when-unchanged' },
+    status: { source: 'body', preservation: 'preserve-when-unchanged', guard: 'non-sentinel-unknown' },
+    stopped_at: { source: 'body', preservation: 'preserve-when-unchanged' },
+    paused_at: { source: 'body', preservation: 'preserve-when-unchanged' },
+    last_updated: { source: 'free', preservation: 'derive' },
+    last_activity: { source: 'body', preservation: 'derive' },
+    last_activity_desc: { source: 'body', preservation: 'preserve-when-unchanged' },
+    state_head: { source: 'free', preservation: 'derive' },
+    progress: { source: 'curated', preservation: 'preserve-always', mergeStrategy: 'progress-ratchet' },
+    'progress.total_phases': { source: 'disk', preservation: 'derive' },
+    'progress.completed_phases': { source: 'disk', preservation: 'derive' },
+    'progress.total_plans': { source: 'disk', preservation: 'derive' },
+    'progress.completed_plans': { source: 'disk', preservation: 'derive' },
+    'progress.percent': { source: 'disk', preservation: 'derive' },
+  });
+
+  // Verbatim copy of `FRONTMATTER_BODY_SOURCE`'s pre-#3873 literal (8 keys,
+  // this exact key order — deliberately NOT the same order as
+  // `FIELD_CLASSIFICATION` above, nor the same order as
+  // `FRONTMATTER_KEY_TO_BODY_LABEL` in tests/state.test.cjs; the two
+  // pre-existing tables disagreed with each other's order too).
+  const TODAYS_FRONTMATTER_BODY_SOURCE = Object.freeze({
+    current_phase: ['Current Phase'],
+    current_phase_name: ['Current Phase Name'],
+    current_plan: ['Current Plan'],
+    status: ['Status'],
+    stopped_at: ['Stopped At', 'Stopped at'],
+    paused_at: ['Paused At'],
+    last_activity: ['Last Activity', 'Last activity'],
+    last_activity_desc: ['Last Activity Description'],
+  });
+
+  test('row 1 — fieldClassificationProjectionMatchesTodaysTable', () => {
+    assert.deepStrictEqual(
+      Object.keys(FIELD_CLASSIFICATION),
+      Object.keys(TODAYS_FIELD_CLASSIFICATION),
+      'FIELD_CLASSIFICATION key order must be unchanged',
+    );
+    for (const key of Object.keys(TODAYS_FIELD_CLASSIFICATION)) {
+      assert.deepStrictEqual(
+        FIELD_CLASSIFICATION[key],
+        TODAYS_FIELD_CLASSIFICATION[key],
+        `FIELD_CLASSIFICATION[${JSON.stringify(key)}] must be byte-identical to today's table`,
+      );
+    }
+  });
+
+  test('row 2 — bodySourceProjectionMatchesTodaysTable', () => {
+    assert.deepStrictEqual(
+      Object.keys(FRONTMATTER_BODY_SOURCE),
+      Object.keys(TODAYS_FRONTMATTER_BODY_SOURCE),
+      'FRONTMATTER_BODY_SOURCE key order must be unchanged',
+    );
+    for (const key of Object.keys(TODAYS_FRONTMATTER_BODY_SOURCE)) {
+      assert.deepStrictEqual(
+        [...FRONTMATTER_BODY_SOURCE[key]],
+        TODAYS_FRONTMATTER_BODY_SOURCE[key],
+        `FRONTMATTER_BODY_SOURCE[${JSON.stringify(key)}] must be byte-identical to today's table`,
+      );
+    }
+  });
+
+  test('row 5 — projectionIsFrozenAndNullPrototype (FIELD_CLASSIFICATION, FRONTMATTER_BODY_SOURCE)', () => {
+    assert.ok(Object.isFrozen(FIELD_CLASSIFICATION));
+    assert.strictEqual(FIELD_CLASSIFICATION['toString'], undefined);
+    assert.ok(Object.isFrozen(FRONTMATTER_BODY_SOURCE));
+    assert.strictEqual(FRONTMATTER_BODY_SOURCE['toString'], undefined);
+    // Per-row objects/arrays keep their pre-#3873 shape too: FIELD_CLASSIFICATION's
+    // rows were plain (non-frozen, non-null-prototype) literals, and this
+    // projection reproduces that exactly rather than "improving" it.
+    assert.strictEqual(Object.isFrozen(FIELD_CLASSIFICATION.status), false);
+    assert.ok(Object.isFrozen(FRONTMATTER_BODY_SOURCE.stopped_at));
+  });
+
+  test('row 6 — everyClassificationRowStillResolves (including the five progress.* rows)', () => {
+    for (const key of Object.keys(TODAYS_FIELD_CLASSIFICATION)) {
+      assert.notStrictEqual(getFieldClassification(key), null, `${key} must still resolve`);
+    }
+    for (const leaf of ['progress.total_phases', 'progress.completed_phases', 'progress.total_plans', 'progress.completed_plans', 'progress.percent']) {
+      const cls = getFieldClassification(leaf);
+      assert.strictEqual(cls.source, 'disk');
+      assert.strictEqual(cls.preservation, 'derive');
+    }
+  });
+
+  test('row 7 — preserveWhenUnchangedProjectionUnchanged', () => {
+    assert.deepStrictEqual(
+      getPreserveWhenUnchangedFields(),
+      ['current_phase', 'current_phase_name', 'current_plan', 'status', 'stopped_at', 'paused_at', 'last_activity_desc'],
+    );
+  });
+
+  test('row 8 — schemaMayDeclareMoreThanAProjectionConsumes', () => {
+    // `milestone` is a real STATE_FIELD_SCHEMA row (external/preserve-if-placeholder)
+    // with no body source at all, so it is legitimately absent from
+    // FRONTMATTER_BODY_SOURCE — projections are subsets by design (D4).
+    assert.ok(Object.prototype.hasOwnProperty.call(STATE_FIELD_SCHEMA, 'milestone'));
+    assert.strictEqual(STATE_FIELD_SCHEMA.milestone.bodySource, undefined);
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(FRONTMATTER_BODY_SOURCE, 'milestone'),
+      false,
+      'a schema row with no bodySource must not appear in the FRONTMATTER_BODY_SOURCE projection',
+    );
   });
 });
 
