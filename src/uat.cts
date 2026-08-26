@@ -1274,7 +1274,12 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // ACCEPTED CONSEQUENCE, DELIBERATELY TRADED (this replaces the #3078
   // follow-up MINOR 1 scoping): a `### N.`-shaped line inside a properly
   // CLOSED fence in a `## Notes` section — a documentation sample of the row
-  // format, the ordinary way to explain the syntax inside a UAT file — is
+  // format. NOTE the shape needs LITERAL DIGITS — the scan requires `\d+`, so the
+  // conventional placeholder `### N. Name` does NOT trigger it; only a sample written
+  // with real numbers (`### 1. Example Row`) does, and no phase UAT file in-tree does
+  // (only the shipped template, which selectPhaseUatFiles never scans). If you test the
+  // placeholder form, see no over-report, and conclude this pin is stale: it is not.
+  // The ordinary way to explain the syntax inside a UAT file — is
   // counted as a suppressed row and raises a parse gap on a file with nothing
   // actually missing. That is an OVER-report: noisy, but VISIBLE and FAIL-SAFE
   // (an agent reads the file and dismisses it). Fence-closedness cannot
@@ -1304,7 +1309,11 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // `## Tests` body would silently drop an indented row living anywhere else
   // in the file — the identical vanishing-row class. Its own false-positive
   // guard is STRUCTURAL (scalar attribution via
-  // `ANY_KEY_SCALAR_HEADER_LINE_RE`), not positional, so it needs no scope.
+  // `ANY_KEY_SCALAR_HEADER_LINE_RE`) — with ONE positional caveat: the walk stops at the
+  // nearest COLUMN-0 line, so a block scalar nested inside a `## Gaps` bullet (a
+  // `- truth:` entry carrying an indented `note: |`) is transparent to it and a
+  // heading-shaped line inside that value is counted. That is another instance of the
+  // accepted over-report above, not a separate defect, not positional, so it needs no scope.
   headingsSeen += countUnattributedIndentedRows(content);
 
   // #3078: an UNTERMINATED fence swallows the entire remainder of the
