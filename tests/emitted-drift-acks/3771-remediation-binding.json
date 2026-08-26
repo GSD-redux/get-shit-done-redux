@@ -21,6 +21,12 @@
     },
     "verify-work.md": {
       "reason": "#3771 round-2 review found this flow missed. verify-work's gap-plan revision loop hands `<revision_context>` to gsd-planner, so it inherits the whole revised contract whether or not it states it — a planner reading planner-revision.md can return REVISION_CONFLICT here, and before this change nothing in the loop could receive it. The growth is the two blocks every other revision-bearing flow now carries: the binding/advisory statement plus the constraint re-check in the planner's instructions, and the conflict branch that declines to spend an iteration, offers only resolving options, and bounds recurrence on a repeated required_property. No new mechanism — the same wording as plan-phase and quick, in the file that owns this loop's iteration_count."
+    },
+    "gsd-planner.md": {
+      "reason": "#3771 adds one return marker to the planner's contract. `## REVISION_CONFLICT` is what a planner emits when a checker fix_hint contradicts a locked decision, capability guidance, or an existing plan constraint. check:contract-drift is explicit that a marker four workflows dispatch on must be declared and emitted where the agent is defined — describing it only in gsd-core/references/planner-revision.md left an orphan consumer, a marker nothing produces. The growth is the fenced marker plus the four lines saying when to emit it, that it is not a failure, and where its shape lives. The full return shape stays in the reference; it is not duplicated here."
+    },
+    "gsd-ui-researcher.md": {
+      "reason": "#3771 gives the UI researcher the same return marker, for the same contract-drift reason: /gsd:ui-phase dispatches on `## REVISION_CONFLICT` and nothing emitted it. This file carries the full table shape rather than pointing at a reference because gsd-ui-researcher has no revision-mode reference to point at — planner-revision.md is the planner's, and creating a second one for a single return block would cost more loaded context than the block itself. The growth is that block plus the paragraph stating when it replaces `## UI-SPEC COMPLETE` and that it does not spend a revision iteration."
     }
   }
 }
