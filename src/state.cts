@@ -3534,10 +3534,13 @@ function applyPostSyncPreservation(
     for (const key of Object.keys(preservation.postFm)) {
       const before = preservationInputSnapshot[key];
       const after = preservation.postFm[key];
-      const changed = (typeof before === 'object' || typeof after === 'object')
-        ? JSON.stringify(before) !== JSON.stringify(after)
-        : before !== after;
-      if (changed) divergedFields.push(key);
+      // ADR-3473 §8.7 (#3872 standards-axis finding): route through the ONE
+      // owner of this comparison rule (`stateFieldValuesDiffer`, defined
+      // below) instead of carrying a second inline `JSON.stringify`-vs-`!==`
+      // copy — this is exactly the duplicated-rule shape this epic exists to
+      // remove. `stateFieldValuesDiffer` is a function declaration (hoisted),
+      // so calling it here, above its textual definition, is safe.
+      if (stateFieldValuesDiffer(before, after)) divergedFields.push(key);
     }
     // ADR-3408 §8.5 Row 2 (D1's actual bug, the reason the guards had to be
     // deleted rather than merely relocated): the loop above can only see a
@@ -3749,8 +3752,19 @@ const FRONTMATTER_KEY_TO_BODY_LABEL: Readonly<Record<string, string>> = Object.f
  * (e.g. `progress`), not a silent degrade.
  */
 function bodyLabelFor(field: string): string {
-  const label = FRONTMATTER_KEY_TO_BODY_LABEL[field];
-  if (label !== undefined) return label;
+  // ADR-3473 §8.7 (#3872 review): an OWN-PROPERTY check, never a bare
+  // bracket read — `FRONTMATTER_KEY_TO_BODY_LABEL` is a plain object literal
+  // (real `Object.prototype` in its chain), so `[field]` for a hostile field
+  // named `__proto__`/`constructor`/`toString` returns the INHERITED
+  // prototype-chain member (`Object.prototype` itself, the `Object`
+  // constructor function, `Object.prototype.toString`) instead of
+  // `undefined` — which would then be returned as the "label" and leak a
+  // non-string value into the caller's `updated` array. Proven by
+  // `dottedResolutionDoesNotPollutePrototypes` (test matrix row 25) before
+  // this fix. Mirrors `resolveFrontmatterPath`'s own-property discipline.
+  if (Object.prototype.hasOwnProperty.call(FRONTMATTER_KEY_TO_BODY_LABEL, field)) {
+    return FRONTMATTER_KEY_TO_BODY_LABEL[field];
+  }
   const cls = stateTransitionMod.getFieldClassification(field);
   if (cls && cls.preservation === 'preserve-when-unchanged') {
     const err = new Error(

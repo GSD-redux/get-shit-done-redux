@@ -12,8 +12,11 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runGsdTools, createTempDir, createTempProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
 const { createFixture, seedWorkstream, writeState } = require('./fixtures/index.cjs');
+// ADR-3473 §8.7 (#3872): git-fixture spawns for the state_head rows (10/11)
+// go through the throw-preserving wrapper, never a raw execFileSync.
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 // #3578 AC4 (MCP dispatch parity): drives the same `state complete-phase`
 // command through the gsd_invoke_command MCP tool route instead of the CLI,
 // mirroring the gsd-mcp-server.test.cjs `tools/call gsd_invoke_command`
@@ -18016,6 +18019,523 @@ describe('#3834/#3835/#3836: current_phase_name / last_activity_desc preservatio
       parsed.last_activity_desc,
       'FRESH CURATED DESCRIPTION',
       `last_activity_desc must report the curated frontmatter value, not the stale archived body prose — got ${JSON.stringify(parsed.last_activity_desc)}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-3473 §8.7 (#3872): the transaction diff — remaining test-matrix rows
+// (`.gsd/phase/feat-3872-transaction-diff-reporting/50-test-matrix.md`). Rows
+// 3, 4, 5, 8, 12, 13, 20, 27 and the row-12 companion are covered elsewhere
+// (tests/frontmatter.test.cjs's #1264 pin, and existing state.test.cjs A2f/
+// #3743/#3818 assertions) and are deliberately NOT duplicated here.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('ADR-3473 §8.7 (#3872): reconcileReportedFields / the transaction diff', () => {
+  let tmpDir;
+  let statePath;
+
+  beforeEach(() => {
+    tmpDir = createTempDir('gsd-3872-diff-');
+    statePath = path.join(tmpDir, 'STATE.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writePersisted(frontmatterLines, bodyLines) {
+    fs.writeFileSync(
+      statePath,
+      ['---', ...frontmatterLines, '---', '', ...bodyLines].join('\n'),
+    );
+  }
+
+  // Row 1
+  test('reportsAFieldThatActuallyPersisted', () => {
+    writePersisted(
+      ['current_phase: "05"'],
+      ['# State', '', '**Current Phase:** 05', ''],
+    );
+    const snapshotBody = ['# State', '', '**Current Phase:** 04', ''].join('\n');
+    const updated = stateLib._reconcileReportedFields(
+      statePath,
+      { fm: { current_phase: '04' }, body: snapshotBody },
+      ['Current Phase'],
+      [],
+    );
+    assert.deepEqual(updated, ['Current Phase'], 'a field the transform reported that genuinely persisted must be reported');
+  });
+
+  // Row 2 — #3351 stays closed
+  test('doesNotReportAFieldTheWriteDiscarded', () => {
+    const body = ['# State', '', '**Current Phase:** 05', ''].join('\n');
+    writePersisted(['current_phase: "05"'], ['# State', '', '**Current Phase:** 05', '']);
+    const updated = stateLib._reconcileReportedFields(
+      statePath,
+      { fm: { current_phase: '05' }, body },
+      ['Current Phase'],
+      [],
+    );
+    assert.deepEqual(updated, [], '#3351: a field the transform claimed to write but sync/preservation discarded before the save must not be reported');
+  });
+
+  // Rows 6, 7, 9 — pure diff, no I/O: computeChangedFrontmatterFields
+  test('doesNotReportAnUnchangedDottedLeaf / reportsOnlyTheLeafThatMoved / neverReportsAnUnconditionallyStampedField', () => {
+    const snapshotFm = {
+      progress: { total_plans: '0', completed_plans: '2' },
+      last_updated: '2026-08-24T00:00:00.000Z',
+    };
+    const persistedFm = {
+      progress: { total_plans: '5', completed_plans: '2' },
+      last_updated: '2026-08-25T00:00:00.000Z',
+    };
+    const changed = stateLib._computeChangedFrontmatterFields(snapshotFm, persistedFm, undefined);
+    assert.deepEqual(
+      changed,
+      ['progress.total_plans'],
+      'total_plans moved and must be the only reported leaf: completed_plans (row 6) is unchanged so it must not appear, ' +
+      'and last_updated (row 9) is the one-element provenance exclusion so it must never appear regardless of how much it moved',
+    );
+  });
+
+  // Row 14 — preserve-always field restored to an identical value
+  test('anIdenticalRestoreIsNotAChange', () => {
+    writePersisted(['milestone: "v2"'], ['# State', '']);
+    const updated = stateLib._reconcileReportedFields(
+      statePath,
+      { fm: { milestone: 'v2' }, body: '# State\n' },
+      [],
+      [],
+    );
+    assert.deepEqual(updated, [], 'milestone restored to the SAME value it already held is not a change');
+  });
+
+  // Row 15 — the row that proves no classification-based exclusion survives
+  test('reportsAPlaceholderRestoreThatChangedTheValue', () => {
+    writePersisted(['milestone: "v2"'], ['# State', '']);
+    const updated = stateLib._reconcileReportedFields(
+      statePath,
+      { fm: { milestone: 'unreleased' }, body: '# State\n' },
+      [],
+      [],
+    );
+    assert.deepEqual(
+      updated,
+      ['milestone'],
+      'a preserve-if-placeholder field (milestone/milestone_name) genuinely restored to a DIFFERENT value must be ' +
+      'reported — the old classification filter would have suppressed it, so this is the row that proves the filter is gone',
+    );
+  });
+
+  // Row 16 — deletion
+  test('reportsADeletedKey', () => {
+    writePersisted(['status: "executing"'], ['# State', '']);
+    const updated = stateLib._reconcileReportedFields(
+      statePath,
+      { fm: { status: 'executing', stale_key: 'x' }, body: '# State\n' },
+      [],
+      [],
+    );
+    assert.deepEqual(updated, ['stale_key'], 'a key present in the snapshot but absent from persisted is a deletion, which is a change');
+  });
+
+  // Row 17 — addition
+  test('reportsAnAddedKey', () => {
+    writePersisted(['status: "executing"', 'new_key: "y"'], ['# State', '']);
+    const updated = stateLib._reconcileReportedFields(
+      statePath,
+      { fm: { status: 'executing' }, body: '# State\n' },
+      [],
+      [],
+    );
+    assert.deepEqual(updated, ['new_key'], 'a key absent from the snapshot but present in persisted is an addition, which is a change');
+  });
+
+  // Row 18 — #1162: body-first, frontmatter-key-flat fallback second. A field
+  // name that EXACT-MATCHES a frontmatter key must still resolve against the
+  // body first — proven by making the frontmatter value stay constant while
+  // only the body's label line moves, so a frontmatter-first reading would
+  // wrongly report "unchanged".
+  test('bodyLabelResolutionOrderUnchanged', () => {
+    writePersisted(['status: "A"'], ['# State', '', '**Status:** C', '']);
+    const snapshotBody = ['# State', '', '**Status:** B', ''].join('\n');
+    const updated = stateLib._reconcileReportedFields(
+      statePath,
+      { fm: { status: 'A' }, body: snapshotBody },
+      ['status'],
+      [],
+    );
+    assert.deepEqual(
+      updated,
+      ['status'],
+      '#1162: a lowercase field name that exact-matches a frontmatter key must still resolve against the BODY first — ' +
+      'the frontmatter value (A) never changed, but the body label did (B -> C), and only body-first resolution reports that',
+    );
+  });
+
+  // Row 19 — internal-invariant throw for a preserve-when-unchanged field
+  // with no FRONTMATTER_KEY_TO_BODY_LABEL row. `getFieldClassification` is
+  // consulted via `stateTransitionMod.getFieldClassification` (a property
+  // read, not a destructured local), so mocking the shared module object is
+  // observed by the compiled seam under test.
+  test('unwiredLabelRowStillThrows', (t) => {
+    const original = stateTransitionMod.getFieldClassification;
+    mock.method(stateTransitionMod, 'getFieldClassification', (field) => {
+      if (field === 'fake_preserve_field') return { preservation: 'preserve-when-unchanged' };
+      return original(field);
+    });
+    t.after(() => mock.restoreAll());
+
+    writePersisted(['fake_preserve_field: "x"'], ['# State', '']);
+    assert.throws(
+      () => stateLib._reconcileReportedFields(statePath, { fm: {}, body: '# State\n' }, [], []),
+      (err) => err.code === 'STATE_BODY_LABEL_UNWIRED_ROW' && err.field === 'fake_preserve_field',
+      'a preserve-when-unchanged field with no FRONTMATTER_KEY_TO_BODY_LABEL row must still throw STATE_BODY_LABEL_UNWIRED_ROW',
+    );
+  });
+
+  // Row 21 — representation-insensitive equality (frontmatter scalars round-trip as strings)
+  test('stringAndNumberOfTheSameValueIsNotAChange', () => {
+    assert.equal(stateLib._stateFieldValuesDiffer('5', 5), false, '"5" vs 5 is the SAME value in two representations, not a change');
+    assert.equal(stateLib._stateFieldValuesDiffer('0', 0), false, '"0" vs 0 is the SAME value, not a change');
+    assert.equal(
+      stateLib._stateFieldValuesDiffer('1.0', 1),
+      true,
+      '"1.0" and 1 stringify to DIFFERENT representations ("1.0" vs "1") — this is a genuine representation change, not the same-value case row 21 protects',
+    );
+    assert.equal(stateLib._stateFieldValuesDiffer('5', '6'), true, 'a genuine value change ("5" -> "6") must still count');
+  });
+
+  // Row 22 — structural, not reference, equality
+  test('structuralEqualityForNestedValues', () => {
+    assert.equal(
+      stateLib._stateFieldValuesDiffer({ a: 1, b: { c: 2 } }, { a: 1, b: { c: 2 } }),
+      false,
+      'two distinct object instances with the same structure are not a change',
+    );
+    assert.equal(
+      stateLib._stateFieldValuesDiffer({ a: 1 }, { a: 2 }),
+      true,
+      'a structural difference is a change',
+    );
+  });
+
+  // Row 23 — hostile: missing parent
+  test('dottedPathWithMissingParentDoesNotThrow', () => {
+    let resolved;
+    assert.doesNotThrow(() => {
+      resolved = stateLib._resolveFrontmatterPath({}, 'progress.total_plans');
+    });
+    assert.equal(typeof resolved, 'symbol', 'a missing parent must resolve to the absence SENTINEL (a symbol), not undefined/null by coincidence');
+    assert.ok(
+      resolved.toString().includes('state-field-absent'),
+      `expected the state-field-absent sentinel, got ${resolved.toString()}`,
+    );
+    // Same input on both sides of the diff: absent-vs-absent is not a change.
+    assert.equal(
+      stateLib._computeChangedFrontmatterFields({}, {}, undefined).includes('progress.total_plans'),
+      false,
+      'a leaf whose parent is absent on BOTH sides is not a change',
+    );
+  });
+
+  // Row 24 — hostile: dotted path into a scalar parent
+  test('dottedPathIntoAScalarDoesNotThrow', () => {
+    let resolved;
+    assert.doesNotThrow(() => {
+      resolved = stateLib._resolveFrontmatterPath({ status: 'executing' }, 'status.foo');
+    });
+    assert.equal(typeof resolved, 'symbol', 'a dotted path into a scalar parent must resolve to the absence SENTINEL, not throw or return the scalar itself');
+    assert.ok(
+      resolved.toString().includes('state-field-absent'),
+      `expected the state-field-absent sentinel, got ${resolved.toString()}`,
+    );
+    assert.equal(
+      stateLib._computeChangedFrontmatterFields(
+        { status: 'executing' },
+        { status: 'executing' },
+        undefined,
+      ).includes('status.foo'),
+      false,
+      'a dotted path into a scalar parent (unchanged on both sides) is not reported as a change',
+    );
+  });
+
+  // Row 25 — security: prototype-pollution safety. Field names __proto__,
+  // constructor, prototype, toString both as PATH SEGMENTS (nested under a
+  // real object) and as actual frontmatter KEYS (own enumerable properties —
+  // built via JSON.parse, which — unlike object-literal syntax — creates a
+  // literal own property named "__proto__" rather than reassigning the
+  // object's prototype).
+  test('dottedResolutionDoesNotPollutePrototypes', () => {
+    const hostileKeys = ['__proto__', 'constructor', 'prototype', 'toString'];
+
+    assert.doesNotThrow(() => {
+      // As path segments under a real nested object.
+      for (const key of hostileKeys) {
+        stateLib._resolveFrontmatterPath({ a: {} }, `a.${key}.polluted`);
+      }
+      // As flat top-level keys, and as own frontmatter keys via JSON.parse.
+      const hostileFm = JSON.parse(
+        '{"__proto__":"snap-proto","constructor":"snap-ctor","prototype":"snap-proto2","toString":"snap-tostr"}',
+      );
+      for (const key of hostileKeys) {
+        stateLib._resolveFrontmatterPath(hostileFm, key);
+      }
+    }, 'hostile path segments and frontmatter keys must never throw');
+
+    const hostileSnapshot = JSON.parse(
+      '{"__proto__":"snap-proto","constructor":"snap-ctor","prototype":"snap-proto2","toString":"snap-tostr"}',
+    );
+    const hostilePersisted = JSON.parse(
+      '{"__proto__":"persisted-proto","constructor":"snap-ctor","prototype":"snap-proto2","toString":"snap-tostr"}',
+    );
+    writePersisted(['status: "executing"'], ['# State', '']);
+    stateLib._reconcileReportedFields(
+      statePath,
+      { fm: hostileSnapshot, body: '# State\n' },
+      hostileKeys,
+      [],
+    );
+    const changed = stateLib._computeChangedFrontmatterFields(hostileSnapshot, hostilePersisted, undefined);
+    assert.deepEqual(
+      changed,
+      ['__proto__'],
+      'only the hostile key whose value genuinely differs must be reported — the diff must still function correctly, not merely avoid throwing',
+    );
+
+    assert.strictEqual(({}).polluted, undefined, 'a plain object must never gain a "polluted" own or inherited property AFTER running the resolution and the full diff');
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(Object.prototype, 'polluted'),
+      false,
+      'Object.prototype itself must gain no new member from hostile field names',
+    );
+  });
+
+  // Row 26 — a literal key containing a dot, resolved BEFORE path traversal
+  // (pinned to the order `resolveFrontmatterPath` actually ships: a literal
+  // flat own-property wins first; only when no such flat key exists is the
+  // name split and walked as a dotted path).
+  test('literalDottedKeyResolvesBeforePathTraversal', () => {
+    const fm = { 'a.b': 'literal-value', a: { b: 'path-value' } };
+    assert.equal(
+      stateLib._resolveFrontmatterPath(fm, 'a.b'),
+      'literal-value',
+      'a stored flat key containing a literal dot must win over dotted-path traversal into a same-named nested structure',
+    );
+  });
+
+  // Row 10 — state_head IS reportable: it changes only when git HEAD actually
+  // moved, so a git-backed fixture across a real commit must surface it.
+  test('reportsStateHeadWhenHeadMoved', () => {
+    const dir = createTempGitProject('gsd-3872-statehead-');
+    writeState(dir, ['---', 'status: "Paused"', '---', '', '# State', '', '**Status:** Paused', ''].join('\n'));
+    gitOrThrow(['add', '-A'], { cwd: dir });
+    gitOrThrow(['commit', '-m', 'seed state'], { cwd: dir });
+
+    // Stabilizing write: the very first patch on a freshly-seeded fixture
+    // also reports gsd_state_version/progress.* from bootstrap resync noise,
+    // which is not this row's concern.
+    runGsdTools(['query', 'state.patch', JSON.stringify({ Status: 'In progress' })], dir);
+
+    // Advance HEAD with a real commit, unrelated to STATE.md.
+    fs.writeFileSync(path.join(dir, 'dummy.txt'), 'x');
+    gitOrThrow(['add', 'dummy.txt'], { cwd: dir });
+    gitOrThrow(['commit', '-m', 'advance head'], { cwd: dir });
+
+    const result = runGsdTools(['query', 'state.patch', JSON.stringify({ Status: 'Executing' })], dir);
+    assert.ok(result.success, `state.patch failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.ok(
+      output.updated.includes('state_head'),
+      `state_head must be reported when git HEAD genuinely moved between writes; got updated=${JSON.stringify(output.updated)}`,
+    );
+  });
+
+  // Row 11 — absence is not a change, in both of the matrix's named shapes:
+  // (a) HEAD did not move between two writes in a git-backed tree, and
+  // (b) the tree is not a git repo at all (state_head never appears at all).
+  test('absentStateHeadIsNotAChange', () => {
+    const gitDir = createTempGitProject('gsd-3872-statehead-unmoved-');
+    writeState(gitDir, ['---', 'status: "Paused"', '---', '', '# State', '', '**Status:** Paused', ''].join('\n'));
+    gitOrThrow(['add', '-A'], { cwd: gitDir });
+    gitOrThrow(['commit', '-m', 'seed state'], { cwd: gitDir });
+
+    runGsdTools(['query', 'state.patch', JSON.stringify({ Status: 'In progress' })], gitDir);
+    const unmoved = runGsdTools(['query', 'state.patch', JSON.stringify({ Status: 'Executing' })], gitDir);
+    assert.ok(unmoved.success, `state.patch failed: ${unmoved.error}`);
+    const unmovedOutput = JSON.parse(unmoved.output);
+    assert.ok(
+      !unmovedOutput.updated.includes('state_head'),
+      `state_head must NOT be reported when HEAD did not move; got updated=${JSON.stringify(unmovedOutput.updated)}`,
+    );
+
+    const plainDir = createTempProject('gsd-3872-statehead-nongit-');
+    writeState(plainDir, ['---', 'status: "Paused"', '---', '', '# State', '', '**Status:** Paused', ''].join('\n'));
+    runGsdTools(['query', 'state.patch', JSON.stringify({ Status: 'In progress' })], plainDir);
+    const nonGit = runGsdTools(['query', 'state.patch', JSON.stringify({ Status: 'Executing' })], plainDir);
+    assert.ok(nonGit.success, `state.patch failed: ${nonGit.error}`);
+    const nonGitOutput = JSON.parse(nonGit.output);
+    assert.ok(
+      !nonGitOutput.updated.includes('state_head'),
+      `an absent state_head (non-git tree) must not read as a deletion/change; got updated=${JSON.stringify(nonGitOutput.updated)}`,
+    );
+    cleanup(gitDir);
+    cleanup(plainDir);
+  });
+
+  // Row 28 — every reconcileReportedFields call site still compiles and
+  // reports coherently: one assertion per command family.
+  test('everyReportingCommandStillReportsCoherently', () => {
+    function assertArrayOfStrings(value, label) {
+      assert.ok(Array.isArray(value), `${label}: expected an array, got ${JSON.stringify(value)}`);
+      for (const entry of value) {
+        assert.equal(typeof entry, 'string', `${label}: every entry must be a string field name, got ${JSON.stringify(entry)}`);
+      }
+    }
+
+    // cmdStatePatch
+    {
+      const dir = createFixture();
+      writeState(dir, '# Project State\n\n**Status:** Ready\n');
+      const r = runGsdTools(['query', 'state.patch', JSON.stringify({ Status: 'Executing now' })], dir);
+      assert.ok(r.success, `state.patch failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      assertArrayOfStrings(out.updated, 'cmdStatePatch');
+      assert.ok(out.updated.includes('Status'), 'cmdStatePatch: the field that genuinely changed must be reported');
+      cleanup(dir);
+    }
+
+    // cmdStateUpdate
+    {
+      const dir = createFixture();
+      writeState(dir, '# Project State\n\n**Status:** Ready\n');
+      const r = runGsdTools(['state', 'update', 'Status', 'Executing now'], dir);
+      assert.ok(r.success, `state update failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      assert.equal(typeof out.updated, 'boolean', 'cmdStateUpdate: updated is a single-field boolean, not an array');
+      assertArrayOfStrings(out.preserved, 'cmdStateUpdate.preserved');
+      assert.equal(out.updated, true, 'cmdStateUpdate: the requested field genuinely changed and must report success');
+      cleanup(dir);
+    }
+
+    // cmdStateAdvancePlan
+    {
+      const dir = createFixture();
+      writeState(dir, [
+        '# Project State', '', '**Current Plan:** 1', '**Total Plans in Phase:** 3',
+        '**Status:** Executing', '**Last Activity:** 2024-01-10',
+      ].join('\n') + '\n');
+      const r = runGsdTools(['state', 'advance-plan'], dir);
+      assert.ok(r.success, `advance-plan failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      assertArrayOfStrings(out.updated, 'cmdStateAdvancePlan');
+      assert.ok(out.updated.includes('Current Plan'), 'cmdStateAdvancePlan: the plan counter that genuinely advanced must be reported');
+      cleanup(dir);
+    }
+
+    // cmdStateRecordSession
+    {
+      const dir = createFixture();
+      writeState(dir, [
+        '# Project State', '', '## Session Continuity', '',
+        '**Last session:** 2024-01-10', '**Stopped at:** Phase 2, Plan 1', '**Resume file:** None',
+      ].join('\n') + '\n');
+      const r = runGsdTools(['state', 'record-session', '--stopped-at', 'Phase 3, Plan 2'], dir);
+      assert.ok(r.success, `record-session failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      assert.equal(out.recorded, true, 'cmdStateRecordSession: a genuine field write must record');
+      assertArrayOfStrings(out.updated, 'cmdStateRecordSession');
+      assert.ok(out.updated.includes('Stopped At'), 'cmdStateRecordSession: the field that genuinely changed must be reported');
+      cleanup(dir);
+    }
+
+    const phaseStateMd = [
+      '# Project State', '', '**Current Phase:** 1', '**Current Phase Name:** setup', '**Total Phases:** 5',
+      '**Current Plan:** 0', '**Total Plans in Phase:** 0', '**Status:** Ready to plan', '**Last Activity:** 2026-03-20',
+      '**Last Activity Description:** Roadmap created', '', '## Current Position',
+      'Phase: 1 of 5 (setup)', 'Plan: 0 of ? in current phase', 'Status: Ready to plan',
+      'Last activity: 2026-03-20 -- Roadmap created', 'Progress: [..........] 0%', '',
+    ].join('\n');
+
+    // cmdStateBeginPhase
+    {
+      const dir = createFixture();
+      writeState(dir, phaseStateMd);
+      const r = runGsdTools(['state', 'begin-phase', '--phase', '1', '--name', 'setup', '--plans', '4'], dir);
+      assert.ok(r.success, `begin-phase failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      assertArrayOfStrings(out.updated, 'cmdStateBeginPhase');
+      assert.ok(out.updated.includes('Status'), 'cmdStateBeginPhase: Status genuinely changed and must be reported');
+      cleanup(dir);
+    }
+
+    // cmdStatePlannedPhase
+    {
+      const dir = createFixture();
+      writeState(dir, phaseStateMd);
+      const r = runGsdTools(['state', 'planned-phase', '--phase', '3', '--name', 'API', '--plans', '5'], dir);
+      assert.ok(r.success, `planned-phase failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      assertArrayOfStrings(out.updated, 'cmdStatePlannedPhase');
+      assert.ok(out.updated.includes('Total Plans in Phase'), 'cmdStatePlannedPhase: the plan count that genuinely changed must be reported');
+      cleanup(dir);
+    }
+
+    // cmdStateCompletePhase
+    {
+      const dir = createFixture();
+      writeState(dir, phaseStateMd);
+      const r = runGsdTools(['state', 'complete-phase', '--phase', '1'], dir);
+      assert.ok(r.success, `complete-phase failed: ${r.error}`);
+      const out = JSON.parse(r.output);
+      assertArrayOfStrings(out.updated, 'cmdStateCompletePhase');
+      assert.ok(out.updated.includes('Current Position'), 'cmdStateCompletePhase: Current Position genuinely changed and must be reported');
+      cleanup(dir);
+    }
+  });
+
+  // Row 29 — property: a field appears in the changed set IFF its persisted
+  // value differs from the snapshot, over generated snapshot/persisted
+  // frontmatter pairs, ambient keys (last_updated) excluded. Arbitraries are
+  // declared INSIDE the property body (fast-check v4: a describe-body
+  // arbitrary kills the whole block). Seed pinned, numRuns bounded; a failing
+  // run's thrown error carries fast-check's own counterexample + seed for
+  // replay.
+  test('updatedIsExactlyTheChangedNonAmbientSet', () => {
+    // A closed, deliberately small key alphabet — none of these are
+    // body-sourced (current_phase/current_phase_name), declared-leaf parents
+    // (progress), or the ambient exclusion (last_updated), so the reference
+    // oracle below (plain hasOwnProperty + stateFieldValuesDiffer) is exactly
+    // what computeChangedFrontmatterFields is contractually required to match.
+    const KEYS = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
+    const scalarArb = fc.oneof(
+      fc.string({ maxLength: 6 }),
+      fc.integer({ min: -100, max: 100 }),
+      fc.boolean(),
+    );
+    const fmArb = fc.dictionary(fc.constantFrom(...KEYS), scalarArb, { maxKeys: KEYS.length });
+
+    fc.assert(
+      fc.property(fmArb, fmArb, (snapshotFm, persistedFm) => {
+        const changed = stateLib._computeChangedFrontmatterFields(snapshotFm, persistedFm, undefined);
+        const changedSet = new Set(changed);
+        const unionKeys = new Set([...Object.keys(snapshotFm), ...Object.keys(persistedFm)]);
+        for (const key of unionKeys) {
+          const inSnap = Object.prototype.hasOwnProperty.call(snapshotFm, key);
+          const inPers = Object.prototype.hasOwnProperty.call(persistedFm, key);
+          const expected = inSnap !== inPers
+            ? true
+            : stateLib._stateFieldValuesDiffer(snapshotFm[key], persistedFm[key]);
+          assert.equal(
+            changedSet.has(key),
+            expected,
+            `key=${key} expected changed=${expected} actual=${changedSet.has(key)} ` +
+            `snapshot=${JSON.stringify(snapshotFm)} persisted=${JSON.stringify(persistedFm)}`,
+          );
+        }
+      }),
+      { seed: 20260825, numRuns: 200 },
     );
   });
 });
