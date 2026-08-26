@@ -414,8 +414,20 @@ if [ -z "${REVIEWS_FILE}" ] || [ ! -r "${REVIEWS_FILE}" ]; then
   echo "BLOCKED: cannot read REVIEWS.md ('${REVIEWS_FILE}') to check for open plan-revision conflicts. Refusing to declare convergence on an unverifiable gate." >&2
   exit 1
 fi
-OPEN_CONFLICTS=$(grep -c '^- \[ \] .*required_property:' "${REVIEWS_FILE}" || true)
-OPEN_CONFLICTS=${OPEN_CONFLICTS:-0}
+if OPEN_CONFLICTS=$(grep -c '^- \[ \] .*required_property:' "${REVIEWS_FILE}"); then
+  :
+else
+  # `$?` must be read in the ELSE branch, not after `if !` — `!` inverts the status, so a
+  # negated form reports 0 here and every failure reads as success.
+  # grep exit 1 is "no matches", a legitimate zero. ANY other status is a read failure, and
+  # `|| true` would launder it into 0 open conflicts, converging over whatever the file holds.
+  grep_status=$?
+  if [ "${grep_status}" -ne 1 ]; then
+    echo "BLOCKED: could not scan '${REVIEWS_FILE}' for open plan-revision conflicts (grep exit ${grep_status}). Refusing to declare convergence on an unverifiable gate." >&2
+    exit 1
+  fi
+  OPEN_CONFLICTS=0
+fi
 ```
 
 `/gsd:plan-phase` records each conflict as a `- [ ]` checklist line and flips it to `- [x]` when

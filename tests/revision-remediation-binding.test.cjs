@@ -295,6 +295,18 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       'an unreadable gate input must block, not pass');
     assert.doesNotMatch(CONVERGENCE, /"\$\{REVIEWS_FILE\}" 2>\/dev\/null \|\| echo 0/,
       'swallowing the read error back into a zero count is the fail-open this test exists to stop');
+    // `|| true` on the count laundered grep's error status (2) into 0 open conflicts — the same
+    // fail-open, moved. Only exit 1 ("no matches") is a legitimate zero.
+    assert.doesNotMatch(CONVERGENCE, /grep -c '\^- \\\[ \\\] \.\*required_property:' "\$\{REVIEWS_FILE\}" \|\| true/,
+      'the count must not swallow a grep error into zero');
+    assert.match(CONVERGENCE, /grep_status=\$\?/,
+      'the gate must inspect grep\'s exit status rather than assume a zero');
+    assert.match(CONVERGENCE, /if \[ "\$\{grep_status\}" -ne 1 \]; then/,
+      'only grep status 1 (no matches) may be treated as zero conflicts');
+    // `$?` after `if !` reports the negation, not the command — a negated form reads every
+    // failure as success. The status must be read in the else branch.
+    assert.doesNotMatch(CONVERGENCE, /if ! OPEN_CONFLICTS=\$\(grep/,
+      'a negated if inverts $? and makes the status check always see 0');
   });
 
   // The section is a blocking gate's state. One writer, or it can be forged.
