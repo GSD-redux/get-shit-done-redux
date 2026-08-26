@@ -1588,6 +1588,18 @@ function validateRuntimeBody(cap) {
           'runtime.orchestratorExec.promptFlag must be a string or null (got: ' + JSON.stringify(oe.promptFlag) + ')',
         );
       }
+
+      // modelFlag — optional; string or null (#3714). `null`/absent means the
+      // host declares no per-invocation model channel and the argument is
+      // omitted. Validated here for the same reason as its siblings: an
+      // external descriptor that clears the trust gate with a malformed value
+      // would otherwise hard-fail at dispatch time with `invalid_model_flag`,
+      // degrading isolation on every wave rather than being rejected at install.
+      if (oe.modelFlag !== undefined && oe.modelFlag !== null && typeof oe.modelFlag !== 'string') {
+        errors.push(
+          'runtime.orchestratorExec.modelFlag must be a string or null (got: ' + JSON.stringify(oe.modelFlag) + ')',
+        );
+      }
     }
   }
 

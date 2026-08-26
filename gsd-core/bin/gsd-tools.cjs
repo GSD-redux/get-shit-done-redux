@@ -1851,17 +1851,45 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // that resolver is the runtime-neutral descriptor-to-argv seam and
           // holds no host knowledge by ADR-1239 design. A malformed model
           // shape is the resolver's problem; an inappropriate model is the
-          // caller's. GSD tier tokens and Anthropic-flavored ids are GSD's own
-          // vocabulary and mean nothing to a host CLI, so they are dropped
-          // silently — the same treatment ADR-2313 gives a whitespace-only
-          // override rather than failing a wave over a config typo.
-          const { VALID_TIERS, isAnthropicFlavoredModel } = require('./lib/model-catalog.cjs');
+          // caller's.
+          //
+          // EVERY rejection degrades to "no pin", never to a failed
+          // resolution. A bad value must cost the user their pin, not their
+          // wave: this runs after `worktree.create`, so a fail-closed
+          // resolution here leaves an orphaned worktree and a FATAL exit —
+          // strictly worse than the pre-#3714 behavior of silently using the
+          // session model. Silence matches ADR-2313's treatment of a
+          // whitespace-only override.
+          const {
+            VALID_TIERS,
+            VALID_AGENT_TIERS,
+            isAnthropicFlavoredModel,
+          } = require('./lib/model-catalog.cjs');
           const modelIdx = args.indexOf('--model');
-          const modelRaw = modelIdx !== -1 ? args[modelIdx + 1] : undefined;
-          const modelArg = typeof modelRaw === 'string'
-            && modelRaw.length > 0
+          // Trimmed before the emptiness test so a whitespace-only override is
+          // absent rather than a blank `--model` the host will reject.
+          const modelRaw = modelIdx !== -1 && typeof args[modelIdx + 1] === 'string'
+            ? args[modelIdx + 1].trim()
+            : '';
+          // Anthropic-flavored ids are filtered only for a host that declares
+          // `modelMode: passive` — the axis that says GSD must not push its
+          // own model vocabulary at this host. Gating on the declared posture
+          // rather than a runtime id is what ADR-1239 requires, and it is not
+          // hypothetical: opencode declares `orchestrator-worktree` too but is
+          // `modelMode: active`, so the day it declares a modelFlag a
+          // legitimate `claude-*` pin must still reach it.
+          const modelMode = runtimeEntry?.runtime?.hostIntegration?.modelMode ?? null;
+          const modelArg = modelRaw.length > 0
+            // A value starting with '-' is read by the spawned CLI as a flag,
+            // and the resolver rejects it outright. Drop it here so a config
+            // typo never reaches that fail-closed guard.
+            && !modelRaw.startsWith('-')
+            // Both GSD vocabularies: tier VALUES (opus/sonnet/haiku/inherit)
+            // and agent tier TOKENS (heavy/standard/light). Either is GSD's
+            // own language and means nothing to a host CLI.
             && !VALID_TIERS.has(modelRaw)
-            && !isAnthropicFlavoredModel(modelRaw)
+            && !VALID_AGENT_TIERS.has(modelRaw)
+            && !(modelMode === 'passive' && isAnthropicFlavoredModel(modelRaw))
             ? modelRaw
             : undefined;
           const hostIntegration = require('./lib/host-integration.cjs');

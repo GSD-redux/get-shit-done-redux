@@ -2077,6 +2077,18 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     assert.deepEqual(d.exec.args, UNPINNED);
   });
 
+  test('the Anthropic filter keys off the declared posture, not a runtime id', () => {
+    // The filter is scoped to `modelMode: passive` hosts. That gate is latent
+    // today (codex is the only host declaring a modelFlag), so pin the premise
+    // it rests on: opencode is an orchestrator-worktree host that is NOT
+    // passive, so the day it declares a modelFlag a legitimate `claude-*` pin
+    // must still reach it. If either value flips, this fires.
+    const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const modelMode = (id) => registry.runtimes[id].runtime.hostIntegration.modelMode;
+    assert.equal(modelMode('codex'), 'passive', 'the Anthropic filter must apply to codex');
+    assert.equal(modelMode('opencode'), 'active', 'opencode must not be filtered by posture');
+  });
+
   test('modelFlag is validated in lockstep with its sibling flag fields', () => {
     // The trust boundary: a third-party descriptor carrying `modelFlag: 42`
     // must be rejected at validation, not accepted and then hard-failed at
