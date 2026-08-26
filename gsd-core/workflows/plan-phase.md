@@ -1245,6 +1245,17 @@ ${AGENT_SKILLS_PLANNER}
 
 <instructions>
 Make targeted updates to address checker issues.
+
+Each issue's `required_property` + evidence + severity are BINDING. Its `fix_hint` is ONE
+example route to that property and is NON-BINDING: a smaller or different mechanism that makes
+the same property true addresses the issue in full — say which mechanism you used.
+
+Before editing, re-check locked decisions in CONTEXT.md, active capability guidance (CLAUDE.md,
+project skills), and constraints the existing plans already encode. If a `fix_hint` would
+contradict one, or the property is unreachable without breaking one, do NOT apply it and do NOT
+work around it — return `## REVISION_CONFLICT` with the conflict and the alternatives
+considered, after addressing every non-conflicting issue.
+
 Do NOT replan from scratch unless issues are fundamental.
 Return what changed.
 </instructions>
@@ -1261,6 +1272,14 @@ Agent(
 ```
 
 **ORCHESTRATOR RULE — ALL RUNTIMES:** (7.99; no marker, mtimes only) `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md')` while waiting/active — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
+
+**If the planner returns `## REVISION_CONFLICT`:** the loop cannot resolve it by re-running, so it
+must not consume retry budget. Do NOT increment `iteration_count`, do NOT update
+`prev_issue_count`, and do NOT re-spawn the checker yet. If `workflow.plan_review_convergence` is
+enabled (`gsd_run query config-get workflow.plan_review_convergence`), hand the conflict and its
+alternatives to that loop. Otherwise present the conflict table and alternatives to the user and
+ask which to take: adopt the named alternative / override the constraint and apply the hint /
+accept the plans as-is. Re-spawn the planner with that resolution, then continue below.
 
 After planner returns -> spawn checker again (step 10), increment iteration_count.
 

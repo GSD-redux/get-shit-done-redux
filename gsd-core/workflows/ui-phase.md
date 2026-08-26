@@ -248,11 +248,26 @@ The UI checker found issues with the current UI-SPEC.md.
 ### Issues to Fix
 {paste blocking issues from checker return}
 
-Read the existing UI-SPEC.md, fix ONLY the listed issues, re-write the file.
+Each issue's `required_property` + evidence + severity are BINDING. Its `fix_hint` is ONE
+example route to that property and is NON-BINDING: a smaller or different mechanism that makes
+the same property true resolves the issue in full — say which mechanism you used.
+
+Before editing, re-check the user's locked answers, active capability guidance (CLAUDE.md,
+project skills), and constraints this UI-SPEC already encodes. If a `fix_hint` would contradict
+one, or the property is unreachable without breaking one, do NOT apply it and do NOT work around
+it — return `## REVISION_CONFLICT` naming the conflict and the alternatives considered, after
+resolving every non-conflicting issue.
+
+Read the existing UI-SPEC.md, resolve ONLY the listed issues, re-write the file.
 Do NOT re-ask the user questions that are already answered.
 </revision>
 ```
 
+- **If the researcher returns `## REVISION_CONFLICT`:** do NOT increment `revision_count` and do
+  NOT re-spawn the checker — a conflict is not resolvable by re-running the same loop. Present the
+  conflict and its alternatives to the user and ask which to take (adopt the alternative / override
+  the constraint and apply the hint / accept the spec as-is), then re-spawn the researcher with
+  that resolution.
 - After researcher returns → re-spawn checker (step 7)
 
 **If `revision_count` >= 2:**

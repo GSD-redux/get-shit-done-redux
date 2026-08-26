@@ -45,25 +45,57 @@ Display iteration progress before each revision spawn:
 
 When re-spawning the producing agent for revision, pass the checker's YAML-formatted issues. The checker's output contains a `## Issues` heading followed by a YAML block. Parse this block and pass it verbatim to the revision agent.
 
+The field names are the plan-checker's schema (`agents/gsd-plan-checker.md` → `<issue_structure>`):
+`dimension`, `severity`, `required_property`, `description`, `affected_field`, `fix_hint`. There is
+no `suggested_fix` field — that name was a drift and every producer now emits `fix_hint`.
+
 ```
 <checker_issues>
-The issues below are in YAML format. Each has: dimension, severity, finding,
-affected_field, suggested_fix. Address ALL BLOCKER issues. Address WARNING
-issues where feasible.
+The issues below are in YAML format. Each has: dimension, severity,
+required_property, description, affected_field, fix_hint.
+
+BINDING: required_property (the invariant that must hold), description (the
+evidence it does not), severity. NON-BINDING: fix_hint -- ONE example route to
+the property, never an instruction.
+
+Satisfy the required_property of ALL BLOCKER issues. Satisfy WARNING issues
+where feasible.
 
 {YAML issues block from checker output -- passed verbatim}
 </checker_issues>
 
 <revision_instructions>
 Address ALL BLOCKER and WARNING issues identified above.
-- For each BLOCKER: make the required change
+- For each BLOCKER: make required_property true. Its fix_hint is one example
+  route; a smaller or different mechanism that makes the same property true
+  addresses the issue in full -- report which mechanism you used.
 - For each WARNING: address or explain why it's acceptable
+- Before editing, re-check locked decisions, active capability guidance, and
+  constraints the existing output already encodes. If a fix_hint would
+  contradict one of those, or the property is unreachable without breaking one,
+  do NOT apply it and do NOT work around it: return REVISION_CONFLICT naming
+  the conflict and the alternatives considered, having addressed every
+  non-conflicting issue.
 - Do NOT introduce new issues while fixing existing ones
 - Preserve all content not flagged by the checker
 This is revision iteration {N} of max 3. Previous iteration had {prev_count}
 issues. You must reduce the count or the loop will terminate.
 </revision_instructions>
 ```
+
+### Conflict Return (REVISION_CONFLICT)
+
+A revision agent that returns `REVISION_CONFLICT` has not failed and has not stalled. Handle it
+BEFORE the iteration counter and the stall check — a conflict is not resolvable by re-running the
+same loop, so spending retry budget on it only exhausts the cap:
+
+1. Do NOT increment `iteration` and do NOT update `prev_issue_count`.
+2. If `workflow.plan_review_convergence` is enabled, hand the conflict and its alternatives to
+   that loop.
+3. Otherwise present the conflict and alternatives to the user and ask which to take
+   (pattern: `gsd-core/references/gate-prompts.md`). Options: adopt the named alternative /
+   override the constraint and apply the hint / accept the output as-is.
+4. Re-spawn the producing agent with the resolution, then resume the loop at step 1.
 
 ### After 3 Iterations
 
@@ -95,3 +127,5 @@ If issues persist after 3 revision cycles:
 - **Each iteration gets a fresh agent spawn** -- don't try to continue in the same context
 - **Checker feedback must be inlined** -- the revision agent needs to see exactly what failed
 - **Don't silently swallow issues** -- always present the final state to the user after exiting the loop
+- **A remediation hint is an example, not an order** -- an issue satisfied through a smaller valid
+  mechanism is addressed, and counts as resolved for the issue-count and stall checks

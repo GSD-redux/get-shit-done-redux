@@ -88,6 +88,17 @@ ${AGENT_SKILLS_PLANNER}
 
 <instructions>
 Make targeted updates to address checker issues.
+
+Each issue's `required_property` + evidence + severity are BINDING. Its `fix_hint` is ONE
+example route to that property and is NON-BINDING: a smaller or different mechanism that makes
+the same property true addresses the issue in full — say which mechanism you used.
+
+Before editing, re-check locked decisions${DISCUSS_MODE ? ' in ' + quick_id + '-CONTEXT.md' : ''},
+active capability guidance (CLAUDE.md, project skills), and constraints this plan already
+encodes. If a `fix_hint` would contradict one, or the property is unreachable without breaking
+one, do NOT apply it and do NOT work around it — return `## REVISION_CONFLICT` with the
+conflict and the alternatives considered, after addressing every non-conflicting issue.
+
 Do NOT replan from scratch unless issues are fundamental.
 Return what changed.
 </instructions>
@@ -103,6 +114,14 @@ Agent(
 ```
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+
+**If the planner returns `## REVISION_CONFLICT`:** a conflict is not resolvable by re-running the
+same loop, so it must not consume retry budget. Do NOT increment `iteration_count` and do NOT
+re-spawn the checker yet. If `workflow.plan_review_convergence` is enabled
+(`gsd_run query config-get workflow.plan_review_convergence`), hand the conflict and its
+alternatives to that loop. Otherwise present the conflict table and the alternatives to the user
+and ask which to take: adopt the named alternative / override the constraint and apply the hint /
+accept the plan as-is. Re-spawn the planner with that resolution, then continue below.
 
 After planner returns → spawn checker again, increment iteration_count.
 
