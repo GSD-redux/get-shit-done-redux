@@ -413,7 +413,14 @@ OPEN_CONFLICTS=${OPEN_CONFLICTS:-0}
 
 `/gsd:plan-phase` records each conflict as a `- [ ]` checklist line and flips it to `- [x]` when
 it is resolved, so open conflicts are an exact fixed-string match — no table parsing, and a
-resolved line can never be miscounted as open. If `OPEN_CONFLICTS` > 0, convergence has NOT been
+resolved line can never be miscounted as open.
+
+This scan stops at the next `## `, so it is only sound because the writer sanitizes: plan-phase
+collapses newlines in the agent-authored conflict text and strips a leading `#`, making one
+conflict exactly one line. Agent text appended verbatim could carry a line beginning `## `, end
+this scan early, and leave later conflicts uncounted — the gate would then pass over an
+unresolved blocker. If you ever see a `## ` inside this section, treat the count as untrusted and
+escalate rather than converging. If `OPEN_CONFLICTS` > 0, convergence has NOT been
 achieved regardless of the counts: skip the converged branch and continue to 5c so the next cycle
 arbitrates. Escalation at `MAX_CYCLES` is unchanged and still terminates the loop, so an
 unresolvable conflict escalates rather than deadlocking.

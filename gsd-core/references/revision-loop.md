@@ -120,6 +120,14 @@ so they restate the operative rules inline; this section is the authority they m
    conflicts by fixed-string match and never parses a table whose header and separator rows are
    indistinguishable from data. An open line blocks convergence even if this run is abandoned.
    A workflow with no such channel (`quick` has no phase and no REVIEWS.md) skips this step.
+
+   **Sanitize before writing — the conflict text is agent-authored.** Every field comes from the
+   producing agent, and the file is scanned later by a reader that stops at the next `## ` heading.
+   One line of agent text beginning `## ` ends that scan early, so the conflicts below it are not
+   counted and the gate passes over an unresolved blocker — it fails OPEN, the dangerous
+   direction. Before appending, for EACH field: collapse every newline and tab to a single space,
+   and strip any leading `#`, `-`, `|` or backtick-fence run. One conflict is exactly one line
+   beginning `- [ ]`. Never append agent text verbatim, and never append a fenced block.
 3. **Resolve** — present the conflict and its alternatives to the user and ask which to take
    (pattern: `gsd-core/references/gate-prompts.md`): adopt a named alternative / override the
    named constraint and apply the hint / amend the constraint itself. Each option resolves the
@@ -132,9 +140,19 @@ so they restate the operative rules inline; this section is the authority they m
    handler — never fall through to the checker spawn. A second conflict is still a conflict, not
    a revised output, and handing it to the checker would check the conflict message.
 
-**Bounded.** Not incrementing must not make this path unbounded: if the agent returns a conflict
-naming the SAME `required_property` twice in a row, the chosen resolution did not take. Stop
-re-spawning, report it as a stall, and escalate through the same gate the iteration cap uses.
+**Bounded — two ways, because one is evadable.** Not incrementing must not make this path
+unbounded:
+
+- **Repeat.** A conflict naming the SAME `required_property` twice in a row means the chosen
+  resolution did not take. Stop re-spawning; escalate as a stall.
+- **Total.** Count every conflict return in this revision loop, whatever property each names. On
+  the THIRD, stop and escalate — an agent that alternates property names never trips the repeat
+  rule, so the repeat rule alone leaves the loop unbounded. This total is what actually bounds the
+  path; the repeat rule just catches the common case sooner.
+
+Both escalate through the same gate the iteration cap uses. A conflict still never consumes a
+revision iteration — the cap on conflicts is separate from, and additional to, the cap on
+revisions.
 
 **No workflow hands a conflict to a loop and returns.** Asking the user is the route everywhere;
 recording is in addition to asking, never instead of it. `plan-phase` in particular never invokes

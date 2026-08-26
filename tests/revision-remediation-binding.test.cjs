@@ -266,6 +266,26 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       'the superseded routing description must not survive as drift');
   });
 
+  // The conflict text is agent-authored and lands in a file scanned by heading. Verified by
+  // hand before this was written: 3 open conflicts, awk returned 2, because one conflict's text
+  // began a `## ` line and ended the scan. That is a fail-OPEN — convergence over a live blocker.
+  test('agent-authored conflict text is sanitized at the write boundary', () => {
+    assert.match(flat(REVISION_LOOP), /Sanitize before writing — the conflict text is agent-authored/,
+      'the shared protocol must sanitize where the untrusted text enters the file');
+    assert.match(flat(REVISION_LOOP), /collapse every newline and tab to a single space, and strip any leading `#`/,
+      'the rule must name the exact transform, or it is advice rather than a control');
+    assert.match(flat(REVISION_LOOP), /it fails OPEN, the dangerous direction/,
+      'the failure direction must be stated so nobody relaxes this later');
+    assert.match(flat(PLAN_PHASE), /Sanitize each agent-authored field before appending/,
+      'the workflow that does the appending must carry the rule, not only the reference');
+    for (const [name, agent] of [['planner-revision', PLANNER_REVISION], ['gsd-ui-researcher', UI_RESEARCHER]]) {
+      assert.match(flat(agent), /\*\*Every field is one line of plain text\.\*\*/,
+        `${name} must forbid the shapes the writer would otherwise have to strip`);
+    }
+    assert.match(flat(CONVERGENCE), /This scan stops at the next `## `, so it is only sound because the writer sanitizes/,
+      'the reader must state the invariant it depends on, or a future edit silently breaks it');
+  });
+
   test('an issue satisfied by a smaller mechanism counts as resolved for the loop checks', () => {
     assert.match(
       REVISION_LOOP,
@@ -348,14 +368,19 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
 
     // Not incrementing the counter removes the bound the counter provided. Something must
     // replace it, or an agent returning the same conflict forever loops unattended.
+    // Two bounds, because one is evadable: an agent alternating property names never trips the
+    // repeat rule, so the repeat rule alone leaves the un-incremented path unbounded.
     test(`${name} bounds conflict recurrence so the un-incremented path cannot spin`, () => {
       assert.match(
         loaded,
         /same `required_property` (a second time in a row|twice in a row)/i,
         `${name} must detect a repeated conflict rather than re-spawning forever`
       );
-      assert.match(loaded, /the resolution did not take/,
-        `${name} must name why a repeated conflict is a stall`);
+      assert.match(
+        loaded,
+        /THIRD conflict return of this loop whatever property it names/,
+        `${name} must cap TOTAL conflict returns — round-robin across property names evades the repeat rule`
+      );
     });
 
     // The conflict gate resolves the conflict; it must not become an early exit from a blocker.

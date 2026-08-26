@@ -153,3 +153,8 @@ configured plan-review convergence loop; it does not count as a failed revision 
 
 {table of the non-conflicting issues you DID address, same shape as REVISION COMPLETE}
 ```
+
+**Every field is one line of plain text.** No newlines inside a cell, and never begin a field with
+`#`, `-`, `|` or a code fence. These fields are appended to a shared markdown file that a later
+reader scans by heading; a field that starts a heading truncates that scan and hides conflicts
+below it.

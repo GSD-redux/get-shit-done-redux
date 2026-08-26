@@ -1283,7 +1283,10 @@ REVIEWS_FILE=$(ls "${PHASE_DIR}"/*-REVIEWS.md 2>/dev/null | head -1)
 - Record channel: `$REVIEWS_FILE` under `## Plan-Revision Conflicts`, when `CONVERGENCE_ENABLED`
   is `true` and `$REVIEWS_FILE` is non-empty. plan-phase wrote the line, so plan-phase closes it.
 - After re-spawning, re-evaluate the return here — do not fall through to the checker spawn below.
-- Escalation on a repeated `required_property` uses the same gate as the iteration cap below.
+- Escalation uses the same gate as the iteration cap below — on a repeated `required_property`,
+  and on the THIRD conflict return of this loop whatever property it names.
+- Sanitize each agent-authored field before appending: newlines and tabs to spaces, strip a
+  leading `#`/`-`/`|`/fence. One conflict is one line. The reader stops at the next `## `.
 
 After planner returns -> spawn checker again (step 10), increment iteration_count.
 

@@ -391,6 +391,11 @@ not spend a revision iteration on it.
 | Dimension {N} | {smaller or different mechanism} | {yes / partially — how} | {what it changes} |
 ```
 
+**Every field is one line of plain text.** No newlines inside a cell, and never begin a field with
+`#`, `-`, `|` or a code fence. These fields are appended to a shared markdown file that a later
+reader scans by heading; a field that starts a heading truncates that scan and hides conflicts
+below it.
+
 ## UI-SPEC Blocked
 
 ```markdown

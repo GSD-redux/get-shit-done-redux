@@ -916,9 +916,10 @@ consume retry budget. Present the conflict table and its alternatives to the use
 to take: adopt a named alternative / override the named constraint and apply the hint / amend the
 constraint itself. Every option resolves the conflict; accepting the plans with the blocker still
 open is NOT offered here — that choice belongs to the max-iteration escalation below. Re-spawn
-the planner with the chosen resolution. **Bounded:** if the planner returns a conflict naming the
-SAME `required_property` twice in a row, the resolution did not take — stop re-spawning and
-escalate as a stall. After re-spawning, **re-evaluate the planner's return from the top of this
+the planner with the chosen resolution. **Bounded:** a conflict naming the SAME
+`required_property` twice in a row is a stall, and so is the THIRD conflict return of this loop
+whatever property it names — alternating property names would otherwise never trip the repeat
+rule. Stop re-spawning and escalate as a stall. After re-spawning, **re-evaluate the planner's return from the top of this
 handler** — do not fall through to the checker spawn below; a second conflict is still a conflict,
 not a revised plan.
 
