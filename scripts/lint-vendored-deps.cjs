@@ -37,8 +37,18 @@
  *
  * Hand-authored twins (js-yaml.d.cts, #3881: js-yaml ships no type
  * declarations upstream, so there is nothing to byte-compare) skip checks
- * 2 and 3 entirely — there is no upstream/bin-side counterpart to compare
- * against, and that is deliberate rather than a gap in coverage.
+ * 2 and 3 (the byte-compares) — there is no upstream/bin-side counterpart
+ * to compare against, and that is deliberate rather than a gap in coverage.
+ * They get a DIFFERENT check instead (#3881 review, finding 4): every
+ * value-level export the twin DECLARES (`export function`/`export const`,
+ * not a type/interface) must be an actual own property of the vendored
+ * runtime module. `srcTwin` was previously read only inside the
+ * upstream-verbatim branch — for a hand-authored row it was declared and
+ * never consulted by anything, so a stale claim in the twin (a declared
+ * export that no longer exists at runtime, or the reverse) could drift
+ * silently. This is how a hand-authored twin's docblock/type surface could
+ * make a false claim about the runtime (ADR-3473 §8.1, finding 2) without
+ * this gate — or any other — ever catching it.
  *
  * Usage: node scripts/lint-vendored-deps.cjs
  * Exit 0 when every vendored copy is fresh; 1 otherwise.
@@ -140,6 +150,52 @@ function stripRangeOperator(spec) {
 }
 
 /**
+ * Extract every value-level export name (`export function foo` / `export const
+ * foo`) declared in a hand-authored `.d.cts` twin. Deliberately excludes
+ * `export type`/`export interface` — those have no runtime existence to check
+ * against, so including them would only ever produce false failures.
+ * @param {string} dctsSource
+ * @returns {string[]}
+ */
+function declaredValueExports(dctsSource) {
+  const names = [];
+  const re = /^export\s+(?:function|const|class)\s+([A-Za-z_$][\w$]*)/gm;
+  let m;
+  while ((m = re.exec(dctsSource)) !== null) names.push(m[1]);
+  return names;
+}
+
+/**
+ * #3881 review, finding 4: for a `hand-authored` twin, verify every value-level
+ * export it DECLARES is an actual own property of the vendored runtime module —
+ * the check `srcTwin` previously had no consumer for. Returns findings (empty
+ * when the twin's declared surface matches runtime reality).
+ * @param {VendoredPackage} row
+ * @returns {string[]}
+ */
+function checkHandAuthoredTwin(row) {
+  if (!row.srcTwin) return [`${row.name}: twinKind 'hand-authored' but srcTwin is null`];
+  const twinPath = path.join(ROOT, row.srcTwin);
+  if (!fs.existsSync(twinPath)) return [`${row.srcTwin} does not exist`];
+
+  const declared = declaredValueExports(fs.readFileSync(twinPath, 'utf8'));
+  if (declared.length === 0) {
+    return [`${row.srcTwin} declares zero value-level exports — nothing for this twin to gate`];
+  }
+
+  const runtimeModule = require(path.join(ROOT, row.vendoredCjs));
+  const findings = [];
+  for (const name of declared) {
+    if (!Object.prototype.hasOwnProperty.call(runtimeModule, name)) {
+      findings.push(
+        `${row.srcTwin} declares export "${name}" — not an own property of ${row.vendoredCjs} at runtime`,
+      );
+    }
+  }
+  return findings;
+}
+
+/**
  * Run all applicable freshness checks for one vendored package row.
  * @param {VendoredPackage} row
  * @returns {string[]} findings (empty when the row is fresh)
@@ -159,6 +215,8 @@ function checkRow(row) {
       const srcTwinDrift = compareFiles(row.srcTwin, row.vendoredDts);
       if (srcTwinDrift) findings.push(srcTwinDrift);
     }
+  } else if (row.twinKind === 'hand-authored') {
+    findings.push(...checkHandAuthoredTwin(row));
   }
 
   const pkgPath = path.join(ROOT, 'package.json');
@@ -211,4 +269,12 @@ function main() {
 
 if (require.main === module) runMain(main);
 
-module.exports = { compareFiles, stripRangeOperator, VENDORED, buildRefreshCommand, checkRow };
+module.exports = {
+  compareFiles,
+  stripRangeOperator,
+  VENDORED,
+  buildRefreshCommand,
+  checkRow,
+  declaredValueExports,
+  checkHandAuthoredTwin,
+};

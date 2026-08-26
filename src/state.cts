@@ -39,7 +39,7 @@ const { planningDir, planningPaths } = planningWorkspace;
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, propagateCommentChannel, FRONTMATTER_UNPARSEABLE } = frontmatter;
+const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, propagateCommentChannel } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -5689,28 +5689,20 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
 
     // Bug #1255: operate on body only so the YAML frontmatter `status:` key
     // cannot shadow the body Status field (pipe-table or inline).
-    const existingFm = extractFrontmatter(content, statePath) as Record<string, unknown>;
-    const hasFrontmatter = Object.keys(existingFm).length > 0;
-    let body = stripFrontmatter(content);
-    // ADR-3473 §8.1 (#3881): computed BEFORE `body` is reassigned below, so the
-    // captured prefix is the exact bytes stripped from the ORIGINAL content —
-    // used to preserve an UNPARSEABLE frontmatter block (marked via
-    // FRONTMATTER_UNPARSEABLE) instead of silently dropping it when
-    // `hasFrontmatter` is false because the region failed to parse rather than
-    // because there was no frontmatter block at all.
-    const fmPrefix = content.slice(0, content.length - body.length);
-    const unparseableFm = (existingFm as unknown as Record<symbol, unknown>)[FRONTMATTER_UNPARSEABLE] === true;
+    //
+    // ADR-3473 §8.1 (#3881 review, finding 5): previously this block hand-reimplemented
+    // the isUnparseableFrontmatter/rawFrontmatterPrefix shape inline instead of using the
+    // canonical helper — the sixth copy of a block already duplicated 5x in
+    // state-transition.cts. Routed through the shared `beginFrontmatterReassembly` so this
+    // module can never drift from the frontmatter-preservation contract state-transition.cts
+    // enforces everywhere else.
+    const { existingFm, body: initialBody, reassemble } =
+      stateTransitionMod.beginFrontmatterReassembly(content, statePath);
+    let body = initialBody;
     const curatedPhaseName = existingFm['current_phase_name'];
     if (typeof curatedPhaseName === 'string' && curatedPhaseName.trim().length > 0) {
       rmwOptions.authoritativeFm = { current_phase_name: curatedPhaseName };
     }
-
-    const reassemble = (b: string) =>
-      hasFrontmatter
-        ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-        : unparseableFm
-          ? `${fmPrefix}${b}`
-          : b;
 
     // Update Status field (body only — #1255)
     const statusValue = `Phase ${currentPhase} complete`;

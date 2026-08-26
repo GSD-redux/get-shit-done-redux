@@ -201,18 +201,36 @@ describe('A6 commentsStayOnTheirOwnKey', () => {
 });
 
 describe('A7 anchorsAndAliasesAreRefused', () => {
-  test('an anchor/alias pair is refused rather than expanded', () => {
-    const doc = '---\nfoo: &a bar\nbaz: *a\n---\n\nbody\n';
-    const parsed = extractFrontmatter(doc);
-    assert.equal(Object.keys(parsed).length, 0);
-    assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
-  });
+  // #3881 review, finding 1: the original refusal was a raw-line regex matching only the
+  // bare-key spelling (`key: &x`). A quoted key, a flow mapping and a flow sequence all
+  // define/use the SAME anchor mechanics while never matching that line shape — table-driven
+  // over every spelling that was confirmed bypassable, plus the original passing case, so a
+  // future regression in any one spelling fails loudly rather than hiding behind the others.
+  const SPELLINGS = [
+    ['plain', '---\nfoo: &a bar\nbaz: *a\n---\n\nbody\n'],
+    ['quoted key', '---\n"foo": &a bar\n"baz": *a\n---\n\nbody\n'],
+    ['flow mapping', '---\na: {b: &a 1, c: *a}\n---\n\nbody\n'],
+    ['flow sequence', '---\na: [&a "q", *a]\n---\n\nbody\n'],
+    ['merge key (<<:) with an alias', '---\nbase: &b\n  x: "1"\nfoo:\n  <<: *b\n  y: "2"\n---\n\nbody\n'],
+  ];
 
-  test('a merge key (<<:) is refused rather than expanded', () => {
-    const doc = '---\nbase: &b\n  x: "1"\nfoo:\n  <<: *b\n  y: "2"\n---\n\nbody\n';
+  for (const [label, doc] of SPELLINGS) {
+    test(`${label}: refused rather than expanded`, () => {
+      const parsed = extractFrontmatter(doc);
+      assert.equal(Object.keys(parsed).length, 0, `${label} must parse to zero keys`);
+      assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true, `${label} must carry the unparseable marker`);
+    });
+  }
+
+  test('a bare merge key with NO alias is not itself refused (no anchor, no expansion risk)', () => {
+    // Under FAILSAFE_SCHEMA (no !!merge type resolution) this never actually merges — it
+    // parses as an ordinary, non-expanding literal "<<" string key. Documented behavior
+    // change from the pre-review regex (which refused every `<<:`-shaped line regardless of
+    // whether an alias was present) — see frontmatter.cts refuseAnchorsAndAliases docblock.
+    const doc = '---\na:\n  <<: {b: 1}\n  c: 2\n---\n\nbody\n';
     const parsed = extractFrontmatter(doc);
-    assert.equal(Object.keys(parsed).length, 0);
-    assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+    assert.notEqual(parsed[FRONTMATTER_UNPARSEABLE], true);
+    assert.deepEqual(parsed.a, { '<<': { b: '1' }, c: '2' });
   });
 });
 
@@ -240,6 +258,61 @@ describe('A8 aliasExpansionCannotExhaustMemory', () => {
       serializedSize < 1024,
       `a refused parse must stay tiny (would be ~22.8MB if expanded); got ${serializedSize} bytes`
     );
+  });
+
+  test('the same billion-laughs bomb, quoted-key-spelled, is ALSO refused (#3881 review, finding 1)', () => {
+    // The exact bypass the review found: the pre-fix raw-text regex matched only bare
+    // (unquoted) keys, so this 303-byte quoted-key spelling of the identical bomb went
+    // straight through unrefused and expanded to ~35.8MB. Pinned here on the RESULT shape.
+    const bomb = [
+      '"a": &a ["lol","lol","lol","lol","lol","lol","lol","lol","lol"]',
+      '"b": &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]',
+      '"c": &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]',
+      '"d": &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]',
+      '"e": &e [*d,*d,*d,*d,*d,*d,*d,*d,*d]',
+      '"f": &f [*e,*e,*e,*e,*e,*e,*e,*e,*e]',
+      '"g": [*f,*f,*f,*f,*f,*f,*f,*f,*f]',
+    ].join('\n');
+    const doc = `---\n${bomb}\n---\n\nbody\n`;
+
+    const parsed = extractFrontmatter(doc);
+
+    assert.equal(Object.keys(parsed).length, 0);
+    assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+    const serializedSize = Buffer.byteLength(JSON.stringify(parsed), 'utf8');
+    assert.ok(
+      serializedSize < 1024,
+      `a refused parse must stay tiny (would be ~35.8MB if expanded); got ${serializedSize} bytes`
+    );
+  });
+});
+
+describe('finding 3: null-byte sentinel round-trip is injective', () => {
+  const E000 = String.fromCharCode(0xE000);
+
+  test('a real NUL is preserved exactly when no pre-existing U+E000 is present', () => {
+    const doc = '---\nfoo: "has null"\n---\n\nbody\n';
+    const parsed = extractFrontmatter(doc);
+    assert.equal(parsed.foo, 'has null');
+  });
+
+  test('a document containing a literal U+E000 (the sentinel itself) is refused, not silently corrupted', () => {
+    // Before the fix, restoreNullBytesDeep rewrote EVERY U+E000 in the parsed tree back to
+    // U+0000 unconditionally — including one the document author legitimately wrote — so this
+    // document's own U+E000 silently became a NUL. It must now be refused instead.
+    const doc = `---\nfoo: "pre${E000}existing"\n---\n\nbody\n`;
+    const parsed = extractFrontmatter(doc);
+    assert.equal(Object.keys(parsed).length, 0);
+    assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+  });
+
+  test('a literal U+E000 alongside a real NUL is refused rather than merging the two into one byte', () => {
+    // The exact corruption case from the review: escaping the real NUL to U+E000 makes it
+    // indistinguishable from the pre-existing U+E000, and restoring converts BOTH back to NUL.
+    const doc = `---\nfoo: "has null"\nbar: "pre${E000}existing"\n---\n\nbody\n`;
+    const parsed = extractFrontmatter(doc);
+    assert.equal(Object.keys(parsed).length, 0);
+    assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
   });
 });
 

@@ -33,3 +33,8 @@ Categories present:
   nested YAML anchors/aliases. Parser must refuse it (zero keys,
   `FRONTMATTER_UNPARSEABLE` set) rather than expand it — ADR-3473
   §8.1 consequence 6.
+- `anchor-alias-bomb-quoted.md` — the same "billion laughs" bomb, spelled with
+  quoted keys (`"a": &a [...]`) instead of bare keys. Added after #3881
+  review found the original raw-text anchor/alias refusal regex matched only
+  the bare-key line shape and was bypassable by this (and other) spellings.
+  Must refuse identically to `anchor-alias-bomb.md`.

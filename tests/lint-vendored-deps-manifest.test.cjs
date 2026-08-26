@@ -28,6 +28,8 @@ const {
   compareFiles,
   checkRow,
   stripRangeOperator,
+  declaredValueExports,
+  checkHandAuthoredTwin,
 } = require('../scripts/lint-vendored-deps.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -154,7 +156,7 @@ describe('G3: the hand-authored js-yaml type twin is excluded from byte-compare,
     assert.equal(row.srcTwin, 'src/vendor/js-yaml.d.cts');
   });
 
-  test('sensor: mutating src/vendor/js-yaml.d.cts produces NO drift finding — the exclusion is real, not accidental', () => {
+  test('sensor: a byte-compare-neutral mutation (e.g. a trailing comment) produces NO drift finding — the BYTE-COMPARE exclusion is real, not accidental', () => {
     const row = jsYamlRow();
     const srcTwinAbs = path.join(REPO_ROOT, row.srcTwin);
     const original = fs.readFileSync(srcTwinAbs, 'utf8');
@@ -169,6 +171,43 @@ describe('G3: the hand-authored js-yaml type twin is excluded from byte-compare,
     } finally {
       fs.writeFileSync(srcTwinAbs, original);
     }
+  });
+
+  test('#3881 review, finding 4: srcTwin is NOT dead for a hand-authored row — a declared export the runtime does not have IS caught', () => {
+    // Before the fix, `srcTwin` was read only inside the `twinKind === 'upstream-verbatim'`
+    // branch; for a hand-authored row nothing ever consulted it, which is exactly how the
+    // js-yaml.d.cts docblock could drift from runtime reality (finding 2) unnoticed.
+    const row = jsYamlRow();
+    const srcTwinAbs = path.join(REPO_ROOT, row.srcTwin);
+    const original = fs.readFileSync(srcTwinAbs, 'utf8');
+    fs.writeFileSync(
+      srcTwinAbs,
+      `${original}\nexport function thisExportDoesNotExistAtRuntime(): void;\n`,
+    );
+    try {
+      const findings = checkRow(row);
+      assert.ok(
+        findings.some((f) => f.includes('thisExportDoesNotExistAtRuntime')),
+        `expected a declared-export-not-at-runtime finding, got: ${JSON.stringify(findings)}`,
+      );
+    } finally {
+      fs.writeFileSync(srcTwinAbs, original);
+    }
+  });
+
+  test('checkHandAuthoredTwin: fresh state is clean for the real js-yaml twin', () => {
+    assert.deepEqual(checkHandAuthoredTwin(jsYamlRow()), []);
+  });
+
+  test('declaredValueExports: extracts function/const/class exports, ignores type/interface exports', () => {
+    const src = [
+      'export interface Foo { x: number; }',
+      'export type Bar = string;',
+      'export function realFn(): void;',
+      'export const REAL_CONST: string;',
+      'export class RealClass {}',
+    ].join('\n');
+    assert.deepEqual(declaredValueExports(src), ['realFn', 'REAL_CONST', 'RealClass']);
   });
 
   test('contrast: the SAME mutation on an upstream-verbatim row (re2js) IS caught — proving the exclusion is deliberate', () => {

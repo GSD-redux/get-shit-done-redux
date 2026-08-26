@@ -122,6 +122,18 @@ const MATRIX = {
             assert.ok(Buffer.byteLength(JSON.stringify(parsed), 'utf8') < 1024);
         },
     },
+    'anchor-alias-bomb-quoted.md': {
+        invariant: 'refused identically to anchor-alias-bomb.md, even quoted-key-spelled (#3881 review, finding 1)',
+        check(parsed) {
+            // The original raw-text refusal regex matched only the bare-key line shape
+            // (`key: &x`) and was bypassed by a quoted key (`"key": &x`) — the SAME anchor
+            // structure, the SAME expansion, unrefused. This fixture pins that the refusal is
+            // now structural (js-yaml's own parser state), not spelling-dependent.
+            assert.equal(Object.keys(parsed).length, 0);
+            assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+            assert.ok(Buffer.byteLength(JSON.stringify(parsed), 'utf8') < 1024);
+        },
+    },
 };
 
 describe('feat-3594 parser adversarial frontmatter fixture matrix', () => {

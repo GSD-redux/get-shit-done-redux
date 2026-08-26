@@ -104,10 +104,12 @@ type FullLineCommentChannel = { leading: Record<string, string[]>; trailing: str
  * `extractFrontmatter` returns when the region failed to parse (malformed YAML, or a refused
  * anchor/alias/merge key — consequence 6). Mirrors `FULL_LINE_COMMENTS` exactly: invisible to
  * `Object.keys`/`Object.entries`/`JSON.stringify`/`for-in`, so the 70 call sites that never
- * inspect it are unaffected, while the 8 `hasFrontmatter = Object.keys(...).length > 0` sites can
+ * inspect it are unaffected, while the 8 `hasFrontmatter = Object.keys(...).length > 0` sites
  * consult it to tell "genuinely empty" apart from "unparseable" and avoid reassembling the
- * document without its (unparsed but still present) frontmatter block. Wiring those 8 call sites
- * is a separate change — this module only sets and exports the marker.
+ * document without its (unparsed but still present) frontmatter block. Those 8 call sites (7 in
+ * `state-transition.cts` behind `isUnparseableFrontmatter`/`rawFrontmatterPrefix`, plus 1 more in
+ * `state.cts`'s `cmdStateCompletePhase`) are wired on this branch — this module sets and exports
+ * the marker; the callers consume it.
  */
 const FRONTMATTER_UNPARSEABLE = Symbol('frontmatterUnparseable');
 
@@ -118,26 +120,55 @@ function unparseableResult(): Frontmatter {
 }
 
 /**
- * ADR-3473 §8.1 (consequence 6): `FAILSAFE_SCHEMA` still resolves anchors, aliases and merge
- * keys — that is core YAML mechanics, not tag resolution, so no schema choice disables it. A
- * hostile 7-line frontmatter (`&a [...]` fanned out through nested aliases) expands to tens of
- * megabytes in a few milliseconds, and `.planning/` documents are user-authored, untrusted input.
- * Corpus occurrences of anchors/aliases/merge keys today: zero, so refusing them costs nothing.
- * This is a raw-text pre-scan (not a full YAML grammar check) — false positives are cheap
- * (the document is treated as unparseable, its frontmatter block preserved verbatim by the
- * caller), so it is deliberately conservative rather than spec-precise.
+ * ADR-3473 §8.1 (consequence 6, corrected post-#3881-review): `FAILSAFE_SCHEMA` still resolves
+ * anchors, aliases and merge keys — that is core YAML mechanics, not tag resolution, so no
+ * schema choice disables it. A hostile 7-line frontmatter (`&a [...]` fanned out through nested
+ * aliases) expands to tens of megabytes in a few milliseconds, and `.planning/` documents are
+ * user-authored, untrusted input. Corpus occurrences of anchors/aliases/merge keys today: zero,
+ * so refusing them costs nothing.
+ *
+ * This was originally a raw-text line regex, and it was bypassable: a quoted key (`"a": &x 1`),
+ * a flow mapping (`{b: &x 1, c: *x}`) or a flow sequence (`[&x "q", *x]`) all define/use an
+ * anchor while never matching the "bareword key, then `&`/`*`" line shape the regex checked —
+ * so the exact expansion this guard exists to stop went straight through unrefused. Detecting a
+ * YAML anchor with a regex is re-implementing a YAML parser in order to guard a YAML parser; the
+ * fix is to let the real parser report it instead of re-deriving anchor syntax by hand. js-yaml's
+ * `load` accepts a `listener` invoked once per parse event with the parser's internal `State`;
+ * `state.anchor` is non-null on every event belonging to an anchored node, in every spelling
+ * above (verified by execution against all four), so throwing the instant it is set aborts the
+ * parse before any alias expansion happens — the 303-byte quoted-key bomb refuses in ~1ms rather
+ * than expanding to ~35MB. A `<<: *base` merge key is refused too, because it can only ever
+ * reference a previously anchored node — the alias itself trips `state.anchor`. A merge key with
+ * NO alias (`<<: {b: 1}`) carries no anchor and is not separately refused: under
+ * `FAILSAFE_SCHEMA` (no `!!merge` type resolution) it never actually merges — it parses as an
+ * ordinary literal `"<<"` string key with a normal, non-expanding nested map — so it carries none
+ * of the resource-exhaustion risk this guard exists for.
  */
-const MERGE_KEY_LINE_RE = /^\s*<<\s*:/;
-const ANCHOR_OR_ALIAS_LINE_RE = /^\s*(?:-\s+|[^\s:'"][^:]*:\s*)[&*][A-Za-z_][\w-]*/;
+/** Thrown from inside the `listener` callback below; never surfaced past `refuseAnchorsAndAliases`. */
+class AnchorDetectedSignal extends Error {}
 
 function refuseAnchorsAndAliases(yaml: string): void {
-  for (const line of splitLines(yaml)) {
-    if (MERGE_KEY_LINE_RE.test(line) || ANCHOR_OR_ALIAS_LINE_RE.test(line)) {
+  try {
+    yamlLoad(yaml, {
+      ...YAML_LOAD_OPTS,
+      listener: (_event: string, state: { anchor?: string | null }) => {
+        // Thrown FROM INSIDE the listener, not merely recorded and checked after `load`
+        // returns: js-yaml keeps parsing (and, for an alias, keeps EXPANDING) past a listener
+        // that only sets a flag, which reintroduces the exact resource-exhaustion window this
+        // guard exists to close. Throwing here aborts the parse immediately, before any
+        // expansion — the billion-laughs fixture refuses in ~1-2ms rather than building the
+        // ~35MB tree first and discarding it.
+        if (state.anchor !== null && state.anchor !== undefined) throw new AnchorDetectedSignal();
+      },
+    });
+  } catch (e) {
+    if (e instanceof AnchorDetectedSignal) {
       throw new YAMLException(
-        'frontmatter: anchors, aliases and merge keys are refused (ADR-3473 §8.1) — ' +
-          `offending line: ${JSON.stringify(line)}`,
+        'frontmatter: anchors, aliases and merge keys are refused (ADR-3473 §8.1)',
       );
     }
+    // Any other failure (malformed YAML unrelated to anchors) is reported by the real parse
+    // in parseYamlRegion; this pre-pass only exists to refuse anchors/aliases early.
   }
 }
 
@@ -146,8 +177,29 @@ function refuseAnchorsAndAliases(yaml: string): void {
  * schema. The fixture invariant (`null-byte-value.md`) is "preserve or normalize; never truncate
  * silently", so the byte is swapped for a private-use sentinel before the parse and restored in
  * every resulting string afterward — preserving the exact byte rather than normalizing it away.
+ *
+ * CORRECTED (post-#3881-review, finding 3): the round-trip was non-injective. `restoreNullBytesDeep`
+ * rewrites EVERY U+E000 in the parsed tree back to U+0000 — including one the document author
+ * legitimately wrote — so a document containing a literal U+E000 (with or without an actual NUL
+ * elsewhere) came back corrupted: its own U+E000 silently became a NUL. Rather than pick a
+ * "provably absent" sentinel (unprovable in general — any fixed codepoint can itself appear in
+ * user-authored input), `refuseIfSentinelPresent` makes the substitution provably reversible by
+ * refusing outright whenever the RAW region already contains U+E000, before any substitution
+ * happens — consistent with this module's existing refusal path (anchors/aliases/merge keys) for
+ * "cannot faithfully round-trip this input." Once refused, the sentinel is guaranteed absent from
+ * the input the escape/restore pair actually operates on, and the substitution is injective by
+ * construction.
  */
 const NULL_BYTE_SENTINEL = String.fromCharCode(0xE000);
+
+function refuseIfSentinelPresent(yaml: string): void {
+  if (yaml.includes(NULL_BYTE_SENTINEL)) {
+    throw new YAMLException(
+      'frontmatter: contains the reserved null-byte-escape sentinel U+E000 — refused rather than ' +
+        'silently corrupted on restore (ADR-3473 §8.1)',
+    );
+  }
+}
 
 function escapeNullBytesForParse(yaml: string): string {
   return yaml.indexOf('\u0000') === -1 ? yaml : yaml.split('\u0000').join(NULL_BYTE_SENTINEL);
@@ -278,6 +330,7 @@ function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCom
  */
 function parseYamlRegion(yaml: string): Frontmatter {
   refuseAnchorsAndAliases(yaml);
+  refuseIfSentinelPresent(yaml);
   const escaped = escapeNullBytesForParse(yaml);
   const raw: unknown = yamlLoad(escaped, YAML_LOAD_OPTS);
   const normalized = normalizeParsedValue(raw, false);
