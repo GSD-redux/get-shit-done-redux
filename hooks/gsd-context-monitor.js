@@ -31,8 +31,13 @@ const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
 // One DEFINITION of what counts as a lifecycle event name, shared by the #3709
 // PreCompact reset and the #2289 output-envelope allowlist. Two call sites, one
 // rule — so the two cannot drift into disagreeing about what "no event name" is.
+// TOTAL, via String(): the old inline expression threw on a truthy non-string
+// hook_event_name, and hoisting it ahead of the pipeline would have moved that
+// throw ahead of the side effects #2289 documents as always running (review of
+// #3808, round 3). A malformed name now reads as an unknown event — silent,
+// side effects intact — on both call sites.
 function readEventName(data) {
-  return (data && data.hook_event_name && data.hook_event_name.trim()) || "";
+  return String((data && data.hook_event_name) || '').trim();
 }
 
 let input = '';
@@ -63,94 +68,38 @@ process.stdin.on('end', () => {
     const tmpDir = os.tmpdir();
     const warnPath = path.join(tmpDir, `claude-ctx-${sessionId}-warned.json`);
     const metricsPath = path.join(tmpDir, `claude-ctx-${sessionId}.json`);
+    const watermarkPath = path.join(tmpDir, `claude-ctx-${sessionId}-compacted.json`);
 
-    // #3709: a compaction RESTARTS the context lifecycle — usage drops back to
-    // Normal and the next climb is a fresh cycle — so the warn sentinel must not
-    // survive it. The hook was already wired to PreCompact (#772), but the event
-    // was only read at the very END, and solely to pick the output envelope.
-    //
-    // Left in place, `lastLevel` stays pinned at 'critical' for the rest of the
-    // session and two documented behaviours die (docs/context-monitor.md):
-    // "First warning always fires immediately" — the first warning of the new
-    // cycle is debounced instead; and "Severity escalation (WARNING -> CRITICAL)
-    // bypasses debounce" — computed as `lastLevel === 'warning'`, which can never
-    // be true again, so every later CRITICAL waits out the full debounce, exactly
-    // when an immediate warning matters most. `criticalRecorded` is equally
-    // sticky, so the #1974 /gsd:resume-work breadcrumb would keep describing the
-    // earlier near-miss rather than the exhaustion that actually ended the run.
-    //
-    // Handled HERE — ahead of BOTH the config check and the metrics read —
-    // deliberately. Ahead of the metrics read because a PreCompact payload
-    // carries no fresh metrics, and a post-compaction reading is healthy again, so
-    // the ENOENT / stale / above-threshold branches below all exit first and the
-    // sentinel would never be cleared. Returning early also stops the compaction
-    // itself from consuming a debounce slot — observed in the issue as
-    // callsSinceWarn advancing 0 -> 1 on the PreCompact call.
-    //
-    // KNOWN, and deliberate: PreCompact fires BEFORE the compaction, so an
-    // aborted or failed compaction leaves the state cleared while the context is
-    // still genuinely critical. The effects are mild and arguably right — one
-    // extra immediate CRITICAL, and criticalRecorded re-armed so a later, more
-    // current breadcrumb can replace the old one. Making the reset conditional
-    // would mean deferring it to SessionStart with source "compact", which is a
-    // different hook event and new wiring; out of scope for this fix, and stated
-    // rather than left silent (review of #3709).
-    //
-    // Ahead of the `context_warnings: false` exit because this is CLEANUP, not a
-    // warning: state that must not outlive a compaction should not outlive it just
-    // because warnings happen to be off right now. Config is re-read per invocation,
-    // so a session that disables warnings, compacts, then re-enables them would
-    // otherwise resurrect the stale sentinel and the original bug with it. Clearing
-    // here cannot emit anything, so the disabled contract is untouched.
+    // #3709: a compaction RESTARTS the context lifecycle, so neither the warn
+    // sentinel nor the pre-compaction statusline reading may survive it. Full
+    // rationale — what dies when the sentinel outlives a compaction, why the
+    // reset sits ahead of the config gate and the metrics read, and why an
+    // aborted compaction deliberately stays cleared — lives in ONE place:
+    // docs/context-monitor.md, "PreCompact reset". Constraints the code itself
+    // must keep are stated at their lines below.
     if (readEventName(data) === 'PreCompact') {
-      // BOTH files, not just the sentinel. Clearing the sentinel alone trades a
-      // warning that never fires for one that fires when it must not: the
-      // statusline bridge still holds the PRE-compaction reading, and
-      // STALE_SECONDS is 60, so for up to a minute it still reads fresh and still
-      // says the context is exhausted. With the sentinel gone, firstWarn is true,
-      // so the next PostToolUse emits a spurious CRITICAL immediately after the
-      // compaction that FREED the context — and flips criticalRecorded, spawning
-      // a false "context exhaustion" breadcrumb. That is the same breadcrumb
-      // inaccuracy #3709 exists to fix, re-entered from the other side. Reported
-      // in review of #3709.
-      //
-      // Removing the bridge is not a loss of data: the statusline owns that file
-      // and rewrites it on every render, and its absence is already the
-      // "no reading yet" state a fresh session starts in, which exits silently.
-      // A compaction invalidates the warning state AND the reading that produced
-      // it, so both go.
+      // BOTH files: with the sentinel gone but the bridge still holding the
+      // pre-compaction reading (fresh for STALE_SECONDS), the next PostToolUse
+      // would fire a spurious CRITICAL off a context the compaction just freed
+      // (review of #3709).
       for (const stale of [warnPath, metricsPath]) {
         try {
           fs.unlinkSync(stale);
         } catch (e) {
           if (e && e.code === 'ENOENT') continue;   // already absent — that IS the reset
-          // Windows can hold a handle (EPERM/EBUSY), and a failed unlink would
-          // leave the original bug silently intact, indistinguishable from
-          // success. Truncate to EMPTY instead — an empty file is the one state
-          // both readers treat exactly like deletion, because JSON.parse('')
-          // throws: the sentinel read falls to its catch, so firstWarn stays
-          // true, and the bridge read falls to the outer catch and exits 0
-          // silently. A well-formed "neutral" value is NOT equivalent (review
-          // of #3709): '{}' parses fine, so the first post-compaction warning
-          // is debounced — AC2 undone on this path — and '{"timestamp":0}' is
-          // never stale (the staleness guard is `metrics.timestamp && ...`,
-          // and 0 is falsy), so the flow reaches emit with
-          // remaining === undefined.
-          //
-          // Refuse to truncate through a LINK: these paths live in a shared
-          // sticky tmpdir, where an unlink of a file another user planted is
-          // exactly what EPERM looks like — and a planted SYMLINK would make a
-          // plain truncating write empty out its TARGET instead (Codex review
-          // of #3808). Two guards, because neither alone covers every
-          // platform: the lstat rejects anything that is not a regular file
-          // everywhere — including Windows, where libuv defines O_NOFOLLOW
-          // as 0 (a no-op) and TEMP/TMP overrides mean the tmpdir is not
-          // guaranteed per-user — and O_NOFOLLOW (ELOOP), where the platform
-          // honors it, closes the lstat→open substitution race as well. Every
-          // refusal lands in the same give-up arm — including a Windows
-          // runner refusing the write-open outright for a freshly written
-          // file (share mode allows delete, not write), which is why the
-          // whole fallback is best-effort rather than asserted-on.
+          // Best-effort fallback for a held handle (Windows EPERM/EBUSY):
+          // truncate to EMPTY — the one state both readers treat exactly like
+          // deletion, because JSON.parse('') throws. A well-formed "neutral"
+          // value is NOT equivalent: '{}' debounces the first post-compaction
+          // warning, '{"timestamp":0}' is never stale (falsy guard) and emits
+          // "undefined%" (review of #3808). Never through a LINK: lstat
+          // rejects non-regular files on every platform (Windows has no
+          // effective O_NOFOLLOW — libuv defines it as 0 — and TEMP/TMP means
+          // its tmpdir is not guaranteed per-user); O_NOFOLLOW additionally
+          // closes the lstat→open substitution race where honored. Every
+          // refusal lands in this give-up arm — including a Windows runner
+          // refusing the write-open of a freshly written file outright —
+          // which is why the fallback is best-effort, never asserted-on.
           try {
             if (fs.lstatSync(stale).isFile()) {
               fs.closeSync(fs.openSync(
@@ -161,6 +110,31 @@ process.stdin.on('end', () => {
           } catch (e2) { /* give up, never throw */ }
         }
       }
+
+      // COMPACTION WATERMARK (review of #3808, round 3). Deleting the bridge
+      // only NARROWS the stale-reading window: the statusline is an
+      // uncoordinated process that re-writes the bridge on every render, so a
+      // render landing between this clear and the compaction's completion
+      // re-creates the PRE-compaction reading with a CURRENT timestamp — and
+      // it would sail past STALE_SECONDS as freshly valid. The watermark makes
+      // the pre-compaction reading identifiable rather than merely absent: the
+      // metrics read drops any reading not strictly newer than it. Written
+      // unlink-then-O_EXCL so an existing file — or a planted symlink — is
+      // never followed or overwritten in place; failure to write degrades to
+      // the old narrowing, never throws.
+      try {
+        try {
+          fs.unlinkSync(watermarkPath);
+        } catch (e) {
+          if (!e || e.code !== 'ENOENT') throw e;
+        }
+        const wfd = fs.openSync(
+          watermarkPath,
+          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+        );
+        fs.writeSync(wfd, JSON.stringify({ at: Math.floor(Date.now() / 1000) }));
+        fs.closeSync(wfd);
+      } catch (e) { /* best effort — see above */ }
       process.exit(0);
     }
 
@@ -190,6 +164,21 @@ process.stdin.on('end', () => {
     }
     const metrics = JSON.parse(metricsRaw);
     const now = Math.floor(Date.now() / 1000);
+
+    // #3709 (round 3): a reading not STRICTLY newer than the compaction
+    // watermark is the pre-compaction reading, whatever its timestamp says —
+    // the statusline can re-write the bridge mid-compaction and stamp the old
+    // remaining_percentage with a current time. `!(> at)` rather than `<= at`
+    // so a missing/zero/garbage timestamp is also dropped once a compaction
+    // has happened: an unstamped reading cannot prove it is post-compaction.
+    // No watermark (fresh session, or the best-effort write failed) degrades
+    // to the plain STALE_SECONDS behaviour below.
+    try {
+      const watermark = JSON.parse(fs.readFileSync(watermarkPath, 'utf8'));
+      if (watermark && typeof watermark.at === 'number' && !(metrics.timestamp > watermark.at)) {
+        process.exit(0);
+      }
+    } catch (e) { /* no watermark — nothing to compare against */ }
 
     // Ignore stale metrics
     if (metrics.timestamp && (now - metrics.timestamp) > STALE_SECONDS) {

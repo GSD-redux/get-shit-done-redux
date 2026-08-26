@@ -23,11 +23,29 @@ const fs = require('fs');
 const realUnlinkSync = fs.unlinkSync;
 const match = process.env.GSD_TEST_UNLINK_EPERM_MATCH || '';
 
-fs.unlinkSync = function unlinkSyncWithInjectedEperm(p) {
-  if (match && String(p).includes(match)) {
-    const err = new Error(`EPERM: operation not permitted, unlink '${p}'`);
-    err.code = 'EPERM';
-    throw err;
-  }
-  return realUnlinkSync.apply(fs, arguments);
-};
+if (match) {
+  fs.unlinkSync = function unlinkSyncWithInjectedEperm(p) {
+    if (String(p).includes(match)) {
+      const err = new Error(`EPERM: operation not permitted, unlink '${p}'`);
+      err.code = 'EPERM';
+      throw err;
+    }
+    return realUnlinkSync.apply(fs, arguments);
+  };
+}
+
+// `GSD_TEST_LSTAT_CLAIMS_FILE_MATCH`: make lstat CLAIM a regular file for
+// matching paths — the lstat→open substitution-race shape (a symlink swapped in
+// after the lstat), so the O_NOFOLLOW backstop is the guard actually under test
+// (review of #3808, round 3, Minor 3). The real stat object is returned with
+// only isFile overridden; everything else stays truthful.
+const lstatMatch = process.env.GSD_TEST_LSTAT_CLAIMS_FILE_MATCH || '';
+
+if (lstatMatch) {
+  const realLstatSync = fs.lstatSync;
+  fs.lstatSync = function lstatSyncClaimingFile(p) {
+    const st = realLstatSync.apply(fs, arguments);
+    if (String(p).includes(lstatMatch)) st.isFile = () => true;
+    return st;
+  };
+}

@@ -40,15 +40,18 @@ To avoid spamming the agent with repeated warnings:
   both rules above would be dead for the rest of the session once a CRITICAL had
   fired, since the escalation test is "the previous level was WARNING" (#3709).
 
-The compaction reset clears three things together:
+### PreCompact reset
+
+The compaction reset does four things together:
 
 | what | why |
 |---|---|
-| the debounce counter and last-seen severity | a compact restarts the context lifecycle, so the next climb is a fresh cycle |
-| the one-time critical-session guard | otherwise the resume breadcrumb keeps describing the earlier near-miss rather than the exhaustion that actually ended the run (#1974) |
-| the statusline metrics file | it still holds the pre-compaction reading, and metrics stay "fresh" for 60s — leaving it would fire a warning off a reading the compaction just invalidated, immediately after the context was freed |
+| clears the debounce counter and last-seen severity | a compact restarts the context lifecycle, so the next climb is a fresh cycle |
+| clears the one-time critical-session guard | otherwise the resume breadcrumb keeps describing the earlier near-miss rather than the exhaustion that actually ended the run (#1974) |
+| deletes the statusline metrics file | it holds the pre-compaction reading, and metrics stay "fresh" for 60s — a warning fired off it right after the compaction would be exactly backwards |
+| writes a compaction **watermark** (`claude-ctx-{session_id}-compacted.json`) | deleting the bridge only narrows the stale-reading window: the statusline re-writes the bridge on every render, so a render landing mid-compaction re-creates the pre-compaction reading with a current timestamp. The monitor drops any reading not strictly newer than the watermark, so the old reading is identifiable rather than merely absent — and an unstamped reading (no/zero timestamp) is dropped too once a compaction has happened |
 
-Two properties of the reset worth knowing:
+Properties of the reset worth knowing:
 
 - It runs even when `hooks.context_warnings` is `false`. Clearing this state is
   cleanup, not a warning, and it emits nothing — but config is re-read on every
@@ -58,6 +61,12 @@ Two properties of the reset worth knowing:
   state has already been reset. The effect is mild: one extra immediate warning,
   and the breadcrumb guard re-armed so a later, more current breadcrumb can
   replace the old one.
+- The reset covers **compaction only**. No other context-shrinking path (a
+  `/clear`, a session restart that reuses the id) fires `PreCompact`, so state
+  keyed to a surviving `session_id` outlives those; wiring `SessionStart` is
+  separate work.
+- Everything here is best-effort: the reset, the fallback truncation, and the
+  watermark write all degrade silently rather than ever failing a compaction.
 
 ## Architecture
 

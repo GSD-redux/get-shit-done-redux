@@ -1212,6 +1212,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     const id = `fix-3709-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const metricsPath = path.join(dir, `claude-ctx-${id}.json`);
     const warnPath = path.join(dir, `claude-ctx-${id}-warned.json`);
+    const watermarkPath = path.join(dir, `claude-ctx-${id}-compacted.json`);
     let cwd = dir;
     let projDir = null;
     if (gsdActive) {
@@ -1225,7 +1226,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       cwd = projDir;
     }
     t.after(() => {
-      for (const p of [metricsPath, warnPath]) { try { fs.unlinkSync(p); } catch { /* absent */ } }
+      for (const p of [metricsPath, warnPath, watermarkPath]) { try { fs.unlinkSync(p); } catch { /* absent */ } }
       if (projDir) { try { cleanup(projDir); } catch { /* best effort */ } }
     });
 
@@ -1251,7 +1252,11 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       // review-of-#3709 (Blocker 2) seam for the unlink-failure fallback. Method
       // monkeypatching, never chmod 0o000: root bypasses mode bits under
       // Docker/CI, so a chmod row passes with zero coverage.
-      call(event, remaining, { metrics = true, failUnlinkMatching = null } = {}) {
+      // `lstatClaimsFileMatching` additionally makes the child's lstat report a
+      // REGULAR FILE for matching paths — the lstat→open substitution-race
+      // shape, so the O_NOFOLLOW backstop is the guard actually exercised
+      // (review of #3808, round 3, Minor 3).
+      call(event, remaining, { metrics = true, failUnlinkMatching = null, lstatClaimsFileMatching = null } = {}) {
         if (metrics === 'keep') {
           // leave the bridge exactly as the previous call left it
         } else if (metrics) {
@@ -1259,16 +1264,27 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
             session_id: id,
             remaining_percentage: remaining,
             used_pct: 100 - remaining,
-            timestamp: Math.floor(Date.now() / 1000),
+            // +2s: deliberately a hair in the future. The compaction watermark
+            // has one-second granularity and these tests run PreCompact and
+            // the next PostToolUse inside the same second — a real session's
+            // post-compaction render lands seconds later. Future-stamping by
+            // 2s keeps the reading "strictly newer than the watermark" without
+            // touching the staleness math (a negative age is never > 60).
+            timestamp: Math.floor(Date.now() / 1000) + 2,
           }));
         } else {
           try { fs.unlinkSync(metricsPath); } catch { /* already absent */ }
         }
         let stdout = '';
         let exitCode = 0;
-        const argv = failUnlinkMatching ? ['--require', UNLINK_EPERM_PRELOAD, HOOK] : [HOOK];
-        const env = failUnlinkMatching
-          ? { ...process.env, GSD_TEST_UNLINK_EPERM_MATCH: failUnlinkMatching }
+        const usePreload = failUnlinkMatching || lstatClaimsFileMatching;
+        const argv = usePreload ? ['--require', UNLINK_EPERM_PRELOAD, HOOK] : [HOOK];
+        const env = usePreload
+          ? {
+              ...process.env,
+              ...(failUnlinkMatching ? { GSD_TEST_UNLINK_EPERM_MATCH: failUnlinkMatching } : {}),
+              ...(lstatClaimsFileMatching ? { GSD_TEST_LSTAT_CLAIMS_FILE_MATCH: lstatClaimsFileMatching } : {}),
+            }
           : process.env;
         try {
           stdout = execFileSync(process.execPath, argv, {
@@ -1293,11 +1309,20 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
         try { return fs.readFileSync(metricsPath, 'utf8'); } catch { return null; }
       },
       // The bridge filename (claude-ctx-<id>.json) ends with this, the sentinel
-      // (claude-ctx-<id>-warned.json) does not — a match string that fails ONLY
-      // the bridge unlink.
+      // (claude-ctx-<id>-warned.json) and watermark (claude-ctx-<id>-compacted
+      // .json) do not — a match string that fails ONLY the bridge unlink.
       bridgeMatch: `${id}.json`,
       metrics() {
         try { return JSON.parse(fs.readFileSync(metricsPath, 'utf8')); } catch { return null; }
+      },
+      watermark() {
+        try { return JSON.parse(fs.readFileSync(watermarkPath, 'utf8')); } catch { return null; }
+      },
+      // Write the bridge EXACTLY as given (plus session_id) — the statusline-
+      // race rows need full control of the timestamp, which call()'s fresh
+      // stamp deliberately does not offer.
+      writeBridge(fields) {
+        fs.writeFileSync(metricsPath, JSON.stringify({ session_id: id, ...fields }));
       },
       seed(data) { fs.writeFileSync(warnPath, JSON.stringify(data)); },
     };
@@ -1307,21 +1332,21 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
     s.call('PreCompact', 20);
-    assert.strictEqual(s.warn(), null,
+    assert.strictEqual(s.warnRaw(), null,
       'the sentinel must be GONE after a compaction — a compact restarts the context lifecycle, '
       + 'so carrying lastLevel:critical across it disables escalation for the rest of the session');
   });
 
   test('AC1: PreCompact is tolerant of the sentinel already being absent', (t) => {
     const s = makeSession(t);
-    assert.strictEqual(s.warn(), null, 'precondition: no sentinel');
+    assert.strictEqual(s.warnRaw(), null, 'precondition: no sentinel');
     // Asserted on the EXIT CODE, not on "did not throw". The driver catches every
     // child failure, so doesNotThrow would hold even for a hook that exited 1 on
     // the ENOENT unlink — the row would have proved nothing.
     assert.strictEqual(s.call('PreCompact', 20).exitCode, 0,
       'the common case is no warning having fired this cycle; an absent sentinel is success, and a '
       + 'compaction must never be failed by this hook');
-    assert.strictEqual(s.warn(), null, 'and it stays absent');
+    assert.strictEqual(s.warnRaw(), null, 'and it stays absent');
   });
 
   // Review of #3709: every other row writes a fresh metrics file, so the reset could
@@ -1334,7 +1359,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
     const r = s.call('PreCompact', 20, { metrics: false });
     assert.strictEqual(r.exitCode, 0, 'a PreCompact without metrics must still exit cleanly');
-    assert.strictEqual(s.warn(), null,
+    assert.strictEqual(s.warnRaw(), null,
       'a real PreCompact carries no bridge metrics — if the reset sat below the metrics read, the '
       + 'ENOENT branch would exit first and the sentinel would survive every genuine compaction');
   });
@@ -1345,7 +1370,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     // 80% remaining is above the WARNING threshold — the shape right after a
     // compaction, and an early `process.exit(0)` for every path below the reset.
     assert.strictEqual(s.call('PreCompact', 80).exitCode, 0);
-    assert.strictEqual(s.warn(), null,
+    assert.strictEqual(s.warnRaw(), null,
       'post-compaction usage is healthy again, so a reset placed below the above-threshold exit '
       + 'would never run — which is exactly the state the issue reported in a live session');
   });
@@ -1358,7 +1383,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     const s = makeSession(t, { gsdActive: true, contextWarnings: false });
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
     assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
-    assert.strictEqual(s.warn(), null,
+    assert.strictEqual(s.warnRaw(), null,
       'clearing the sentinel is CLEANUP, not a warning — state that must not outlive a compaction '
       + 'should not outlive it merely because warnings are switched off for now');
   });
@@ -1425,7 +1450,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     assert.strictEqual(stdout, '',
       'the next tool use after a compaction must not warn off a pre-compaction reading — the '
       + 'context was just FREED, so telling the agent to stop is exactly backwards');
-    assert.strictEqual(s.warn(), null,
+    assert.strictEqual(s.warnRaw(), null,
       'and criticalRecorded must not be re-armed off that stale reading, or the session records a '
       + 'context-exhaustion breadcrumb for an exhaustion that did not happen');
   });
@@ -1491,17 +1516,24 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
         `sentinel must be truncated or untouched, never a neutral value; got ${JSON.stringify(raw)} — `
         + 'the old {} parsed fine, so firstWarn was false and the first post-compaction warning '
         + 'was debounced: AC2 of #3709 undone on exactly the path the fallback exists for');
+      if (raw !== '') {
+        // A VISIBLE skip, never a silent if: a platform that stops reaching
+        // the behavioural half must show in the run output rather than count
+        // as a pass (review of #3808, round 3, Minor 5).
+        t.skip('truncation did not land (Windows share-mode hold on fresh files) — the '
+          + 'neutral-value class is pinned above; the behavioural follow-on is provable only '
+          + 'where truncation lands, and the POSIX lanes prove it');
+        return;
+      }
     } else {
       assert.strictEqual(raw, '',
         'the sentinel must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral {} '
         + 'parsed fine, so firstWarn was false and the first post-compaction warning was debounced: '
         + 'AC2 of #3709 still unfixed on exactly the path the fallback exists for');
     }
-    if (raw === '') {
-      const { stdout } = s.call('PostToolUse', 30);
-      assert.match(stdout, /CONTEXT WARNING/,
-        'an unparseable sentinel IS the reset: the first warning of the new cycle fires immediately');
-    }
+    const { stdout } = s.call('PostToolUse', 30);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an unparseable sentinel IS the reset: the first warning of the new cycle fires immediately');
   });
 
   test('Blocker: bridge unlink EPERM → truncated to empty, silent — never "Usage at undefined%"', (t) => {
@@ -1515,21 +1547,25 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
         `bridge must be truncated or untouched, never a neutral value; got ${JSON.stringify(raw)} — `
         + 'the old {"timestamp":0} was NEVER stale (the staleness guard is falsy at 0), so the '
         + 'flow reached emit with remaining === undefined');
+      if (raw !== '') {
+        t.skip('truncation did not land (Windows share-mode hold on fresh files) — the '
+          + 'neutral-value class is pinned above; the behavioural follow-on is provable only '
+          + 'where truncation lands, and the POSIX lanes prove it');
+        return;
+      }
     } else {
       assert.strictEqual(raw, '',
         'the bridge must be TRUNCATED TO EMPTY, which JSON.parse rejects — the old neutral '
         + '{"timestamp":0} was NEVER stale (the staleness guard is `metrics.timestamp && ...` and 0 '
         + 'is falsy), so the flow reached emit with remaining === undefined');
     }
-    if (raw === '') {
-      const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
-      assert.strictEqual(stdout, '',
-        'the next tool use must be SILENT: an unreadable bridge falls to the outer catch and exits 0 '
-        + '— re-entering the prior round\'s Major as a literal "CONTEXT WARNING: Usage at undefined%" '
-        + 'injection is the failure mode this row pins shut');
-      assert.strictEqual(s.warn(), null,
-        'and no sentinel may be rebuilt off the truncated bridge — criticalRecorded stays un-re-armed');
-    }
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'the next tool use must be SILENT: an unreadable bridge falls to the outer catch and exits 0 '
+      + '— re-entering the prior round\'s Major as a literal "CONTEXT WARNING: Usage at undefined%" '
+      + 'injection is the failure mode this row pins shut');
+    assert.strictEqual(s.warnRaw(), null,
+      'and no sentinel may be rebuilt off the truncated bridge — criticalRecorded stays un-re-armed');
   });
 
   test('the truncation fallback refuses to follow a planted symlink', (t) => {
@@ -1537,9 +1573,10 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     // tmpdir, where "unlink fails with EPERM" is exactly what a file PLANTED by
     // another user produces — so the fallback's write must not follow links: a
     // plain truncating write would empty out the symlink's TARGET, weaponising
-    // the hook against any file its own user can write. O_NOFOLLOW makes the
-    // open fail with ELOOP, which lands in the same give-up arm as any other
-    // fallback failure.
+    // the hook against any file its own user can write. This row pins the
+    // LSTAT guard — lstat sees the link and the open is never reached; the
+    // O_NOFOLLOW backstop is exercised by the substitution-race row below
+    // (review of #3808, round 3, Minor 3).
     if (process.platform === 'win32') {
       t.skip('symlink planting is a POSIX shared-sticky-tmpdir scenario; Windows temp is per-user');
       return;
@@ -1561,5 +1598,172 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     assert.ok(fs.lstatSync(s.warnPath).isSymbolicLink(),
       'the planted symlink must still be there — its absence means the unlink succeeded and the '
       + 'fallback under test never executed');
+  });
+
+  test('O_NOFOLLOW backstops the lstat→open substitution race', (t) => {
+    // Review of #3808, round 3, Minor 3. The lstat guard and O_NOFOLLOW defend
+    // DIFFERENT things: lstat covers "the path is not a regular file",
+    // O_NOFOLLOW covers a symlink swapped in BETWEEN the lstat and the open.
+    // The preload makes the child's lstat claim a regular file for the planted
+    // symlink — exactly the race's shape — so the open itself is the only
+    // guard left, and dropping `| O_NOFOLLOW` from the flags ships red here
+    // instead of green.
+    if (process.platform === 'win32') {
+      t.skip('O_NOFOLLOW is a no-op on Windows (libuv defines it 0); the race backstop is POSIX-only');
+      return;
+    }
+    const s = makeSession(t);
+    const victim = path.join(os.tmpdir(), `fix-3709-victim-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(victim, 'precious victim bytes');
+    t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
+    fs.symlinkSync(victim, s.warnPath);
+
+    const r = s.call('PreCompact', 20, {
+      failUnlinkMatching: '-warned.json',
+      lstatClaimsFileMatching: '-warned.json',
+    });
+    assert.strictEqual(r.exitCode, 0, 'ELOOP is a give-up, never a hook failure');
+    assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious victim bytes',
+      'with lstat blinded, only O_NOFOLLOW stands between the open and the victim — the target '
+      + 'must be untouched');
+    assert.ok(fs.lstatSync(s.warnPath).isSymbolicLink(),
+      'the planted symlink must survive — its absence means the injection never engaged');
+  });
+
+  test('round 3, Major 1: a statusline rewrite DURING the compaction cannot re-fire off the old reading', (t) => {
+    // PreCompact deletes the bridge, but the statusline is an uncoordinated
+    // process that re-writes it on every render — a render landing between the
+    // clear and the compaction's completion re-creates the PRE-compaction
+    // remaining with a CURRENT timestamp, sailing past STALE_SECONDS. The
+    // compaction watermark makes that reading identifiable: anything not
+    // strictly newer than the watermark is dropped.
+    const s = makeSession(t, { gsdActive: true });
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
+    const wm = s.watermark();
+    assert.ok(wm && typeof wm.at === 'number', 'PreCompact must leave a watermark');
+    // the racing render: pre-compaction remaining, stamped in the same second
+    s.writeBridge({ remaining_percentage: 20, used_pct: 80, timestamp: wm.at });
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'a reading the compaction watermark covers must be dropped — warning off it tells the agent '
+      + 'to stop right after the compaction that freed the context');
+    assert.strictEqual(s.warnRaw(), null,
+      'and no false context-exhaustion breadcrumb may be re-armed off it');
+  });
+
+  test('round 3, Major 1: a genuinely post-compaction reading still warns', (t) => {
+    // The non-vacuity half: the watermark must drop the OLD reading, not all
+    // readings — a strictly newer one passes and the fresh cycle behaves like
+    // a fresh session.
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
+    const wm = s.watermark();
+    assert.ok(wm && typeof wm.at === 'number', 'PreCompact must leave a watermark');
+    s.writeBridge({ remaining_percentage: 30, used_pct: 70, timestamp: wm.at + 1 });
+    const { stdout } = s.call('PostToolUse', 30, { metrics: 'keep' });
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a reading strictly newer than the watermark is the new cycle — it must warn immediately');
+  });
+
+  test('round 3, Minor 6: a malformed hook_event_name is silent, with side effects intact', (t) => {
+    // readEventName is TOTAL: a truthy non-string name (malformed or
+    // future-dialect payload) used to throw at the tail call site — AFTER the
+    // side effects — and hoisting it to the PreCompact check would have moved
+    // that throw ahead of them, silently breaking #2289's documented contract.
+    // Now it reads as an unknown event: no output, side effects run.
+    const s = makeSession(t);
+    const { stdout, exitCode } = s.call(42, 30);
+    assert.strictEqual(exitCode, 0, 'a malformed event name must never fail the hook');
+    assert.strictEqual(stdout, '', 'unknown events emit nothing (#2289 allowlist)');
+    assert.ok(s.warn(), 'the debounce sentinel side effect must still have run (#2289 contract)');
+  });
+});
+
+// ─── #3709 round 3 (Major 2): the thresholds this fix turns on, at their limits ───
+//
+// DEBOUNCE_CALLS is the threshold the whole fix is ABOUT — the bug was a stale
+// sentinel forcing every later CRITICAL through the full debounce — and
+// STALE_SECONDS is load-bearing for the bridge-clearing argument. Neither had
+// limit-1/limit/limit+1 coverage; the seeded values in the repo (0, 1, 10) sit
+// far from the edges, so an off-by-one in either comparison shipped green.
+describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () => {
+  const HOOK = path.join(__dirname, '..', 'hooks', 'gsd-context-monitor.js');
+  const NOW_PRELOAD = path.join(__dirname, 'helpers', 'context-monitor-fixed-now-preload.cjs');
+  // The STALE rows sit ON a wall-clock boundary, where one second of child
+  // startup delay flips the verdict — so the child's Date.now is pinned via
+  // preload and every age is exact arithmetic, not a race.
+  const NOW_MS = 1_800_000_000_000;
+  const NOW_S = Math.floor(NOW_MS / 1000);
+
+  function drive({ remaining = 30, warnData = null, timestamp = NOW_S }) {
+    const id = `fix-3709-trio-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const metricsPath = path.join(os.tmpdir(), `claude-ctx-${id}.json`);
+    const warnPath = path.join(os.tmpdir(), `claude-ctx-${id}-warned.json`);
+    fs.writeFileSync(metricsPath, JSON.stringify({
+      session_id: id, remaining_percentage: remaining, used_pct: 100 - remaining, timestamp,
+    }));
+    if (warnData) fs.writeFileSync(warnPath, JSON.stringify(warnData));
+    let stdout = '';
+    let exitCode = 0;
+    try {
+      stdout = execFileSync(process.execPath, ['--require', NOW_PRELOAD, HOOK], {
+        input: JSON.stringify({ session_id: id, cwd: os.tmpdir(), hook_event_name: 'PostToolUse' }),
+        encoding: 'utf8',
+        timeout: 8000,
+        env: { ...process.env, GSD_TEST_NOW_MS: String(NOW_MS) },
+      });
+    } catch (e) { stdout = e.stdout || ''; exitCode = e.status ?? 1; }
+    finally {
+      for (const p of [metricsPath, warnPath]) { try { fs.unlinkSync(p); } catch { /* absent */ } }
+    }
+    return { stdout, exitCode };
+  }
+
+  // The gate is `callsSinceWarn < DEBOUNCE_CALLS` evaluated AFTER the +1
+  // increment: a seed of 3 becomes 4 (debounced), 4 becomes 5 (emits, the
+  // limit itself), 5 becomes 6 (emits). `<=` for `<`, or moving the increment
+  // below the comparison, reds exactly one of these three.
+  for (const [seed, emits] of [[3, false], [4, true], [5, true]]) {
+    test(`DEBOUNCE_CALLS trio: seed ${seed} (${seed + 1} after increment) → ${emits ? 'emits' : 'debounced'}`, () => {
+      const { stdout, exitCode } = drive({
+        remaining: 30,
+        warnData: { callsSinceWarn: seed, lastLevel: 'warning' },
+      });
+      assert.strictEqual(exitCode, 0);
+      if (emits) {
+        assert.match(stdout, /CONTEXT WARNING/, `seed ${seed}: the debounce window is over — must emit`);
+      } else {
+        assert.strictEqual(stdout, '', `seed ${seed}: still inside the debounce window — must stay silent`);
+      }
+    });
+  }
+
+  // The gate is `(now - timestamp) > STALE_SECONDS`: an age of exactly 60 is
+  // NOT stale, 61 is. `>=` for `>` reds the 60 row; widening reds the 61 row.
+  for (const [age, emits] of [[59, true], [60, true], [61, false]]) {
+    test(`STALE_SECONDS trio: reading aged ${age}s → ${emits ? 'warns' : 'dropped as stale'}`, () => {
+      const { stdout, exitCode } = drive({ remaining: 30, timestamp: NOW_S - age });
+      assert.strictEqual(exitCode, 0);
+      if (emits) {
+        assert.match(stdout, /CONTEXT WARNING/, `age ${age}s is inside the freshness window`);
+      } else {
+        assert.strictEqual(stdout, '', `age ${age}s is beyond STALE_SECONDS`);
+      }
+    });
+  }
+
+  test('timestamp 0 bypasses the stale gate — characterized directly', () => {
+    // The falsy guard (`metrics.timestamp && ...`) means an UNSTAMPED reading
+    // is never age-checked. Pinned here as the current contract in its own
+    // row — not inside a platform disjunction — so a change to the guard's
+    // polarity is a visible decision, not drift. After a compaction the
+    // watermark closes this hole (`!(0 > at)` drops the reading), which the
+    // round-3 Major-1 rows exercise.
+    const { stdout, exitCode } = drive({ remaining: 30, timestamp: 0 });
+    assert.strictEqual(exitCode, 0);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an unstamped reading skips the age check (falsy guard) — current, characterized behaviour');
   });
 });
