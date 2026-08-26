@@ -1801,47 +1801,77 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   // (the injection case above — the .toml surface never had to consider this
   // because TOML string-quoting isn't a shell argv boundary) is dropped with
   // a warning rather than ever reaching child_process argv.
+  // Single source of truth for the model-id "allowed characters" notion
+  // (#3714 follow-up — "Generative Fix Divergence"): the accept regex
+  // (MODEL_ID_CHARSET_RE, used to ADMIT a pin) and the sanitizer keep-class
+  // (MODEL_ID_SANITIZE_STRIP_RE, used to RENDER a rejected pin into a
+  // warning) are both derived from this one character-class body so they
+  // cannot drift apart again the way they already did once (the '@' added
+  // for Vertex pins landed in the accept regex but not the sanitizer,
+  // rendering "text-bison@002" as "text-bison?002" in the warning). '@' is
+  // included for Vertex model-version pins ("text-bison@002",
+  // "chat-bison@001"), which are legitimate model ids reachable through a
+  // custom model_provider.
+  const MODEL_ID_CHARSET_BODY = 'A-Za-z0-9._:/@-';
+  // The first character must be alphanumeric (#3714 hardening): a leading
+  // '.', '_', ':', '/', or '@' has no legitimate model-id use case and, for
+  // resolveOrchestratorExec's documented role as a GENERAL descriptor→argv
+  // seam other hosts may adopt, a leading '@' or '/' is exactly the shape an
+  // @-response-file or /-switch parser would key on. The leading-dash shape
+  // is enforced separately by LEADING_DASH_RE below — it is NOT relaxed
+  // here, since a flag-shaped value ("-c", "--config") must still fail the
+  // resolver's own unsafe_leading_dash_model guard path via that dedicated
+  // check, not this charset.
+  const MODEL_ID_CHARSET_RE = new RegExp(`^[A-Za-z0-9][${MODEL_ID_CHARSET_BODY}]*$`);
+  // Keep-class for sanitizing a REJECTED pin before it reaches the warning
+  // (a guaranteed-reachable raw-to-TTY sink — the dispatch step runs with no
+  // `2>` redirect). Built from the same MODEL_ID_CHARSET_BODY as the accept
+  // regex above, so every character the matcher accepts also survives the
+  // sanitizer unchanged, and a widened charset can never diverge from its
+  // rendering again.
+  const MODEL_ID_SANITIZE_STRIP_RE = new RegExp(`[^${MODEL_ID_CHARSET_BODY}]`, 'g');
+  // A model id has no legitimate reason to be long; this also keeps a
+  // pathological pin away from the Windows argv ceiling (execFileSync aborts
+  // if argv > 32,767 chars — CLAUDE.md "Windows ARGV Overflow"). A pin over
+  // this length is DROPPED WITH A WARNING like every other rejection, never
+  // truncated into argv — a truncated model id is a different model id.
+  const MODEL_ID_MAX_LENGTH = 200;
   const _dispatchModelPinDropWarned = new Set();
   function _warnDispatchModelPinDropped(agentName, rawValue, reason) {
     const key = `${agentName}::${rawValue}::${reason}`;
     if (_dispatchModelPinDropWarned.has(key)) return;
     _dispatchModelPinDropWarned.add(key);
-    // Sanitize BEFORE truncating: every value that reaches this warning failed
-    // the model-id charset test by definition, so it contains a character
-    // outside `[A-Za-z0-9._:/-]` — which includes raw control/escape bytes
-    // (ESC, BEL, CSI sequences). This is a guaranteed-reachable raw-to-TTY
-    // sink (the dispatch step runs with no `2>` redirect), so every such
-    // character is replaced with '?' first, matching the identity-sanitizing
-    // pattern already used for --as at gsd-tools.cjs:1526. Sanitizing before
-    // truncating also ensures a truncated escape sequence can never survive
-    // (e.g. an SGR sequence cut before its reset, leaving sticky terminal
-    // state) — truncation only ever cuts already-safe characters.
-    const sanitized = String(rawValue).replace(/[^A-Za-z0-9._:/-]/g, '?');
+    // Sanitize BEFORE truncating: every value that reaches this warning
+    // failed the model-id charset test by definition (or, for the
+    // over-length case, still only ever contains charset-legal bytes) —
+    // sanitizing first catches raw control/escape bytes (ESC, BEL, CSI
+    // sequences) using the identity-sanitizing pattern already used for
+    // --as at gsd-tools.cjs:1526. Sanitizing before truncating also ensures
+    // a truncated escape sequence can never survive (e.g. an SGR sequence
+    // cut before its reset, leaving sticky terminal state) — truncation
+    // only ever cuts already-safe characters.
+    const sanitized = String(rawValue).replace(MODEL_ID_SANITIZE_STRIP_RE, '?');
     const safe = sanitized.length > 64 ? `${sanitized.slice(0, 64)}…` : sanitized;
     process.stderr.write(
       `gsd: warning — dispatch model pin for agent "${agentName}" (value "${safe}") ${reason}; ` +
       `dropping it so the spawned executor falls back to the session model.\n`,
     );
   }
-  // '@' is included for Vertex model-version pins ("text-bison@002",
-  // "chat-bison@001"), which are legitimate model ids reachable through a
-  // custom model_provider. The leading-character anchor is enforced
-  // separately by LEADING_DASH_RE below — it is NOT relaxed here, since a
-  // flag-shaped value ("-c", "--config") must still fail the resolver's own
-  // unsafe_leading_dash_model guard path via that dedicated check, not this
-  // charset.
-  const MODEL_ID_CHARSET_RE = /^[A-Za-z0-9._:/@-]+$/;
   // A value starting with '-' (or '--') is a flag/option shape, not a model
-  // id — `-c`, `--config`, `-`, `--`, `-p` all pass MODEL_ID_CHARSET_RE above
-  // (it permits '-') but are unsafe to hand to resolveOrchestratorExec, whose
-  // own `unsafe_leading_dash_model` guard rejects them and fails the WHOLE
-  // resolution to `{ ok: false }` -> exec:null -> a FATAL wave abort
-  // (executor-isolation-dispatch.md:299-303), even on hosts (e.g. kimi-code)
-  // that declare no modelFlag at all and previously ignored the pin
-  // entirely. Reject here, at the VALUE-policy layer, so a leading-dash
-  // value degrades to "no model" like every other rejected shape, instead of
-  // reaching a resolver whose failure mode is fatal rather than a graceful
-  // drop.
+  // id — `-c`, `--config`, `-`, `--`, `-p` are unsafe to hand to
+  // resolveOrchestratorExec, whose own `unsafe_leading_dash_model` guard
+  // rejects them and fails the WHOLE resolution to `{ ok: false }` ->
+  // exec:null -> a FATAL wave abort (executor-isolation-dispatch.md:299-303),
+  // even on hosts (e.g. kimi-code) that declare no modelFlag at all and
+  // previously ignored the pin entirely. This check MUST run BEFORE
+  // MODEL_ID_CHARSET_RE below: the charset is anchored to `[A-Za-z0-9]` at
+  // the first character, so every dash-leading value already fails the
+  // charset test and would otherwise be swallowed by the generic "unsafe
+  // characters" message, losing the more specific and more actionable
+  // flag/option diagnosis. Reject here, at the VALUE-policy layer, so a
+  // leading-dash value degrades to "no model" like every other rejected
+  // shape, instead of reaching a resolver whose failure mode is fatal
+  // rather than a graceful drop.
   const LEADING_DASH_RE = /^-/;
   /**
    * Resolve the VALUE policy for an explicit dispatch model pin. `rawValue`
@@ -1863,12 +1893,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       _warnDispatchModelPinDropped(agentName, rawValue, 'is an Anthropic-flavored model/alias, not a valid Codex model');
       return undefined;
     }
+    if (LEADING_DASH_RE.test(trimmed)) {
+      _warnDispatchModelPinDropped(agentName, rawValue, 'looks like a flag/option, not a model id (leading "-")');
+      return undefined;
+    }
     if (!MODEL_ID_CHARSET_RE.test(trimmed)) {
       _warnDispatchModelPinDropped(agentName, rawValue, 'does not look like a model id (unsafe characters)');
       return undefined;
     }
-    if (LEADING_DASH_RE.test(trimmed)) {
-      _warnDispatchModelPinDropped(agentName, rawValue, 'looks like a flag/option, not a model id (leading "-")');
+    if (trimmed.length > MODEL_ID_MAX_LENGTH) {
+      _warnDispatchModelPinDropped(agentName, rawValue, `exceeds the maximum model id length (${MODEL_ID_MAX_LENGTH} characters)`);
       return undefined;
     }
     return trimmed;
@@ -4583,5 +4617,12 @@ module.exports = {
   // #3275: exported for tests — the shared PATH+PATHEXT resolver behind
   // review-lane invoke's `deps.spawn` / `deps.hasBinary` seams.
   resolveSpawnBinary,
+  // #3714 follow-up: exported for tests — the dispatch model-pin VALUE
+  // policy (charset accept/render parity, max-length boundary, leading-char
+  // anchor) is otherwise unreachable from outside the dispatchOverlayCapabilityCommand closure.
+  resolveDispatchModelPin,
+  MODEL_ID_CHARSET_RE,
+  MODEL_ID_SANITIZE_STRIP_RE,
+  MODEL_ID_MAX_LENGTH,
 };
 
