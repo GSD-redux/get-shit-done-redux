@@ -252,11 +252,11 @@ Scan ALL phases in the current milestone for outstanding verification debt using
 DEBT=$(gsd_run query audit-uat --raw 2>/dev/null)
 ```
 
-Parse JSON for `summary.total_items` and `summary.total_files`.
+Parse JSON for `summary.total_items`, `summary.total_files`, and `summary.parse_gap_files`.
 
-Track: `outstanding_debt` — `summary.total_items` from the audit.
+Track: `outstanding_debt` — `summary.total_items` from the audit. Track `parse_gap_files` — `summary.parse_gap_files` from the audit.
 
-**If outstanding_debt > 0:** Add a warning section to the progress report output (in the `report` step), placed between "## What's Next" and the route suggestion:
+**If outstanding_debt > 0 OR parse_gap_files > 0:** Add a warning section to the progress report output (in the `report` step), placed between "## What's Next" and the route suggestion:
 
 ```markdown
 ## Verification Debt ({N} files across prior phases)
@@ -266,12 +266,13 @@ Track: `outstanding_debt` — `summary.total_items` from the audit.
 | {phase} | {filename} | {pending_count} pending, {skipped_count} skipped, {blocked_count} blocked |
 | {phase} | {filename} | human_needed — {count} items |
 | {phase} | {filename} | {unresolved_count} deferred items |
+| {phase} | {filename} | unparsed — test blocks with no readable `result:` line |
 
 Review: `/gsd:audit-uat ${GSD_WS}` — full cross-phase audit
 Resume testing: `/gsd:verify-work {phase} ${GSD_WS}` — retest specific phase
 ```
 
-This is a WARNING, not a blocker — routing proceeds normally. The debt is visible so the user can make an informed choice.
+The unparsed row comes from `results` entries with `parse_gap: true` (`summary.parse_gap_files` counts them). This is a WARNING, not a blocker — routing proceeds normally. The debt is visible so the user can make an informed choice.
 
 **Step 1.7: Check verification status for the current phase**
 

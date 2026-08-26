@@ -2629,10 +2629,15 @@ result: pending
   // CONTROL: a file where every row passes must contribute zero items (and
   // therefore, pre-fix, is exactly the case defect 3's `items.length > 0`
   // guard is legitimately protecting — a fully-passing file SHOULD vanish).
+  // Strengthened (regression review): the weak `total_items === 0` form
+  // stayed green even while a bogus `parse_gap` entry was being emitted for
+  // this exact fixture, so also assert `results` carries NO entry at all.
   test("a fully passing file contributes no items", () => {
     writeUat(ALL_PASS_ROWS);
     const output = runAudit();
     assert.strictEqual(output.summary.total_items, 0);
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.strictEqual(entry, undefined, `expected no results entry at all, got ${JSON.stringify(entry)}`);
   });
 
   // CONTROL: the plain, pre-existing single-line `expected:` + `result:
@@ -2642,5 +2647,159 @@ result: pending
     const output = runAudit();
     assert.strictEqual(output.summary.total_items, 1);
     assert.strictEqual(output.results[0].items[0].category, "pending");
+  });
+});
+
+describe("#3707 review: end-anchored result matcher regressed trailing-text rows", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const HEADER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+`;
+
+  // BLOCKER 1: the end-anchored `^result:\s*\[?(\w+)\]?\s*$` matcher yielded
+  // NO match — and so silently dropped the row — for any `result:` line
+  // carrying trailing text. Each of these three shapes returned an item on
+  // origin/next and [] on the regressed commit.
+  test("a result: line with a trailing parenthetical is surfaced", () => {
+    writeUat(`${HEADER}### 1. Trailing Paren\nexpected: x\nresult: pending (blocked on staging)\n`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    assert.strictEqual(output.results[0].items[0].result, "pending");
+  });
+
+  test("a bracketed result: with a trailing comment is surfaced", () => {
+    writeUat(`${HEADER}### 1. Bracket Comment\nexpected: x\nresult: [skipped] # no device\n`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    assert.strictEqual(output.results[0].items[0].result, "skipped");
+  });
+
+  test("a result: line with a trailing dash-clause is surfaced", () => {
+    writeUat(`${HEADER}### 1. Dash Clause\nexpected: x\nresult: blocked - waiting\n`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    assert.strictEqual(output.results[0].items[0].result, "blocked");
+  });
+
+  // MAJOR: case-handling split — categorizeItem compared case-sensitively
+  // while the PASS check lowercased, so `result: PENDING` / `result: Blocked`
+  // fell through to 'unknown' instead of their real category.
+  test("result: PENDING categorizes as pending, not unknown", () => {
+    writeUat(`${HEADER}### 1. Casing\nexpected: x\nresult: PENDING\n`);
+    const output = runAudit();
+    assert.strictEqual(output.results[0].items[0].category, "pending");
+  });
+
+  test("result: Blocked categorizes as blocked, not unknown", () => {
+    writeUat(`${HEADER}### 1. Casing\nexpected: x\nresult: Blocked\n`);
+    const output = runAudit();
+    assert.strictEqual(output.results[0].items[0].category, "blocked");
+  });
+
+  // MINOR: the block previously ended only at the next NUMBERED level-3
+  // heading, so a trailing `## Gaps` section was absorbed into the
+  // preceding test's block and its unanchored `reason:` scan bled a Gaps
+  // entry's own reason onto the last test row.
+  test("a trailing ## Gaps section's reason does not bleed onto the prior test", () => {
+    writeUat(`${HEADER}### 1. Prior Test\nexpected: x\nresult: pending\n\n## Gaps\n\n- truth: "unrelated finding"\n  status: open\n  reason: GAPS-REASON\n`);
+    const output = runAudit();
+    const testItem = output.results[0].items.find((i) => i.name === "Prior Test");
+    assert.ok(testItem, `expected an item for 'Prior Test', got ${JSON.stringify(output.results[0].items)}`);
+    assert.strictEqual(testItem.reason, undefined, `expected no bled reason, got ${JSON.stringify(testItem)}`);
+  });
+});
+
+describe("#3707 review: parse_gap must reflect headings seen vs. items yielded", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  // A Gaps-only UAT file whose sole entry is already resolved must yield no
+  // items AND no parse_gap entry — the old `items.length === 0 && status !==
+  // 'complete'` signal fired on this fixture even though nothing is
+  // outstanding and nothing failed to parse.
+  test("a Gaps-only file with 0 unresolved entries yields no items and no parse_gap", () => {
+    writeUat(`${FRONTMATTER}## Gaps\n\n- truth: "already handled"\n  status: resolved\n`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 0);
+    assert.strictEqual(output.summary.parse_gap_files, 0);
+    assert.strictEqual(output.results.find((r) => r.file === "01-UAT.md"), undefined);
+  });
+
+  // An empty `## Gaps` section (heading present, zero bullets) must not
+  // throw and must not register as a parse gap.
+  test("an empty Gaps section yields 0 items without throwing and no parse_gap", () => {
+    writeUat(`${FRONTMATTER}## Gaps\n`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 0);
+    assert.strictEqual(output.summary.parse_gap_files, 0);
+    assert.strictEqual(output.results.find((r) => r.file === "01-UAT.md"), undefined);
+  });
+
+  // A file whose `### N.` blocks have no `result:` line at all is a genuine
+  // parse gap (headings were seen, no item was yielded for any of them, and
+  // it was not because they passed).
+  test("a file whose test blocks have no result: line at all is a parse_gap", () => {
+    writeUat(`${FRONTMATTER}## Tests\n\n### 1. Undrafted\nexpected: something\nnotes: result not yet recorded\n`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.parse_gap, true);
+    assert.strictEqual(output.summary.parse_gap_files, 1);
   });
 });

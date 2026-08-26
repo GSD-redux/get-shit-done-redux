@@ -71,12 +71,15 @@ interface UatFileResult {
   archived_milestone?: string;
   items: UatItem[];
   /**
-   * True when this file parsed to ZERO items but its frontmatter `status:`
-   * is present and non-terminal (#3707) — a genuine parse gap (unrecognised
-   * row shape, or a row missing its `result:` field entirely) rather than a
-   * file whose every row legitimately passed. Distinguishes "nothing to see
-   * here" from "something here could not be read" so a zero-item, non-`complete`
-   * file is still surfaced instead of silently vanishing.
+   * True when this file contained `### N.` test blocks that yielded ZERO
+   * items (#3707) — a genuine parse gap (a row missing its `result:` field
+   * entirely, or otherwise unrecognised) rather than a file whose every row
+   * legitimately passed, or a Gaps-only file with nothing outstanding.
+   * Derived from `parseUatItemsWithStats`'s `headingsSeen` counter, NOT from
+   * frontmatter `status:` — see that function's doc comment. Distinguishes
+   * "nothing to see here" from "something here could not be read" so a file
+   * whose test blocks could not be parsed is still surfaced instead of
+   * silently vanishing.
    */
   parse_gap?: boolean;
 }
@@ -164,7 +167,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     for (const file of selectPhaseUatFiles(files, dir)) {
       const uatFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(uatFilePath, 'utf-8');
-      const items = parseUatItems(content);
+      const { items, headingsSeen } = parseUatItemsWithStats(content);
       const status = (extractFrontmatter(content, uatFilePath).status as string || 'unknown');
       if (items.length > 0) {
         results.push({
@@ -177,13 +180,16 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
           archived_milestone: milestone,
           items,
         });
-      } else if (status !== 'complete') {
-        // #3707 defect 3: a file whose rows all failed to parse (or that
-        // otherwise legitimately has none) is NOT the same as a file whose
-        // rows all passed. `complete` is the only terminal status a template-
-        // conformant UAT file writes on genuine completion (templates/UAT.md);
-        // missing/unrecognised status is treated as non-terminal (surfaced),
-        // matching this module's established fail-safe direction.
+      } else if (headingsSeen > 0 && status !== 'complete') {
+        // `parse_gap` means the file contained `### N.` test blocks that
+        // yielded no items — NOT merely "zero items and not complete"
+        // (#3707 MAJOR: that broader signal false-positived on an all-pass
+        // file and on a Gaps-only file with everything resolved). A file
+        // whose blocks all passed, or that has no test blocks at all, never
+        // sets `headingsSeen`, so it never lands here regardless of status.
+        // The `status !== 'complete'` guard is kept alongside `headingsSeen`
+        // (rather than replacing it) so a file explicitly marked terminal
+        // stays omitted even if a stray unparseable block remains in it.
         results.push({
           phase: phaseNum,
           phase_dir: dir,
@@ -251,11 +257,18 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
   const summary: {
     total_files: number;
     total_items: number;
+    parse_gap_files: number;
     by_category: Record<string, number>;
     by_phase: Record<string, number>;
   } = {
     total_files: results.length,
     total_items: results.reduce((sum, r) => sum + r.items.length, 0),
+    // #3707 blocker 2: a distinct counter so a file whose test blocks
+    // yielded no items (structurally unparseable, not "all clear") stays
+    // visible even though it contributes zero to total_items. Consumers
+    // (audit-uat.md, progress.md) must gate their all-clear / debt checks on
+    // BOTH total_items === 0 AND parse_gap_files === 0.
+    parse_gap_files: results.filter((r) => r.parse_gap).length,
     by_category: {},
     by_phase: {},
   };
@@ -596,34 +609,71 @@ function buildCheckpoint(currentTest: { number: number; name: string; expected: 
  */
 const UAT_PASS_RESULTS = new Set(['pass', 'passed']);
 
-function parseUatItems(content: string): UatItem[] {
+/**
+ * Extract a fallback `reason` from the text trailing the `result:` token
+ * itself (#3707 blocker 1 follow-up), e.g. `result: pending (blocked on
+ * staging)` or `result: blocked - waiting`. Only used when the block has no
+ * dedicated `reason:` line, so this never overrides or invents a second
+ * value for an already-present field.
+ */
+function extractTrailingReason(trailing: string): string | undefined {
+  let t = trailing.trim();
+  if (!t) return undefined;
+  t = t.replace(/^[#\-:]+\s*/, '').trim();
+  const parenMatch = t.match(/^\(([^)]*)\)$/);
+  if (parenMatch) t = parenMatch[1].trim();
+  return t || undefined;
+}
+
+function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number } {
   const items: UatItem[] = [];
+  let headingsSeen = 0;
 
   // Locate every `### N. Name` test heading across the WHOLE document (not
   // adjacency-matched against `result:`, #3707 defect 2) and slice each one's
-  // own block from its heading to the next `###` heading (or EOF).
-  const subHeadings = tokenizeHeadings(content).filter(
+  // own block from its heading to the next heading OF ANY LEVEL (or EOF) —
+  // a trailing `## Gaps` section or an interleaved `### Notes` heading must
+  // not be absorbed into the preceding test's block, else its unanchored
+  // `reason:`/`blocked_by:` scans below bleed a Gaps entry's fields onto the
+  // last test row.
+  const allHeadings = tokenizeHeadings(content);
+  const subHeadings = allHeadings.filter(
     (h) => h.level === 3 && /^\d+\.\s+/.test(h.text),
   );
 
   for (let i = 0; i < subHeadings.length; i += 1) {
     const current = subHeadings[i];
-    const next = subHeadings[i + 1];
+    const currentIdx = allHeadings.indexOf(current);
+    const next = allHeadings[currentIdx + 1];
     const block = next ? content.slice(current.offset, next.offset) : content.slice(current.offset);
 
     // A block with no `result:` line at all is not a test row (e.g. still
-    // being drafted) — no item, no false positive.
-    const resultMatch = block.match(/^result:\s*\[?(\w+)\]?\s*$/im);
-    if (!resultMatch) continue;
-    const result = resultMatch[1];
+    // being drafted) — no item, no false positive. It IS, however, a heading
+    // that failed to yield an item for a reason other than a PASS token, so
+    // it counts toward `headingsSeen` (used to detect a genuine parse gap).
+    // Deliberately NOT end-anchored (regression fix, #3707 blocker 1): a
+    // trailing comment/clause after the token (`result: pending (blocked on
+    // staging)`, `result: [skipped] # no device`, `result: blocked -
+    // waiting`) must still match and surface the row instead of being
+    // silently dropped.
+    const resultLineMatch = block.match(/^result:\s*\[?(\w+)\]?(.*)$/im);
+    if (!resultLineMatch) {
+      headingsSeen += 1;
+      continue;
+    }
+    const result = resultLineMatch[1];
+    const trailingText = resultLineMatch[2];
 
     // #3707 defect 1: invert the old DROP-list filter to a PASS set — see
     // UAT_PASS_RESULTS's doc comment for why this direction was chosen.
+    // A recognised PASS token is the ONLY reason a heading is excluded from
+    // `headingsSeen` without producing an item — every other non-yielding
+    // case (missing `result:` line, above) is a genuine parse gap.
     if (UAT_PASS_RESULTS.has(result.toLowerCase())) continue;
 
-    const headingParts = current.text.match(/^(\d+)\.\s+(.+)$/);
-    const testNumber = headingParts ? parseInt(headingParts[1], 10) : undefined;
-    const testName = headingParts ? headingParts[2].trim() : current.text.trim();
+    const headingParts = current.text.match(/^(\d+)\.\s+(.+)$/)!;
+    const testNumber = parseInt(headingParts[1], 10);
+    const testName = headingParts[2].trim();
 
     // Reuse the existing block-scalar/inline `expected:` grammar rather than
     // re-deriving a second one (#3707 defect 2).
@@ -631,21 +681,26 @@ function parseUatItems(content: string): UatItem[] {
 
     const reasonMatch = block.match(/reason:\s*(.+)/);
     const blockedByMatch = block.match(/blocked_by:\s*(.+)/);
+    const reason = reasonMatch?.[1]?.trim() || extractTrailingReason(trailingText);
 
     const item: UatItem = {
       test: testNumber,
       name: testName,
       result,
-      category: categorizeItem(result, reasonMatch?.[1], blockedByMatch?.[1]),
+      category: categorizeItem(result, reason, blockedByMatch?.[1]),
     };
     if (expected) item.expected = expected;
-    if (reasonMatch) item.reason = reasonMatch[1].trim();
+    if (reason) item.reason = reason;
     if (blockedByMatch) item.blocked_by = blockedByMatch[1].trim();
     items.push(item);
   }
 
   items.push(...parseGapsItems(content));
-  return items;
+  return { items, headingsSeen };
+}
+
+function parseUatItems(content: string): UatItem[] {
+  return parseUatItemsWithStats(content).items;
 }
 
 // ─── parseGapsItems ───────────────────────────────────────────────────────────
@@ -1650,7 +1705,12 @@ function normalizeHumanVerificationEntry(raw: unknown): string {
 
 // ─── categorizeItem ───────────────────────────────────────────────────────────
 
-function categorizeItem(result: string, reason?: string, blockedBy?: string): UatCategory {
+function categorizeItem(rawResult: string, reason?: string, blockedBy?: string): UatCategory {
+  // Normalize once so this comparison agrees with the PASS-token check
+  // (UAT_PASS_RESULTS.has(result.toLowerCase())): `result: PENDING` and
+  // `result: Blocked` must categorize the same as their lowercase forms,
+  // not fall through to 'unknown'.
+  const result = rawResult.toLowerCase();
   if (result === 'blocked' || blockedBy) {
     if (blockedBy) {
       if (/server/i.test(blockedBy)) return 'server_blocked';
@@ -1683,6 +1743,7 @@ export = {
   cmdRenderCheckpoint,
   parseCurrentTest,
   parseUatItems,
+  parseUatItemsWithStats,
   selectPhaseUatFiles,
   buildCheckpoint,
   CHECKPOINT_FRAMES,

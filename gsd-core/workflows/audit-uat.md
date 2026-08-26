@@ -14,12 +14,25 @@ AUDIT=$(gsd_run query audit-uat --raw)
 
 Parse JSON for `results` array and `summary` object.
 
-If `summary.total_items` is 0:
+If `summary.total_items` is 0 AND `summary.parse_gap_files` is 0:
 ```
 ## All Clear
 
 No outstanding UAT or verification items found across all phases.
 All tests are passing, resolved, or diagnosed with fix plans.
+```
+Stop here.
+
+If `summary.total_items` is 0 but `summary.parse_gap_files` is greater than 0, this is NOT all-clear — one or more files have test blocks that could not be parsed and may be hiding outstanding work. Filter `results` for entries with `parse_gap: true` and report:
+```
+## Unparsed UAT Files ({parse_gap_files} files)
+
+| Phase | File |
+|-------|------|
+| {phase} | {file_path} |
+...
+
+These files have `### N.` test blocks with no readable `result:` line. Fix the file's structure, then re-run the audit.
 ```
 Stop here.
 </step>
