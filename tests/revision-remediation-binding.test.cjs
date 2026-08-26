@@ -168,10 +168,12 @@ describe('#3771 checker states the property and marks the example non-binding', 
       assert.match(block, /(^|\r?\n)[>\s]*required_property:/,
         `few-shot issue example lacks required_property:\n${block.trim().slice(0, 200)}`);
     }
-    assert.match(FEW_SHOT, /Planner satisfies the property through a smaller mechanism than the hint/,
-      'a positive example proving a smaller alternative is acceptable must exist');
-    assert.match(FEW_SHOT, /REVISION_CONFLICT/,
-      'the calibration file must show the conflict route as the alternative to literal application');
+    // The smaller-alternative rule is NOT demonstrated here on purpose: this file is the
+    // CHECKER's calibration set, fixed by tests/few-shot-calibration.test.cjs at 2 positive +
+    // 2 negative, and the rule is about what the PLANNER may do with a hint. It is normative in
+    // the checker and in planner-revision.md, and pinned by the assertions in this suite.
+    assert.match(flat(FEW_SHOT), /because the binding payload is the property rather than the example, the planner may satisfy it a different way/,
+      'the calibration commentary must still teach that the hint does not bind');
   });
 });
 
@@ -265,7 +267,7 @@ describe('#3771 generic revision pattern carries the same separation', () => {
     const section = REVISION_LOOP.slice(REVISION_LOOP.indexOf('### Conflict Return'));
     assert.ok(section.length > 0, 'the pattern must define a conflict return');
     assert.match(section, /has not failed and has not stalled/);
-    assert.match(section, /Do NOT increment `iteration` and do NOT update `prev_issue_count`/);
+    assert.match(flat(section), /Do NOT increment the iteration counter and do NOT update `prev_issue_count`/);
     assert.match(flat(REVISION_LOOP), /The increment is step g, AFTER the producing agent returns/,
       'the canonical flow must place the increment on the return path, or the rule above is unreachable');
     assert.doesNotMatch(flat(REVISION_LOOP), /a\. iteration \+= 1/,
@@ -302,27 +304,44 @@ const ORCHESTRATORS = [
 ];
 
 describe('#3771 every revision orchestrator routes conflicts instead of retrying', () => {
+  // plan-phase @-imports revision-loop.md, so the shared Conflict Return protocol really is in
+  // its loaded context and it states only its own bindings. The other three do not import it and
+  // must carry the rules inline. `loadedFor` is what the runtime actually puts in front of each
+  // orchestrator — the honest surface to assert a shared rule against.
+  const importsShared = (content) => /@~\/\.claude\/gsd-core\/references\/revision-loop\.md/.test(content);
+  const loadedFor = (content) => (importsShared(content) ? flat(content + '\n' + REVISION_LOOP) : flat(content));
+
+  test('plan-phase delegates the shared protocol rather than duplicating it', () => {
+    assert.ok(importsShared(PLAN_PHASE), 'plan-phase must @-import the reference it defers to');
+    assert.match(flat(PLAN_PHASE), /follow the shared Conflict Return protocol in `gsd-core\/references\/revision-loop\.md`/,
+      'the delegation must be explicit, or the bindings have no protocol to bind to');
+    assert.match(flat(REVISION_LOOP), /This protocol is shared\./,
+      'the reference must announce itself as the protocol the workflows point at');
+  });
+
   for (const [name, content, counter] of ORCHESTRATORS) {
+    const loaded = loadedFor(content);
+
     test(`${name} tells the reviser the hint is non-binding`, () => {
-      assert.match(flat(content), /`fix_hint` is ONE example route to that property and is NON-BINDING/,
+      assert.match(loaded, /`fix_hint` is ONE example route to that property and is NON-BINDING/,
         `${name} must mark the remediation example non-binding in its revision prompt`);
-      assert.match(flat(content), /smaller or different mechanism that makes the same property true/,
+      assert.match(loaded, /smaller or different mechanism that makes the same property true/,
         `${name} must accept a smaller alternative`);
     });
 
     test(`${name} orders a constraint re-check before editing`, () => {
-      assert.match(content, /Before editing, re-check/,
+      assert.match(loaded, /Before editing, re-check/,
         `${name} must order the constraint re-check`);
-      assert.match(flat(content), /would contradict one, or the property is unreachable without breaking one, do NOT apply it/,
+      assert.match(loaded, /would contradict one, or the property is unreachable without breaking one, do NOT apply it/,
         `${name} must forbid applying a conflicting hint`);
     });
 
     test(`${name} routes REVISION_CONFLICT without consuming ${counter}`, () => {
-      assert.match(content, /## REVISION_CONFLICT/,
+      assert.match(loaded, /## REVISION_CONFLICT/,
         `${name} must handle the conflict return`);
       assert.match(
-        content,
-        new RegExp(`[Dd]o NOT increment \`?${counter}\`?`),
+        loaded,
+        new RegExp(`[Dd]o NOT increment (the iteration counter|\`?${counter}\`?)`),
         `${name} must not spend a revision iteration on an unresolvable conflict`
       );
     });
@@ -335,7 +354,7 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
         new RegExp(`- Increment \`${counter}\` - Re-spawn`),
         `${name} must not increment ${counter} before the reviser is dispatched`
       );
-      assert.match(flat(content), new RegExp(`(returns|return) [^.]*increment \`?${counter}\`?|increment \`?${counter}\`?, then re-spawn`, 'i'),
+      assert.match(loaded, new RegExp(`(returns|return) [^.]*increment \`?${counter}\`?|increment \`?${counter}\`?, then re-spawn|Counter not spent: \`${counter}\``, 'i'),
         `${name} must increment ${counter} only once the reviser has returned`);
     });
 
@@ -343,30 +362,30 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     // replace it, or an agent returning the same conflict forever loops unattended.
     test(`${name} bounds conflict recurrence so the un-incremented path cannot spin`, () => {
       assert.match(
-        flat(content),
+        loaded,
         /same `required_property` (a second time in a row|twice in a row)/i,
         `${name} must detect a repeated conflict rather than re-spawning forever`
       );
-      assert.match(flat(content), /the resolution did not take/,
+      assert.match(loaded, /the resolution did not take/,
         `${name} must name why a repeated conflict is a stall`);
     });
 
     // The conflict gate resolves the conflict; it must not become an early exit from a blocker.
     test(`${name} re-evaluates a second conflict instead of falling through to the checker`, () => {
       assert.match(
-        flat(content),
-        /re-evaluate (its|the [a-z]+'s) return from the top of this handler|return to this step/,
+        loaded,
+        /re-evaluate (its|the [a-z]+'s|the) return (from the top of this handler|here)|return to this step/,
         `${name} must loop back on the re-spawn, not fall through to the checker spawn`
       );
     });
 
     test(`${name} does not offer accepting the output with the blocker still open`, () => {
       assert.match(
-        flat(content),
+        loaded,
         /is NOT offered here/,
         `${name} must state that accepting an unaddressed blocker is not one of the conflict options`
       );
-      assert.match(flat(content), /amend the constraint/,
+      assert.match(loaded, /amend the constraint/,
         `${name} must offer amending the constraint as the third resolving option`);
     });
   }
@@ -376,17 +395,17 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
       'plan-phase must consult the convergence config');
     assert.match(flat(PLAN_PHASE), /REVIEWS_FILE=\$\(ls "\$\{PHASE_DIR\}"\/\*-REVIEWS\.md/,
       'the record branch must be gated on a condition the orchestrator can evaluate at runtime');
-    assert.match(flat(PLAN_PHASE), /plan-phase never invokes `\/gsd:plan-review-convergence` for a conflict/,
-      'plan-phase runs inside that loop; invoking it would be a cycle');
-    assert.match(flat(PLAN_PHASE), /plan-phase wrote the line, so plan-phase owns closing it; convergence only reads/,
+    assert.match(flat(PLAN_PHASE), /plan-phase wrote the line, so plan-phase closes it/,
       'closure must have exactly one named owner, or a line can be orphaned open');
+    assert.match(flat(REVISION_LOOP), /never invokes `\/gsd:plan-review-convergence`/,
+      'plan-phase runs inside that loop; invoking it would be a cycle');
     // A markdown table cannot be counted by any simple filter — its header and separator rows
     // look like data. The recorded shape must be one the reader can match exactly.
-    assert.match(flat(PLAN_PHASE), /A checkbox, not a table row/,
+    assert.match(flat(REVISION_LOOP), /A checkbox, not a table row/,
       'the recorded conflict must be countable without parsing a table');
-    assert.match(PLAN_PHASE, /- \[ \] \{dimension\}\/\{plan\} — required_property:/,
-      'plan-phase must record the open form the convergence gate matches');
-    assert.match(flat(PLAN_PHASE), /flips the line it wrote from `- \[ \]` to `- \[x\]`/,
+    assert.match(REVISION_LOOP, /- \[ \] \{dimension\}\/\{plan\} — required_property:/,
+      'the shared protocol must define the open form the convergence gate matches');
+    assert.match(flat(REVISION_LOOP), /owns flipping it to `- \[x\]`/,
       'the close step must produce the resolved form the gate excludes');
   });
 
@@ -425,9 +444,9 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
       'quick must say why the convergence route does not apply, rather than dangling a dead branch');
   });
 
-  test('the conflict is surfaced to the user with its alternatives when convergence is off', () => {
+  test('the conflict is surfaced to the user with its alternatives', () => {
     for (const [name, content] of ORCHESTRATORS) {
-      assert.match(content, /alternatives to the user/,
+      assert.match(loadedFor(content), /alternatives to the user|conflict and its alternatives to the user/,
         `${name} must present the alternatives rather than deciding silently`);
     }
   });

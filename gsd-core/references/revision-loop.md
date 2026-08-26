@@ -100,23 +100,45 @@ A revision agent that returns `REVISION_CONFLICT` has not failed and has not sta
 BEFORE the iteration counter and the stall check — a conflict is not resolvable by re-running the
 same loop, so spending retry budget on it only exhausts the cap:
 
-1. Do NOT increment `iteration` and do NOT update `prev_issue_count`.
-2. Present the conflict and its alternatives to the user and ask which to take
-   (pattern: `gsd-core/references/gate-prompts.md`). Options: adopt a named alternative /
-   override the named constraint and apply the hint / amend the constraint itself. Each option
-   resolves the conflict. Accepting the output with the blocker still open is NOT offered here —
-   the blocking `required_property` still fails, and that choice belongs to the cap escalation.
-3. Re-spawn the producing agent with the chosen resolution, then resume the loop.
+**This protocol is shared.** Every revision-bearing workflow (`plan-phase`, `quick`, `ui-phase`,
+`verify-work`) follows it verbatim; each states only its own counter name, artifact path and next
+step, and points here for the rest.
 
-**Bounded.** Not incrementing `iteration` must not make this path unbounded: if the agent returns
-a conflict naming the SAME `required_property` twice in a row, the chosen resolution did not take.
-Stop re-spawning, report it as a stall, and escalate through the same gate the iteration cap uses.
+1. **Do not spend budget.** Do NOT increment the iteration counter and do NOT update
+   `prev_issue_count`. Do NOT re-spawn the checker yet — the conflict is not a revised output.
+2. **Record**, where the host has a channel an arbitration loop reads. `plan-phase` appends one
+   line per conflict to the phase `*-REVIEWS.md` under `## Plan-Revision Conflicts` when
+   `workflow.plan_review_convergence` is enabled and that file already exists:
 
-Asking the user is the route, in every workflow. A host that participates in an arbitration loop
-also RECORDS the conflict where that loop will see it — `plan-phase` appends a `- [ ]` line to the
-phase REVIEWS.md when `workflow.plan_review_convergence` is enabled, so an open conflict blocks
-convergence even if this run is abandoned — but recording is in addition to asking, never instead
-of it. No workflow hands a conflict to a loop and returns.
+   ```markdown
+   - [ ] {dimension}/{plan} — required_property: {property} | conflicts with: {locked decision
+     D-nn / CLAUDE.md rule / plan constraint} | alternatives: {the agent's alternatives}
+   ```
+
+   A checkbox, not a table row: `- [ ]` is open, `- [x]` is resolved, so the reader counts open
+   conflicts by fixed-string match and never parses a table whose header and separator rows are
+   indistinguishable from data. An open line blocks convergence even if this run is abandoned.
+   A workflow with no such channel (`quick` has no phase and no REVIEWS.md) skips this step.
+3. **Resolve** — present the conflict and its alternatives to the user and ask which to take
+   (pattern: `gsd-core/references/gate-prompts.md`): adopt a named alternative / override the
+   named constraint and apply the hint / amend the constraint itself. Each option resolves the
+   conflict. Accepting the output with the blocker still open is NOT offered here — the blocking
+   `required_property` still fails, and that choice belongs to the cap escalation.
+4. **Close** — the workflow that wrote the line owns flipping it to `- [x]` once the resolution
+   has been applied, appending ` | resolved: {chosen resolution}`. Readers only read. A line left
+   open is a live blocker, never a stale artifact.
+5. **Re-spawn** with the chosen resolution, then re-evaluate the return from the top of this
+   handler — never fall through to the checker spawn. A second conflict is still a conflict, not
+   a revised output, and handing it to the checker would check the conflict message.
+
+**Bounded.** Not incrementing must not make this path unbounded: if the agent returns a conflict
+naming the SAME `required_property` twice in a row, the chosen resolution did not take. Stop
+re-spawning, report it as a stall, and escalate through the same gate the iteration cap uses.
+
+**No workflow hands a conflict to a loop and returns.** Asking the user is the route everywhere;
+recording is in addition to asking, never instead of it. `plan-phase` in particular never invokes
+`/gsd:plan-review-convergence` — it runs *inside* that loop, so invoking it would be a cycle, and
+"was I invoked by convergence?" is not a question the orchestrator can answer at runtime.
 
 ### After 3 Iterations
 

@@ -1273,54 +1273,19 @@ Agent(
 
 **ORCHESTRATOR RULE — ALL RUNTIMES:** (7.99; no marker, mtimes only) `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md')` while waiting/active — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
 
-**If the planner returns `## REVISION_CONFLICT`:** the loop cannot resolve it by re-running, so it
-must not consume retry budget. Do NOT increment `iteration_count`, do NOT update
-`prev_issue_count`, and do NOT re-spawn the checker yet.
-
-**Record it, then resolve it here.** plan-phase never invokes
-`/gsd:plan-review-convergence` for a conflict — plan-phase runs *inside* that loop, so invoking it
-would be a cycle, and "was I invoked by convergence?" is not a question this orchestrator can
-answer at runtime. Instead:
+**If the planner returns `## REVISION_CONFLICT`:** follow the shared Conflict Return protocol in
+`gsd-core/references/revision-loop.md` (@-imported above), with this workflow's bindings:
 
 ```bash
 CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence 2>/dev/null || echo "false")
 REVIEWS_FILE=$(ls "${PHASE_DIR}"/*-REVIEWS.md 2>/dev/null | head -1)
 ```
 
-1. **Record** — if `CONVERGENCE_ENABLED` is `true` and `REVIEWS_FILE` is non-empty, append the
-   conflict to that file under `## Plan-Revision Conflicts`, one checklist line per conflict:
-
-   ```markdown
-   ## Plan-Revision Conflicts
-
-   - [ ] {dimension}/{plan} — required_property: {property} | conflicts with: {locked decision
-     D-nn / CLAUDE.md rule / plan constraint} | alternatives: {the planner's alternatives}
-   ```
-
-   A checkbox, not a table row: `- [ ]` is open and `- [x]` is resolved, so the convergence loop
-   counts open conflicts with a fixed-string match and never has to parse a table (whose header
-   and separator rows are indistinguishable from data by any simple filter). REVIEWS.md is the
-   channel that loop already consumes, so no new hand-off mechanism is introduced: an open line
-   blocks its converged exit even if this run is abandoned.
-2. **Resolve** — present the conflict table and its alternatives to the user and ask which to
-   take: adopt a named alternative / override the named constraint and apply the hint / amend the
-   constraint itself. Every option resolves the conflict. Accepting the plans with the blocker
-   still open is NOT offered here — the blocking `required_property` still fails, and that choice
-   belongs to the iteration-cap escalation below, which is unchanged.
-3. **Close** — after the planner has applied the chosen resolution, plan-phase flips the line it
-   wrote from `- [ ]` to `- [x]` and appends ` | resolved: {chosen resolution}`. plan-phase wrote
-   the line, so plan-phase owns closing it; convergence only reads. A line left open is a live
-   blocker, never a stale artifact.
-
-**Conflict recurrence is bounded.** Re-spawning after a resolution does not increment
-`iteration_count` — the conflict was not a failed attempt. But if the planner returns a conflict
-naming the SAME `required_property` a second time in a row, the resolution did not take: stop
-re-spawning, report it as a stall, and hand it to the same escalation the iteration cap uses.
-Without that bound the conflict path could loop unattended.
-
-Re-spawn the planner with the chosen resolution, then **re-evaluate its return from the top of
-this handler** — do not fall through to the checker spawn below. A second conflict is still a
-conflict, not a revised plan, and handing it to the checker would check the conflict message.
+- Counter not spent: `iteration_count`, and `prev_issue_count` is left unchanged.
+- Record channel: `$REVIEWS_FILE` under `## Plan-Revision Conflicts`, when `CONVERGENCE_ENABLED`
+  is `true` and `$REVIEWS_FILE` is non-empty. plan-phase wrote the line, so plan-phase closes it.
+- After re-spawning, re-evaluate the return here — do not fall through to the checker spawn below.
+- Escalation on a repeated `required_property` uses the same gate as the iteration cap below.
 
 After planner returns -> spawn checker again (step 10), increment iteration_count.
 

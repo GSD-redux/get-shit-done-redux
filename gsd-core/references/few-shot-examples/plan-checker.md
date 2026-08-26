@@ -42,14 +42,6 @@ last_calibrated: 2026-03-24
 
 **Why this is good:** The checker identified a real structural problem -- two plans modifying the same file in the same wave without a dependency relationship. It stated the property that must hold, cited dependency_correctness, named both plans and the conflicting file, and offered two example routes -- neither of which binds, since either makes the property true.
 
-### Example 3: Planner satisfies the property through a smaller mechanism than the hint
-
-**Input:** The BLOCKER from Example 1. The `fix_hint` names three edits (create the middleware, apply it across `src/routes/api.js` lines 12-45, add an integration test). The project's CLAUDE.md already mandates one auth middleware, registered centrally in `src/app.js`.
-
-**Output:** The planner writes the task action as "create `authMiddleware` in `src/middleware/auth.js`; register once via `app.use` in `src/app.js`", and reports: *addressed -- `required_property` (action names target files and functions to create) now holds; used central registration instead of the hint's per-route application, which the project convention requires.*
-
-**Why this is good:** `required_property` is what binds. The planner reached it with a smaller mechanism than the hint named, said which mechanism it used, and did not expand the plan to match an example. Re-running the checker passes: the property holds. Had the hint instead *contradicted* the CLAUDE.md convention with no smaller route available, the correct output would have been `## REVISION_CONFLICT` naming the conflict and this alternative -- not silent literal application, and not a burned revision iteration.
-
 ## Negative Examples
 
 ### Example 1: All dimensions pass when verify commands are missing
