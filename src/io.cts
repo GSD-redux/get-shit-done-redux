@@ -12,6 +12,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { platformWriteSync, platformEnsureDir } from './shell-command-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { setJsonErrorMode, getJsonErrorMode, EXIT_ENVELOPE_REASON } = cliExitModule;
 
 // ─── Temp-file helpers (needed by output()) ──────────────────────────────────
 
@@ -184,7 +187,7 @@ const ERROR_REASON = Object.freeze({
   CONFIG_PARSE_FAILED: 'config_parse_failed',
   CONFIG_INVALID_KEY: 'config_invalid_key',
   // SDK / gsd-tools dispatch
-  SDK_FAIL_FAST: 'sdk_fail_fast',
+  SDK_FAIL_FAST: EXIT_ENVELOPE_REASON,
   SDK_UNKNOWN_COMMAND: 'sdk_unknown_command',
   SDK_MISSING_ARG: 'sdk_missing_arg',
   // workflow / phase
@@ -220,18 +223,8 @@ const ERROR_REASON = Object.freeze({
 
 type ErrorReasonValue = typeof ERROR_REASON[keyof typeof ERROR_REASON];
 
-/**
- * Process-level flag: when true, error() emits structured JSON to stderr
- * instead of plain "Error: <message>" text. Set by gsd-tools.cjs when the
- * CLI is invoked with `--json-errors`. Tests opt in to typed-IR error
- * assertions by passing that flag and parsing the JSON.
- *
- * Default off so existing callers and human operators keep their plain-text
- * diagnostics. The structured form is opt-in for tooling and tests (#2974).
- */
-let _jsonErrorMode = false;
-function setJsonErrorMode(v: unknown): void { _jsonErrorMode = !!v; }
-function getJsonErrorMode(): boolean { return _jsonErrorMode; }
+// setJsonErrorMode / getJsonErrorMode now live in cli-exit.cts (imported above)
+// and are re-exported here for the callers that already import them from io.
 
 /**
  * Emit an error and exit. When the second argument is provided it must be
@@ -248,7 +241,7 @@ function getJsonErrorMode(): boolean { return _jsonErrorMode; }
  * message is the only thing an operator sees there.
  */
 function error(message: string, reason: ErrorReasonValue = ERROR_REASON.UNKNOWN, extra?: Record<string, unknown>): never {
-  if (_jsonErrorMode) {
+  if (getJsonErrorMode()) {
     const payload = JSON.stringify({ ok: false, reason, message, ...(extra || {}) }) + '\n';
     writeAllSync(2, payload);
   } else {

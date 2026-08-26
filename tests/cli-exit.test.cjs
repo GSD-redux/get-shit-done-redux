@@ -542,13 +542,18 @@ describe('regressions', () => {
         `  failFast: io.ERROR_REASON.SDK_FAIL_FAST,`,
         `  frozen: Object.isFrozen(io.ERROR_REASON),`,
         `  reasonCount: Object.keys(io.ERROR_REASON).length,`,
+        `  keys: Object.keys(io.ERROR_REASON).sort(),`,
         `}));`,
       ]);
       assert.strictEqual(seen.setter, 'function');
       assert.strictEqual(seen.getter, 'function');
       assert.strictEqual(seen.failFast, 'sdk_fail_fast', 'the literal must survive moving to cli-exit');
       assert.strictEqual(seen.frozen, true);
-      assert.strictEqual(seen.reasonCount, 25, 'ERROR_REASON must keep all 25 members');
+      assert.strictEqual(seen.reasonCount, 23, 'ERROR_REASON must keep all 23 members');
+      assert.ok(
+        seen.keys.includes('SDK_FAIL_FAST'),
+        `ERROR_REASON must still include SDK_FAIL_FAST, got: ${JSON.stringify(seen.keys)}`,
+      );
     });
 
     // ── Matrix rows 22-23: the unbuilt-clone constraint ──────────────────────
