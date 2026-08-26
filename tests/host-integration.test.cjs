@@ -1955,6 +1955,79 @@ describe('#2627 dispatch-isolation CLI route', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #3714 — an explicit `model_overrides.gsd-executor` pin must reach the argv
+// that orchestrator-worktree wave dispatch spawns. The defect was not a
+// dropped append: the invocation-time model channel did not exist at all, so
+// a pinned executor silently ran the session/global model.
+//
+// These cases drive the WHOLE chain the workflow drives — the raw config read,
+// then the model resolver, then the dispatch route — through the CLI, because
+// the resolver in isolation was never the broken part.
+// ---------------------------------------------------------------------------
+describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () => {
+  const os = require('node:os');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+  const GSD_TOOLS = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  // GSD_RUNTIME outranks config.runtime in resolveRuntime, so it is stripped
+  // here: the `"runtime"` key written into the temp project below is what must
+  // decide the host, not whatever shell this suite happens to run under.
+  const ENV = { ...process.env };
+  delete ENV.GSD_RUNTIME;
+
+  function query(dir, verbArgs) {
+    const r = runNode(
+      [GSD_TOOLS, 'query', ...verbArgs],
+      { cwd: dir, env: ENV, timeoutMs: PROBE_TIMEOUT_MS },
+    );
+    throwIfFailed(r, `gsd-tools query ${verbArgs.join(' ')}`);
+    return r.stdout.trim();
+  }
+
+  /**
+   * Compose exactly what executor-isolation-dispatch.md composes: read the raw
+   * override, run it through the model resolver only when it is non-empty,
+   * then hand the result to the dispatch route. Returns the parsed decision.
+   */
+  function dispatch(t, modelOverrides) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3714-'));
+    t.after(() => cleanup(dir));
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    // `runtime` is load-bearing: without it the no-override case would resolve
+    // an empty model for the wrong reason and the AC4 identity would hold
+    // vacuously.
+    const config = { runtime: 'codex', resolve_model_ids: 'omit' };
+    if (modelOverrides !== undefined) config.model_overrides = modelOverrides;
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify(config));
+
+    const override = query(dir, ['config-get', 'model_overrides.gsd-executor', '--default', '', '--raw']);
+    const model = override ? query(dir, ['resolve-model', 'gsd-executor', '--raw']) : '';
+    return JSON.parse(query(dir, [
+      'dispatch-isolation', '--json',
+      '--cwd-target', '/tmp/wt',
+      '--prompt', 'P',
+      '--model', model,
+    ]));
+  }
+
+  test('AC1: an explicit pin reaches the spawned argv', (t) => {
+    const d = dispatch(t, { 'gsd-executor': 'gpt-5.6-terra' });
+    assert.equal(d.isolation, 'orchestrator-worktree');
+    assert.equal(d.exec.command, 'codex');
+    assert.equal(d.exec.cwd, '/tmp/wt');
+    assert.deepEqual(d.exec.args, ['exec', '--cd', '/tmp/wt', '--model', 'gpt-5.6-terra', 'P']);
+  });
+
+  test('AC4: no override key at all leaves the argv exactly as it is today', (t) => {
+    const d = dispatch(t, undefined);
+    assert.equal(d.isolation, 'orchestrator-worktree');
+    assert.deepEqual(d.exec.args, ['exec', '--cd', '/tmp/wt', 'P']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #2652 — dispatch-site parity: isolation is decided by the negotiated
 // dispatch.isolation capability, never by a runtime id.
 //
