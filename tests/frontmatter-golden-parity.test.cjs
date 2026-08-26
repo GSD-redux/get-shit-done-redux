@@ -1,290 +1,153 @@
 'use strict';
 
 /**
- * Golden parity over the real corpus (ADR-3473 §8.1, #3881, phase test-matrix §D).
+ * Golden parity, hermetic (ADR-3473 §8.1, #3881, phase test-matrix §D — redesigned).
  *
- * The parser moved from a hand-rolled line scanner to vendored js-yaml across ~900 real
- * documents. This suite proves nothing was silently changed by diffing the CURRENT
- * parser's output against a golden captured from the LEGACY parser, independently of it.
+ * The parser moved from a hand-rolled line scanner to vendored js-yaml. This suite proves
+ * nothing was silently changed by diffing the CURRENT parser's output against a golden
+ * captured from the LEGACY parser, independently of it — but unlike the original design,
+ * every fixture entry carries its OWN literal document text. Nothing here enumerates the
+ * tree, reads a tracked repo path, or shells out to git. That is deliberate:
  *
- * Golden provenance (do NOT re-derive from the current parser — see D2):
- *   `tests/fixtures/golden/frontmatter-legacy-golden.json` was captured by compiling
- *   `src/frontmatter.cts` AS IT EXISTED AT COMMIT ddde001af (`git show
- *   ddde001af:src/frontmatter.cts`) standalone with tsc, against this repo's sibling
- *   support modules (`io.cjs`, `shell-command-projection.cjs`, `validate.cjs`,
- *   `text-lines.cjs`, `unusable-input.cjs`, `pattern.cjs`, `phase-id.cjs`) — all
- *   byte-identical between ddde001af and HEAD (`git diff ddde001af..HEAD --stat` over
- *   those paths is empty), so borrowing the current build of those pure helpers does not
- *   change what the legacy frontmatter parser itself computed. The legacy
- *   `extractFrontmatter` was then run over every git-tracked `*.md` file, EXCLUDING
- *   `.changeset/**` (see below), whose content opens with a byte-0 `---` fence, and each
- *   result was structurally serialized (see `tests/helpers/frontmatter-golden-serializer.cjs`,
- *   D2) and committed. This is a one-time capture: the compiled legacy module is not part
- *   of this repo and is not re-run by the suite below, which only ever reads the committed
- *   golden.
+ * The original design keyed ~376 golden entries by tracked repo path (every git-tracked
+ * command file, workflow file, agent file, and doc under the repo's markdown surfaces). This repo
+ * merges roughly 21 commits/day; a 14-day sample measured 937 touches of exactly those
+ * covered files. Any PR that edits one of those files' frontmatter — adding an
+ * `argument-hint`, changing `allowed-tools`, editing a description — changed its parse and
+ * turned this suite red for a change that had nothing to do with the parser. The reflex fix
+ * was "regenerate the golden," which overwrites the very snapshot meant to catch a real
+ * regression — training people to blow away their own regression fixture on every unrelated
+ * touch. It was also a guaranteed merge-conflict magnet: the JSON was one big file every
+ * such PR would need to touch. Excluding `.changeset/**` (a prior, narrower fix) was not
+ * enough — the design itself was wrong.
  *
- * `.changeset/**` is excluded from the corpus entirely (redesign, #3881 follow-up): a
- *   changeset fragment's `pr:` field is REQUIRED by this repo's own workflow to mutate from
- *   the placeholder `pr: 0` to the real PR number once `gh api POST /pulls` returns it
- *   (CONTRIBUTING.md, "PR Number Handling"). A snapshot keyed to a file that is mutable BY
- *   DESIGN can never be stable — every backfill would turn this suite red on a change that
- *   has nothing to do with the parser, and the standard response would become "regenerate
- *   the golden," which trains people to overwrite the very snapshot meant to catch a real
- *   regression. This is exactly what happened: `.changeset/jolly-geese-roar.md`'s normal
- *   `pr: 0` -> `pr: 3888` backfill turned this suite red although the parser did not change.
+ * This redesign carries no tracked-path dependency at all: each entry stores a stable `id`,
+ * the literal `documentText` (shrunk from a real ddde001af-era corpus document — see
+ * provenance below), and an `expectedParse` captured from the legacy parser. A PR editing
+ * `commands/gsd/help.md` cannot affect this suite. The only thing that can ever conflict
+ * here is two PRs both editing the parser itself.
  *
- * A tracked, frontmatter-carrying `*.md` file with NO golden entry is tolerated (it did not
- *   exist at capture time) rather than failed — see D1's "post-capture" test below — so this
- *   suite also does not go red merely because the tree grew a new document. It still fails
- *   when a file THAT IS in the golden parses differently today, or has vanished from the
- *   tree entirely (D1's coverage-floor and vanished-file tests).
+ * Golden provenance (do NOT re-derive `expectedParse` from the current parser — that would
+ *   make the comparison circular and prove nothing): `tests/fixtures/golden/
+ *   frontmatter-legacy-golden.json` was captured by compiling `src/frontmatter.cts` AS IT
+ *   EXISTED AT COMMIT ddde001af (`git show ddde001af:src/frontmatter.cts`) standalone with
+ *   tsc, against this repo's sibling support modules (`io.cts`, `shell-command-projection.
+ *   cts`, `validate.cts`, `text-lines.cts`, `unusable-input.cts`, `pattern.cts`, `phase-id.
+ *   cts`) — all byte-identical between ddde001af and HEAD (`git diff ddde001af..HEAD --stat`
+ *   over those paths is empty), so borrowing the current sources of those pure helpers does
+ *   not change what the legacy frontmatter parser itself computed. The legacy
+ *   `extractFrontmatter` was run once, at capture time, over a representative sample of real
+ *   ddde001af-era documents — every document then listed as a known divergence, every
+ *   adversarial fixture under `tests/fixtures/adversarial/frontmatter/`, and a sample chosen
+ *   for breadth across the distinct YAML shapes present in the corpus (block scalars, inline
+ *   arrays, dashed lists, object-lists, nested maps, unicode keys, CRLF, empty values,
+ *   comments, multi-doc-looking bodies) — each result was structurally serialized (see
+ *   `tests/helpers/frontmatter-golden-serializer.cjs`, D2) and committed alongside the
+ *   shrunk document text it was captured from. This is a one-time capture: the compiled
+ *   legacy module is not part of this repo and is not re-run by the suite below, which only
+ *   ever reads the committed golden.
+ *
+ * Shrinking: most entries store the frontmatter region plus a short stub body rather than a
+ *   whole file. Every entry was verified AT CAPTURE TIME that both the current parser and
+ *   the legacy parser produce the same structurally-serialized result over the original
+ *   full document and the shrunk `documentText` — any candidate where either parser's
+ *   output changed under shrinking was dropped rather than stored (0 of 51 candidates were
+ *   dropped by this check in this capture; 1 additional file, the adversarial
+ *   `unclosed-block.md` fixture, has no closing fence to truncate at and is stored
+ *   unshrunk, verbatim).
+ *
+ * Divergences: entries with `diverges: true` are documented, deliberate legacy/current
+ *   mismatches — see each entry's `justification`. They are asserted to STILL diverge
+ *   (D3), never silently absorbed as a wildcard exemption. Non-diverging entries are
+ *   asserted to match `expectedParse` exactly (D1).
  */
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 
 const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
 const { serializeFrontmatterValue } = require('./helpers/frontmatter-golden-serializer.cjs');
 
-const REPO_ROOT = path.join(__dirname, '..');
 const GOLDEN_PATH = path.join(__dirname, 'fixtures', 'golden', 'frontmatter-legacy-golden.json');
 const golden = JSON.parse(fs.readFileSync(GOLDEN_PATH, 'utf8'));
+const ENTRIES = golden.entries;
 
-/**
- * D3 — the closed list of known, deliberate divergences. Each entry's justification was
- * verified against a live run of the legacy parser (see the module doc above) as part of
- * writing this suite, not copied blind from the design doc.
- */
-const DIVERGENCES = [
-  {
-    file: 'commands/gsd/add-tests.md',
-    justification:
-      'Legacy returned the block scalar indicator `"|"` as the literal value of '
-      + '`argument-instructions` and invented a phantom top-level key `Example` from the '
-      + "block's first content line. js-yaml parses the block scalar correctly and emits no "
-      + 'such key. Defect fix (B1/B2).',
-  },
-  {
-    file: 'gsd-core/templates/summary-complex.md',
-    justification:
-      "Legacy's per-line flattening of the `requires` list produced an array whose first "
-      + 'item read `"phase: [prior phase]"` but which ALSO carried a named own property '
-      + '`.provides = "[what that phase built]"` (Object.keys === ["0","provides"]) — the '
-      + 'second `key: value` line of the same list item leaked onto the array as a sibling '
-      + 'property instead of being folded into the item text. js-yaml + this repo\'s '
-      + 'normalizer instead produce ONE combined string per item: '
-      + '`"phase: [prior phase], provides: [what that phase built]"`. Canonicalization.',
-  },
-  {
-    file: 'tests/fixtures/adversarial/frontmatter/anchor-alias-bomb.md',
-    justification:
-      'Legacy is a line scanner, not a YAML engine — it read `&a`/`*a`/`<<:` as inert literal '
-      + 'text on each key\'s value, bounded and harmless. js-yaml resolves real YAML anchors '
-      + 'and aliases, so consequence 6/A7 refuses the whole region outright (returns {} '
-      + 'carrying FRONTMATTER_UNPARSEABLE) rather than risk expanding a hostile alias fan-out '
-      + '(A8, billion-laughs). Deliberate refusal, not a defect.',
-  },
-  {
-    file: 'tests/fixtures/adversarial/frontmatter/unicode-keys-and-values.md',
-    justification: 'Legacy dropped the `相` key (B3: its key regex was not Unicode-aware). Defect fix.',
-  },
-  {
-    file: 'tests/fixtures/representative/audit-uat/human-verification-frontmatter.md',
-    justification:
-      "Legacy's per-line flattening of the single-key `human_verification` list item left an "
-      + 'unstripped opening quote character in the flattened value '
-      + '(`test: "Confirm the widget renders correctly`, note the stray leading `"`). js-yaml '
-      + 'produces the clean combined string `"test: Confirm the widget renders correctly"` '
-      + 'with the quoting resolved. Canonicalization (same per-line-flattening family as the '
-      + 'summary-complex.md row above; this document has only one key per item so no named '
-      + 'array property appears here — the divergence is the stray-quote artifact instead).',
-  },
-];
-const DIVERGING_FILES = new Set(DIVERGENCES.map((d) => d.file));
-
-// Coverage floor for D1's "not vacuous" sensor (see below): the real, non-changeset,
-// frontmatter-carrying corpus is ~376 documents as of this capture. Recording the exact
-// count captured (rather than the ~880 figure that included .changeset/** before the
-// redesign) so a broken enumeration that quietly compares a handful of files still fails
-// loudly instead of silently degrading.
-const COVERAGE_FLOOR = 350;
-
-/**
- * Every git-tracked *.md file, EXCLUDING .changeset/** (mutable by design — see the module
- * doc above), whose content opens with a byte-0 `---` fence.
- */
-function listFrontmatterCarryingFiles() {
-  // `-c safe.directory=*` (process-scoped, never written to any config file) rather than
-  // `git config --global --add safe.directory` (persistent, requires write access to a global
-  // config, and races other concurrent test runs sharing the same HOME): the remote runner
-  // clones/mounts this repo as a different UID than the process running the suite, which git
-  // treats as "dubious ownership" and refuses to operate on at all — this test's ONLY read is
-  // `ls-files`, so trusting the directory for this one invocation is sufficient and leaves no
-  // side effect behind. `--` bounds the pathspec so `*.md` is never misread as a flag.
-  const raw = execFileSync(
-    'git',
-    ['-c', 'safe.directory=*', 'ls-files', '--', '*.md'],
-    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 15000 },
-  );
-  const files = raw.split('\n').filter(Boolean);
-  const carrying = [];
-  for (const rel of files) {
-    if (rel.startsWith('.changeset/')) continue; // mutable by design; never a stable golden
-    const abs = path.join(REPO_ROOT, rel);
-    let content;
-    try {
-      content = fs.readFileSync(abs, 'utf8');
-    } catch {
-      continue;
-    }
-    if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
-    if (content.startsWith('---\n') || content.startsWith('---\r\n')) carrying.push(rel);
-  }
-  return carrying;
+/** Serialized current-parser output for one entry's embedded document text. */
+function currentSerialized(entry) {
+  return serializeFrontmatterValue(extractFrontmatter(entry.documentText));
 }
 
-/** Serialized current-parser output for one tracked, frontmatter-carrying file. */
-function currentSerialized(rel) {
-  const content = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
-  return serializeFrontmatterValue(extractFrontmatter(content));
-}
-
-describe('frontmatter golden parity over the real corpus (ADR-3473 §8.1, #3881, §D)', () => {
-  test('D1: post-capture documents (no golden entry) are counted, not failed', () => {
-    // A tracked, frontmatter-carrying document with no golden entry did not exist when the
-    // snapshot was captured — that is ordinary tree growth, not a parity break, so it must
-    // NOT fail this suite. It is only counted and surfaced (stdout, for visibility).
-    const carrying = listFrontmatterCarryingFiles();
-    const postCapture = carrying.filter((rel) => !(rel in golden));
-    const compared = carrying.length - postCapture.length;
-    console.log(`frontmatter-golden-parity: compared ${compared} golden entries, skipped ${postCapture.length} post-capture file(s)`);
-    // Not a hard assertion (post-capture files are tolerated by design) — the coverage
-    // floor test below is what guards against this silently degrading to vacuous.
-    assert.equal(postCapture.length, carrying.length - compared);
+describe('frontmatter golden parity, hermetic (ADR-3473 §8.1, #3881, §D)', () => {
+  test('fixture sanity: entries are present and every id is unique', () => {
+    assert.ok(Array.isArray(ENTRIES) && ENTRIES.length > 0, 'expected at least one golden entry');
+    const ids = ENTRIES.map((e) => e.id);
+    assert.equal(new Set(ids).size, ids.length, 'duplicate entry id(s) in the golden fixture');
+    console.log(`frontmatter-golden-parity: ${ENTRIES.length} hermetic golden entries`);
   });
 
-  test('D1: every golden entry\'s file is still present in the tracked corpus (no silent deletions)', () => {
-    // The inverse direction DOES matter: a document that WAS captured and has since
-    // vanished from the tree (deleted, renamed, or its frontmatter fence removed) is a
-    // real regression worth noticing, so this direction stays a hard failure.
-    const carrying = new Set(listFrontmatterCarryingFiles());
-    const vanished = Object.keys(golden).filter((rel) => !carrying.has(rel));
-    assert.deepEqual(
-      vanished,
-      [],
-      'golden entries whose file no longer exists / no longer carries frontmatter in the '
-        + `tracked corpus (a real deletion — investigate before regenerating the golden): ${JSON.stringify(vanished)}`,
-    );
-  });
-
-  test('D1: golden coverage has not quietly degraded to near-vacuous', () => {
-    // Coverage floor: if the enumeration breaks and only compares a handful of files, this
-    // must fail loudly rather than pass with hollow coverage.
-    const carrying = listFrontmatterCarryingFiles();
-    const compared = carrying.filter((rel) => rel in golden).length;
-    assert.ok(
-      compared >= COVERAGE_FLOOR,
-      `golden entries actually compared (${compared}) fell below the coverage floor `
-        + `(${COVERAGE_FLOOR}) — the corpus enumeration or golden lookup is likely broken`,
-    );
-  });
-
-  test('D1: every non-diverging tracked document matches its legacy-parser golden exactly', () => {
-    const carrying = listFrontmatterCarryingFiles();
+  test('D1: every non-diverging entry matches its legacy-parser expectedParse exactly', () => {
     const failures = [];
-    for (const rel of carrying) {
-      if (DIVERGING_FILES.has(rel)) continue;
-      if (!(rel in golden)) continue; // post-capture file; reported by the test above
-      const actual = currentSerialized(rel);
-      if (actual !== golden[rel]) {
-        failures.push({ file: rel, expected: golden[rel], actual });
+    for (const entry of ENTRIES) {
+      if (entry.diverges) continue;
+      const actual = currentSerialized(entry);
+      if (actual !== entry.expectedParse) {
+        failures.push({ id: entry.id, expected: entry.expectedParse, actual });
       }
     }
     assert.deepEqual(
       failures,
       [],
       'undocumented parity divergence(s) — either the parser silently changed behavior, or '
-        + 'this is a deliberate divergence missing from DIVERGENCES in this file: '
-        + `${JSON.stringify(failures, null, 2)}`,
+        + `this is a deliberate divergence that must be marked diverges:true with a justification: ${JSON.stringify(failures, null, 2)}`,
     );
   });
 
-  test('D1 sensor: the parity check is not vacuous — a mutated golden value is caught', () => {
-    // Prove the comparison in the row above can actually fail: take one real
-    // non-diverging document, mutate its recorded golden value, and confirm the equality
-    // check used above would reject it.
-    const carrying = listFrontmatterCarryingFiles().filter((rel) => !DIVERGING_FILES.has(rel) && rel in golden);
-    assert.ok(carrying.length > 0, 'expected at least one non-diverging tracked document to sensor-check against');
-    const rel = carrying[0];
+  test('D1 sensor: the parity check is not vacuous — a mutated expectedParse is caught', () => {
+    const rel = ENTRIES.find((e) => !e.diverges);
+    assert.ok(rel, 'expected at least one non-diverging entry to sensor-check against');
     const actual = currentSerialized(rel);
-    const mutatedGolden = `${golden[rel]}__MUTATED__`;
+    const mutated = `${rel.expectedParse}__MUTATED__`;
     assert.notEqual(
       actual,
-      mutatedGolden,
-      'sensor failed: a mutated golden value must not equal the real parser output',
+      mutated,
+      'sensor failed: a mutated expectedParse must not equal the real parser output',
     );
   });
 
-  test('D1 sensor: deleting a covered file\'s golden entry is a post-capture skip, not a false pass, and still erodes the coverage floor', () => {
-    // A single golden entry going missing (as opposed to the FILE vanishing from the tree,
-    // which the hard-failure test above catches) is indistinguishable, from this suite's
-    // point of view, from that file being genuinely new — both present as "tracked file
-    // with no golden entry". That is correct: it must be tolerated, not fail. What must NOT
-    // happen is that deletion being silently absorbed as a genuine parity PASS for that
-    // file (comparing nothing is not the same as comparing and matching) — and repeated
-    // erosion of entries must still trip the coverage floor. Both are checked here directly
-    // against the same functions the real tests use, on a COPY of the golden set (never
-    // mutating the module-level `golden`).
-    const carrying = listFrontmatterCarryingFiles().filter((rel) => !DIVERGING_FILES.has(rel));
-    const rel = carrying.find((f) => f in golden);
-    assert.ok(rel, 'expected at least one non-diverging tracked file with a golden entry to sensor-check against');
-    const goldenWithoutEntry = { ...golden };
-    delete goldenWithoutEntry[rel];
-
-    // 1. Not a false pass: the file is no longer compared at all (it falls into the same
-    //    "no golden entry" branch the real D1 parity test uses to skip), so nothing here
-    //    can be read as "parser output matched golden" for this file.
-    const wouldBeCompared = rel in goldenWithoutEntry;
-    assert.equal(wouldBeCompared, false, 'sensor failed: a deleted golden entry must fall out of comparison, not falsely match');
-
-    // 2. The coverage floor still sees the loss: comparing against goldenWithoutEntry
-    //    yields exactly one fewer compared entry than the real golden.
-    const comparedReal = carrying.filter((f) => f in golden).length;
-    const comparedAfterDeletion = carrying.filter((f) => f in goldenWithoutEntry).length;
-    assert.equal(
-      comparedAfterDeletion,
-      comparedReal - 1,
-      'sensor failed: deleting one covered golden entry must reduce the compared count seen by the coverage-floor test',
-    );
-  });
-
-  test('D3: every entry in the divergence list actually diverges from its golden today', () => {
+  test('D3: every diverging entry actually diverges from its expectedParse today', () => {
     const stillMatching = [];
-    for (const { file } of DIVERGENCES) {
-      assert.ok(file in golden, `divergence entry ${file} has no golden entry to diverge from`);
-      const actual = currentSerialized(file);
-      if (actual === golden[file]) stillMatching.push(file);
+    for (const entry of ENTRIES) {
+      if (!entry.diverges) continue;
+      const actual = currentSerialized(entry);
+      if (actual === entry.expectedParse) stillMatching.push(entry.id);
     }
     assert.deepEqual(
       stillMatching,
       [],
-      'entries in DIVERGENCES that no longer diverge must be REMOVED from the list (it must '
-        + `never become a wildcard exemption): ${JSON.stringify(stillMatching)}`,
+      'entries marked diverges:true that no longer diverge must have diverges FLIPPED TO '
+        + `false (it must never become a wildcard exemption): ${JSON.stringify(stillMatching)}`,
     );
   });
 
-  test('D3: the divergence list has no entries outside the real, currently-tracked corpus', () => {
-    const carrying = new Set(listFrontmatterCarryingFiles());
-    const stale = DIVERGENCES.filter((d) => !carrying.has(d.file)).map((d) => d.file);
-    assert.deepEqual(stale, [], `divergence entries for files no longer tracked/frontmatter-carrying: ${JSON.stringify(stale)}`);
+  test('D3: every diverging entry carries a non-empty justification', () => {
+    for (const entry of ENTRIES) {
+      if (!entry.diverges) continue;
+      assert.ok(
+        typeof entry.justification === 'string' && entry.justification.trim().length > 0,
+        `${entry.id} is marked diverges:true but has no justification`,
+      );
+    }
   });
 
-  test('D3: every divergence entry carries a non-empty one-line justification', () => {
-    for (const { file, justification } of DIVERGENCES) {
-      assert.ok(typeof justification === 'string' && justification.trim().length > 0, `${file} has no justification`);
+  test('hermeticity: fixture entries carry no filesystem path operands', () => {
+    // sourcePath is provenance-only metadata (never read at test time) — everything else on
+    // an entry must be inert data, not something that could be mistaken for a live path
+    // lookup.
+    for (const entry of ENTRIES) {
+      assert.equal(typeof entry.documentText, 'string');
+      assert.equal(typeof entry.expectedParse, 'string');
     }
   });
 });
@@ -326,14 +189,14 @@ describe('frontmatter golden serializer protects the gate itself (ADR-3473 §8.1
   });
 
   test('D2: the named-array-property shape is real, not hypothetical — it appears in the captured golden', () => {
-    // summary-complex.md's `requires` entry is captured golden proof this shape occurs on
-    // a real, tracked document (verified live against the legacy parser while writing this
-    // suite): its serialized golden value must carry a named-property tail.
-    const rel = 'gsd-core/templates/summary-complex.md';
-    assert.ok(rel in golden, 'expected summary-complex.md in the golden set');
+    // gsd-core__templates__summary-complex's `requires` entry is captured golden proof this
+    // shape occurs on a real, tracked document (verified live against the legacy parser
+    // while writing this suite): its expectedParse must carry a named-property tail.
+    const entry = ENTRIES.find((e) => e.id === 'gsd-core__templates__summary-complex');
+    assert.ok(entry, 'expected the summary-complex divergence entry in the golden set');
     assert.ok(
-      /"requires":\["[^"]*"\]\{"provides":/.test(golden[rel]),
-      `expected the golden entry for ${rel} to carry a named-property tail on 'requires'; got: ${golden[rel]}`,
+      /"requires":\["[^"]*"\]\{"provides":/.test(entry.expectedParse),
+      `expected the expectedParse for ${entry.id} to carry a named-property tail on 'requires'; got: ${entry.expectedParse}`,
     );
   });
 });
