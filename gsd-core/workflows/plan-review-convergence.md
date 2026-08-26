@@ -414,8 +414,7 @@ if [ -z "${REVIEWS_FILE}" ] || [ ! -r "${REVIEWS_FILE}" ]; then
   echo "BLOCKED: cannot read REVIEWS.md ('${REVIEWS_FILE}') to check for open plan-revision conflicts. Refusing to declare convergence on an unverifiable gate." >&2
   exit 1
 fi
-OPEN_CONFLICTS=$(awk '/^## Plan-Revision Conflicts/{f=1;next} f&&/^## /{exit} f&&/^- \[ \]/{n++} END{print n+0}' \
-  "${REVIEWS_FILE}")
+OPEN_CONFLICTS=$(grep -c '^- \[ \] .*required_property:' "${REVIEWS_FILE}" || true)
 OPEN_CONFLICTS=${OPEN_CONFLICTS:-0}
 ```
 
@@ -423,12 +422,13 @@ OPEN_CONFLICTS=${OPEN_CONFLICTS:-0}
 it is resolved, so open conflicts are an exact fixed-string match — no table parsing, and a
 resolved line can never be miscounted as open.
 
-This scan stops at the next `## `, so it is only sound because the writer sanitizes: plan-phase
-collapses newlines in the agent-authored conflict text and strips a leading `#`, making one
-conflict exactly one line. Agent text appended verbatim could carry a line beginning `## `, end
-this scan early, and leave later conflicts uncounted — the gate would then pass over an
-unresolved blocker. If you ever see a `## ` inside this section, treat the count as untrusted and
-escalate rather than converging.
+**The count is by line SHAPE, not by section, deliberately.** An earlier form scanned between
+`## Plan-Revision Conflicts` and the next `## ` heading. That scan stops at the FIRST heading it
+meets, so a single stray `## ` line — from a hand edit, a legacy file, or an agent that ignored
+the single-writer rule below — hid every conflict beneath it and returned 0, converging over a
+live blocker. Matching `- [ ] … required_property:` anywhere in the file cannot be truncated by a
+heading, needs no section bookkeeping, and pairs with the writer's sanitization (which strips a
+leading `-` from agent text, so agent prose cannot forge this shape).
 
 **Only `/gsd:plan-phase` writes this section.** It appends the `- [ ]` lines and it flips them to
 `- [x]`. Every other agent with write access to REVIEWS.md — the review agent included — must

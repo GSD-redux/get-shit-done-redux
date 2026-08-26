@@ -916,12 +916,14 @@ consume retry budget. Present the conflict table and its alternatives to the use
 to take: adopt a named alternative / override the named constraint and apply the hint / amend the
 constraint itself. Every option resolves the conflict; accepting the plans with the blocker still
 open is NOT offered here — that choice belongs to the max-iteration escalation below. Re-spawn
-the planner with the chosen resolution. **Bounded:** a conflict naming the SAME
-`required_property` twice in a row is a stall, and so is the THIRD conflict return of this loop
-whatever property it names — alternating property names would otherwise never trip the repeat
-rule. Stop re-spawning and escalate as a stall. After re-spawning, **re-evaluate the planner's return from the top of this
-handler** — do not fall through to the checker spawn below; a second conflict is still a conflict,
-not a revised plan.
+the planner with the chosen resolution and then **re-evaluate its return from the top of this
+handler** — never fall through to the checker spawn below, because a second conflict is still a
+conflict, not a revised plan, and only a NON-conflict return may reach the checker or increment
+`iteration_count`.
+
+**Bounded:** a conflict naming the SAME `required_property` twice in a row is a stall, and so is
+the THIRD conflict return of this loop whatever property it names — alternating property names
+would otherwise never trip the repeat rule. Stop re-spawning and escalate as a stall.
 
 **On any other return** → spawn checker again (verify_gap_plans logic)
 Increment iteration_count

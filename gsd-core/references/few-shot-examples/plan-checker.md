@@ -17,7 +17,7 @@ last_calibrated: 2026-03-24
 > ```yaml
 > issues:
 >   - dimension: task_completeness
->     severity: BLOCKER
+>     severity: blocker
 >     required_property: "Every task action names its target files and the functions to create"
 >     description: "Task T1 action says 'implement the authentication feature' without naming target files, functions to create, or middleware to apply. Executor cannot determine what to build."
 >     fix_hint: "Specify: create authMiddleware in src/middleware/auth.js, apply to routes in src/routes/api.js lines 12-45, verify with integration test"
@@ -34,7 +34,7 @@ last_calibrated: 2026-03-24
 > ```yaml
 > issues:
 >   - dimension: dependency_correctness
->     severity: BLOCKER
+>     severity: blocker
 >     required_property: "Same-wave plans never modify the same file without a declared dependency"
 >     description: "Plans 01 and 02 both modify gsd-core/workflows/execute-phase.md in wave 1 with no depends_on relationship. Concurrent execution will cause merge conflicts or lost changes."
 >     fix_hint: "Either move Plan 02 to wave 2 with depends_on: ['01'] or consolidate the file changes into a single plan"
@@ -64,7 +64,7 @@ last_calibrated: 2026-03-24
 > ```yaml
 > issues:
 >   - dimension: scope_sanity
->     severity: INFO
+>     severity: info
 >     required_property: "Each plan stays within the per-plan context budget"
 >     description: "Plan has 3 tasks -- consider splitting into smaller plans for faster iteration"
 >     fix_hint: "Split tasks into separate plans"

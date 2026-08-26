@@ -926,9 +926,9 @@ that property — never the only admissible route, never an instruction. A plann
 State it as the invariant, not the edit — "every `auto` task has a `<verify>` separating pass
 from fail", not "add a verify block". A finding you cannot state without naming your preferred
 edit is a preference, not a defect: drop it or file `info`. Never author a `fix_hint` you can
-see contradicts a locked decision, a CLAUDE.md convention, or an active capability constraint;
-if the only route you can name would, say so in the hint — the planner must then surface that
-conflict rather than apply it.
+see contradicts a locked decision, a CLAUDE.md convention, or an active capability constraint. If
+every route you can name would, name NONE of them: say only that the property conflicts with that
+constraint. A hint carrying a forbidden route is applied by anyone who trusts hints.
 
 ## Severity Levels
 

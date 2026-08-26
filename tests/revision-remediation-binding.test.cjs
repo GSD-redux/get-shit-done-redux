@@ -282,8 +282,8 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       assert.match(flat(agent), /\*\*Every field is one line of plain text\.\*\*/,
         `${name} must forbid the shapes the writer would otherwise have to strip`);
     }
-    assert.match(flat(CONVERGENCE), /This scan stops at the next `## `, so it is only sound because the writer sanitizes/,
-      'the reader must state the invariant it depends on, or a future edit silently breaks it');
+    assert.match(flat(CONVERGENCE), /\*\*The count is by line SHAPE, not by section, deliberately\.\*\*/,
+      'the reader must state why it does not scope by section, or someone reintroduces the scan');
   });
 
   // The gate reads a path resolved by a pre-existing unquoted `ls`; an empty or unreadable
@@ -448,10 +448,14 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
       'the count must be read from REVIEWS.md — CYCLE_SUMMARY does not carry it');
     // The counter and the writer must agree on the marker, or every resolved conflict reads as
     // open and the loop deadlocks instead of converging.
-    assert.match(CONVERGENCE, /\/\^- \\\[ \\\]\//,
-      'the gate must count exactly the open-checkbox form plan-phase writes');
+    assert.match(CONVERGENCE, /grep -c '\^- \\\[ \\\] \.\*required_property:'/,
+      'the gate must count the conflict line SHAPE plan-phase writes');
     assert.doesNotMatch(CONVERGENCE, /grep -c '\^\| '/,
       'counting table rows would include the header and separator and never reach zero');
+    // A section-scoped scan stops at the first heading it meets, so one stray `## ` hides every
+    // conflict beneath it and returns 0 — reproduced before this was written.
+    assert.doesNotMatch(CONVERGENCE, /\/\^## Plan-Revision Conflicts\/\{f=1;next\}/,
+      'the section-scoped awk is truncatable by an injected heading and must not come back');
     assert.match(flat(CONVERGENCE), /escalates rather than deadlocking/,
       'the gate must state that an unresolvable conflict still terminates at MAX_CYCLES');
     assert.match(
@@ -461,7 +465,7 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     );
     // Ordering is the whole finding: the gate placed after `state planned-phase` would write
     // and announce convergence over a conflict nobody resolved.
-    const gateAt = CONVERGENCE.indexOf('OPEN_CONFLICTS=$(awk');
+    const gateAt = CONVERGENCE.indexOf('OPEN_CONFLICTS=$(grep');
     const writeAt = CONVERGENCE.indexOf('gsd_run state planned-phase');
     const bannerAt = CONVERGENCE.indexOf('GSD ► CONVERGENCE COMPLETE');
     assert.ok(gateAt > 0 && writeAt > 0 && bannerAt > 0, 'all three anchors must exist');
