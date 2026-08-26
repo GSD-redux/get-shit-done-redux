@@ -29,12 +29,85 @@ const os = require('node:os');
 
 const coreUtils = require('../gsd-core/bin/lib/core-utils.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
-const { cleanup, runGsdTools } = require('./helpers.cjs');
+const {
+  cleanup, runGsdTools, scrubConfigLocationEnv,
+  saveSessionEnv, restoreSessionEnv, clearSessionEnv, TEST_HOME_SANDBOX_MARKER,
+} = require('./helpers.cjs');
 const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
 const workstreamNamePolicy = require('../gsd-core/bin/lib/workstream-name-policy.cjs');
 const activeWorkstreamStore = require('../gsd-core/bin/lib/active-workstream-store.cjs');
 const gsd2Import = require('../gsd-core/bin/lib/gsd2-import.cjs');
+const commandsMod = require('../gsd-core/bin/lib/commands.cjs');
+const initMod = require('../gsd-core/bin/lib/init.cjs');
+
+// #3883/Stryker shard budget (scripts/mutation-matrix.cjs `core-utils` entry,
+// `tests/state-contract.test.cjs`'s header documents the same mechanism):
+// Stryker's command-runner bills one `node --test <file>` invocation as a
+// single unit costing whatever the file's slowest run costs, re-run once per
+// mutant. A3/A5 originally drove every CLI-reachable slug site through
+// `runGsdTools` (a real child-process spawn per call, ~85-170ms each across
+// ~70 calls) — ~7.5s of the file's ~7.9s wall time, which blew the 15-minute
+// shard cap. `cmdGenerateSlug` / `cmdInitExecutePhase` / `cmdInitPhaseOp` /
+// `cmdInitProgress` are plain functions reachable in-process from the built
+// `gsd-core/bin/lib/*.cjs` — calling them directly removes the spawn
+// entirely instead of moving the cost to a sibling file. `captureFd1Sync`
+// intercepts the fd-level write these commands make via io.cjs's
+// `writeAllSync` → `fs.writeSync(1, ...)` (bug #1008's pattern, already
+// established in tests/io.test.cjs and tests/init.test.cjs's
+// `captureInitVerifyWork` — NOT `process.stdout.write`, which silently
+// captures nothing here). `withHermeticInProcessEnv` reproduces the isolation
+// `runGsdTools(..., { HOME: tmpDir })` + `testEnvBase()` gave the child
+// process (HOME/USERPROFILE sandbox + config-location env scrub + session-
+// identity env clear) so an in-process call can't read the developer's real
+// `~/.gsd` config or leak real session-identity env into the slug output.
+
+function captureFd1Sync(fn) {
+  const chunks = [];
+  const origWriteSync = fs.writeSync.bind(fs);
+  fs.writeSync = (fd, data, offset, length) => {
+    if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+    if (fd !== 1) return origWriteSync(fd, data, offset, length);
+    const chunk = Buffer.isBuffer(data)
+      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+      : String(data);
+    chunks.push(chunk);
+    return Buffer.byteLength(chunk, 'utf8');
+  };
+  try {
+    fn();
+  } finally {
+    fs.writeSync = origWriteSync;
+  }
+  return chunks.join('');
+}
+
+function withHermeticInProcessEnv(dir, fn) {
+  const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
+  const savedMarker = process.env[TEST_HOME_SANDBOX_MARKER];
+  const savedSession = saveSessionEnv();
+  const restoreConfigEnv = scrubConfigLocationEnv();
+  clearSessionEnv();
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env[TEST_HOME_SANDBOX_MARKER] = dir;
+  try {
+    return fn();
+  } finally {
+    restoreConfigEnv();
+    restoreSessionEnv(savedSession);
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+    if (savedMarker === undefined) delete process.env[TEST_HOME_SANDBOX_MARKER];
+    else process.env[TEST_HOME_SANDBOX_MARKER] = savedMarker;
+  }
+}
+
+function cmdGenerateSlugInProcess(text) {
+  const captured = captureFd1Sync(() => commandsMod.cmdGenerateSlug(text, false));
+  return JSON.parse(captured).slug;
+}
 
 // ─── toPosixPath ─────────────────────────────────────────────────────────────
 
@@ -785,17 +858,15 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
   // ── A1: commands.cts cmdGenerateSlug (CLI `generate-slug`) ──────────────────
 
   test('A1 cyrillicSlugIsNotEmpty: cmdGenerateSlug on Cyrillic yields the canonical value, not ""', () => {
-    const result = runGsdTools(['generate-slug', 'Привет мир'], process.cwd(), { HOME: os.tmpdir() });
-    assert.ok(result.success, `generate-slug command failed: ${result.error}`);
-    const output = JSON.parse(result.output);
+    const observedSlug = cmdGenerateSlugInProcess('Привет мир');
     // Pinned to a concrete value (not merely "non-empty") so this cannot be
     // satisfied by an unrelated fallback string — and pinned to the
     // canonical's OWN live output so a future change to the transliteration
     // map cannot silently desync this expectation from generateSlugInternal.
     const canonical = coreUtils.generateSlugInternal('Привет мир');
     assert.strictEqual(canonical, 'privet-mir', 'sanity: canonical must itself transliterate to privet-mir');
-    assert.notStrictEqual(output.slug, '', 'cmdGenerateSlug must not collapse a Cyrillic title to an empty slug (#2848-class regression)');
-    assert.strictEqual(output.slug, canonical, 'cmdGenerateSlug must delegate to (or agree with) generateSlugInternal');
+    assert.notStrictEqual(observedSlug, '', 'cmdGenerateSlug must not collapse a Cyrillic title to an empty slug (#2848-class regression)');
+    assert.strictEqual(observedSlug, canonical, 'cmdGenerateSlug must delegate to (or agree with) generateSlugInternal');
   });
 
   // ── A2: commands.cts cmdGenerateSlug truncation-boundary trailing hyphen ────
@@ -809,13 +880,11 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     // reproduced with 59 'a's + ' b': the collapsed separator sits exactly
     // at the canonical's substring(0, 60) cut point.
     const input = 'a'.repeat(59) + ' b';
-    const result = runGsdTools(['generate-slug', input], process.cwd(), { HOME: os.tmpdir() });
-    assert.ok(result.success, `generate-slug command failed: ${result.error}`);
-    const output = JSON.parse(result.output);
+    const observedSlug = cmdGenerateSlugInProcess(input);
     const canonical = coreUtils.generateSlugInternal(input);
     assert.strictEqual(canonical, 'a'.repeat(59), 'sanity: canonical must not leave a trailing hyphen at the boundary');
-    assert.ok(!output.slug.endsWith('-'), `cmdGenerateSlug must not emit a trailing hyphen at the truncation boundary; got: ${JSON.stringify(output.slug)}`);
-    assert.strictEqual(output.slug, canonical, 'cmdGenerateSlug must agree with generateSlugInternal at the truncation boundary');
+    assert.ok(!observedSlug.endsWith('-'), `cmdGenerateSlug must not emit a trailing hyphen at the truncation boundary; got: ${JSON.stringify(observedSlug)}`);
+    assert.strictEqual(observedSlug, canonical, 'cmdGenerateSlug must agree with generateSlugInternal at the truncation boundary');
   });
 
   // ── A3/A4: every reachable slug call site vs. the canonical ─────────────────
@@ -852,12 +921,6 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     ['long-ascii-90-mixed-case', 'The Quick Brown Fox Jumps Over The Lazy Dog Many Many Many Times In A Row'],
   ];
 
-  function runInitJson(argv, tmpDir) {
-    const result = runGsdTools(['init', ...argv], tmpDir, { HOME: tmpDir });
-    assert.ok(result.success, `init ${argv.join(' ')} failed: ${result.error}`);
-    return JSON.parse(result.output);
-  }
-
   // cmdInitExecutePhase / cmdInitPhaseOp emit `phase_slug: phaseInfo?.['phase_slug'] || null`
   // (init.cts:1880 and neighbors) — an output-shaping `|| null` that coerces
   // ANY empty-string slug to null, independent of whether the slugification
@@ -888,9 +951,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
       name: 'commands.cts:209 cmdGenerateSlug (CLI generate-slug)',
       cap: 60,
       call(text) {
-        const r = runGsdTools(['generate-slug', text], process.cwd(), { HOME: os.tmpdir() });
-        assert.ok(r.success, `generate-slug failed for ${JSON.stringify(text)}: ${r.error}`);
-        return JSON.parse(r.output).slug;
+        return cmdGenerateSlugInProcess(text);
       },
     },
     {
@@ -904,7 +965,11 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
             path.join(tmpDir, '.planning', 'ROADMAP.md'),
             `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
           );
-          return phaseSlugField(runInitJson(['execute-phase', '1'], tmpDir));
+          const json = withHermeticInProcessEnv(tmpDir, () => {
+            const captured = captureFd1Sync(() => initMod.cmdInitExecutePhase(tmpDir, '1', false));
+            return JSON.parse(captured);
+          });
+          return phaseSlugField(json);
         } finally {
           cleanup(tmpDir);
         }
@@ -921,7 +986,11 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
             path.join(tmpDir, '.planning', 'ROADMAP.md'),
             `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
           );
-          return phaseSlugField(runInitJson(['phase-op', '1'], tmpDir));
+          const json = withHermeticInProcessEnv(tmpDir, () => {
+            const captured = captureFd1Sync(() => initMod.cmdInitPhaseOp(tmpDir, '1', false));
+            return JSON.parse(captured);
+          });
+          return phaseSlugField(json);
         } finally {
           cleanup(tmpDir);
         }
@@ -940,7 +1009,11 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
             path.join(tmpDir, '.planning', 'ROADMAP.md'),
             `# Roadmap\n\n<details>\n<summary>Shipped v1.0</summary>\n\n### Phase 1: Old\n**Goal:** old\n</details>\n\n## Current\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
           );
-          return phaseSlugField(runInitJson(['phase-op', '1'], tmpDir));
+          const json = withHermeticInProcessEnv(tmpDir, () => {
+            const captured = captureFd1Sync(() => initMod.cmdInitPhaseOp(tmpDir, '1', false));
+            return JSON.parse(captured);
+          });
+          return phaseSlugField(json);
         } finally {
           cleanup(tmpDir);
         }
@@ -957,7 +1030,11 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
             path.join(tmpDir, '.planning', 'ROADMAP.md'),
             `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
           );
-          return runInitJson(['progress'], tmpDir).phases[0].name;
+          const json = withHermeticInProcessEnv(tmpDir, () => {
+            const captured = captureFd1Sync(() => initMod.cmdInitProgress(tmpDir, false));
+            return JSON.parse(captured);
+          });
+          return json.phases[0].name;
         } finally {
           cleanup(tmpDir);
         }
