@@ -406,8 +406,16 @@ it must be read from the file directly — evaluate this BEFORE the converged br
 run would write `planned-phase` and print the success banner over a conflict nobody resolved:
 
 ```bash
+if [ -z "${REVIEWS_FILE}" ] || [ ! -r "${REVIEWS_FILE}" ]; then
+  # Fail CLOSED. An unreadable REVIEWS.md is "I cannot tell", never "no conflicts" — and
+  # REVIEWS_FILE is resolved a few lines above by an `ls` whose ${phase_dir} is unquoted, so a
+  # path containing a space yields an empty string rather than an error. Counting 0 there would
+  # converge over every open conflict silently.
+  echo "BLOCKED: cannot read REVIEWS.md ('${REVIEWS_FILE}') to check for open plan-revision conflicts. Refusing to declare convergence on an unverifiable gate." >&2
+  exit 1
+fi
 OPEN_CONFLICTS=$(awk '/^## Plan-Revision Conflicts/{f=1;next} f&&/^## /{exit} f&&/^- \[ \]/{n++} END{print n+0}' \
-  "${REVIEWS_FILE}" 2>/dev/null || echo 0)
+  "${REVIEWS_FILE}")
 OPEN_CONFLICTS=${OPEN_CONFLICTS:-0}
 ```
 
@@ -420,7 +428,12 @@ collapses newlines in the agent-authored conflict text and strips a leading `#`,
 conflict exactly one line. Agent text appended verbatim could carry a line beginning `## `, end
 this scan early, and leave later conflicts uncounted — the gate would then pass over an
 unresolved blocker. If you ever see a `## ` inside this section, treat the count as untrusted and
-escalate rather than converging. If `OPEN_CONFLICTS` > 0, convergence has NOT been
+escalate rather than converging.
+
+**Only `/gsd:plan-phase` writes this section.** It appends the `- [ ]` lines and it flips them to
+`- [x]`. Every other agent with write access to REVIEWS.md — the review agent included — must
+leave `## Plan-Revision Conflicts` byte-for-byte alone: appending, editing, reordering or
+deleting a line there forges the state of a blocking gate. Readers read. If `OPEN_CONFLICTS` > 0, convergence has NOT been
 achieved regardless of the counts: skip the converged branch and continue to 5c so the next cycle
 arbitrates. Escalation at `MAX_CYCLES` is unchanged and still terminates the loop, so an
 unresolvable conflict escalates rather than deadlocking.

@@ -286,6 +286,25 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       'the reader must state the invariant it depends on, or a future edit silently breaks it');
   });
 
+  // The gate reads a path resolved by a pre-existing unquoted `ls`; an empty or unreadable
+  // result must never read as "no conflicts". Unverifiable is not the same as clean.
+  test('the convergence gate fails CLOSED when it cannot read REVIEWS.md', () => {
+    assert.match(CONVERGENCE, /if \[ -z "\$\{REVIEWS_FILE\}" \] \|\| \[ ! -r "\$\{REVIEWS_FILE\}" \]; then/,
+      'the gate must test readability before trusting a count of zero');
+    assert.match(flat(CONVERGENCE), /Refusing to declare convergence on an unverifiable gate/,
+      'an unreadable gate input must block, not pass');
+    assert.doesNotMatch(CONVERGENCE, /"\$\{REVIEWS_FILE\}" 2>\/dev\/null \|\| echo 0/,
+      'swallowing the read error back into a zero count is the fail-open this test exists to stop');
+  });
+
+  // The section is a blocking gate's state. One writer, or it can be forged.
+  test('only plan-phase may mutate the conflicts section', () => {
+    assert.match(flat(CONVERGENCE), /\*\*Only `\/gsd:plan-phase` writes this section\.\*\*/,
+      'the section needs exactly one declared writer');
+    assert.match(flat(CONVERGENCE), /the review agent included — must leave `## Plan-Revision Conflicts` byte-for-byte alone/,
+      'every other writer of REVIEWS.md must be told to keep out, or a resolution can be forged');
+  });
+
   test('an issue satisfied by a smaller mechanism counts as resolved for the loop checks', () => {
     assert.match(
       REVISION_LOOP,

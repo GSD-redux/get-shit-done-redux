@@ -38,10 +38,9 @@ LOOP:
      g. iteration += 1
      h. After revision completes, go to LOOP
 
-The increment is step g, AFTER the producing agent returns — deliberately, not as written before
-#3771. An iteration counted at step a is already spent by the time a REVISION_CONFLICT comes back,
-so it cannot then be withheld, and the cap would punish the agent for correctly refusing to apply
-incompatible advice.
+The increment is step g, AFTER the producing agent returns. An iteration counted at step a is
+already spent by the time a REVISION_CONFLICT comes back, so it cannot then be withheld, and the
+cap would punish the agent for correctly refusing to apply incompatible advice.
 ```
 
 ### Issue Count Tracking
