@@ -136,9 +136,7 @@ describe('state-snapshot command', () => {
 
   test('missing STATE.md returns error', () => {
     const result = runGsdTools('state-snapshot', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4);
-    // the JSON error payload is unchanged, only the exit code.
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should succeed: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.strictEqual(output.error, 'STATE.md not found', 'should report missing file');
@@ -701,9 +699,7 @@ describe('state json command', () => {
 
   test('missing STATE.md returns error', () => {
     const result = runGsdTools('state json', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4);
-    // the JSON error payload is unchanged, only the exit code.
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should succeed: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.strictEqual(output.error, 'STATE.md not found', 'should report missing file');
@@ -1326,8 +1322,7 @@ describe('cmdStateGet (state get)', () => {
     );
 
     const result = runGsdTools('state get Missing', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0 even for missing field: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -1602,8 +1597,7 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
 
   test('returns error when STATE.md missing', () => {
     const result = runGsdTools('state advance-plan', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -1617,8 +1611,7 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
     );
 
     const result = runGsdTools('state advance-plan', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -1837,8 +1830,7 @@ describe('cmdStateRecordMetric (state record-metric)', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), metricsFixture);
 
     const result = runGsdTools('state record-metric --phase 1', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -1850,8 +1842,7 @@ describe('cmdStateRecordMetric (state record-metric)', () => {
 
   test('returns error when STATE.md missing', () => {
     const result = runGsdTools('state record-metric --phase 1 --plan 1 --duration 2min', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -2070,8 +2061,7 @@ describe('cmdStateUpdateProgress (state update-progress)', () => {
 
   test('returns error when STATE.md missing', () => {
     const result = runGsdTools('state update-progress', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -2493,8 +2483,7 @@ describe('cmdStateResolveBlocker (state resolve-blocker)', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), blockerFixture);
 
     const result = runGsdTools('state resolve-blocker', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -2506,8 +2495,7 @@ describe('cmdStateResolveBlocker (state resolve-blocker)', () => {
 
   test('returns error when STATE.md missing', () => {
     const result = runGsdTools('state resolve-blocker --text "anything"', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -2602,8 +2590,7 @@ describe('cmdStateRecordSession (state record-session)', () => {
 
   test('returns error when STATE.md missing', () => {
     const result = runGsdTools('state record-session', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
 
     const output = JSON.parse(result.output);
     assert.ok(output.error !== undefined, 'output should have error field');
@@ -3646,8 +3633,7 @@ describe('state planned-phase command', () => {
   test('missing STATE.md returns graceful error', () => {
     // No STATE.md written
     const result = runGsdTools(['state', 'planned-phase', '--phase', '1', '--name', 'Test', '--plans', '3'], tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4).
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit, not a crash');
+    assert.ok(result.success, 'Should not crash');
     const output = JSON.parse(result.output);
     assert.ok(output.error, 'Should return error field');
   });
@@ -6086,34 +6072,6 @@ describe('state sync command', () => {
     assert.strictEqual(before, after, 'File should not be modified in verify mode');
   });
 
-  // #3881 / ADR-3473 §8.4 ("failure is a value"): an `{ error: ... }` result
-  // used to exit 0, so `$(gsd_run query state.json 2>/dev/null || echo "{}")`
-  // idioms in gsd-core/workflows/next.md and elsewhere could never fall
-  // through to the fallback branch. `state sync` with no STATE.md is the
-  // reproduction from the issue; asserted against the real CLI (runGsdTools),
-  // not the in-process function, so the exit code the shell actually observes
-  // is what's under test.
-  test('#3881: STATE.md not found exits non-zero, not 0, so a caller\'s `||` fallback fires', () => {
-    // tmpDir has .planning/phases (createFixture default) but no STATE.md.
-    const result = runGsdTools('state sync', tmpDir);
-    assert.strictEqual(result.success, false, 'an error result must be a non-zero exit');
-    assert.notStrictEqual(result.exitCode, 0, `expected non-zero exit; got ${result.exitCode}`);
-    const output = JSON.parse(result.output);
-    assert.strictEqual(output.error, 'STATE.md not found', 'stdout must still carry the JSON error payload — only the exit code changed');
-  });
-
-  // Same command, success path — pinned in the same file so this row cannot
-  // pass vacuously by having flipped every `state sync` exit code to 1.
-  test('#3881: a successful sync (STATE.md present, phases present) still exits 0', () => {
-    fs.writeFileSync(
-      path.join(tmpDir, '.planning', 'STATE.md'),
-      `# Project State\n\n**Status:** Planning\n**Current Phase:** 1\n**Total Plans in Phase:** 0\n**Current Plan:** 0\n**Progress:** 0%\n`
-    );
-    const result = runGsdTools('state sync', tmpDir);
-    assert.strictEqual(result.success, true, `expected exit 0; got exitCode=${result.exitCode} error=${result.error}`);
-    assert.strictEqual(result.exitCode, 0);
-  });
-
   // ADR-3408 §8.3 Matrix C3 (#3469, extend): `--verify` stays a true dry run
   // for the sanctioned-exception path too — no write happens even though the
   // (unwritten) sync would have let the body win over a curated frontmatter
@@ -7960,9 +7918,7 @@ describe('state complete-phase: decorated Phase fallback (#2761 nitpick)', () =>
     fs.writeFileSync(statePath, stateMd);
 
     const result = runGsdTools('state complete-phase', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4) —
-    // still a clean JSON error payload on stdout, not a crash.
-    assert.strictEqual(result.success, false, 'command should return a JSON error payload with a non-zero exit, not crash');
+    assert.ok(result.success, 'command should return JSON error payload, not crash');
     const output = JSON.parse(result.output);
     assert.ok(output.error, 'expected clear resolution error');
 
@@ -7995,9 +7951,7 @@ describe('state complete-phase: decorated Phase fallback (#2761 nitpick)', () =>
     fs.writeFileSync(statePath, stateMd);
 
     const result = runGsdTools('state complete-phase', tmpDir);
-    // #3881: an `{ error: ... }` result now exits non-zero (ADR-3473 §8.4) —
-    // still a clean JSON error payload on stdout, not a crash.
-    assert.strictEqual(result.success, false, 'command should return a JSON error payload with a non-zero exit, not crash');
+    assert.ok(result.success, 'command should return JSON error payload, not crash');
     const output = JSON.parse(result.output);
     assert.ok(output.error, 'expected a resolution error, not a phase mined from the version string');
 

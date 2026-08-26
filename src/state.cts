@@ -588,7 +588,6 @@ function cmdStateGet(cwd: string, section: string | undefined, raw: boolean): vo
       return;
     }
 
-    process.exitCode = 1;
     output({ error: `Section or field "${section}" not found` }, raw, '');
   }
 }
@@ -847,7 +846,7 @@ function stateReplaceFieldWithFallback(content: string, primary: string, fallbac
 
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
-  if (!fs.existsSync(statePath)) { process.exitCode = 1; output({ error: 'STATE.md not found' }, raw, undefined); return; }
+  if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
 
   // ADR-1769 Phase 2: dispatches to the STATE.md Transition Module. The
   // ~80-line RMW callback that used to live here (plan parsing, advance vs
@@ -892,7 +891,6 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   }, cwd, { divergedFields, preWriteState });
 
   if (!resultData || resultData['error']) {
-    process.exitCode = 1;
     output({ error: 'Cannot parse Current Plan or Total Plans in Phase from STATE.md' }, raw, undefined);
     return;
   }
@@ -925,12 +923,11 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
 
 function cmdStateRecordMetric(cwd: string, options: StateRecordMetricOptions, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
-  if (!fs.existsSync(statePath)) { process.exitCode = 1; output({ error: 'STATE.md not found' }, raw, undefined); return; }
+  if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
 
   const { phase, plan, duration, tasks, files } = options;
 
   if (!phase || !plan || !duration) {
-    process.exitCode = 1;
     output({ error: 'phase, plan, and duration required' }, raw, undefined);
     return;
   }
@@ -1130,7 +1127,7 @@ function computeUpdateProgressPreview(statePath: string, cwd: string): UpdatePro
 
 function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
-  if (!fs.existsSync(statePath)) { process.exitCode = 1; output({ error: 'STATE.md not found' }, raw, undefined); return; }
+  if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
 
   // Auto-derived scan across current-milestone phases (outside lock — read-only).
   // Gates the #3217/#3233 withholds below ONLY — the reported completed/total
@@ -1255,7 +1252,7 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
 
 function cmdStateAddDecision(cwd: string, options: StateAddDecisionOptions, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
-  if (!fs.existsSync(statePath)) { process.exitCode = 1; output({ error: 'STATE.md not found' }, raw, undefined); return; }
+  if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
 
   const { phase, summary, summary_file, rationale, rationale_file } = options;
   let summaryText: string | undefined = undefined;
@@ -1269,7 +1266,7 @@ function cmdStateAddDecision(cwd: string, options: StateAddDecisionOptions, raw:
     return;
   }
 
-  if (!summaryText) { process.exitCode = 1; output({ error: 'summary required' }, raw, undefined); return; }
+  if (!summaryText) { output({ error: 'summary required' }, raw, undefined); return; }
 
   // #3231/#3481: `--phase` omitted → resolve from the STATE.md being written, via
   // the canonical ladder `state prune` uses. A decision entry is a permanent
@@ -1340,7 +1337,7 @@ function cmdStateAddDecision(cwd: string, options: StateAddDecisionOptions, raw:
 
 function cmdStateAddBlocker(cwd: string, text: string | StateAddBlockerOptions, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
-  if (!fs.existsSync(statePath)) { process.exitCode = 1; output({ error: 'STATE.md not found' }, raw, undefined); return; }
+  if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
   const blockerOptions: StateAddBlockerOptions = typeof text === 'object' && text !== null ? text : { text: text };
   let blockerText: string | undefined = undefined;
 
@@ -1351,7 +1348,7 @@ function cmdStateAddBlocker(cwd: string, text: string | StateAddBlockerOptions, 
     return;
   }
 
-  if (!blockerText) { process.exitCode = 1; output({ error: 'text required' }, raw, undefined); return; }
+  if (!blockerText) { output({ error: 'text required' }, raw, undefined); return; }
 
   const entry = `- ${blockerText}`;
   let _added = false;
@@ -1406,7 +1403,7 @@ function cmdStateAddBlocker(cwd: string, text: string | StateAddBlockerOptions, 
 
 function cmdStateAddRoadmapEvolution(cwd: string, options: StateAddRoadmapEvolutionOptions, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
-  if (!fs.existsSync(statePath)) { process.exitCode = 1; output({ error: 'STATE.md not found' }, raw, undefined); return; }
+  if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
 
   const { phase, action, after, note, note_file, urgent } = options;
   let noteText: string | undefined = undefined;
@@ -1418,7 +1415,7 @@ function cmdStateAddRoadmapEvolution(cwd: string, options: StateAddRoadmapEvolut
   }
   // Reject missing / empty / whitespace-only notes — an evolution entry with no
   // narrative is meaningless and would corrupt the section with a dangling bullet.
-  if (!noteText || !noteText.trim()) { process.exitCode = 1; output({ error: 'note required' }, raw, undefined); return; }
+  if (!noteText || !noteText.trim()) { output({ error: 'note required' }, raw, undefined); return; }
   // Flatten line breaks so the entry is always a single Markdown bullet. The
   // dedupe + rendering contract is line-oriented; a multiline --note-file would
   // otherwise spill continuation lines outside the bullet and defeat dedupe.
@@ -1542,8 +1539,8 @@ function cmdStateAddRoadmapEvolution(cwd: string, options: StateAddRoadmapEvolut
 
 function cmdStateResolveBlocker(cwd: string, text: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
-  if (!fs.existsSync(statePath)) { process.exitCode = 1; output({ error: 'STATE.md not found' }, raw, undefined); return; }
-  if (!text) { process.exitCode = 1; output({ error: 'text required' }, raw, undefined); return; }
+  if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
+  if (!text) { output({ error: 'text required' }, raw, undefined); return; }
 
   let resolved = false;
 
@@ -1588,7 +1585,7 @@ function cmdStateResolveBlocker(cwd: string, text: string, raw: boolean): void {
 
 function cmdStateRecordSession(cwd: string, options: StateRecordSessionOptions, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
-  if (!fs.existsSync(statePath)) { process.exitCode = 1; output({ error: 'STATE.md not found' }, raw, undefined); return; }
+  if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
 
   const now = realClock.nowIso();
   const updated: string[] = [];
@@ -2014,7 +2011,6 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
 
   if (!fs.existsSync(statePath)) {
-    process.exitCode = 1;
     output({ error: 'STATE.md not found' }, raw, undefined);
     return;
   }
@@ -4213,7 +4209,6 @@ function reconcileReportedFields(
 function cmdStateJson(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
-    process.exitCode = 1;
     output({ error: 'STATE.md not found' }, raw, 'STATE.md not found');
     return;
   }
@@ -4327,7 +4322,6 @@ function cmdStateJson(cwd: string, raw: boolean): void {
 function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName: string | null | undefined, planCount: number | null | undefined, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
-    process.exitCode = 1;
     output({ error: 'STATE.md not found' }, raw, undefined);
     return;
   }
@@ -4650,7 +4644,6 @@ function updatePerformanceMetricsSection(content: string, cwd: string, phaseNum:
 function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, phaseName: string | null | undefined, planCount: number | null | undefined, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
-    process.exitCode = 1;
     output({ error: 'STATE.md not found' }, raw, undefined);
     return;
   }
@@ -4760,7 +4753,6 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, phaseNa
  */
 function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name: string | undefined, raw: boolean): void {
   if (!version || !String(version).trim()) {
-    process.exitCode = 1;
     output({ error: 'milestone required (--milestone <vX.Y>)' }, raw, undefined);
     return;
   }
@@ -5169,7 +5161,6 @@ function cmdStateValidate(cwd: string, raw: boolean, opts: { strict?: boolean } 
 function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
-    process.exitCode = 1;
     output({ error: 'STATE.md not found' }, raw, undefined);
     return;
   }
@@ -5686,7 +5677,6 @@ type StateCompletePhaseUpdateEntry =
 function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) {
-    process.exitCode = 1;
     output({ error: 'STATE.md not found' }, raw, undefined);
     return;
   }
@@ -5723,7 +5713,6 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
 
   const resolvedPhase = resolvePhaseIdForCompletePhase(fm, body, overridePhase);
   if (!resolvedPhase || /^phase$/i.test(resolvedPhase)) {
-    process.exitCode = 1;
     output({ error: 'Unable to resolve current phase. Pass an explicit phase: state complete-phase --phase <N>' }, raw, undefined);
     return;
   }
