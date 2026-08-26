@@ -22,6 +22,7 @@ const {
   parseUatItemsWithStats,
   DEFERRED_MARKER_ALT,
   DEFERRED_BULLET_MARKERS,
+  parseVerificationItems,
 } = require('../gsd-core/bin/lib/uat.cjs');
 const { iterateBullets } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
@@ -8287,5 +8288,288 @@ describe('#3781: acknowledge supports the heading-delimited entry shape', () => 
     assert.equal(ack.status, 'ok');
     assert.equal(ack.content, '## Deferred Items\n\n- alpha\n  status: acknowledged\n',
       'the pre-existing headless splice shape must be untouched');
+  });
+});
+
+// ─── #3850: gaps_found VERIFICATION files ────────────────────────────────────
+//
+// cmdAuditUat admits `human_needed` OR `gaps_found`, but parseVerificationItems
+// honoured only the first and returned [] for the second. Because cmdAuditUat
+// pushes a file into `results` only when `items.length > 0`, a `gaps_found`
+// report did not under-report — the whole file, and its phase's `by_phase` row,
+// VANISHED. Every test below fails on base: the gate returns [] regardless of
+// what the frontmatter holds.
+describe('#3850 gaps_found VERIFICATION files', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  /** Write one VERIFICATION file and return the parsed audit-uat payload. */
+  const auditWith = (body, phase = '01-demo') => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', phase);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, `${phase.split('-')[0]}-VERIFICATION.md`), body);
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  };
+
+  const HV_TWO = `---
+phase: 01-demo
+status: gaps_found
+human_verification:
+  - test: "Confirm the widget renders on a physical device"
+    expected: "Widget appears within 2s"
+    why_human: "Needs real hardware"
+  - test: "Confirm the audible alert fires"
+    expected: "Alert is audible"
+    why_human: "Needs a human ear"
+---
+
+# Verification
+`;
+
+  test('surfaces a gaps_found file\'s human_verification array (the #3850 defect)', () => {
+    const output = auditWith(HV_TWO);
+    assert.strictEqual(output.summary.total_items, 2);
+    assert.strictEqual(output.summary.total_files, 1);
+    assert.strictEqual(output.results[0].type, 'verification');
+    assert.strictEqual(output.results[0].status, 'gaps_found');
+    assert.strictEqual(output.results[0].items[0].category, 'human_uat');
+    // by_phase carries the phase — the omission mechanism this issue is about.
+    assert.strictEqual(output.summary.by_phase['01'], 2);
+  });
+
+  test('the SAME file under human_needed and gaps_found yields identical human_verification items', () => {
+    // The status token alone decided visibility; it must now decide nothing
+    // about the human_verification reading itself.
+    const asGaps = parseVerificationItems(HV_TWO, 'gaps_found');
+    const asHuman = parseVerificationItems(HV_TWO.replace('status: gaps_found', 'status: human_needed'), 'human_needed');
+    assert.deepStrictEqual(asGaps, asHuman);
+    assert.strictEqual(asGaps.length, 2);
+  });
+
+  test('surfaces a gaps_found file\'s frontmatter gaps array', () => {
+    const output = auditWith(`---
+phase: 02-gaps
+status: gaps_found
+gaps:
+  - truth: "The widget renders"
+    status: partial
+    reason: "Only observed on one platform"
+    test: 7
+---
+
+# Verification
+`, '02-gaps');
+    assert.strictEqual(output.summary.total_items, 1);
+    const item = output.results[0].items[0];
+    assert.strictEqual(item.name, 'The widget renders');
+    assert.strictEqual(item.result, 'partial');
+    assert.strictEqual(item.reason, 'Only observed on one platform');
+    assert.strictEqual(item.test, 7);
+  });
+
+  test('a gaps entry with no parseable status surfaces as unknown, never dropped (fail-safe)', () => {
+    const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "Garbled entry"
+---
+`, 'gaps_found');
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].result, 'unknown');
+  });
+
+  test('folded >- scalars inside an entry do not break the entry (real verifier shape)', () => {
+    const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "Gate is fail-open on absence of information"
+    status: partial
+    reason: >-
+      The hub learns a collection's schema version only from a push carrying
+      rows, so a zero-row collection is invisible and the RAM-only hub
+      re-blinds itself on every host restart.
+---
+`, 'gaps_found');
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].name, 'Gate is fail-open on absence of information');
+    assert.strictEqual(items[0].result, 'partial');
+  });
+
+  describe('closed entries are excluded on the gaps_found path', () => {
+    test('skips resolution:-marked human_verification entries, keeping original 1-based positions', () => {
+      const items = parseVerificationItems(`---
+status: gaps_found
+human_verification:
+  - test: "Already answered"
+    resolution: "RESOLVED 2026-01-01 by the phase 4 rig run"
+  - test: "Still outstanding"
+    why_human: "Needs real hardware"
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      // Entry 2 keeps position 2 so a surfaced item still names its row.
+      assert.strictEqual(items[0].test, 2);
+      assert.match(items[0].name, /Still outstanding/);
+    });
+
+    test('skips status: resolved gaps entries', () => {
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "Open"
+    status: partial
+  - truth: "Closed"
+    status: resolved
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].name, 'Open');
+    });
+
+    test('a resolution:-shaped substring MID-LINE is not a closure marker', () => {
+      // extractGapEntryFields anchors a field to the start of its own trimmed
+      // line; a quoted value mentioning "resolution:" must never close an entry.
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "Deferred until the resolution: pending owner ruling"
+    status: partial
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+    });
+
+    test('the human_needed path does NOT filter closed entries (AC: unchanged)', () => {
+      // Deliberate asymmetry, pinned so it cannot drift silently: the issue's
+      // acceptance criteria pin human_needed behaviour as unchanged, and real
+      // reports carry resolution:-annotated entries there today.
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "Already answered"
+    resolution: "RESOLVED 2026-01-01"
+  - test: "Still outstanding"
+---
+`, 'human_needed');
+      assert.strictEqual(items.length, 2);
+    });
+  });
+
+  describe('array-population boundaries', () => {
+    const build = (hv, gaps) => [
+      '---', 'status: gaps_found',
+      ...(hv === null ? [] : ['human_verification:', ...hv.map((t) => `  - test: "${t}"`)]),
+      ...(gaps === null ? [] : ['gaps:', ...gaps.map((t) => `  - truth: "${t}"\n    status: partial`)]),
+      '---', '',
+    ].join('\n');
+
+    test('empty human_verification + populated gaps still surfaces the gaps', () => {
+      const items = parseVerificationItems(build([], ['G1']), 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].name, 'G1');
+    });
+
+    test('populated human_verification + no gaps key surfaces only the hv entries', () => {
+      const items = parseVerificationItems(build(['H1'], null), 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].category, 'human_uat');
+    });
+
+    test('both arrays populated surfaces the union, human_verification first', () => {
+      const items = parseVerificationItems(build(['H1', 'H2'], ['G1']), 'gaps_found');
+      assert.strictEqual(items.length, 3);
+      assert.strictEqual(items[0].category, 'human_uat');
+      assert.strictEqual(items[2].name, 'G1');
+    });
+
+    test('neither key present yields zero items', () => {
+      assert.strictEqual(parseVerificationItems(build(null, null), 'gaps_found').length, 0);
+    });
+
+    test('a single entry (N=1) surfaces', () => {
+      assert.strictEqual(parseVerificationItems(build(['H1'], null), 'gaps_found').length, 1);
+    });
+
+    test('every entry closed yields zero items, so the file is omitted — intended, not the #3850 bug', () => {
+      // The omission this issue reports is a file with OUTSTANDING items
+      // vanishing. A file whose every entry is closed has nothing outstanding,
+      // so `items.length > 0` correctly drops it. Pinned to keep the two cases
+      // distinguishable.
+      const output = auditWith(`---
+phase: 03-allclosed
+status: gaps_found
+human_verification:
+  - test: "Answered"
+    resolution: "RESOLVED"
+gaps:
+  - truth: "Closed"
+    status: resolved
+---
+`, '03-allclosed');
+      assert.strictEqual(output.summary.total_items, 0);
+      assert.strictEqual(output.summary.total_files, 0);
+    });
+  });
+
+  describe('property: the closed/open partition', () => {
+    // Text that can never be mistaken for a field line or a closure marker.
+    const bodyArb = fc.string({ minLength: 1, maxLength: 24 })
+      .map((s) => s.replace(/["\\\r\n:]/g, ''))
+      .filter((s) => s.trim().length > 0);
+
+    test('property: an entry surfaces iff it is not closed; surfaced + skipped == total', () => {
+      fc.assert(
+        fc.property(
+          fc.array(fc.record({
+            body: bodyArb,
+            closed: fc.boolean(),
+            // Both closure spellings occur in the wild; neither may leak an entry.
+            viaResolution: fc.boolean(),
+          }), { maxLength: 12 }),
+          (raw) => {
+            // Index-prefix so surfaced names map back unambiguously even when
+            // the generated bodies collide.
+            const entries = raw.map((e, i) => ({ ...e, name: `E${i}_${e.body}` }));
+            const lines = ['---', 'status: gaps_found', 'gaps:'];
+            for (const e of entries) {
+              lines.push(`  - truth: "${e.name}"`);
+              if (e.closed && e.viaResolution) lines.push('    resolution: "closed upstream"');
+              else if (e.closed) lines.push('    status: resolved');
+              else lines.push('    status: partial');
+            }
+            lines.push('---', '');
+
+            const items = parseVerificationItems(lines.join('\n'), 'gaps_found');
+            const surfaced = new Set(items.map((it) => it.name));
+            const open = entries.filter((e) => !e.closed);
+            const closed = entries.filter((e) => e.closed);
+
+            // Partition: surfaced count is exactly the open count...
+            assert.strictEqual(items.length, open.length);
+            // ...every open entry surfaces...
+            for (const e of open) assert.ok(surfaced.has(e.name), `open entry missing: ${e.name}`);
+            // ...no closed entry ever does, by either spelling...
+            for (const e of closed) assert.ok(!surfaced.has(e.name), `closed entry surfaced: ${e.name}`);
+            // ...and the two parts account for the whole.
+            assert.strictEqual(open.length + closed.length, entries.length);
+          },
+        ),
+      );
+    });
+
+    test('property: an all-open array surfaces every entry (no silent cap)', () => {
+      fc.assert(
+        fc.property(fc.array(bodyArb, { minLength: 1, maxLength: 20 }), (bodies) => {
+          const names = bodies.map((b, i) => `E${i}_${b}`);
+          const content = ['---', 'status: gaps_found', 'gaps:',
+            ...names.map((n) => `  - truth: "${n}"\n    status: partial`), '---', ''].join('\n');
+          assert.strictEqual(parseVerificationItems(content, 'gaps_found').length, names.length);
+        }),
+      );
+    });
   });
 });

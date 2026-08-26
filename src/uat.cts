@@ -28,7 +28,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter } = frontmatter;
+const { extractFrontmatter, sliceTopLevelFrontmatterSegments } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
@@ -3450,9 +3450,127 @@ function rawGapEntryText(
 
 // ─── parseVerificationItems ───────────────────────────────────────────────────
 
+/**
+ * Slice one top-level frontmatter ARRAY key into per-entry line groups (#3850).
+ *
+ * `extractFrontmatter` cannot serve this: its array-item parser keeps only each
+ * `- ` entry's FIRST line (with one layer of wrapping quotes stripped) and has
+ * no notion of nested key/value objects, so an entry's `status:`,
+ * `resolution:`, `reason:` and `test:` siblings never reach its output at all.
+ * A resolved entry is therefore INDISTINGUISHABLE from an open one downstream
+ * of it — no amount of post-processing can recover the difference.
+ *
+ * Rather than grow a competing object-list parser (or change
+ * `extractFrontmatter`, whose blast radius is every frontmatter consumer in the
+ * repo), this reads the RAW segment BEFORE the flattening and hands it to the
+ * `## Gaps` machinery that already parses exactly this shape — a `- `-opened,
+ * indentation-continued entry list. `sliceTopLevelFrontmatterSegments` supplies
+ * the anchored boundary: a segment runs from a COLUMN-0 `key:` line to the line
+ * before the next column-0 key, so nested indented content is captured and a
+ * same-named nested key can never open a segment.
+ */
+function sliceFrontmatterArrayEntries(content: string, key: string): string[][] {
+  const fmMatch = content.match(/^---\r?\n([\s\S]+?)\r?\n---/);
+  if (!fmMatch) return [];
+  const segment = sliceTopLevelFrontmatterSegments(fmMatch[1]).find((seg) => seg.key === key);
+  if (!segment) return [];
+  // Drop the `key:` header line; the remainder is the entry list body.
+  const body = segment.raw.split('\n').slice(1).join('\n');
+  return splitGapsEntries(body);
+}
+
+/**
+ * Is this frontmatter entry already closed? (#3850)
+ *
+ * Two markers occur in the wild and neither is universal: verifier-written
+ * `human_verification:` entries record closure as a `resolution:` field with no
+ * `status:` at all, while `gaps:` entries follow the `## Gaps` convention of
+ * `status: resolved`. Both are accepted here.
+ *
+ * Deliberately NOT folded into `parseGapsItems`, which keeps its narrower
+ * `status: resolved` rule: widening THAT would newly drop a `## Gaps` entry
+ * carrying `resolution:` alongside `status: failed` — a `*-UAT.md` behavior
+ * change outside this fix's scope, and one nobody asked for.
+ */
+function isFrontmatterEntryResolved(entryLines: string[] | undefined): boolean {
+  if (!entryLines) return false;
+  const fields = extractGapEntryFields(entryLines);
+  if (fields.resolution) return true;
+  return (fields.status || '').toLowerCase() === 'resolved';
+}
+
+/**
+ * Surface a `gaps_found` report's frontmatter `gaps:` array (#3850).
+ *
+ * Mirrors `parseGapsItems`' field vocabulary and fail-safe status handling, but
+ * reads the FRONTMATTER array rather than a `## Gaps` markdown section —
+ * `parseGapsItems` is reached only from `parseUatItems`, and the verification
+ * template puts gaps in frontmatter, so no existing reader covers this shape.
+ */
+function parseVerificationGapsItems(content: string): UatItem[] {
+  const items: UatItem[] = [];
+  for (const entryLines of sliceFrontmatterArrayEntries(content, 'gaps')) {
+    if (isFrontmatterEntryResolved(entryLines)) continue;
+    const fields = extractGapEntryFields(entryLines);
+    // Fail-safe, as in parseGapsItems: a missing/garbled status surfaces as
+    // 'unknown' rather than being dropped.
+    const status = fields.status || 'unknown';
+    const item: UatItem = {
+      name: fields.truth || rawGapEntryText(entryLines),
+      result: status,
+      category: categorizeItem(status, fields.reason, undefined),
+    };
+    if (fields.test && /^\d+$/.test(fields.test)) item.test = parseInt(fields.test, 10);
+    if (fields.reason) item.reason = fields.reason;
+    items.push(item);
+  }
+  return items;
+}
+
+/**
+ * #3850: `gaps_found` is as outstanding as `human_needed`.
+ *
+ * `cmdAuditUat` admits BOTH statuses, then this function honoured only one and
+ * returned an empty array for the other. Because `cmdAuditUat` pushes a file
+ * into `results` only when `items.length > 0`, a `gaps_found` report did not
+ * merely under-report — it VANISHED, taking its phase's row out of `by_phase`
+ * with it, so a clean-looking total gave the reader no cue that anything was
+ * skipped. The trailing `plan-phase --gaps` note that stood in for a
+ * `gaps_found` branch pointed at a DIFFERENT command that `audit-uat` never
+ * reaches.
+ *
+ * Eligibility now has ONE owner — the caller — and this function reports what
+ * the file says.
+ *
+ * The `human_needed` path is byte-for-byte unchanged, per the issue's
+ * acceptance criteria: same reader, same `normalizeHumanVerificationEntry`
+ * display names, same numbering, and NO resolved-entry filtering. Closed
+ * entries are skipped only on the new `gaps_found` path. See the PR discussion
+ * — unifying the two is a one-line change, deliberately not taken here.
+ */
 function parseVerificationItems(content: string, status: string, sourcePath?: string): UatItem[] {
   const items: UatItem[] = [];
+  if (status === 'gaps_found') {
+    items.push(...parseHumanVerificationItems(content, sourcePath, true));
+    items.push(...parseVerificationGapsItems(content));
+    return items;
+  }
   if (status === 'human_needed') {
+    return parseHumanVerificationItems(content, sourcePath, false);
+  }
+  return items;
+}
+
+/**
+ * The `human_verification:` reader, extracted verbatim from
+ * `parseVerificationItems` so `gaps_found` and `human_needed` share ONE
+ * implementation rather than a second copy that drifts (ref
+ * `DEFECT.GENERATIVE-FIX`). `skipResolved` is the only behavioural difference
+ * and is false on the `human_needed` path.
+ */
+function parseHumanVerificationItems(content: string, sourcePath: string | undefined, skipResolved: boolean): UatItem[] {
+  const items: UatItem[] = [];
+  {
     // #2286: the frontmatter's structured `human_verification:` YAML array
     // (extractFrontmatter) is the PRIMARY source of truth when present and
     // non-empty — it fully bypasses the body-shape scan below, so a file
@@ -3462,8 +3580,16 @@ function parseVerificationItems(content: string, status: string, sourcePath?: st
     const frontmatter = extractFrontmatter(content, sourcePath);
     const humanVerification = frontmatter.human_verification;
     if (Array.isArray(humanVerification) && humanVerification.length > 0) {
+      // #3850: the flattened `humanVerification` strings carry the DISPLAY name
+      // (unchanged), while the raw slice carries the sibling fields needed to
+      // tell a closed entry from an open one. Indexes align: both derive from
+      // the same `- `-opened entry list, in order.
+      const rawEntries = skipResolved ? sliceFrontmatterArrayEntries(content, 'human_verification') : [];
       humanVerification.forEach((entry, idx) => {
+        if (skipResolved && isFrontmatterEntryResolved(rawEntries[idx])) return;
         items.push({
+          // The entry's ORIGINAL 1-based position, so a surfaced item still
+          // names its row in the file when a closed sibling was skipped.
           test: idx + 1,
           name: normalizeHumanVerificationEntry(entry),
           result: 'human_needed',
@@ -3596,7 +3722,6 @@ function parseVerificationItems(content: string, status: string, sourcePath?: st
       }
     }
   }
-  // gaps_found items are already handled by plan-phase --gaps pipeline
   return items;
 }
 
@@ -3687,4 +3812,8 @@ export = {
   // `iterateBullets` actually reads.
   DEFERRED_MARKER_ALT,
   DEFERRED_BULLET_MARKERS,
+  // #3850: exported so the `gaps_found` partition invariant is asserted
+  // against the parser itself rather than only through a CLI round-trip
+  // (RULESET.TESTS.property-based-testing).
+  parseVerificationItems,
 };

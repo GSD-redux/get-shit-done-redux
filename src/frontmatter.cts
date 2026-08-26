@@ -1468,6 +1468,15 @@ export = {
   stripFrontmatter,
   noOpObjectListSetError,
   parseMustHavesBlock,
+  // #3850: the per-top-level-key RAW text slicer, exposed so a caller that
+  // needs an array entry's SIBLING fields can read them before the lossy
+  // flattening in `parseYamlRegion` discards them. `extractFrontmatter` keeps
+  // only each `- ` entry's FIRST line (and strips a wrapping quote), so a
+  // multi-key entry's `status:`/`resolution:`/`reason:` siblings are simply
+  // absent from its output — unreachable downstream at any cost. Slicing the
+  // raw segment is how a caller gets underneath that, without this module
+  // having to grow a second, competing object-list parser.
+  sliceTopLevelFrontmatterSegments,
   FRONTMATTER_SCHEMAS,
   cmdFrontmatterGet,
   cmdFrontmatterSet,
