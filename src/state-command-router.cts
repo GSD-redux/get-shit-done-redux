@@ -163,15 +163,45 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
         // fabricated plan position. The repair path for a genuinely diverged
         // STATE.md is the existing one: `state rebuild`, `state sync`, or
         // `state patch`.
-        // `--` is the POSIX end-of-options marker, not an option. main()
-        // honours it (gsd-tools.cjs) and does not strip it, so a caller
-        // writing `state advance-plan -- …` reaches here with a bare `--` in
-        // argv; treating it as an unrecognized option rejects a legitimate,
-        // conventional invocation. Excluded by exact match, so `--x` is
-        // still caught.
-        const unrecognized = args.filter((t) => t !== '--' && t.startsWith('--'));
+        // #3862 review (Minor x2): the previous filter was
+        // `args.filter((t) => t !== '--' && t.startsWith('--'))`, which had two
+        // defects that share one cause — it screened TOKEN SHAPES rather than
+        // scoping the caller-supplied REGION.
+        //
+        // (1) It caught only `--`-prefixed tokens, so `state advance-plan 5`,
+        //     `01`, `-x` and `-p 10` were still silently discarded: the exact
+        //     #3830-facet-2 defect this arm exists to close, at a different
+        //     token shape. This verb takes no options AND no operands, so all
+        //     of those are unambiguously invalid input being accepted.
+        // (2) Its comment invoked POSIX end-of-options while implementing a
+        //     whole-array `!== '--'` exclusion, which is not the same rule.
+        //     `state advance-plan -- --plan` errored on `--plan` as an OPTION —
+        //     precisely the invocation POSIX says must be read as an operand.
+        //
+        // Both are closed by slicing instead of filtering. The command words
+        // occupy indices 0-1 in BOTH invocation forms — gsd-tools.cjs splits the
+        // dotted canonical form into `[head, rest, ...args.slice(1)]` before any
+        // router runs — so everything from index 2 on is caller-supplied, the
+        // same boundary the sibling handlers above rely on when they read their
+        // first operand at `args[2]`.
+        //
+        // Then honour `--` as POSIX actually specifies: drop the FIRST one and
+        // read what follows as operands. A bare `state advance-plan --` stays
+        // legal (nothing follows it). `-- --plan` is still rejected — this verb
+        // takes no operands either — but as the operand it is, rather than
+        // mislabelled an option. Safe to be this strict here because `main()`
+        // splices every global flag out of argv first (`--json-errors`, `--cwd`
+        // and `--cwd=`, `--ws` and `--ws=`, `--raw`, `--pick`, `--default`), and
+        // `--help` / version flags short-circuit ahead of dispatch, so nothing
+        // legitimate survives to index 2.
+        const supplied = args.slice(2);
+        const endOfOptions = supplied.indexOf('--');
+        const unrecognized =
+          endOfOptions === -1
+            ? supplied
+            : [...supplied.slice(0, endOfOptions), ...supplied.slice(endOfOptions + 1)];
         if (unrecognized.length > 0) {
-          error(`state advance-plan takes no options; unrecognized: ${unrecognized.join(' ')}`);
+          error(`state advance-plan takes no options or arguments; unrecognized: ${unrecognized.join(' ')}`);
           return;
         }
         state.cmdStateAdvancePlan(cwd, raw);

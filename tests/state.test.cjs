@@ -2532,6 +2532,61 @@ describe('#3830 facet 2: state advance-plan rejects options instead of discardin
       `bare -- must not be rejected; got: ${combined}`);
   });
 
+  // #3862 review (Minor): operands and short options were silently discarded —
+  // the identical #3830-facet-2 defect at a token shape the `--`-prefix filter
+  // could not see. This verb takes no options and no operands, so each of these
+  // is unambiguously invalid input that used to return a confident answer it had
+  // not been asked for.
+  test('bare operands are rejected rather than silently discarded', () => {
+    for (const operand of ['5', '01']) {
+      seedSimpleState();
+      const before = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      const result = runGsdTools(['state', 'advance-plan', operand], tmpDir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(!result.success, `operand ${operand} must be rejected; got: ${combined}`);
+      assert.ok(combined.includes(operand), `the rejection should name ${operand}; got: ${combined}`);
+      assert.strictEqual(
+        fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'), before,
+        'a rejected invocation must not mutate STATE.md',
+      );
+    }
+  });
+
+  test('short options are rejected rather than silently discarded', () => {
+    for (const argv of [['-x'], ['-p', '10']]) {
+      seedSimpleState();
+      const result = runGsdTools(['state', 'advance-plan', ...argv], tmpDir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(!result.success, `${argv.join(' ')} must be rejected; got: ${combined}`);
+      assert.ok(combined.includes(argv[0]), `the rejection should name ${argv[0]}; got: ${combined}`);
+    }
+  });
+
+  // #3862 review (Minor): the old filter's comment invoked POSIX end-of-options
+  // while implementing a whole-array `!== '--'` exclusion. Under real POSIX,
+  // everything after the first `--` is an OPERAND. This verb takes no operands,
+  // so `-- --plan` is still rejected — but as an operand, not as an option, and
+  // the message says so.
+  test('`--` is honored as end-of-options: what follows is an operand, not an option', () => {
+    seedSimpleState();
+    const result = runGsdTools(['state', 'advance-plan', '--', '--plan'], tmpDir);
+    const combined = `${result.output || ''}${result.error || ''}`;
+    assert.ok(!result.success, `an operand after -- must still be rejected; got: ${combined}`);
+    assert.ok(combined.includes('--plan'), `the rejection should name --plan; got: ${combined}`);
+    assert.ok(combined.includes('takes no options or arguments'),
+      `the message must not call an operand an option; got: ${combined}`);
+  });
+
+  test('only the FIRST `--` is consumed as the marker', () => {
+    // A second `--` after the marker is an ordinary operand, and this verb takes
+    // none — so it is rejected, which is what distinguishes slicing at the first
+    // marker from the old whole-array exclusion that swallowed every `--`.
+    seedSimpleState();
+    const result = runGsdTools(['state', 'advance-plan', '--', '--'], tmpDir);
+    const combined = `${result.output || ''}${result.error || ''}`;
+    assert.ok(!result.success, `a second -- is an operand and must be rejected; got: ${combined}`);
+  });
+
   test('--pick still projects a field', () => {
     seedSimpleState();
     const result = runGsdTools('state advance-plan --pick advanced', tmpDir);
