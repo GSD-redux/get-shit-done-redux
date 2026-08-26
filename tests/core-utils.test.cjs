@@ -29,7 +29,12 @@ const os = require('node:os');
 
 const coreUtils = require('../gsd-core/bin/lib/core-utils.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, runGsdTools } = require('./helpers.cjs');
+const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
+const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
+const workstreamNamePolicy = require('../gsd-core/bin/lib/workstream-name-policy.cjs');
+const activeWorkstreamStore = require('../gsd-core/bin/lib/active-workstream-store.cjs');
+const gsd2Import = require('../gsd-core/bin/lib/gsd2-import.cjs');
 
 // ─── toPosixPath ─────────────────────────────────────────────────────────────
 
@@ -762,5 +767,383 @@ describe('countMatchedSummaries — stray non-plan summaries excluded (#1988)', 
   test('absolute path (leading slash) still pairs via the dir split', () => {
     // Guards the lastIndexOf('/') >= 0 boundary (slash at index 0).
     assert.strictEqual(countMatchedSummaries(['/abs/PLAN-01.md'], ['/abs/SUMMARY-01.md']), 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3883 (ADR-3473 §8.3) — one slug implementation per rule
+//
+// generateSlugInternal (this file's own subject, above) is the canonical slug
+// formula. 11 independent inline re-implementations were found by grep across
+// src/ (file:line evidence in the PR description). This block drives each
+// reachable site the way production reaches it and proves today's code
+// disagrees with the canonical — failing-first, per the phase 6 test matrix
+// (.gsd/phase/feat-3883-one-impl-per-rule/50-test-matrix.md section A/B).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
+  // ── A1: commands.cts cmdGenerateSlug (CLI `generate-slug`) ──────────────────
+
+  test('A1 cyrillicSlugIsNotEmpty: cmdGenerateSlug on Cyrillic yields the canonical value, not ""', () => {
+    const result = runGsdTools(['generate-slug', 'Привет мир'], process.cwd(), { HOME: os.tmpdir() });
+    assert.ok(result.success, `generate-slug command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    // Pinned to a concrete value (not merely "non-empty") so this cannot be
+    // satisfied by an unrelated fallback string — and pinned to the
+    // canonical's OWN live output so a future change to the transliteration
+    // map cannot silently desync this expectation from generateSlugInternal.
+    const canonical = coreUtils.generateSlugInternal('Привет мир');
+    assert.strictEqual(canonical, 'privet-mir', 'sanity: canonical must itself transliterate to privet-mir');
+    assert.notStrictEqual(output.slug, '', 'cmdGenerateSlug must not collapse a Cyrillic title to an empty slug (#2848-class regression)');
+    assert.strictEqual(output.slug, canonical, 'cmdGenerateSlug must delegate to (or agree with) generateSlugInternal');
+  });
+
+  // ── A2: commands.cts cmdGenerateSlug truncation-boundary trailing hyphen ────
+
+  test('A2 truncationBoundaryLeavesNoTrailingHyphen: no trailing separator at the truncation boundary', () => {
+    // #2849: strip-then-truncate (cmdGenerateSlug's current order) can
+    // reintroduce a trailing hyphen when truncation lands exactly on an
+    // internal separator that strip-then-truncate never revisits.
+    // generateSlugInternal fixed this by truncating BEFORE the final strip
+    // pass (see its own comment, above in this file). The boundary is
+    // reproduced with 59 'a's + ' b': the collapsed separator sits exactly
+    // at the canonical's substring(0, 60) cut point.
+    const input = 'a'.repeat(59) + ' b';
+    const result = runGsdTools(['generate-slug', input], process.cwd(), { HOME: os.tmpdir() });
+    assert.ok(result.success, `generate-slug command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const canonical = coreUtils.generateSlugInternal(input);
+    assert.strictEqual(canonical, 'a'.repeat(59), 'sanity: canonical must not leave a trailing hyphen at the boundary');
+    assert.ok(!output.slug.endsWith('-'), `cmdGenerateSlug must not emit a trailing hyphen at the truncation boundary; got: ${JSON.stringify(output.slug)}`);
+    assert.strictEqual(output.slug, canonical, 'cmdGenerateSlug must agree with generateSlugInternal at the truncation boundary');
+  });
+
+  // ── A3/A4: every reachable slug call site vs. the canonical ─────────────────
+
+  // Shared input corpus: ASCII, Cyrillic, CJK, emoji, punctuation runs,
+  // leading/trailing separators. Boundary-length inputs are a SEPARATE
+  // corpus (below) because not every site truncates (A4).
+  const CORPUS = [
+    ['ascii-simple', 'Hello World'],
+    ['ascii-punctuation-run', 'Test@#$%^Special!!!'],
+    ['ascii-leading-trailing-separators', '---Leading Trailing---'],
+    ['ascii-numbers', 'Phase 3 Plan'],
+    ['cyrillic', 'Привет мир'],
+    ['cjk-non-transliterable', '中文测试'],
+    ['emoji', 'hello 😀 world'],
+    ['latin-diacritics', 'Café münchen'],
+  ];
+
+  // Boundary corpus: the separator sits one-under / exactly-at / one-over the
+  // canonical's substring(0, 60) cut point (see A2 and B1 below).
+  const BOUNDARY_CORPUS = [
+    ['boundary-under', 'a'.repeat(58) + ' b'],
+    ['boundary-exact', 'a'.repeat(59) + ' b'],
+    ['boundary-over', 'a'.repeat(60) + ' b'],
+  ];
+
+  function runInitJson(argv, tmpDir) {
+    const result = runGsdTools(['init', ...argv], tmpDir, { HOME: tmpDir });
+    assert.ok(result.success, `init ${argv.join(' ')} failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  // cmdInitExecutePhase / cmdInitPhaseOp emit `phase_slug: phaseInfo?.['phase_slug'] || null`
+  // (init.cts:1880 and neighbors) — an output-shaping `|| null` that coerces
+  // ANY empty-string slug to null, independent of whether the slugification
+  // itself was correct. Comparing the raw JSON value against the canonical's
+  // real string output would flag every all-non-transliterable corpus entry
+  // (e.g. CJK, where the canonical ALSO produces "") as a false divergence.
+  // Normalizing null back to "" here isolates the axis this test actually
+  // cares about — the slug ALGORITHM's output — from that unrelated
+  // presentation choice.
+  function phaseSlugField(json) {
+    return json.phase_slug === null ? '' : json.phase_slug;
+  }
+
+  // Each site: { name, truncates, call(text) => observed slug value }.
+  // `call` drives the site exactly the way production reaches it.
+  const SITES = [
+    {
+      name: 'commands.cts:209 cmdGenerateSlug (CLI generate-slug)',
+      truncates: true,
+      call(text) {
+        const r = runGsdTools(['generate-slug', text], process.cwd(), { HOME: os.tmpdir() });
+        assert.ok(r.success, `generate-slug failed for ${JSON.stringify(text)}: ${r.error}`);
+        return JSON.parse(r.output).slug;
+      },
+    },
+    {
+      name: 'init.cts:176 slugifyPhaseName (CLI init execute-phase, ROADMAP-only phase)',
+      truncates: true,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-ep-'));
+        try {
+          fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+          fs.writeFileSync(
+            path.join(tmpDir, '.planning', 'ROADMAP.md'),
+            `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
+          );
+          return phaseSlugField(runInitJson(['execute-phase', '1'], tmpDir));
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'init.cts:1957 cmdInitPhaseOp !phaseInfo fallback (CLI init phase-op, no directory)',
+      truncates: true,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-po-fb-'));
+        try {
+          fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+          fs.writeFileSync(
+            path.join(tmpDir, '.planning', 'ROADMAP.md'),
+            `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
+          );
+          return phaseSlugField(runInitJson(['phase-op', '1'], tmpDir));
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'init.cts:1935 cmdInitPhaseOp archived branch (CLI init phase-op, archived dir + current ROADMAP)',
+      truncates: true,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-po-ar-'));
+        try {
+          const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-old');
+          fs.mkdirSync(archiveDir, { recursive: true });
+          fs.writeFileSync(path.join(archiveDir, '01-CONTEXT.md'), '# old');
+          fs.writeFileSync(
+            path.join(tmpDir, '.planning', 'ROADMAP.md'),
+            `# Roadmap\n\n<details>\n<summary>Shipped v1.0</summary>\n\n### Phase 1: Old\n**Goal:** old\n</details>\n\n## Current\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
+          );
+          return phaseSlugField(runInitJson(['phase-op', '1'], tmpDir));
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'init.cts:3109 cmdInitProgress unstarted ROADMAP phase (CLI init progress)',
+      truncates: true,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-prog-'));
+        try {
+          fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+          fs.writeFileSync(
+            path.join(tmpDir, '.planning', 'ROADMAP.md'),
+            `# Roadmap\n\n### Phase 1: ${text}\n**Goal:** test\n**Plans:** TBD\n`,
+          );
+          return runInitJson(['progress'], tmpDir).phases[0].name;
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'phase-id.cts:229 getPhaseDirFromPhaseId (direct require, exported)',
+      truncates: true,
+      call(text) {
+        // The rendered dir is `<milestone>-<sub>-<slug>`; strip the fixed
+        // numeric prefix this call always emits to isolate the slug component.
+        const dir = phaseId.getPhaseDirFromPhaseId('01-01', text, null);
+        return dir.replace(/^01-01-?/, '');
+      },
+    },
+    {
+      name: 'phase-id.cts:380 toDir safeSlug guard (direct require, exported)',
+      truncates: true,
+      call(text) {
+        try {
+          const dir = phaseId.toDir({ project: 'GSD', milestone: '01', phase: '01' }, text);
+          return dir.replace(/^GSD\.01-01-?/, '');
+        } catch (e) {
+          // Current behavior throws "sanitizes to empty" for input the
+          // canonical transliterates successfully — surface that as a
+          // sentinel the corpus comparison can see (never equal to the
+          // canonical's real, non-empty slug).
+          return `__THREW__:${e.message}`;
+        }
+      },
+    },
+    {
+      name: 'phase-locator.cts:269 findPhaseInternal phase_slug (direct require, exported)',
+      truncates: true,
+      call(text) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-pl-'));
+        try {
+          const phaseDir = path.join(tmpDir, '.planning', 'phases', `01-${text}`);
+          fs.mkdirSync(phaseDir, { recursive: true });
+          const result = phaseLocator.findPhaseInternal(tmpDir, '1');
+          return result ? result.phase_slug : undefined;
+        } finally {
+          cleanup(tmpDir);
+        }
+      },
+    },
+    {
+      name: 'workstream-name-policy.cts:75 toWorkstreamSlug (direct require, exported)',
+      truncates: false, // undeclared gap — no A4 entry, so A3 must catch it (see BOUNDARY_CORPUS below)
+      call(text) {
+        return workstreamNamePolicy.toWorkstreamSlug(text);
+      },
+    },
+  ];
+
+  // A4: sites intentionally different from the canonical, with their reason.
+  // A3 skips these for the axis named, an UNDECLARED divergence still fails.
+  const DECLARED_DIFFERENT = [
+    {
+      site: 'gsd2-import.cts:97 slugify (direct require, exported)',
+      axis: 'truncation',
+      reason:
+        'Documented distinct contract (gsd2-import.cts:97-102, tests/gsd2-import.test.cjs '
+        + '"#2848 row 11"): slugify shares the transliteration primitive with '
+        + 'generateSlugInternal but deliberately does NOT truncate at 60 chars — '
+        + 'GSD-2 import titles are not filesystem path segments the way phase '
+        + 'directory slugs are.',
+    },
+    {
+      site: 'active-workstream-store.cts:97 getWorkstreamSessionKey (direct require, exported)',
+      axis: 'input-domain',
+      reason:
+        'The slugified text is never caller-supplied: it is always one of a '
+        + 'fixed ASCII whitelist of environment-variable KEY NAMES '
+        + '(WORKSTREAM_SESSION_ENV_KEYS: GSD_SESSION_KEY, CODEX_THREAD_ID, '
+        + 'CLAUDE_SESSION_ID, CLAUDE_CODE_SESSION_ID). The shared unicode/CJK/'
+        + 'emoji/boundary-length corpus can never reach this call site in '
+        + 'production, so it is checked separately below against its own real '
+        + 'input domain rather than run through the shared CORPUS loop.',
+    },
+  ];
+
+  test('A4 deliberatelyDifferentSitesAreDeclared: the declared-divergence list names real sites with real reasons', () => {
+    // This mechanism must exist even though today it is non-empty (both
+    // entries above are load-bearing — remove either and A3 below starts
+    // failing for the corresponding site/axis, which is exactly the point:
+    // A3 cannot be silently satisfied by exempting the hard cases).
+    assert.ok(Array.isArray(DECLARED_DIFFERENT));
+    for (const entry of DECLARED_DIFFERENT) {
+      assert.strictEqual(typeof entry.site, 'string');
+      assert.ok(entry.site.length > 0);
+      assert.strictEqual(typeof entry.reason, 'string');
+      assert.ok(entry.reason.length > 20, 'a declared-different entry needs a real reason, not a placeholder');
+    }
+    const declaredForTruncation = DECLARED_DIFFERENT.filter((e) => e.axis === 'truncation').map((e) => e.site);
+    assert.deepStrictEqual(
+      declaredForTruncation,
+      ['gsd2-import.cts:97 slugify (direct require, exported)'],
+      'exactly one site is declared to skip the truncation axis — an undeclared truncation gap must fail A3',
+    );
+  });
+
+  describe('A3 everySlugCallSiteAgreesWithTheCanonical', () => {
+    for (const site of SITES) {
+      describe(site.name, () => {
+        for (const [label, text] of CORPUS) {
+          test(`corpus:${label} agrees with generateSlugInternal`, () => {
+            const canonical = coreUtils.generateSlugInternal(text);
+            const observed = site.call(text);
+            assert.strictEqual(
+              observed,
+              canonical,
+              `site "${site.name}" on ${JSON.stringify(text)}: expected canonical ${JSON.stringify(canonical)}, got ${JSON.stringify(observed)}`,
+            );
+          });
+        }
+
+        if (site.truncates) {
+          for (const [label, text] of BOUNDARY_CORPUS) {
+            test(`boundary:${label} agrees with generateSlugInternal`, () => {
+              const canonical = coreUtils.generateSlugInternal(text);
+              const observed = site.call(text);
+              assert.strictEqual(
+                observed,
+                canonical,
+                `site "${site.name}" at truncation boundary ${JSON.stringify(text)}: expected canonical ${JSON.stringify(canonical)}, got ${JSON.stringify(observed)}`,
+              );
+            });
+          }
+        }
+      });
+    }
+
+    // gsd2-import.cts:97 slugify — compared on the general corpus (must still
+    // transliterate correctly) but NOT the boundary corpus (declared, A4).
+    describe('gsd2-import.cts:97 slugify (direct require, exported)', () => {
+      for (const [label, text] of CORPUS) {
+        test(`corpus:${label} agrees with generateSlugInternal`, () => {
+          const canonical = coreUtils.generateSlugInternal(text);
+          const observed = gsd2Import.slugify(text);
+          assert.strictEqual(observed, canonical, `slugify on ${JSON.stringify(text)}: expected ${JSON.stringify(canonical)}, got ${JSON.stringify(observed)}`);
+        });
+      }
+    });
+
+    // active-workstream-store.cts:97 getWorkstreamSessionKey — checked against
+    // its own real, restricted input domain (declared, A4), not the shared corpus.
+    describe('active-workstream-store.cts:97 getWorkstreamSessionKey (real input domain only)', () => {
+      const REAL_ENV_KEYS = ['GSD_SESSION_KEY', 'CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'];
+      for (const envKey of REAL_ENV_KEYS) {
+        test(`${envKey} slugifies identically to generateSlugInternal(${envKey})`, () => {
+          const saved = {};
+          for (const k of REAL_ENV_KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+          process.env[envKey] = 'token123';
+          try {
+            const observedKey = activeWorkstreamStore.getWorkstreamSessionKey();
+            const canonicalPrefix = coreUtils.generateSlugInternal(envKey);
+            assert.strictEqual(
+              observedKey,
+              `${canonicalPrefix}-token123`,
+              `getWorkstreamSessionKey(${envKey}): expected the envKey portion to equal generateSlugInternal(${envKey})`,
+            );
+          } finally {
+            for (const k of REAL_ENV_KEYS) {
+              if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+            }
+          }
+        });
+      }
+    });
+  });
+
+  // ── B. Boundaries (repo rule: limit-1, limit, limit+1) ───────────────────────
+
+  describe('B1 slug truncation length: one-under / exact / one-over — no trailing separator at any', () => {
+    for (const [label, text] of BOUNDARY_CORPUS) {
+      test(`canonical: ${label}`, () => {
+        const slug = coreUtils.generateSlugInternal(text);
+        assert.ok(!slug.endsWith('-'), `generateSlugInternal(${JSON.stringify(text)}) must not end in a hyphen; got ${JSON.stringify(slug)}`);
+      });
+    }
+  });
+
+  describe('B2 empty and whitespace-only input', () => {
+    test('generateSlugInternal("") → null', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal(''), null);
+    });
+    test('generateSlugInternal("   ") → "" (whitespace collapses, not null — falsy check is on the input, not the output)', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal('   '), '');
+    });
+    test('cmdGenerateSlug rejects empty input with an explicit error (not a silent empty slug)', () => {
+      const result = runGsdTools(['generate-slug', ''], process.cwd(), { HOME: os.tmpdir() });
+      assert.ok(!result.success, 'generate-slug must fail on empty text');
+      assert.ok(result.error.includes('text required'), `expected "text required" error, got: ${result.error}`);
+    });
+  });
+
+  describe('B3 input that is entirely non-transliterable (Cyrillic-to-empty class, generalized)', () => {
+    test('CJK-only title → canonical produces "" (not an error, not a crash)', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal('中文测试'), '');
+    });
+    test('punctuation-only title → canonical produces ""', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal('!!!@@@###'), '');
+    });
+    test('emoji-only title → canonical produces ""', () => {
+      assert.strictEqual(coreUtils.generateSlugInternal('😀😁😂'), '');
+    });
   });
 });
