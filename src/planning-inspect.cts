@@ -59,7 +59,7 @@ import gapCheckerMod = require('./gap-checker.cjs');
 const { parseRequirements } = gapCheckerMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import uatMod = require('./uat.cjs');
-const { parseUatItems, selectPhaseUatFiles } = uatMod;
+const { parseUatItemsWithStats, selectPhaseUatFiles } = uatMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLifecycleMod = require('./phase-lifecycle.cjs');
 const { clampPercent } = phaseLifecycleMod;
@@ -860,7 +860,27 @@ function buildUatRows(
       scope = SCOPE.TRUNCATED;
       continue;
     }
-    items.push(...parseUatItems(doc.text));
+    // #3707-class false-clean, second surface (security review finding 1):
+    // `parseUatItemsWithStats`'s `headingsSeen` counts `### N.` test blocks
+    // that yielded ZERO items (a row missing its `result:` line, or otherwise
+    // unrecognised) — the audit-uat side (`cmdAuditUat`, above) already flags
+    // this as `parse_gap`. Reading the file successfully is not the same as
+    // deriving every row from it: a heading that failed to parse means this
+    // phase's UAT completeness cannot be affirmatively claimed, so `scope`
+    // must NOT stay `complete` for it — reusing `SCOPE.TRUNCATED` (the same
+    // value this function already uses two lines up for an unreadable file)
+    // rather than inventing a new token, since both cases share the same
+    // meaning here: "this document did not fully yield its rows."
+    const { items: fileItems, headingsSeen } = parseUatItemsWithStats(doc.text);
+    items.push(...fileItems);
+    if (headingsSeen > 0) {
+      diagnostics.push({
+        code: INSPECT_DIAGNOSTIC.UAT_UNREADABLE,
+        subject: `${phaseDirName}/${file}`,
+        detail: `UAT document has ${headingsSeen} test block(s) with no parseable result; unresolved is not a complete answer.`,
+      });
+      scope = SCOPE.TRUNCATED;
+    }
   }
   return { items, scope };
 }

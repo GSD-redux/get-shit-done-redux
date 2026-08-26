@@ -23,18 +23,7 @@ All tests are passing, resolved, or diagnosed with fix plans.
 ```
 Stop here.
 
-If `summary.total_items` is 0 but `summary.parse_gap_files` is greater than 0, this is NOT all-clear — one or more files have test blocks that could not be parsed and may be hiding outstanding work. Filter `results` for entries with `parse_gap: true` and report:
-```
-## Unparsed UAT Files ({parse_gap_files} files)
-
-| Phase | File |
-|-------|------|
-| {phase} | {file_path} |
-...
-
-These files have `### N.` test blocks with no readable `result:` line. Fix the file's structure, then re-run the audit.
-```
-Stop here.
+If `summary.total_items` is 0 but `summary.parse_gap_files` is greater than 0, this is NOT all-clear — one or more files have test blocks that could not be parsed and may be hiding outstanding work. Continue to the `categorize` and `present` steps below; `present` renders the Unparsed section from these `parse_gap: true` entries even though `items` is empty for a mixed project.
 </step>
 
 <step name="categorize">
@@ -58,6 +47,19 @@ For each item in "Testable Now", use Grep/Read to check if the underlying featur
 </step>
 
 <step name="present">
+If `summary.parse_gap_files` is greater than 0, render this section FIRST (before the `## UAT Audit Report` below, or standalone if `total_items` is also 0). Filter `results` for entries with `parse_gap: true`:
+```
+## Unparsed UAT Files ({parse_gap_files} files)
+
+| Phase | File | Unparsed Blocks |
+|-------|------|------------------|
+| {phase} | {file_path} | {unparsed_blocks} |
+...
+
+These files have `### N.` test blocks with no readable `result:` line. Fix the file's structure, then re-run the audit.
+```
+This fires for ANY project with `parse_gap_files > 0`, including a mixed project where other phases also have real outstanding `items` — the two sections are not mutually exclusive. If `total_items` is 0, stop after this section (there is no `## UAT Audit Report` to present). Otherwise continue below.
+
 Present the audit report:
 
 ```

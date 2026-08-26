@@ -1122,6 +1122,33 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     assert.deepStrictEqual(sortedKeys(phase), EXPECTED_PHASE_ROW_KEYS);
   });
 
+  test('uatParseGapNeverClaimsCompleteScopeWithEmptyUnresolved', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    // Security review finding 1 (#3707 second surface): a `### N.` test block
+    // with no `result:` line is a genuine parse gap — the audit-uat side
+    // (`cmdAuditUat`) already flags this file as `parse_gap: true`. Before
+    // the fix, planning-inspect's `buildUatRows` called `parseUatItems`
+    // (which silently drops a gap-only heading from BOTH items and any
+    // scope signal), so this exact file was reported as `uat: { unresolved:
+    // [], scope: 'complete' }` — an affirmative completeness claim over rows
+    // it never actually derived.
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    writeUatDoc(phaseDir, '1', [
+      '### 1. Check something',
+      'expected: it works',
+      '',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.deepStrictEqual(phase.uat.unresolved, []);
+    assert.notStrictEqual(phase.uat.scope, 'complete');
+    assert.strictEqual(phase.uat.scope, 'truncated');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')));
+  });
+
   test('roadmapAcceptanceIsNeverAuthoritativeOnAnyPhaseRow', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));

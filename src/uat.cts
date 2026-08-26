@@ -16,7 +16,7 @@ import io = require('./io.cjs');
 const { output, error } = io;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import markdownSectionizer = require('./markdown-sectionizer.cjs');
-const { collectSection, tokenizeHeadings } = markdownSectionizer;
+const { collectSection, tokenizeHeadings, stripFencedCode } = markdownSectionizer;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import markdownTable = require('./markdown-table.cjs');
 const { splitTableRow, isDelimiterRow } = markdownTable;
@@ -82,6 +82,14 @@ interface UatFileResult {
    * silently vanishing.
    */
   parse_gap?: boolean;
+  /**
+   * Count of `### N.` test blocks in this file that yielded ZERO items
+   * (`headingsSeen` from `parseUatItemsWithStats`) — set alongside `parse_gap`
+   * so a MIXED file (some parseable rows, some not) quantifies how many rows
+   * are unaccounted for instead of the boolean flag alone. Present only when
+   * `parse_gap` is true.
+   */
+  unparsed_blocks?: number;
 }
 
 interface CurrentTest {
@@ -169,8 +177,26 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
       const content = fs.readFileSync(uatFilePath, 'utf-8');
       const { items, headingsSeen } = parseUatItemsWithStats(content);
       const status = (extractFrontmatter(content, uatFilePath).status as string || 'unknown');
-      if (items.length > 0) {
-        results.push({
+      // `parse_gap` means the file contained `### N.` test blocks that
+      // yielded no items — NOT merely "zero items and not complete" (#3707
+      // MAJOR: that broader signal false-positived on an all-pass file and on
+      // a Gaps-only file with everything resolved). A file whose blocks all
+      // passed, or that has no test blocks at all, never sets `headingsSeen`,
+      // so it never sets the flag regardless of status. The `status !==
+      // 'complete'` guard is kept alongside `headingsSeen` (rather than
+      // replacing it) so a file explicitly marked terminal stays unflagged
+      // even if a stray unparseable block remains in it.
+      //
+      // This check is deliberately UNCONDITIONAL on `items.length` (#3707
+      // follow-up BLOCKER): a MIXED file — some parseable rows plus some
+      // unparseable blocks — must report BOTH the real items AND the parse
+      // gap, quantified via `unparsed_blocks`. The previous `else if` only
+      // ever flagged a file with ZERO items, silently discarding
+      // `headingsSeen` (and every unparseable row it counted) the instant any
+      // single item existed anywhere in the file, including via the Gaps
+      // union.
+      if (items.length > 0 || headingsSeen > 0) {
+        const entry: UatFileResult = {
           phase: phaseNum,
           phase_dir: dir,
           file,
@@ -179,28 +205,12 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
           status,
           archived_milestone: milestone,
           items,
-        });
-      } else if (headingsSeen > 0 && status !== 'complete') {
-        // `parse_gap` means the file contained `### N.` test blocks that
-        // yielded no items — NOT merely "zero items and not complete"
-        // (#3707 MAJOR: that broader signal false-positived on an all-pass
-        // file and on a Gaps-only file with everything resolved). A file
-        // whose blocks all passed, or that has no test blocks at all, never
-        // sets `headingsSeen`, so it never lands here regardless of status.
-        // The `status !== 'complete'` guard is kept alongside `headingsSeen`
-        // (rather than replacing it) so a file explicitly marked terminal
-        // stays omitted even if a stray unparseable block remains in it.
-        results.push({
-          phase: phaseNum,
-          phase_dir: dir,
-          file,
-          file_path: toPosixPath(path.relative(cwd, path.join(phaseDir, file))),
-          type: 'uat',
-          status,
-          archived_milestone: milestone,
-          items: [],
-          parse_gap: true,
-        });
+        };
+        if (headingsSeen > 0 && status !== 'complete') {
+          entry.parse_gap = true;
+          entry.unparsed_blocks = headingsSeen;
+        }
+        results.push(entry);
       }
     }
 
@@ -274,6 +284,12 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
   };
 
   for (const r of results) {
+    // Deliberate (#3707 follow-up MINOR): this seeds a `by_phase` key at 0
+    // even for a parse-gap-only phase whose `items` is empty — do NOT "tidy"
+    // this away as dead code. The 0-valued key is itself the cue that this
+    // phase was scanned and produced no COUNTABLE items, distinguishing it
+    // from a phase absent from `by_phase` entirely (never scanned / no UAT
+    // file at all). A phase with a real outstanding item overwrites it below.
     if (!summary.by_phase[r.phase]) summary.by_phase[r.phase] = 0;
     for (const item of r.items) {
       summary.by_phase[r.phase]++;
@@ -609,22 +625,6 @@ function buildCheckpoint(currentTest: { number: number; name: string; expected: 
  */
 const UAT_PASS_RESULTS = new Set(['pass', 'passed']);
 
-/**
- * Extract a fallback `reason` from the text trailing the `result:` token
- * itself (#3707 blocker 1 follow-up), e.g. `result: pending (blocked on
- * staging)` or `result: blocked - waiting`. Only used when the block has no
- * dedicated `reason:` line, so this never overrides or invents a second
- * value for an already-present field.
- */
-function extractTrailingReason(trailing: string): string | undefined {
-  let t = trailing.trim();
-  if (!t) return undefined;
-  t = t.replace(/^[#\-:]+\s*/, '').trim();
-  const parenMatch = t.match(/^\(([^)]*)\)$/);
-  if (parenMatch) t = parenMatch[1].trim();
-  return t || undefined;
-}
-
 function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number } {
   const items: UatItem[] = [];
   let headingsSeen = 0;
@@ -637,15 +637,37 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // `reason:`/`blocked_by:` scans below bleed a Gaps entry's fields onto the
   // last test row.
   const allHeadings = tokenizeHeadings(content);
-  const subHeadings = allHeadings.filter(
-    (h) => h.level === 3 && /^\d+\.\s+/.test(h.text),
-  );
+  // #3707 follow-up MINOR: `^\d+\.` alone — a trailing name is OPTIONAL
+  // (`### 3.` and `### 3.Foo`, without the space the old `\s+`-anchored
+  // pattern required, both count) so a heading missing or squishing its name
+  // still contributes to `headingsSeen`/items rather than being silently
+  // excluded from BOTH — the same vanishing-row symptom the parse-gap flag
+  // exists to catch, reachable here at the heading-filter layer instead.
+  // Carry each match's own index into `allHeadings` from the filter pass
+  // itself (security review finding 3) rather than re-deriving it via
+  // `allHeadings.indexOf(current)` inside the loop below — the latter is an
+  // O(n) scan per heading, making the whole loop O(n^2) in document size.
+  const subHeadings: { heading: (typeof allHeadings)[number]; index: number }[] = [];
+  allHeadings.forEach((h, index) => {
+    if (h.level === 3 && /^\d+\./.test(h.text)) subHeadings.push({ heading: h, index });
+  });
 
   for (let i = 0; i < subHeadings.length; i += 1) {
-    const current = subHeadings[i];
-    const currentIdx = allHeadings.indexOf(current);
+    const { heading: current, index: currentIdx } = subHeadings[i];
     const next = allHeadings[currentIdx + 1];
     const block = next ? content.slice(current.offset, next.offset) : content.slice(current.offset);
+    // Fence-stripped copy for the `result:`/`reason:`/`blocked_by:` field
+    // scans below (#3707 follow-up MAJOR/regression): `block` is raw slice
+    // text, and a fenced code sample inside a test block (a legitimate way to
+    // document expected output) can contain a line that LOOKS like a field
+    // declaration (e.g. an example ` ```\nresult: pending\n``` `). Scanning
+    // raw text reads that sample's `result:` as the test's real outcome —
+    // origin/next returned null here, so an unstripped scan is a regression,
+    // not a pre-existing behavior to preserve. `parseExpectedFromTestBlock`
+    // below still receives the RAW `block`, not this stripped copy: an
+    // `expected: |` block-scalar value may legitimately reproduce
+    // fenced-looking text verbatim, and stripping it would corrupt that field.
+    const fenceStrippedBlock = stripFencedCode(block).text;
 
     // A block with no `result:` line at all is not a test row (e.g. still
     // being drafted) — no item, no false positive. It IS, however, a heading
@@ -655,14 +677,23 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // trailing comment/clause after the token (`result: pending (blocked on
     // staging)`, `result: [skipped] # no device`, `result: blocked -
     // waiting`) must still match and surface the row instead of being
-    // silently dropped.
-    const resultLineMatch = block.match(/^result:\s*\[?(\w+)\]?(.*)$/im);
+    // silently dropped. The trailing text itself is matched-and-ignored
+    // (#3707 follow-up MINOR): it is NOT synthesized into `reason` — a real
+    // `reason:` line is the only source for that field (see below) — because
+    // doing so previously changed `categorizeItem`'s classification for
+    // shapes origin/next categorized differently (an unpinned behavior
+    // change, not something the blocker required).
+    const resultLineMatch = fenceStrippedBlock.match(/^result:\s*\[?(\w+)\]?.*$/im);
     if (!resultLineMatch) {
       headingsSeen += 1;
       continue;
     }
-    const result = resultLineMatch[1];
-    const trailingText = resultLineMatch[2];
+    // Security review finding 2: store the token lower-cased so the published
+    // `result` field agrees with `category` (which categorizeItem already
+    // lower-cases internally, below). No consumer needs the original casing —
+    // `uat-predicate.cts` runs its own independent parser and already
+    // lower-cases too — so the raw-cased form is kept nowhere.
+    const result = resultLineMatch[1].toLowerCase();
 
     // #3707 defect 1: invert the old DROP-list filter to a PASS set — see
     // UAT_PASS_RESULTS's doc comment for why this direction was chosen.
@@ -671,17 +702,22 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // case (missing `result:` line, above) is a genuine parse gap.
     if (UAT_PASS_RESULTS.has(result.toLowerCase())) continue;
 
-    const headingParts = current.text.match(/^(\d+)\.\s+(.+)$/)!;
+    // #3707 follow-up MINOR: the heading filter above now admits `### 3.`
+    // (no name at all) and `### 3.Foo` (no space before the name), so this
+    // extraction is loosened in lockstep — a bare number with no trailing
+    // name falls back to the heading's own trimmed text (`3.`) rather than
+    // crashing the non-null assertion the old name-mandatory pattern used.
+    const headingParts = current.text.match(/^(\d+)\.\s*(.*)$/)!;
     const testNumber = parseInt(headingParts[1], 10);
-    const testName = headingParts[2].trim();
+    const testName = headingParts[2].trim() || current.text.trim();
 
     // Reuse the existing block-scalar/inline `expected:` grammar rather than
     // re-deriving a second one (#3707 defect 2).
     const expected = parseExpectedFromTestBlock(block);
 
-    const reasonMatch = block.match(/reason:\s*(.+)/);
-    const blockedByMatch = block.match(/blocked_by:\s*(.+)/);
-    const reason = reasonMatch?.[1]?.trim() || extractTrailingReason(trailingText);
+    const reasonMatch = fenceStrippedBlock.match(/reason:\s*(.+)/);
+    const blockedByMatch = fenceStrippedBlock.match(/blocked_by:\s*(.+)/);
+    const reason = reasonMatch?.[1]?.trim();
 
     const item: UatItem = {
       test: testNumber,

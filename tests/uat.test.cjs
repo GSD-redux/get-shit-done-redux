@@ -2803,3 +2803,336 @@ updated: 2025-01-01T00:00:00Z
     assert.strictEqual(output.summary.parse_gap_files, 1);
   });
 });
+
+describe("#3707 follow-up BLOCKER: a MIXED file must not drop its unparseable rows", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  // The old `else if (items.length > 0)` branch discarded `headingsSeen`
+  // entirely the instant ANY item existed anywhere in the file — a file with
+  // one parseable row plus two unparseable blocks reported total_items: 1,
+  // parse_gap_files: 0, parse_gap: undefined, silently losing the two
+  // outstanding rows with zero trace.
+  test("a mixed file reports the real item AND parse_gap true AND unparsed_blocks 2", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Real Row
+expected: x
+result: pending
+
+### 2. Missing Result
+expected: y
+notes: none
+
+### 3. Missing Result Too
+expected: z
+notes: none
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.items.length, 1);
+    assert.strictEqual(entry.items[0].name, "Real Row");
+    assert.strictEqual(entry.parse_gap, true);
+    assert.strictEqual(entry.unparsed_blocks, 2);
+    assert.strictEqual(output.summary.parse_gap_files, 1);
+  });
+
+  // Same hole reachable via the Gaps union: all `### N.` test blocks are
+  // unparseable but the file also has one open `## Gaps` entry, so
+  // `items.length` is 1 via the Gaps path alone — the old guard's
+  // `items.length > 0` check never distinguished the SOURCE of the items,
+  // so the flag never set even though two test blocks are still unaccounted
+  // for.
+  test("all test blocks unparseable plus one open Gaps entry also flags parse_gap", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Missing Result
+expected: y
+notes: none
+
+### 2. Missing Result Too
+expected: z
+notes: none
+
+## Gaps
+
+- truth: "something open"
+  status: open
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.items[0].name, "something open");
+    assert.strictEqual(entry.parse_gap, true);
+    assert.strictEqual(entry.unparsed_blocks, 2);
+    assert.strictEqual(output.summary.parse_gap_files, 1);
+  });
+});
+
+describe("#3707 follow-up MAJOR: a result: inside a fenced code block must not be read as real", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  // `block` was raw slice text and only HEADINGS were fence-stripped, so a
+  // fenced code sample's own `result: pending` line was read as the test's
+  // real outcome, hiding a genuinely PASSING test behind an outstanding row
+  // sourced from an example. origin/next returned null here (a regression).
+  test("a fenced result: pending followed by a real result: pass is NOT surfaced", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Fenced Then Real
+expected: x
+\`\`\`
+result: pending
+\`\`\`
+result: pass
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 0);
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.strictEqual(entry, undefined, `expected no results entry at all, got ${JSON.stringify(entry)}`);
+  });
+
+  // A fenced-only `result:` with no real one must fabricate no item AND
+  // still count as an unparsed block (headingsSeen), not silently vanish.
+  test("a fenced-only result: with no real result: yields no item and counts as an unparsed block", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Fenced Only
+expected: x
+\`\`\`
+result: pending
+\`\`\`
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 0);
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.items.length, 0);
+    assert.strictEqual(entry.parse_gap, true);
+    assert.strictEqual(entry.unparsed_blocks, 1);
+  });
+});
+
+describe("#3707 follow-up MINOR: headings without a name are still surfaced", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  // `^\d+\.\s+` excluded `### 3.` (no name at all) — the heading contributed
+  // neither an item nor headingsSeen, so a file made only of these vanished
+  // entirely with no trace, the original symptom still reachable.
+  test("a file of nameless `### N.` headings with real result: lines is surfaced", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 3.
+expected: x
+result: pending
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    assert.strictEqual(output.results[0].items[0].test, 3);
+  });
+
+  // Same exclusion for `### 3.Foo` (no space between the number and name).
+  test("a file of no-space `### N.Name` headings with real result: lines is surfaced", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 3.Foo
+expected: x
+result: pending
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    assert.strictEqual(output.results[0].items[0].test, 3);
+    assert.strictEqual(output.results[0].items[0].name, "Foo");
+  });
+});
+
+describe("#3707 follow-up MINOR: trailing-text-to-reason synthesis is removed", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  // `extractTrailingReason` stripped only `#-:`, so `result: [skipped] # no
+  // device` yielded reason ", needs device"-shaped text and categorized as
+  // device_needed on the regressed commit, where origin/next gave
+  // skipped_unresolved. The row must still be surfaced (that's what the
+  // blocker required) but with NO synthesized reason, restoring the
+  // origin/next categorization.
+  test("result: [skipped] # no device is surfaced, has no reason, and categorizes as skipped_unresolved", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Bracket Comment
+expected: x
+result: [skipped] # no device
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1);
+    const item = output.results[0].items[0];
+    assert.strictEqual(item.result, "skipped");
+    assert.strictEqual(item.reason, undefined);
+    assert.strictEqual(item.category, "skipped_unresolved");
+  });
+});
+
+describe("#3707 follow-up: unparsed_blocks and by_phase 0-valued keys", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  // A parse-gap-only phase (zero real items) still gains a `by_phase` key
+  // with value 0 — deliberate (see the doc comment at the accumulation
+  // site): it distinguishes "scanned, nothing countable" from "never
+  // scanned at all".
+  test("a parse-gap-only phase gains a by_phase key with value 0", () => {
+    writeUat(`${FRONTMATTER}## Tests\n\n### 1. Undrafted\nexpected: something\nnotes: result not yet recorded\n`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 0);
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(output.summary.by_phase, "01"),
+      `expected phase '01' in by_phase, got ${JSON.stringify(output.summary.by_phase)}`,
+    );
+    assert.strictEqual(output.summary.by_phase["01"], 0);
+  });
+});
