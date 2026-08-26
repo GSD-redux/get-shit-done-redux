@@ -7088,6 +7088,59 @@ describe('ADR-3408 §8.5 Matrix (#3471): stale-but-present, and the report resid
       assert.deepStrictEqual(wrongPolicy, [], `FRONTMATTER_KEY_TO_BODY_LABEL row(s) whose FIELD_CLASSIFICATION policy is not preserve-when-unchanged: ${JSON.stringify(wrongPolicy)}`);
     });
   });
+
+  // ─── #3873 pin: last_activity's TWO-TABLE disagreement, resolved by what SHIPS ──
+  // `FRONTMATTER_BODY_SOURCE` (state-transition.cts) carries a `last_activity`
+  // row; `FRONTMATTER_KEY_TO_BODY_LABEL` (state.cts, above) does not. ADR-3473
+  // §8.8 / issue #3873 Phase 3 collapses both tables into one schema and must
+  // declare a single answer for `last_activity` rather than picking whichever
+  // table looks tidier. This test pins the OBSERVED behavior that ships
+  // today, so the consolidation cannot silently change it.
+  //
+  // Observed: `last_activity`'s `FIELD_CLASSIFICATION` policy is
+  // `{ source: 'body', preservation: 'derive' }` — NOT `preserve-when-unchanged`.
+  // `bodyLabelFor` (state.cts) is only ever invoked, inside
+  // `reconcileReportedFields`'s `divergedFields` loop, for fields whose
+  // classification IS `preserve-when-unchanged` (every other field is
+  // `continue`d past before `bodyLabelFor` is reached). Because
+  // `last_activity` is `derive`, `bodyLabelFor('last_activity')` is
+  // unreachable in production today: the field never surfaces a Title-Case
+  // body label through that path, regardless of `FRONTMATTER_KEY_TO_BODY_LABEL`
+  // lacking a row for it. Meanwhile `FRONTMATTER_BODY_SOURCE['last_activity']`
+  // IS populated and IS live — it drives body-value reads for the frontmatter
+  // key (`getFrontmatterBodySource`, `frontmatterKeyForBodyField`). The two
+  // tables' disagreement is real, but only one of them is reachable for this
+  // key today; a consolidated schema resolves `last_activity` as "has a body
+  // SOURCE, has no reportable body LABEL" — matching what ships, not the
+  // tidier "it should have a label too" answer.
+  describe('#3873: last_activity label resolution matches shipped behavior', () => {
+    test('lastActivityLabelResolutionMatchesShippedBehavior', () => {
+      const cls = stateTransitionMod.getFieldClassification('last_activity');
+      assert.deepStrictEqual(
+        cls,
+        { source: 'body', preservation: 'derive' },
+        'last_activity must remain classified as derive (never preserve-when-unchanged) — ' +
+          'this is what makes bodyLabelFor unreachable for it today',
+      );
+
+      const bodySource = stateTransitionMod.getFrontmatterBodySource('last_activity');
+      assert.deepStrictEqual(
+        bodySource,
+        ['Last Activity', 'Last activity'],
+        'FRONTMATTER_BODY_SOURCE must still carry a body source for last_activity',
+      );
+
+      const hasBodyLabel = Object.prototype.hasOwnProperty.call(stateLib._FRONTMATTER_KEY_TO_BODY_LABEL, 'last_activity');
+      assert.strictEqual(
+        hasBodyLabel,
+        false,
+        'FRONTMATTER_KEY_TO_BODY_LABEL must NOT carry a last_activity row — the schema resolves ' +
+          'the two-table disagreement by declaring "no reportable body label", matching today\'s ' +
+          'shipped behavior (unreachable via bodyLabelFor because the field is derive, not ' +
+          'preserve-when-unchanged), not by inventing one because FRONTMATTER_BODY_SOURCE has an entry',
+      );
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
