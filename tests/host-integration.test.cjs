@@ -1854,6 +1854,341 @@ describe('#2584 orchestratorExec — validator', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #3714 — codex-worktree model pin.
+//
+// `resolveOrchestratorExec` currently takes NO `model` argument at all, so
+// codex's argv never carries `--model` regardless of any configured
+// model_overrides. THESE TESTS ARE FAILING-FIRST against today's code — do
+// not "fix" resolveOrchestratorExec or gsd-tools.cjs to make them pass here;
+// that is a separate change. See issue #3714.
+//
+// THE FIX THIS PINS (not yet implemented):
+//   1. Descriptor gains an optional `modelFlag` (string|null). codex ->
+//      "--model"; every other shipped runtime leaves it absent/null.
+//   2. resolveOrchestratorExec(orchestratorExec, cwd, prompt, model) gains an
+//      optional 4th positional `model`, appending [modelFlag, model] ONLY
+//      when modelFlag is a non-empty string AND model is a non-empty string.
+//      Argv order: baseArgs -> modelFlag,model -> cwdFlag,cwd -> prompt. The
+//      prompt remains the final positional token. Fails closed with
+//      'unsafe_leading_dash_model' exactly like the existing
+//      unsafe_leading_dash_prompt / unsafe_leading_dash_cwd guards.
+//   3. Policy (which model, if any, to pass) lives at the CALLER
+//      (bin/gsd-tools.cjs), via:
+//        resolveAgentModelOverride('gsd-executor', readGsdEffectiveModelOverrides(cwd), null)
+//      then dropping the 'inherit' sentinel. Passing null as the runtime
+//      resolver is what makes "no tier routing" structural (ADR-2313) — the
+//      seam itself decides no policy.
+// ---------------------------------------------------------------------------
+
+describe('#3714 resolveOrchestratorExec — modelFlag/model seam (mechanical, RED pre-fix)', () => {
+  const CWD = '/repo/.claude/worktrees/agent-a1';
+  const PROMPT = 'Execute plan 2 of phase 3.';
+  const CODEX_MODEL_DESCRIPTOR = { command: 'codex', args: ['exec'], cwdFlag: '--cd', modelFlag: '--model' };
+  const EXPECTED_ARGS_WITH_MODEL = ['exec', '--model', 'gpt-5.6-terra', '--cd', CWD, PROMPT];
+  const EXPECTED_ARGS_NO_MODEL = ['exec', '--cd', CWD, PROMPT];
+
+  // MATRIX row 1 [FAIL]: explicit pin -> full argv identity, not includes().
+  // Today's resolver ignores the 4th `model` argument entirely, so this
+  // produces ["exec","--cd",CWD,PROMPT] — no "--model" anywhere — and the
+  // deepEqual below is RED.
+  test('row 1: explicit model pin -> full argv is [baseArgs..., --model, <model>, cwdFlag, cwd, prompt]', () => {
+    const result = resolveOrchestratorExec(CODEX_MODEL_DESCRIPTOR, CWD, PROMPT, 'gpt-5.6-terra');
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, EXPECTED_ARGS_WITH_MODEL,
+      'today\'s resolver has no model parameter — it silently drops "gpt-5.6-terra" and emits no --model at all');
+  });
+
+  // MATRIX row 6 [FAIL]: prompt is still the LAST element of args once a
+  // model is emitted. Pinned via the same full-array identity check as row 1
+  // (a narrower args[len-1]===prompt check alone would pass today by
+  // coincidence, since nothing is ever inserted after the prompt either way).
+  test('row 6: when a model IS emitted, the prompt remains the LAST element of args', () => {
+    const result = resolveOrchestratorExec(CODEX_MODEL_DESCRIPTOR, CWD, PROMPT, 'gpt-5.6-terra');
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, EXPECTED_ARGS_WITH_MODEL);
+    assert.equal(result.args[result.args.length - 1], PROMPT);
+  });
+
+  // Boundary: modelFlag absent / null / "" -> no --model ever appears,
+  // regardless of a valid model value. All three CONTROL (pass today, by
+  // coincidence of today's total absence of model support — but this is also
+  // the documented post-fix contract, so these stay green after the fix).
+  test('modelFlag absent, model provided -> no --model on the wire', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: ['exec'], cwdFlag: '--cd' }, CWD, PROMPT, 'gpt-5.6-terra');
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, EXPECTED_ARGS_NO_MODEL);
+  });
+
+  test('modelFlag null, model provided -> no --model on the wire', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'codex', args: ['exec'], cwdFlag: '--cd', modelFlag: null }, CWD, PROMPT, 'gpt-5.6-terra',
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, EXPECTED_ARGS_NO_MODEL);
+  });
+
+  test('modelFlag "" (empty string), model provided -> no --model on the wire', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'codex', args: ['exec'], cwdFlag: '--cd', modelFlag: '' }, CWD, PROMPT, 'gpt-5.6-terra',
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, EXPECTED_ARGS_NO_MODEL);
+  });
+
+  // Boundary: model absent / null / "" -> no --model ever appears, regardless
+  // of a valid modelFlag. All three CONTROL.
+  test('modelFlag present, model absent -> no --model on the wire', () => {
+    const result = resolveOrchestratorExec(CODEX_MODEL_DESCRIPTOR, CWD, PROMPT);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, EXPECTED_ARGS_NO_MODEL);
+  });
+
+  test('modelFlag present, model null -> no --model on the wire', () => {
+    const result = resolveOrchestratorExec(CODEX_MODEL_DESCRIPTOR, CWD, PROMPT, null);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, EXPECTED_ARGS_NO_MODEL);
+  });
+
+  test('modelFlag present, model "" (empty string) -> no --model on the wire', () => {
+    const result = resolveOrchestratorExec(CODEX_MODEL_DESCRIPTOR, CWD, PROMPT, '');
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, EXPECTED_ARGS_NO_MODEL);
+  });
+
+  // New fail-closed guard, mirroring unsafe_leading_dash_prompt/_cwd. RED
+  // today: the resolver has no model-validation branch at all, so a
+  // dash-leading model is simply ignored (ok:true) rather than rejected.
+  test('a dash-leading model is rejected: unsafe_leading_dash_model', () => {
+    for (const hostile of ['--dangerously-skip-permissions', '-p', '--help']) {
+      const result = resolveOrchestratorExec(CODEX_MODEL_DESCRIPTOR, CWD, PROMPT, hostile);
+      assert.equal(result.ok, false, `model=${hostile} must be rejected`);
+      assert.equal(result.reason, 'unsafe_leading_dash_model');
+    }
+  });
+
+  test('a model merely CONTAINING a dash is fine — only a leading dash is a flag', () => {
+    const result = resolveOrchestratorExec(CODEX_MODEL_DESCRIPTOR, CWD, PROMPT, 'gpt-5.6-terra');
+    assert.equal(result.ok, true);
+    assert.ok(result.args.includes('gpt-5.6-terra'));
+  });
+
+  // Every existing fail-closed guard must still fire, unaffected by a valid
+  // model argument riding alongside. CONTROL — these guards run before any
+  // model logic regardless of whether the model param exists yet.
+  test('existing fail-closed guards still fire with a model present', () => {
+    assert.equal(resolveOrchestratorExec(undefined, CWD, PROMPT, 'm').reason, 'missing_command');
+    assert.equal(resolveOrchestratorExec({}, CWD, PROMPT, 'm').reason, 'missing_command');
+    assert.equal(resolveOrchestratorExec({ command: 'codex' }, '', PROMPT, 'm').reason, 'invalid_cwd');
+    assert.equal(resolveOrchestratorExec({ command: 'codex', args: 'exec' }, CWD, PROMPT, 'm').reason, 'invalid_args');
+    assert.equal(resolveOrchestratorExec({ command: 'codex' }, CWD, '', 'm').reason, 'invalid_prompt');
+    assert.equal(
+      resolveOrchestratorExec({ command: 'codex', cwdFlag: '--cd' }, '-oProxyCommand=x', PROMPT, 'm').reason,
+      'unsafe_leading_dash_cwd',
+    );
+    assert.equal(
+      resolveOrchestratorExec({ command: 'codex', cwdFlag: '--cd' }, CWD, '-p', 'm').reason,
+      'unsafe_leading_dash_prompt',
+    );
+  });
+
+  // MATRIX row 7 [CONTROL]: a host with no modelFlag is byte-identical to
+  // today whether or not a model is passed — kimi-code/opencode never get a
+  // 5th positional token nor a flag pair injected.
+  test('row 7 CONTROL: a host descriptor with NO modelFlag key resolves identically whether or not a model is passed', () => {
+    const descriptor = { command: 'kimi', args: ['--print'], cwdFlag: '--work-dir', promptFlag: '--prompt' };
+    const withoutModelArg = resolveOrchestratorExec(descriptor, CWD, PROMPT);
+    const withModelArg = resolveOrchestratorExec(descriptor, CWD, PROMPT, 'some-model');
+    assert.deepEqual(withModelArg, withoutModelArg,
+      'a descriptor with no modelFlag must resolve identically whether or not a model is passed');
+    assert.deepEqual(withoutModelArg.args, ['--print', '--work-dir', CWD, '--prompt', PROMPT]);
+  });
+
+  test('property: for any descriptor and any model input, when a prompt is supplied it is always args[args.length-1] (seed=3714)', () => {
+    const commandArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0);
+    const argsArb = fc.array(fc.string());
+    const cwdArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0 && !s.startsWith('-'));
+    const flagArb = fc.oneof(
+      fc.constant(undefined), fc.constant(null), fc.constant(''),
+      fc.string({ minLength: 1 }).filter((s) => s.length > 0 && !s.startsWith('-')),
+    );
+    const modelArb = fc.oneof(
+      fc.constant(undefined), fc.constant(null), fc.constant(''),
+      fc.string({ minLength: 1 }).filter((s) => s.length > 0 && !s.startsWith('-')),
+    );
+    const promptArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0 && !s.startsWith('-'));
+
+    fc.assert(
+      fc.property(commandArb, argsArb, cwdArb, flagArb, modelArb, promptArb,
+        (command, args, cwd, modelFlag, model, prompt) => {
+          fc.pre(!args.includes(cwd) && !args.includes(prompt));
+          const descriptor = modelFlag === undefined ? { command, args } : { command, args, modelFlag };
+          const result = resolveOrchestratorExec(descriptor, cwd, prompt, model);
+          assert.equal(result.ok, true);
+          assert.equal(result.args[result.args.length - 1], prompt);
+        }),
+      { numRuns: 200, seed: 3714 },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3714 — end-to-end policy: the caller (bin/gsd-tools.cjs) decides WHETHER
+// to pass a model at all, via
+//   resolveAgentModelOverride('gsd-executor', readGsdEffectiveModelOverrides(cwd), null)
+// then dropping the 'inherit' sentinel. Every row below is a MEASURED FACT
+// (verified by direct execution against this repo's current code) about what
+// that function returns for a given .planning/config.json shape — these
+// describe the POLICY the fix must implement, not a currently-wired
+// behavior: `query dispatch-isolation` never emits --model today for ANY
+// config shape, so only the "explicit pin" rows are RED; the rest coincide
+// with today's (absent) behavior and are CONTROLS.
+// ---------------------------------------------------------------------------
+describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix on explicit-pin rows)', () => {
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+  const { createTempProject, cleanup } = require('./helpers.cjs');
+  const GSD_TOOLS = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  function writeConfig(projectDir, config) {
+    fs.writeFileSync(
+      path.join(projectDir, '.planning', 'config.json'),
+      JSON.stringify(config),
+    );
+  }
+
+  function queryCodexJson(projectDir, extraEnv = {}) {
+    const r = runNode(
+      [GSD_TOOLS, 'query', 'dispatch-isolation', '--json', '--cwd-target', '/tmp/wt', '--prompt', 'do the thing'],
+      { cwd: projectDir, env: { ...process.env, GSD_RUNTIME: 'codex', ...extraEnv }, timeoutMs: PROBE_TIMEOUT_MS },
+    );
+    throwIfFailed(r, 'gsd-tools query dispatch-isolation --json (codex, model policy)');
+    return JSON.parse(r.stdout);
+  }
+
+  function hasModelFlag(execArgs) {
+    return execArgs.includes('--model');
+  }
+
+  // MATRIX row 1 [FAIL] (CLI-level counterpart of the unit-level row 1
+  // above): an explicit gsd-executor override must reach argv as --model.
+  test('row 1: explicit model_overrides["gsd-executor"] -> exec.args contains ["--model","gpt-5.6-terra"] at the correct position', () => {
+    const dir = createTempProject('gsd-3714-row1-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': 'gpt-5.6-terra' } });
+      const result = queryCodexJson(dir);
+      assert.equal(result.isolation, 'orchestrator-worktree');
+      assert.deepEqual(result.exec.args, ['exec', '--model', 'gpt-5.6-terra', '--cd', '/tmp/wt', 'do the thing'],
+        'today gsd-tools.cjs never wires a model into orchestratorExec — exec.args is ["exec","--cd","/tmp/wt","do the thing"], no --model at all');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // MATRIX row 2 [CONTROL]: no override configured -> no --model, and in
+  // particular the resolve-model tier value ("sonnet") must NEVER leak onto
+  // codex's argv (that is the #2310/#2311 400 ADR-2313 exists to prevent).
+  test('row 2 CONTROL: no override -> exec.args contains NO --model and no "sonnet" anywhere', () => {
+    const dir = createTempProject('gsd-3714-row2-');
+    try {
+      writeConfig(dir, {});
+      const result = queryCodexJson(dir);
+      assert.equal(result.isolation, 'orchestrator-worktree');
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+      assert.ok(!result.exec.args.join(' ').includes('sonnet'));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // MATRIX row 3 [CONTROL]: the 'inherit' sentinel must never reach argv.
+  test('row 3 CONTROL: model_overrides["gsd-executor"] === "inherit" -> no --model (sentinel never on the wire)', () => {
+    const dir = createTempProject('gsd-3714-row3-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': 'inherit' } });
+      const result = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+      assert.ok(!result.exec.args.join(' ').includes('inherit'));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // MATRIX row 4 [CONTROL]: an empty-string override resolves to null, same as no override.
+  test('row 4 CONTROL: model_overrides["gsd-executor"] === "" -> no --model', () => {
+    const dir = createTempProject('gsd-3714-row4-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': '' } });
+      const result = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // MATRIX row 5 [CONTROL]: a model_profile alone (no per-agent override) must
+  // NOT route through the tier table onto codex's argv — ADR-2313 forbids
+  // tier routing to codex entirely; passing `null` as the runtimeResolver
+  // (per the fix design) is what makes this structural rather than incidental.
+  test('row 5 CONTROL: model_profile:"balanced" only (no per-agent override) -> no --model (tier routing forbidden, ADR-2313)', () => {
+    const dir = createTempProject('gsd-3714-row5-');
+    try {
+      writeConfig(dir, { runtime: 'codex', model_profile: 'balanced' });
+      const result = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+      assert.ok(!result.exec.args.join(' ').includes('sonnet'));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // MATRIX row 8 [FAIL]: the dispatch predicate (what gsd-tools.cjs's caller
+  // decides to pass) must agree, on every config shape below, with what the
+  // shared resolveAgentModelOverride('gsd-executor', overrides, null)
+  // function returns (dropping only the 'inherit' sentinel). Fails today
+  // because the explicit-pin shape's predicate says "emit --model" while the
+  // unwired CLI never does.
+  test('row 8: dispatch predicate agrees with resolveAgentModelOverride(..., null) on every config shape', () => {
+    const installModelOverrideResolver = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
+    const shapes = [
+      { name: 'explicit pin', config: { model_overrides: { 'gsd-executor': 'gpt-5.6-terra' } } },
+      { name: 'no override', config: {} },
+      { name: 'override "inherit"', config: { model_overrides: { 'gsd-executor': 'inherit' } } },
+      { name: 'override ""', config: { model_overrides: { 'gsd-executor': '' } } },
+      { name: 'model_profile only', config: { runtime: 'codex', model_profile: 'balanced' } },
+    ];
+    for (const shape of shapes) {
+      const dir = createTempProject('gsd-3714-row8-');
+      try {
+        writeConfig(dir, shape.config);
+        // The predicate the fix's caller must implement: explicit override,
+        // no runtime-tier resolver (null), with 'inherit' dropped.
+        const overrides = installModelOverrideResolver.readGsdEffectiveModelOverrides(dir);
+        const resolved = installModelOverrideResolver.resolveAgentModelOverride('gsd-executor', overrides, null);
+        const expectedModel = (resolved && resolved !== 'inherit') ? resolved : null;
+        const expectedHasModel = expectedModel !== null;
+
+        const result = queryCodexJson(dir);
+        const actualHasModel = hasModelFlag(result.exec.args);
+
+        assert.equal(actualHasModel, expectedHasModel,
+          `shape="${shape.name}": predicate says emit-model=${expectedHasModel} but actual argv ` +
+          `${expectedHasModel ? 'never carries' : 'unexpectedly carries'} --model (args=${JSON.stringify(result.exec.args)})`);
+        if (expectedHasModel) {
+          assert.deepEqual(result.exec.args, ['exec', '--model', expectedModel, '--cd', '/tmp/wt', 'do the thing']);
+        }
+      } finally {
+        cleanup(dir);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #2627 Phase 3 — the `dispatch-isolation` CLI route.
 //
 // Behavioral: each case SPAWNS the real gsd-tools CLI and asserts on its actual
