@@ -111,14 +111,28 @@ function pathExistsInternal(cwd: string, targetPath: string): boolean {
   }
 }
 
-function generateSlugInternal(text: string | null | undefined): string | null {
+/**
+ * #3883 (ADR-3473 §8.3 remediation): `maxLen` lets a caller state its own
+ * truncation contract instead of being forced into this function's
+ * historical 60-char cap. Some call sites truncated at 60 before the #3883
+ * consolidation (commands.cts:cmdGenerateSlug) and some never truncated at
+ * all (phase-id.cts toDir/getPhaseDirFromPhaseId, the init.cts/phase-locator
+ * phase_slug sites, workstream-name-policy.cts toWorkstreamSlug) — collapsing
+ * every caller onto a single hard-coded 60 introduced two identity
+ * collisions (distinct >60-char names/phase-slugs truncating to the same
+ * value) that did not exist pre-migration. `maxLen: 60` remains the default
+ * so untouched callers keep prior behavior; pass `null` for no truncation.
+ */
+function generateSlugInternal(text: string | null | undefined, maxLen: number | null = 60): string | null {
   if (!text) return null;
   // #2849: strip leading/trailing hyphens AFTER truncation, not only before.
   // .substring(0, 60) can land on a separator, re-introducing a trailing hyphen
   // the strip step exists to prevent. Truncation cannot add a leading hyphen, so
   // running the full ^-+|-+$ pass last is equivalent for leading hyphens and
   // fixes the trailing-hyphen-after-truncation case.
-  return transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-').substring(0, 60).replace(/^-+|-+$/g, '');
+  const collapsed = transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-');
+  const truncated = maxLen === null ? collapsed : collapsed.substring(0, maxLen);
+  return truncated.replace(/^-+|-+$/g, '');
 }
 
 // ─── Transliteration (#2848) ─────────────────────────────────────────────────

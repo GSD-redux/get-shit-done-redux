@@ -176,7 +176,10 @@ function guardedGetRoadmapPhase(
 function slugifyPhaseName(phaseName: string | null): string | null {
   // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
   // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
-  return phaseName ? coreUtils.generateSlugInternal(phaseName) : null;
+  // `maxLen: null` preserves this site's pre-migration untruncated contract —
+  // the 60-char default would collapse two distinct >60-char phase names onto
+  // the same reported phase_slug.
+  return phaseName ? coreUtils.generateSlugInternal(phaseName, null) : null;
 }
 
 /**
@@ -1932,8 +1935,10 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
         phase_number: roadmapPhase['phase_number'],
         phase_name: phaseName,
         // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
-        // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
-        phase_slug: phaseName ? coreUtils.generateSlugInternal(phaseName) : null,
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing
+        // it. `maxLen: null` preserves this site's pre-migration untruncated
+        // contract.
+        phase_slug: phaseName ? coreUtils.generateSlugInternal(phaseName, null) : null,
         plans: [],
         summaries: [],
         incomplete_plans: [],
@@ -1954,8 +1959,10 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
         phase_number: roadmapPhase['phase_number'],
         phase_name: phaseName,
         // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
-        // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
-        phase_slug: phaseName ? coreUtils.generateSlugInternal(phaseName) : null,
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing
+        // it. `maxLen: null` preserves this site's pre-migration untruncated
+        // contract.
+        phase_slug: phaseName ? coreUtils.generateSlugInternal(phaseName, null) : null,
         plans: [],
         summaries: [],
         incomplete_plans: [],
@@ -3107,8 +3114,10 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
       const phaseInfo: Record<string, unknown> = {
         number: num,
         // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
-        // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
-        name: coreUtils.generateSlugInternal(name) ?? '',
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing
+        // it. `maxLen: null` preserves this site's pre-migration untruncated
+        // contract.
+        name: coreUtils.generateSlugInternal(name, null) ?? '',
         directory: null,
         status,
         plan_count: 0,

@@ -7,7 +7,11 @@
  * Used by active-workstream-store.cjs, planning-workspace.cjs, workstream.cjs.
  *
  * #3883 (ADR-3473 §8.3): toWorkstreamSlug delegates to core-utils.cjs's
- * generateSlugInternal (the canonical slug formula). core-utils.cjs already
+ * generateSlugInternal (the canonical slug formula), passing `maxLen: null`
+ * to preserve this site's pre-migration untruncated contract — the 60-char
+ * default collided distinct >60-char workstream names onto the same slug
+ * (verified: `"a".repeat(60)+"alpha"` and `"a".repeat(60)+"beta"` truncated
+ * identically). core-utils.cjs already
  * requires (transitively, at module-init time) THIS module:
  * core-utils.cjs -> planning-workspace.cjs -> active-workstream-store.cjs ->
  * workstream-name-policy.cjs. A top-level require of core-utils.cjs here
@@ -93,7 +97,7 @@ export function toWorkstreamSlug(name: string | null | undefined): string {
   // 60-char truncation). Lazy require to break the core-utils.cjs cycle
   // (see the module dependency doc comment above).
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
-  return (require('./core-utils.cjs').generateSlugInternal(String(name ?? '')) as string | null) ?? '';
+  return (require('./core-utils.cjs').generateSlugInternal(String(name ?? ''), null) as string | null) ?? '';
 }
 
 /**

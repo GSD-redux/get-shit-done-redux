@@ -842,6 +842,16 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     ['boundary-over', 'a'.repeat(60) + ' b'],
   ];
 
+  // #3883 regression corpus: inputs well past the OLD hard-coded 60-char cap,
+  // for sites whose pre-migration contract never truncated (cap === null).
+  // Proves the untruncated tail actually survives, not merely that the
+  // truncation boundary is handled.
+  const LONG_UNCAPPED_CORPUS = [
+    ['long-ascii-70', 'a'.repeat(70)],
+    ['long-ascii-100-with-separators', `${'word-'.repeat(20)}tail`],
+    ['long-ascii-90-mixed-case', 'The Quick Brown Fox Jumps Over The Lazy Dog Many Many Many Times In A Row'],
+  ];
+
   function runInitJson(argv, tmpDir) {
     const result = runGsdTools(['init', ...argv], tmpDir, { HOME: tmpDir });
     assert.ok(result.success, `init ${argv.join(' ')} failed: ${result.error}`);
@@ -861,12 +871,22 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     return json.phase_slug === null ? '' : json.phase_slug;
   }
 
-  // Each site: { name, truncates, call(text) => observed slug value }.
-  // `call` drives the site exactly the way production reaches it.
+  // Each site: { name, cap, call(text) => observed slug value }. `cap` is the
+  // site's OWN pre-#3883-migration truncation contract (60, or null for
+  // "never truncated") — the value it must now be compared against, not a
+  // single global 60. #3883-remediation (this file, security-review finding):
+  // the original A3/A4 harness compared every migrated site to
+  // generateSlugInternal(text) with the DEFAULT 60 cap baked in, which could
+  // only ever prove "truncates like the default" — it structurally could not
+  // catch the two sites (phase-id.cts toDir, workstream-name-policy.cts
+  // toWorkstreamSlug) that the migration silently truncated for the first
+  // time, because a false-positive "matches the canonical" was the only
+  // possible outcome once BOTH sides shared the same hard-coded 60. `call`
+  // drives the site exactly the way production reaches it.
   const SITES = [
     {
       name: 'commands.cts:209 cmdGenerateSlug (CLI generate-slug)',
-      truncates: true,
+      cap: 60,
       call(text) {
         const r = runGsdTools(['generate-slug', text], process.cwd(), { HOME: os.tmpdir() });
         assert.ok(r.success, `generate-slug failed for ${JSON.stringify(text)}: ${r.error}`);
@@ -875,7 +895,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     },
     {
       name: 'init.cts:176 slugifyPhaseName (CLI init execute-phase, ROADMAP-only phase)',
-      truncates: true,
+      cap: null,
       call(text) {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-ep-'));
         try {
@@ -892,7 +912,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     },
     {
       name: 'init.cts:1957 cmdInitPhaseOp !phaseInfo fallback (CLI init phase-op, no directory)',
-      truncates: true,
+      cap: null,
       call(text) {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-po-fb-'));
         try {
@@ -909,7 +929,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     },
     {
       name: 'init.cts:1935 cmdInitPhaseOp archived branch (CLI init phase-op, archived dir + current ROADMAP)',
-      truncates: true,
+      cap: null,
       call(text) {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-po-ar-'));
         try {
@@ -928,7 +948,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     },
     {
       name: 'init.cts:3109 cmdInitProgress unstarted ROADMAP phase (CLI init progress)',
-      truncates: true,
+      cap: null,
       call(text) {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-prog-'));
         try {
@@ -945,7 +965,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     },
     {
       name: 'phase-id.cts:229 getPhaseDirFromPhaseId (direct require, exported)',
-      truncates: true,
+      cap: null,
       call(text) {
         // The rendered dir is `<milestone>-<sub>-<slug>`; strip the fixed
         // numeric prefix this call always emits to isolate the slug component.
@@ -955,7 +975,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     },
     {
       name: 'phase-id.cts:380 toDir safeSlug guard (direct require, exported)',
-      truncates: true,
+      cap: null,
       call(text) {
         try {
           const dir = phaseId.toDir({ project: 'GSD', milestone: '01', phase: '01' }, text);
@@ -977,7 +997,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
           // demands real agreement everywhere the canonical succeeds, and
           // only tolerates the throw where the canonical's answer is itself
           // "".
-          const canonical = coreUtils.generateSlugInternal(text);
+          const canonical = coreUtils.generateSlugInternal(text, null);
           if (canonical === '' || canonical === null) return canonical ?? '';
           return `__THREW__:${e.message}`;
         }
@@ -985,7 +1005,7 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     },
     {
       name: 'phase-locator.cts:269 findPhaseInternal phase_slug (direct require, exported)',
-      truncates: true,
+      cap: null,
       call(text) {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3883-pl-'));
         try {
@@ -1000,7 +1020,10 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
     },
     {
       name: 'workstream-name-policy.cts:75 toWorkstreamSlug (direct require, exported)',
-      truncates: false, // undeclared gap — no A4 entry, so A3 must catch it (see BOUNDARY_CORPUS below)
+      // #3883 regression (fixed): this site never truncated pre-migration.
+      // generateSlugInternal's `maxLen` parameter now lets it opt out of the
+      // 60-char default instead of colliding distinct >60-char names.
+      cap: null,
       call(text) {
         return workstreamNamePolicy.toWorkstreamSlug(text);
       },
@@ -1084,10 +1107,10 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
           });
         }
 
-        if (site.truncates) {
+        if (site.cap !== null) {
           for (const [label, text] of BOUNDARY_CORPUS) {
-            test(`boundary:${label} agrees with generateSlugInternal`, () => {
-              const canonical = coreUtils.generateSlugInternal(text);
+            test(`boundary:${label} agrees with generateSlugInternal(text, ${site.cap})`, () => {
+              const canonical = coreUtils.generateSlugInternal(text, site.cap);
               const observed = site.call(text);
               assert.strictEqual(
                 observed,
@@ -1096,9 +1119,57 @@ describe('#3883 one-impl-per-rule: slug re-implementation divergence', () => {
               );
             });
           }
+        } else {
+          // #3883 regression coverage: a site whose pre-migration contract
+          // never truncated must still never truncate post-migration — prove
+          // it on inputs well past the OLD hard-coded 60-char cap, not just
+          // at the boundary. This is the exact axis the original harness
+          // could not see (it always compared against a 60-capped canonical).
+          for (const [label, text] of LONG_UNCAPPED_CORPUS) {
+            test(`long:${label} agrees with generateSlugInternal(text, null) and is not truncated to 60`, () => {
+              const canonical = coreUtils.generateSlugInternal(text, null);
+              const observed = site.call(text);
+              assert.strictEqual(
+                observed,
+                canonical,
+                `site "${site.name}" on long input ${JSON.stringify(text)}: expected untruncated canonical ${JSON.stringify(canonical)}, got ${JSON.stringify(observed)}`,
+              );
+            });
+          }
         }
       });
     }
+
+    // #3883 collision regression: the two concrete collisions the security
+    // review proved by execution (workstream-name-policy.cts toWorkstreamSlug,
+    // phase-id.cts toDir) — driven through the REAL surfaces, not the
+    // canonical directly, and asserted RED against 01cc283da / GREEN after
+    // generateSlugInternal gained the maxLen parameter and these sites opted
+    // out of the 60-char default.
+    describe('A5 uncappedSitesDoNotCollideOnLongInputs (#3883 collision regression)', () => {
+      const COLLISION_PAIRS = [
+        [`${'a'.repeat(60)}alpha`, `${'a'.repeat(60)}beta`],
+        [
+          'migrate the legacy billing subsystem onto the new distributed queue system today',
+          'migrate the legacy billing subsystem onto the new distributed queue system tomorrow',
+        ],
+      ];
+      for (const site of SITES.filter((s) => s.cap === null)) {
+        describe(site.name, () => {
+          for (const [textA, textB] of COLLISION_PAIRS) {
+            test(`"${textA.slice(0, 20)}..." vs "${textB.slice(0, 20)}..." produce distinct slugs`, () => {
+              const slugA = site.call(textA);
+              const slugB = site.call(textB);
+              assert.notEqual(
+                slugA,
+                slugB,
+                `site "${site.name}": distinct >60-char inputs collided on slug ${JSON.stringify(slugA)}`,
+              );
+            });
+          }
+        });
+      }
+    });
 
     // gsd2-import.cts:97 slugify — compared on the general corpus (must still
     // transliterate correctly) but NOT the boundary corpus (declared, A4).

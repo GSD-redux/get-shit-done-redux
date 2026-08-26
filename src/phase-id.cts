@@ -239,10 +239,13 @@ function getPhaseDirFromPhaseId(phaseId: unknown, phaseName: string | null | und
   const sub = subParts.join('-');
   // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
   // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
+  // `maxLen: null` preserves this site's pre-migration untruncated contract —
+  // the 60-char default would silently shadow one on-disk phase dir's
+  // reported phase_slug behind another distinct >60-char phase name's.
   // Lazy require to break the core-utils.cjs <-> phase-id.cjs cycle (see the
   // module dependency doc comment above).
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
-  const slug = phaseName ? ((require('./core-utils.cjs').generateSlugInternal(phaseName) as string | null) ?? '') : '';
+  const slug = phaseName ? ((require('./core-utils.cjs').generateSlugInternal(phaseName, null) as string | null) ?? '') : '';
   const parts = [milestone, sub, slug].filter(Boolean);
   const base = parts.join('-');
   return projectCode ? `${projectCode}-${base}` : base;
@@ -400,10 +403,13 @@ function toDir(id: PhaseId, slug: string): string {
   // name, and toDir protects the parsePhaseId dir↔identity bijection
   // (see the toDir docstring above) by refusing to emit an unusable name,
   // where every other site silently accepts "" or a re-truncated value.
+  // `maxLen: null` preserves toDir's pre-migration untruncated contract — the
+  // 60-char default let two distinct >60-char phase names collapse onto the
+  // identical directory name, one silently shadowing the other on disk.
   // Lazy require to break the core-utils.cjs <-> phase-id.cjs cycle (see the
   // module dependency doc comment above).
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
-  const safeSlug = (require('./core-utils.cjs').generateSlugInternal(slug) as string | null) ?? '';
+  const safeSlug = (require('./core-utils.cjs').generateSlugInternal(slug, null) as string | null) ?? '';
   // A slug that sanitizes to nothing (e.g. '!!!') would otherwise emit a
   // dangling trailing hyphen.
   if (!safeSlug) {
