@@ -1,4 +1,4 @@
-# ADR-3889: The process-exit contract — one outcome vocabulary, one projection, two terminators
+# ADR-3889: One exit-code registry — 0 and 1 are free, everything else is allocated
 
 | | |
 |---|---|
@@ -6,385 +6,292 @@
 | **Date** | 2026-08-26 |
 | **Issue** | [#3889](https://github.com/open-gsd/gsd-core/issues/3889) |
 | **Supersedes** | — |
-| **Amends** | [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md) (payload-carried error is a degraded result) — provides the compatibility boundary ADR-2980's "Revisit if" clause names |
+| **Amends** | [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md) — supplies the compatibility boundary its "Revisit if" clause names |
 | **Constrained by** | [ADR-2966](2966-loop-qa-walk.md) §5–§7, [ADR-2008](2008-command-exit-zero-gate.md), [ADR-1411](1411-resolution-provenance.md), [ADR-3473](3473-enforcement-by-construction.md) §B4 |
+
+> **Evidence note.** Every count here is an **AST census** (`@typescript-eslint/parser`, `CallExpression`
+> where `callee.object.name === 'process' && callee.property.name === 'exit'`), not a grep. A grep of
+> `process\.exit` over-counts by roughly 2×: it matches comment prose (the hooks discuss
+> `catch { process.exit(0) }` in their own comments) **and** it matches `process.exitCode`, which is
+> the *correct* pattern. Behavioral claims below were executed, each with a control.
 
 ## Context
 
-An exit code is the only thing every caller of this product can read. Shell workflows branch on
-`$?`. `gsd_run` branches on `$?`. CI steps branch on `$?`. The Claude Code hook harness reads
-nothing else. Capability gates declared under `check.predicate` with `kind: "command-exit-zero"`
-read nothing else *by definition* ([ADR-2008](2008-command-exit-zero-gate.md)).
+### What is actually true (measured, not inferred)
 
-That channel currently carries **one bit**, and the bit is computed independently at every call
-site from whatever local boolean happened to be in scope. There is no type, no projection, and no
-owner.
+**128 real `process.exit()` call sites** (143 raw, less 15 `gsd-core/bin/lib/*.cjs` sites that are
+tsc output of the `src/*.cts` originals). They are not evenly spread:
 
-### The measured population
+| Surface | Sites | Shape |
+|---|--:|---|
+| `hooks/**` | **91** | 83 × `exit(0)`, 8 × `exit(2)` |
+| `bin/install.js` | 18 | generated installer |
+| `src/**/*.cts` | 15 | mixed, incl. 4 ternaries |
+| `bin/` other | 2 | |
+| `scripts/**` | **1** | |
+| `gsd-core/bin/gsd-tools.cjs` | 1 | |
 
-Counted at `next` on 2026-08-26 across `src/`, `bin/`, `scripts/`, `hooks/`, `gsd-core/`,
-`capabilities/`, `pi/`:
+Against that, **`process.exitCode` is assigned 88 times** — `src` 25, `scripts` 39, `gsd-core` 24,
+`hooks` **0**.
 
-| Terminator | Count |
-|---|--:|
-| `process.exit(0)` | 199 |
-| `process.exit(1)` | 50 |
-| `process.exit(2)` | 27 |
-| **Total JS/TS terminators** | **276** |
+Two conclusions follow, and both contradict the obvious framing:
 
-Shell surfaces add `exit 2` ×17, `exit 0` ×16, `exit 1` ×10, `exit 127` ×1.
+1. **This repo already has an exit seam and already adopted it.** `src/cli-exit.cts`'s `runMain` +
+   `ExitError` is the owner. `scripts/` runs **39 `exitCode` assignments to 1 `process.exit`** — that
+   surface is done. The migration is not missing; it is *incomplete*, and it stopped at `hooks/`.
+2. **71% of the remaining problem is one directory.** `hooks/` has zero `exitCode` usage, and for a
+   sound reason recorded at `eslint.config.mjs:563-582`: a hook's stdin-timeout guard fires from a
+   `setTimeout` where `process.exitCode = N; return;` terminates nothing. The seam has no adapter for
+   the one surface whose entire contract *is* the exit code.
 
-Four distinct idioms reach the process boundary, and none of them owns it:
+### The real defect: codes are invented locally, so the same number means four things
 
-| Idiom | Where | Exit code | Information carried |
-|---|---|--:|---|
-| `error(message, reason)` | `src/io.cts` → `gsd-core/bin/lib/io.cjs:244` | always **1** | 25-value `ERROR_REASON` enum — **discarded at the boundary** |
-| `output(payload)` | `src/io.cts` | always **0** | everything, but only to a caller that parses stdout |
-| `ExitError(code, msg)` / `runMain` | `src/cli-exit.cts` | caller's choice | the only place a code is *chosen* |
-| bare `process.exit(N)` | 276 sites | ad hoc | none |
+`src/ui-safety-gate.cts:137` states its contract in a comment:
 
-### Conflation 1 — "did not run" is spelled the same as "ran and passed"
-
-The three security scanners are the clearest instance, because their subject matter makes the cost
-unambiguous:
-
-```sh
-# scripts/secret-scan.sh:238-239 — collect_files, --diff mode
-git diff --name-only --diff-filter=ACMR "$base"...HEAD 2>/dev/null \
-  | grep -vE '\.(png|jpg|…)$' || true
+```
+// Exit 0 = UI found, 1 = no UI, 2 = startup error.
 ```
 
-`2>/dev/null` discards the diagnostic and `|| true` discards the status. A bad base ref, a shallow
-clone with no merge-base, a detached HEAD, or a non-repo cwd all produce an empty list that is
-byte-identical to a genuinely empty diff. Twelve lines later:
+`0` and `1` are exactly right — pass and fail are universal. The third code is the problem: it was
+**invented at the module**, and four other things in this repo also invented `2`:
 
-```sh
-# scripts/secret-scan.sh:330-333
-if [[ -z "$files" ]]; then
-  echo "secret-scan: no files to scan"
-  exit 0
-fi
-```
-
-**A secret scan that could not run reports clean.** The same three lines appear at
-`scripts/base64-scan.sh:323-326` and `scripts/prompt-injection-scan.sh:252-255`.
-
-Wire that to a capability gate — the sanctioned integration path — and the failure becomes a
-verdict. `evaluateCommandExitZero` (`src/gate-predicate-evaluator.cts:134-140`) is total and correct
-on its own terms:
-
-```ts
-if (res.exitCode === 0) {
-  return { block: false, message: 'command exited 0', … };
-}
-```
-
-The evaluator is not wrong. It is reading a one-bit channel that cannot express what it needs to
-know. A scanner that examined zero files hands it a `0`, and it truthfully reports `block: false`.
-
-The same shape appears in the check router, where the skip is stated in the payload and erased in
-the exit code:
-
-```js
-// gsd-core/bin/lib/check-command-router.cjs:292
-output({ passed: true, skipped: true, reason: 'CONTEXT.md missing',
-         total: 0, covered: 0, uncovered: [],
-         message: 'No CONTEXT.md - nothing to check.' }, raw, undefined);
-```
-
-`passed: true` for a gate that never evaluated anything, delivered with exit 0. Three sites
-(`:279`, `:292`, `:321`) share it.
-
-### Conflation 2 — a crash is spelled the same as an allow
-
-Across the 19 source files in `hooks/`, `process.exit(0)` appears **94** times against **8**
-`process.exit(2)`; only 6 of the 19 hooks contain any `exit(2)` at all. The dominant shape is an
-outer fail-open catch:
-
-```js
-// hooks/gsd-read-guard.js:195-197 (the same block appears in 8 sibling hooks)
-} catch {
-  process.exit(0);
-}
-```
-
-The hooks are candid about it — `hooks/gsd-read-guard.js:74` and `:87` and their siblings carry the
-comment *"`catch { process.exit(0) }`: the same crash-to-allow this fix closes"*. Three shell hooks
-(`gsd-phase-boundary.sh`, `gsd-session-state.sh`, `gsd-validate-commit.sh`) additionally run with no
-`set -e` at all, so an unhandled failure mid-script falls through to whatever the last command
-returned. [#3838](https://github.com/open-gsd/gsd-core/issues/3838) is the filed instance:
-*gsd-validate-commit silently allows every command when node or the built scanner is unavailable.*
-
-Fail-open is a defensible **policy** for some hooks — a guard that bricks a session on a transient
-read error is worse than one that waves it through. What is not defensible is that the policy is
-**unstated, unreviewable, and indistinguishable from success**. Nothing downstream can tell an
-allow from a collapse, so nothing downstream can count collapses, alert on them, or fail a CI job
-that experienced 40 of them.
-
-### Conflation 3 — every failure reason collapses to `1`
-
-`ERROR_REASON` (`gsd-core/bin/lib/io.cjs:174-209`) is a curated 25-value enum:
-`CONFIG_KEY_NOT_FOUND`, `CONFIG_PARSE_FAILED`, `PHASE_NOT_FOUND`,
-`WORKSTREAM_MODE_MARKER_UNRESOLVED`, `COMMIT_DOCS_GUARD_NOT_A_REPO`, `SECURITY_SCAN_FAILED`,
-`USAGE`, … Its docstring says the enum exists *"so tests can assert against typed values instead of
-grepping stderr."* Then:
-
-```js
-// gsd-core/bin/lib/io.cjs:236-245
-function error(message, reason = ERROR_REASON.UNKNOWN, extra) {
-    if (_jsonErrorMode) { … } else { writeAllSync(2, 'Error: ' + message + '\n'); }
-    process.exit(1);
-}
-```
-
-25 distinguishable conditions, one integer. The distinction survives only for a caller that opts
-into `--json-errors` **and** parses stderr. Every shell caller — which is every workflow — sees `1`.
-A caller cannot distinguish "your flag was misspelled" from "this repository is unreadable", and so
-cannot retry the one and abort the other.
-
-### Why the existing guards do not see any of this
-
-The repo's answer to defect classes is a detector: 22 local ESLint rules and ~45 lint/drift scripts.
-For this class, the detector is `n/no-process-exit` — and it is registered nowhere that matters.
-
-1. **Hooks: explicitly off.** `eslint.config.mjs:582` sets `'n/no-process-exit': 'off'` for
-   `hooks/**`, with a 20-line justification. The justification is *correct*: a hook's stdin-timeout
-   guard fires from a `setTimeout` where nothing else terminates the process, so
-   `process.exitCode = N; return;` is a behavior change, not a refactor. But the comment's own
-   opening sentence — *"A hook is a standalone process whose ENTIRE contract is its exit code"* —
-   is the argument **for** a typed exit seam, not against one. The surface where the exit code is
-   the whole contract is the surface with zero enforcement over it.
-2. **`src/**/*.cts`: never registered.** The `src` block (`eslint.config.mjs:348-404`) registers the
-   `local` plugin only. `n` is not among its plugins and `n/no-process-exit` is not among its rules.
-3. **`gsd-core/bin/lib/*.cjs`: globally ignored.** The rule *is* set to `'error'` on
-   `gsd-core/bin/**/*.cjs` (`:478`) — but `gsd-core/bin/lib/io.cjs` is item 239 in the global
-   `ignores` list as tsc output.
-
-Net: the single most-executed exit site in the product, `error()`'s `process.exit(1)`, is invisible
-to the rule that exists to govern it, from both directions at once. This is the same trap
-[ADR-3473](3473-enforcement-by-construction.md) §B6 documents for `local/no-adhoc-markdown-parsing`
-and `local/no-external-require-in-bin`.
-
-The QA harness *does* see it, and is structurally forbidden from acting.
-`tests/qa/oracles.cjs:574-598` defines the `soft-error-exit-zero` oracle, which fires on exactly
-this shape. Per [ADR-2966](2966-loop-qa-walk.md) §5, `runOracles(ctx).failed` aliases `violations`
-only and never includes `smells`, so the oracle **can never redden a build**. Four instances sit in
-`tests/qa/smell-baseline.json` today, permanently.
-
-### `2` is triple-booked
-
-Three live protocols in this repo assign incompatible meanings to the same integer:
-
-| Protocol | `2` means |
+| Emitter | `2` means |
 |---|---|
 | Claude Code hook harness | **deny** the tool call |
-| `scripts/*-scan.sh` | **usage error** (bad argv) |
-| `gsd-test` (`CONTRIBUTING.md`) | **infra error** (dispatch failed) |
+| `scripts/{secret,base64,prompt-injection}-scan.sh` | **usage error** (bad argv) |
+| `gsd-test` (foreign repo) | **infra error** (dispatch failed) |
+| `ui-safety-gate` / `api-coverage` / `assumption-delta` | **startup error** (stdin read failed) |
 
-A wrapper that shells one into another — which `command-exit-zero` gates are designed to do — cannot
-interpret `2` without knowing which protocol produced it.
+A wrapper that shells one into another — precisely what a `command-exit-zero` gate
+([ADR-2008](2008-command-exit-zero-gate.md)) does — cannot interpret `2` without out-of-band
+knowledge of which program produced it. Four modules independently reinvented the same
+three-outcome convention (`ui-safety-gate`, `api-coverage`, `assumption-delta`, `teams-status`),
+each documenting it only in a comment. **The convention exists; what is missing is an allocator.**
 
-### What this is not
+### The failures this produces, executed with controls
 
-It is **not** [ADR-3473](3473-enforcement-by-construction.md) §B4. That criterion — *"failure is a
-value, not a shape"* — governs the **in-process return contract**: every routine that can fail
-returns the hub's `Result = {ok,data} | {ok:false,kind,…}`. It stops at the function boundary. This
-ADR governs the **process boundary**: what integer a terminating process hands its parent. The two
-compose — §B4 produces the typed value, this ADR projects it — and neither substitutes for the other.
-A perfectly §B4-compliant `Result` still exits 0 today, because nothing translates it.
+**(a) An empty input is reported as an authoritative negative verdict.** These gates' `exit(2)` arm
+is bound to `stdin.on('error')` only. There is no arm for *stdin closed with zero bytes*:
+
+```console
+$ printf 'Build a React component with a button' | node gsd-core/bin/lib/ui-safety-gate.cjs; echo $?
+0                       # control — UI found
+$ printf '' | node gsd-core/bin/lib/ui-safety-gate.cjs; echo $?
+1                       # "no UI" — but nothing was examined
+$ printf '' | node gsd-core/bin/lib/api-coverage.cjs; echo $?
+1                       # "no API integration" — same
+```
+
+An unset `$PHASE_SECTION` makes the UI safety gate assert that the phase has no UI.
+
+**(b) A scan that could not run reports clean.**
+
+```console
+$ bash scripts/secret-scan.sh --diff origin/next;                 echo $?
+secret-scan: scanned 2 files, 0 with findings
+0                       # control
+$ bash scripts/secret-scan.sh --diff refs/heads/does-not-exist;   echo $?
+secret-scan: no files to scan
+0                       # ← could not compute a diff
+$ cd /tmp/not-a-repo && bash …/scripts/secret-scan.sh --diff origin/next; echo $?
+secret-scan: no files to scan
+0                       # ← not a git repository
+```
+
+`collect_files` (`scripts/secret-scan.sh:238-239`) ends `2>/dev/null || true`, which discards the
+diagnostic and the status. Identical three lines at `base64-scan.sh:323-326` and
+`prompt-injection-scan.sh:252-255`.
+
+**(c) A failed probe fabricates a specific negative verdict.** Nine shell sites use
+`… 2>/dev/null || echo '<json>'`. They split into two classes, and **the honest form already exists
+in this repo**:
+
+| Form | Site | Says |
+|---|---|---|
+| honest | `execute-phase/steps/codebase-drift-gate.md:19` | `{"skipped":true,"reason":"sdk-failed"}` |
+| honest | `plan-phase.md:536` | `{"skipped":true}` |
+| **fabricated** | `capabilities/ai-integration/fragments/api-coverage-plan-pre.md:25,114` | `{"detected":false,…}` |
+| **fabricated** | `capabilities/assumption-delta/fragments/plan-pre.md:14` | `{"detected":false,…}` |
+
+The fabricated form does not degrade — it asserts that no API integration exists, and that assertion
+feeds the **blocking** `api-coverage.verify-pre` gate. A phase can ship without its COVERAGE.md
+matrix because the detector failed to launch.
+
+**(d) 25 failure reasons collapse to `1`.** `ERROR_REASON` (`src/io.cts:180-215`) is a curated
+25-value enum whose docstring says it exists *"so tests can assert against typed values instead of
+grepping stderr."* `error()` (`src/io.cts:246-254`) ends `process.exit(1)` unconditionally. Note the
+symmetric fact: `output()` (`src/io.cts:144-168`) **never touches the exit code at all** — it writes
+to fd 1 and returns. The `0` a caller observes is not a decision anyone made; it is the absence of
+one.
+
+### Why the existing guard cannot see it — proven, with a positive control
+
+```console
+# positive control: the rule works
+$ printf "process.exit(0);" > scripts/_probe.cjs && npx eslint --no-cache scripts/_probe.cjs
+  n/no-process-exit fired: 1
+
+$ npx eslint --no-cache src/io.cts             # contains process.exit(1) at :253
+  n/no-process-exit fired: 0
+$ npx eslint --no-cache gsd-core/bin/lib/io.cjs
+  "File ignored because of a matching ignore pattern"
+$ npx eslint --no-cache hooks/gsd-read-guard.js
+  n/no-process-exit fired: 0
+```
+
+Three independent reasons, all live at `next`: `'off'` for `hooks/**` (`eslint.config.mjs:582`);
+never registered on `src/**/*.cts` (that block loads only the `local` plugin); and `'error'` on
+`gsd-core/bin/**/*.cjs` (`:478`) but `gsd-core/bin/lib/io.cjs` is item **239** in the global
+`ignores` list. The most-executed exit site in the product is invisible to its own rule.
 
 ## Decision
 
-**Introduce one `Outcome` vocabulary, one pure projection to an integer, and two terminators that
-share both. Make declaring an outcome mandatory; make the integer a policy that can be versioned.**
+**`0` and `1` are free. Every other exit code is allocated from one registry.**
 
-### 1. The vocabulary — six outcomes
+### 1. The bands
 
-```ts
-const OUTCOME = Object.freeze({
-  PASS:          'pass',           // ran, did the work, verdict affirmative
-  FAIL:          'fail',           // ran, verdict negative — findings, drift, gate red
-  USAGE:         'usage',          // caller error — bad argv, unknown command, missing arg
-  NO_INPUT:      'no_input',       // ran, but ZERO units were in scope. Not a pass.
-  UNAVAILABLE:   'unavailable',    // could NOT run — prerequisite absent, input unreadable
-  INTERNAL:      'internal',       // self-failure — crash, timeout, killed subprocess
-} as const);
-```
+| Range | Rule |
+|---|---|
+| `0` | **Free.** Pass — the operation ran and its verdict is affirmative. |
+| `1` | **Free.** Fail — the operation ran and its verdict is negative. |
+| `2` | **Reserved to the Claude Code hook protocol** (deny). Emittable *only* by the hook adapter. No other GSD code may produce it. |
+| `3`–`13` | **Forbidden.** Node reserves these (3 = internal JS parse error, 5 = fatal error, 9 = invalid argument, 13 = unfinished top-level await). A domain `3` is ambiguous with a Node crash. |
+| `64`–`78` | **Generic entries**, aligned to `sysexits.h` mnemonics where they fit. |
+| `80`–`125` | **Domain entries**, allocated per tool. |
+| `126`, `127`, `128+N` | Shell (not executable / not found) and signals. Not ours. |
 
-`NO_INPUT` and `UNAVAILABLE` are the two that do the work; the other four already exist de facto.
-The split between them is the load-bearing one and it is deliberately uncomfortable to author:
+A tool that only needs pass/fail registers nothing. The moment it needs to say anything **more
+specific** than pass/fail, it takes a number from the registry — because a locally-invented number
+is exactly how `2` came to mean four things.
 
-- `NO_INPUT` — *"I ran, my scope was empty, and I know the scope was genuinely empty."*
-- `UNAVAILABLE` — *"I could not establish my scope."*
+### 2. The registry is the database
 
-Today `secret-scan.sh` cannot tell these apart, because `2>/dev/null || true` destroyed the evidence
-before the branch. Forcing the author to pick one is the point: it makes the missing error handling
-a compile-time-visible gap rather than a silent third state hiding inside `NO_INPUT`.
+One generated source of truth, following the pattern this repo already uses for
+`capability-registry.cjs`, the model catalog, and the ADR index — a declaration per owner, a
+generator, and a `--check` gate in `lint:generated-sync`.
 
-### 2. The projection — `exitCodeFor(outcome)`
+Every entry carries: **code**, **symbolic name**, **meaning**, **owning module**, and the **issue or
+ADR that authorized it**. Two invariants the generator enforces by failing the build:
 
-Pure, total, no I/O, no clock. The only function in the codebase permitted to produce an exit
-integer.
+- **One number, one meaning.** A second declaration of an allocated code is a hard error. This is the
+  invariant whose absence produced the four-way `2`.
+- **One owner.** A code is emitted only by its declaring module. A second emitter is a hard error —
+  that is how a generic code silently acquires a second meaning.
 
-| Outcome | Code | Basis |
-|---|--:|---|
-| `PASS` | `0` | universal |
-| `FAIL` | `1` | universal |
-| `USAGE` | `64` | `EX_USAGE` |
-| `NO_INPUT` | `66` | `EX_NOINPUT` |
-| `UNAVAILABLE` | `69` | `EX_UNAVAILABLE` |
-| `INTERNAL` | `70` | `EX_SOFTWARE` |
+Generic entries seeded from the measured population:
 
-**Why 64–78 and not 3–8.** Node reserves 1–13 for its own fatal conditions (3 = internal JS parse
-error, 5 = fatal error, 9 = invalid argument, 13 = unfinished top-level await) and 128+N for signal
-termination. A domain code in that band is ambiguous with a Node crash. 126/127 belong to the shell
-(not executable / not found). The band 64–78 is the only wide gap left, and BSD `sysexits.h` already
-assigns it mnemonic meanings that match ours almost exactly.
+| Code | Name | Meaning |
+|--:|---|---|
+| `64` | `USAGE` | Caller error — bad argv, unknown subcommand, missing argument |
+| `66` | `NO_INPUT` | Ran; **zero units were in scope**, and that emptiness is known to be genuine |
+| `69` | `UNAVAILABLE` | **Could not run** — prerequisite absent, input unreadable, scope unestablished |
+| `70` | `INTERNAL` | Self-failure — crash, timeout, killed subprocess |
 
-**Stated honestly:** the `sysexits(3)` *interface* is documented by FreeBSD as deprecated and its use
-discouraged. We are not adopting the header, linking the symbols, or claiming conformance — we are
-borrowing a collision-free numeric band and its established mnemonics so that a maintainer reading
-`69` in a CI log has somewhere to look it up. If that band ever collides with something real, the
-projection is one frozen table in one file.
+`NO_INPUT` versus `UNAVAILABLE` is the distinction the failures in (a) and (b) collapse, and it is
+deliberately uncomfortable to author: emitting `NO_INPUT` honestly requires proving the scope was
+established, which means deleting the `2>/dev/null || true` that currently destroys the evidence.
+That cost **is** the missing error handling.
 
-**The fail-safe property, which is what makes this shippable.** Every new code is non-zero. Any
-caller written as `if ! cmd; then` or `cmd && next` behaves *identically* for `PASS`, and for every
-other outcome it now trips where it previously did not. **Adding this vocabulary can turn a false
-green red. It can never turn a red green.** Compare [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md)'s
-declined Option 3, which flipped `0 → 1` across a `CRITICAL` seam with 170 direct callers: the
-objection there was Hyrum's Law over an observable exit-0 behavior. That objection is answered here
-not by argument but by **scope** — see §5.
+**Domain entries are permitted** and are the reason this is a registry rather than an enum. A tool
+with a genuinely tool-specific outcome registers it (`80`+) with an owner and a justification,
+rather than reaching for a generic code that nearly fits. The `80`–`125` band bounds this at 46
+entries; needing more would itself be a finding.
 
-### 3. The seam — two terminators, one interface
+**`sysexits` honestly:** FreeBSD documents the `sysexits(3)` *interface* as deprecated. We adopt
+neither the header nor conformance to it — we borrow a collision-free band and its established
+mnemonics so `69` in a CI log has somewhere to be looked up.
 
-The seam is the process boundary. `src/cli-exit.cts`'s `runMain` already sits exactly on it and is
-the only existing construct shaped correctly. It is deepened, not replaced.
+### 3. Two terminators over one registry
 
-```ts
-// Adapter A — drain-then-exit. For gsd-tools, scripts, generators.
-//   Sets process.exitCode and lets the event loop drain: stdout flushes,
-//   process.on('exit') cleanup fires. This is today's runMain, retyped.
-runMain(main: () => Outcome | Promise<Outcome>): void
+The seam is the process boundary. `src/cli-exit.cts` already sits on it and is deepened, not
+replaced:
 
-// Adapter B — write-then-terminate. For hooks ONLY.
-//   fs.writeSync the payload, then process.exit(code) immediately. Required
-//   because a hook's stdin-timeout guard fires from a setTimeout where nothing
-//   else terminates the process, and because pipe writes are async on Windows
-//   (hooks/gsd-write-guard.js:159-175).
-terminateNow(outcome: Outcome, opts?: { stdout?: string; stderr?: string }): never
-```
+- **`runMain(main)`** — drain-then-exit. Sets `process.exitCode`; stdout flushes and
+  `process.on('exit')` handlers fire. Today's behavior, retyped. Serves `gsd-tools`, `scripts/`,
+  generators — the 88 sites already doing this.
+- **`terminateNow(outcome)`** — write-then-terminate. `fs.writeSync` then immediate `process.exit`.
+  Required for `hooks/`, per the constraint `eslint.config.mjs:563-582` documents correctly and per
+  `hooks/gsd-write-guard.js:159-175` (pipe writes are async on Windows). **This is the only
+  sanctioned `process.exit` call site in the repo, and the only place `2` can be produced.**
 
-Two adapters, one interface, one projection. This is the design constraint
-`eslint.config.mjs:563-582` correctly identified and that a naive "ban `process.exit` everywhere"
-sweep would have broken. **`terminateNow` is the sanctioned `process.exit` call site** — there is
-exactly one, and it is reviewed.
+Both project through the same registry lookup. A parity assertion test is mandatory — two
+terminators with independent projections would re-create this ADR's defect inside its own fix
+(`CONTEXT.md` → generative-fix-divergence).
 
-Hooks additionally get a `HOOK_DECISION` projection, because the Claude Code harness owns that
-protocol and we do not: `ALLOW → 0`, `DENY → 2`, and — the new part — an outcome of `UNAVAILABLE`
-or `INTERNAL` must resolve through a **declared** `onCrash: 'allow' | 'deny'` field rather than
-falling into a bare `catch { exit(0) }`. Fail-open stays legal. Fail-open by accident does not.
+### 4. Declaration is mandatory; the projection is versioned
 
-### 4. Mandatory declaration, versioned projection
+- **Declaring an outcome is mandatory immediately.** Every terminating path names one. Under `v1`
+  the projection reproduces today's integers exactly, so this is a pure refactor.
+- **The integers are policy.** `v1` pins [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md)'s
+  60 ratified `output({error})` sites to exit 0 byte-for-byte. `v2` applies the registry. Selected by
+  `GSD_EXIT_CONTRACT=v2` / `--exit-contract=v2`; default flips at the next major.
 
-Two separately-gated things:
+This is the compatibility boundary ADR-2980's "Revisit if" clause asks for verbatim.
 
-- **The `Outcome` is mandatory, immediately.** Every terminating path returns one. This is a pure
-  refactor with no observable behavior change while the projection is pinned to v1, and it is what
-  makes the codebase *correct* rather than merely *flagged*.
-- **The integer is a policy.** `exitCodeFor` accepts a contract version. `v1` collapses everything
-  except `PASS`/`USAGE` to today's codes (`NO_INPUT`/`UNAVAILABLE` → `0`, preserving ADR-2980's
-  ratified behavior byte-for-byte). `v2` is the table above. Selected by
-  `GSD_EXIT_CONTRACT=v2` / `--exit-contract=v2`, default `v1`, flipped to `v2` by default at the
-  next major.
+**Exception — these flip to `v2` immediately**, because no ADR ratified them and their callers are
+in-repo and enumerable: the three shell scanners, and the four gate modules' empty-input arm.
 
-This is the compatibility boundary [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md)'s
-"Revisit if" clause asks for verbatim: *"A future `gsd-tools` major version provides a compatibility
-boundary that a CLI exit code otherwise lacks."*
+### 5. The fail-safe property
 
-**Exception — the security scanners flip to v2 immediately, ahead of the default.** They have no
-ADR-2980 ratification, their callers are in-repo and enumerable, and "a scan that could not run
-reports clean" is not a compatibility guarantee anyone is entitled to rely on.
-
-### 5. Scope — what this ADR does *not* touch
-
-The 60 `output({error: …})` sites ratified by [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md)
-**keep exit 0 under v1 and are not rewritten by this epic.** Their `Outcome` is declared
-(`NO_INPUT` for absent-artifact, `UNAVAILABLE` for unusable-input) so the information finally
-exists, but the projection is pinned until the major. Reclassifying them is ADR-2980's own
-"Revisit if" work and stays there.
-
-This is the difference between this ADR and ADR-2980's declined Option 3: Option 3 proposed
-flipping the exit code of a `CRITICAL` seam as its *first* act. This proposes building the type
-first, flipping nothing, and letting the flip be a version bump years later if it happens at all.
+Every registered code is non-zero. A caller written `if ! cmd; then` or `cmd && next` behaves
+**identically** for pass and trips for everything else. **This can turn a false green red; it can
+never turn a red green.** That is what makes it shippable across a surface with 170 direct callers,
+and it is the property ADR-2980's declined Option 3 lacked.
 
 ## Consequences
 
 **Good.**
 
-- A scan that could not run is `69`, not `0`. That is the whole point and it is worth the rest of
-  the cost on its own.
-- The exit code becomes a *projection of a typed value* rather than a *display value re-derived per
-  call site* — the same bug class as reusing a rendered string as an identity.
-- `exitCodeFor` is a pure total function over a 6-value enum: exhaustively testable, and a natural
-  `fast-check` bijection property (`CONTEXT.md` → property-based testing rule).
-- `soft-error-exit-zero` and `untyped-success` stop being permanent SMELLs. Under a declared
-  contract they become VIOLATIONs or they become unnecessary — either way the four frozen entries in
-  `tests/qa/smell-baseline.json` leave.
-- Fail-open hook policy becomes **declared and countable**. A CI job can assert that zero guards
-  collapsed during a run, which today is unaskable.
+- One number, one meaning, machine-enforced. The four-way `2` becomes unrepresentable rather than
+  merely documented.
+- Four modules' hand-rolled convention consolidates onto one allocator — a consolidation, not a
+  greenfield concept.
+- A scan that could not run exits `69`, not `0`. A gate handed empty input says so instead of
+  asserting a verdict.
+- `exitCodeFor` is a pure total function over a closed table: exhaustively testable, and a natural
+  `fast-check` bijection property.
+- `soft-error-exit-zero` and `untyped-success` stop being permanent SMELLs, and their four frozen
+  `tests/qa/smell-baseline.json` entries leave.
 
 **Costs, stated plainly.**
 
-1. **This adds a concept.** Six outcome names are six things a contributor must learn, and the
-   `NO_INPUT` / `UNAVAILABLE` distinction genuinely requires thought at each site. The mitigation is
-   that it replaces an *undocumented* concept that contributors are already guessing at — 276 sites'
-   worth — but the learning cost is real and new.
-2. **The `NO_INPUT` / `UNAVAILABLE` split will be got wrong.** Some author will reach for `NO_INPUT`
-   because the error handling to prove it is expensive. That is a lint target, not a design flaw,
-   but it will happen and the guard for it does not exist yet.
-3. **Two adapters is a real seam and must stay one.** If `terminateNow` and `runMain` ever grow
-   independent projections, this becomes two contracts wearing one name — the exact failure this
-   epic exists to fix, re-created inside the fix. A parity assertion test is mandatory
-   (`CONTEXT.md` → generative-fix-divergence rule).
-4. **`hooks/dist/**` doubles every hook edit.** The build seam (`scripts/build-hooks.js`,
-   `npm run lint:hooks-runtime-build-seam`) already governs this, but the hook phases touch 19 files
-   twice.
-5. **Under v1 the epic delivers no observable behavior change** outside the three scanners. Most of
-   the work is type plumbing whose payoff arrives at the major. That is the honest price of not
-   breaking ADR-2980's ratified population, and it should be weighed before approving.
+1. **A registry is a governance surface.** Someone must review allocations, or `80`+ fills with
+   near-duplicates and callers end up looking up codes that all mean "something went wrong". The
+   generic four exist to absorb most cases; if domain allocations outpace them, the grain is wrong.
+2. **The `NO_INPUT` / `UNAVAILABLE` split will be got wrong.** An author will reach for `NO_INPUT`
+   rather than pay for the proof. That is a lint target that does not exist yet, and I do not have a
+   design for one that is not itself a fingerprint-of-the-last-bug detector.
+3. **`hooks/` is 71% of the work** and every hook edit doubles through `hooks/dist/**` via the build
+   seam.
+4. **Retiring `2` from `ui-safety-gate`, `api-coverage`, `assumption-delta`, `teams-status` and the
+   three scanners changes observable behavior** for anything that pattern-matched on `2`.
+5. **Under `v1`, most phases deliver no observable change.** The payoff is at the major. That is the
+   price of not breaking ADR-2980's population.
 
-**Guard ledger** (per [ADR-3473](3473-enforcement-by-construction.md) §B6 — net guard count must
-fall):
-
-- **Retired:** the `soft-error-exit-zero` and `untyped-success` SMELL oracles and their four
-  `smell-baseline.json` entries.
-- **Retired:** `eslint.config.mjs:563-582`'s 20-line `n/no-process-exit: 'off'` exemption block and
-  its prose justification — `terminateNow` satisfies the constraint the comment describes, so the
-  exemption stops being needed.
-- **Added:** one rule, `local/require-typed-exit`, replacing `n/no-process-exit` across all four
-  surfaces with a single allowlisted call site.
-
-Net: **−2 oracles, −1 exemption block, +1 rule.**
+**Guard ledger** (per [ADR-3473](3473-enforcement-by-construction.md) §B6 — net count must fall):
+**retired** the two SMELL oracles and their four baseline entries, the 20-line
+`n/no-process-exit: 'off'` exemption block, and the duplicated `scripts/lib/cli-exit.cjs`;
+**added** one rule (`local/require-registered-exit`) plus the registry's own `--check`. Net **−2**.
 
 ## Revisit if
 
-- A fourth terminator appears that fits neither adapter (a long-running daemon, an MCP server). The
-  projection still applies; the terminator set grows.
-- The 64–78 band collides with a runtime we adopt. The projection is one frozen table.
-- `NO_INPUT` proves undecidable in practice at more than a couple of sites — that would mean the
-  distinction is wrong, not that the sites are lazy, and the vocabulary should shrink to five.
+- Domain allocations exceed roughly a dozen. That means the generic four are wrong, not that the
+  band is too small.
+- A runtime we adopt collides with `64`–`125`. The projection is one generated table.
+- `NO_INPUT` proves undecidable at more than a couple of sites — the distinction would be wrong, not
+  the sites lazy.
 
 ## References
 
-- `src/io.cts` / `gsd-core/bin/lib/io.cjs:174-245` — `ERROR_REASON`, `error()`, `output()`
-- `src/cli-exit.cts` — `ExitError`, `runMain` (the seam being deepened)
-- `scripts/lib/cli-exit.cjs` — the drifted duplicate (Phase 0)
-- `src/gate-predicate-evaluator.cts:101-151` — `evaluateCommandExitZero`
-- `gsd-core/bin/lib/check-command-router.cjs:279,292,321` — `passed:true, skipped:true`
-- `scripts/secret-scan.sh:238-239,330-333`, `scripts/base64-scan.sh:323-326`,
-  `scripts/prompt-injection-scan.sh:252-255`
-- `eslint.config.mjs:239,348-404,478,563-582` — the three-way enforcement gap
+- `src/io.cts:144-168` (`output`, touches no exit code), `:180-215` (`ERROR_REASON`), `:246-254` (`error`)
+- `src/cli-exit.cts` — the seam being deepened; `scripts/lib/cli-exit.cjs` — its drifted duplicate
+- `src/ui-safety-gate.cts:137,149,154` — the convention stated in a comment
+- `src/api-coverage.cts:977,981`, `src/assumption-delta.cts:248,253`, `src/teams-status.cts:88`
+- `scripts/secret-scan.sh:238-239,330-333`; `base64-scan.sh:323-326`; `prompt-injection-scan.sh:252-255`
+- `capabilities/ai-integration/fragments/api-coverage-plan-pre.md:25,114`;
+  `capabilities/assumption-delta/fragments/plan-pre.md:14` — fabricated verdicts
+- `gsd-core/workflows/execute-phase/steps/codebase-drift-gate.md:19` — the honest form, already in-tree
+- `eslint.config.mjs:239,348-404,478,563-582`
 - `tests/qa/oracles.cjs:574-619`, `tests/qa/smell-baseline.json`
-- Node.js docs → *Exit codes* (reserved 1–13; 128+N for signals)
-- `sysexits(3)` — FreeBSD; band borrowed, interface not adopted
+- Node.js docs → *Exit codes* (1–13 reserved; 128+N signals); `sysexits(3)` — band borrowed, interface not adopted
 - [#3838](https://github.com/open-gsd/gsd-core/issues/3838) — the filed hook fail-open instance
