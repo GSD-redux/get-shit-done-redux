@@ -2025,6 +2025,59 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     assert.equal(d.isolation, 'orchestrator-worktree');
     assert.deepEqual(d.exec.args, ['exec', '--cd', '/tmp/wt', 'P']);
   });
+
+  // The passive posture (ADR-2313 D1) is what these guard: no pin means the
+  // session model applies, and a GSD-tier token is not a model this host can
+  // be handed at all.
+  const UNPINNED = ['exec', '--cd', '/tmp/wt', 'P'];
+
+  test('AC2: a blank override is not a pin', (t) => {
+    assert.deepEqual(dispatch(t, { 'gsd-executor': '' }).exec.args, UNPINNED);
+  });
+
+  test('AC3: an explicit "inherit" is not a pin', (t) => {
+    assert.deepEqual(dispatch(t, { 'gsd-executor': 'inherit' }).exec.args, UNPINNED);
+  });
+
+  for (const alias of ['opus', 'sonnet', 'haiku', 'claude-opus-4-8']) {
+    test(`a GSD tier alias or Anthropic-flavored id (${alias}) never reaches the argv`, (t) => {
+      // These pass the config gate as real values, so the dispatch seam is the
+      // only thing standing between them and a literal `--model opus`.
+      assert.deepEqual(dispatch(t, { 'gsd-executor': alias }).exec.args, UNPINNED);
+    });
+  }
+
+  test('a host declaring no model channel is byte-identical with and without --model', () => {
+    const args = (id, extra) => JSON.parse(runNode(
+      [GSD_TOOLS, 'query', 'dispatch-isolation', '--json', '--cwd-target', '/tmp/wt', '--prompt', 'P', ...extra],
+      { cwd: REPO_ROOT, env: { ...ENV, GSD_RUNTIME: id }, timeoutMs: PROBE_TIMEOUT_MS },
+    ).stdout).exec.args;
+
+    for (const id of ['opencode', 'kimi', 'kimi-code']) {
+      assert.deepEqual(
+        args(id, ['--model', 'gpt-5.6-terra']),
+        args(id, []),
+        `${id} declares no modelFlag and must resolve identically`,
+      );
+    }
+  });
+
+  test('the workflow still reads the override and forwards it', () => {
+    // Nothing in the route reads config — the gate and the forward live only
+    // in the workflow step, so without this every other case here stays green
+    // while real dispatch silently stops passing a pin.
+    const step = readFileNormalized(path.join(
+      REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase', 'steps', 'executor-isolation-dispatch.md',
+    ));
+    assert.ok(
+      step.includes('config-get model_overrides.gsd-executor'),
+      'the workflow must gate on the raw override before resolving',
+    );
+    assert.ok(
+      step.includes('--model "$EXECUTOR_MODEL"'),
+      'the workflow must forward the resolved model to dispatch-isolation',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
