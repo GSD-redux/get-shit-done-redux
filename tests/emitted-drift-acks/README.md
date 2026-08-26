@@ -21,11 +21,24 @@ survives the sweep that empties it.
    unattributable **hash** ripple is keyed on the emitted path
    (`skills/gsd-add-tests/SKILL.md`); **growth** is keyed on the bare filename as
    it appears under `gsd-core/workflows/` or `agents/` (`explore.md`).
-3. **Delete the fragment once it has merged (#3078).** Every entry is scoped to
-   the diff that introduced it, so the moment it lands on `next` its prose is
+3. **The fragment is deleted once it has merged (#3078).** Every entry is scoped
+   to the diff that introduced it, so the moment it lands on `next` its prose is
    already at the base — it is spent and can no longer clear anything, while
    still owning its path keys. The `guard-no-ack-on-next` job reds `next` and
-   prints the exact `git rm`. Run it.
+   prints the exact `git rm` for every fully-spent fragment.
+
+   You no longer have to run that `git rm` yourself (#3875). The
+   `ack-fragment-sweep` workflow runs every six hours, asks the guard for its own
+   sweep list (`--sweep-plan`), and opens a PR deleting exactly what the guard
+   named. Deleting the fragment in a follow-up PR by hand still works and is
+   still welcome — it is simply no longer the only thing standing between a
+   merged fragment and a red `next`.
+
+   The sweep is automated because the manual remedy could not keep up. The guard
+   evaluates at MERGE time; a hand-authored `git rm` is fixed at BRANCH time, so
+   any ack-carrying PR that merges in between invalidates it. #3823 lost exactly
+   that race to #3809 on its own merge commit and left `next` red for 24
+   consecutive pushes.
 
 ## Why the sweep exists
 

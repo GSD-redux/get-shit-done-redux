@@ -91,6 +91,7 @@ const {
   MAX_PR_FILES,
   GITHUB_MAX_PR_FILES,
   runGuardNext,
+  main,
 } = require('../scripts/lint-emitted-drift-ack.cjs');
 const {
   ACK_VERSION,
@@ -4715,6 +4716,325 @@ describe('#3842: runGuardNext wires --defer-to-open-prs end to end against a rea
       });
       assert.ok(!result.ok, 'a.json is untouched by any open PR, so it must still be reported as sweepable');
       assert.ok(result.lines.some((l) => l.includes('git rm') && l.includes('a.json')));
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+});
+
+// ── #3875: the sweep set as DATA, and the --sweep-plan work-list mode ───────
+//
+// `next` sat red for 24 consecutive pushes (2026-08-24 → 2026-08-26) on two
+// all-spent fragments nobody swept. The guard computed the right answer every
+// time; what was missing was a way for anything except a human reading CI prose
+// to ACT on it. #3823 shipped the guard already-failing for the same reason: its
+// own sweep was a static list of deletions fixed at branch time, and #3809's
+// fragment merged while it was in flight, so the guard reds on its own merge
+// commit. A sweeper has to read the set the guard actually reasoned about — not
+// re-derive it, and not scrape it back out of the message text.
+
+describe('#3875: runGuardNext surfaces the sweepable set as data', () => {
+  test('sweepable names the spent fragment the prose names', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+      const c2 = repo.commit('add fragment');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+      repo.commit('unrelated change');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c2],
+        cwd: repo.dir,
+      });
+      assert.ok(!result.ok, 'the fully-spent fragment must fail the guard');
+      assert.deepEqual(result.sweepable, ['a.json']);
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('a fragment held by the #3842 open-PR deferral never appears in sweepable', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('a.json', { version: ACK_VERSION, paths: { 'x.md': { reason: 'why' } } });
+      const c2 = repo.commit('add fragment');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+      repo.commit('unrelated change');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c2, '--defer-to-open-prs'],
+        cwd: repo.dir,
+        fetchOpenPrPaths: () => new Set([`${ACK_DIR_REPO_PATH}/a.json`]),
+      });
+      assert.ok(result.ok, 'a held fragment must not fail the guard');
+      assert.deepEqual(
+        result.sweepable, [],
+        'a sweeper acting on this list must never delete a fragment the hold was protecting',
+      );
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('a clean tree yields an empty sweepable set', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'root\n');
+      const c1 = repo.commit('root');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'again\n');
+      repo.commit('second');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c1],
+        cwd: repo.dir,
+      });
+      assert.ok(result.ok);
+      assert.deepEqual(result.sweepable, []);
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+});
+
+describe('#3875: --sweep-plan emits a work list, not a verdict', () => {
+  // `main()` reads process.argv and writes through console, so its argv routing is
+  // observable in-process only via the injected seams. A subprocess run against the
+  // real repository cannot exhibit an arbitrary sweep set on demand, which is exactly
+  // the interesting case.
+  const runMain = (argv, guardResult) => {
+    const out = [];
+    const err = [];
+    const saved = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      main({
+        argv,
+        out: (line) => out.push(String(line)),
+        err: (line) => err.push(String(line)),
+        guard: () => guardResult,
+      });
+      return { out, err, exitCode: process.exitCode };
+    } finally {
+      process.exitCode = saved;
+    }
+  };
+
+  const spent = {
+    ok: false,
+    lines: ['guard prose line'],
+    sweepable: ['a.json', 'b.json'],
+    legacyPresent: false,
+  };
+
+  test('the plan is repo-relative fragment paths on stdout, one per line', () => {
+    const r = runMain(['node', 'script', '--guard-next', '--sweep-plan'], spent);
+    assert.deepEqual(r.out, [
+      `${ACK_DIR_REPO_PATH}/a.json`,
+      `${ACK_DIR_REPO_PATH}/b.json`,
+    ]);
+  });
+
+  test('the guard prose is diverted to stderr so stdout is safe to pipe', () => {
+    const r = runMain(['node', 'script', '--guard-next', '--sweep-plan'], spent);
+    assert.deepEqual(
+      r.err, ['guard prose line'],
+      'a caller doing `xargs git rm` on stdout must never receive a sentence as a filename',
+    );
+  });
+
+  test('a non-empty plan still exits 0 — a work list is not a failure', () => {
+    const r = runMain(['node', 'script', '--guard-next', '--sweep-plan'], spent);
+    // `equal(..., undefined)`, not `notEqual(..., 1)`: the weaker form passes for
+    // ANY value that is not 1, so an implementation setting exitCode to 2 — or to
+    // anything at all — would survive it.
+    assert.equal(
+      r.exitCode, undefined,
+      'plan mode must leave the exit code untouched; a non-zero exit would fail the sweeper step before it could act on the list it asked for',
+    );
+  });
+
+  test('a clean tree emits an empty plan, still reports the prose, and exits 0', () => {
+    const r = runMain(
+      ['node', 'script', '--guard-next', '--sweep-plan'],
+      { ok: true, lines: ['all clear'], sweepable: [], legacyPresent: false },
+    );
+    assert.deepEqual(r.out, []);
+    // Asserting only the empty stdout would be vacuous — it holds for an
+    // implementation that emits nothing anywhere. The prose must still reach
+    // stderr, or a silent run is indistinguishable from a broken one.
+    assert.deepEqual(r.err, ['all clear']);
+    assert.equal(r.exitCode, undefined);
+  });
+
+  test('without --sweep-plan the guard lane is unchanged: prose on stdout, exit 1', () => {
+    const r = runMain(['node', 'script', '--guard-next'], spent);
+    assert.deepEqual(r.out, ['guard prose line']);
+    assert.deepEqual(r.err, []);
+    assert.equal(r.exitCode, 1, 'the verdict lane must keep failing on a surviving spent fragment');
+  });
+
+  test('the legacy ack document leads the plan when present', () => {
+    const r = runMain(
+      ['node', 'script', '--guard-next', '--sweep-plan'],
+      { ok: false, lines: ['prose'], sweepable: ['a.json'], legacyPresent: true },
+    );
+    assert.deepEqual(r.out, [ACK_REPO_PATH, `${ACK_DIR_REPO_PATH}/a.json`]);
+  });
+
+  test('the legacy ack document is absent from the plan when it is not on the tree', () => {
+    const r = runMain(
+      ['node', 'script', '--guard-next', '--sweep-plan'],
+      { ok: false, lines: ['prose'], sweepable: ['a.json'], legacyPresent: false },
+    );
+    assert.deepEqual(r.out, [`${ACK_DIR_REPO_PATH}/a.json`]);
+  });
+
+  test('--sweep-plan without --guard-next falls through to the validation lane', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'root\n');
+      repo.commit('root');
+      const out = [];
+      const err = [];
+      main({
+        argv: ['node', 'script', '--sweep-plan'],
+        cwd: repo.dir,
+        out: (line) => out.push(String(line)),
+        err: (line) => err.push(String(line)),
+      });
+      // `--sweep-plan` is meaningful only alongside `--guard-next`. Pinned so the
+      // routing cannot quietly change into "plan mode implies guard mode", which
+      // would make a bare --sweep-plan print a work list computed against a base
+      // ref nobody asked for.
+      assert.equal(err.length, 0);
+      assert.equal(out.length, 1);
+      assert.ok(out[0].startsWith('ok lint-emitted-drift-ack:'), `got: ${out[0]}`);
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+});
+
+describe('#3875: the legacy document and the fragment directory are separate sweep inputs', () => {
+  test('runGuardNext reports a revived legacy ack document as present', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'root\n');
+      const c1 = repo.commit('root');
+      const legacy = path.join(repo.dir, ...ACK_REPO_PATH.split('/'));
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ version: ACK_VERSION, paths: {} }));
+      repo.commit('revive the legacy file');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c1],
+        cwd: repo.dir,
+      });
+      assert.equal(result.ok, false, 'a legacy ack document on next must fail the guard');
+      assert.equal(
+        result.legacyPresent, true,
+        'without this the sweeper is blind to one of the two ways this guard reds next',
+      );
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('runGuardNext reports legacyPresent false on a tree that has none', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'root\n');
+      const c1 = repo.commit('root');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'again\n');
+      repo.commit('second');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c1],
+        cwd: repo.dir,
+      });
+      assert.equal(result.legacyPresent, false);
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  // The live shape on `next` when #3875 was written: four all-spent fragments, two
+  // of them held by an open PR. An implementation that always returned an empty
+  // `sweepable` would pass the all-held and clean-tree cases; only a mixed one
+  // proves the partition is real.
+  test('a mixed tree partitions into swept and held, and reports both', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('held.json', { version: ACK_VERSION, paths: { 'h.md': { reason: 'held' } } });
+      repo.writeFrag('sweep.json', { version: ACK_VERSION, paths: { 's.md': { reason: 'sweep' } } });
+      const c2 = repo.commit('add two fragments');
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'unrelated\n');
+      repo.commit('unrelated change');
+
+      const result = runGuardNext({
+        argv: ['node', 'script', '--guard-next', '--base-ref', c2, '--defer-to-open-prs'],
+        cwd: repo.dir,
+        fetchOpenPrPaths: () => new Set([`${ACK_DIR_REPO_PATH}/held.json`]),
+      });
+      assert.deepEqual(result.sweepable, ['sweep.json'], 'only the unheld fragment is sweepable');
+      assert.ok(!result.ok, 'an unheld all-spent fragment still fails the guard');
+      const prose = result.lines.join('\n');
+      assert.ok(prose.includes('held.json') && prose.includes('held'), 'the held fragment must still be reported, not silently dropped');
+      assert.ok(prose.includes('git rm') && prose.includes('sweep.json'), 'the sweepable fragment must name its remedy');
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('main() honours injected cwd and out in the validation lane, not just the guard lane', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      fs.writeFileSync(path.join(repo.dir, 'README.md'), 'root\n');
+      repo.commit('root');
+      const out = [];
+      const err = [];
+      main({
+        argv: ['node', 'script'],
+        cwd: repo.dir,
+        out: (line) => out.push(String(line)),
+        err: (line) => err.push(String(line)),
+      });
+      // A half-injected seam is worse than none: with `cwd` ignored this reads the
+      // REAL repository and reports on whatever is checked in, which passes for
+      // reasons entirely unrelated to the fixture.
+      assert.equal(err.length, 0, 'a clean fixture tree has no problems to report');
+      assert.equal(out.length, 1, 'exactly one summary line, and on the injected sink');
+      assert.ok(out[0].includes('no acknowledgment sources present'), `got: ${out[0]}`);
+    } finally {
+      cleanup(repo.dir);
+    }
+  });
+
+  test('main() reports a malformed fragment through the injected err sink', () => {
+    const repo = makeGuardNextRepo();
+    try {
+      repo.writeFrag('bad.json', {});
+      fs.writeFileSync(
+        path.join(repo.dir, ...ACK_DIR_REPO_PATH.split('/'), 'bad.json'),
+        'not json at all',
+      );
+      repo.commit('add a malformed fragment');
+      const out = [];
+      const err = [];
+      const saved = process.exitCode;
+      process.exitCode = undefined;
+      try {
+        main({
+          argv: ['node', 'script'],
+          cwd: repo.dir,
+          out: (line) => out.push(String(line)),
+          err: (line) => err.push(String(line)),
+        });
+        assert.ok(err.length > 0, 'the malformed fragment must reach the injected err sink');
+        assert.ok(err.join('\n').includes('bad.json'), 'the report must name the offending fragment');
+      } finally {
+        process.exitCode = saved;
+      }
     } finally {
       cleanup(repo.dir);
     }

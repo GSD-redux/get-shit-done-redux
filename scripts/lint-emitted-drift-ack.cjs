@@ -732,11 +732,24 @@ function fetchOpenPrTouchedAckPaths({ cwd = REPO_ROOT, execGh = execGhDefault, l
  * @param {() => Set<string>} [opts.fetchOpenPrPaths] defaults to `fetchOpenPrTouchedAckPaths`.
  *   Injectable so a test can supply canned open-PR data (or a throwing stub, to exercise
  *   the fail-closed "hold everything" path) without shelling out to a real `gh`.
- * @returns {{ ok: boolean, lines: string[] }}
+ * `sweepable` is the fragment basenames the guard would have the caller `git rm` — the
+ * same set the prose names, already narrowed by the #3842 open-PR hold, so a held
+ * fragment never appears in it. Surfaced as DATA rather than left to be scraped back out
+ * of `lines`, because the sweeper (#3875) must act on exactly the set the guard reasoned
+ * about: a sweeper that re-derives the list, or greps it out of the message text, can
+ * drift from the guard and delete a fragment the hold was protecting.
+ * `legacyPresent` is reported separately from `sweepable` because the two are different
+ * KINDS of cruft with the same remedy: `sweepable` holds fragment basenames under
+ * `ACK_DIR_REPO_PATH`, whereas the legacy document is one fixed path. Folding it into
+ * `sweepable` would make a consumer prefix it with the fragment directory and try to
+ * delete a path that does not exist. Without it the sweeper would be blind to exactly
+ * one of the two ways this guard can red `next`.
+ * @returns {{ ok: boolean, lines: string[], sweepable: string[], legacyPresent: boolean }}
  */
 function runGuardNext({ argv = process.argv, cwd = REPO_ROOT, fetchOpenPrPaths = fetchOpenPrTouchedAckPaths } = {}) {
   const legacyFile = path.join(cwd, ...ACK_REPO_PATH.split('/'));
-  const legacy = assertAbsentOnNext(fs.existsSync(legacyFile));
+  const legacyPresent = fs.existsSync(legacyFile);
+  const legacy = assertAbsentOnNext(legacyPresent);
   const lines = [legacy.message];
 
   // The fragment half (#3078). CI always passes `--base-ref` (the pre-push tip of `next`,
@@ -776,20 +789,58 @@ function runGuardNext({ argv = process.argv, cwd = REPO_ROOT, fetchOpenPrPaths =
   const sweep = assertNoAllSpentFragments(fragments, { openPrTouchedPaths });
   lines.push(sweep.message);
 
-  return { ok: legacy.ok && sweep.ok, lines };
+  return { ok: legacy.ok && sweep.ok, lines, sweepable: sweep.sweepable, legacyPresent };
 }
 
-function main() {
-  if (process.argv.includes('--guard-next')) {
-    const result = runGuardNext();
-    for (const line of result.lines) console.log(line);
+/**
+ * CLI entry. Dependencies are injectable so the `--guard-next` / `--sweep-plan` argv
+ * routing is testable in-process: `main()` otherwise reads `process.argv` and writes
+ * through `console`, and the only way to observe it would be a subprocess run against
+ * the REAL repository — which cannot exhibit an arbitrary sweep set on demand, so the
+ * interesting cases would go uncovered.
+ *
+ * `cwd`, `out` and `err` are honoured by BOTH lanes, not just the guard lane. A seam
+ * that is injected halfway is worse than one that is not injected at all: a test
+ * passing `cwd` to the validation lane would silently read the real repository and
+ * report on whatever happens to be checked in, which is a pass-always test wearing the
+ * costume of a real one.
+ */
+function main({
+  argv = process.argv,
+  cwd = REPO_ROOT,
+  out = console.log,
+  err = console.error,
+  guard = runGuardNext,
+} = {}) {
+  if (argv.includes('--guard-next')) {
+    const result = guard({ argv });
+
+    // `--sweep-plan` (#3875) turns the guard from a VERDICT into a WORK LIST. The
+    // sweeper workflow needs the exact set the guard reasoned about, so the plan goes
+    // to stdout alone and the prose is diverted to stderr — a caller doing
+    // `xargs git rm` on stdout must never receive an explanatory sentence as a
+    // filename. Plan mode also exits 0 even when the verdict is a failure: a
+    // non-empty plan is the NORMAL case it exists to report, and a non-zero exit
+    // would fail the workflow step before it could act on the very list it asked for.
+    if (argv.includes('--sweep-plan')) {
+      for (const line of result.lines) err(line);
+      // The legacy document leads the plan: it is a fixed path rather than a name
+      // under the fragment directory, and `assertAbsentOnNext` reds `next` on its
+      // PRESENCE alone. Omitting it would leave the sweeper able to fix only one of
+      // the two conditions that make this guard fail.
+      if (result.legacyPresent) out(ACK_REPO_PATH);
+      for (const name of result.sweepable) out(`${ACK_DIR_REPO_PATH}/${name}`);
+      return;
+    }
+
+    for (const line of result.lines) out(line);
     if (!result.ok) process.exitCode = 1;
     return;
   }
 
-  const legacyFile = path.join(REPO_ROOT, ...ACK_REPO_PATH.split('/'));
+  const legacyFile = path.join(cwd, ...ACK_REPO_PATH.split('/'));
 
-  const fragmentsDir = path.join(REPO_ROOT, ...ACK_DIR_REPO_PATH.split('/'));
+  const fragmentsDir = path.join(cwd, ...ACK_DIR_REPO_PATH.split('/'));
   const sources = [
     { label: ACK_REPO_PATH, raw: readIfPresent(legacyFile) },
     ...listFragmentFiles(fragmentsDir).map((name) => ({
@@ -835,9 +886,9 @@ function main() {
   }
 
   if (problems.length) {
-    console.error(`lint-emitted-drift-ack: ${problems.length} problem(s)\n`);
-    for (const e of problems) console.error(`  - ${e}`);
-    console.error(
+    err(`lint-emitted-drift-ack: ${problems.length} problem(s)\n`);
+    for (const e of problems) err(`  - ${e}`);
+    err(
       '\nThis blocks the merge on purpose. The base-side reader fails loudly on a document '
       + 'it cannot parse, so a broken one on the base branch reds every PR that carries an '
       + 'acknowledgment, and a duplicate across two sources is exactly the silent-drift class '
@@ -847,7 +898,7 @@ function main() {
     return;
   }
 
-  console.log(
+  out(
     anyPresent
       ? 'ok lint-emitted-drift-ack: all acknowledgment sources are well-formed'
       : 'ok lint-emitted-drift-ack: no acknowledgment sources present (the healthy steady state)',
@@ -881,4 +932,5 @@ module.exports = {
   GITHUB_MAX_PR_FILES,
   GH_TIMEOUT_MS,
   runGuardNext,
+  main,
 };
