@@ -17,7 +17,6 @@ const {
   resolveCheckpointFrame,
   parseDeferredItems,
   parseUatItemsWithStats,
-  maskBlockScalarBodies,
 } = require('../gsd-core/bin/lib/uat.cjs');
 
 describe('audit-uat command', () => {
@@ -3481,9 +3480,9 @@ result: blocked
   // Regression guard for the fixes above: a LEGITIMATE `expected: |` scalar
   // carrying indented prose AND a fenced code sample must still yield its own
   // full value. This is the case that forbids either (a) fence-STRIPPING the
-  // block before reading `expected:`, or (b) clipping it at the first fence
-  // opener found in the RAW text — the clip point is computed on the
-  // scalar-MASKED copy precisely so a nested sample cannot truncate the field.
+  // block before reading `expected:`, or (b) clipping it at ANY fence opener —
+  // the clipper only recognises a COLUMN-0 fence precisely so a nested,
+  // necessarily-indented sample cannot truncate the field.
   // Note the sample's own `result: pending` line must NOT become the row's
   // outcome; the real `result: blocked` does.
   test("a legitimate `expected: |` scalar with prose and a fenced sample is read in full", () => {
@@ -3540,10 +3539,9 @@ result: pending
     assert.strictEqual(entry.items[0].expected, "first line\nsecond line", describeItems(entry));
   });
 
-  // Sibling of the CRLF case: `|-` / `|+` chomping indicators. The masker
-  // treats them as scalar openers, so the READER must too — otherwise the body
-  // is structurally masked (correct) but the field falls through to the inline
-  // arm and publishes the literal `"|-"`.
+  // Sibling of the CRLF case: `|-` / `|+` chomping indicators. The READER's
+  // opener grammar must admit them — otherwise the field falls through to the
+  // inline arm and publishes the literal `"|-"` instead of the value.
   test("an `expected: |-` chomped scalar is read as its value, not as the literal `|-`", () => {
     writeUat(`${FRONTMATTER}## Tests
 
@@ -3559,14 +3557,14 @@ result: pending
     assert.strictEqual(entry.items[0].expected, "chomped value", describeItems(entry));
   });
 
-  // #3078 follow-up (security review): `BLOCK_SCALAR_OPENER_RE` admitted the
-  // chomping indicator (`|-`, `|+`) but not YAML's explicit INDENTATION
+  // #3078 follow-up (security review): the reader's opener grammar admitted
+  // the chomping indicator (`|-`, `|+`) but not YAML's explicit INDENTATION
   // indicator (`1`-`9`), which may appear before OR after the chomping
-  // indicator (`|2`, `|2-`, `|-2`, `>2`, `>2+`, ...). Pre-fix, none of these
-  // openers were recognized, so the scalar body was never masked and a
-  // `### N.`-shaped line inside it was tokenized as a real heading — the same
-  // row-theft class this masking exists to prevent. Row IDENTITY (number AND
-  // name) is asserted for every variant, never just a count, per the finding.
+  // indicator (`|2`, `|2-`, `|-2`, `>2`, `>2+`, ...). A body under an
+  // unrecognised opener was read as the literal opener string, and its
+  // `### N.`-shaped lines fed the row-theft class this row-identity assertion
+  // guards. Row IDENTITY (number AND name) is asserted for every variant,
+  // never just a count, per the finding.
   for (const opener of ["|2", "|2-", "|-2", ">2"]) {
     test(`an \`expected: ${opener}\` scalar with an explicit indentation indicator does not let its body steal row identity`, () => {
       writeUat(`${FRONTMATTER}## Tests
@@ -3602,7 +3600,7 @@ result: blocked
   // Regression guard: the plain (no indentation indicator) openers this
   // module already handled must behave exactly as before the fix above.
   for (const opener of ["|", "|-", "|+", ">"]) {
-    test(`regression: an \`expected: ${opener}\` scalar (no indentation indicator) still masks its body`, () => {
+    test(`regression: an \`expected: ${opener}\` scalar (no indentation indicator) keeps its body inert`, () => {
       writeUat(`${FRONTMATTER}## Tests
 
 ### 1. Alpha
@@ -3853,17 +3851,17 @@ result: pending
   });
 });
 
-// ─── #3078 review follow-up: UTF-16 vs. code-point framing in maskBlockScalarBodies ──
+// ─── #3078 review follow-up: astral (surrogate-pair) characters in a row name ──
 //
-// BLOCKER: `maskBlockScalarBodies` computed `lineStart[]` offsets and
-// `lines[k].length` in UTF-16 units but spliced into `Array.from(content)` — a
-// CODE POINT array. Every astral character (surrogate pair) earlier in the
-// document shifted every later mask write one slot too far right, blanking
-// the wrong characters and spilling a body's mask past its own line boundary
-// into the next line. On a fixture whose test NAME carries emoji plus an
-// `expected: |` scalar body containing a `### 3.` line and a `result:` line,
-// this stole the real row's fields and published a phantom row 3 instead.
-describe("#3078 review: maskBlockScalarBodies must not corrupt astral (surrogate-pair) offsets", () => {
+// A test NAME carrying emoji plus an `expected: |` scalar body containing a
+// `### 3.` line and a `result:` line once published a phantom row 3 and stole
+// the real row's fields: the scalar masker measured offsets in UTF-16 units but
+// spliced into a CODE POINT array, so every astral character earlier in the
+// document shifted a later mask write one slot right. The masker is gone — the
+// `### 3.` line is inert because it is INDENTED, and no character-splicing
+// happens anywhere — so this class is now structurally unreachable. These
+// fixtures stay as the behavioural pin.
+describe("#3078 review: an astral (emoji) row name never yields a phantom row", () => {
   function fixtureWithEmoji(emojiCount) {
     const emoji = "\u{1F600}".repeat(emojiCount);
     return `## Tests
@@ -3876,7 +3874,7 @@ result: blocked
   }
 
   for (const emojiCount of [1, 3, 6, 10]) {
-    test(`a name with ${emojiCount} emoji does not shift the scalar mask (row 1 intact, no phantom row 3)`, () => {
+    test(`a name with ${emojiCount} emoji keeps row 1 intact with no phantom row 3`, () => {
       const { items, headingsSeen } = parseUatItemsWithStats(fixtureWithEmoji(emojiCount));
       const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
 
@@ -3896,7 +3894,7 @@ result: blocked
   }
 
   // Same fixture through the render-checkpoint path (`parseFirstPendingTest`
-  // shares `maskBlockScalarBodies`) must resume test 1, never a phantom.
+  // shares the column-0 heading rule) must resume test 1, never a phantom.
   describe("render-checkpoint path", () => {
     let tmpDir;
     let uatPath;
@@ -3954,32 +3952,6 @@ result: pending
     });
   });
 
-  // Property-style check: `maskBlockScalarBodies` output must always have the
-  // same UTF-16 `.length` and the same line count as its input. No `fast-check`
-  // dependency added — the file does not already use one for this module — a
-  // loop over an explicit list covers ASCII, astral characters (in a heading,
-  // in a scalar body, and scattered outside any scalar), CRLF, tabs, and a
-  // scalar running all the way to EOF with no trailing newline.
-  test("output length and line count are invariant across a spread of inputs (ASCII, emoji, CRLF, tabs, EOF scalar)", () => {
-    const inputs = [
-      "### 1. Alpha\nexpected: |\n  line one\n  line two\nresult: pending\n",
-      "### 1. \u{1F600}\nexpected: |\n  \u{1F600}\u{1F601} body line\n  more\nresult: pending\n",
-      "### 1. Alpha\r\nexpected: |\r\n  line one\r\n  line two\r\nresult: pending\r\n",
-      "### 1. Alpha\n\texpected: |\n\t\tline one\n\t\tline two\nresult: pending\n",
-      "### 1. Alpha\nexpected: |\n  line one\n  line two",
-      "\u{1F602}\u{1F602}\u{1F602}\n### 1. Alpha\nexpected: |\n  \u{1F680} body\nresult: pending\n\u{1F389}",
-    ];
-
-    for (const input of inputs) {
-      const output = maskBlockScalarBodies(input);
-      assert.strictEqual(output.length, input.length, `length mismatch for ${JSON.stringify(input)}`);
-      assert.strictEqual(
-        output.split("\n").length,
-        input.split("\n").length,
-        `line count mismatch for ${JSON.stringify(input)}`,
-      );
-    }
-  });
 });
 
 // ─── #3078 review follow-up: shortfall counter must not over-count documentation ──
@@ -4087,5 +4059,87 @@ ${FENCE}
     assert.ok(row1, describeAll());
     assert.notStrictEqual(row1.expected, "SECRET-INSIDE", `fence-hidden expected was stolen: ${describeAll()}`);
     assert.strictEqual(row1.expected, undefined, describeAll());
+  });
+});
+
+// ─── #3078 follow-up: indented fence delimiter must not reach tokenizeHeadings ──
+//
+// Escalated design call, answered as option (b): dropping the scalar masker
+// for the column-0 heading filter fixed the phantom-heading theft, but
+// exposed a SECOND thing masking used to do — hide an indented fence
+// delimiter from `tokenizeHeadings` itself. `tokenizeHeadings` is a
+// CommonMark scanner with its own {0,3}-space fence tolerance, so a 2-space
+// fence opener inside an `expected: |` scalar body still opens a real fence
+// AS FAR AS THE TOKENIZER IS CONCERNED — the fence's matching closer (also
+// indented, also inside a LATER row's own scalar body, so the pair reads as
+// TERMINATED at the whole-document level) sits past `### 2. Beta`'s heading
+// line, which is never returned as a token at all. This is a DIFFERENT
+// failure mode from every other #3078 fixture above: it does not trip the
+// document-wide `unterminatedFence` DEFECT-D signal (a real closer exists),
+// so the row is not merely a counted parse-gap shortfall — pre-fix it is
+// swallowed cleanly, with `parse_gap` never even set. Option (a) — asserting
+// row 2 as "counted, not surfaced" — would have shipped exactly this
+// silent-drop as permanent, intended behaviour; asserting row IDENTITY here
+// (number AND name, not merely a count) is what forbids that.
+describe("#3078 follow-up: an indented fence delimiter must not reach tokenizeHeadings", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+  const FENCE = "```";
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  test("an indented fence opener inside an `expected:` scalar, closed inside a LATER row's own scalar, still surfaces the row between them by identity", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: |
+  ${FENCE}
+  sample
+result: pending
+
+### 2. Beta
+result: blocked
+
+### 3. Gamma
+expected: |
+  ${FENCE}
+result: pending
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.parse_gap, undefined, JSON.stringify(entry, null, 2));
+
+    const byNumber = new Map(entry.items.filter((i) => i.test !== undefined).map((i) => [i.test, i]));
+    assert.strictEqual(byNumber.get(1).name, "Alpha", JSON.stringify(entry, null, 2));
+    assert.strictEqual(byNumber.get(2).name, "Beta", JSON.stringify(entry, null, 2));
+    assert.strictEqual(byNumber.get(2).result, "blocked", JSON.stringify(entry, null, 2));
+    assert.strictEqual(byNumber.get(3).name, "Gamma", JSON.stringify(entry, null, 2));
   });
 });

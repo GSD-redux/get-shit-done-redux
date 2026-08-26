@@ -407,19 +407,24 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
 
   const sectionBody = testsSection.body;
 
-  // #3078 blocker (same exposure as `parseUatItemsWithStats`): tokenize a
-  // SCALAR-MASKED copy, never the raw section body, so a `### N.` line
-  // indented <= 3 spaces INSIDE an `expected: |` value cannot register as a
-  // phantom heading and steal the real row's `result:` token. The masked
-  // copy is byte-length-identical, so offsets still index `sectionBody`.
-  const maskedSectionBody = maskBlockScalarBodies(sectionBody);
-
   // Within the Tests section body, find ### N. Name sub-headings.
   // tokenizeHeadings operates on the section body as a standalone document,
   // filtering to level-3 headings matching the UAT-specific "N. Name" pattern.
   // The UAT-specific item parsing (number extraction, result parsing) stays caller-side.
-  const subHeadings = tokenizeHeadings(maskedSectionBody).filter(
-    (h) => h.level === 3 && /^\d+\.\s+/.test(h.text),
+  //
+  // #3078 blocker (same exposure as `parseUatItemsWithStats`): only a COLUMN-0
+  // heading is a test row — see `isColumnZeroHeading`. A `### N.` line indented
+  // <= 3 spaces INSIDE an `expected: |` value is value text, and must not
+  // register as a phantom heading and steal the real row's `result:` token.
+  //
+  // #3078 follow-up: tokenize a copy with every INDENTED fence delimiter
+  // blanked out first — see `blankIndentedFenceDelimiters`. Without this, an
+  // indented ` ``` ` opener inside an `expected: |` value still reads as a
+  // real fence to `tokenizeHeadings` (CommonMark tolerates 1-3 leading
+  // spaces), which then hides every heading up to the next matching closer —
+  // including a later, genuinely column-0 `### N.` row.
+  const subHeadings = tokenizeHeadings(blankIndentedFenceDelimiters(sectionBody)).filter(
+    (h) => h.level === 3 && /^\d+\.\s+/.test(h.text) && isColumnZeroHeading(sectionBody, h),
   );
 
   for (let i = 0; i < subHeadings.length; i += 1) {
@@ -469,7 +474,7 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
  * `(?:[1-9][+-]?|[+-][1-9]?)?` additionally admits the `|-` / `|+` chomping
  * indicators AND the explicit indentation indicator (`|2`, `|2-`, `|-2`, ...,
  * in either order per the YAML header grammar), keeping this reader in step
- * with `BLOCK_SCALAR_OPENER_RE` (which already masks their bodies) —
+ * with the column-0 heading rule (an indented heading inside a scalar body is
  * otherwise a `expected: |-` or `expected: |2` value would be structurally
  * masked but then read as the literal string `"|-"` / `"|2"` by the same
  * fall-through.
@@ -685,102 +690,112 @@ function buildCheckpoint(currentTest: { number: number; name: string; expected: 
 const UAT_PASS_RESULTS = new Set(['pass', 'passed']);
 
 /**
- * Visual column width of a line's leading whitespace (tab = 4), used to compare
- * indentation between a block-scalar key line and its candidate body lines.
+ * A fenced-code OPENER line at COLUMN 0 (``` or ~~~).
+ *
+ * Deliberately NOT the CommonMark `{0,3}`-space form (#3078 simplification):
+ * inside this module a fence only ever means "document structure the tokenizer
+ * hid from us", and every structural fence in a UAT file starts at column 0. An
+ * INDENTED fence run is, by construction, part of an `expected: |` block-scalar
+ * value — the ordinary way a UAT row reproduces a code sample verbatim — and
+ * must stay invisible to the clipper, or the very field it exists to protect
+ * gets truncated at its own sample. Column 0 is the whole rule for every
+ * fence-aware scan THIS MODULE writes directly against raw block text (this
+ * one, `dropTopLevelFencedRegions`'s `delimRe`). It does NOT extend to
+ * `tokenizeHeadings`, which is a third-party CommonMark scanner with its own
+ * {0,3}-space fence tolerance baked in — see `blankIndentedFenceDelimiters`
+ * for how an indented delimiter is kept from reaching that scanner at all.
  */
-function indentWidthOf(prefix: string): number {
-  let width = 0;
-  for (const ch of prefix) width += ch === '\t' ? 4 : 1;
-  return width;
-}
-
-/**
- * A `<key>: |` (or `|-`, `|+`, `>`, `>-`, `>+`, and the explicit-indentation-
- * indicator forms `|2`, `|2-`, `|-2`, `>2`, `>2+`, ...) block-scalar OPENER
- * line — the only shape whose following, more-indented lines are opaque VALUE
- * text rather than document structure. Per the YAML block-scalar header
- * grammar, the indentation indicator (`1`-`9`, never `0`) and the chomping
- * indicator (`+`/`-`) are each optional and may appear in EITHER order
- * (`|2-` and `|-2` are both valid). The optional `- ` allows the bullet-borne
- * form (`- expected: |`); the key column is measured AFTER the bullet marker
- * so the body test stays strict (a line must out-indent the KEY, not the
- * dash).
- */
-const BLOCK_SCALAR_OPENER_RE = /^([ \t]*(?:-[ \t]+)?)[A-Za-z_][\w-]*[ \t]*:[ \t]*[|>](?:[1-9][+-]?|[+-][1-9]?)?[ \t]*\r?$/;
-
-/** A fenced-code OPENER line (``` or ~~~, up to 3 leading spaces). */
-const FENCE_OPENER_RE = /^ {0,3}(?:`{3,}|~{3,})/;
+const FENCE_OPENER_RE = /^(?:`{3,}|~{3,})/;
 
 /**
  * A raw source line whose shape is a UAT `### N.` test heading — the line-level
  * twin of the `h.level === 3 && /^\d+\.(?!\d)/` token filter in
- * `parseUatItemsWithStats`. Used ONLY to count headings that `tokenizeHeadings`
- * suppressed (see `maskBlockScalarBodies`'s callers), never to parse one.
+ * `parseUatItemsWithStats`, and anchored at COLUMN 0 to match that filter's
+ * `isColumnZeroHeading` guard exactly. Used ONLY to count headings that
+ * `tokenizeHeadings` suppressed (a fence-straddled row), never to parse one:
+ * the two counts must be derived by the SAME rule or the shortfall they
+ * bracket over- or under-reports.
  */
-const TEST_HEADING_LINE_RE = /^ {0,3}#{3}(?!#)[ \t]+\d+\.(?!\d)/;
+const TEST_HEADING_LINE_RE = /^#{3}(?!#)[ \t]+\d+\.(?!\d)/;
 
 /**
- * Return `content` with the BODY of every block scalar overwritten by spaces,
- * character-for-character, so the result has byte-identical length and every
- * offset into it also indexes the original document.
+ * True when `heading` starts at COLUMN 0 of its source line in `content`.
  *
- * Why (#3078 blocker): `tokenizeHeadings` is a pure markdown scanner — it has
- * no notion of YAML block scalars, so a line like `  ### 3. Fake Row` sitting
- * INSIDE an `expected: |` value is a perfectly valid ATX heading to it
- * (markdown tolerates up to 3 leading spaces). That phantom heading then opens
- * a block that STEALS the real row's `result:` line, and the real row vanishes
- * from `items` entirely — a silently-dropped outstanding row, which is exactly
- * the false-clean this parser exists to prevent. Masking the scalar body before
- * tokenizing makes value text structurally inert. Length preservation (spaces,
- * not deletion) is load-bearing: the heading offsets returned from the masked
- * copy are used to slice block text out of the RAW document, which
- * `parseExpectedFromTestBlock` must still see verbatim.
+ * The UAT test-row contract (#3078): a `### N.` row heading is structure ONLY
+ * at column 0. `tokenizeHeadings` implements CommonMark, which tolerates up to
+ * 3 leading spaces on an ATX heading — and that single over-permissive rule is
+ * what let a `### 3. Fake Row` line sitting INSIDE an `expected: |` value
+ * register as a phantom heading, open a block, and STEAL the real row's
+ * `result:` line, dropping a genuinely outstanding row from `items`. A scalar
+ * body is indented BY CONSTRUCTION (that is what makes it a body), so requiring
+ * column 0 makes every such line inert without the parser needing any notion of
+ * YAML block scalars at all. The shipped `templates/UAT.md` writes every `### N.`
+ * heading at column 0, and no UAT document in the tree indents one.
  *
- * Body extent follows the YAML rule: the run of lines more indented than the
- * key line, ending at the first non-blank line whose indent is <= the key's.
- * Blank lines never terminate a scalar (they belong to it), but trailing blanks
- * are not counted as part of it either.
+ * `HeadingToken.offset` is the offset of the heading LINE's first character, so
+ * a column-0 heading is exactly one whose first character is the `#` itself.
  */
-function maskBlockScalarBodies(content: string): string {
-  // #3078 follow-up BLOCKER: this used to compute `lineStart[]` offsets and
-  // `lines[k].length` (both UTF-16 units) and splice them into `Array.from(content)`
-  // (a CODE POINT array). Every astral character (surrogate pair) earlier in the
-  // document shifted every later mask write one slot too far right, blanking the
-  // wrong characters and spilling a body's mask past its own newline into the
-  // next line. Rebuilding BY LINE is frame-agnostic: `lines[i].length` and
-  // `' '.repeat(lines[i].length)` are both measured in the SAME (UTF-16) units as
-  // the string itself, and `.join('\n')` reproduces the exact original length and
-  // line count regardless of code-point/code-unit framing. This also handles CRLF
-  // correctly without special-casing it: `content.split('\n')` leaves any `\r`
-  // attached to the end of its line (never stripped here), so a masked CRLF line's
-  // trailing `\r` is replaced by a space exactly as it always was pre-fix, and an
-  // unmasked line's `\r` round-trips untouched through the rejoin.
+function isColumnZeroHeading(content: string, heading: { offset: number }): boolean {
+  return content.charCodeAt(heading.offset) === 0x23 /* '#' */;
+}
+
+/**
+ * An INDENTED (1-3 leading spaces, never 0) fenced-code delimiter line.
+ * Column 0 is intentionally EXCLUDED — a column-0 fence is real document
+ * structure and `tokenizeHeadings` handling it is correct; only the
+ * CommonMark-legal 1-3-space tolerance is the problem this targets.
+ */
+const INDENTED_FENCE_DELIM_RE = /^ {1,3}(?:`{3,}|~{3,})/;
+
+/**
+ * Return `content` with every INDENTED fence-delimiter LINE overwritten by
+ * spaces, byte-length- and line-count-preserving, so every downstream offset
+ * and line index still lines up against the original document.
+ *
+ * Why (#3078 follow-up, escalated design call, answered as option (b)):
+ * dropping `maskBlockScalarBodies` in favor of the column-0 heading filter
+ * (`isColumnZeroHeading`) fixed the phantom-heading theft, but it silently
+ * dropped a SECOND thing masking used to do — hide an INDENTED fence
+ * delimiter from `tokenizeHeadings` itself. `tokenizeHeadings` is a
+ * CommonMark scanner with its own {0,3}-space fence tolerance; a 1-3-space
+ * ` ``` ` inside an `expected: |` scalar body still opens a fence AS FAR AS
+ * THAT SCANNER IS CONCERNED, and every heading between it and its matching
+ * (or absent) closer — including a LATER, genuinely column-0 `### N.` row —
+ * is hidden from the token stream entirely, not merely mis-filtered. The
+ * column-0 heading filter cannot recover a heading the tokenizer never
+ * returned in the first place.
+ *
+ * This is deliberately the SAME "column 0 is structure, anything else is
+ * value text" rule already applied to headings (`isColumnZeroHeading`) and to
+ * this module's own raw-text fence scans (`FENCE_OPENER_RE`,
+ * `dropTopLevelFencedRegions`'s `delimRe`) — extended to the one place that
+ * rule cannot be expressed as a post-hoc filter, because the tokenizer
+ * consumes the fence delimiter before this module ever sees a token for it.
+ * It carries no YAML knowledge whatsoever (no notion of `expected:`, `|`,
+ * indentation width, or scalar bodies) — it blanks an indented delimiter LINE
+ * unconditionally, wherever it appears, the same context-free way the other
+ * column-0 rules do.
+ *
+ * LINE-BASED by construction (`content.split('\n')` / `.join('\n')`), never
+ * character-array splicing — the exact bug class (`Array.from(content)`
+ * code-point indexing against UTF-16 offsets) that made the original
+ * `maskBlockScalarBodies` corrupt astral-character documents. A line's own
+ * `.length` and `' '.repeat(line.length)` are measured in the same (UTF-16)
+ * units as the string itself, so this cannot misalign regardless of
+ * code-point framing, and CRLF survives untouched: `split('\n')` leaves any
+ * `\r` attached to the end of its line, and blanking that line replaces the
+ * `\r` with a space exactly like every other character on it — `join('\n')`
+ * then reproduces the original line count and total length exactly.
+ */
+function blankIndentedFenceDelimiters(content: string): string {
   const lines = content.split('\n');
-  const shouldMask = new Array<boolean>(lines.length).fill(false);
-  let masked = false;
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const opener = BLOCK_SCALAR_OPENER_RE.exec(lines[i]);
-    if (!opener) continue;
-    const keyIndent = indentWidthOf(opener[1]);
-
-    let lastBodyLine = i;
-    for (let j = i + 1; j < lines.length; j += 1) {
-      const line = lines[j];
-      if (line.trim() === '') continue; // blank lines never close a scalar
-      if (indentWidthOf(/^[ \t]*/.exec(line)![0]) <= keyIndent) break;
-      lastBodyLine = j;
-    }
-
-    for (let k = i + 1; k <= lastBodyLine; k += 1) {
-      shouldMask[k] = true;
-      if (lines[k].length > 0) masked = true;
-    }
-    i = lastBodyLine;
-  }
-
-  if (!masked) return content;
-  return lines.map((line, i) => (shouldMask[i] ? ' '.repeat(line.length) : line)).join('\n');
+  let changed = false;
+  const out = lines.map((line) => {
+    if (!INDENTED_FENCE_DELIM_RE.test(line)) return line;
+    changed = true;
+    return ' '.repeat(line.length);
+  });
+  return changed ? out.join('\n') : content;
 }
 
 /**
@@ -794,18 +809,16 @@ function maskBlockScalarBodies(content: string): string {
  * as its own. Clipping at the fence opener bounds the raw read to the part of
  * the block the tokenizer also considered visible.
  *
- * The opener search runs over the SCALAR-MASKED copy, not the raw text, so a
- * fenced sample nested inside a legitimate `expected: |` value is invisible
- * here and does not clip the very field this exists to preserve. Masking is
- * length-preserving, so line indices agree between the two copies.
+ * Column-0 fences only (`FENCE_OPENER_RE`): a fenced sample nested inside a
+ * legitimate `expected: |` value is indented by construction, so it is invisible
+ * here and cannot clip the very field this exists to preserve.
  */
 function clipBlockAtFirstFence(block: string): string {
-  const maskedLines = maskBlockScalarBodies(block).split('\n');
   const rawLines = block.split('\n');
 
   let firstFenceLine = -1;
-  for (let i = 0; i < maskedLines.length; i += 1) {
-    if (FENCE_OPENER_RE.test(maskedLines[i])) {
+  for (let i = 0; i < rawLines.length; i += 1) {
+    if (FENCE_OPENER_RE.test(rawLines[i])) {
       firstFenceLine = i;
       break;
     }
@@ -819,45 +832,43 @@ function clipBlockAtFirstFence(block: string): string {
   // CLOSED is not a theft risk — only content strictly INSIDE the fence must
   // stay hidden. The plain "clip at first opener" result above silently
   // discards a late `expected:` even when it sits outside every fence.
-  // Reconstruct the block with every top-level FENCED REGION dropped (fence
-  // boundaries tracked on the MASKED copy — the same anti-theft rule as above,
-  // so a fenced-looking line living inside a legitimate `expected: |` value can
-  // never be mistaken for a real fence), keeping RAW text everywhere else. This
-  // exposes a late `expected:` living after a fence closes, while an
-  // `expected:` living strictly inside the fence is dropped along with it and
-  // stays unreachable — the "inside a fence" vs. "after a closed fence" split
-  // falls straight out of whether the fence-tracking state machine below is
-  // OPEN or CLOSED at that line, not out of position relative to the FIRST
-  // fence opener alone.
-  const visible = dropTopLevelFencedRegions(rawLines, maskedLines);
+  // Reconstruct the block with every top-level FENCED REGION dropped, keeping
+  // RAW text everywhere else. This exposes a late `expected:` living after a
+  // fence closes, while an `expected:` living strictly inside the fence is
+  // dropped along with it and stays unreachable — the "inside a fence" vs.
+  // "after a closed fence" split falls straight out of whether the
+  // fence-tracking state machine below is OPEN or CLOSED at that line, not out
+  // of position relative to the FIRST fence opener alone.
+  const visible = dropTopLevelFencedRegions(rawLines);
   if (parseExpectedFromTestBlock(visible)) return visible;
 
   return beforeFence;
 }
 
 /**
- * Reconstruct `rawLines` with every TOP-LEVEL fenced region removed, tracking
- * fence open/close state on the parallel `maskedLines` (so a fence-shaped line
- * living inside a masked block-scalar body can never be mistaken for a real
- * fence). Mirrors `stripFencedCode`'s own delimiter algorithm exactly — a
- * fence run of the SAME character and at least the SAME length, with no
- * trailing content, is what closes an open fence — so "inside a fence" here
- * means the same thing it means to the rest of this module's fence handling.
- * An UNTERMINATED fence (open at EOF) drops everything from its opener to the
- * end, same as `stripFencedCode`.
+ * Reconstruct `rawLines` with every TOP-LEVEL fenced region removed. Mirrors
+ * `stripFencedCode`'s own delimiter algorithm — a fence run of the SAME
+ * character and at least the SAME length, with no trailing content, is what
+ * closes an open fence — so "inside a fence" here means the same thing it means
+ * to the rest of this module's fence handling. An UNTERMINATED fence (open at
+ * EOF) drops everything from its opener to the end, same as `stripFencedCode`.
+ *
+ * Delimiters are recognised at COLUMN 0 only, for the reason given on
+ * `FENCE_OPENER_RE`: an INDENTED fence run belongs to an `expected: |` value,
+ * not to document structure, and must not open a region here.
  */
-function dropTopLevelFencedRegions(rawLines: string[], maskedLines: string[]): string {
+function dropTopLevelFencedRegions(rawLines: string[]): string {
   const kept: string[] = [];
   let openFence: { char: string; len: number } | null = null;
-  const delimRe = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+  const delimRe = /^(`{3,}|~{3,})(.*)$/;
 
-  for (let i = 0; i < maskedLines.length; i += 1) {
-    const line = maskedLines[i].replace(/\r$/, '');
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const line = rawLines[i].replace(/\r$/, '');
     const m = delimRe.exec(line);
     if (m) {
-      const char = m[2][0];
-      const len = m[2].length;
-      const trailing = m[3];
+      const char = m[1][0];
+      const len = m[1].length;
+      const trailing = m[2];
       if (openFence === null) {
         if (char === '`' && trailing.includes('`')) {
           // Not a valid fence opener (CommonMark: backtick info string must
@@ -889,12 +900,22 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // not be absorbed into the preceding test's block, else its unanchored
   // `reason:`/`blocked_by:` scans below bleed a Gaps entry's fields onto the
   // last test row.
-  // #3078 blocker: tokenize a SCALAR-MASKED copy, never the raw document —
-  // see `maskBlockScalarBodies`. The copy is byte-length-identical, so every
-  // offset it yields still indexes `content`, and block slicing below stays on
-  // the RAW text that `parseExpectedFromTestBlock` needs.
-  const maskedContent = maskBlockScalarBodies(content);
-  const allHeadings = tokenizeHeadings(maskedContent);
+  // #3078 blocker: only a COLUMN-0 heading is document structure here (see
+  // `isColumnZeroHeading`). The filter is applied to the WHOLE token stream,
+  // not just to the `### N.` rows, because an indented heading must not act as
+  // a block BOUNDARY either — a `### 3. Fake Row` line inside an `expected: |`
+  // value would otherwise truncate its own row's block just before the real
+  // `result:` line and drop a genuinely outstanding row from `items`.
+  //
+  // #3078 follow-up: tokenize a copy with every indented fence delimiter
+  // blanked out (`blankIndentedFenceDelimiters`) BEFORE the column-0 filter
+  // ever runs. Otherwise an indented ` ``` ` opener inside an `expected: |`
+  // value still opens a real fence as far as `tokenizeHeadings` (a
+  // CommonMark scanner, {0,3}-space fence tolerance) is concerned, hiding
+  // every heading up to its closer from the token stream entirely — a LATER,
+  // genuinely column-0 `### N.` row is never returned as a token at all, so
+  // no post-hoc filter over the token stream could recover it.
+  const allHeadings = tokenizeHeadings(blankIndentedFenceDelimiters(content)).filter((h) => isColumnZeroHeading(content, h));
   // #3707 follow-up MINOR: `^\d+\.` alone — a trailing name is OPTIONAL
   // (`### 3.` and `### 3.Foo`, without the space the old `\s+`-anchored
   // pattern required, both count) so a heading missing or squishing its name
@@ -920,9 +941,10 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // count of heading-SHAPED source lines against the headings the tokenizer
   // actually returned recovers the shortfall; each suppressed row counts
   // toward `headingsSeen`, so the file is flagged as a parse gap rather than
-  // silently clean. Counted over the MASKED copy, not the raw document, so a
-  // `### N.`-shaped line living inside an `expected: |` value — which is value
-  // text, not a suppressed row — cannot inflate the tally.
+  // silently clean. The line scan is anchored at COLUMN 0 (`TEST_HEADING_LINE_RE`)
+  // by the same rule the token filter uses, so a `### N.`-shaped line living
+  // inside an `expected: |` value — which is value text, not a suppressed row —
+  // cannot inflate the tally.
   //
   // #3078 follow-up MINOR 1: a `### N.`-shaped line living inside a properly
   // CLOSED fenced code sample used to document the UAT row format — the
@@ -939,14 +961,14 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // `parseFirstPendingTest` already uses to locate `## Tests`) excludes a
   // fenced sample living elsewhere in the file while leaving the in-section
   // straddle detection above completely intact. Falls back to the WHOLE
-  // masked document when no `## Tests` heading exists at all, preserving
-  // prior behavior for a non-conformant file that never had one.
+  // document when no `## Tests` heading exists at all, preserving prior
+  // behavior for a non-conformant file that never had one.
   const testsSectionForShapeScan = collectSection(
-    maskedContent,
+    content,
     (h) => /^tests$/i.test(h.text) && h.level === 2,
     { levelBounded: true },
   );
-  const shapeScanSurface = testsSectionForShapeScan ? testsSectionForShapeScan.body : maskedContent;
+  const shapeScanSurface = testsSectionForShapeScan ? testsSectionForShapeScan.body : content;
   let shapedHeadingLines = 0;
   for (const line of shapeScanSurface.split('\n')) {
     if (TEST_HEADING_LINE_RE.test(line)) shapedHeadingLines += 1;
@@ -2113,7 +2135,6 @@ export = {
   parseCurrentTest,
   parseUatItems,
   parseUatItemsWithStats,
-  maskBlockScalarBodies,
   selectPhaseUatFiles,
   buildCheckpoint,
   CHECKPOINT_FRAMES,
