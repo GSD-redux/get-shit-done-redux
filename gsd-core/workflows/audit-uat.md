@@ -24,8 +24,6 @@ All tests are passing, resolved, or diagnosed with fix plans.
 Stop here.
 
 If `summary.total_items` is 0 but `summary.parse_gap_files` is greater than 0, this is NOT all-clear — one or more files have test blocks that could not be parsed and may be hiding outstanding work. Continue to the `categorize` and `present` steps below; `present` renders the Unparsed section from these `parse_gap: true` entries even though `items` is empty for a mixed project.
-
-`summary.parse_gap_files` counts only files in LIVE (non-archived) phases — that is what makes it an actionable gate. Files in phases belonging to an already-completed milestone are counted separately in `summary.archived_parse_gap_files`, because an archived milestone is closed history: its UAT files are signed off by definition, and no user action can clear a parse gap in them. If `archived_parse_gap_files` were folded into the gate, a mature project would report unparsed files on every single run, permanently, drowning the next real gap. Archived gaps are still fully present in `results` (with `parse_gap: true` and an `archived_milestone` field) and are reported by `present` in their own informational section — visible, but never counted as work to do. Do NOT treat a non-zero `archived_parse_gap_files` alone as a reason to skip the All Clear block above.
 </step>
 
 <step name="categorize">
@@ -49,7 +47,7 @@ For each item in "Testable Now", use Grep/Read to check if the underlying featur
 </step>
 
 <step name="present">
-If `summary.parse_gap_files` is greater than 0, render this section FIRST (before the `## UAT Audit Report` below, or standalone if `total_items` is also 0). Filter `results` for entries with `parse_gap: true` AND no `archived_milestone` field:
+If `summary.parse_gap_files` is greater than 0, render this section FIRST (before the `## UAT Audit Report` below, or standalone if `total_items` is also 0). Filter `results` for entries with `parse_gap: true`:
 ```
 ## Unparsed UAT Files ({parse_gap_files} files)
 
@@ -60,20 +58,7 @@ If `summary.parse_gap_files` is greater than 0, render this section FIRST (befor
 
 These files have `### N.` test blocks with no readable `result:` line. Fix the file's structure, then re-run the audit.
 ```
-This fires for ANY project with `parse_gap_files > 0`, including a mixed project where other phases also have real outstanding `items` — the two sections are not mutually exclusive. If `total_items` is 0, stop after this section (there is no `## UAT Audit Report` to present). Otherwise continue below.
-
-If `summary.archived_parse_gap_files` is greater than 0, render this section AFTER the live one above (or on its own if there were no live gaps). Filter `results` for entries with `parse_gap: true` AND an `archived_milestone` field:
-```
-## Unparsed UAT Files in Archived Milestones ({archived_parse_gap_files} files) — informational
-
-| Milestone | Phase | File | Unparsed Blocks |
-|-----------|-------|------|------------------|
-| {archived_milestone} | {phase} | {file_path} | {unparsed_blocks} |
-...
-
-These phases belong to milestones that are already complete, so this is closed history and NOT outstanding work — no action is expected or required. They are listed only so a parse gap in a signed-off file is never silently dropped: if you ever need to trust one of these records, this is where to look.
-```
-Never merge these rows into the live `## Unparsed UAT Files` table, never add them to `{parse_gap_files}`, and never let this section alone suppress the All Clear block or drive a routing suggestion. Its presence is a note, not a task.
+This fires for ANY project with `parse_gap_files > 0`, including a mixed project where other phases also have real outstanding `items` — the two sections are not mutually exclusive. An outstanding item does not stop mattering because its phase belongs to an already-archived milestone (a deferred human-UAT scenario or a `skipped` live-stack test is exactly what gets archived still-open), so an archived phase's parse gap is listed in this same table, unfiltered by `archived_milestone`. If `total_items` is 0, stop after this section (there is no `## UAT Audit Report` to present). Otherwise continue below.
 
 Present the audit report:
 

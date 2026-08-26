@@ -5799,26 +5799,27 @@ result: pending
   });
 });
 
-// ─── #3078 review MAJOR: the parse-gap counter is split by provenance ─────────
+// ─── #3707 fix: parse_gap_files is ONE counter, archived or not ────────────────
 //
-// Making the parse-gap predicate status-independent was correct, but it collided
-// with the `scanTargets` rule that archived phase dirs are deliberately NOT
-// milestone-filtered. An archived milestone's UAT files are `complete` BY
-// DEFINITION, so every signed-off archived phase carrying an unreadable block
-// landed in `summary.parse_gap_files` — the counter both consumer workflows gate
-// on (`progress.md`: `outstanding_debt > 0 OR parse_gap_files > 0`;
-// `audit-uat.md`: the Unparsed table fires on `parse_gap_files > 0` regardless of
-// `total_items`). On a mature project that means a permanent warning on EVERY
-// `/gsd-progress` run about closed history no user action can clear — warning
-// fatigue that hides the next genuine gap, i.e. the feature defeating itself.
-//
-// The split keeps archived gaps VISIBLE (they must never become silent — that is
-// the whole point of the issue) while keeping them OUT OF THE LIVE GATE so it
-// stays actionable: `parse_gap_files` counts non-archived entries only, and
-// `archived_parse_gap_files` counts the archived ones. The `results` entries
-// themselves are UNCHANGED — an archived parse-gap file still appears with
-// `parse_gap: true` and its `archived_milestone`, so nothing is hidden.
-describe('#3078 review MAJOR: archived parse gaps stay visible but leave the live gate', () => {
+// A live/archived split on `parse_gap_files` was tried in this branch and
+// reverted (#3707 follow-up, #2766's own rationale): "Outstanding UAT items do
+// not stop mattering when a milestone closes: a deferred human-UAT scenario or
+// a `skipped` live-stack test is exactly what gets archived still-open." So
+// "archived UAT files are complete by definition" — the split's premise — is
+// false, and `total_items` (`summary.total_items`) has never had such a split
+// either. Two regressions were executed under the split:
+//   (a) a phase belonging to the CURRENT milestone, but filed under
+//       `.planning/milestones/<version>-phases/` (getArchivedPhaseDirs scans
+//       that whole tree regardless of which milestone ROADMAP.md currently
+//       names), was classified "archived" and demoted out of the gate —
+//       live in-progress work reported as closed history.
+//   (b) an archived outstanding row that PARSES gives `total_items: 1` and
+//       trips Verification Debt; the SAME row made unparseable gave
+//       `parse_gap_files: 0` under the split — the parse failure buried the
+//       debt, the exact bug class #3707 exists to fix.
+// `parse_gap_files` now counts EVERY entry with `parse_gap: true`, unfiltered
+// by `archived_milestone` — mirroring `total_items` exactly.
+describe('#3707 fix: parse_gap_files counts every parse gap, archived or not', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -5865,10 +5866,9 @@ result: pending
     return JSON.parse(result.output);
   }
 
-  // THE REPRODUCTION. Before the split this reported
-  // `total_files: 5, total_items: 1, parse_gap_files: 4` — four signed-off
-  // archived milestones permanently tripping the live gate.
-  test('four signed-off archived milestones with unparseable blocks do NOT enter the live gate', () => {
+  // The merged-semantics replacement for the old "stays out of the live gate"
+  // assertion: four archived milestones with unparseable blocks ALL count.
+  test('archived milestones with unparseable blocks are counted in parse_gap_files, not hidden from it', () => {
     writeFile('.planning', 'phases', '01-live', '01-UAT.md', LIVE_PENDING);
     const archived = [
       ['v0.1.0', '01-alpha'],
@@ -5884,17 +5884,15 @@ result: pending
     const output = audit();
     const describeAll = () => JSON.stringify(output, null, 2);
 
-    // The live gate is CLEAN: nothing here is actionable.
-    assert.strictEqual(output.summary.parse_gap_files, 0, describeAll());
-    // The archived gaps are counted — separately, and informationally.
-    assert.strictEqual(output.summary.archived_parse_gap_files, 4, describeAll());
-    // The live pending row is untouched by the split.
+    // ONE counter: all four archived gaps plus none from the live pending row.
+    assert.strictEqual(output.summary.parse_gap_files, 4, describeAll());
+    assert.strictEqual(output.summary.archived_parse_gap_files, undefined, describeAll());
     assert.strictEqual(output.summary.total_items, 1, describeAll());
     assert.strictEqual(output.summary.total_files, 5, describeAll());
 
-    // NOTHING IS HIDDEN: all four archived entries are still in `results`, each
-    // still flagged `parse_gap: true` and each still carrying the
-    // `archived_milestone` that is the discriminator for the split.
+    // NOTHING IS HIDDEN: all four archived entries are still in `results`,
+    // each still flagged `parse_gap: true` and still carrying its
+    // `archived_milestone`, per file identity.
     const archivedEntries = output.results.filter((r) => r.archived_milestone !== undefined);
     assert.strictEqual(archivedEntries.length, 4, describeAll());
     for (const entry of archivedEntries) {
@@ -5908,17 +5906,15 @@ result: pending
     );
   });
 
-  // THE NON-REGRESSION THAT MATTERS: the live signal must not be weakened by
-  // the split. A live phase whose block cannot be read is still a real,
+  // Baseline: a live phase whose block cannot be read is still a real,
   // actionable gap and must still trip the gate the workflows read.
-  test('a LIVE (non-archived) phase with an unparseable block is still counted in parse_gap_files', () => {
+  test('a live phase with an unparseable block is counted in parse_gap_files', () => {
     writeFile('.planning', 'phases', '01-live', '01-UAT.md', UNPARSEABLE_BLOCK);
 
     const output = audit();
     const describeAll = () => JSON.stringify(output, null, 2);
 
     assert.strictEqual(output.summary.parse_gap_files, 1, describeAll());
-    assert.strictEqual(output.summary.archived_parse_gap_files, 0, describeAll());
     assert.strictEqual(output.summary.total_items, 0, describeAll());
     assert.strictEqual(output.summary.total_files, 1, describeAll());
 
@@ -5932,9 +5928,7 @@ result: pending
     assert.strictEqual(entry.status, 'complete', describeAll());
   });
 
-  // The two counters are independent: a mixed project reports both, and neither
-  // one absorbs or masks the other.
-  test('a mixed project counts live and archived parse gaps independently', () => {
+  test('a mixed project sums live and archived parse gaps into one counter', () => {
     writeFile('.planning', 'phases', '01-live', '01-UAT.md', UNPARSEABLE_BLOCK);
     writeFile('.planning', 'phases', '02-also-live', '02-UAT.md', LIVE_PENDING);
     writeFile('.planning', 'milestones', 'v0.9.0-phases', '09-old', '09-UAT.md', UNPARSEABLE_BLOCK);
@@ -5942,8 +5936,7 @@ result: pending
     const output = audit();
     const describeAll = () => JSON.stringify(output, null, 2);
 
-    assert.strictEqual(output.summary.parse_gap_files, 1, describeAll());
-    assert.strictEqual(output.summary.archived_parse_gap_files, 1, describeAll());
+    assert.strictEqual(output.summary.parse_gap_files, 2, describeAll());
     assert.strictEqual(output.summary.total_items, 1, describeAll());
     assert.strictEqual(output.summary.total_files, 3, describeAll());
 
@@ -5959,11 +5952,65 @@ result: pending
     assert.strictEqual(archivedGap.phase, '09', describeAll());
     assert.strictEqual(archivedGap.archived_milestone, 'v0.9.0', describeAll());
 
-    // The phase carrying a genuine outstanding item is a parse gap on NEITHER
-    // side — the split does not reclassify ordinary rows.
+    // The phase carrying a genuine outstanding item is a parse gap on
+    // NEITHER side.
     const pendingEntry = output.results.find((r) => r.phase === '02');
     assert.ok(pendingEntry, describeAll());
     assert.strictEqual(pendingEntry.parse_gap, undefined, describeAll());
     assert.strictEqual(pendingEntry.items.length, 1, describeAll());
+  });
+
+  // REGRESSION (a): a phase under `.planning/milestones/v<ver>-phases/` whose
+  // milestone IS the ROADMAP's "## Current Milestone" must still count in
+  // `parse_gap_files` — live in-progress work must never be demoted to
+  // closed history merely because of which directory it happens to live
+  // under. Asserts IDENTITY: exact count, plus the entry's own phase/file.
+  test('a phase under the CURRENT milestone but filed in the milestones/ archive tree still counts', () => {
+    writeFile('.planning', 'ROADMAP.md', `# Roadmap
+
+## Current Milestone
+
+v1.1 - Example Milestone
+
+### Phase 1: Alpha
+`);
+    writeFile('.planning', 'milestones', 'v1.1-phases', '01-alpha', '01-UAT.md', UNPARSEABLE_BLOCK);
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    assert.strictEqual(output.summary.parse_gap_files, 1, describeAll());
+    assert.strictEqual(output.summary.total_files, 1, describeAll());
+
+    const [entry] = output.results;
+    assert.strictEqual(entry.phase, '01', describeAll());
+    assert.strictEqual(entry.file, '01-UAT.md', describeAll());
+    assert.strictEqual(entry.parse_gap, true, describeAll());
+    assert.strictEqual(entry.archived_milestone, 'v1.1', describeAll());
+  });
+
+  // REGRESSION (b): an archived outstanding row that fails to parse must not
+  // be buried relative to the identical row when it happens to parse — the
+  // same file, parseable, gives `total_items: 1`; unparseable, it must give
+  // `parse_gap_files: 1`, not 0. Asserts IDENTITY: exact counts, plus the
+  // entry's own phase/file.
+  test('an archived row that fails to parse counts exactly like the identical row that parses', () => {
+    writeFile('.planning', 'milestones', 'v0.5.0-phases', '05-old', '05-UAT.md', LIVE_PENDING);
+    const parseableOutput = audit();
+    assert.strictEqual(parseableOutput.summary.total_items, 1, JSON.stringify(parseableOutput, null, 2));
+    assert.strictEqual(parseableOutput.summary.parse_gap_files, 0, JSON.stringify(parseableOutput, null, 2));
+
+    writeFile('.planning', 'milestones', 'v0.5.0-phases', '05-old', '05-UAT.md', UNPARSEABLE_BLOCK);
+    const gapOutput = audit();
+    const describeAll = () => JSON.stringify(gapOutput, null, 2);
+
+    assert.strictEqual(gapOutput.summary.total_items, 0, describeAll());
+    assert.strictEqual(gapOutput.summary.parse_gap_files, 1, describeAll());
+    assert.strictEqual(gapOutput.summary.total_files, 1, describeAll());
+
+    const [entry] = gapOutput.results;
+    assert.strictEqual(entry.phase, '05', describeAll());
+    assert.strictEqual(entry.file, '05-UAT.md', describeAll());
+    assert.strictEqual(entry.archived_milestone, 'v0.5.0', describeAll());
   });
 });

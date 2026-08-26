@@ -252,13 +252,11 @@ Scan ALL phases in the current milestone for outstanding verification debt using
 DEBT=$(gsd_run query audit-uat --raw 2>/dev/null)
 ```
 
-Parse JSON for `summary.total_items`, `summary.total_files`, `summary.parse_gap_files`, and `summary.archived_parse_gap_files`.
+Parse JSON for `summary.total_items`, `summary.total_files`, and `summary.parse_gap_files`.
 
-Track: `outstanding_debt` — `summary.total_items` from the audit. Track `parse_gap_files` — `summary.parse_gap_files` from the audit. Track `archived_parse_gap_files` — `summary.archived_parse_gap_files` from the audit.
+Track: `outstanding_debt` — `summary.total_items` from the audit. Track `parse_gap_files` — `summary.parse_gap_files` from the audit.
 
-`summary.parse_gap_files` counts unparsed files in LIVE (non-archived) phases only. Files in phases already archived under a completed milestone are counted separately in `summary.archived_parse_gap_files` and MUST NOT be added to `parse_gap_files` or to the Verification Debt gate below: an archived milestone is signed-off history, so a parse gap there is not debt anyone can pay down, and gating on it would make this warning fire on every run of a mature project forever — which would train the reader to ignore the next real gap.
-
-This split deliberately does NOT extend to `outstanding_debt` (`summary.total_items`), which still counts outstanding rows in archived phases. The two are different in kind: an archived parse gap is a row nobody can read, so there is no action to take and the warning can never be cleared, whereas an archived `result: pending` row is known, legible work someone can still pay down by retesting. Debt that can be settled stays counted; a permanently unclearable warning does not.
+`summary.parse_gap_files` counts EVERY file with `parse_gap: true`, archived or not — the same as `outstanding_debt` (`summary.total_items`), which has no archived split either. An outstanding item does not stop mattering because its phase belongs to an already-archived milestone: a deferred human-UAT scenario or a `skipped` live-stack test is exactly what gets archived still-open, so an archived parse gap is exactly as much unread outstanding work as an archived `result: pending` row.
 
 **If outstanding_debt > 0 OR parse_gap_files > 0:** Add a warning section to the progress report output (in the `report` step), placed between "## What's Next" and the route suggestion:
 
@@ -276,15 +274,7 @@ Review: `/gsd:audit-uat ${GSD_WS}` — full cross-phase audit
 Resume testing: `/gsd:verify-work {phase} ${GSD_WS}` — retest specific phase
 ```
 
-The unparsed row comes from `results` entries with `parse_gap: true` AND no `archived_milestone` field (`summary.parse_gap_files` counts exactly those). This is a WARNING, not a blocker — routing proceeds normally. The debt is visible so the user can make an informed choice.
-
-**If archived_parse_gap_files > 0:** append a single informational line directly beneath the section above (or on its own, immediately after "## What's Next", when nothing else triggered the section):
-
-```markdown
-_Note: {archived_parse_gap_files} UAT file(s) in already-completed milestones also have unparsed test blocks. That is closed history — no action needed. See `/gsd:audit-uat ${GSD_WS}` if you want the list._
-```
-
-That line is FYI only. It never adds a Verification Debt row, never changes the `{N} files` count in the heading, and never influences the route suggestion — its only job is to make sure a parse gap in an archived file is recorded somewhere rather than disappearing.
+The unparsed row comes from `results` entries with `parse_gap: true` (`summary.parse_gap_files` counts exactly those, archived or not). This is a WARNING, not a blocker — routing proceeds normally. The debt is visible so the user can make an informed choice.
 
 **Step 1.7: Check verification status for the current phase**
 

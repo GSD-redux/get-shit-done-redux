@@ -285,7 +285,6 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     total_files: number;
     total_items: number;
     parse_gap_files: number;
-    archived_parse_gap_files: number;
     by_category: Record<string, number>;
     by_phase: Record<string, number>;
   } = {
@@ -297,25 +296,18 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // (audit-uat.md, progress.md) must gate their all-clear / debt checks on
     // BOTH total_items === 0 AND parse_gap_files === 0.
     //
-    // #3078 review MAJOR — the counter is SPLIT by provenance. Making the
-    // parse-gap predicate status-independent (see the block above) was correct,
-    // but it collided with the scanTargets rule that archived phase dirs are
-    // deliberately NOT milestone-filtered: an archived milestone's UAT files
-    // are `complete` BY DEFINITION, so every signed-off archived phase carrying
-    // an unreadable block would land in the LIVE gate. On a mature project
-    // that means `/gsd-progress` warns on EVERY run, forever, about closed
-    // history no user action can clear — warning fatigue that hides the next
-    // genuine gap, i.e. the detector defeating itself.
-    //
-    // So: `parse_gap_files` counts only NON-archived (live, actionable)
-    // entries and stays the gate; `archived_parse_gap_files` counts the
-    // archived ones and is reported separately as closed history. Nothing is
-    // hidden — the `results` entries are untouched, so an archived parse-gap
-    // file still appears with `parse_gap: true` AND its `archived_milestone`.
-    // `archived_milestone` is the discriminator (set from the scanTargets
-    // milestone above), NOT a re-derivation from the path.
-    parse_gap_files: results.filter((r) => r.parse_gap && r.archived_milestone === undefined).length,
-    archived_parse_gap_files: results.filter((r) => r.parse_gap && r.archived_milestone !== undefined).length,
+    // Counts EVERY entry with `parse_gap: true`, archived or not — same as
+    // `total_items`, which has no archived split. An outstanding item does
+    // not stop mattering because its phase was archived on milestone close
+    // (#2766): a deferred human-UAT scenario or a `skipped` live-stack test
+    // is exactly what gets archived still-open, so a parse gap on that same
+    // file is still an unread outstanding row, not closed history. Splitting
+    // this counter by `archived_milestone` (tried in this branch, reverted)
+    // demoted an in-progress phase filed under an archived dir out of the
+    // gate, and buried an archived outstanding row's parse failure relative
+    // to the identical row when it happened to parse — the exact bug class
+    // this issue exists to fix.
+    parse_gap_files: results.filter((r) => r.parse_gap).length,
     by_category: {},
     by_phase: {},
   };
