@@ -151,7 +151,7 @@ fi
 3. **Not every degraded result is an absent artifact.** A missing required argument is reported the
    same way — `gsd-tools state add-blocker` with no `--text` returns `{"error":"text required"}` and
    exits 0. So is unusable input: `gsd-tools state advance-plan` against a STATE.md it cannot parse
-   returns `{"error":"Cannot parse Current Plan or Total Plans in Phase from STATE.md"}`, also exit
+   returns `{"error":"Cannot read the plan position from STATE.md. Expected one of: ..."}`, also exit
    0. **The exit code does not distinguish absent from malformed from misinvoked** — see ADR-2980's
    Consequences, where this is recorded as a known cost.
 4. **`message`/`error` text is not stable.** Assert on structure and on typed `reason` codes, never

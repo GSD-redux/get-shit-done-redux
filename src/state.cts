@@ -893,6 +893,11 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
     return result.content;
   }, cwd, { divergedFields, preWriteState });
 
+  // `!resultData` is a type guard, not a second failure mode: the callback
+  // above assigns it unconditionally and only runs once STATE.md is known to
+  // exist (the missing-file case returns "STATE.md not found" earlier), and
+  // every `advancePlanCore` return path sets `data`. So the message below is
+  // the one a caller can actually receive.
   if (!resultData || resultData['error']) {
     // #3807: a multi-`Phase:` Current Position section carries its own cause
     // and its own remedy (name the candidates; the caller resolves them).
@@ -904,13 +909,11 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }, raw, undefined);
       return;
     }
-    // Say which of the two things went wrong. This used to report a parse
-    // failure for ANY transition error, which sends a reader hunting the plan
-    // fields when the fields were never the problem.
-    if (!resultData) {
-      output({ error: 'advance-plan produced no result from STATE.md' }, raw, undefined);
-      return;
-    }
+    // Name the shapes that would work. The old text asserted a specific cause
+    // ("Cannot parse Current Plan or Total Plans in Phase") while listing no
+    // accepted form, so a reader whose file WAS readable-looking had nothing
+    // to compare it against — which is how the hybrid shape in #3784 went
+    // unrecognised for as long as it did.
     output({
       error:
         'Cannot read the plan position from STATE.md. Expected one of: ' +
