@@ -416,6 +416,15 @@ Display:
  Next: /gsd:execute-phase {PHASE}
 ```
 
+**Before declaring convergence:** if `REVIEWS.md` carries a `## Plan-Revision Conflicts` section
+whose entries are not marked resolved, convergence has NOT been achieved. Those entries are
+plan-revision conflicts recorded by `/gsd:plan-phase` (#3771): a checker `fix_hint` that
+contradicts a locked decision, capability guidance, or an existing plan constraint, together with
+the alternatives the planner considered. Treat each open entry as a current actionable concern —
+skip this exit, and continue to 5c so the next cycle arbitrates it. An arbitrated conflict is
+resolved by adopting one of its alternatives, overriding the named constraint, or amending the
+constraint, and marking the entry resolved in `REVIEWS.md`.
+
 Exit — convergence achieved.
 
 **If HIGH_COUNT > 0 or ACTIONABLE_COUNT > 0:** Continue to 5c.
@@ -486,7 +495,7 @@ Display: `◆ Replanning inline with review feedback... (plan-phase runs here in
 Skill(skill="gsd-plan-phase", args="{PHASE} --reviews --skip-research {GSD_WS}")
 ```
 
-Run plan-phase **inline** (do NOT wrap it in Agent()). Same rationale as step 4: the convergence orchestrator runs at depth 0 with Agent available, so inline plan-phase can spawn gsd-planner and gsd-plan-checker at depth 1. Wrapping in Agent() pushes plan-phase to depth 1 where the Agent tool is absent — the replan loop can never produce a revised plan when HIGHs are found. This is the root cause of bug #936. Actionable MEDIUM/LOW findings must be incorporated into executable PLAN.md content or explicitly deferred/rejected in the relevant PLAN.md before convergence can complete. Wait until plan-phase completes (outputs '## PLANNING COMPLETE') and updated PLAN.md files are committed before continuing.
+Run plan-phase **inline** (do NOT wrap it in Agent()). Same rationale as step 4: the convergence orchestrator runs at depth 0 with Agent available, so inline plan-phase can spawn gsd-planner and gsd-plan-checker at depth 1. Wrapping in Agent() pushes plan-phase to depth 1 where the Agent tool is absent — the replan loop can never produce a revised plan when HIGHs are found. This is the root cause of bug #936. Actionable MEDIUM/LOW findings must be incorporated into executable PLAN.md content or explicitly deferred/rejected in the relevant PLAN.md before convergence can complete. The same holds for any open `## Plan-Revision Conflicts` entry (#3771): the replan must resolve it by adopting one of its recorded alternatives, overriding the named constraint, or amending the constraint — and mark the entry resolved. Re-running the planner against an unchanged conflict cannot resolve it and only burns a cycle. Wait until plan-phase completes (outputs '## PLANNING COMPLETE') and updated PLAN.md files are committed before continuing.
 
 After plan-phase completes → go back to **step 5a** (review again).
 
@@ -505,7 +514,7 @@ After plan-phase completes → go back to **step 5a** (review again).
 - [ ] Abort with clear error if current_actionable is absent or malformed
 - [ ] Warn if ACTIONABLE_COUNT > 0 but ## Current Actionable Non-HIGH Concerns section is absent from return message
 - [ ] The review Agent fully completes gsd-review before returning (plan-phase runs inline — no Agent wrap)
-- [ ] Loop exits on: no HIGH concerns and no actionable non-HIGH concerns (converged) OR max cycles (escalation)
+- [ ] Loop exits on: no HIGH concerns, no actionable non-HIGH concerns, and no open `## Plan-Revision Conflicts` entry (converged) OR max cycles (escalation)
 - [ ] Stall detection reported when total unresolved review concern count is not decreasing
 - [ ] STATE.md updated on convergence completion
 </success_criteria>

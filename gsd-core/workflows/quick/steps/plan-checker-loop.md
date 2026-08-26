@@ -117,11 +117,17 @@ Agent(
 
 **If the planner returns `## REVISION_CONFLICT`:** a conflict is not resolvable by re-running the
 same loop, so it must not consume retry budget. Do NOT increment `iteration_count` and do NOT
-re-spawn the checker yet. If `workflow.plan_review_convergence` is enabled
-(`gsd_run query config-get workflow.plan_review_convergence`), hand the conflict and its
-alternatives to that loop. Otherwise present the conflict table and the alternatives to the user
-and ask which to take: adopt the named alternative / override the constraint and apply the hint /
-accept the plan as-is. Re-spawn the planner with that resolution, then continue below.
+re-spawn the checker yet. Present the conflict table and its alternatives to the user and ask
+which to take: adopt a named alternative / override the named constraint and apply the hint /
+amend the constraint itself. Every option resolves the conflict. Accepting the plan with the
+blocker still open is NOT offered here — the blocking `required_property` still fails, and that
+choice belongs to the max-iteration escalation below, which is unchanged.
+
+A quick task has no REVIEWS.md and no phase, so `workflow.plan_review_convergence` has nothing to
+arbitrate over here; the user is the only route. `plan-phase` is where the convergence hand-off
+lives.
+
+Re-spawn the planner with the chosen resolution, then continue below.
 
 After planner returns → spawn checker again, increment iteration_count.
 

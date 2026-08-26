@@ -1275,11 +1275,27 @@ Agent(
 
 **If the planner returns `## REVISION_CONFLICT`:** the loop cannot resolve it by re-running, so it
 must not consume retry budget. Do NOT increment `iteration_count`, do NOT update
-`prev_issue_count`, and do NOT re-spawn the checker yet. If `workflow.plan_review_convergence` is
-enabled (`gsd_run query config-get workflow.plan_review_convergence`), hand the conflict and its
-alternatives to that loop. Otherwise present the conflict table and alternatives to the user and
-ask which to take: adopt the named alternative / override the constraint and apply the hint /
-accept the plans as-is. Re-spawn the planner with that resolution, then continue below.
+`prev_issue_count`, and do NOT re-spawn the checker yet.
+
+```bash
+CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence 2>/dev/null || echo "false")
+```
+
+**If `CONVERGENCE_ENABLED` is `true` AND this plan-phase run was NOT itself invoked by
+`/gsd:plan-review-convergence`:** append the conflict table and its Alternatives Considered to
+`{PHASE_DIR}/{padded_phase}-REVIEWS.md` under `## Plan-Revision Conflicts`, then run
+`/gsd:plan-review-convergence {phase_number}` and let its arbitration cycle settle it. REVIEWS.md
+is the channel that loop already consumes, so no new hand-off mechanism is introduced. Routing
+back into convergence from a run convergence itself started would be a cycle — in that case, and
+whenever convergence is disabled, ask the user directly instead.
+
+**Otherwise:** present the conflict table and its alternatives to the user and ask which to take:
+adopt a named alternative / override the named constraint and apply the hint / amend the
+constraint itself. Every option resolves the conflict. Accepting the plans with the blocker still
+open is NOT offered here — the blocking `required_property` still fails, and that choice belongs
+to the iteration-cap escalation below, which is unchanged.
+
+Re-spawn the planner with the chosen resolution, then continue below.
 
 After planner returns -> spawn checker again (step 10), increment iteration_count.
 

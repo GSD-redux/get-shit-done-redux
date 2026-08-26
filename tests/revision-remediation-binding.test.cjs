@@ -62,6 +62,7 @@ const PLAN_PHASE = read('gsd-core', 'workflows', 'plan-phase.md');
 const QUICK_LOOP = read('gsd-core', 'workflows', 'quick', 'steps', 'plan-checker-loop.md');
 const UI_PHASE = read('gsd-core', 'workflows', 'ui-phase.md');
 const DIAGNOSE = read('gsd-core', 'workflows', 'diagnose-issues.md');
+const CONVERGENCE = read('gsd-core', 'workflows', 'plan-review-convergence.md');
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -73,7 +74,9 @@ const DIAGNOSE = read('gsd-core', 'workflows', 'diagnose-issues.md');
 function yamlIssueBlocks(content) {
   return content
     .split(/```/)
-    .filter((block) => /(^|\r?\n)\s*fix_hint:/.test(block));
+    // `[>\s]*` not `\s*`: the few-shot file blockquotes its YAML (`>     fix_hint:`), so an
+    // indent-only anchor matched nothing there and every loop over it ran zero times.
+    .filter((block) => /(^|\r?\n)[>\s]*fix_hint:/.test(block));
 }
 
 // ── Checker side: binding payload vs advisory remediation ──────────
@@ -111,7 +114,7 @@ describe('#3771 checker states the property and marks the example non-binding', 
     for (const block of blocks) {
       assert.match(
         block,
-        /(^|\r?\n)\s*required_property:/,
+        /(^|\r?\n)[>\s]*required_property:/,
         `issue example names fix_hint but no required_property:\n${block.trim().slice(0, 240)}`
       );
     }
@@ -151,10 +154,14 @@ describe('#3771 checker states the property and marks the example non-binding', 
   });
 
   test('the calibration examples model the split and a smaller-alternative acceptance', () => {
-    assert.doesNotMatch(FEW_SHOT, /suggested_fix/,
-      'few-shot examples must use the plan-checker schema field name');
-    for (const block of yamlIssueBlocks(FEW_SHOT)) {
-      assert.match(block, /(^|\r?\n)\s*required_property:/,
+    assert.doesNotMatch(FEW_SHOT, /suggested_fix|(^|\n)>?\s*finding:|affected_field/,
+      'few-shot examples must use the plan-checker schema field names, not the drifted ones');
+    const fewShotBlocks = yamlIssueBlocks(FEW_SHOT);
+    assert.ok(fewShotBlocks.length >= 3,
+      `expected the few-shot issue examples to be found, got ${fewShotBlocks.length} — ` +
+      'a zero here means the block filter stopped matching, not that the file is clean');
+    for (const block of fewShotBlocks) {
+      assert.match(block, /(^|\r?\n)[>\s]*required_property:/,
         `few-shot issue example lacks required_property:\n${block.trim().slice(0, 200)}`);
     }
     assert.match(FEW_SHOT, /Planner satisfies the property through a smaller mechanism than the hint/,
@@ -213,11 +220,12 @@ describe('#3771 revision re-checks constraints and has a conflict path', () => {
 
 describe('#3771 generic revision pattern carries the same separation', () => {
   test('the field list matches the plan-checker schema', () => {
-    assert.match(REVISION_LOOP, /required_property, description, affected_field, fix_hint/);
+    assert.match(flat(REVISION_LOOP), /`plan`, `dimension`, `severity`, `required_property`, `description`, `task`, `fix_hint`/,
+      'the generic pattern must advertise exactly the plan-checker schema');
     assert.doesNotMatch(
       REVISION_LOOP,
-      /affected_field, suggested_fix/,
-      'the generic pattern must not advertise a suggested_fix field the checker never emits'
+      /affected_field, suggested_fix|dimension, severity, finding/,
+      'the generic pattern must not advertise fields the checker never emits'
     );
     assert.match(flat(REVISION_LOOP), /There is no `suggested_fix` field/,
       'the retired name must be called out so a reader of an old prompt is not confused');
@@ -235,8 +243,12 @@ describe('#3771 generic revision pattern carries the same separation', () => {
     assert.ok(section.length > 0, 'the pattern must define a conflict return');
     assert.match(section, /has not failed and has not stalled/);
     assert.match(section, /Do NOT increment `iteration` and do NOT update `prev_issue_count`/);
-    assert.match(section, /workflow\.plan_review_convergence/,
-      'the configured convergence loop must be an available route');
+    assert.match(flat(REVISION_LOOP), /The increment is step g, AFTER the producing agent returns/,
+      'the canonical flow must place the increment on the return path, or the rule above is unreachable');
+    assert.doesNotMatch(flat(REVISION_LOOP), /a\. iteration \+= 1/,
+      'the pre-dispatch increment is the ordering defect and must be gone');
+    assert.match(flat(section), /Accepting the output with the blocker still open is NOT offered here/,
+      'the conflict gate must not become an early exit from a blocker');
   });
 
   test('an issue satisfied by a smaller mechanism counts as resolved for the loop checks', () => {
@@ -281,13 +293,52 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
         `${name} must not spend a revision iteration on an unresolvable conflict`
       );
     });
+
+    // A counter incremented BEFORE dispatch is already spent when the conflict comes back, so
+    // "do NOT increment" would be unreachable prose. The increment must sit on the return path.
+    test(`${name} increments ${counter} on the return, not before dispatch`, () => {
+      assert.doesNotMatch(
+        flat(content),
+        new RegExp(`- Increment \`${counter}\` - Re-spawn`),
+        `${name} must not increment ${counter} before the reviser is dispatched`
+      );
+      assert.match(flat(content), new RegExp(`(returns|return) [^.]*increment \`?${counter}\`?|increment \`?${counter}\`?, then re-spawn`, 'i'),
+        `${name} must increment ${counter} only once the reviser has returned`);
+    });
+
+    // The conflict gate resolves the conflict; it must not become an early exit from a blocker.
+    test(`${name} does not offer accepting the output with the blocker still open`, () => {
+      assert.match(
+        flat(content),
+        /is NOT offered here/,
+        `${name} must state that accepting an unaddressed blocker is not one of the conflict options`
+      );
+      assert.match(flat(content), /amend the constraint/,
+        `${name} must offer amending the constraint as the third resolving option`);
+    });
   }
 
-  test('plan-phase and quick offer the configured convergence loop as a route', () => {
-    for (const [name, content] of [['plan-phase', PLAN_PHASE], ['quick', QUICK_LOOP]]) {
-      assert.match(content, /workflow\.plan_review_convergence/,
-        `${name} must be able to route the conflict to the convergence loop`);
-    }
+  test('plan-phase routes to convergence through the channel convergence already reads', () => {
+    assert.match(PLAN_PHASE, /workflow\.plan_review_convergence/,
+      'plan-phase must consult the convergence config');
+    assert.match(flat(PLAN_PHASE), /REVIEWS\.md` under `## Plan-Revision Conflicts`/,
+      'the hand-off must use REVIEWS.md rather than inventing a new mechanism');
+    assert.match(flat(PLAN_PHASE), /Routing back into convergence from a run convergence itself started would be a cycle/,
+      'plan-phase must not route back into the loop that invoked it');
+  });
+
+  test('convergence consumes the conflicts plan-phase records, and will not converge over them', () => {
+    assert.match(CONVERGENCE, /## Plan-Revision Conflicts/,
+      'the convergence loop must know about the section plan-phase writes');
+    assert.match(flat(CONVERGENCE), /whose entries are not marked resolved, convergence has NOT been achieved/,
+      'an open conflict must block the converged exit');
+    assert.match(flat(CONVERGENCE), /Re-running the planner against an unchanged conflict cannot resolve it/,
+      'the replan step must be told that re-running alone cannot clear a conflict');
+  });
+
+  test('quick does not advertise a convergence route it has no artifact for', () => {
+    assert.match(flat(QUICK_LOOP), /A quick task has no REVIEWS\.md and no phase/,
+      'quick must say why the convergence route does not apply, rather than dangling a dead branch');
   });
 
   test('the conflict is surfaced to the user with its alternatives when convergence is off', () => {
@@ -304,8 +355,14 @@ describe('#3771 the UI-spec and gap-plan hints are marked non-binding too', () =
   test('the UI checker states the property and marks its hint an example', () => {
     assert.match(UI_CHECKER, /\*\*`fix_hint` is an example, never an order\.\*\*/);
     assert.match(flat(UI_CHECKER), /reaches the same property by a smaller or different mechanism has resolved the issue in full/);
-    for (const block of yamlIssueBlocks(UI_CHECKER)) {
-      assert.match(block, /(^|\r?\n)\s*required_property:/,
+    const uiBlocks = yamlIssueBlocks(UI_CHECKER);
+    assert.ok(uiBlocks.length >= 6, `expected the UI dimension examples, got ${uiBlocks.length}`);
+    assert.doesNotMatch(UI_CHECKER, /exact fix required/,
+      'the UI verdict must not order an exact fix — that is the prescription this fix removes');
+    assert.match(flat(UI_CHECKER), /- \*\*Dimension \{N\} — \{name\}:\*\* \{required_property\} Evidence: \{description\} Example fix \(non-binding/,
+      'the UI ISSUES FOUND rendering must name the property, its evidence, and a non-binding example');
+    for (const block of uiBlocks) {
+      assert.match(block, /(^|\r?\n)[>\s]*required_property:/,
         `UI checker issue example lacks required_property:\n${block.trim().slice(0, 200)}`);
     }
   });

@@ -238,8 +238,9 @@ Display blocking issues. Proceed to step 9.
 Track `revision_count` (starts at 0).
 
 **If `revision_count` < 2:**
-- Increment `revision_count`
-- Re-spawn gsd-ui-researcher with revision context:
+- Re-spawn gsd-ui-researcher with revision context. `revision_count` is incremented on the
+  researcher's RETURN, not here — a return of `## REVISION_CONFLICT` must not spend an
+  iteration, and an increment made before dispatch cannot be withheld afterwards:
 
 ```markdown
 <revision>
@@ -265,10 +266,12 @@ Do NOT re-ask the user questions that are already answered.
 
 - **If the researcher returns `## REVISION_CONFLICT`:** do NOT increment `revision_count` and do
   NOT re-spawn the checker — a conflict is not resolvable by re-running the same loop. Present the
-  conflict and its alternatives to the user and ask which to take (adopt the alternative / override
-  the constraint and apply the hint / accept the spec as-is), then re-spawn the researcher with
-  that resolution.
-- After researcher returns → re-spawn checker (step 7)
+  conflict and its alternatives to the user and ask which to take: adopt a named alternative /
+  override the named constraint and apply the hint / amend the constraint itself. Every option
+  resolves the conflict — accepting the spec with the BLOCK still open is NOT offered here, because
+  the blocking `required_property` still fails; that choice belongs to the cap escalation below.
+  Re-spawn the researcher with the chosen resolution and return to this step.
+- **On any other return:** increment `revision_count`, then re-spawn checker (step 7)
 
 **If `revision_count` >= 2:**
 ```

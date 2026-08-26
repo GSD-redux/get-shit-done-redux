@@ -310,7 +310,8 @@ Dimension 7 — Inventory Provenance: {PASS / FLAG / BLOCK}
 
 Status: {APPROVED / BLOCKED}
 
-{If BLOCKED: list each BLOCK dimension with exact fix required}
+{If BLOCKED: list each BLOCK dimension with the required_property that must hold, its evidence,
+and the fix_hint labelled as a non-binding example}
 {If APPROVED with FLAGs: list each FLAG as recommendation, not blocker}
 ```
 
@@ -368,8 +369,9 @@ UI-SPEC approved. Planner can use as design context.
 
 ### Blocking Issues
 {For each BLOCK:}
-- **Dimension {N} — {name}:** {description}
-  Fix: {exact fix required}
+- **Dimension {N} — {name}:** {required_property}
+  Evidence: {description}
+  Example fix (non-binding — any mechanism reaching the property counts): {fix_hint}
 
 ### Recommendations
 {For each FLAG:}
