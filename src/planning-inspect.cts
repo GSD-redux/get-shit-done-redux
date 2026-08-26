@@ -873,7 +873,15 @@ function buildUatRows(
     // meaning here: "this document did not fully yield its rows."
     const { items: fileItems, headingsSeen } = parseUatItemsWithStats(doc.text);
     items.push(...fileItems);
-    if (headingsSeen > 0) {
+    // Round-3 review MINOR 3: mirror the same terminal-status guard
+    // `cmdAuditUat` applies (src/uat.cts, alongside its own `headingsSeen`
+    // check) so the two surfaces agree on a `status: complete` file that
+    // still carries a stray unparseable block — a file explicitly marked
+    // terminal stays TRUNCATED-free here just as it stays parse_gap-free
+    // there, instead of audit-uat leaving it unflagged while this scope
+    // truncates.
+    const status = (extractFrontmatter(doc.text, path.join(phaseDir, file)).status as string) || 'unknown';
+    if (headingsSeen > 0 && status !== 'complete') {
       diagnostics.push({
         code: INSPECT_DIAGNOSTIC.UAT_UNREADABLE,
         subject: `${phaseDirName}/${file}`,

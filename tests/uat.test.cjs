@@ -2599,11 +2599,21 @@ result: pending
   // Control for FIX 4: a zero-item file whose status IS the terminal
   // `complete` stays omitted entirely — parse_gap must not fire for a
   // legitimately-finished file.
+  // Round-3 review MAJOR 2: the original fixture wrote `02-UAT.md` into phase
+  // dir `01-foundation`. Under #3511 phase scoping, `selectPhaseUatFiles`
+  // filters files against the phase dir's OWN token ("01"), so a `02-UAT.md`
+  // living in `01-foundation` is never even opened — `entry` was `undefined`
+  // for a reason unrelated to the terminal-status guard this test claims to
+  // exercise, i.e. vacuously green regardless of whether that guard exists.
+  // Using the default (matching) `01-foundation` / `01-UAT.md` pairing makes
+  // the file actually reachable, so the assertion is load-bearing on the
+  // guard at src/uat.cts (the `status !== 'complete'` check alongside
+  // `headingsSeen`), not on phase-scope filtering.
   test("a zero-item file with a complete status is still omitted", () => {
-    writeUat(ALL_UNPARSEABLE_ROWS_COMPLETE, "01-foundation", "02-UAT.md");
+    writeUat(ALL_UNPARSEABLE_ROWS_COMPLETE);
     const output = runAudit();
-    const entry = output.results.find((r) => r.file === "02-UAT.md");
-    assert.strictEqual(entry, undefined, `expected no results entry for 02-UAT.md, got ${JSON.stringify(entry)}`);
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.strictEqual(entry, undefined, `expected no results entry for 01-UAT.md, got ${JSON.stringify(entry)}`);
   });
 
   // Defect 1, design-decision case: the fix inverts the DROP-list filter to a
@@ -3134,5 +3144,519 @@ updated: 2025-01-01T00:00:00Z
       `expected phase '01' in by_phase, got ${JSON.stringify(output.summary.by_phase)}`,
     );
     assert.strictEqual(output.summary.by_phase["01"], 0);
+  });
+});
+
+describe("#3707 round-3 review: unterminated fence and decimal sub-headings", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  // MINOR 1: an UNTERMINATED fence (opened, never closed, so it runs to the
+  // end of this test's own block) must not swallow the real `result:` line
+  // that follows it into a false parse_gap. Pre-fix: `stripFencedCode`
+  // drops everything from the opener to EOF (including `result: pending`),
+  // the field-line scan finds nothing, and the row is silently downgraded to
+  // a `headingsSeen`-only parse gap instead of a surfaced item.
+  test("an unterminated fence does not swallow a real result: line", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Broken Fence
+expected: sample
+\`\`\`
+sample code
+result: pending
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 1, `expected 1 item, got ${JSON.stringify(output)}`);
+    assert.strictEqual(output.results[0].items[0].test, 1);
+    assert.strictEqual(output.results[0].items[0].name, "Broken Fence");
+    assert.strictEqual(output.results[0].items[0].result, "pending");
+    // #3078 DEFECT D amends this expectation: the ROW is still surfaced (that
+    // is this test's original point — the unterminated fence must not swallow
+    // the real `result:` line), but the FILE is now additionally flagged as a
+    // parse gap. An unterminated fence swallows everything after it for every
+    // downstream markdown consumer — later `### N.` rows and any trailing
+    // `## Gaps` section alike — so "some rows parsed" is not evidence the file
+    // was read completely. `uat-predicate.cts` already refuses such a file
+    // (src/uat-predicate.cts:278-281); the audit now agrees rather than
+    // reporting a partially-read file as clean.
+    assert.strictEqual(output.results[0].parse_gap, true, JSON.stringify(output.results[0]));
+    assert.ok(output.results[0].unparsed_blocks >= 1);
+  });
+
+  // MINOR 2: `### 1.2.3 Rollback` is a decimal-numbered level-3 sub-heading,
+  // not a `### N.` test heading — the widened `^\d+\.` filter (without the
+  // negative lookahead) matched its leading `1.` and parsed it as test 1
+  // named "2.3 Rollback", a phantom row. Requiring `^\d+\.(?!\d)` excludes
+  // it: the "1." is followed by another digit, so it is not a bare
+  // integer-dot heading at all.
+  test("a decimal-numbered sub-heading like `### 1.2.3 Rollback` is not parsed as a test row", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1.2.3 Rollback
+result: pending
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 0, `expected 0 items, got ${JSON.stringify(output)}`);
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.strictEqual(entry, undefined, `expected no results entry, got ${JSON.stringify(entry)}`);
+  });
+
+  // Regression guard: `### 3.` (no name) and `### 3.Foo` (no space) must
+  // still be recognised as test headings after the `(?!\d)` tightening —
+  // neither has a digit immediately after the `N.`, so the lookahead does
+  // not exclude them.
+  test("`### 3.` and `### 3.Foo` are still parsed as test rows", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 3.
+expected: x
+result: pending
+
+### 3.Foo
+expected: y
+result: blocked
+`);
+    const output = runAudit();
+    assert.strictEqual(output.summary.total_items, 2, `expected 2 items, got ${JSON.stringify(output)}`);
+  });
+});
+
+// ─── #3078 security review: fence/scalar boundary defects ─────────────────────
+//
+// Four correctness defects in `parseUatItemsWithStats` (src/uat.cts), all of
+// which end the same way: a genuinely outstanding UAT row disappears with NO
+// trace and the file reports CLEAN.
+//
+// Every assertion below checks the row's IDENTITY (test number AND name) and
+// not merely the item COUNT plus a result token — a phantom row that STEALS a
+// real row's `result:` satisfies count-and-token assertions exactly, which is
+// how blocker B was previously (wrongly) cleared.
+describe("#3078: fenced/scalar boundaries must never silently drop a UAT row", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeUat(content, phaseDirName = "01-foundation", fileName = "01-UAT.md") {
+    const phaseDir = path.join(tmpDir, ".planning", "phases", phaseDirName);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, fileName), content);
+  }
+
+  function runAudit() {
+    const result = runGsdTools("audit-uat --raw", tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  const FENCE = "```";
+
+  // Renders the FULL item list so a misattribution (a row publishing another
+  // row's field) is visible in the failure message rather than hidden behind a
+  // bare count mismatch.
+  function describeItems(entry) {
+    return JSON.stringify(entry ? entry.items : null, null, 2);
+  }
+
+  // BLOCKER A. `tokenizeHeadings` is fence-aware, so a BALANCED fence pair
+  // opened after test 1 and closed before test 3 makes `### 2.` invisible AS A
+  // HEADING — it never enters the token stream, so the per-block loop cannot
+  // count it either. Pre-fix: items for 1 and 3 only, headingsSeen 0, no
+  // parse_gap, no unparsed_blocks — test 2's `result: blocked` vanishes with
+  // ZERO trace, which origin/next's whole-file regex DID surface (a
+  // regression, not merely a gap).
+  test("a balanced fence straddling `### 2.` flags the file instead of silently dropping the row", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+result: pending
+
+${FENCE}
+### 2. Beta
+result: blocked
+${FENCE}
+
+### 3. Gamma
+result: pending
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+
+    // The suppressed row is accounted for, not silently absent.
+    assert.strictEqual(entry.parse_gap, true, `expected parse_gap, items were ${describeItems(entry)}`);
+    assert.ok(
+      entry.unparsed_blocks >= 1,
+      `expected unparsed_blocks >= 1, got ${entry.unparsed_blocks}; items ${describeItems(entry)}`,
+    );
+    assert.strictEqual(output.summary.parse_gap_files, 1);
+
+    // The two VISIBLE rows keep their own identities.
+    const byNumber = new Map(entry.items.filter((i) => i.test !== undefined).map((i) => [i.test, i]));
+    assert.strictEqual(byNumber.get(1).name, "Alpha", describeItems(entry));
+    assert.strictEqual(byNumber.get(1).result, "pending", describeItems(entry));
+    assert.strictEqual(byNumber.get(3).name, "Gamma", describeItems(entry));
+  });
+
+  // BLOCKER B. A `### N.` line indented 2 spaces inside an `expected: |`
+  // block scalar IS a valid ATX heading to markdown (<= 3 leading spaces), so
+  // the tokenizer emitted a PHANTOM row that consumed the REAL row's
+  // `result:` line. Pre-fix this file yielded exactly
+  // `{"test":3,"name":"Fake Row","result":"pending"}` with headingsSeen 0 —
+  // one item, result "pending", so a count-and-token assertion passed while
+  // test 1 had disappeared entirely. Hence the identity assertions here.
+  test("a `### 3.` indented inside an `expected: |` scalar does not steal the real row", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: |
+  ### 3. Fake Row
+result: pending
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+
+    assert.strictEqual(entry.items.length, 1, describeItems(entry));
+    assert.strictEqual(entry.items[0].test, 1, describeItems(entry));
+    assert.strictEqual(entry.items[0].name, "Alpha", describeItems(entry));
+    assert.strictEqual(entry.items[0].result, "pending", describeItems(entry));
+    // The scalar's contents are the row's VALUE, read verbatim.
+    assert.strictEqual(entry.items[0].expected, "### 3. Fake Row", describeItems(entry));
+
+    // No phantom row numbered 3 anywhere.
+    assert.deepStrictEqual(
+      entry.items.filter((i) => i.test === 3),
+      [],
+      `phantom row 3 present: ${describeItems(entry)}`,
+    );
+    // Scalar body is VALUE text, never a suppressed heading, so it must not
+    // inflate the parse-gap tally either.
+    assert.strictEqual(entry.unparsed_blocks, undefined, describeItems(entry));
+    assert.strictEqual(entry.parse_gap, undefined, describeItems(entry));
+    assert.strictEqual(output.summary.parse_gap_files, 0);
+  });
+
+  // BLOCKER C (same root as B, opposite direction). `parseExpectedFromTestBlock`
+  // received the RAW slice while the field scans used a fence-STRIPPED copy, so
+  // row 1's raw block ran straight into fence-hidden row 2 and published row
+  // 2's `expected:` as its own. Pre-fix: row 1 carried
+  // `expected: "SECRET-FROM-ROW-2"` and row 2 was silently absent.
+  test("a fence-hidden later row's `expected:` is not published by the preceding row", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+result: pending
+${FENCE}
+### 2. Beta
+expected: SECRET-FROM-ROW-2
+result: blocked
+${FENCE}
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+
+    const row1 = entry.items.find((i) => i.test === 1);
+    assert.ok(row1, `row 1 missing: ${describeItems(entry)}`);
+    assert.strictEqual(row1.name, "Alpha", describeItems(entry));
+    assert.notStrictEqual(row1.expected, "SECRET-FROM-ROW-2", `row 1 stole row 2's expected: ${describeItems(entry)}`);
+    assert.strictEqual(row1.expected, undefined, describeItems(entry));
+
+    // Row 2 is either surfaced or counted — never silently absent.
+    const row2 = entry.items.find((i) => i.test === 2);
+    if (!row2) {
+      assert.strictEqual(entry.parse_gap, true, `row 2 dropped with no parse gap: ${describeItems(entry)}`);
+      assert.ok(entry.unparsed_blocks >= 1, `unparsed_blocks was ${entry.unparsed_blocks}`);
+    } else {
+      assert.strictEqual(row2.name, "Beta", describeItems(entry));
+    }
+  });
+
+  // DEFECT D. An unterminated fence swallows the remainder of the document —
+  // every later row AND a trailing `## Gaps` section — so pre-fix the file
+  // yielded `{items: [], headingsSeen: 0}`, never entered `results` at all, and
+  // `parse_gap_files` stayed 0: a WHOLE-FILE false clean. `uat-predicate.cts`
+  // already refuses such a file via `analyzeMarkdown(raw).unterminatedFence`
+  // (src/uat-predicate.cts:278-281); the audit must agree.
+  test("an unterminated fence makes the file a parse gap, not a clean file", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+result: pass
+
+${FENCE}
+oops, never closed
+
+## Gaps
+
+- truth: "the export silently truncates"
+  status: open
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `unterminated-fence file vanished entirely: ${JSON.stringify(output)}`);
+    assert.strictEqual(entry.parse_gap, true, describeItems(entry));
+    assert.ok(entry.unparsed_blocks >= 1, `unparsed_blocks was ${entry.unparsed_blocks}`);
+    assert.strictEqual(output.summary.parse_gap_files, 1, JSON.stringify(output.summary));
+  });
+
+  // DEFECT D, scalar variant. When the unterminated fence opens INSIDE an
+  // `expected:` scalar the pre-fix parser reported `unparsed_blocks: 1` while
+  // TWO rows had been lost — an undercount that reads as "one minor gap".
+  // The unterminated-fence signal is deliberately measured on the RAW document
+  // (a masked copy would hide the opener), so this file is flagged AND both
+  // rows keep their identities.
+  test("an unterminated fence inside an `expected:` scalar still flags the file", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: |
+  ${FENCE}
+  sample
+result: pending
+
+### 2. Beta
+result: blocked
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.parse_gap, true, describeItems(entry));
+    assert.ok(entry.unparsed_blocks >= 1, `unparsed_blocks was ${entry.unparsed_blocks}`);
+    assert.strictEqual(output.summary.parse_gap_files, 1);
+
+    const byNumber = new Map(entry.items.filter((i) => i.test !== undefined).map((i) => [i.test, i]));
+    assert.strictEqual(byNumber.get(1).name, "Alpha", describeItems(entry));
+    assert.strictEqual(byNumber.get(1).result, "pending", describeItems(entry));
+    assert.strictEqual(byNumber.get(2).name, "Beta", describeItems(entry));
+    assert.strictEqual(byNumber.get(2).result, "blocked", describeItems(entry));
+  });
+
+  // Regression guard for the fixes above: a LEGITIMATE `expected: |` scalar
+  // carrying indented prose AND a fenced code sample must still yield its own
+  // full value. This is the case that forbids either (a) fence-STRIPPING the
+  // block before reading `expected:`, or (b) clipping it at the first fence
+  // opener found in the RAW text — the clip point is computed on the
+  // scalar-MASKED copy precisely so a nested sample cannot truncate the field.
+  // Note the sample's own `result: pending` line must NOT become the row's
+  // outcome; the real `result: blocked` does.
+  test("a legitimate `expected: |` scalar with prose and a fenced sample is read in full", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: |
+  The banner renders.
+  Then:
+  ${FENCE}
+  result: pending
+  ${FENCE}
+  Done.
+result: blocked
+
+### 2. Beta
+expected: plain inline
+result: pending
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.parse_gap, undefined, describeItems(entry));
+
+    const byNumber = new Map(entry.items.filter((i) => i.test !== undefined).map((i) => [i.test, i]));
+    assert.strictEqual(byNumber.get(1).name, "Alpha", describeItems(entry));
+    assert.strictEqual(byNumber.get(1).result, "blocked", describeItems(entry));
+    assert.strictEqual(
+      byNumber.get(1).expected,
+      ["The banner renders.", "Then:", FENCE, "result: pending", FENCE, "Done."].join("\n"),
+      describeItems(entry),
+    );
+    assert.strictEqual(byNumber.get(2).name, "Beta", describeItems(entry));
+    assert.strictEqual(byNumber.get(2).expected, "plain inline", describeItems(entry));
+  });
+
+  // Found while proving the fixes above (#3078): `parseExpectedFromTestBlock`'s
+  // block-scalar opener demanded a BARE `\n` after the `|`, so on a CRLF
+  // document `expected: |\r\n` never matched it and control fell through to the
+  // INLINE arm, which captured the pipe character itself — the row published
+  // `expected: "|"` and the whole multi-line value was discarded silently.
+  test("a CRLF `expected: |` scalar is read as its value, not as the literal `|`", () => {
+    writeUat(
+      `${FRONTMATTER}## Tests\n\n### 1. Alpha\nexpected: |\n  first line\n  second line\nresult: pending\n`
+        .replace(/\n/g, "\r\n"),
+    );
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.items.length, 1, describeItems(entry));
+    assert.strictEqual(entry.items[0].test, 1, describeItems(entry));
+    assert.strictEqual(entry.items[0].name, "Alpha", describeItems(entry));
+    assert.strictEqual(entry.items[0].result, "pending", describeItems(entry));
+    assert.strictEqual(entry.items[0].expected, "first line\nsecond line", describeItems(entry));
+  });
+
+  // Sibling of the CRLF case: `|-` / `|+` chomping indicators. The masker
+  // treats them as scalar openers, so the READER must too — otherwise the body
+  // is structurally masked (correct) but the field falls through to the inline
+  // arm and publishes the literal `"|-"`.
+  test("an `expected: |-` chomped scalar is read as its value, not as the literal `|-`", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: |-
+  chomped value
+result: pending
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.items[0].name, "Alpha", describeItems(entry));
+    assert.strictEqual(entry.items[0].expected, "chomped value", describeItems(entry));
+  });
+});
+
+// ─── #3078 follow-up: parseFirstPendingTest shares the same exposure ──────────
+//
+// `parseFirstPendingTest` (src/uat.cts) feeds `cmdRenderCheckpoint` — the same
+// tokenizeHeadings-on-raw + raw-block `parseExpectedFromTestBlock` shape as
+// `parseUatItemsWithStats`, on the render-checkpoint path a human is shown and
+// answers. A phantom row here means the user is asked to confirm a test that
+// does not exist, or the real pending test is skipped.
+describe("#3078 follow-up: parseFirstPendingTest must not steal rows on the render-checkpoint path", () => {
+  let tmpDir;
+  let uatPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    const phaseDir = path.join(tmpDir, ".planning", "phases", "01-test-phase");
+    fs.mkdirSync(phaseDir, { recursive: true });
+    uatPath = path.join(phaseDir, "01-UAT.md");
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FENCE = "```";
+  const FRONTMATTER = `---
+status: partial
+phase: 01-test-phase
+---
+
+## Current Test
+
+[testing paused — 1 item outstanding]
+
+`;
+
+  function renderCheckpoint() {
+    const result = runGsdTools(["uat", "render-checkpoint", "--file", ".planning/phases/01-test-phase/01-UAT.md"], tmpDir);
+    assert.strictEqual(result.success, true, `render-checkpoint failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  // BLOCKER B, render-checkpoint surface. A `### 3.` line indented inside an
+  // `expected: |` scalar is a valid ATX heading to markdown, so the tokenizer
+  // emits a PHANTOM row that steals the real row's `result:` line and the
+  // checkpoint would resume/confirm test 3 "Fake Row" instead of test 1
+  // "Alpha" — which never disappeared, it just never got a chance to render.
+  test("a `### 3.` indented inside an `expected: |` scalar does not become the rendered checkpoint", () => {
+    fs.writeFileSync(uatPath, `${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: |
+  ### 3. Fake Row
+result: pending
+`);
+    const output = renderCheckpoint();
+    assert.strictEqual(output.test_number, 1, JSON.stringify(output));
+    assert.strictEqual(output.test_name, "Alpha", JSON.stringify(output));
+    assert.ok(!/Fake Row/.test(output.checkpoint), `phantom row leaked into checkpoint: ${output.checkpoint}`);
+  });
+
+  // BLOCKER C, render-checkpoint surface. `parseExpectedFromTestBlock` reading
+  // the RAW block let row 1 run into fence-hidden row 2 and publish row 2's
+  // `expected:` as its own in the rendered checkpoint.
+  test("a fence-hidden later row's `expected:` is not published in the rendered checkpoint", () => {
+    fs.writeFileSync(uatPath, `${FRONTMATTER}## Tests
+
+### 1. Alpha
+result: pending
+${FENCE}
+### 2. Beta
+expected: SECRET-FROM-ROW-2
+result: pending
+${FENCE}
+`);
+    const output = renderCheckpoint();
+    assert.strictEqual(output.test_number, 1, JSON.stringify(output));
+    assert.strictEqual(output.test_name, "Alpha", JSON.stringify(output));
+    assert.ok(!/SECRET-FROM-ROW-2/.test(output.checkpoint), `row 1 stole row 2's expected: ${output.checkpoint}`);
+  });
+
+  // Regression guard: a LEGITIMATE `expected: |` scalar carrying indented
+  // prose and a fenced code sample must still render its own full value.
+  test("a legitimate `expected: |` scalar with prose and a fenced sample renders in full", () => {
+    fs.writeFileSync(uatPath, `${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: |
+  The banner renders.
+  Then:
+  ${FENCE}
+  result: pending
+  ${FENCE}
+  Done.
+result: pending
+`);
+    const output = renderCheckpoint();
+    assert.strictEqual(output.test_number, 1, JSON.stringify(output));
+    assert.strictEqual(output.test_name, "Alpha", JSON.stringify(output));
+    assert.ok(output.checkpoint.includes("The banner renders."), output.checkpoint);
+    assert.ok(output.checkpoint.includes(`${FENCE}\nresult: pending\n${FENCE}`), output.checkpoint);
+    assert.ok(output.checkpoint.includes("Done."), output.checkpoint);
   });
 });

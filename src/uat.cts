@@ -195,7 +195,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
       // `headingsSeen` (and every unparseable row it counted) the instant any
       // single item existed anywhere in the file, including via the Gaps
       // union.
-      if (items.length > 0 || headingsSeen > 0) {
+      if (items.length > 0 || (headingsSeen > 0 && status !== 'complete')) {
         const entry: UatFileResult = {
           phase: phaseNum,
           phase_dir: dir,
@@ -407,18 +407,25 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
 
   const sectionBody = testsSection.body;
 
+  // #3078 blocker (same exposure as `parseUatItemsWithStats`): tokenize a
+  // SCALAR-MASKED copy, never the raw section body, so a `### N.` line
+  // indented <= 3 spaces INSIDE an `expected: |` value cannot register as a
+  // phantom heading and steal the real row's `result:` token. The masked
+  // copy is byte-length-identical, so offsets still index `sectionBody`.
+  const maskedSectionBody = maskBlockScalarBodies(sectionBody);
+
   // Within the Tests section body, find ### N. Name sub-headings.
   // tokenizeHeadings operates on the section body as a standalone document,
   // filtering to level-3 headings matching the UAT-specific "N. Name" pattern.
   // The UAT-specific item parsing (number extraction, result parsing) stays caller-side.
-  const subHeadings = tokenizeHeadings(sectionBody).filter(
+  const subHeadings = tokenizeHeadings(maskedSectionBody).filter(
     (h) => h.level === 3 && /^\d+\.\s+/.test(h.text),
   );
 
   for (let i = 0; i < subHeadings.length; i += 1) {
     const current = subHeadings[i];
     const next = subHeadings[i + 1];
-    // Slice the block for this sub-test from the section body text
+    // Slice the block for this sub-test from the RAW section body text
     const block = next
       ? sectionBody.slice(current.offset, next.offset)
       : sectionBody.slice(current.offset);
@@ -433,7 +440,10 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
     const testNumber = parseInt(headingParts[1], 10);
     const testName = headingParts[2].trim();
 
-    const expected = parseExpectedFromTestBlock(block);
+    // #3078 blocker: clip the block at its first fence opener before handing
+    // it to `parseExpectedFromTestBlock`, so a raw read cannot reach into
+    // fence-hidden content — including a LATER row's own `expected:` line.
+    const expected = parseExpectedFromTestBlock(clipBlockAtFirstFence(block));
     if (!expected) {
       error(`Pending UAT test ${testNumber} is missing an expected field`);
     }
@@ -449,13 +459,27 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
   return null;
 }
 
+/**
+ * CRLF (#3078, found while hardening the scalar reader): the opener pattern
+ * demanded a BARE `\n` immediately after the `|`, so on a CRLF document
+ * `expected: |\r\n` never matched the block-scalar arm at all — control fell
+ * through to the INLINE arm, which happily captured the pipe character itself
+ * and published `expected: "|"`, discarding the entire multi-line value with no
+ * trace. `\r?` on the opener plus a per-line `\r` strip on the body fixes it.
+ * `[+-]?` additionally admits the `|-` / `|+` chomping indicators, keeping this
+ * reader in step with `BLOCK_SCALAR_OPENER_RE` (which already masks their
+ * bodies) — otherwise a `expected: |-` value would be structurally masked but
+ * then read as the literal string `"|-"` by the same fall-through.
+ */
+const EXPECTED_SCALAR_OPENER = String.raw`^expected:[ \t]*\|[+-]?[ \t]*\r?\n`;
+
 function parseExpectedFromTestBlock(block: string): string | null {
-  const expectedBlockMatch = block.match(/^expected:\s*\|\n([\s\S]*?)(?=^\w[\w-]*:\s)/m)
-    || block.match(/^expected:\s*\|\n([\s\S]+)/m);
+  const expectedBlockMatch = block.match(new RegExp(`${EXPECTED_SCALAR_OPENER}([\\s\\S]*?)(?=^\\w[\\w-]*:\\s)`, 'm'))
+    || block.match(new RegExp(`${EXPECTED_SCALAR_OPENER}([\\s\\S]+)`, 'm'));
   if (expectedBlockMatch) {
     return expectedBlockMatch[1]
       .split('\n')
-      .map((line: string) => line.replace(/^ {2}/, ''))
+      .map((line: string) => line.replace(/\r$/, '').replace(/^ {2}/, ''))
       .join('\n')
       .trim();
   }
@@ -625,6 +649,120 @@ function buildCheckpoint(currentTest: { number: number; name: string; expected: 
  */
 const UAT_PASS_RESULTS = new Set(['pass', 'passed']);
 
+/**
+ * Visual column width of a line's leading whitespace (tab = 4), used to compare
+ * indentation between a block-scalar key line and its candidate body lines.
+ */
+function indentWidthOf(prefix: string): number {
+  let width = 0;
+  for (const ch of prefix) width += ch === '\t' ? 4 : 1;
+  return width;
+}
+
+/**
+ * A `<key>: |` (or `|-`, `|+`, `>`, `>-`, `>+`) block-scalar OPENER line — the
+ * only shape whose following, more-indented lines are opaque VALUE text rather
+ * than document structure. The optional `- ` allows the bullet-borne form
+ * (`- expected: |`); the key column is measured AFTER the bullet marker so the
+ * body test stays strict (a line must out-indent the KEY, not the dash).
+ */
+const BLOCK_SCALAR_OPENER_RE = /^([ \t]*(?:-[ \t]+)?)[A-Za-z_][\w-]*[ \t]*:[ \t]*[|>][+-]?[ \t]*\r?$/;
+
+/** A fenced-code OPENER line (``` or ~~~, up to 3 leading spaces). */
+const FENCE_OPENER_RE = /^ {0,3}(?:`{3,}|~{3,})/;
+
+/**
+ * A raw source line whose shape is a UAT `### N.` test heading — the line-level
+ * twin of the `h.level === 3 && /^\d+\.(?!\d)/` token filter in
+ * `parseUatItemsWithStats`. Used ONLY to count headings that `tokenizeHeadings`
+ * suppressed (see `maskBlockScalarBodies`'s callers), never to parse one.
+ */
+const TEST_HEADING_LINE_RE = /^ {0,3}#{3}(?!#)[ \t]+\d+\.(?!\d)/;
+
+/**
+ * Return `content` with the BODY of every block scalar overwritten by spaces,
+ * character-for-character, so the result has byte-identical length and every
+ * offset into it also indexes the original document.
+ *
+ * Why (#3078 blocker): `tokenizeHeadings` is a pure markdown scanner — it has
+ * no notion of YAML block scalars, so a line like `  ### 3. Fake Row` sitting
+ * INSIDE an `expected: |` value is a perfectly valid ATX heading to it
+ * (markdown tolerates up to 3 leading spaces). That phantom heading then opens
+ * a block that STEALS the real row's `result:` line, and the real row vanishes
+ * from `items` entirely — a silently-dropped outstanding row, which is exactly
+ * the false-clean this parser exists to prevent. Masking the scalar body before
+ * tokenizing makes value text structurally inert. Length preservation (spaces,
+ * not deletion) is load-bearing: the heading offsets returned from the masked
+ * copy are used to slice block text out of the RAW document, which
+ * `parseExpectedFromTestBlock` must still see verbatim.
+ *
+ * Body extent follows the YAML rule: the run of lines more indented than the
+ * key line, ending at the first non-blank line whose indent is <= the key's.
+ * Blank lines never terminate a scalar (they belong to it), but trailing blanks
+ * are not counted as part of it either.
+ */
+function maskBlockScalarBodies(content: string): string {
+  const lines = content.split('\n');
+  const lineStart: number[] = new Array<number>(lines.length);
+  let acc = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    lineStart[i] = acc;
+    acc += lines[i].length + 1;
+  }
+
+  const chars = Array.from(content);
+  let masked = false;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const opener = BLOCK_SCALAR_OPENER_RE.exec(lines[i]);
+    if (!opener) continue;
+    const keyIndent = indentWidthOf(opener[1]);
+
+    let lastBodyLine = i;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const line = lines[j];
+      if (line.trim() === '') continue; // blank lines never close a scalar
+      if (indentWidthOf(/^[ \t]*/.exec(line)![0]) <= keyIndent) break;
+      lastBodyLine = j;
+    }
+
+    for (let k = i + 1; k <= lastBodyLine; k += 1) {
+      const start = lineStart[k];
+      for (let p = 0; p < lines[k].length; p += 1) chars[start + p] = ' ';
+      if (lines[k].length > 0) masked = true;
+    }
+    i = lastBodyLine;
+  }
+
+  return masked ? chars.join('') : content;
+}
+
+/**
+ * Truncate `block` at its first TOP-LEVEL fenced-code opener (#3078 blocker).
+ *
+ * `parseExpectedFromTestBlock` must read the RAW block (an `expected: |` scalar
+ * may legitimately reproduce fenced-looking text verbatim, so a fence-STRIPPED
+ * copy would corrupt the field). But a raw block slice can run straight into
+ * content that `tokenizeHeadings` correctly hid inside a fence — including a
+ * LATER test row's own `expected:` line, which the earlier row then published
+ * as its own. Clipping at the fence opener bounds the raw read to the part of
+ * the block the tokenizer also considered visible.
+ *
+ * The opener search runs over the SCALAR-MASKED copy, not the raw text, so a
+ * fenced sample nested inside a legitimate `expected: |` value is invisible
+ * here and does not clip the very field this exists to preserve. Masking is
+ * length-preserving, so line indices agree between the two copies.
+ */
+function clipBlockAtFirstFence(block: string): string {
+  const maskedLines = maskBlockScalarBodies(block).split('\n');
+  for (let i = 0; i < maskedLines.length; i += 1) {
+    if (FENCE_OPENER_RE.test(maskedLines[i])) {
+      return block.split('\n').slice(0, i).join('\n');
+    }
+  }
+  return block;
+}
+
 function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number } {
   const items: UatItem[] = [];
   let headingsSeen = 0;
@@ -636,7 +774,12 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // not be absorbed into the preceding test's block, else its unanchored
   // `reason:`/`blocked_by:` scans below bleed a Gaps entry's fields onto the
   // last test row.
-  const allHeadings = tokenizeHeadings(content);
+  // #3078 blocker: tokenize a SCALAR-MASKED copy, never the raw document —
+  // see `maskBlockScalarBodies`. The copy is byte-length-identical, so every
+  // offset it yields still indexes `content`, and block slicing below stays on
+  // the RAW text that `parseExpectedFromTestBlock` needs.
+  const maskedContent = maskBlockScalarBodies(content);
+  const allHeadings = tokenizeHeadings(maskedContent);
   // #3707 follow-up MINOR: `^\d+\.` alone — a trailing name is OPTIONAL
   // (`### 3.` and `### 3.Foo`, without the space the old `\s+`-anchored
   // pattern required, both count) so a heading missing or squishing its name
@@ -649,8 +792,43 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // O(n) scan per heading, making the whole loop O(n^2) in document size.
   const subHeadings: { heading: (typeof allHeadings)[number]; index: number }[] = [];
   allHeadings.forEach((h, index) => {
-    if (h.level === 3 && /^\d+\./.test(h.text)) subHeadings.push({ heading: h, index });
+    if (h.level === 3 && /^\d+\.(?!\d)/.test(h.text)) subHeadings.push({ heading: h, index });
   });
+
+  // #3078 blocker: `tokenizeHeadings` is fence-aware, so a BALANCED fence pair
+  // that opens after one test row and closes after a later one makes every
+  // `### N.` heading between them invisible — the rows are not merely
+  // unparseable, they are absent from the token stream, so the loop below can
+  // never count them and the file reports as CLEAN with an outstanding
+  // `result: blocked` inside it. (origin/next's old whole-file regex did
+  // surface those rows, making the silent drop a regression.) Comparing the
+  // count of heading-SHAPED source lines against the headings the tokenizer
+  // actually returned recovers the shortfall; each suppressed row counts
+  // toward `headingsSeen`, so the file is flagged as a parse gap rather than
+  // silently clean. Counted over the MASKED copy, not the raw document, so a
+  // `### N.`-shaped line living inside an `expected: |` value — which is value
+  // text, not a suppressed row — cannot inflate the tally.
+  let shapedHeadingLines = 0;
+  for (const line of maskedContent.split('\n')) {
+    if (TEST_HEADING_LINE_RE.test(line)) shapedHeadingLines += 1;
+  }
+  if (shapedHeadingLines > subHeadings.length) {
+    headingsSeen += shapedHeadingLines - subHeadings.length;
+  }
+
+  // #3078: an UNTERMINATED fence swallows the entire remainder of the
+  // document — every later test row AND a trailing `## Gaps` section — so the
+  // file yields nothing at all and never even enters `results`: a whole-file
+  // false clean. Mirrors the per-file malformed-markdown guard
+  // `evaluateUatPassed` already applies via `analyzeMarkdown`
+  // (src/uat-predicate.cts:278), which likewise gates on
+  // `stripFencedCode(raw).unterminatedFence`. Deliberately measured on the RAW
+  // document: a fence opened inside an `expected:` scalar is still an
+  // unterminated fence for every downstream markdown consumer, and the masked
+  // copy would hide it.
+  if (stripFencedCode(content).unterminatedFence) {
+    headingsSeen += 1;
+  }
 
   for (let i = 0; i < subHeadings.length; i += 1) {
     const { heading: current, index: currentIdx } = subHeadings[i];
@@ -667,7 +845,18 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // below still receives the RAW `block`, not this stripped copy: an
     // `expected: |` block-scalar value may legitimately reproduce
     // fenced-looking text verbatim, and stripping it would corrupt that field.
-    const fenceStrippedBlock = stripFencedCode(block).text;
+    // #3707 round-3 MINOR: an UNTERMINATED fence (EOF inside a fence, or —
+    // here, scoped per test block — the closing delimiter living in a LATER
+    // block, so from this block's own slice the fence never closes) makes
+    // `stripFencedCode` drop everything from the opener to the end of the
+    // block, including a real `result:`/`reason:`/`blocked_by:` line that
+    // follows it. Falling back to the RAW (unstripped) block in that case
+    // means a legitimate fenced-code false-positive (a `result:`-shaped line
+    // INSIDE a properly-closed sample) is still guarded against in the common
+    // case, while a malformed/unterminated fence no longer silently swallows
+    // a real field line into a false parse_gap.
+    const stripResult = stripFencedCode(block);
+    const fenceStrippedBlock = stripResult.unterminatedFence ? block : stripResult.text;
 
     // A block with no `result:` line at all is not a test row (e.g. still
     // being drafted) — no item, no false positive. It IS, however, a heading
@@ -712,8 +901,13 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     const testName = headingParts[2].trim() || current.text.trim();
 
     // Reuse the existing block-scalar/inline `expected:` grammar rather than
-    // re-deriving a second one (#3707 defect 2).
-    const expected = parseExpectedFromTestBlock(block);
+    // re-deriving a second one (#3707 defect 2). #3078 blocker: the block is
+    // CLIPPED at its first top-level fence opener first — still raw text (a
+    // legitimate `expected: |` scalar must be read verbatim, fences and all),
+    // but bounded to what the tokenizer also treated as visible, so this row
+    // cannot reach past a fence into a LATER row's `expected:` line and
+    // publish it as its own. See `clipBlockAtFirstFence`.
+    const expected = parseExpectedFromTestBlock(clipBlockAtFirstFence(block));
 
     const reasonMatch = fenceStrippedBlock.match(/reason:\s*(.+)/);
     const blockedByMatch = fenceStrippedBlock.match(/blocked_by:\s*(.+)/);
