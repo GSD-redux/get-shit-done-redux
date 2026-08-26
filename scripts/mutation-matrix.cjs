@@ -132,6 +132,15 @@ const TARGET_MUTATION_SCORE = 80;
 //     RATCHET_BASELINE — which lives in tests/mutation-matrix-ratchet.test.cjs, not here — is
 //     updated in the same diff as that procedure requires.
 //
+// PR #3888 (#3881 follow-up): the frontmatter shard's new tests were never registered here
+//   (only the pre-existing frontmatter.property/unit + unusable-input ran), so Stryker's
+//   mutants in the new vendored-parser adapter code had nothing constraining them. Score fell
+//   to 55.8% against the 65 floor (748 killed / 593 survived / 17 timeout) and the shard also
+//   blew the 15-minute cap. Fixed by registering the branch's four new/changed frontmatter
+//   test files in the tests array above (see that entry's inline comment for which files and
+//   why) and giving the shard a measured 180-minute budget via timeoutMinutes. minScore left
+//   at 65 pending a fresh CI measurement with the corrected test list.
+//
 // LESSON: floors MUST be calibrated from CI mutation runs (CI runs with
 // timeout≈0, deterministic). Local runs count timeouts as kills and
 // inflate scores significantly (prompt-budget: 99.6% local vs 68.3% CI;
@@ -180,25 +189,72 @@ const COVERED = {
       // constrain it live here. Without this entry the mutants in that branch are covered by
       // no test in the shard, so the module's score drops even though the behaviour is tested.
       'tests/unusable-input.test.cjs',
+      // #3881 (vendored-YAML-parser migration, ADR-3473 §8.1) grew src/frontmatter.cts from
+      // ~825 to 1496 lines, adding a whole vendored-js-yaml adapter surface that the three
+      // tests above never exercise. PR #3888's shard measured 55.8% against the 65 floor
+      // (748 killed / 593 survived / 17 timeout) BECAUSE these four files existed on the
+      // branch but were never added here — the exact `scripts/mutation-matrix.cjs`
+      // COVERED-vs-tests-array desync `stryker.config.mjs` warns about. Each earns its slot
+      // on evidence, not by blanket inclusion — verified no two of the four duplicate the
+      // same constraining assertion (checked via string search for the distinguishing
+      // symbols/fixtures each file pins):
+      //   - tests/feat-3881-yaml-parser-consequences.test.cjs: consequence/boundary matrix
+      //     for the parser swap (state-transition interop, unusable-input counters) —
+      //     nothing else in the shard drives extractFrontmatter/reconstructFrontmatter
+      //     through those seams.
+      //   - tests/frontmatter-golden-parity.test.cjs: hermetic golden diff of the CURRENT
+      //     parser's output against a snapshot of the LEGACY parser — the only test proving
+      //     the migration changed nothing it didn't mean to.
+      //   - tests/frontmatter-roundtrip.property.test.cjs: fast-check round-trip idempotence
+      //     (parse(serialize(x)) stability) — ADR-3473 §8.1's own mandated gate; no other
+      //     file in the shard property-tests the serializer.
+      //   - tests/frontmatter.test.cjs: pre-existing 2932-line integration file, +167 lines
+      //     on this branch. Its post-review-finding additions are NOT redundant with the
+      //     other three: anchor-alias-bomb refusal (billion-laughs-style anchor/alias
+      //     expansion must be rejected, not expanded) and the B1/B2 block-scalar assertions
+      //     (parsing commands/gsd/add-tests.md must not invent a phantom "Example" key) exist
+      //     ONLY here — grepped for `anchor-alias-bomb` across the other six candidate files
+      //     and found zero hits. Its escapeDoubleQuotedScalar named-escape pins (BEL/NUL/
+      //     NEL/NBSP/line-sep/paragraph-sep/BOM/lone-surrogate) overlap partially with
+      //     tests/frontmatter.unit.test.cjs's existing 13 references to that symbol, but the
+      //     prototype-chain-safe key tests (constructor/__proto__/toString/valueOf/
+      //     hasOwnProperty surviving extract+reconstruct+round-trip) are unique to this file
+      //     too. Measured solo: 3132ms — 2.7x the combined cost of the other three new files
+      //     (776+51+92=919ms) — but a cheaper subset cannot kill the anchor-alias-bomb or
+      //     block-scalar mutants, so it stays.
+      'tests/feat-3881-yaml-parser-consequences.test.cjs',
+      'tests/frontmatter-golden-parity.test.cjs',
+      'tests/frontmatter-roundtrip.property.test.cjs',
+      'tests/frontmatter.test.cjs',
     ],
     minScore: 65,
-    // #3881 (vendored-YAML-parser migration) grew src/frontmatter.cts from ~825 to 1496
-    // lines (+671/-187), proportionally growing the mutant count Stryker generates for
-    // gsd-core/bin/lib/frontmatter.cjs. That alone pushed the shard from a documented 9m46s
-    // baseline (see the model-catalog comment above) past the 15-minute cap — measured
-    // locally: the three test files' OWN logic totals ~413ms (356+30+27ms via `node
-    // tests/<file>.test.cjs`), so the per-mutant cost is dominated by process-fork overhead
-    // in Stryker's `node --test <3 files>` command, NOT by slow test rows (contrast the
-    // #2790/core-utils precedent, which was slow *rows* inside one file). Node's default
-    // test isolation forks one child process PER FILE ARGUMENT; measured via node:test's
-    // run() API on this exact 3-file set: isolation:'process' took ~593ms vs isolation:'none'
-    // ~478ms for the same 392 passing assertions — a ~19-57% cut in per-mutant billed cost
-    // depending on how much of the raw CLI's own startup is counted. `node --test` cannot be
-    // invoked directly in this environment (hard-blocked locally), so the true CI-shard
-    // number is confirmed on the GitHub Actions run, not locally. Scoped to this module only
-    // (not a blanket change) because the other 8 shards were not individually audited for
-    // cross-file state leakage under shared-process execution.
-    isolation: 'none',
+    // Wall-time projection (per this file's own documented method — see the isolation
+    // removal note below): source grew 1.8x (#3881), so mutant count grows 1030 -> ~1850.
+    // Evidence for the multiplier being linear in mutant count at fixed test cost: PR #3888's
+    // shard (new 1.8x source, OLD 3-file test cmd) was cancelled at 15m04s (904s) against a
+    // documented 9m46s (586s) / 1030-mutant baseline for the SAME 3-file test cmd — 586 * 1.8
+    // = 1055s (17.6min), consistent with a shard that would have finished just past the
+    // 15-minute cap had it not been capped. Per-run test-command cost is the second factor:
+    // measured via node:test's run() API (node --test is hard-blocked locally; this is the
+    // sanctioned substitute) on the full 7-file set above, isolation:'process', 697 assertions,
+    // 3 runs: 4705ms / 4652ms / 5085ms (~4.8s avg) vs the OLD 3-file set's documented 593ms —
+    // an 8x per-run cost increase. Applying both factors to the 586s baseline the same way the
+    // #3881 note previously applied the isolation-savings ratio: 586s * 1.8 (mutants) * 8x
+    // (test cost) ~= 8430s (~140 minutes). Set to 180 minutes for margin above that projection
+    // (well under GitHub Actions' 360-minute job ceiling). Scoped to this shard only via
+    // timeoutMinutes below — every other shard keeps the 15-minute default.
+    timeoutMinutes: 180,
+    // isolation: intentionally NOT set (defaults to 'process' below). #3881 previously set
+    // this to 'none' on the strength of a 3-file/392-assertion measurement (593ms process vs
+    // 478ms none, ~19-57% cut) that was never audited for cross-file state leakage among the
+    // shard's files (shared module cache, process.env writes, un-restored monkeypatches, order
+    // dependence) — a correctness risk taken for an optimisation. Re-measured on the full
+    // 7-file/697-assertion set this entry now uses: process 4705/4652/5085ms vs none
+    // 5202/4699/4660ms — the two distributions overlap; 'none' shows no reliable win at this
+    // scale, the earlier 19-57% figure does not generalize as the test set grows. With the
+    // 180-minute budget above no longer needing the optimisation, and the win no longer
+    // measurable, isolation:'none' is removed rather than kept on an unaudited correctness
+    // trade that isn't earning its keep.
   },
   'adr-parser': {
     cjs: 'gsd-core/bin/lib/adr-parser.cjs',
@@ -457,8 +513,14 @@ function buildResult(moduleNames) {
     tests: COVERED[name].tests.join(' '),
     minScore: COVERED[name].minScore,
     // node:test's default per-file process isolation; only modules that document a
-    // measured, audited need for 'none' (see the frontmatter entry above) opt out.
+    // measured, audited need for 'none' opt out.
     isolation: COVERED[name].isolation || 'process',
+    // Per-shard CI job timeout in minutes. Defaults to 15 (the shared per-shard budget);
+    // only a module that documents a measured need for more (see the frontmatter entry
+    // above) sets a higher value. Threaded through mutation.yml's job-level
+    // `timeout-minutes: ${{ matrix.timeoutMinutes }}` the same way `isolation` is threaded
+    // through the test-runner env.
+    timeoutMinutes: COVERED[name].timeoutMinutes || 15,
   }));
 
   return {
@@ -479,6 +541,7 @@ function printHuman(result, changedFiles) {
     console.log(`    tests:    ${shard.tests}`);
     console.log(`    minScore: ${shard.minScore}`);
     console.log(`    isolation:${shard.isolation}`);
+    console.log(`    timeoutMinutes:${shard.timeoutMinutes}`);
   }
 }
 

@@ -108,7 +108,11 @@ jobs:
     # GitHub-hosted runners only. Speed comes from running shards in PARALLEL
     # (one job per changed module), not from larger/3rd-party runners.
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # per-shard; lower than the old 30-min serial budget
+    # Per-shard; lower than the old 30-min serial budget. Matrix-driven so only shards that
+    # document a measured need (mutation-matrix.cjs COVERED[<module>].timeoutMinutes, e.g.
+    # frontmatter's 180) get more; every other shard keeps the 15-minute default emitted by
+    # buildResult() in scripts/mutation-matrix.cjs.
+    timeout-minutes: ${{ matrix.timeoutMinutes }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
