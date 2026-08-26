@@ -1226,26 +1226,38 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     });
   }
 
-  // ─── #3078 round-8: a shortfall is REPORTED, it does not WITHHOLD ──────────
+  // ─── #3078 round-8 REVERTED (fix/3707-fold-shield-revert): the shield is
+  // GONE — a fence-suppression shortfall now degrades the fold exactly like
+  // every other UAT parse gap. `phase.uat.scope` (this phase's own reported
+  // evidence quality) and `phase.scope` (the `worstScope` fold that gates
+  // `phase_scope_degraded` and — via `progress.*` — the milestone's
+  // percentages) remain two SEPARATE fields with two separate meanings, but
+  // as of this revert they no longer disagree on a shortfall-only gap: both
+  // report degraded evidence. `src/uat.cts` still counts `shortfallBlocks` as
+  // its own documented ACCEPTED-OVER-REPORT subset of `headingsSeen`, but
+  // `buildUatRows` no longer reads that subset when deciding `foldScope` — see
+  // `src/planning-inspect.cts`'s `buildUatRows` for the current (unconditional)
+  // rule: `headingsSeen > 0` alone sets BOTH `scope` and `foldScope` to
+  // TRUNCATED, with no `headingsSeen > shortfallBlocks` comparison left to
+  // exempt anything.
   //
-  // `phase.uat.scope` (what this phase's UAT evidence is worth) and
-  // `phase.scope` (the `worstScope` fold, which gates `phase_scope_degraded`
-  // and — via `progress.*` — the milestone's percentages) are separate
-  // decisions. The fence-suppression shortfall is `src/uat.cts`'s documented
-  // ACCEPTED OVER-REPORT class: a closed-fence documentation sample with
-  // literal digits is indistinguishable from a straddled row. A COMPLETED
-  // phase is terminal, so letting that class withhold percentages would make a
-  // paragraph of prose suppress the project's numbers in every future audit
-  // forever.
+  // Boundary matrix (`headingsSeen`, `shortfallBlocks`):
+  //   (0, 0) -> no diagnostic, fold COMPLETE            — unchanged
+  //   (1, 1) -> fold TRUNCATED                          — THE CHANGE (below)
+  //   (1, 0) -> fold TRUNCATED                          — unchanged
+  //   (2, 1) -> fold TRUNCATED                          — unchanged
 
-  test('shortfallAloneReportsTheGapWithoutDegradingThePhaseOrWithholdingThePercentage', (t) => {
+  test('shortfallAloneDegradesTheFoldAndWithholdsThePercentage', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
     const phaseDir = declarePhase(tmpDir, '1', 'Foo');
     writeVerification(phaseDir, '1', 'passed');
     // A `## Notes` section documenting the row format inside a CLOSED fence —
     // literal digits, so `TEST_HEADING_LINE_RE` counts it and the shortfall
-    // fires. This is prose, not an outstanding row.
+    // scan fires: headingsSeen === 1, shortfallBlocks === 1 (the boundary
+    // case the removed `headingsSeen > shortfallBlocks` comparison used to
+    // treat specially — post-revert there is no comparison left, so this is
+    // ordinary `headingsSeen > 0`).
     writeUatDocWithStatus(phaseDir, '1', 'complete', [
       '# UAT',
       '',
@@ -1263,14 +1275,43 @@ describe('planning inspect — evidence kept separate, never folded', () => {
 
     const payload = parseInspect(tmpDir);
     const phase = payload.phases[0];
-    // REPORTED …
-    assert.ok(payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')));
+    // Post-revert: the fold now degrades on a shortfall-only gap, and the
+    // milestone percentage is withheld — the exact behavior #3707's shield
+    // used to suppress.
+    assert.strictEqual(phase.scope, 'truncated');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'phase_scope_degraded' && d.subject === phase.dir));
+    assert.strictEqual(payload.progress.accepted_phases.percent, null);
+    assert.ok(payload.diagnostics.some((d) => d.code === 'percent_withheld'));
+  });
+
+  test('shortfallAloneStillReportsTruncatedUatScopeAndTheUnreadableDiagnostic', (t) => {
+    // CONTROL: the per-phase `uat.scope` reporting and the `uat_unreadable`
+    // diagnostic are untouched by the shield revert — they already went
+    // TRUNCATED for every gap, shortfall included. Only the FOLD (asserted in
+    // the row above) changed.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    writeUatDocWithStatus(phaseDir, '1', 'complete', [
+      '# UAT',
+      '',
+      '## Notes',
+      '',
+      'How to write a row:',
+      '',
+      '```',
+      '### 1. Example Row',
+      'expected: x',
+      'result: pass',
+      '```',
+      '',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
     assert.strictEqual(phase.uat.scope, 'truncated');
-    // … but NOT degraded, and the numbers still publish.
-    assert.strictEqual(phase.scope, 'complete');
-    assert.strictEqual(payload.diagnostics.filter((d) => d.code === 'phase_scope_degraded').length, 0);
-    assert.strictEqual(payload.diagnostics.filter((d) => d.code === 'percent_withheld').length, 0);
-    assert.strictEqual(payload.progress.accepted_phases.percent, 100);
+    assert.ok(payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')));
   });
 
   test('aNonShortfallParseGapStillDegradesThePhaseAndWithholdsThePercentage', (t) => {
@@ -1314,6 +1355,116 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     assert.ok(payload.diagnostics.some((d) => d.code === 'phase_scope_degraded'));
     assert.strictEqual(payload.progress.accepted_phases.percent, null);
   });
+
+  test('aPhaseWithNoUatGapAtAllStillPublishesThePercentage', (t) => {
+    // CONTROL for the catastrophic-revert failure mode: a revert that sets
+    // `foldScope = SCOPE.TRUNCATED` unconditionally, OUTSIDE the
+    // `headingsSeen > 0` branch, would withhold every percentage in the
+    // project — including this phase, which has no gap whatsoever.
+    // Boundary case: headingsSeen === 0, shortfallBlocks === 0.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    writeUatDocWithStatus(phaseDir, '1', 'complete', [
+      '### 1. Alpha',
+      'expected: a',
+      'result: pass',
+      '',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.uat.scope, 'complete');
+    assert.strictEqual(phase.scope, 'complete');
+    assert.strictEqual(payload.diagnostics.filter((d) => d.code === 'phase_scope_degraded').length, 0);
+    assert.strictEqual(payload.diagnostics.filter((d) => d.code === 'uat_unreadable').length, 0);
+    assert.strictEqual(payload.progress.accepted_phases.percent, 100);
+  });
+
+  test('aMixedShortfallAndGenuineParseGapPhaseDegradesTheFold', (t) => {
+    // CONTROL: a file carrying BOTH a shortfall block and a genuine
+    // (non-shortfall) parse gap in the same document — headingsSeen === 2,
+    // shortfallBlocks === 1. `headingsSeen > shortfallBlocks` was already true
+    // under the OLD shielded rule (2 > 1), so this row degraded the fold
+    // before the revert too; it stays green throughout.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    writeUatDocWithStatus(phaseDir, '1', 'complete', [
+      // A genuine gap: a column-0 `### N.` block with no `result:` line.
+      '### 1. Alpha',
+      'expected: a',
+      '',
+      // A shortfall: a closed-fence documentation sample with literal digits.
+      '## Notes',
+      '',
+      '```',
+      '### 2. Example Row',
+      'expected: x',
+      'result: pass',
+      '```',
+      '',
+    ]);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    assert.strictEqual(phase.uat.scope, 'truncated');
+    assert.strictEqual(phase.scope, 'truncated');
+    assert.ok(payload.diagnostics.some((d) => d.code === 'phase_scope_degraded' && d.subject === phase.dir));
+    assert.strictEqual(payload.progress.accepted_phases.percent, null);
+  });
+
+  // ─── Multi-file order independence ─────────────────────────────────────────
+  //
+  // Two files scope to the SAME phase: one carries a shortfall-only gap, one
+  // is entirely clean. The fold must degrade regardless of which file
+  // `buildUatRows`'s per-file loop visits first — `fs.readdirSync` order is
+  // deterministically controlled via method monkeypatching (never mode bits;
+  // real directory order is OS/filesystem-dependent and would make this a
+  // flaky race), per CLAUDE.md's cross-platform IO-failure-injection rule.
+
+  function writeCustomUatFile(phaseDir, fileName, status, bodyLines) {
+    writeAbs(path.join(phaseDir, fileName), ['---', `status: ${status}`, '---', '', ...bodyLines].join('\n'));
+  }
+
+  const CLEAN_UAT_BODY = ['### 1. Alpha', 'expected: a', 'result: pass', ''];
+  const SHORTFALL_UAT_BODY = [
+    '# UAT', '', '## Notes', '', 'How to write a row:', '',
+    '```', '### 1. Example Row', 'expected: x', 'result: pass', '```', '',
+  ];
+
+  for (const [label, order] of [
+    ['cleanFileFirst', ['1-UAT-clean.md', '1-UAT-shortfall.md']],
+    ['shortfallFileFirst', ['1-UAT-shortfall.md', '1-UAT-clean.md']],
+  ]) {
+    test(`shortfallOnlyGapDegradesTheFoldRegardlessOfFileOrder_${label}`, (t) => {
+      const tmpDir = createTempProject();
+      t.after(() => cleanup(tmpDir));
+      const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+      writeVerification(phaseDir, '1', 'passed');
+      writeCustomUatFile(phaseDir, '1-UAT-clean.md', 'complete', CLEAN_UAT_BODY);
+      writeCustomUatFile(phaseDir, '1-UAT-shortfall.md', 'complete', SHORTFALL_UAT_BODY);
+
+      const planningInspectLib = require('../gsd-core/bin/lib/planning-inspect.cjs');
+      const originalReaddirSync = fs.readdirSync;
+      t.mock.method(fs, 'readdirSync', function mockedReaddirSync(target, ...rest) {
+        const result = originalReaddirSync.call(this, target, ...rest);
+        if (target === phaseDir) {
+          const others = result.filter((f) => f !== '1-UAT-clean.md' && f !== '1-UAT-shortfall.md');
+          return [...order, ...others];
+        }
+        return result;
+      });
+
+      const payload = planningInspectLib.buildPlanningInspect(tmpDir);
+      const phase = payload.phases[0];
+      assert.strictEqual(phase.scope, 'truncated');
+      assert.ok(payload.diagnostics.some((d) => d.code === 'phase_scope_degraded' && d.subject === phase.dir));
+      assert.strictEqual(payload.progress.accepted_phases.percent, null);
+    });
+  }
 
   test('roadmapAcceptanceIsNeverAuthoritativeOnAnyPhaseRow', (t) => {
     const tmpDir = createTempProject();
