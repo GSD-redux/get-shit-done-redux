@@ -1557,7 +1557,12 @@ describe('#3078-CR: evaluateUatPassed agrees with the audit surface (parseUatIte
     assert.strictEqual(items.length, 1, 'a U+2028-delimited heading must still be found');
     assert.strictEqual(items[0].test, 2);
     assert.strictEqual(items[0].name, 'B');
-    assert.notStrictEqual(items[0].result, 'passed', 'must not read as a passing result');
+    // IDENTITY, not a proxy: the exact token. `notStrictEqual(..., 'passed')` also passes on
+    // 'pass', which IS in UAT_PASS_RESULTS -- so it could not catch a regression that
+    // attributed a PASSING result to the recovered heading, which is the whole risk here.
+    assert.strictEqual(items[0].result, 'missing',
+      'the result: line sits across the same exotic separator, so it is correctly NOT attributed -- '
+      + 'missing is a non-passing, blocking state');
   });
 
   test('H-U28 restored: evaluateUatPassed BLOCKS on the U+2028-delimited heading shape', () => {

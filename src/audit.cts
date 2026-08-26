@@ -1621,7 +1621,10 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
   // it exists on disk. Normalizing first would rewrite the file's line
   // endings as a side effect of an unrelated acknowledge operation, and a
   // splice computed against normalized text can land at the wrong offset
-  // when written back over the RAW (un-normalized) original.
+  // when written back over the RAW (un-normalized) original. The snapshot
+  // VALUE computed below IS normalized (on a separate in-memory copy, never
+  // the spliced one) so it agrees with the scanner's frame — see the comment
+  // at `normalizedContent` further down.
   // ── The four phase-scoped categories: --phase --file [--archived-milestone] ──
   const PHASE_SCOPED = new Set(['uat_gaps', 'verification_gaps', 'context_questions', 'deferred_items']);
   if (PHASE_SCOPED.has(category as string)) {
@@ -1657,6 +1660,15 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
 
     const content = fs.readFileSync(safeFilePath, 'utf-8');
     const fm = extractFrontmatter(content, safeFilePath);
+    // Mixed-frame fix (security review, 4th instance on this branch): the
+    // splice above and below stays keyed to RAW `content` (raw byte offsets
+    // must not shift), but `scanUatGaps`/`scanContextQuestions` now derive
+    // their comparison values from `normalizeLineEndings`d content. Deriving
+    // the snapshot here from raw `content` would make a lone-CR file's
+    // stored value permanently disagree with what the scanner recomputes —
+    // `audit acknowledge` would be a silent no-op for lone-CR artifacts. Feed
+    // the derive functions a normalized COPY; never splice from it.
+    const normalizedContent = normalizeLineEndings(content);
     let snapshotKey: string;
     let currentValue: string;
     if (category === 'uat_gaps') {
@@ -1664,7 +1676,7 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
       // pending scenarios added under the same status — snapshot the
       // composite `deriveUatGapSnapshotValue` instead (see its doc comment).
       snapshotKey = 'gap_snapshot';
-      currentValue = deriveUatGapSnapshotValue(((fm.status as string) || 'unknown').toLowerCase(), content);
+      currentValue = deriveUatGapSnapshotValue(((fm.status as string) || 'unknown').toLowerCase(), normalizedContent);
     } else if (category === 'verification_gaps') {
       snapshotKey = 'status';
       currentValue = ((fm.status as string) || 'unknown').toLowerCase();
@@ -1673,7 +1685,7 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
       // question set, not just its count (see `deriveOpenQuestionsDigest`'s
       // doc comment).
       snapshotKey = 'questions_digest';
-      currentValue = deriveOpenQuestionsDigest(deriveOpenQuestions(content, fm));
+      currentValue = deriveOpenQuestionsDigest(deriveOpenQuestions(normalizedContent, fm));
     }
     fm.audit_acknowledged = { ...markerBase, [snapshotKey]: currentValue };
     const newContent = spliceFrontmatter(content, fm);
