@@ -61,6 +61,22 @@ const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 const ROOT = path.join(__dirname, '..');
 
 /**
+ * Resolve a path that may be either repo-relative (the shape every VENDORED
+ * row and CLI usage actually passes) or already absolute (the shape a test
+ * exercising drift against a scratch file outside the repo passes). Joining
+ * an absolute path onto ROOT via `path.join(ROOT, abs)` silently produces a
+ * nonsense path (Windows: crossing drive letters is not even representable
+ * as a relative join; POSIX: an absolute second segment wins but the result
+ * is coincidental, not correct) — this makes "absolute in, absolute out"
+ * explicit instead of relying on that coincidence.
+ * @param {string} p
+ * @returns {string}
+ */
+function resolvePath(p) {
+  return path.isAbsolute(p) ? p : path.join(ROOT, p);
+}
+
+/**
  * One row per vendored third-party package.
  *
  * @typedef {object} VendoredPackage
@@ -129,8 +145,8 @@ const REFRESH_COMMAND = VENDORED.map(buildRefreshCommand).join(' && ');
  * @returns {string | null}
  */
 function compareFiles(relA, relB) {
-  const absA = path.join(ROOT, relA);
-  const absB = path.join(ROOT, relB);
+  const absA = resolvePath(relA);
+  const absB = resolvePath(relB);
   if (!fs.existsSync(absA)) return `${relA} does not exist`;
   if (!fs.existsSync(absB)) return `${relB} does not exist`;
   const a = fs.readFileSync(absA);
@@ -175,7 +191,7 @@ function declaredValueExports(dctsSource) {
  */
 function checkHandAuthoredTwin(row) {
   if (!row.srcTwin) return [`${row.name}: twinKind 'hand-authored' but srcTwin is null`];
-  const twinPath = path.join(ROOT, row.srcTwin);
+  const twinPath = resolvePath(row.srcTwin);
   if (!fs.existsSync(twinPath)) return [`${row.srcTwin} does not exist`];
 
   const declared = declaredValueExports(fs.readFileSync(twinPath, 'utf8'));
@@ -183,7 +199,7 @@ function checkHandAuthoredTwin(row) {
     return [`${row.srcTwin} declares zero value-level exports — nothing for this twin to gate`];
   }
 
-  const runtimeModule = require(path.join(ROOT, row.vendoredCjs));
+  const runtimeModule = require(resolvePath(row.vendoredCjs));
   const findings = [];
   for (const name of declared) {
     if (!Object.prototype.hasOwnProperty.call(runtimeModule, name)) {
@@ -277,4 +293,5 @@ module.exports = {
   checkRow,
   declaredValueExports,
   checkHandAuthoredTwin,
+  resolvePath,
 };

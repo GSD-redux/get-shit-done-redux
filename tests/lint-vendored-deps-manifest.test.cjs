@@ -30,6 +30,7 @@ const {
   stripRangeOperator,
   declaredValueExports,
   checkHandAuthoredTwin,
+  resolvePath,
 } = require('../scripts/lint-vendored-deps.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -46,6 +47,23 @@ function re2jsRow() {
   return row;
 }
 
+describe('resolvePath: absolute-input safety does not change repo-relative resolution', () => {
+  test('a repo-relative input still resolves under REPO_ROOT (unchanged behavior)', () => {
+    const row = jsYamlRow();
+    assert.equal(resolvePath(row.vendoredCjs), path.join(REPO_ROOT, row.vendoredCjs));
+  });
+
+  test('an absolute input is returned as-is, not re-joined onto REPO_ROOT', () => {
+    const absPath = path.join(os.tmpdir(), 'resolve-path-absolute-sensor.cjs');
+    assert.equal(resolvePath(absPath), absPath);
+    // Sensor: confirm this is not vacuous — path.join(ROOT, absPath) (the
+    // pre-fix behavior) would NOT equal absPath, since joining an absolute
+    // second segment onto ROOT is not the identity operation on either
+    // POSIX or Windows.
+    assert.notEqual(path.join(REPO_ROOT, absPath), absPath);
+  });
+});
+
 describe('G1: vendored js-yaml matches node_modules via the generalized manifest', () => {
   test('the js-yaml row byte-compares clean against node_modules today', () => {
     const findings = checkRow(jsYamlRow());
@@ -59,7 +77,14 @@ describe('G1: vendored js-yaml matches node_modules via the generalized manifest
     const original = fs.readFileSync(upstreamAbs, 'utf8');
     fs.writeFileSync(tmpFile, `${original}\n// mutated for test\n`);
     try {
-      const drift = compareFiles(row.vendoredCjs, path.relative(REPO_ROOT, tmpFile));
+      // tmpFile is passed ABSOLUTE, not relativized against REPO_ROOT — a
+      // temp dir can live on a different drive than the repo checkout
+      // (observed on windows-latest CI), where path.relative() cannot
+      // express a relative traversal and silently returns the absolute
+      // path unchanged, defeating compareFiles's `path.join(ROOT, rel)`
+      // resolution. compareFiles/resolvePath must accept an absolute path
+      // as-is regardless of platform or drive.
+      const drift = compareFiles(row.vendoredCjs, tmpFile);
       assert.ok(drift, 'expected compareFiles to report drift against a mutated copy, got null');
       assert.ok(drift.includes('!='), `expected a byte-length mismatch description, got: ${drift}`);
     } finally {
@@ -80,7 +105,10 @@ describe('G2: all four original re2js checks still fire after the manifest refac
     const tmpFile = path.join(os.tmpdir(), `re2js-vendored-mutated-${process.pid}-${Date.now()}.cjs`);
     fs.writeFileSync(tmpFile, `${fs.readFileSync(vendoredAbs, 'utf8')}\n// mutated`);
     try {
-      const mutatedRow = { ...row, vendoredCjs: path.relative(REPO_ROOT, tmpFile) };
+      // Absolute tmpFile, not relativized — see the js-yaml sensor test above
+      // for why: cross-drive path.relative() on Windows returns the absolute
+      // path unchanged, which is exactly the shape that must still resolve.
+      const mutatedRow = { ...row, vendoredCjs: tmpFile };
       const findings = checkRow(mutatedRow);
       assert.ok(
         findings.some((f) => f.includes('!=')),
@@ -98,7 +126,8 @@ describe('G2: all four original re2js checks still fire after the manifest refac
     const tmpFile = path.join(os.tmpdir(), `re2js-dts-mutated-${process.pid}-${Date.now()}.d.cts`);
     fs.writeFileSync(tmpFile, `${fs.readFileSync(vendoredDtsAbs, 'utf8')}\n// mutated`);
     try {
-      const mutatedRow = { ...row, vendoredDts: path.relative(REPO_ROOT, tmpFile) };
+      // Absolute tmpFile — same cross-drive rationale as above.
+      const mutatedRow = { ...row, vendoredDts: tmpFile };
       const findings = checkRow(mutatedRow);
       assert.ok(
         findings.some((f) => f.includes('!=')),
@@ -116,7 +145,8 @@ describe('G2: all four original re2js checks still fire after the manifest refac
     const tmpFile = path.join(os.tmpdir(), `re2js-srctwin-mutated-${process.pid}-${Date.now()}.d.cts`);
     fs.writeFileSync(tmpFile, `${fs.readFileSync(srcTwinAbs, 'utf8')}\n// mutated`);
     try {
-      const mutatedRow = { ...row, srcTwin: path.relative(REPO_ROOT, tmpFile) };
+      // Absolute tmpFile — same cross-drive rationale as above.
+      const mutatedRow = { ...row, srcTwin: tmpFile };
       const findings = checkRow(mutatedRow);
       assert.ok(
         findings.some((f) => f.includes('!=')),
