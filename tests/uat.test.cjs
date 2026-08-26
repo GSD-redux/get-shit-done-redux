@@ -6543,4 +6543,23 @@ describe('parseUatItemsWithStats — result: line-scan boundary defects (#3078-C
     assert.strictEqual(findAnyPassItem(items), undefined, describeAll());
     assert.strictEqual(headingsSeen, 0, describeAll());
   });
+
+  test('[REGRESSION] a column-0 result: line whose trailing text contains U+2028 parses identically to its plain-LF twin', () => {
+    // Final review MINOR 1: the per-line pattern kept `.*$` after the fix
+    // above dropped `/m`, and `.` never matches U+2028/U+2029, so `$` was
+    // unreachable on a line whose TRAILING text (after the token) contained
+    // one of these separators — the line failed to match at all. Compare by
+    // IDENTITY (test number AND name AND result) against the plain-LF
+    // equivalent, not just presence/count, per this suite's own convention.
+    const withSeparator = '### 1. Alpha\nexpected: ok\nresult: blocked' + LINE_SEPARATOR + 'trailing note\n';
+    const plainLf = '### 1. Alpha\nexpected: ok\nresult: blocked trailing note\n';
+
+    const withSeparatorResult = parseUatItemsWithStats(withSeparator);
+    const plainLfResult = parseUatItemsWithStats(plainLf);
+    const describeAll = () => JSON.stringify({ withSeparatorResult, plainLfResult }, null, 2);
+
+    assert.ok(findAlphaBlocked(withSeparatorResult.items), `expected outstanding row 1/Alpha/blocked absent: ${describeAll()}`);
+    assert.deepStrictEqual(withSeparatorResult.items, plainLfResult.items, `must match the plain-LF twin by identity: ${describeAll()}`);
+    assert.strictEqual(withSeparatorResult.headingsSeen, plainLfResult.headingsSeen, describeAll());
+  });
 });

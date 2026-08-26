@@ -1237,23 +1237,6 @@ function countUnattributedIndentedRows(surface: string): number {
 }
 
 /**
- * `normalizeLineEndings` itself now lives in `core-utils.cts` (#3707-CR
- * follow-up MAJOR) and is imported above alongside `toPosixPath`, so it can
- * also be applied at the READ boundary in `cmdAuditUat` (see
- * `readNormalizedDocument`) — not just inside this module's own parsers. See
- * that shared copy's doc comment for the full CommonMark lone-CR rationale.
- *
- * It is still called directly inside `parseUatItemsWithStats` and
- * `parseCurrentTest` below: `parseUatItemsWithStats` is also reached from
- * `src/planning-inspect.cts`'s `buildUatRows` via its own `readDocument` seam
- * (a DIFFERENT read boundary this module does not own), and
- * `parseCurrentTest` is reached from `cmdRenderCheckpoint`'s own independent
- * `readFileSync` (a third read site, never touched by `cmdAuditUat`'s
- * boundary). Both calls stay so neither ingress can regress if its own
- * boundary is ever skipped.
- */
-
-/**
  * `headingsSeen` is the TOTAL parse-gap tally (every heading-shaped thing this
  * parser could not turn into an item). `shortfallBlocks` is the SUBSET of it
  * contributed by the fence-suppression shortfall scan below — the one gap class
@@ -1505,7 +1488,12 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // mistook an indented `### N.` living inside a legitimate block scalar
     // for a heading boundary, corrupting every scalar/indent guard in this
     // module — see tests/uat.test.cjs's #3078 scalar guard family).
-    const RESULT_LINE_RE = /^result:\s*\[?(\w+)\]?.*$/i;
+    // Trailing text is matched with `[^]*` rather than `.*` (final review
+    // MINOR 1): `.` never matches U+2028/U+2029, so a column-0 `result:`
+    // line whose trailing text contains one of those separators would
+    // otherwise never reach `$`, and the whole line would fail to match —
+    // an unpinned regression against origin/next, which parses it.
+    const RESULT_LINE_RE = /^result:\s*\[?(\w+)\]?[^]*$/i;
     const resultLineMatch = fenceStrippedBlock
       .split('\n')
       .map((line) => line.match(RESULT_LINE_RE))
