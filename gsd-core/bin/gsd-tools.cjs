@@ -1841,10 +1841,32 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           const promptIdx = args.indexOf('--prompt');
           const promptArg = promptIdx !== -1 ? args[promptIdx + 1] : undefined;
           const hostIntegration = require('./lib/host-integration.cjs');
+          // #3714: resolve an EXPLICIT, non-sentinel per-agent model pin for the
+          // spawned worktree executor. Passing `null` as the runtime resolver
+          // (3rd arg) is LOAD-BEARING, not an oversight — it is what keeps
+          // profile/tier-derived models out of argv. Codex's `modelMode: passive`
+          // posture (ADR-1239) and ADR-2313 forbid GSD driving model selection on
+          // this host; only an operator's EXPLICIT override may cross this seam.
+          // resolveAgentModelOverride(..., null) returns a value ONLY when the
+          // operator pinned one explicitly (measured: unpinned -> null,
+          // "inherit" -> "inherit" meaning "use the ambient session model, don't
+          // pass a flag", "" -> null, profile-only -> null). Do NOT swap in
+          // resolve-model / a full model-resolver here: that resolver falls back
+          // to a default (e.g. "sonnet") for the unpinned/profile-only cases,
+          // and emitting that on Codex's exec argv is exactly the documented
+          // #2310/#2311 regression (a model unknown to Codex forced into a
+          // passive-posture host).
+          const { readGsdEffectiveModelOverrides, resolveAgentModelOverride } =
+            require('./lib/install-model-override-resolver.cjs');
+          const pinned = resolveAgentModelOverride(
+            'gsd-executor', readGsdEffectiveModelOverrides(cwd), null);
+          const model = (typeof pinned === 'string' && pinned.length > 0 && pinned !== 'inherit')
+            ? pinned : undefined;
           const resolution = hostIntegration.resolveOrchestratorExec(
             runtimeEntry?.runtime?.orchestratorExec,
             cwdTarget,
             promptArg,
+            model,
           );
           // A host declaring orchestrator-worktree whose exec descriptor does
           // not resolve cannot be spawned — degrade to sequential rather than

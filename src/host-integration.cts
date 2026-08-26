@@ -798,6 +798,7 @@ interface OrchestratorExec {
   args?: string[];
   cwdFlag?: string | null;
   promptFlag?: string | null;
+  modelFlag?: string | null;
 }
 
 type OrchestratorExecResolution =
@@ -823,13 +824,29 @@ type OrchestratorExecResolution =
  * per-host branch ADR-1239 exists to remove. Omit `prompt` entirely and the
  * resolution is byte-identical to Phase 2's (the unconsumed-resolver shape).
  *
- * Argv order is base args → cwd flag → prompt, so the prompt stays the final
- * positional token for the hosts that read it that way.
+ * Argv order is base args → model flag → cwd flag → prompt, so the prompt
+ * stays the final positional token for the hosts that read it that way. The
+ * model flag is placed BEFORE the cwd flag (not after, and not appended at
+ * the very end) purely to keep it clear of that trailing positional — the
+ * model value itself is never the prompt-adjacent token a host might scan
+ * for last.
+ *
+ * `model` (Phase 4, #3714) is optional, descriptor-gated exactly like prompt:
+ * a `modelFlag` string on the descriptor names the flag that pins the
+ * spawned executor's model (codex: `--model`); `null`/absent means the host
+ * exposes no such override on this exec path, and `[modelFlag, model]` is
+ * appended ONLY when both the descriptor's `modelFlag` and the caller's
+ * `model` are non-empty strings. Omitting `model` entirely (or passing it to
+ * a host with no `modelFlag`) is byte-identical to the resolver's behavior
+ * before this parameter existed. This function decides no policy about WHICH
+ * model to pass or what 'inherit' means — that is entirely the caller's job;
+ * this seam only shapes descriptor + values into argv.
  */
 function resolveOrchestratorExec(
   orchestratorExec: OrchestratorExec | undefined,
   cwd: string,
   prompt?: string,
+  model?: string,
 ): OrchestratorExecResolution {
   if (!orchestratorExec || typeof orchestratorExec !== 'object' || Array.isArray(orchestratorExec)) {
     return { ok: false, reason: 'missing_command' };
@@ -850,10 +867,16 @@ function resolveOrchestratorExec(
   if (oe.promptFlag !== undefined && oe.promptFlag !== null && typeof oe.promptFlag !== 'string') {
     return { ok: false, reason: 'invalid_prompt_flag' };
   }
+  if (oe.modelFlag !== undefined && oe.modelFlag !== null && typeof oe.modelFlag !== 'string') {
+    return { ok: false, reason: 'invalid_model_flag' };
+  }
   // An executor spawned with no instruction is a hang, not a degraded run —
   // fail closed rather than launching a prompt-less process.
   if (prompt !== undefined && (typeof prompt !== 'string' || prompt.length === 0)) {
     return { ok: false, reason: 'invalid_prompt' };
+  }
+  if (model !== undefined && (typeof model !== 'string' || model.length === 0)) {
+    return { ok: false, reason: 'invalid_model' };
   }
   // Leading-dash guard, mirroring worktree-safety.cts's `unsafe_leading_dash`
   // check on git arguments. A positional prompt (or a cwd) beginning with '-'
@@ -869,11 +892,20 @@ function resolveOrchestratorExec(
   if (cwd.startsWith('-')) {
     return { ok: false, reason: 'unsafe_leading_dash_cwd' };
   }
+  if (typeof model === 'string' && model.startsWith('-')) {
+    return { ok: false, reason: 'unsafe_leading_dash_model' };
+  }
 
   const baseArgs = Array.isArray(oe.args) ? [...oe.args] : [];
-  const args = typeof oe.cwdFlag === 'string' && oe.cwdFlag.length > 0
-    ? [...baseArgs, oe.cwdFlag, cwd]
-    : baseArgs;
+  let args = baseArgs;
+
+  if (typeof oe.modelFlag === 'string' && oe.modelFlag.length > 0 && typeof model === 'string' && model.length > 0) {
+    args = [...args, oe.modelFlag, model];
+  }
+
+  args = typeof oe.cwdFlag === 'string' && oe.cwdFlag.length > 0
+    ? [...args, oe.cwdFlag, cwd]
+    : args;
 
   if (typeof prompt === 'string') {
     if (typeof oe.promptFlag === 'string' && oe.promptFlag.length > 0) {
