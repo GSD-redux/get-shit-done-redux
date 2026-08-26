@@ -16,6 +16,7 @@ const {
   CHECKPOINT_LANGUAGE_ALIASES,
   resolveCheckpointFrame,
   parseDeferredItems,
+  parseUatItems,
   parseUatItemsWithStats,
 } = require('../gsd-core/bin/lib/uat.cjs');
 
@@ -4141,5 +4142,634 @@ result: pending
     assert.strictEqual(byNumber.get(2).name, "Beta", JSON.stringify(entry, null, 2));
     assert.strictEqual(byNumber.get(2).result, "blocked", JSON.stringify(entry, null, 2));
     assert.strictEqual(byNumber.get(3).name, "Gamma", JSON.stringify(entry, null, 2));
+  });
+});
+
+// ─── #3078 round 4 MAJOR 1: an indented delimiter may be a COLUMN-0 fence's closer ──
+//
+// `blankIndentedFenceBlocks` (then named `blankIndentedFenceDelimiters`)
+// blanked every indented delimiter LINE on
+// sight, with no notion of open/closed state. CommonMark lets a column-0 fence
+// be CLOSED by a delimiter indented up to three spaces, so the pass perturbed
+// fence pairing in BOTH directions and swallowed a genuinely outstanding row:
+//   - column-0 opener + indented closer: the closer was blanked, the fence
+//     never closed for `tokenizeHeadings`, and the row after it vanished —
+//     `{items: [], headingsSeen: 1}` pre-fix, where the identical document with
+//     a column-0 closer returned the row;
+//   - indented opener + column-0 closer: the opener was blanked, PROMOTING the
+//     closer into an opener, same vanishing row, same `{items: [],
+//     headingsSeen: 1}`.
+// Both documents are legal CommonMark that renders correctly, so the row's
+// CONTENT — not merely a count — must survive. Every assertion below is on row
+// IDENTITY (number AND name) plus its result/blocked_by, never on a count:
+// pre-fix these files reported a parse-gap shortfall of 1, so a count-only
+// assertion would have shipped the content loss as intended behaviour.
+describe('#3078 round 4 MAJOR 1: an indented fence delimiter must not perturb column-0 fence pairing', () => {
+  const BACKTICK = '```';
+  const TILDE = '~~~';
+  const LONG_BACKTICK = '`````';
+
+  function documentWith(opener, closer) {
+    return `## Tests
+
+### 1. Alpha
+result: pass
+
+${opener}
+hidden sample text
+${closer}
+### 2. Outstanding Row
+result: blocked
+blocked_by: server
+`;
+  }
+
+  function assertOutstandingRowSurfaced(content) {
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    const row = items.find((i) => i.test === 2);
+    assert.ok(row, `outstanding row 2 absent: ${describeAll()}`);
+    assert.strictEqual(row.name, 'Outstanding Row', describeAll());
+    assert.strictEqual(row.result, 'blocked', describeAll());
+    assert.strictEqual(row.blocked_by, 'server', describeAll());
+    assert.strictEqual(row.category, 'server_blocked', describeAll());
+    return { items, headingsSeen, describeAll };
+  }
+
+  test('a column-0 opener closed by a 3-space-indented closer still surfaces the row after it', () => {
+    const { headingsSeen, describeAll } = assertOutstandingRowSurfaced(
+      documentWith(BACKTICK, `   ${BACKTICK}`),
+    );
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('the same document with a column-0 closer is unchanged (control)', () => {
+    const { headingsSeen, describeAll } = assertOutstandingRowSurfaced(
+      documentWith(BACKTICK, BACKTICK),
+    );
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('a 2-space-indented opener closed by a column-0 closer still surfaces the row after it', () => {
+    const { headingsSeen, describeAll } = assertOutstandingRowSurfaced(
+      documentWith(`  ${BACKTICK}`, BACKTICK),
+    );
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // Same two pairings on the OTHER delimiter character and at a run length
+  // longer than 3, so the fix cannot be a backtick-and-exactly-3 special case:
+  // the delimiter rules come from the shared `scanFencedBlocks` engine.
+  test('a column-0 `~~~` opener closed by a 2-space-indented `~~~` closer still surfaces the row after it', () => {
+    assertOutstandingRowSurfaced(documentWith(TILDE, `  ${TILDE}`));
+  });
+
+  test('a 3-space-indented `~~~` opener closed by a column-0 `~~~` closer still surfaces the row after it', () => {
+    assertOutstandingRowSurfaced(documentWith(`   ${TILDE}`, TILDE));
+  });
+
+  test('a column-0 5-backtick opener closed by a 3-space-indented 5-backtick closer still surfaces the row after it', () => {
+    assertOutstandingRowSurfaced(documentWith(LONG_BACKTICK, `   ${LONG_BACKTICK}`));
+  });
+
+  test('a 2-space-indented opener closed by a column-0 LONGER-run closer still surfaces the row after it', () => {
+    assertOutstandingRowSurfaced(documentWith(`  ${BACKTICK}`, LONG_BACKTICK));
+  });
+
+  // The case the helper EXISTS for must not regress: an indented fence PAIR
+  // living wholly inside an `expected: |` value is neutralised, so a later
+  // column-0 row is still tokenised — and the scalar itself is still published
+  // verbatim, fences and all.
+  test('an indented fence PAIR wholly inside an `expected: |` body still leaves a later row visible', () => {
+    const content = `## Tests
+
+### 1. Alpha
+expected: |
+  ${BACKTICK}
+  sample
+  ${BACKTICK}
+result: pending
+
+### 2. Beta
+result: blocked
+`;
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    const alpha = items.find((i) => i.test === 1);
+    const beta = items.find((i) => i.test === 2);
+    assert.ok(alpha, `row 1 absent: ${describeAll()}`);
+    assert.strictEqual(alpha.name, 'Alpha', describeAll());
+    assert.strictEqual(alpha.expected, `${BACKTICK}\nsample\n${BACKTICK}`, describeAll());
+    assert.ok(beta, `row 2 absent: ${describeAll()}`);
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('an indented `~~~` PAIR wholly inside an `expected: |` body still leaves a later row visible', () => {
+    const content = `## Tests
+
+### 1. Alpha
+expected: |
+  ${TILDE}
+  sample
+  ${TILDE}
+result: pending
+
+### 2. Beta
+result: blocked
+`;
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    const beta = items.find((i) => i.test === 2);
+    assert.ok(beta, `row 2 absent: ${describeAll()}`);
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+});
+
+// ─── #3078 round 4 MAJOR 2: an indented row must be COUNTED, not dropped ──
+//
+// `isColumnZeroHeading` refusing to PARSE an indented `### N.` row is
+// deliberate. But `TEST_HEADING_LINE_RE` — the shortfall scan that exists to
+// count rows the parser could not read — inherited the same column-0 anchor,
+// so a heading the parse gate rejected could never reach `headingsSeen`
+// either. origin/next's unanchored `###\s*(\d+)\.` surfaced
+// `  ### 1. Indented Row` with its `result: pending`; pre-fix this HEAD
+// returned `{items: [], headingsSeen: 0}` — no item, no gap, no count, no
+// trace. Refusing to parse is defensible; vanishing silently is the defect
+// class this issue exists to close.
+describe('#3078 round 4 MAJOR 2: an indented test row surfaces as a parse gap instead of vanishing', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const FRONTMATTER = `---
+status: testing
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+`;
+
+  function writeUat(content) {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '01-UAT.md'), content);
+  }
+
+  test('a file whose only test row is indented yields no item but IS flagged as a parse gap', () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+  ### 1. Indented Row
+result: pending
+`);
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const entry = output.results.find((r) => r.file === '01-UAT.md');
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    assert.ok(entry, `expected a results entry, got ${describeAll()}`);
+    assert.deepStrictEqual(entry.items, [], describeAll());
+    assert.strictEqual(entry.parse_gap, true, describeAll());
+    assert.ok(entry.unparsed_blocks >= 1, describeAll());
+    assert.strictEqual(output.summary.parse_gap_files, 1, describeAll());
+  });
+
+  test('the indented row is counted at the parser seam too', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+  ### 1. Indented Row
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.deepStrictEqual(items, [], describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
+  });
+
+  // Boundary coverage on the CommonMark indent tolerance: 1, 2 and 3 spaces
+  // are heading-shaped and must be counted; 4 spaces is an indented CODE BLOCK
+  // to CommonMark, not a heading at all, so it must NOT inflate the tally.
+  for (const spaces of [1, 2, 3]) {
+    test(`a row indented ${spaces} space(s) is counted as an unparsed block`, () => {
+      const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+${' '.repeat(spaces)}### 1. Indented Row
+result: pending
+`);
+      const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+      assert.deepStrictEqual(items, [], describeAll());
+      assert.strictEqual(headingsSeen, 1, describeAll());
+    });
+  }
+
+  test('a line indented 4 spaces is an indented code block, not a row, and is not counted', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: blocked
+
+    ### 2. Code Block Line
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].name, 'Alpha', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // The counting loosening must NOT reach an indented `### N.` that is the
+  // VALUE of an `expected:` block scalar — that line is already published,
+  // verbatim, as the row's own `expected` field, so counting it would flag a
+  // parse gap against a document with nothing missing.
+  test('an indented `### N.` that is `expected:` scalar VALUE text is still not counted', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: |
+  ### 3. Fake Row
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 1, describeAll());
+    assert.strictEqual(items[0].name, 'Alpha', describeAll());
+    assert.strictEqual(items[0].expected, '### 3. Fake Row', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // Same exclusion across the whole opener family the reader accepts — the
+  // line-level header grammar is derived from the reader's own source, so a
+  // new opener shape cannot be admitted by one and refused by the other.
+  for (const opener of ['|', '|-', '|+', '|2', '|2-', '|-2', '>', '>-', '>+', '>2', '>2+']) {
+    test(`an indented \`### N.\` under an \`expected: ${opener}\` scalar is not counted`, () => {
+      const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: ${opener}
+  ### 3. Fake Row
+result: pending
+`);
+      const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+      assert.strictEqual(items.length, 1, describeAll());
+      assert.strictEqual(items[0].name, 'Alpha', describeAll());
+      assert.strictEqual(headingsSeen, 0, describeAll());
+    });
+  }
+
+  // An indented row following a CLOSED scalar body (the preceding column-0
+  // line is an ordinary field, not a scalar header) is a row, not value text.
+  test('an indented row after a completed row is still counted', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: pass
+
+  ### 2. Indented Row
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.deepStrictEqual(items, [], describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
+  });
+});
+
+// ─── #3078 round 5 BLOCKER: neutralising a fence must blank its BODY too ──────
+//
+// `blankIndentedFenceDelimiters` blanked only the two DELIMITER lines of a
+// neutralised indented fence block. Its BODY was left verbatim — so a COLUMN-0
+// `### N.` line living INSIDE that block, correctly invisible to
+// `tokenizeHeadings` while the fence stood, was UN-HIDDEN the instant the
+// delimiters were blanked. The tokenizer then emitted it as a real heading, it
+// opened a block, and it STOLE the preceding row's `result:` line:
+//
+//     ### 1. Alpha        →  pre-fix: [{test: 9, name: 'Phantom',
+//     expected: x                                 result: 'pending'}]
+//       ```                  Row 1 "Alpha" GONE, phantom holding its result.
+//     ### 9. Phantom
+//       ```
+//     result: pending
+//
+// This is the exact theft `isColumnZeroHeading` exists to prevent, reintroduced
+// one layer down by the neutralisation pass itself. An indented fence pair is
+// CONTENT of a scalar by the very rule that selected it for neutralisation, so
+// nothing inside it may produce document structure. Assertions are on row
+// IDENTITY (number AND name) — a count-only assertion passes on the pre-fix
+// output, which also returns exactly one item.
+describe('#3078 round 5 BLOCKER: a neutralised indented fence must not expose a column-0 heading in its body', () => {
+  const BACKTICK = '```';
+  const TILDE = '~~~';
+  const LONG_BACKTICK = '`````';
+
+  function documentWith(opener, closer) {
+    return `## Tests
+
+### 1. Alpha
+expected: x
+${opener}
+### 9. Phantom
+${closer}
+result: pending
+`;
+  }
+
+  function assertAlphaKeptItsResult(content) {
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    const phantom = items.find((i) => i.test === 9);
+    assert.strictEqual(
+      phantom,
+      undefined,
+      `a phantom row 9 was emitted from inside a neutralised fence: ${describeAll()}`,
+    );
+    const alpha = items.find((i) => i.test === 1);
+    assert.ok(alpha, `row 1 "Alpha" was stolen by the phantom: ${describeAll()}`);
+    assert.strictEqual(alpha.name, 'Alpha', describeAll());
+    assert.strictEqual(alpha.result, 'pending', describeAll());
+    assert.strictEqual(alpha.category, 'pending', describeAll());
+    assert.strictEqual(alpha.expected, 'x', describeAll());
+    return { items, headingsSeen, describeAll };
+  }
+
+  test('a column-0 `### 9.` inside a 2-space-indented fence pair does not steal row 1', () => {
+    assertAlphaKeptItsResult(documentWith(`  ${BACKTICK}`, `  ${BACKTICK}`));
+  });
+
+  test('the same document with a `~~~` indented pair behaves identically', () => {
+    assertAlphaKeptItsResult(documentWith(`  ${TILDE}`, `  ${TILDE}`));
+  });
+
+  test('the same document with an indented 5-backtick pair behaves identically', () => {
+    assertAlphaKeptItsResult(documentWith(`   ${LONG_BACKTICK}`, `   ${LONG_BACKTICK}`));
+  });
+
+  // The other neutralised shape: an indented opener that never closes at all.
+  // Its "body" runs to EOF, so widening the blanking must reach the end of the
+  // document, not stop at a closer that does not exist.
+  test('a column-0 `### 9.` after an UNTERMINATED indented opener does not steal row 1', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: x
+result: pending
+  ${BACKTICK}
+### 9. Phantom
+result: blocked
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    const alpha = items.find((i) => i.test === 1);
+    assert.ok(alpha, `row 1 "Alpha" absent: ${describeAll()}`);
+    assert.strictEqual(alpha.name, 'Alpha', describeAll());
+    assert.strictEqual(alpha.result, 'pending', describeAll());
+    assert.strictEqual(
+      items.find((i) => i.test === 9),
+      undefined,
+      `a phantom row 9 was emitted from inside an unterminated indented fence: ${describeAll()}`,
+    );
+  });
+
+  // The case the helper EXISTS for must survive the widening: blanking is done
+  // on a tokenizer-only COPY, so `parseExpectedFromTestBlock` still reads the
+  // RAW block and a legitimate `expected: |` scalar containing a fenced sample
+  // still publishes that sample verbatim.
+  test('a legitimate `expected: |` scalar with an indented fenced sample still yields its full text', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: |
+  intro line
+  ${BACKTICK}js
+  const x = 1;
+  ${BACKTICK}
+  outro line
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    const alpha = items.find((i) => i.test === 1);
+    assert.ok(alpha, `row 1 absent: ${describeAll()}`);
+    assert.strictEqual(alpha.name, 'Alpha', describeAll());
+    assert.strictEqual(
+      alpha.expected,
+      `intro line\n${BACKTICK}js\nconst x = 1;\n${BACKTICK}\noutro line`,
+      describeAll(),
+    );
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+});
+
+// ─── #3078 round 5 MAJOR: ONE test-row grammar, shared by BOTH parse paths ────
+//
+// `parseFirstPendingTest` (render-checkpoint) filtered level-3 headings with
+// `/^\d+\.\s+/` while `parseUatItemsWithStats` (audit) used `/^\d+\.(?!\d)/`.
+// So `### 3.Foo` WAS a test row to the audit and was NOT one to the checkpoint:
+// two paths in one module disagreeing about the same grammar. Both now go
+// through `isTestRowHeadingText` / `parseTestRowHeadingText`, and the AUDIT rule
+// won — it admits `### 3.` and `### 3.Foo` and excludes the dotted-outline
+// `### 1.2.3`.
+describe('#3078 round 5 MAJOR: the audit and render-checkpoint paths agree on what a test row is', () => {
+  let tmpDir;
+  let uatPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-test-phase');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    uatPath = path.join(phaseDir, '01-UAT.md');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // A NON-STRUCTURED `## Current Test` section is what routes `parseCurrentTest`
+  // into `parseFirstPendingTest` — the path under test here.
+  const FRONTMATTER = `---
+status: partial
+phase: 01-test-phase
+---
+
+## Current Test
+
+[testing paused — 1 item outstanding]
+
+`;
+
+  function documentFor(headingText) {
+    return `## Tests
+
+### ${headingText}
+expected: EXPECTED-VALUE
+result: pending
+`;
+  }
+
+  function renderCheckpoint(headingText) {
+    fs.writeFileSync(uatPath, `${FRONTMATTER}${documentFor(headingText)}`);
+    return runGsdTools(
+      ['uat', 'render-checkpoint', '--file', '.planning/phases/01-test-phase/01-UAT.md'],
+      tmpDir,
+    );
+  }
+
+  function assertBothPathsYieldRow(headingText, expectedNumber, expectedName) {
+    const { items, headingsSeen } = parseUatItemsWithStats(documentFor(headingText));
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, `audit path: ${describeAll()}`);
+    assert.strictEqual(items[0].test, expectedNumber, `audit path: ${describeAll()}`);
+    assert.strictEqual(items[0].name, expectedName, `audit path: ${describeAll()}`);
+
+    const result = renderCheckpoint(headingText);
+    assert.strictEqual(
+      result.success,
+      true,
+      `render-checkpoint path did not treat "### ${headingText}" as a row: ${result.error}`,
+    );
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.test_number, expectedNumber, JSON.stringify(output));
+    assert.strictEqual(output.test_name, expectedName, JSON.stringify(output));
+  }
+
+  function assertNeitherPathYieldsRow(headingText) {
+    const { items } = parseUatItemsWithStats(documentFor(headingText));
+    assert.deepStrictEqual(
+      items,
+      [],
+      `audit path parsed "### ${headingText}" as a row: ${JSON.stringify(items)}`,
+    );
+
+    const result = renderCheckpoint(headingText);
+    assert.strictEqual(
+      result.success,
+      false,
+      `render-checkpoint path parsed "### ${headingText}" as a row: ${result.output}`,
+    );
+  }
+
+  // `### 3.Foo` — the name squished against the dot. This is the shape that
+  // actually diverged: a row to the audit, silently NOT a row to the checkpoint.
+  test('`### 3.Foo` is a row with the same identity on BOTH paths', () => {
+    assertBothPathsYieldRow('3.Foo', 3, 'Foo');
+  });
+
+  // `### 3.` — no name at all; both paths fall back to the heading's own text.
+  test('`### 3.` is a row with the same identity on BOTH paths', () => {
+    assertBothPathsYieldRow('3.', 3, '3.');
+  });
+
+  // The control that keeps the shared rule from being "anything starting with a
+  // digit": a dotted OUTLINE number is a document heading, not test row 1.
+  test('`### 1.2.3` is excluded on BOTH paths', () => {
+    assertNeitherPathYieldsRow('1.2.3');
+  });
+
+  test('`### 1.2.3 Overview` is excluded on BOTH paths', () => {
+    assertNeitherPathYieldsRow('1.2.3 Overview');
+  });
+
+  // The conventional shape neither path ever disagreed about — proves the
+  // shared predicate did not narrow the grammar while closing the divergence.
+  test('`### 3. Foo` is a row with the same identity on BOTH paths (control)', () => {
+    assertBothPathsYieldRow('3. Foo', 3, 'Foo');
+  });
+});
+
+// ─── #3078 round 5 MINOR: parseUatItems is a documented, TESTED wrapper ───────
+//
+// `parseUatItems` has no in-tree caller left (`cmdAuditUat` and
+// `src/planning-inspect.cts` both use `parseUatItemsWithStats`) but is a public
+// export of a shipped module, so it stays — removing an exported symbol is a
+// contract change. It must not therefore be untested dead weight: this pins the
+// one thing it promises, that it is the items-only projection of the stats form.
+describe('#3078 round 5 MINOR: parseUatItems is the items-only form of parseUatItemsWithStats', () => {
+  test('it returns exactly the `items` the stats form returns, and drops `headingsSeen`', () => {
+    // A document exercising both surfaces: a surfaced `### N.` row, a passing
+    // row that yields nothing, a `## Gaps` entry, and a heading with no
+    // `result:` line at all (which contributes to headingsSeen only).
+    const content = `## Tests
+
+### 1. Alpha
+expected: A
+result: pending
+
+### 2. Beta
+result: pass
+
+### 3. Gamma
+expected: G
+
+## Gaps
+
+- truth: "an open finding"
+  status: open
+`;
+    const stats = parseUatItemsWithStats(content);
+    const items = parseUatItems(content);
+    const describeAll = () => JSON.stringify({ items, stats }, null, 2);
+
+    assert.deepStrictEqual(items, stats.items, describeAll());
+    assert.strictEqual(
+      stats.headingsSeen,
+      1,
+      `row 3 has no result: line and should be the only unparsed block: ${describeAll()}`,
+    );
+    // Identity, not just count — the wrapper must not reorder or re-shape.
+    assert.strictEqual(items.length, 2, describeAll());
+    assert.strictEqual(items[0].test, 1, describeAll());
+    assert.strictEqual(items[0].name, 'Alpha', describeAll());
+    assert.strictEqual(items[0].result, 'pending', describeAll());
+    assert.strictEqual(items[1].name, 'an open finding', describeAll());
+    assert.strictEqual(items[1].result, 'open', describeAll());
+  });
+});
+
+// ─── #3078 round 5 MINOR: `result:` is lower-cased once, at extraction ────────
+//
+// The PASS-token check re-lowercased an already-lower-cased value. Removing the
+// redundant call must leave mixed-case tokens behaving exactly as before: a
+// mixed-case PASS is still suppressed, and a mixed-case non-pass token is still
+// surfaced with a lower-cased `result` and a matching `category`.
+describe('#3078 round 5 MINOR: mixed-case result tokens normalize at a single point', () => {
+  test('`result: PASS` and `result: Passed` are suppressed', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: PASS
+
+### 2. Beta
+result: Passed
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.deepStrictEqual(items, [], describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('`result: PENDING` surfaces lower-cased with a matching category', () => {
+    const { items } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: PENDING
+
+### 2. Beta
+result: Blocked
+blocked_by: Server team
+`);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    assert.strictEqual(items.length, 2, describeAll());
+    assert.strictEqual(items[0].result, 'pending', describeAll());
+    assert.strictEqual(items[0].category, 'pending', describeAll());
+    assert.strictEqual(items[1].result, 'blocked', describeAll());
+    assert.strictEqual(items[1].category, 'server_blocked', describeAll());
   });
 });

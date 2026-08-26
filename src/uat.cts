@@ -16,7 +16,7 @@ import io = require('./io.cjs');
 const { output, error } = io;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import markdownSectionizer = require('./markdown-sectionizer.cjs');
-const { collectSection, tokenizeHeadings, stripFencedCode } = markdownSectionizer;
+const { collectSection, tokenizeHeadings, stripFencedCode, scanFencedBlocks } = markdownSectionizer;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import markdownTable = require('./markdown-table.cjs');
 const { splitTableRow, isDelimiterRow } = markdownTable;
@@ -417,14 +417,20 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
   // <= 3 spaces INSIDE an `expected: |` value is value text, and must not
   // register as a phantom heading and steal the real row's `result:` token.
   //
-  // #3078 follow-up: tokenize a copy with every INDENTED fence delimiter
-  // blanked out first — see `blankIndentedFenceDelimiters`. Without this, an
+  // #3078 follow-up: tokenize a copy with every wholly-INDENTED fenced BLOCK
+  // blanked out first — see `blankIndentedFenceBlocks`. Without this, an
   // indented ` ``` ` opener inside an `expected: |` value still reads as a
   // real fence to `tokenizeHeadings` (CommonMark tolerates 1-3 leading
   // spaces), which then hides every heading up to the next matching closer —
   // including a later, genuinely column-0 `### N.` row.
-  const subHeadings = tokenizeHeadings(blankIndentedFenceDelimiters(sectionBody)).filter(
-    (h) => h.level === 3 && /^\d+\.\s+/.test(h.text) && isColumnZeroHeading(sectionBody, h),
+  //
+  // #3078 round-5 MAJOR: the row predicate is `isTestRowHeadingText`, the ONE
+  // shared helper `parseUatItemsWithStats` uses. It previously read
+  // `/^\d+\.\s+/` here while the audit path read `/^\d+\.(?!\d)/`, so
+  // `### 3.Foo` WAS a row on one path and was NOT on the other — two parse
+  // paths in one module disagreeing about the same grammar.
+  const subHeadings = tokenizeHeadings(blankIndentedFenceBlocks(sectionBody)).filter(
+    (h) => h.level === 3 && isTestRowHeadingText(h.text) && isColumnZeroHeading(sectionBody, h),
   );
 
   for (let i = 0; i < subHeadings.length; i += 1) {
@@ -439,11 +445,15 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
       continue;
     }
 
-    // Extract the UAT-specific number and name from the heading text
-    const headingParts = current.text.match(/^(\d+)\.\s+(.+)$/);
+    // Extract the UAT-specific number and name from the heading text via the
+    // SAME `parseTestRowHeadingText` seam the audit path uses (#3078 round-5
+    // MAJOR) — a name-mandatory `/^(\d+)\.\s+(.+)$/` here would have `continue`d
+    // past exactly the `### 3.` / `### 3.Foo` shapes the shared predicate just
+    // admitted, reintroducing the divergence one line below the fix.
+    const headingParts = parseTestRowHeadingText(current.text);
     if (!headingParts) continue;
-    const testNumber = parseInt(headingParts[1], 10);
-    const testName = headingParts[2].trim();
+    const testNumber = headingParts.number;
+    const testName = headingParts.name;
 
     // #3078 blocker: clip the block at its first fence opener before handing
     // it to `parseExpectedFromTestBlock`, so a raw read cannot reach into
@@ -486,7 +496,19 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
  * whole scalar. The opener character is now captured (group 1) so the caller
  * can apply YAML's fold semantics for `>` while leaving `|` untouched.
  */
-const EXPECTED_SCALAR_OPENER = String.raw`^expected:[ \t]*([|>])(?:[1-9][+-]?|[+-][1-9]?)?[ \t]*\r?\n`;
+const EXPECTED_SCALAR_HEADER = String.raw`expected:[ \t]*([|>])(?:[1-9][+-]?|[+-][1-9]?)?[ \t]*`;
+
+const EXPECTED_SCALAR_OPENER = String.raw`^${EXPECTED_SCALAR_HEADER}\r?\n`;
+
+/**
+ * The same `expected:` block-scalar HEADER grammar as `EXPECTED_SCALAR_OPENER`,
+ * matched against ONE already-CR-stripped source line instead of against a
+ * multi-line block. Derived from the SAME `EXPECTED_SCALAR_HEADER` source so
+ * the two cannot drift into disagreeing about which openers (`|`, `|-`, `|+`,
+ * `|2`, `|-2`, `>`, `>-`, `>+`, `>2+`, ...) start a scalar body — the
+ * generative-divergence class this repo pins elsewhere.
+ */
+const EXPECTED_SCALAR_HEADER_LINE_RE = new RegExp(`^${EXPECTED_SCALAR_HEADER}$`);
 
 /**
  * Apply YAML FOLDED-scalar (`>`) line-joining to an already-dedented,
@@ -719,6 +741,66 @@ const FENCE_OPENER_RE = /^(?:`{3,}|~{3,})/;
 const TEST_HEADING_LINE_RE = /^#{3}(?!#)[ \t]+\d+\.(?!\d)/;
 
 /**
+ * THE test-row grammar, in ONE place (#3078 round-5 MAJOR).
+ *
+ * `parseFirstPendingTest` (the render-checkpoint path) and
+ * `parseUatItemsWithStats` (the audit path) each filtered level-3 headings with
+ * their own literal — `/^\d+\.\s+/` vs `/^\d+\.(?!\d)/` — so the two paths in
+ * this one module DISAGREED about what a test row is: `### 3.Foo` (name squished
+ * against the dot) and `### 3.` (no name at all) were rows to the audit and were
+ * silently NOT rows to the checkpoint. That is the generative-divergence class
+ * this repo requires closed with a shared definition rather than two literals
+ * kept in sync by hand.
+ *
+ * The AUDIT rule wins, deliberately: `^\d+\.(?!\d)` admits `### 3.` and
+ * `### 3.Foo` (a heading missing or squishing its name still contributes to
+ * `headingsSeen`/items instead of vanishing from BOTH — the same silent-drop
+ * symptom the parse-gap flag exists to catch) while the `(?!\d)` lookahead keeps
+ * a DOTTED-SECTION heading like `### 1.2.3 Overview` out, since that is a
+ * document outline number, not test row 1. `TEST_HEADING_LINE_RE` /
+ * `INDENTED_TEST_HEADING_LINE_RE` are the raw-source-line twins of this same
+ * rule and carry the identical `\d+\.(?!\d)` core.
+ */
+const TEST_ROW_HEADING_TEXT_RE = /^\d+\.(?!\d)/;
+
+/** True when a level-3 heading's TEXT is a UAT test row. See `TEST_ROW_HEADING_TEXT_RE`. */
+function isTestRowHeadingText(text: string): boolean {
+  return TEST_ROW_HEADING_TEXT_RE.test(text);
+}
+
+/**
+ * Split a test-row heading's text into its number and display name — the
+ * extraction twin of `isTestRowHeadingText`, shared by both parse paths for the
+ * same anti-divergence reason. Returns `null` for text the predicate rejects.
+ *
+ * A bare `### 3.` (no trailing name) falls back to the heading's own trimmed
+ * text (`3.`) rather than yielding an empty name.
+ */
+function parseTestRowHeadingText(text: string): { number: number; name: string } | null {
+  if (!isTestRowHeadingText(text)) return null;
+  const parts = text.match(/^(\d+)\.\s*(.*)$/);
+  if (!parts) return null;
+  return { number: parseInt(parts[1], 10), name: parts[2].trim() || text.trim() };
+}
+
+/**
+ * The INDENTED (1-3 leading spaces, CommonMark-legal) twin of
+ * `TEST_HEADING_LINE_RE` — used by the SHORTFALL SCAN ONLY, never by the parse
+ * gate.
+ *
+ * #3078 round-4 MAJOR 2: `isColumnZeroHeading` refusing to PARSE an indented
+ * `### N.` row is deliberate and stays (no `*UAT*.md` in the tree indents one).
+ * But the COUNTING side inherited that anchor through
+ * `TEST_HEADING_LINE_RE`, so a heading the parse gate rejected could never
+ * reach `headingsSeen` either: `  ### 1. Indented Row` with `result: pending`
+ * — which origin/next's unanchored `###\s*(\d+)\.` did surface — yielded no
+ * item, no gap, no count and no trace at all. Refusing to parse is defensible;
+ * vanishing silently is the exact defect class this issue exists to close, so
+ * the row now surfaces as a PARSE GAP instead.
+ */
+const INDENTED_TEST_HEADING_LINE_RE = /^ {1,3}#{3}(?!#)[ \t]+\d+\.(?!\d)/;
+
+/**
  * True when `heading` starts at COLUMN 0 of its source line in `content`.
  *
  * The UAT test-row contract (#3078): a `### N.` row heading is structure ONLY
@@ -748,9 +830,10 @@ function isColumnZeroHeading(content: string, heading: { offset: number }): bool
 const INDENTED_FENCE_DELIM_RE = /^ {1,3}(?:`{3,}|~{3,})/;
 
 /**
- * Return `content` with every INDENTED fence-delimiter LINE overwritten by
- * spaces, byte-length- and line-count-preserving, so every downstream offset
- * and line index still lines up against the original document.
+ * Return `content` with every wholly-INDENTED fenced BLOCK — its delimiter
+ * lines AND every line of its body — overwritten by spaces, byte-length- and
+ * line-count-preserving, so every downstream offset and line index still lines
+ * up against the original document.
  *
  * Why (#3078 follow-up, escalated design call, answered as option (b)):
  * dropping `maskBlockScalarBodies` in favor of the column-0 heading filter
@@ -776,6 +859,40 @@ const INDENTED_FENCE_DELIM_RE = /^ {1,3}(?:`{3,}|~{3,})/;
  * unconditionally, wherever it appears, the same context-free way the other
  * column-0 rules do.
  *
+ * PAIRED, NOT UNCONDITIONAL (#3078 round-4 MAJOR 1). Blanking every indented
+ * delimiter LINE on sight perturbs fence PAIRING in BOTH directions, because
+ * CommonMark lets a COLUMN-0 fence be closed by a delimiter indented up to
+ * three spaces:
+ *   - a column-0 opener closed by an INDENTED closer had its closer blanked,
+ *     so the fence never closed for `tokenizeHeadings` and every later row —
+ *     including a genuinely column-0 `### N.` with an outstanding `result:` —
+ *     was swallowed;
+ *   - the mirror, an INDENTED opener closed by a COLUMN-0 closer, had its
+ *     opener blanked, PROMOTING that closer into an opener and swallowing
+ *     everything after it instead.
+ * Both documents are legal CommonMark that renders correctly, so neither may
+ * lose content. The decision is therefore made per FENCED BLOCK, not per line:
+ * a block is neutralised only when it is indented at BOTH ends (or is an
+ * indented opener that never closes at all) — i.e. when nothing about it is
+ * column-0 document structure. That is exactly the intended case, an indented
+ * fence pair living wholly inside an `expected: |` block-scalar value, which
+ * is why the helper exists; any block with a column-0 delimiter at either end
+ * is left completely alone so its pairing reaches the tokenizer unchanged.
+ * WHICH blocks are neutralised is unchanged by the round-5 blocker fix; only
+ * WHAT gets blanked within a chosen block widened, from its two delimiter
+ * lines to the whole block (see the inline note at the `blank.add` loop).
+ *
+ * NO SECOND FENCE DIALECT: the blocks come from `scanFencedBlocks`
+ * (markdown-sectionizer.cts), the SAME exported CommonMark state machine
+ * `stripFencedCode` — and therefore `tokenizeHeadings` — runs. Backtick AND
+ * tilde runs, run length >= 3, the <= 3-space indent tolerance, a closer of
+ * the same char with run length >= the opener and no trailing text, info
+ * strings (including the "a backtick fence's info string may not contain a
+ * backtick" rule), and the unterminated-at-EOF case are all classified by that
+ * engine, not re-derived here. This module contributes only the column-0
+ * question — which delimiter lines are structure — via
+ * `INDENTED_FENCE_DELIM_RE`.
+ *
  * LINE-BASED by construction (`content.split('\n')` / `.join('\n')`), never
  * character-array splicing — the exact bug class (`Array.from(content)`
  * code-point indexing against UTF-16 offsets) that made the original
@@ -787,15 +904,36 @@ const INDENTED_FENCE_DELIM_RE = /^ {1,3}(?:`{3,}|~{3,})/;
  * `\r` with a space exactly like every other character on it — `join('\n')`
  * then reproduces the original line count and total length exactly.
  */
-function blankIndentedFenceDelimiters(content: string): string {
+function blankIndentedFenceBlocks(content: string): string {
   const lines = content.split('\n');
-  let changed = false;
-  const out = lines.map((line) => {
-    if (!INDENTED_FENCE_DELIM_RE.test(line)) return line;
-    changed = true;
-    return ' '.repeat(line.length);
-  });
-  return changed ? out.join('\n') : content;
+  const isIndentedDelimiter = (idx: number): boolean =>
+    idx >= 0 && idx < lines.length && INDENTED_FENCE_DELIM_RE.test(lines[idx].replace(/\r$/, ''));
+
+  const blank = new Set<number>();
+  for (const block of scanFencedBlocks(lines)) {
+    // A column-0 OPENER is real document structure: leave the whole block
+    // alone, closer included, so an indented closer still closes it.
+    if (!isIndentedDelimiter(block.openLineIdx)) continue;
+    // An indented opener paired with a COLUMN-0 closer is likewise real
+    // structure at its far end — blanking the opener would promote that closer
+    // into an opener and hide everything after it.
+    if (block.closeLineIdx !== -1 && !isIndentedDelimiter(block.closeLineIdx)) continue;
+    // WHOLE BLOCK, delimiters AND body (#3078 round-5 blocker). Blanking only
+    // the two delimiter lines UN-HID whatever they enclosed: a column-0
+    // `### N.` line living in the body of a neutralised indented fence was
+    // correctly invisible to `tokenizeHeadings` while the fence stood, and
+    // became a REAL heading the moment its delimiters were blanked — opening a
+    // phantom block that stole the preceding row's `result:` line and dropped
+    // that row from `items` entirely (the exact theft `isColumnZeroHeading`
+    // exists to prevent, reintroduced one layer down). An indented fence pair
+    // is CONTENT of a scalar by the very rule that selected it for
+    // neutralisation, so NOTHING inside it may produce document structure.
+    const lastIdx = block.closeLineIdx !== -1 ? block.closeLineIdx : lines.length - 1;
+    for (let i = block.openLineIdx; i <= lastIdx; i += 1) blank.add(i);
+  }
+  if (blank.size === 0) return content;
+
+  return lines.map((line, i) => (blank.has(i) ? ' '.repeat(line.length) : line)).join('\n');
 }
 
 /**
@@ -889,6 +1027,48 @@ function dropTopLevelFencedRegions(rawLines: string[]): string {
   return kept.join('\n');
 }
 
+/**
+ * Count the INDENTED (1-3 space) `### N.` heading-shaped lines in `surface`
+ * that are NOT the value text of a preceding `expected:` block scalar.
+ *
+ * Why the exclusion (#3078 round-4 MAJOR 2): the parse gate refuses BOTH
+ * shapes for the same reason (column 0 is structure), but only one of them is
+ * a lost ROW. A `### 3. Fake Row` line sitting inside an `expected: |` value is
+ * the row's own published `expected:` string — already surfaced, verbatim, on
+ * the item — so counting it would flag a parse gap against a document with
+ * nothing missing (the pinned scalar-body behaviour). A `  ### 1. Indented
+ * Row` that no scalar owns is a row the parser declined to read, and must be
+ * visible as an unparsed block instead of silently clean.
+ *
+ * Attribution is structural and cheap: walk BACK from the indented heading to
+ * the first non-blank line at column 0 (a block-scalar body is indented by
+ * construction, and blank lines are legal inside one). The heading is scalar
+ * VALUE exactly when that line is an `expected:` scalar header, per the SAME
+ * grammar the reader itself uses (`EXPECTED_SCALAR_HEADER_LINE_RE`, derived
+ * from `EXPECTED_SCALAR_HEADER`). No second opener dialect, and no attempt to
+ * model YAML indentation levels.
+ */
+function countUnattributedIndentedRows(surface: string): number {
+  const lines = surface.split('\n');
+  let count = 0;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!INDENTED_TEST_HEADING_LINE_RE.test(lines[i])) continue;
+
+    let ownedByScalar = false;
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const previous = lines[j].replace(/\r$/, '');
+      if (previous.trim() === '') continue; // blank line: still inside a scalar body
+      if (/^[ \t]/.test(previous)) continue; // indented line: still inside a scalar body
+      ownedByScalar = EXPECTED_SCALAR_HEADER_LINE_RE.test(previous);
+      break;
+    }
+    if (!ownedByScalar) count += 1;
+  }
+
+  return count;
+}
+
 function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number } {
   const items: UatItem[] = [];
   let headingsSeen = 0;
@@ -915,20 +1095,22 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // every heading up to its closer from the token stream entirely — a LATER,
   // genuinely column-0 `### N.` row is never returned as a token at all, so
   // no post-hoc filter over the token stream could recover it.
-  const allHeadings = tokenizeHeadings(blankIndentedFenceDelimiters(content)).filter((h) => isColumnZeroHeading(content, h));
+  const allHeadings = tokenizeHeadings(blankIndentedFenceBlocks(content)).filter((h) => isColumnZeroHeading(content, h));
   // #3707 follow-up MINOR: `^\d+\.` alone — a trailing name is OPTIONAL
   // (`### 3.` and `### 3.Foo`, without the space the old `\s+`-anchored
   // pattern required, both count) so a heading missing or squishing its name
   // still contributes to `headingsSeen`/items rather than being silently
   // excluded from BOTH — the same vanishing-row symptom the parse-gap flag
   // exists to catch, reachable here at the heading-filter layer instead.
+  // #3078 round-5 MAJOR: that rule now lives in `isTestRowHeadingText` and is
+  // shared verbatim with `parseFirstPendingTest`, which used to disagree.
   // Carry each match's own index into `allHeadings` from the filter pass
   // itself (security review finding 3) rather than re-deriving it via
   // `allHeadings.indexOf(current)` inside the loop below — the latter is an
   // O(n) scan per heading, making the whole loop O(n^2) in document size.
   const subHeadings: { heading: (typeof allHeadings)[number]; index: number }[] = [];
   allHeadings.forEach((h, index) => {
-    if (h.level === 3 && /^\d+\.(?!\d)/.test(h.text)) subHeadings.push({ heading: h, index });
+    if (h.level === 3 && isTestRowHeadingText(h.text)) subHeadings.push({ heading: h, index });
   });
 
   // #3078 blocker: `tokenizeHeadings` is fence-aware, so a BALANCED fence pair
@@ -976,6 +1158,14 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   if (shapedHeadingLines > subHeadings.length) {
     headingsSeen += shapedHeadingLines - subHeadings.length;
   }
+
+  // #3078 round-4 MAJOR 2: an INDENTED `### N.` row is refused by the parse
+  // gate (`isColumnZeroHeading`) — correct — but must not therefore vanish
+  // without a trace. See `countUnattributedIndentedRows` for why an indented
+  // heading that is the VALUE of a preceding `expected:` block scalar is
+  // excluded from this tally (it is value text, not a row), keeping the
+  // scalar-body pins intact while a genuinely indented ROW surfaces as a gap.
+  headingsSeen += countUnattributedIndentedRows(shapeScanSurface);
 
   // #3078: an UNTERMINATED fence swallows the entire remainder of the
   // document — every later test row AND a trailing `## Gaps` section — so the
@@ -1050,16 +1240,20 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // A recognised PASS token is the ONLY reason a heading is excluded from
     // `headingsSeen` without producing an item — every other non-yielding
     // case (missing `result:` line, above) is a genuine parse gap.
-    if (UAT_PASS_RESULTS.has(result.toLowerCase())) continue;
+    // `result` is already lower-cased at its extraction above, which is the
+    // single point of normalization for this value — re-lowercasing here was
+    // dead work and implied a second, independent normalization that does not
+    // exist (#3078 round-5 MINOR).
+    if (UAT_PASS_RESULTS.has(result)) continue;
 
     // #3707 follow-up MINOR: the heading filter above now admits `### 3.`
     // (no name at all) and `### 3.Foo` (no space before the name), so this
     // extraction is loosened in lockstep — a bare number with no trailing
-    // name falls back to the heading's own trimmed text (`3.`) rather than
-    // crashing the non-null assertion the old name-mandatory pattern used.
-    const headingParts = current.text.match(/^(\d+)\.\s*(.*)$/)!;
-    const testNumber = parseInt(headingParts[1], 10);
-    const testName = headingParts[2].trim() || current.text.trim();
+    // name falls back to the heading's own trimmed text (`3.`). #3078 round-5
+    // MAJOR: shared with `parseFirstPendingTest` via `parseTestRowHeadingText`.
+    const headingParts = parseTestRowHeadingText(current.text)!;
+    const testNumber = headingParts.number;
+    const testName = headingParts.name;
 
     // Reuse the existing block-scalar/inline `expected:` grammar rather than
     // re-deriving a second one (#3707 defect 2). #3078 blocker: the block is
@@ -1090,6 +1284,18 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   return { items, headingsSeen };
 }
 
+/**
+ * ITEMS-ONLY convenience form over `parseUatItemsWithStats` — the same parse,
+ * with the `headingsSeen` parse-gap counter dropped, for a caller that only
+ * wants the rows.
+ *
+ * Deliberately RETAINED with no in-tree caller (#3078 round-5 MINOR): both
+ * `cmdAuditUat` and `src/planning-inspect.cts` need the stats form, so this is
+ * currently used only from outside. It is a public export of a shipped module,
+ * and removing an exported symbol is a CONTRACT change, out of scope for a bug
+ * fix — so it stays, as the documented thin wrapper it has always been, with a
+ * direct test of its own rather than as untested dead weight.
+ */
 function parseUatItems(content: string): UatItem[] {
   return parseUatItemsWithStats(content).items;
 }
@@ -2098,7 +2304,8 @@ function normalizeHumanVerificationEntry(raw: unknown): string {
 
 function categorizeItem(rawResult: string, reason?: string, blockedBy?: string): UatCategory {
   // Normalize once so this comparison agrees with the PASS-token check
-  // (UAT_PASS_RESULTS.has(result.toLowerCase())): `result: PENDING` and
+  // (`UAT_PASS_RESULTS.has(result)`, over an already-lower-cased token):
+  // `result: PENDING` and
   // `result: Blocked` must categorize the same as their lowercase forms,
   // not fall through to 'unknown'.
   const result = rawResult.toLowerCase();
