@@ -808,7 +808,7 @@ function buildUatRows(
   phaseDirName: string,
   diagnostics: Diagnostic[],
   planningRoot: string,
-): { items: unknown[]; scope: Scope } {
+): { items: unknown[]; scope: Scope; foldScope: Scope } {
   const phaseDir = path.join(phasesDir, phaseDirName);
   // GAP 1 (#2790 follow-up security review): same rationale as
   // `buildPlanRows` above — `readdirSync` below FOLLOWS a directory symlink,
@@ -823,7 +823,7 @@ function buildUatRows(
       subject: phaseDirName,
       detail: 'Phase directory could not be listed; UAT presence is unknown.',
     });
-    return { items: [], scope: SCOPE.UNREADABLE };
+    return { items: [], scope: SCOPE.UNREADABLE, foldScope: SCOPE.UNREADABLE };
   }
   let entries: string[];
   try {
@@ -834,7 +834,7 @@ function buildUatRows(
       subject: phaseDirName,
       detail: 'Phase directory could not be listed; UAT presence is unknown.',
     });
-    return { items: [], scope: SCOPE.UNREADABLE };
+    return { items: [], scope: SCOPE.UNREADABLE, foldScope: SCOPE.UNREADABLE };
   }
 
   const uatFiles = selectPhaseUatFiles(entries, phaseDirName);
@@ -844,11 +844,12 @@ function buildUatRows(
       subject: phaseDirName,
       detail: 'No UAT document for this phase. This does not affect phase acceptance.',
     });
-    return { items: [], scope: SCOPE.COMPLETE };
+    return { items: [], scope: SCOPE.COMPLETE, foldScope: SCOPE.COMPLETE };
   }
 
   const items: unknown[] = [];
   let scope: Scope = SCOPE.COMPLETE;
+  let foldScope: Scope = SCOPE.COMPLETE;
   for (const file of uatFiles) {
     const doc = readDocument(path.join(phaseDir, file), planningRoot);
     if (doc.text === null) {
@@ -858,6 +859,7 @@ function buildUatRows(
         detail: 'UAT document exists but could not be read.',
       });
       scope = SCOPE.TRUNCATED;
+      foldScope = SCOPE.TRUNCATED;
       continue;
     }
     // #3707-class false-clean, second surface (security review finding 1):
@@ -865,32 +867,57 @@ function buildUatRows(
     // that yielded ZERO items (a row missing its `result:` line, or otherwise
     // unrecognised) — the audit-uat side (`cmdAuditUat`, above) already flags
     // this as `parse_gap`. Reading the file successfully is not the same as
-    // deriving every row from it: a heading that failed to parse means this
-    // phase's UAT completeness cannot be affirmatively claimed, so `scope`
-    // must NOT stay `complete` for it — reusing `SCOPE.TRUNCATED` (the same
-    // value this function already uses two lines up for an unreadable file)
-    // rather than inventing a new token, since both cases share the same
-    // meaning here: "this document did not fully yield its rows."
-    const { items: fileItems, headingsSeen } = parseUatItemsWithStats(doc.text);
+    // deriving every row from it, so the gap is ALWAYS REPORTED.
+    //
+    // #3078 round-8 HIGH — NO FRONTMATTER KILL SWITCH. There is deliberately
+    // no `status !== 'complete'` term here. `cmdAuditUat` dropped its own such
+    // guard (see the long rationale at src/uat.cts, above `headingsSeen > 0`):
+    // a terminal status is an ASSERTION BY THE AUTHOR, and an assertion must
+    // not be able to switch off the detector that would contradict it. A guard
+    // here let one word of frontmatter turn a fence-straddled `result: blocked`
+    // into an affirmative `scope: "complete"` with ZERO diagnostics. The
+    // condition is `headingsSeen > 0` alone, matching src/uat.cts's own check
+    // line for line. Do not re-add a status term to "align the surfaces" — the
+    // surfaces are aligned precisely BY its absence.
+    //
+    // #3078 round-8 — REPORTING THE GAP AND WITHHOLDING THE PERCENTAGE ARE TWO
+    // DIFFERENT DECISIONS, so they get two different fields. `scope` is what
+    // this phase's own `uat.scope` reports: it stays honest and goes TRUNCATED
+    // for every gap, because a document that did not yield all its rows must
+    // never carry an affirmative `"complete"`. `foldScope` is what is handed to
+    // `worstScope` in the caller, and it is the one with teeth — a non-COMPLETE
+    // fold raises `phase_scope_degraded` AND, via `phaseScope`/`makeFraction`,
+    // withholds BOTH progress percentages for the WHOLE milestone.
+    //
+    // Those teeth cannot bite on `shortfallBlocks`: that is the subset of
+    // `headingsSeen` produced by the fence-suppression shortfall scan, the ONE
+    // gap class `src/uat.cts` documents as an ACCEPTED OVER-REPORT — a
+    // closed-fence documentation sample written with literal digits is provably
+    // indistinguishable from a genuinely fence-straddled row (fence-closedness
+    // is identical in both), so the scan deliberately over-reports. A COMPLETED
+    // phase is terminal: nobody reopens its UAT file, so a shortfall-only
+    // over-report there would withhold the project's percentages in every
+    // future audit FOREVER over a paragraph of prose. Reported-and-dismissible
+    // is the right shape for it; silent is not, and neither is permanent.
+    //
+    // Every OTHER gap class (a block with no `result:` line, an unattributed
+    // indented row, an unterminated fence) has no such false-positive story and
+    // still degrades the fold, as does the unreadable-FILE case above — which
+    // is what `SCOPE.TRUNCATED` means per src/planning-scope.cts: the scan
+    // could not SEE part of the evidence.
+    const { items: fileItems, headingsSeen, shortfallBlocks } = parseUatItemsWithStats(doc.text);
     items.push(...fileItems);
-    // Round-3 review MINOR 3: mirror the same terminal-status guard
-    // `cmdAuditUat` applies (src/uat.cts, alongside its own `headingsSeen`
-    // check) so the two surfaces agree on a `status: complete` file that
-    // still carries a stray unparseable block — a file explicitly marked
-    // terminal stays TRUNCATED-free here just as it stays parse_gap-free
-    // there, instead of audit-uat leaving it unflagged while this scope
-    // truncates.
-    const status = (extractFrontmatter(doc.text, path.join(phaseDir, file)).status as string) || 'unknown';
-    if (headingsSeen > 0 && status !== 'complete') {
+    if (headingsSeen > 0) {
       diagnostics.push({
         code: INSPECT_DIAGNOSTIC.UAT_UNREADABLE,
         subject: `${phaseDirName}/${file}`,
         detail: `UAT document has ${headingsSeen} test block(s) with no parseable result; unresolved is not a complete answer.`,
       });
       scope = SCOPE.TRUNCATED;
+      if (headingsSeen > shortfallBlocks) foldScope = SCOPE.TRUNCATED;
     }
   }
-  return { items, scope };
+  return { items, scope, foldScope };
 }
 
 // ─── Progress ─────────────────────────────────────────────────────────────────
@@ -1199,7 +1226,14 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
     const phaseId = token ? token[1] : null;
     const { goal, dependencies } = buildPhaseGoalAndDependencies(cwd, roadmapDoc, phaseId, phase.dir, diagnostics);
 
-    const folded = worstScope(phase.scope, plans.scope, uat.scope, goal.scope, dependencies.scope);
+    // `uat.foldScope`, NOT `uat.scope` (#3078 round-8). The two differ for
+    // exactly one case: a UAT document whose ONLY parse gap is the
+    // fence-suppression shortfall, `src/uat.cts`'s documented ACCEPTED
+    // OVER-REPORT class. That still reports honestly on the row itself
+    // (`uat.scope === "truncated"` plus the `uat_unreadable` diagnostic below),
+    // but it must not raise `phase_scope_degraded` and must not withhold the
+    // milestone's percentages — see `buildUatRows` for the full rationale.
+    const folded = worstScope(phase.scope, plans.scope, uat.foldScope, goal.scope, dependencies.scope);
     if (folded !== SCOPE.COMPLETE) {
       diagnostics.push({
         code: INSPECT_DIAGNOSTIC.PHASE_SCOPE_DEGRADED,

@@ -5798,3 +5798,172 @@ result: pending
     assert.strictEqual(parseGap, true, describeAll());
   });
 });
+
+// ─── #3078 review MAJOR: the parse-gap counter is split by provenance ─────────
+//
+// Making the parse-gap predicate status-independent was correct, but it collided
+// with the `scanTargets` rule that archived phase dirs are deliberately NOT
+// milestone-filtered. An archived milestone's UAT files are `complete` BY
+// DEFINITION, so every signed-off archived phase carrying an unreadable block
+// landed in `summary.parse_gap_files` — the counter both consumer workflows gate
+// on (`progress.md`: `outstanding_debt > 0 OR parse_gap_files > 0`;
+// `audit-uat.md`: the Unparsed table fires on `parse_gap_files > 0` regardless of
+// `total_items`). On a mature project that means a permanent warning on EVERY
+// `/gsd-progress` run about closed history no user action can clear — warning
+// fatigue that hides the next genuine gap, i.e. the feature defeating itself.
+//
+// The split keeps archived gaps VISIBLE (they must never become silent — that is
+// the whole point of the issue) while keeping them OUT OF THE LIVE GATE so it
+// stays actionable: `parse_gap_files` counts non-archived entries only, and
+// `archived_parse_gap_files` counts the archived ones. The `results` entries
+// themselves are UNCHANGED — an archived parse-gap file still appears with
+// `parse_gap: true` and its `archived_milestone`, so nothing is hidden.
+describe('#3078 review MAJOR: archived parse gaps stay visible but leave the live gate', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // A `### N.` block with NO `result:` line at all — the parser counts the
+  // heading (headingsSeen) but yields no item, which is exactly a parse gap.
+  const UNPARSEABLE_BLOCK = `---
+status: complete
+---
+
+## Tests
+
+### 1. Unreadable Row
+expected: something observable
+`;
+
+  const LIVE_PENDING = `---
+status: testing
+---
+
+## Tests
+
+### 1. Real Outstanding Row
+expected: something observable
+result: pending
+`;
+
+  function writeFile(...parts) {
+    const body = parts.pop();
+    const target = path.join(tmpDir, ...parts);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, body);
+  }
+
+  function audit() {
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  // THE REPRODUCTION. Before the split this reported
+  // `total_files: 5, total_items: 1, parse_gap_files: 4` — four signed-off
+  // archived milestones permanently tripping the live gate.
+  test('four signed-off archived milestones with unparseable blocks do NOT enter the live gate', () => {
+    writeFile('.planning', 'phases', '01-live', '01-UAT.md', LIVE_PENDING);
+    const archived = [
+      ['v0.1.0', '01-alpha'],
+      ['v0.2.0', '02-bravo'],
+      ['v0.3.0', '03-charlie'],
+      ['v0.4.0', '04-delta'],
+    ];
+    for (const [milestone, phaseDir] of archived) {
+      writeFile('.planning', 'milestones', `${milestone}-phases`, phaseDir,
+        `${phaseDir.slice(0, 2)}-UAT.md`, UNPARSEABLE_BLOCK);
+    }
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    // The live gate is CLEAN: nothing here is actionable.
+    assert.strictEqual(output.summary.parse_gap_files, 0, describeAll());
+    // The archived gaps are counted — separately, and informationally.
+    assert.strictEqual(output.summary.archived_parse_gap_files, 4, describeAll());
+    // The live pending row is untouched by the split.
+    assert.strictEqual(output.summary.total_items, 1, describeAll());
+    assert.strictEqual(output.summary.total_files, 5, describeAll());
+
+    // NOTHING IS HIDDEN: all four archived entries are still in `results`, each
+    // still flagged `parse_gap: true` and each still carrying the
+    // `archived_milestone` that is the discriminator for the split.
+    const archivedEntries = output.results.filter((r) => r.archived_milestone !== undefined);
+    assert.strictEqual(archivedEntries.length, 4, describeAll());
+    for (const entry of archivedEntries) {
+      assert.strictEqual(entry.parse_gap, true, describeAll());
+      assert.strictEqual(entry.unparsed_blocks, 1, describeAll());
+    }
+    assert.deepStrictEqual(
+      archivedEntries.map((r) => r.archived_milestone).sort(),
+      ['v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.4.0'],
+      describeAll(),
+    );
+  });
+
+  // THE NON-REGRESSION THAT MATTERS: the live signal must not be weakened by
+  // the split. A live phase whose block cannot be read is still a real,
+  // actionable gap and must still trip the gate the workflows read.
+  test('a LIVE (non-archived) phase with an unparseable block is still counted in parse_gap_files', () => {
+    writeFile('.planning', 'phases', '01-live', '01-UAT.md', UNPARSEABLE_BLOCK);
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    assert.strictEqual(output.summary.parse_gap_files, 1, describeAll());
+    assert.strictEqual(output.summary.archived_parse_gap_files, 0, describeAll());
+    assert.strictEqual(output.summary.total_items, 0, describeAll());
+    assert.strictEqual(output.summary.total_files, 1, describeAll());
+
+    const [entry] = output.results;
+    assert.strictEqual(entry.parse_gap, true, describeAll());
+    assert.strictEqual(entry.unparsed_blocks, 1, describeAll());
+    assert.strictEqual(entry.archived_milestone, undefined, describeAll());
+    // Status-independence is preserved: this file declares `complete` and is
+    // STILL reported. A self-declared terminal status must not switch off the
+    // detector that would contradict it.
+    assert.strictEqual(entry.status, 'complete', describeAll());
+  });
+
+  // The two counters are independent: a mixed project reports both, and neither
+  // one absorbs or masks the other.
+  test('a mixed project counts live and archived parse gaps independently', () => {
+    writeFile('.planning', 'phases', '01-live', '01-UAT.md', UNPARSEABLE_BLOCK);
+    writeFile('.planning', 'phases', '02-also-live', '02-UAT.md', LIVE_PENDING);
+    writeFile('.planning', 'milestones', 'v0.9.0-phases', '09-old', '09-UAT.md', UNPARSEABLE_BLOCK);
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    assert.strictEqual(output.summary.parse_gap_files, 1, describeAll());
+    assert.strictEqual(output.summary.archived_parse_gap_files, 1, describeAll());
+    assert.strictEqual(output.summary.total_items, 1, describeAll());
+    assert.strictEqual(output.summary.total_files, 3, describeAll());
+
+    const liveGap = output.results.find(
+      (r) => r.parse_gap && r.archived_milestone === undefined,
+    );
+    const archivedGap = output.results.find(
+      (r) => r.parse_gap && r.archived_milestone !== undefined,
+    );
+    assert.ok(liveGap, describeAll());
+    assert.strictEqual(liveGap.phase, '01', describeAll());
+    assert.ok(archivedGap, describeAll());
+    assert.strictEqual(archivedGap.phase, '09', describeAll());
+    assert.strictEqual(archivedGap.archived_milestone, 'v0.9.0', describeAll());
+
+    // The phase carrying a genuine outstanding item is a parse gap on NEITHER
+    // side — the split does not reclassify ordinary rows.
+    const pendingEntry = output.results.find((r) => r.phase === '02');
+    assert.ok(pendingEntry, describeAll());
+    assert.strictEqual(pendingEntry.parse_gap, undefined, describeAll());
+    assert.strictEqual(pendingEntry.items.length, 1, describeAll());
+  });
+});

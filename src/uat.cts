@@ -285,6 +285,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     total_files: number;
     total_items: number;
     parse_gap_files: number;
+    archived_parse_gap_files: number;
     by_category: Record<string, number>;
     by_phase: Record<string, number>;
   } = {
@@ -295,7 +296,26 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // visible even though it contributes zero to total_items. Consumers
     // (audit-uat.md, progress.md) must gate their all-clear / debt checks on
     // BOTH total_items === 0 AND parse_gap_files === 0.
-    parse_gap_files: results.filter((r) => r.parse_gap).length,
+    //
+    // #3078 review MAJOR — the counter is SPLIT by provenance. Making the
+    // parse-gap predicate status-independent (see the block above) was correct,
+    // but it collided with the scanTargets rule that archived phase dirs are
+    // deliberately NOT milestone-filtered: an archived milestone's UAT files
+    // are `complete` BY DEFINITION, so every signed-off archived phase carrying
+    // an unreadable block would land in the LIVE gate. On a mature project
+    // that means `/gsd-progress` warns on EVERY run, forever, about closed
+    // history no user action can clear — warning fatigue that hides the next
+    // genuine gap, i.e. the detector defeating itself.
+    //
+    // So: `parse_gap_files` counts only NON-archived (live, actionable)
+    // entries and stays the gate; `archived_parse_gap_files` counts the
+    // archived ones and is reported separately as closed history. Nothing is
+    // hidden — the `results` entries are untouched, so an archived parse-gap
+    // file still appears with `parse_gap: true` AND its `archived_milestone`.
+    // `archived_milestone` is the discriminator (set from the scanTargets
+    // milestone above), NOT a re-derivation from the path.
+    parse_gap_files: results.filter((r) => r.parse_gap && r.archived_milestone === undefined).length,
+    archived_parse_gap_files: results.filter((r) => r.parse_gap && r.archived_milestone !== undefined).length,
     by_category: {},
     by_phase: {},
   };
@@ -1198,9 +1218,23 @@ function countUnattributedIndentedRows(surface: string): number {
   return count;
 }
 
-function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number } {
+/**
+ * `headingsSeen` is the TOTAL parse-gap tally (every heading-shaped thing this
+ * parser could not turn into an item). `shortfallBlocks` is the SUBSET of it
+ * contributed by the fence-suppression shortfall scan below — the one gap class
+ * this module documents as carrying an ACCEPTED OVER-REPORT (a closed-fence
+ * documentation sample written with literal digits is indistinguishable from a
+ * genuinely fence-straddled row; see the long comment at the scan itself).
+ * Reported separately so a consumer that must decide whether to WITHHOLD a
+ * derived number — as opposed to merely REPORT the gap — can tell "a row I
+ * definitely could not read" from "a row I possibly mis-counted".
+ * `src/planning-inspect.cts`'s `buildUatRows` is that consumer; `cmdAuditUat`
+ * is not, and still gates `parse_gap` on the total.
+ */
+function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number; shortfallBlocks: number } {
   const items: UatItem[] = [];
   let headingsSeen = 0;
+  let shortfallBlocks = 0;
 
   // Locate every `### N. Name` test heading across the WHOLE document (not
   // adjacency-matched against `result:`, #3707 defect 2) and slice each one's
@@ -1293,8 +1327,14 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // CLOSED fence in a `## Notes` section — a documentation sample of the row
   // format. NOTE the shape needs LITERAL DIGITS — the scan requires `\d+`, so the
   // conventional placeholder `### N. Name` does NOT trigger it; only a sample written
-  // with real numbers (`### 1. Example Row`) does, and no phase UAT file in-tree does
-  // (only the shipped template, which selectPhaseUatFiles never scans). If you test the
+  // with real numbers (`### 1. Example Row`) does. On FREQUENCY, claim only what is
+  // measurable here: the SHAPE is uncommon (it takes a literal-digit row inside a
+  // CLOSED fence), and that is a claim about the shape, NOT a measurement across real
+  // projects. The in-tree sample size for it is ZERO PHASE FILES — the only `*UAT*.md`
+  // anywhere in this repo is the shipped template (which `selectPhaseUatFiles` never
+  // scans, and which itself scores headingsSeen=11, six of them literal-digit example
+  // rows), so "no phase UAT file in-tree triggers it" is vacuously true and proves
+  // nothing about rarity in the field. Do not restate it as evidence. If you test the
   // placeholder form, see no over-report, and conclude this pin is stale: it is not.
   // The ordinary way to explain the syntax inside a UAT file — is
   // counted as a suppressed row and raises a parse gap on a file with nothing
@@ -1311,7 +1351,8 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     if (TEST_HEADING_LINE_RE.test(line)) shapedHeadingLines += 1;
   }
   if (shapedHeadingLines > subHeadings.length) {
-    headingsSeen += shapedHeadingLines - subHeadings.length;
+    shortfallBlocks = shapedHeadingLines - subHeadings.length;
+    headingsSeen += shortfallBlocks;
   }
 
   // #3078 round-4 MAJOR 2: an INDENTED `### N.` row is refused by the parse
@@ -1454,7 +1495,7 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   }
 
   items.push(...parseGapsItems(content));
-  return { items, headingsSeen };
+  return { items, headingsSeen, shortfallBlocks };
 }
 
 /**
