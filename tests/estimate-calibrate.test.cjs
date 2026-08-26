@@ -23,6 +23,7 @@ const path = require('node:path');
 
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 const est = require('../gsd-core/bin/lib/phase-estimation.cjs');
+const estimateCli = require('../gsd-core/bin/lib/estimate-cli.cjs');
 
 /** Write a phase dir containing a PLAN with an estimate and a SUMMARY with actuals. */
 function writePhase(tmpDir, phaseDir, { estTokens, actTokens, tasks = 3, commits = 4 }) {
@@ -362,5 +363,123 @@ describe('multi-plan phases pair per plan, not per phase', () => {
     const out = JSON.parse(runGsdTools('query estimate-calibrate', tmpDir).output);
     assert.equal(out.sample_count, 3, 'two plans in phase 1 plus one in phase 2');
     assert.equal(out.applied, true);
+  });
+});
+
+// ─── sentinel phases must not skew calibration (#3882, ADR-3473 §8.2) ──────
+//
+// collectCalibrationSamples enumerates .planning/phases with a raw readdirSync
+// and treats every directory as a completed phase — it never routes through
+// the phase-directory owner and never applies isSentinelPhaseId, so a sentinel
+// directory (milestone 0 or 999 — SENTINEL_RANGES in src/phase-id.cts) whose
+// PLAN/SUMMARY pair carries an estimate/actuals block contributes a phantom
+// calibration sample.
+//
+// Governing constraint (docs/.gsd/phase/feat-3882-enumerations/50-test-matrix.md
+// row A1): computeCalibration is MEDIAN-based, so a single outlier sample does
+// not move a 3-sample factor at all — asserting "the factor is unchanged" against
+// exactly one sentinel would pass on the broken code for the wrong reason. The
+// real, measured damage is the MIN_CALIBRATION_SAMPLES threshold crossing
+// (applied flips false -> true, confidence low -> med on phantom evidence) and,
+// once two sentinels are present, actual factor corruption. Every assertion
+// below compares the WHOLE computed CalibrationResult object between a
+// sentinel-free project and its sentinel-injected twin, reached the same way
+// production reaches it (collectCalibrationSamples -> computeCalibration, the
+// exact pair cmdEstimateCalibrate calls).
+describe('sentinel phases must not skew calibration (#3882)', () => {
+  // Two genuine phases with DIFFERING ratios (1x and 2x), so A3 can pin each
+  // one's own unchanged value rather than two indistinguishable duplicates.
+  const REAL_PHASES = [
+    ['01-alpha', 1000, 1000],
+    ['02-beta', 2000, 4000],
+  ];
+  // A deliberately extreme, fabricated ratio (50x) — the shape of what a
+  // sentinel's PLAN/SUMMARY pair would carry.
+  const SENTINEL_SAMPLE = { estTokens: 1000, actTokens: 50000 };
+
+  function buildRealOnlyProject() {
+    const tmpDir = createTempProject();
+    for (const [dir, estTokens, actTokens] of REAL_PHASES) {
+      writePhase(tmpDir, dir, { estTokens, actTokens });
+    }
+    return tmpDir;
+  }
+
+  /** Reached the way production reaches it — see cmdEstimateCalibrate above. */
+  function calibrationResultFor(tmpDir) {
+    return est.computeCalibration(estimateCli.collectCalibrationSamples(tmpDir));
+  }
+
+  test('A1a: sentinelPhaseDoesNotActivateCalibration', (t) => {
+    const realOnly = buildRealOnlyProject();
+    t.after(() => cleanup(realOnly));
+    const withSentinel = buildRealOnlyProject();
+    t.after(() => cleanup(withSentinel));
+    // milestone 999 — reserved icebox sentinel range (SENTINEL_RANGES).
+    writePhase(withSentinel, '999-icebox', SENTINEL_SAMPLE);
+
+    const realOnlyResult = calibrationResultFor(realOnly);
+    const withSentinelResult = calibrationResultFor(withSentinel);
+
+    assert.deepEqual(
+      withSentinelResult, realOnlyResult,
+      'a single sentinel phase must not change the computed calibration at all — '
+      + `real-only=${JSON.stringify(realOnlyResult)} with-sentinel=${JSON.stringify(withSentinelResult)}`,
+    );
+  });
+
+  test('A1b: sentinelPhasesDoNotCorruptTheFactor', (t) => {
+    const realOnly = buildRealOnlyProject();
+    t.after(() => cleanup(realOnly));
+    const withTwoSentinels = buildRealOnlyProject();
+    t.after(() => cleanup(withTwoSentinels));
+    // milestone 999 and milestone 0 — both reserved sentinel ranges.
+    writePhase(withTwoSentinels, '999-icebox', SENTINEL_SAMPLE);
+    writePhase(withTwoSentinels, '0-backlog', SENTINEL_SAMPLE);
+
+    const realOnlyResult = calibrationResultFor(realOnly);
+    const withSentinelsResult = calibrationResultFor(withTwoSentinels);
+
+    assert.deepEqual(
+      withSentinelsResult, realOnlyResult,
+      'sentinel phases must not corrupt the calibration factor — '
+      + `real-only=${JSON.stringify(realOnlyResult)} with-sentinels=${JSON.stringify(withSentinelsResult)}`,
+    );
+  });
+
+  test('A2: sentinelPhaseContributesNoCalibrationSample', (t) => {
+    const withTwoSentinels = buildRealOnlyProject();
+    t.after(() => cleanup(withTwoSentinels));
+    writePhase(withTwoSentinels, '999-icebox', SENTINEL_SAMPLE);
+    writePhase(withTwoSentinels, '0-backlog', SENTINEL_SAMPLE);
+
+    const samples = estimateCli.collectCalibrationSamples(withTwoSentinels);
+    const sentinelHits = samples.filter(
+      (s) => s.estimateTokens === SENTINEL_SAMPLE.estTokens && s.actualTokens === SENTINEL_SAMPLE.actTokens,
+    );
+    assert.equal(
+      sentinelHits.length, 0,
+      `the sentinel phases' sample must be absent from the returned list; got ${JSON.stringify(samples)}`,
+    );
+  });
+
+  test('A3: realPhasesStillContribute', (t) => {
+    const withTwoSentinels = buildRealOnlyProject();
+    t.after(() => cleanup(withTwoSentinels));
+    writePhase(withTwoSentinels, '999-icebox', SENTINEL_SAMPLE);
+    writePhase(withTwoSentinels, '0-backlog', SENTINEL_SAMPLE);
+
+    const samples = estimateCli.collectCalibrationSamples(withTwoSentinels);
+    const realSamples = samples.filter(
+      (s) => !(s.estimateTokens === SENTINEL_SAMPLE.estTokens && s.actualTokens === SENTINEL_SAMPLE.actTokens),
+    );
+    assert.deepEqual(
+      realSamples.sort((a, b) => a.estimateTokens - b.estimateTokens),
+      [
+        { estimateTokens: 1000, actualTokens: 1000 },
+        { estimateTokens: 2000, actualTokens: 4000 },
+      ],
+      'the two genuine phases must still contribute their own, unchanged samples',
+    );
   });
 });
