@@ -834,30 +834,13 @@ describe('scalarNeedsDoubleQuoting (via reconstructFrontmatter double-quoting de
   });
 });
 
-describe('repairAmbiguousColonValues (via extractFrontmatter reader-side repair)', () => {
-  test('an unquoted mid-value colon+space is repaired and the full value survives', () => {
-    const parsed = extractFrontmatter('---\ntitle: value: extra\n---\n');
-    assert.equal(parsed.title, 'value: extra');
-  });
-
-  test('an already-quoted value with an embedded colon is left alone and parses natively', () => {
-    // Near-miss for the /^["\'[{]/  ->  /^[^"\'[{]/  mutant (negated already-safe check): a
-    // mutant that inverts this class would try to re-repair an already-quoted line, corrupting
-    // the value with an extra layer of quoting.
-    const parsed = extractFrontmatter('---\ntitle: "value: extra"\n---\n');
-    assert.equal(parsed.title, 'value: extra');
-  });
-
-  test('a trailing bare colon at the end of the value is repaired and survives', () => {
-    const parsed = extractFrontmatter('---\ntitle: value:\n---\n');
-    assert.equal(parsed.title, 'value:');
-  });
-
-  test('a value with no ambiguous colon at all is left untouched (control: repair must not over-fire)', () => {
-    const parsed = extractFrontmatter('---\ntitle: value#nocolon\n---\n');
-    assert.equal(parsed.title, 'value#nocolon');
-  });
-});
+// `repairAmbiguousColonValues` (and its sibling `repairMalformedInlineArrays` +
+// `splitLegacyInlineArrayItems`) was deleted (#3881 follow-up): a sweep of every tracked
+// `*.md` file with a frontmatter fence (910 files) found ZERO documents whose parse result
+// changed with the repair disabled — it was hand-rolled YAML leniency kept alive on a fallback
+// path, the exact thing ADR-3473 §8.1 exists to remove. `extractFrontmatter` now surfaces
+// `unparseableResult()` (via `FRONTMATTER_UNPARSEABLE`) for the ambiguous-colon shapes this
+// block used to pin instead of silently repairing them.
 
 describe('escapeNullBytesForParse (null-byte round-trip through the sentinel swap)', () => {
   test('a NUL byte inside a key survives extractFrontmatter byte-for-byte, including at region offset 1', () => {

@@ -411,141 +411,22 @@ function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCom
  * `countKeysBeforeTruncation`) that could not be inlined without duplicating the
  * refusal/null-byte/comment-channel glue below. Renaming closes that gap literally: nothing in
  * this module still answers to the old hand-rolled scanner's name.
- */
-/**
- * Post-remote-runner-fix (#3881): the legacy hand-rolled scanner captured a top-level line's
- * value with a plain `(.*)` regex group — any text after the FIRST `key:` was accepted
- * verbatim, colons and all (`title: a: b` parsed to `{title: "a: b"}`). Real YAML has no such
- * leniency: a colon followed by whitespace inside an unquoted scalar is core block-mapping
- * syntax (it opens a nested key), so `last_activity: 2026-06-08: reviewed the PR queue` is
- * genuinely ambiguous/invalid YAML and js-yaml throws ("bad indentation of a mapping entry")
- * on the WHOLE region — not just that one value. That is a real, common shape: hand-edited
- * STATE.md files that skip the template's em-dash separator and use a plain colon instead
- * (#2571). Before this fix the entire frontmatter block came back `unparseableResult()` for
- * one ordinary, non-hostile line — total data loss for every OTHER key in the block too.
  *
- * This is a FALLBACK-ONLY retry, never the primary path: the unmodified `yaml` is tried first,
- * and this repair only runs when that attempt already threw. A well-formed (or genuinely
- * malformed-for-other-reasons) document is completely unaffected — zero behavior change, zero
- * added parse cost, on every document that already parses. Only a document that parses
- * SPECIFICALLY because of this repair benefits; if the repaired text still fails to parse, the
- * repair is a no-op and the original error is what callers see (never silently swallowed).
+ * No reader-side leniency repair (post-#3881-followup): a prior revision of this function fell
+ * back, on a throw, to two hand-rolled re-implementations of YAML dialect
+ * (`repairAmbiguousColonValues` for `key: value: extra`/`key: value:`-shaped ambiguous colons,
+ * `repairMalformedInlineArrays`+`splitLegacyInlineArrayItems` for a malformed/unclosed `[...]`)
+ * — itself the exact class of hand-rolled parsing ADR-3473 §8.1 exists to delete, just moved
+ * from the primary path to a fallback one. Measured against every tracked `*.md` file with a
+ * frontmatter fence in this repo (910 files): disabling each repair independently changed the
+ * parse result for **zero** documents. Both were deleted outright rather than kept on the
+ * "the old scanner did this" assumption; see the commit message for the sweep methodology.
  */
-function loadWithAmbiguousColonRepair(yaml: string): unknown {
-  try {
-    return yamlLoad(yaml, YAML_LOAD_OPTS);
-  } catch (e) {
-    for (const repair of [repairAmbiguousColonValues, repairMalformedInlineArrays]) {
-      const repaired = repair(yaml);
-      if (repaired === yaml) continue; // this repair found nothing to change
-      try {
-        return yamlLoad(repaired, YAML_LOAD_OPTS);
-      } catch {
-        continue; // still invalid (possibly for another reason) — try the next repair
-      }
-    }
-    throw e; // no repair helped — surface the original error
-  }
-}
-
-/**
- * Post-remote-runner-fix (#3881): the legacy hand-rolled scanner's inline-array handling
- * (`splitInlineArray`) was a tolerant, quote-aware comma-split over whatever sat between a
- * literal `[` and `]` on one line — consecutive commas and whitespace-only items were silently
- * filtered (`[a,,b]` -> `['a','b']`, `[ , ]` -> `[]`), and a `[` with nothing else on the line
- * was treated exactly like an empty value: an open nested context, populated by any `- item`
- * block-sequence lines that followed, or left an empty array if none did. A real YAML flow
- * sequence has none of that leniency — `[a,,b]` is a syntax error (empty flow-sequence entry),
- * and an unclosed `[` is an unterminated collection — so js-yaml throws on all four shapes,
- * where the legacy scanner silently recovered. This restores that recovery, scoped to exactly
- * the two shapes it covered: a single-line `key: [...]` (repaired into a well-formed, re-
- * parseable flow sequence with empty items dropped) and a bare unclosed `key: [` (rewritten to
- * either `key:` — so a following block-sequence parses normally — or `key: []` when nothing
- * follows, preserving the ARRAY-typed empty result the literal `[` signaled, as distinct from
- * the empty-OBJECT contract of a bare `key:` line with no bracket at all).
- */
-function repairMalformedInlineArrays(yaml: string): string {
-  const lines = splitLines(yaml);
-  const out: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const m = /^([A-Za-z0-9_-]+):\s*\[(.*)$/.exec(line);
-    if (!m) { out.push(line); continue; }
-    const [, key, afterBracket] = m;
-    const closeIdx = afterBracket.indexOf(']');
-    if (closeIdx !== -1) {
-      const inner = afterBracket.slice(0, closeIdx);
-      const trailing = afterBracket.slice(closeIdx + 1);
-      const items = splitLegacyInlineArrayItems(inner).map((it) =>
-        /[,:#[\]{}]/.test(it) || /^\s|\s$/.test(it) ? `"${it.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : it,
-      );
-      out.push(`${key}: [${items.join(', ')}]${trailing}`);
-      continue;
-    }
-    if (afterBracket.trim() === '') {
-      const next = lines[i + 1];
-      out.push(next !== undefined && /^\s+-\s/.test(next) ? `${key}:` : `${key}: []`);
-      continue;
-    }
-    out.push(line); // an unrecognized shape this repair doesn't claim to fix
-  }
-  return out.join('\n');
-}
-
-/** Quote-aware comma split mirroring the legacy scanner's `splitInlineArray`: an item may be
- * wrapped in matching quotes (a comma inside stays part of the item), otherwise split on bare
- * commas. Empty / whitespace-only items are filtered — the exact "consecutive commas" /
- * "whitespace-only items" tolerance the legacy scanner pinned.
- */
-function splitLegacyInlineArrayItems(inner: string): string[] {
-  const items: string[] = [];
-  let current = '';
-  let quote: string | null = null;
-  for (const ch of inner) {
-    if (quote) {
-      current += ch;
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") { quote = ch; current += ch; continue; }
-    if (ch === ',') { items.push(current); current = ''; continue; }
-    current += ch;
-  }
-  items.push(current);
-  return items
-    .map((it) => it.trim().replace(/^["']|["']$/g, ''))
-    .filter((it) => it !== '');
-}
-
-/**
- * Double-quote (and escape) any column-0 `key: value` line whose (single-line) value contains
- * an unquoted colon+whitespace or a trailing bare colon — the exact shape that reads as an
- * ambiguous nested mapping key to a real YAML parser. Lines that are already safely quoted or
- * open a flow/block collection (`"`, `'`, `[`, `{`) are left untouched (js-yaml already handles
- * those); an empty value (`key:` alone, opening a nested block) is left untouched too, since
- * repairing it would change a legitimate nested-map opener into a scalar. Only column-0 lines
- * are considered — an indented line is either already-valid nested content or a genuinely
- * different malformation this repair does not claim to fix.
- */
-function repairAmbiguousColonValues(yaml: string): string {
-  return splitLines(yaml)
-    .map((line) => {
-      const m = /^([A-Za-z0-9_][A-Za-z0-9_-]*):[ \t](.+)$/.exec(line);
-      if (!m) return line;
-      const [, key, value] = m;
-      if (/^["'[{]/.test(value)) return line; // already safely quoted/collection-opened
-      if (!/:(?:[ \t]|$)/.test(value)) return line; // no ambiguous colon in the value
-      const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      return `${key}: "${escaped}"`;
-    })
-    .join('\n');
-}
-
 function parseGuardedYamlRegion(yaml: string): Frontmatter {
   refuseAnchorsAndAliases(yaml);
   refuseIfSentinelPresent(yaml);
   const escaped = escapeNullBytesForParse(yaml);
-  const raw: unknown = loadWithAmbiguousColonRepair(escaped);
+  const raw: unknown = yamlLoad(escaped, YAML_LOAD_OPTS);
   const normalized = normalizeParsedValue(raw, false);
   const root: Record<string, unknown> =
     normalized && typeof normalized === 'object' && !Array.isArray(normalized)
@@ -1092,127 +973,88 @@ function frontmatterDeepEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+/**
+ * ADR-3473 §8.1 (#3881): the legacy `- key: value` same-line-with-dash capture never trimmed
+ * or number-coerced its value (`current[kvMatch[1]] = kvMatch[2]` verbatim), while every
+ * CONTINUATION line (a further-indented sibling key under the same list item) both trimmed
+ * (`kvMatch[2].trim()` — #1905/#1154, a quoted `"backstop "` must not silently stop matching
+ * the literal `backstop` marker) and number-coerced (`/^\d+$/.test(val) ? parseInt(val, 10) :
+ * val`). That distinction was purely a byproduct of the hand-rolled line scanner's own
+ * position tracking — real YAML has no such notion; `path: x` on the dash's own line and
+ * `count: 1` one line below it are the same kind of mapping entry. `tests/frontmatter.test.cjs`
+ * ("trims a continuation-KV value…") pins the trimming behavior, so it is reproduced here by
+ * treating an object item's FIRST own key (source order, matching the dash line) as untouched
+ * and every subsequent key as "continuation": trimmed, and coerced to a number when (after
+ * trimming) it is all-digits — the exact `/^\d+$/` shape the legacy scanner recognized, never a
+ * broader YAML-native numeric resolution (which would also promote floats/octal/booleans the
+ * legacy scanner left as strings).
+ */
+function coerceMustHavesValue(value: unknown, isContinuation: boolean): unknown {
+  if (typeof value !== 'string') return value; // arrays/nested maps pass through untouched
+  if (!isContinuation) return value;
+  const trimmed = value.trim();
+  return /^\d+$/.test(trimmed) ? parseInt(trimmed, 10) : trimmed;
+}
+
+/** Normalize one must_haves list item to the legacy contract: a plain scalar item stays a
+ * string; an object item gets `coerceMustHavesValue`'s same-line/continuation treatment
+ * (see that function's docblock).
+ */
+function normalizeMustHavesItem(item: unknown): unknown {
+  if (item === null || typeof item !== 'object' || Array.isArray(item)) return item;
+  const out: Record<string, unknown> = {};
+  Object.entries(item as Record<string, unknown>).forEach(([k, v], idx) => {
+    out[k] = coerceMustHavesValue(v, idx > 0);
+  });
+  return out;
+}
+
+/**
+ * Extract a specific block from `must_haves` in frontmatter YAML (e.g. `must_haves.truths`,
+ * `must_haves.artifacts`, `must_haves.key_links`) — via the same vendored js-yaml parser the
+ * rest of this module uses (ADR-3473 §8.1 / #3881), rather than the hand-rolled indentation
+ * scanner this replaces.
+ *
+ * Deliberately NOT routed through `parseGuardedYamlRegion`: that function flattens an
+ * object-shaped list ITEM to a single canonical string (consequence 3), which is the correct
+ * contract for the top-level Frontmatter value shape but would collapse `must_haves.artifacts`'s
+ * `{path, provides, ...}` items into unusable strings. This parses the region independently,
+ * under the same `FAILSAFE_SCHEMA` + `json: true` options (every scalar a string, duplicate
+ * keys last-wins) and the same anchor/alias/merge-key refusal (`refuseAnchorsAndAliases`) —
+ * `.planning/` must_haves blocks are untrusted input exactly like the rest of frontmatter.
+ */
 function parseMustHavesBlock(content: string, blockName: string): unknown[] {
-  // Extract a specific block from must_haves in raw frontmatter YAML
-  // Handles 3-level nesting: must_haves > artifacts/key_links > [{path, provides, ...}]
   const fmMatch = content.match(/^---\r?\n([\s\S]+?)\r?\n---/);
   if (!fmMatch) return [];
-
   const yaml = fmMatch[1];
-  const yamlLines = splitLines(yaml);
 
-  // Find must_haves: first to detect its indentation level. Split-then-scan
-  // (rather than a whole-string /m match) so a CRLF or blank-line boundary
-  // can never be absorbed into the indent capture (#3360) — see
-  // .gsd/phase/chore-3413-text-lines-seam/40-design.md.
-  const mustHavesLinePattern = /^(\s*)must_haves:\s*$/;
-  const mustHavesLineIndex = yamlLines.findIndex((line) => mustHavesLinePattern.test(line));
-  if (mustHavesLineIndex === -1) return [];
-  const mustHavesIndent = (yamlLines[mustHavesLineIndex].match(/^(\s*)/) as RegExpMatchArray)[1].length;
-
-  // Find the block (e.g., "truths:", "artifacts:", "key_links:") under must_haves
-  // It must be indented more than must_haves but we detect the actual indent dynamically
-  const blockLinePattern = new RegExp(`^(\\s+)${blockName}:\\s*$`);
-  const blockLineIndex = yamlLines.findIndex((line) => blockLinePattern.test(line));
-  if (blockLineIndex === -1) return [];
-
-  const blockIndent = (yamlLines[blockLineIndex].match(/^(\s*)/) as RegExpMatchArray)[1].length;
-  // The block must be nested under must_haves (more indented)
-  if (blockIndent <= mustHavesIndent) return [];
-
-  const blockLines = yamlLines.slice(blockLineIndex + 1); // skip the header line
-
-  // List items are indented one level deeper than blockIndent
-  // Continuation KVs are indented one level deeper than list items
-  const items: unknown[] = [];
-  let current: string | Record<string, unknown> | null = null;
-  let listItemIndent = -1; // detected from first "- " line
-
-  for (const line of blockLines) {
-    // Skip empty lines
-    if (line.trim() === '') continue;
-    const indentMatch = line.match(/^(\s*)/);
-    const indent = indentMatch ? indentMatch[1].length : 0;
-    // Stop at same or lower indent level than the block header
-    if (indent <= blockIndent && line.trim() !== '') break;
-
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith('- ')) {
-      // Detect list item indent from the first occurrence
-      if (listItemIndent === -1) listItemIndent = indent;
-
-      // Only treat as a top-level list item if at the expected indent
-      if (indent === listItemIndent) {
-        if (current) items.push(current);
-        const afterDash = trimmed.slice(2);
-        const trimmedAfterDash = afterDash.trim();
-        // Check if it's a fully-quoted string (may contain ':' inside the quotes)
-        if ((trimmedAfterDash.startsWith('"') && trimmedAfterDash.endsWith('"')) ||
-            (trimmedAfterDash.startsWith("'") && trimmedAfterDash.endsWith("'"))) {
-          current = trimmedAfterDash.slice(1, -1);
-        // Check if it's a simple string item (no colon means not a key-value)
-        } else if (!afterDash.includes(':')) {
-          current = afterDash.replace(/^["']|["']$/g, '');
-        } else {
-          // Key-value on same line as dash: "- path: value"
-          // YAML KV always has at least one space after the colon: "key: value"
-          // Requiring \s+ rejects "Class::Method" and "db:seed" (no space after colon)
-          const kvMatch = afterDash.match(/^(\w+):\s+"?([^"]*)"?\s*$/);
-          if (kvMatch) {
-            current = {};
-            (current)[kvMatch[1]] = kvMatch[2];
-          } else {
-            // Looks like KV but doesn't match — treat as plain string (#2757)
-            current = afterDash.replace(/^["']|["']$/g, '');
-          }
-        }
-        continue;
-      }
-    }
-
-    if (current && typeof current === 'object' && indent > listItemIndent) {
-      // Continuation key-value or nested array item
-      if (trimmed.startsWith('- ')) {
-        // Array item under a key
-        const arrVal = trimmed.slice(2).replace(/^["']|["']$/g, '');
-        const keys = Object.keys(current);
-        const lastKey = keys[keys.length - 1];
-        if (lastKey && !Array.isArray((current)[lastKey])) {
-          const existing = (current)[lastKey];
-          (current)[lastKey] = existing ? [existing] : [];
-        }
-        if (lastKey) ((current)[lastKey] as unknown[]).push(arrVal);
-      } else {
-        const kvMatch = trimmed.match(/^(\w+):\s*"?([^"]*)"?\s*$/);
-        if (kvMatch) {
-          // Trim: a quoted value like `"backstop "` captures the inner trailing space in group 2.
-          // Left untrimmed, a hand-authored `must_haves` marker degrades (a `backstop` truth silently
-          // grades green instead of abstaining — #1905, the #1154 false-pass; also the sibling
-          // check_target/violationFixture path). Whitespace is never semantic in a scalar KV value.
-          const val = kvMatch[2].trim();
-          // Try to parse as number
-          (current)[kvMatch[1]] = /^\d+$/.test(val) ? parseInt(val, 10) : val;
-        }
-      }
-    }
+  let parsed: unknown;
+  try {
+    refuseAnchorsAndAliases(yaml);
+    parsed = yamlLoad(yaml, YAML_LOAD_OPTS);
+  } catch {
+    return [];
   }
-  if (current) items.push(current);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
 
-  // Warn when must_haves block exists but parsed as empty -- likely YAML formatting issue.
-  // This is a critical diagnostic: empty must_haves causes verification to silently degrade
-  // to Option C (LLM-derived truths) instead of checking documented contracts.
-  if (items.length === 0 && blockLines.length > 0) {
-    const nonEmptyLines = blockLines.filter(l => l.trim() !== '').length;
-    if (nonEmptyLines > 0) {
+  const mustHaves = (parsed as Record<string, unknown>).must_haves;
+  if (!mustHaves || typeof mustHaves !== 'object' || Array.isArray(mustHaves)) return [];
+
+  const block = (mustHaves as Record<string, unknown>)[blockName];
+  if (!Array.isArray(block)) {
+    // Warn when the block exists but isn't a usable list — likely a YAML formatting issue.
+    // This is a critical diagnostic: empty must_haves causes verification to silently degrade
+    // to Option C (LLM-derived truths) instead of checking documented contracts.
+    if (block !== undefined && block !== null) {
       process.stderr.write(
-        `[gsd-tools] WARNING: must_haves.${blockName} block has ${nonEmptyLines} content lines but parsed 0 items. ` +
+        `[gsd-tools] WARNING: must_haves.${blockName} block has content but parsed 0 items. ` +
         `Possible YAML formatting issue — verification will fall back to LLM-derived truths.\n`
       );
     }
+    return [];
   }
 
-  return items;
+  return block.map(normalizeMustHavesItem);
 }
 
 // ─── Frontmatter CRUD commands ────────────────────────────────────────────────

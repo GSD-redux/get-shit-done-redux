@@ -211,21 +211,13 @@ describe('extractFrontmatter: inline arrays', () => {
     assert.deepEqual(result, { tags: ['a, b', 'c', 'd'] });
   });
 
-  test('consecutive commas (empty items filtered)', () => {
-    const result = extractFrontmatter('---\ntags: [a,,b]\n---');
-    assert.deepEqual(result, { tags: ['a', 'b'] });
-  });
-
-  test('whitespace-only items filtered', () => {
-    const result = extractFrontmatter('---\ntags: [ , ]\n---');
-    assert.deepEqual(result, { tags: [] });
-  });
-
-  test('opening bracket only becomes empty array/object', () => {
-    const result = extractFrontmatter('---\ntags: [\n---');
-    assert.deepEqual(result, { tags: [] });
-    assert.ok(Array.isArray(result.tags));
-  });
+  // `repairMalformedInlineArrays` (and its `splitLegacyInlineArrayItems` helper), which these
+  // three cases pinned, was deleted (#3881 follow-up): a sweep of every tracked `*.md` file with
+  // a frontmatter fence (910 files) found ZERO documents whose parse result changed with the
+  // repair disabled. A real YAML flow sequence has none of this leniency — `[a,,b]` is an empty
+  // flow-sequence-entry syntax error, `[ , ]` is the same, and an unclosed `[` is an unterminated
+  // collection — so `extractFrontmatter` now correctly reports these as unparseable
+  // (`FRONTMATTER_UNPARSEABLE`) instead of silently repairing them.
 });
 
 describe('extractFrontmatter: dashed list arrays', () => {
@@ -250,10 +242,12 @@ describe('extractFrontmatter: dashed list arrays', () => {
     assert.deepEqual(result, { tags: ['single quoted'] });
   });
 
-  test('opening bracket followed by dashed list', () => {
-    const result = extractFrontmatter('---\ntags: [\n  - a\n  - b\n---');
-    assert.deepEqual(result, { tags: ['a', 'b'] });
-  });
+  // `repairMalformedInlineArrays`'s "bare unclosed `key: [` followed by a block-sequence"
+  // recovery, which this case pinned, was deleted alongside the rest of that function (#3881
+  // follow-up; see the note above `extractFrontmatter: inline arrays`) — zero tracked documents
+  // depended on it. A literal `[` with no closing bracket is an unterminated YAML flow
+  // collection; `extractFrontmatter` now reports it as unparseable rather than silently
+  // reinterpreting it as a block-sequence opener.
 });
 
 describe('extractFrontmatter: empty / missing values', () => {
