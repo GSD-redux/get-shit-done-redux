@@ -8443,10 +8443,13 @@ gaps:
       assert.strictEqual(items.length, 1);
     });
 
-    test('the human_needed path does NOT filter closed entries (AC: unchanged)', () => {
-      // Deliberate asymmetry, pinned so it cannot drift silently: the issue's
-      // acceptance criteria pin human_needed behaviour as unchanged, and real
-      // reports carry resolution:-annotated entries there today.
+    test('closed entries are excluded on the human_needed path too', () => {
+      // #3850 review m8: an earlier revision skipped closed entries only on
+      // `gaps_found`, citing an acceptance criterion the issue does not
+      // contain. #3850 has no AC section; its suggested fix (2) states the skip
+      // unconditionally, and the file it cites — 14 of 16 entries resolved — is
+      // a `human_needed` one. The asymmetry left the reporter's own scenario
+      // over-reporting by 14. One rule, both statuses.
       const items = parseVerificationItems(`---
 status: human_needed
 human_verification:
@@ -8455,7 +8458,70 @@ human_verification:
   - test: "Still outstanding"
 ---
 `, 'human_needed');
-      assert.strictEqual(items.length, 2);
+      assert.strictEqual(items.length, 1);
+      // The display name keeps `extractFrontmatter`'s flattened shape verbatim
+      // (`normalizeHumanVerificationEntry` strips wrapping quotes only) — this
+      // fix derives the SAME string from the raw slice, it does not prettify it.
+      assert.match(items[0].name, /Still outstanding/);
+      // The surfaced entry keeps its ORIGINAL 1-based row, so it still names
+      // its position in the file after a closed sibling was skipped.
+      assert.strictEqual(items[0].test, 2);
+    });
+
+    test('B2: a nested block sequence at key indent does not drop an OPEN entry', () => {
+      // The review's executed repro. `parseYamlRegion` is indent-blind and
+      // `splitGapsEntries` is indent-anchored, so pairing them by ordinal
+      // position made entry B inherit entry C's `resolution:` and disappear.
+      // Both readings now come from one parse, so there is no index to skew.
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "A"
+    steps:
+    - s1
+  - test: "B"
+  - test: "C"
+    resolution: "done"
+---
+`, 'human_needed');
+      const names = items.map((i) => i.name).join(' | ');
+      assert.match(names, /"B/, `open entry "B" must survive; got ${JSON.stringify(names)}`);
+      assert.ok(!/"C/.test(names), `closed entry "C" must be skipped; got ${JSON.stringify(names)}`);
+    });
+
+    test('B2: a bare bullet does not skew the entry list', () => {
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "A"
+  - 
+  - test: "B"
+---
+`, 'human_needed');
+      const names = items.map((i) => i.name).join(' | ');
+      assert.match(names, /"B/, `the entry after a bare bullet must still surface; got ${JSON.stringify(names)}`);
+    });
+
+    test('B1: a BOM does not make a gaps_found report vanish', () => {
+      // #2977's defect class. A hand-rolled fence regex re-asserts the byte-0
+      // rule and slices nothing, which is this issue's symptom verbatim on the
+      // platform the repo already has a named class for.
+      const items = parseVerificationItems(`\uFEFF---
+status: gaps_found
+gaps:
+  - truth: "G1"
+    status: partial
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1, 'a BOM-prefixed report must still surface its gaps');
+      assert.strictEqual(items[0].name, 'G1');
+    });
+
+    test('M4: CRLF frontmatter surfaces gaps', () => {
+      const crlf = ['---', 'status: gaps_found', 'gaps:', '  - truth: "G1"', '    status: partial', '---', ''].join('\r\n');
+      const items = parseVerificationItems(crlf, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].name, 'G1');
     });
   });
 

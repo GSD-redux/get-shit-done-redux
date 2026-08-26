@@ -28,7 +28,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, sliceTopLevelFrontmatterSegments } = frontmatter;
+const { extractFrontmatter, sliceTopLevelFrontmatterSegments, frontmatterRegion, parseQuotedScalar } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
@@ -3470,13 +3470,71 @@ function rawGapEntryText(
  * same-named nested key can never open a segment.
  */
 function sliceFrontmatterArrayEntries(content: string, key: string): string[][] {
-  const fmMatch = content.match(/^---\r?\n([\s\S]+?)\r?\n---/);
-  if (!fmMatch) return [];
-  const segment = sliceTopLevelFrontmatterSegments(fmMatch[1]).find((seg) => seg.key === key);
+  // #3850 review B1: the region comes from `frontmatterRegion`, the same seam
+  // `extractFrontmatter` uses. A hand-rolled `/^---\r?\n…/` here would re-assert
+  // the byte-0 fence rule that #2977 removed, so a BOM'd file — PowerShell 5.1
+  // `>`/`Out-File` writes one by default — would slice nothing, and a
+  // `gaps_found` report would vanish from the audit exactly as it did before
+  // this fix. One fence parser, not two.
+  const region = frontmatterRegion(content);
+  if (region === null) return [];
+  // Last wins, matching `parseYamlRegion`: a duplicated top-level key assigns
+  // twice, so the LAST block is the one `extractFrontmatter` describes. Taking
+  // the first would make the two readers disagree about which block they mean.
+  const segments = sliceTopLevelFrontmatterSegments(region).filter((seg) => seg.key === key);
+  const segment = segments.length > 0 ? segments[segments.length - 1] : undefined;
   if (!segment) return [];
   // Drop the `key:` header line; the remainder is the entry list body.
   const body = segment.raw.split('\n').slice(1).join('\n');
   return splitGapsEntries(body);
+}
+
+/**
+ * The display name for a frontmatter array entry, derived from its RAW lines
+ * (#3850 review B2).
+ *
+ * `parseYamlRegion` builds each `- ` entry as
+ * `parseQuotedScalar(line.trim().slice(2))`, so applying that identical rule to
+ * the raw entry's first line reproduces the string `extractFrontmatter` would
+ * have produced — without needing to pair the two readers by ordinal position.
+ *
+ * That pairing was the defect: `parseYamlRegion` is indent-BLIND (it pushes any
+ * `- ` line into whatever array context the stack currently holds) while the
+ * raw slicer is indent-ANCHORED (a deeper bullet folds into the current entry).
+ * A block sequence written at the same indent as its key — ordinary, legal YAML
+ * — makes the two disagree about how many entries exist, and from that point on
+ * every index names a different entry. An OPEN entry then inherits a CLOSED
+ * one's resolution and is silently dropped: the exact defect this PR fixes.
+ */
+function frontmatterEntryDisplayName(entryLines: string[]): string {
+  const first = (entryLines[0] ?? '').trim();
+  return parseQuotedScalar(first.startsWith('- ') ? first.slice(2) : first);
+}
+
+/**
+ * One entry -> one `UatItem`, shared by both frontmatter array readers
+ * (#3850 review M3).
+ *
+ * `parseVerificationGapsItems` and the `human_verification` reader had
+ * independent copies of this mapping — same field vocabulary, same
+ * `rawGapEntryText` fallback, same `'unknown'` fail-safe, same `/^\d+$/` test
+ * guard — differing only in which `result` they report. That is the
+ * `DEFECT.GENERATIVE-FIX` shape CONTEXT.md names, and the repo rule is to share
+ * the parser rather than add a parity test over two copies.
+ */
+function frontmatterEntryToUatItem(entryLines: string[], opts: { forcedResult?: string } = {}): UatItem {
+  const fields = extractGapEntryFields(entryLines);
+  // Fail-safe, as in parseGapsItems: a missing/garbled status surfaces as
+  // 'unknown' rather than being dropped.
+  const status = opts.forcedResult ?? fields.status ?? 'unknown';
+  const item: UatItem = {
+    name: fields.truth || frontmatterEntryDisplayName(entryLines) || rawGapEntryText(entryLines),
+    result: status,
+    category: categorizeItem(status, fields.reason, undefined),
+  };
+  if (fields.test && /^\d+$/.test(fields.test)) item.test = parseInt(fields.test, 10);
+  if (fields.reason) item.reason = fields.reason;
+  return item;
 }
 
 /**
@@ -3508,23 +3566,9 @@ function isFrontmatterEntryResolved(entryLines: string[] | undefined): boolean {
  * template puts gaps in frontmatter, so no existing reader covers this shape.
  */
 function parseVerificationGapsItems(content: string): UatItem[] {
-  const items: UatItem[] = [];
-  for (const entryLines of sliceFrontmatterArrayEntries(content, 'gaps')) {
-    if (isFrontmatterEntryResolved(entryLines)) continue;
-    const fields = extractGapEntryFields(entryLines);
-    // Fail-safe, as in parseGapsItems: a missing/garbled status surfaces as
-    // 'unknown' rather than being dropped.
-    const status = fields.status || 'unknown';
-    const item: UatItem = {
-      name: fields.truth || rawGapEntryText(entryLines),
-      result: status,
-      category: categorizeItem(status, fields.reason, undefined),
-    };
-    if (fields.test && /^\d+$/.test(fields.test)) item.test = parseInt(fields.test, 10);
-    if (fields.reason) item.reason = fields.reason;
-    items.push(item);
-  }
-  return items;
+  return sliceFrontmatterArrayEntries(content, 'gaps')
+    .filter((entryLines) => !isFrontmatterEntryResolved(entryLines))
+    .map((entryLines) => frontmatterEntryToUatItem(entryLines));
 }
 
 /**
@@ -3542,184 +3586,201 @@ function parseVerificationGapsItems(content: string): UatItem[] {
  * Eligibility now has ONE owner — the caller — and this function reports what
  * the file says.
  *
- * The `human_needed` path is byte-for-byte unchanged, per the issue's
- * acceptance criteria: same reader, same `normalizeHumanVerificationEntry`
- * display names, same numbering, and NO resolved-entry filtering. Closed
- * entries are skipped only on the new `gaps_found` path. See the PR discussion
- * — unifying the two is a one-line change, deliberately not taken here.
+ * Resolved entries are skipped on BOTH statuses (#3850 review m8). An earlier
+ * revision skipped them only on `gaps_found`, citing an acceptance criterion
+ * that the issue does not contain: #3850 has no AC section, and its suggested
+ * fix (2) states the skip unconditionally — "Skip entries carrying a
+ * `resolution:` field, or the fix trades one wrong number for another — one
+ * file here has 14 of 16 entries resolved". That file is `human_needed`, so the
+ * asymmetry left the reporter's own named scenario over-reporting by 14. One
+ * rule, both paths.
  */
 function parseVerificationItems(content: string, status: string, sourcePath?: string): UatItem[] {
   const items: UatItem[] = [];
   if (status === 'gaps_found') {
-    items.push(...parseHumanVerificationItems(content, sourcePath, true));
+    items.push(...parseHumanVerificationItems(content, sourcePath));
     items.push(...parseVerificationGapsItems(content));
     return items;
   }
   if (status === 'human_needed') {
-    return parseHumanVerificationItems(content, sourcePath, false);
+    return parseHumanVerificationItems(content, sourcePath);
   }
   return items;
 }
 
 /**
- * The `human_verification:` reader, extracted verbatim from
- * `parseVerificationItems` so `gaps_found` and `human_needed` share ONE
- * implementation rather than a second copy that drifts (ref
- * `DEFECT.GENERATIVE-FIX`). `skipResolved` is the only behavioural difference
- * and is false on the `human_needed` path.
+ * The `human_verification:` reader, extracted from `parseVerificationItems` so
+ * `gaps_found` and `human_needed` share ONE implementation rather than a second
+ * copy that drifts (ref `DEFECT.GENERATIVE-FIX`). Both statuses now take the
+ * identical path, resolved-entry skip included — see the dispatcher above.
  */
-function parseHumanVerificationItems(content: string, sourcePath: string | undefined, skipResolved: boolean): UatItem[] {
+function parseHumanVerificationItems(content: string, sourcePath?: string): UatItem[] {
   const items: UatItem[] = [];
-  {
-    // #2286: the frontmatter's structured `human_verification:` YAML array
-    // (extractFrontmatter) is the PRIMARY source of truth when present and
-    // non-empty — it fully bypasses the body-shape scan below, so a file
-    // whose frontmatter declares the array doesn't require any particular
-    // `## Human Verification` body shape at all. An absent or empty array
-    // (length 0) falls back to the body scan unchanged.
-    const frontmatter = extractFrontmatter(content, sourcePath);
-    const humanVerification = frontmatter.human_verification;
-    if (Array.isArray(humanVerification) && humanVerification.length > 0) {
-      // #3850: the flattened `humanVerification` strings carry the DISPLAY name
-      // (unchanged), while the raw slice carries the sibling fields needed to
-      // tell a closed entry from an open one. Indexes align: both derive from
-      // the same `- `-opened entry list, in order.
-      const rawEntries = skipResolved ? sliceFrontmatterArrayEntries(content, 'human_verification') : [];
-      humanVerification.forEach((entry, idx) => {
-        if (skipResolved && isFrontmatterEntryResolved(rawEntries[idx])) return;
+  const skipResolved = true;
+  // #2286: the frontmatter's structured `human_verification:` YAML array
+  // (extractFrontmatter) is the PRIMARY source of truth when present and
+  // non-empty — it fully bypasses the body-shape scan below, so a file
+  // whose frontmatter declares the array doesn't require any particular
+  // `## Human Verification` body shape at all. An absent or empty array
+  // (length 0) falls back to the body scan unchanged.
+  const frontmatter = extractFrontmatter(content, sourcePath);
+  const humanVerification = frontmatter.human_verification;
+  if (Array.isArray(humanVerification) && humanVerification.length > 0) {
+    // #3850 review B2: ONE parse, not two paired by ordinal position.
+    //
+    // The display name and the sibling fields now both come from the raw
+    // slice, so there is no index to desynchronise. Pairing
+    // `extractFrontmatter`'s flattened array against the raw entries by
+    // index was wrong because the two readers disagree about entry COUNT on
+    // legal YAML: `parseYamlRegion` is indent-blind, the slicer is
+    // indent-anchored, and a nested block sequence at key indent pops the
+    // one and folds into the other. From the first disagreement onward every
+    // index names a different entry, and an OPEN entry inherits a CLOSED
+    // one's resolution and vanishes.
+    //
+    // The flattened array stays the GATE (#2286: a non-empty
+    // `human_verification:` array fully bypasses the body-shape scan below),
+    // but no longer the source of the items.
+    const rawEntries = sliceFrontmatterArrayEntries(content, 'human_verification');
+    // Fall back to the flattened array when the slice yields nothing, so a
+    // shape the slicer cannot see still reports rather than disappearing —
+    // the failure mode this whole issue is about.
+    const entrySource: Array<string[] | string> = rawEntries.length > 0 ? rawEntries : humanVerification.map(String);
+    entrySource.forEach((rawEntry, idx) => {
+      const entryLines = Array.isArray(rawEntry) ? rawEntry : [`- ${rawEntry}`];
+      if (skipResolved && isFrontmatterEntryResolved(entryLines)) return;
+      items.push({
+        // The entry's ORIGINAL 1-based position, so a surfaced item still
+        // names its row in the file when a closed sibling was skipped.
+        test: idx + 1,
+        name: normalizeHumanVerificationEntry(frontmatterEntryDisplayName(entryLines)),
+        result: 'human_needed',
+        category: 'human_uat',
+      });
+    });
+    return items;
+  }
+
+  // Use the seam to locate the ## Human Verification section (ADR-1372 T5).
+  const hvSection = collectSection(
+    content,
+    (h) => /^human\s+verification/i.test(h.text) && h.level === 2,
+    { levelBounded: true },
+  );
+  if (hvSection) {
+    // #2245 review Fix 3: reverted to the pre-Phase-4 (HEAD 2cbf18642)
+    // implementation. The live Human Verification section is NOT a strict
+    // GFM table — the planner/verifier templates mix table rows, numbered
+    // items, and bullet items in the same section (and a `### N.` heading
+    // format is common too), so a table-XOR-list read (parse a table, and
+    // if it parses, suppress numbered/bullet items entirely) silently
+    // dropped items on any mixed or malformed section: a malformed
+    // `| N | … |` table with no valid header/delimiter yielded ZERO items
+    // instead of reading the rows positionally. This per-line scan reads
+    // table rows AND numbered items AND bullet items as a UNION (whichever
+    // pattern a given line matches), exactly like OLD, and reads
+    // `| N | desc |` rows even without a valid table header/delimiter.
+    //
+    // #2245 audit: the table-row branch's CELL SPLIT is name/position-
+    // addressed via `splitTableRow` (escape-aware, canonical) instead of a
+    // hand-rolled pipe regex — candidacy itself is decided WITHOUT a table
+    // regex (a leading `|` plus a purely-numeric first cell), so this no
+    // longer needs an allow-adhoc-markdown suppression at all.
+    const lines = hvSection.body.split('\n');
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      // Match table rows: | N | description | ... — candidacy requires a
+      // leading pipe and a purely-numeric first cell (mirrors what the old
+      // regex effectively required: a "|digit|" cell immediately followed
+      // by more content), with at least 2 physical cells so a bare "| N |"
+      // with nothing after it is NOT treated as a row.
+      //
+      // #2245 review Fix 9: this is NOT the same as OLD for a row whose
+      // ONLY content past the digit cell is trailing whitespace (e.g.
+      // "| N | ", no second delimiting `|`). OLD's `([^|]+)` regex ran
+      // against the RAW (untrimmed) line and its `\s*` would backtrack to
+      // let `[^|]+` swallow that trailing whitespace, so OLD matched and
+      // pushed an item with an EMPTY (`.trim()`-collapsed) name. Here,
+      // `trimmedLine = line.trim()` strips that trailing whitespace BEFORE
+      // `splitTableRow` ever sees it, collapsing the line to a single cell
+      // (`candidateCells.length === 1`), which fails the `>= 2` check —
+      // the item is silently dropped instead. A real, acceptable behaviour
+      // change (an empty-named UAT item is not useful either way), but the
+      // two implementations are NOT equivalent on this input.
+      let tableCells: string[] | null = null;
+      if (trimmedLine.startsWith('|')) {
+        const candidateCells = splitTableRow(trimmedLine);
+        if (candidateCells.length >= 2 && /^\d+$/.test(candidateCells[0])) {
+          tableCells = candidateCells;
+        }
+      }
+      // Match bullet items: - description
+      const bulletMatch = line.match(/^[-*]\s+(.+)/);
+      // Match numbered items: 1. description
+      const numberedMatch = line.match(/^(\d+)\.\s+(.+)/);
+
+      if (tableCells) {
+        // Skip rows that already have a passing result (PASS, pass, resolved, etc.)
+        // — checked over every cell AFTER the description column, mirroring
+        // OLD's rowRemainder scan (which only ever saw cells past the
+        // description, the description itself having already been consumed).
+        const hasPassResult = tableCells.slice(2).some(c => /^pass$/i.test(c) || /^resolved$/i.test(c));
+        if (hasPassResult) continue;
         items.push({
-          // The entry's ORIGINAL 1-based position, so a surfaced item still
-          // names its row in the file when a closed sibling was skipped.
-          test: idx + 1,
-          name: normalizeHumanVerificationEntry(entry),
+          test: parseInt(tableCells[0], 10),
+          name: tableCells[1] ?? '',
           result: 'human_needed',
           category: 'human_uat',
         });
-      });
-      return items;
+      } else if (numberedMatch) {
+        items.push({
+          test: parseInt(numberedMatch[1], 10),
+          name: numberedMatch[2].trim(),
+          result: 'human_needed',
+          category: 'human_uat',
+        });
+      } else if (bulletMatch && bulletMatch[1].length > 10) {
+        items.push({
+          name: bulletMatch[1].trim(),
+          result: 'human_needed',
+          category: 'human_uat',
+        });
+      }
     }
 
-    // Use the seam to locate the ## Human Verification section (ADR-1372 T5).
-    const hvSection = collectSection(
-      content,
-      (h) => /^human\s+verification/i.test(h.text) && h.level === 2,
-      { levelBounded: true },
+    // #2286: fall back to the `### N. <label>` heading + bold-led paragraph
+    // shape (the canonical form emitted by `templates/verification-report.md`
+    // — `### 1. {Test Name}` followed by `**Test:** ... **Expected:** ...
+    // **Why human:** ...`), which the table/bullet/numbered per-line scan
+    // above never recognises (a `###`-prefixed line matches none of those
+    // three patterns). Uses the same `tokenizeHeadings` seam
+    // `parseFirstPendingTest` already uses for `### N.` sub-headings,
+    // applied here to the Human Verification section body. Runs in
+    // addition to (a union with) the scan above — the two shapes don't
+    // collide, so this only adds items a `###` heading page would have
+    // silently produced zero for.
+    const hvSubHeadings = tokenizeHeadings(hvSection.body).filter(
+      (h) => h.level === 3 && /^\d+\.\s+/.test(h.text),
     );
-    if (hvSection) {
-      // #2245 review Fix 3: reverted to the pre-Phase-4 (HEAD 2cbf18642)
-      // implementation. The live Human Verification section is NOT a strict
-      // GFM table — the planner/verifier templates mix table rows, numbered
-      // items, and bullet items in the same section (and a `### N.` heading
-      // format is common too), so a table-XOR-list read (parse a table, and
-      // if it parses, suppress numbered/bullet items entirely) silently
-      // dropped items on any mixed or malformed section: a malformed
-      // `| N | … |` table with no valid header/delimiter yielded ZERO items
-      // instead of reading the rows positionally. This per-line scan reads
-      // table rows AND numbered items AND bullet items as a UNION (whichever
-      // pattern a given line matches), exactly like OLD, and reads
-      // `| N | desc |` rows even without a valid table header/delimiter.
-      //
-      // #2245 audit: the table-row branch's CELL SPLIT is name/position-
-      // addressed via `splitTableRow` (escape-aware, canonical) instead of a
-      // hand-rolled pipe regex — candidacy itself is decided WITHOUT a table
-      // regex (a leading `|` plus a purely-numeric first cell), so this no
-      // longer needs an allow-adhoc-markdown suppression at all.
-      const lines = hvSection.body.split('\n');
-      for (const line of lines) {
-        const trimmedLine = line.trim();
-        // Match table rows: | N | description | ... — candidacy requires a
-        // leading pipe and a purely-numeric first cell (mirrors what the old
-        // regex effectively required: a "|digit|" cell immediately followed
-        // by more content), with at least 2 physical cells so a bare "| N |"
-        // with nothing after it is NOT treated as a row.
-        //
-        // #2245 review Fix 9: this is NOT the same as OLD for a row whose
-        // ONLY content past the digit cell is trailing whitespace (e.g.
-        // "| N | ", no second delimiting `|`). OLD's `([^|]+)` regex ran
-        // against the RAW (untrimmed) line and its `\s*` would backtrack to
-        // let `[^|]+` swallow that trailing whitespace, so OLD matched and
-        // pushed an item with an EMPTY (`.trim()`-collapsed) name. Here,
-        // `trimmedLine = line.trim()` strips that trailing whitespace BEFORE
-        // `splitTableRow` ever sees it, collapsing the line to a single cell
-        // (`candidateCells.length === 1`), which fails the `>= 2` check —
-        // the item is silently dropped instead. A real, acceptable behaviour
-        // change (an empty-named UAT item is not useful either way), but the
-        // two implementations are NOT equivalent on this input.
-        let tableCells: string[] | null = null;
-        if (trimmedLine.startsWith('|')) {
-          const candidateCells = splitTableRow(trimmedLine);
-          if (candidateCells.length >= 2 && /^\d+$/.test(candidateCells[0])) {
-            tableCells = candidateCells;
-          }
-        }
-        // Match bullet items: - description
-        const bulletMatch = line.match(/^[-*]\s+(.+)/);
-        // Match numbered items: 1. description
-        const numberedMatch = line.match(/^(\d+)\.\s+(.+)/);
+    for (let i = 0; i < hvSubHeadings.length; i += 1) {
+      const current = hvSubHeadings[i];
+      const next = hvSubHeadings[i + 1];
+      const block = next
+        ? hvSection.body.slice(current.offset, next.offset)
+        : hvSection.body.slice(current.offset);
+      const bodyAfterHeading = block.slice(block.indexOf('\n') + 1);
+      // Require a bold-led paragraph body (`**Test:** ...`) to distinguish
+      // a genuine verification item from an unrelated numbered heading.
+      if (!/^\s*\*\*/.test(bodyAfterHeading)) continue;
 
-        if (tableCells) {
-          // Skip rows that already have a passing result (PASS, pass, resolved, etc.)
-          // — checked over every cell AFTER the description column, mirroring
-          // OLD's rowRemainder scan (which only ever saw cells past the
-          // description, the description itself having already been consumed).
-          const hasPassResult = tableCells.slice(2).some(c => /^pass$/i.test(c) || /^resolved$/i.test(c));
-          if (hasPassResult) continue;
-          items.push({
-            test: parseInt(tableCells[0], 10),
-            name: tableCells[1] ?? '',
-            result: 'human_needed',
-            category: 'human_uat',
-          });
-        } else if (numberedMatch) {
-          items.push({
-            test: parseInt(numberedMatch[1], 10),
-            name: numberedMatch[2].trim(),
-            result: 'human_needed',
-            category: 'human_uat',
-          });
-        } else if (bulletMatch && bulletMatch[1].length > 10) {
-          items.push({
-            name: bulletMatch[1].trim(),
-            result: 'human_needed',
-            category: 'human_uat',
-          });
-        }
-      }
-
-      // #2286: fall back to the `### N. <label>` heading + bold-led paragraph
-      // shape (the canonical form emitted by `templates/verification-report.md`
-      // — `### 1. {Test Name}` followed by `**Test:** ... **Expected:** ...
-      // **Why human:** ...`), which the table/bullet/numbered per-line scan
-      // above never recognises (a `###`-prefixed line matches none of those
-      // three patterns). Uses the same `tokenizeHeadings` seam
-      // `parseFirstPendingTest` already uses for `### N.` sub-headings,
-      // applied here to the Human Verification section body. Runs in
-      // addition to (a union with) the scan above — the two shapes don't
-      // collide, so this only adds items a `###` heading page would have
-      // silently produced zero for.
-      const hvSubHeadings = tokenizeHeadings(hvSection.body).filter(
-        (h) => h.level === 3 && /^\d+\.\s+/.test(h.text),
-      );
-      for (let i = 0; i < hvSubHeadings.length; i += 1) {
-        const current = hvSubHeadings[i];
-        const next = hvSubHeadings[i + 1];
-        const block = next
-          ? hvSection.body.slice(current.offset, next.offset)
-          : hvSection.body.slice(current.offset);
-        const bodyAfterHeading = block.slice(block.indexOf('\n') + 1);
-        // Require a bold-led paragraph body (`**Test:** ...`) to distinguish
-        // a genuine verification item from an unrelated numbered heading.
-        if (!/^\s*\*\*/.test(bodyAfterHeading)) continue;
-
-        const headingParts = current.text.match(/^(\d+)\.\s+(.+)$/);
-        if (!headingParts) continue;
-        items.push({
-          test: parseInt(headingParts[1], 10),
-          name: headingParts[2].trim(),
-          result: 'human_needed',
-          category: 'human_uat',
-        });
-      }
+      const headingParts = current.text.match(/^(\d+)\.\s+(.+)$/);
+      if (!headingParts) continue;
+      items.push({
+        test: parseInt(headingParts[1], 10),
+        name: headingParts[2].trim(),
+        result: 'human_needed',
+        category: 'human_uat',
+      });
     }
   }
   return items;

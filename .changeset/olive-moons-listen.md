@@ -2,4 +2,8 @@
 type: Fixed
 pr: 3879
 ---
-**`/gsd-audit-uat` no longer drops a whole phase's verification debt on the floor** — a `*-VERIFICATION.md` whose status is `gaps_found` reported zero items, so the file never entered the results and its phase disappeared from the report entirely. `cmdAuditUat` admitted both non-passing statuses, then `parseVerificationItems` honoured only `human_needed` and returned an empty array for the other, standing on a comment that deferred to `plan-phase --gaps` — a different command the audit never reaches. A `gaps_found` report now contributes its `human_verification:` entries and its frontmatter `gaps:` entries, skipping any already marked `status: resolved` or carrying a `resolution:`. The `human_needed` path is byte-for-byte unchanged. (#3850)
+**`/gsd-audit-uat` now surfaces a `gaps_found` verification report's FRONTMATTER debt instead of dropping the phase entirely** — a `*-VERIFICATION.md` whose status is `gaps_found` reported zero items, so the file never entered the results and its phase disappeared from the report. `cmdAuditUat` admitted both non-passing statuses, then `parseVerificationItems` honoured only `human_needed` and returned an empty array for the other, standing on a comment that deferred to `plan-phase --gaps` — a different command the audit never reaches. A `gaps_found` report now contributes its `human_verification:` entries and its frontmatter `gaps:` entries.
+
+Entries already closed — carrying `status: resolved` or a `resolution:` field — are skipped on **both** statuses, so a `human_needed` file whose entries are mostly resolved no longer over-reports either.
+
+Scope, stated precisely: this covers gaps recorded in a report's **frontmatter**. A report authored to the template's `## Gaps Summary` prose shape (`gsd-core/templates/verification-report.md`) records its gaps in the body, and those are still not counted. (#3850)
