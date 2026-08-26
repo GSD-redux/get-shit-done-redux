@@ -215,7 +215,9 @@ export const KNOWN_PROVIDERS: Set<string> = new Set(
 export const CLAUDE_AGENT_ALIASES: Set<string> = new Set(['opus', 'sonnet', 'haiku', 'fable']);
 
 export function isAnthropicFlavoredModel(model: unknown): boolean {
-  return typeof model === 'string' && (CLAUDE_AGENT_ALIASES.has(model) || model.toLowerCase().includes('claude'));
+  if (typeof model !== 'string') return false;
+  const lower = model.toLowerCase();
+  return CLAUDE_AGENT_ALIASES.has(lower) || lower.includes('claude');
 }
 
 export function nextTier(currentTier: string): string | null {

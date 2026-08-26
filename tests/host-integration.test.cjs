@@ -1991,6 +1991,28 @@ describe('#3714 resolveOrchestratorExec — modelFlag/model seam (mechanical, RE
     );
   });
 
+  // ITEM 3: `invalid_model` is live for any non-string, non-null, non-undefined
+  // `model` argument — a caller error (number/bool/array/object), distinct
+  // from the benign "use the host default" degradation that null/undefined/''
+  // already exercise. Previously zero test references (Stryker-visible gap).
+  test('ITEM 3: a non-string model (number, boolean, array, object) -> {ok:false, reason:"invalid_model"}', () => {
+    for (const bogus of [7, true, [], {}]) {
+      const result = resolveOrchestratorExec({ command: 'codex', modelFlag: '--model' }, CWD, PROMPT, bogus);
+      assert.deepEqual(result, { ok: false, reason: 'invalid_model' },
+        `model=${JSON.stringify(bogus)} must take the invalid_model branch`);
+    }
+  });
+
+  // ITEM 3 CONTROL: null/undefined/'' must NOT take the invalid_model branch —
+  // they degrade to "omit the flag" and the resolution still succeeds.
+  test('ITEM 3 CONTROL: null/undefined/\'\' do NOT take invalid_model — they omit the flag and succeed', () => {
+    for (const benign of [null, undefined, '']) {
+      const result = resolveOrchestratorExec({ command: 'codex', modelFlag: '--model' }, CWD, PROMPT, benign);
+      assert.equal(result.ok, true, `model=${JSON.stringify(benign)} must resolve ok:true`);
+      assert.ok(!result.args.includes('--model'), `model=${JSON.stringify(benign)} must omit the --model flag`);
+    }
+  });
+
   // MATRIX row 7 [CONTROL]: a host with no modelFlag is byte-identical to
   // today whether or not a model is passed — kimi-code/opencode never get a
   // 5th positional token nor a flag pair injected.
@@ -2283,6 +2305,36 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
     }
   });
 
+  // ITEM 1 follow-up: MODEL_ID_CHARSET_RE previously excluded '@', so a real
+  // Vertex model-version pin ("text-bison@002") was dropped as if it were an
+  // injection-shaped value. '@' is now permitted. The leading-dash row is
+  // kept adjacent so the anchor LEADING_DASH_RE still enforces is visibly
+  // still live even after widening the charset.
+  test('ITEM 1: "text-bison@002" (Vertex model-version pin) survives — "@" is a legitimate model-id character', () => {
+    const dir = createTempProject('gsd-3714-vertex-at-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': 'text-bison@002' } });
+      const { json: result, stderr } = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--model', 'text-bison@002', '--cd', '/tmp/wt', 'do the thing']);
+      assert.equal(stderr, '');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('ITEM 1 anchor control: a leading dash still drops even though "@" is now permitted ("-@bad" -> no --model, a warning)', () => {
+    const dir = createTempProject('gsd-3714-vertex-at-leading-dash-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': '-@bad' } });
+      const { json: result, stderr } = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+      assert.match(stderr, /gsd-executor/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   // MATRIX row 8: the dispatch predicate (what gsd-tools.cjs's caller decides
   // to pass) must agree, on every config shape below, with what the shared
   // resolveAgentModelOverride('gsd-executor', overrides, null) function
@@ -2395,6 +2447,212 @@ describe('#3714 dispatch-isolation CLI — model policy end-to-end (RED pre-fix 
       } finally {
         cleanup(dir);
       }
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Round-2 review regression rows — three real defects reproduced against
+  // this repo's actual CLI (see the fix commit for the full repro transcript).
+  // ---------------------------------------------------------------------------
+
+  // DEFECT 1: a leading-dash pin ('-c', '--config', '-', '--') previously
+  // passed MODEL_ID_CHARSET_RE silently (it permits '-'), reached
+  // resolveOrchestratorExec, tripped its `unsafe_leading_dash_model` guard,
+  // and turned the WHOLE resolution to exec:null — a wave-fatal abort per
+  // executor-isolation-dispatch.md:299-303, with no warning at all. The fix
+  // rejects a leading '-' inside resolveDispatchModelPin itself so it
+  // degrades like every other rejected shape: no --model, a warning, exec
+  // still resolves.
+  test('DEFECT 1: leading-dash pins ("-c", "--config", "-", "--") -> no --model, a warning, exec NOT null (argv == no-model argv)', () => {
+    const leadingDashValues = ['-c', '--config', '-', '--'];
+    for (const value of leadingDashValues) {
+      const dir = createTempProject('gsd-3714-leading-dash-');
+      try {
+        writeConfig(dir, { model_overrides: { 'gsd-executor': value } });
+        const { json: result, stderr } = queryCodexJson(dir);
+        assert.notEqual(result.exec, null, `value=${JSON.stringify(value)}: exec must not be null`);
+        assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing'],
+          `value=${JSON.stringify(value)}: argv must equal the no-model argv exactly`);
+        assert.ok(!hasModelFlag(result.exec.args));
+        assert.match(stderr, /gsd-executor/, `value=${JSON.stringify(value)} must warn`);
+      } finally {
+        cleanup(dir);
+      }
+    }
+  });
+
+  // DEFECT 1 REGRESSION ROW: the same '-c' pin under a host with NO
+  // modelFlag at all (kimi-code) must resolve byte-identical argv to the
+  // no-pin case — before the fix, resolveOrchestratorExec's leading-dash
+  // guard fires BEFORE the modelFlag presence check, so this host (which
+  // previously ignored the model entirely) was newly broken by the pin
+  // policy. The pin policy (and its warning) is gated on the descriptor
+  // declaring a non-empty `modelFlag`; kimi-code declares none, so this must
+  // now produce NO stderr warning either (item 2 follow-up) — the value
+  // policy never runs at all for a host that was never going to emit
+  // --model.
+  test('DEFECT 1 REGRESSION: "-c" pin under kimi-code (no modelFlag host) -> argv byte-identical to no-pin, exec NOT null, stderr EMPTY', () => {
+    const noPinDir = createTempProject('gsd-3714-kimi-nopin-');
+    const pinnedDir = createTempProject('gsd-3714-kimi-pinned-');
+    try {
+      writeConfig(noPinDir, {});
+      writeConfig(pinnedDir, { model_overrides: { 'gsd-executor': '-c' } });
+      const { json: noPinResult } = queryCodexJson(noPinDir, { GSD_RUNTIME: 'kimi-code' });
+      const { json: pinnedResult, stderr } = queryCodexJson(pinnedDir, { GSD_RUNTIME: 'kimi-code' });
+      assert.notEqual(noPinResult.exec, null, 'kimi-code no-pin: exec must not be null');
+      assert.notEqual(pinnedResult.exec, null, 'kimi-code "-c" pin: exec must not be null (this is the regression)');
+      assert.deepEqual(pinnedResult.exec.args, noPinResult.exec.args,
+        'kimi-code argv with a "-c" pin must be byte-identical to the no-pin argv');
+      assert.equal(stderr, '', 'a host with no modelFlag must never run the pin policy, so no warning');
+    } finally {
+      cleanup(noPinDir);
+      cleanup(pinnedDir);
+    }
+  });
+
+  // DEFECT 2: isAnthropicFlavoredModel lowercased its substring arm but not
+  // its CLAUDE_AGENT_ALIASES.has(...) arm, so a case variant of a bare alias
+  // ("Sonnet", "OPUS") or a mixed-case "claude-*" id ("Claude-Sonnet-4-5")
+  // slipped through as if it were a real Codex model id. Lowercase 'sonnet'
+  // is the control (already correctly dropped pre-fix).
+  // NOTE: "opus-4.1" is deliberately excluded from this table. It matches
+  // neither arm of isAnthropicFlavoredModel by DESIGN, independent of case:
+  // CLAUDE_AGENT_ALIASES holds only the bare tier names ('opus'/'sonnet'/
+  // 'haiku'/'fable'), never version-qualified forms, and "opus-4.1" contains
+  // no "claude" substring (every real catalog Anthropic id is "claude-*").
+  // This is a pre-existing predicate-design gap, not the case-sensitivity
+  // defect fixed here — flagged separately rather than asserted as fixed
+  // behavior in this test.
+  test('DEFECT 2: case variants of Anthropic-flavored pins ("Sonnet", "OPUS", "Claude-Sonnet-4-5") -> no --model + warning', () => {
+    const caseVariants = ['Sonnet', 'OPUS', 'Claude-Sonnet-4-5'];
+    for (const value of caseVariants) {
+      const dir = createTempProject('gsd-3714-case-flavor-');
+      try {
+        writeConfig(dir, { model_overrides: { 'gsd-executor': value } });
+        const { json: result, stderr } = queryCodexJson(dir);
+        assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing'],
+          `value=${JSON.stringify(value)} must never reach argv`);
+        assert.ok(!hasModelFlag(result.exec.args));
+        assert.match(stderr, /gsd-executor/, `value=${JSON.stringify(value)} must warn`);
+      } finally {
+        cleanup(dir);
+      }
+    }
+  });
+
+  test('DEFECT 2 CONTROL: lowercase "sonnet" still drops (unchanged behavior)', () => {
+    const dir = createTempProject('gsd-3714-case-flavor-control-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': 'sonnet' } });
+      const { json: result, stderr } = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+      assert.match(stderr, /gsd-executor/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // DEFECT 3: _warnDispatchModelPinDropped wrote the rejected raw value to
+  // stderr, truncated but never escaped — a guaranteed-reachable raw-to-TTY
+  // sink for control/escape bytes, since every value reaching this warning
+  // failed the charset test by definition. Built with String.fromCharCode so
+  // the test source itself carries no literal control characters.
+  test('DEFECT 3: an ESC/BEL-bearing pin is dropped AND the stderr warning contains no raw control character', () => {
+    const ESC = String.fromCharCode(27);
+    const BEL = String.fromCharCode(7);
+    const hostileValue = `x${ESC}]0;PWNED${BEL}y`;
+    const dir = createTempProject('gsd-3714-defect3-hostile-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': hostileValue } });
+      const { json: result, stderr } = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+      assert.match(stderr, /gsd-executor/);
+      const stderrBody = stderr.endsWith('\n') ? stderr.slice(0, -1) : stderr;
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of raw control bytes is the point of this test
+      assert.doesNotMatch(stderrBody, /[\x00-\x1f\x7f]/,
+        'stderr must contain no raw control character outside the trailing newline');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // DEFECT 3 (truncation ordering): a long escape-bearing value must be
+  // sanitized BEFORE truncation, so a truncated escape sequence can never
+  // survive into the emitted warning (e.g. an SGR sequence cut before its
+  // reset, leaving sticky terminal state).
+  test('DEFECT 3: a long ESC-bearing pin (> 64 chars) is sanitized before truncation — no raw control survives', () => {
+    const ESC = String.fromCharCode(27);
+    const hostileValue = `${'x'.repeat(80)}${ESC}[31mHOSTILE`;
+    const dir = createTempProject('gsd-3714-defect3-long-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': hostileValue } });
+      const { json: result, stderr } = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      const stderrBody = stderr.endsWith('\n') ? stderr.slice(0, -1) : stderr;
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of raw control bytes is the point of this test
+      assert.doesNotMatch(stderrBody, /[\x00-\x1f\x7f]/,
+        'a truncated escape sequence must never survive into the emitted warning');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // ITEM 2 follow-up — the pin policy (and its warning) is HOST-NEUTRAL code
+  // running at a site shared by every runtime, so it previously ran (and
+  // warned) even for hosts whose descriptor declares no `modelFlag` at all
+  // (opencode, kimi, kimi-code) — none of which were ever going to emit a
+  // --model regardless of the pin's value. The fix gates the whole policy on
+  // the resolved runtime's orchestratorExec declaring a non-empty modelFlag.
+  // ---------------------------------------------------------------------------
+  test('ITEM 2: a "sonnet" pin under kimi-code -> argv byte-identical to no-pin, stderr EMPTY (no modelFlag declared)', () => {
+    const noPinDir = createTempProject('gsd-3714-item2-kimicode-nopin-');
+    const pinnedDir = createTempProject('gsd-3714-item2-kimicode-pinned-');
+    try {
+      writeConfig(noPinDir, {});
+      writeConfig(pinnedDir, { model_overrides: { 'gsd-executor': 'sonnet' } });
+      const { json: noPinResult, stderr: noPinStderr } = queryCodexJson(noPinDir, { GSD_RUNTIME: 'kimi-code' });
+      const { json: pinnedResult, stderr: pinnedStderr } = queryCodexJson(pinnedDir, { GSD_RUNTIME: 'kimi-code' });
+      assert.deepEqual(pinnedResult.exec.args, noPinResult.exec.args,
+        'kimi-code argv with a "sonnet" pin must be byte-identical to the no-pin argv');
+      assert.equal(noPinStderr, '');
+      assert.equal(pinnedStderr, '', 'kimi-code declares no modelFlag — the pin policy must not run at all, so no warning');
+    } finally {
+      cleanup(noPinDir);
+      cleanup(pinnedDir);
+    }
+  });
+
+  test('ITEM 2: a "sonnet" pin under opencode -> argv byte-identical to no-pin, stderr EMPTY (no modelFlag declared)', () => {
+    const noPinDir = createTempProject('gsd-3714-item2-opencode-nopin-');
+    const pinnedDir = createTempProject('gsd-3714-item2-opencode-pinned-');
+    try {
+      writeConfig(noPinDir, {});
+      writeConfig(pinnedDir, { model_overrides: { 'gsd-executor': 'sonnet' } });
+      const { json: noPinResult, stderr: noPinStderr } = queryCodexJson(noPinDir, { GSD_RUNTIME: 'opencode' });
+      const { json: pinnedResult, stderr: pinnedStderr } = queryCodexJson(pinnedDir, { GSD_RUNTIME: 'opencode' });
+      assert.deepEqual(pinnedResult.exec.args, noPinResult.exec.args,
+        'opencode argv with a "sonnet" pin must be byte-identical to the no-pin argv');
+      assert.equal(noPinStderr, '');
+      assert.equal(pinnedStderr, '', 'opencode declares no modelFlag — the pin policy must not run at all, so no warning');
+    } finally {
+      cleanup(noPinDir);
+      cleanup(pinnedDir);
+    }
+  });
+
+  test('ITEM 2 CONTROL: a "sonnet" pin under codex (declares modelFlag) -> still dropped, WITH the warning', () => {
+    const dir = createTempProject('gsd-3714-item2-codex-control-');
+    try {
+      writeConfig(dir, { model_overrides: { 'gsd-executor': 'sonnet' } });
+      const { json: result, stderr } = queryCodexJson(dir);
+      assert.deepEqual(result.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+      assert.ok(!hasModelFlag(result.exec.args));
+      assert.match(stderr, /gsd-executor.*sonnet.*Anthropic/i);
+    } finally {
+      cleanup(dir);
     }
   });
 });

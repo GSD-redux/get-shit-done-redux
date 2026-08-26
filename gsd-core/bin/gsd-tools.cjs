@@ -1806,13 +1806,43 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const key = `${agentName}::${rawValue}::${reason}`;
     if (_dispatchModelPinDropWarned.has(key)) return;
     _dispatchModelPinDropWarned.add(key);
-    const safe = String(rawValue).length > 64 ? `${String(rawValue).slice(0, 64)}…` : String(rawValue);
+    // Sanitize BEFORE truncating: every value that reaches this warning failed
+    // the model-id charset test by definition, so it contains a character
+    // outside `[A-Za-z0-9._:/-]` — which includes raw control/escape bytes
+    // (ESC, BEL, CSI sequences). This is a guaranteed-reachable raw-to-TTY
+    // sink (the dispatch step runs with no `2>` redirect), so every such
+    // character is replaced with '?' first, matching the identity-sanitizing
+    // pattern already used for --as at gsd-tools.cjs:1526. Sanitizing before
+    // truncating also ensures a truncated escape sequence can never survive
+    // (e.g. an SGR sequence cut before its reset, leaving sticky terminal
+    // state) — truncation only ever cuts already-safe characters.
+    const sanitized = String(rawValue).replace(/[^A-Za-z0-9._:/-]/g, '?');
+    const safe = sanitized.length > 64 ? `${sanitized.slice(0, 64)}…` : sanitized;
     process.stderr.write(
       `gsd: warning — dispatch model pin for agent "${agentName}" (value "${safe}") ${reason}; ` +
       `dropping it so the spawned executor falls back to the session model.\n`,
     );
   }
-  const MODEL_ID_CHARSET_RE = /^[A-Za-z0-9._:/-]+$/;
+  // '@' is included for Vertex model-version pins ("text-bison@002",
+  // "chat-bison@001"), which are legitimate model ids reachable through a
+  // custom model_provider. The leading-character anchor is enforced
+  // separately by LEADING_DASH_RE below — it is NOT relaxed here, since a
+  // flag-shaped value ("-c", "--config") must still fail the resolver's own
+  // unsafe_leading_dash_model guard path via that dedicated check, not this
+  // charset.
+  const MODEL_ID_CHARSET_RE = /^[A-Za-z0-9._:/@-]+$/;
+  // A value starting with '-' (or '--') is a flag/option shape, not a model
+  // id — `-c`, `--config`, `-`, `--`, `-p` all pass MODEL_ID_CHARSET_RE above
+  // (it permits '-') but are unsafe to hand to resolveOrchestratorExec, whose
+  // own `unsafe_leading_dash_model` guard rejects them and fails the WHOLE
+  // resolution to `{ ok: false }` -> exec:null -> a FATAL wave abort
+  // (executor-isolation-dispatch.md:299-303), even on hosts (e.g. kimi-code)
+  // that declare no modelFlag at all and previously ignored the pin
+  // entirely. Reject here, at the VALUE-policy layer, so a leading-dash
+  // value degrades to "no model" like every other rejected shape, instead of
+  // reaching a resolver whose failure mode is fatal rather than a graceful
+  // drop.
+  const LEADING_DASH_RE = /^-/;
   /**
    * Resolve the VALUE policy for an explicit dispatch model pin. `rawValue`
    * is whatever resolveAgentModelOverride(..., null) returned — a string
@@ -1835,6 +1865,10 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
     if (!MODEL_ID_CHARSET_RE.test(trimmed)) {
       _warnDispatchModelPinDropped(agentName, rawValue, 'does not look like a model id (unsafe characters)');
+      return undefined;
+    }
+    if (LEADING_DASH_RE.test(trimmed)) {
+      _warnDispatchModelPinDropped(agentName, rawValue, 'looks like a flag/option, not a model id (leading "-")');
       return undefined;
     }
     return trimmed;
@@ -1924,11 +1958,29 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // applies to this config key (trim / drop-inherit / drop-Anthropic-flavored
           // with a warning / drop-non-model-id-charset with a warning) so a global
           // Anthropic-flavored default or an injected config value never reaches argv.
-          const { readGsdEffectiveModelOverrides, resolveAgentModelOverride } =
-            require('./lib/install-model-override-resolver.cjs');
-          const pinned = resolveAgentModelOverride(
-            'gsd-executor', readGsdEffectiveModelOverrides(cwd), null);
-          const model = resolveDispatchModelPin('gsd-executor', pinned);
+          //
+          // This whole VALUE policy — including its warning — is gated on the
+          // resolved runtime's descriptor actually declaring a non-empty
+          // `modelFlag`. The policy runs at this host-NEUTRAL site, so a host
+          // with no modelFlag at all (kimi, kimi-code, opencode) was never
+          // going to emit a --model regardless of the pin's value; running the
+          // policy anyway produced a stderr warning claiming "dropping it so
+          // the spawned executor falls back to the session model" on every
+          // dispatch for such a host — misleading today, and actively wrong if
+          // a Claude-capable host ever declares a modelFlag. When the
+          // descriptor declares no modelFlag, skip the policy entirely: no
+          // model, no warning, argv byte-identical to before this pin policy
+          // existed.
+          const declaresModelFlag = typeof runtimeEntry?.runtime?.orchestratorExec?.modelFlag === 'string' &&
+            runtimeEntry.runtime.orchestratorExec.modelFlag.length > 0;
+          let model;
+          if (declaresModelFlag) {
+            const { readGsdEffectiveModelOverrides, resolveAgentModelOverride } =
+              require('./lib/install-model-override-resolver.cjs');
+            const pinned = resolveAgentModelOverride(
+              'gsd-executor', readGsdEffectiveModelOverrides(cwd), null);
+            model = resolveDispatchModelPin('gsd-executor', pinned);
+          }
           const resolution = hostIntegration.resolveOrchestratorExec(
             runtimeEntry?.runtime?.orchestratorExec,
             cwdTarget,
@@ -1939,9 +1991,13 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // resolve halts THIS wave's dispatch: isolation is forced to 'none' here,
           // and executor-isolation-dispatch.md:299-303 treats a null exec as FATAL
           // (exit 1) after the worktree has already been created — it does not
-          // degrade to sequential execution. resolveDispatchModelPin never causes
-          // this path: an unresolvable model value degrades to "no --model" (session
-          // model fallback) rather than to resolution.ok === false.
+          // degrade to sequential execution. resolveDispatchModelPin rejects any
+          // leading-dash value (flag/option shape) before it ever reaches this
+          // resolver specifically so it cannot trip the resolver's own
+          // `unsafe_leading_dash_model` guard and turn a bad config value into
+          // this fatal path; every other unresolvable model value likewise
+          // degrades to "no --model" (session model fallback) rather than to
+          // resolution.ok === false.
           if (resolution.ok) {
             exec = { command: resolution.command, args: resolution.args, cwd: resolution.cwd };
           } else {
