@@ -1560,7 +1560,13 @@ Control the reasoning effort of agent invocations with a single config. The univ
 minimal < low < medium < high < xhigh < max
 ```
 
-Effort is rendered per-runtime: `output_config.effort` for Claude (Claude Code subagent `effort` frontmatter / `CLAUDE_CODE_EFFORT_LEVEL` env), `model_reasoning_effort` for Codex (Responses API `reasoning.effort`).
+Effort is rendered per-runtime: `output_config.effort` for Claude (Claude Code subagent `effort` frontmatter / `CLAUDE_CODE_EFFORT_LEVEL` env), `model_reasoning_effort` for Codex (Responses API `reasoning.effort`), and `variant` for OpenCode (agent frontmatter).
+
+**OpenCode `variant` is opt-in ([#3706](https://github.com/open-gsd/gsd-core/issues/3706)).** OpenCode resolves a `variant` name against the variants available for the agent's model — the built-in sets are provider-specific (Anthropic ships `high` and `max`; OpenAI the full ladder) and you can define your own in `opencode.jsonc`. GSD writes the key only when an `effort` block is actually configured; with no `effort` config the generated agent carries no `variant` line and OpenCode applies its own default.
+
+Note that the gate is on effort being configured **at all**, not on the individual agent being named. Once any `effort` block exists, the usual cascade resolves a level for *every* agent — an `agent_overrides` entry for one agent still leaves the others resolving through `routing_tier_defaults` and the tier ladder — so every generated OpenCode agent gets a `variant` line, not only the one you named. Two levels are never written: `inherit` (which means "follow the host default", so the key is omitted) and any level outside OpenCode's supported set. Runtimes with no declared effort surface — Kilo among them — never receive the key at all.
+
+`effort sync` maintains the key too, so changing `effort` config does not require a reinstall: it writes the newly resolved `variant` into each installed OpenCode agent, and removes the key when the agent resolves to `inherit` or to a level OpenCode does not accept — the same states under which install writes nothing.
 
 **Cross-provider clamping:** `minimal` is Anthropic-unsupported — it clamps to `low` on Claude.
 
@@ -1658,8 +1664,9 @@ The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for 
 Valid effort values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `inherit` ([#3533](https://github.com/open-gsd/gsd-core/issues/3533)).
 
 `inherit` means "follow the session/host default" — it is a declarable choice, not a level:
-at install time the agent's `effort:` frontmatter key (claude) or `model_reasoning_effort`
-pin (Codex `.toml`) is **omitted** for an agent resolving to `inherit`; `effort sync` treats
+at install time the agent's `effort:` frontmatter key (claude), `model_reasoning_effort`
+pin (Codex `.toml`), or `variant:` frontmatter key (OpenCode) is **omitted** for an agent
+resolving to `inherit`; `effort sync` treats
 an absent key as the correct in-sync state and strips a present one; no runtime ever receives
 the literal. An explicit `inherit` also never escalates on failed attempts — your choice
 outranks the automatic ladder.
