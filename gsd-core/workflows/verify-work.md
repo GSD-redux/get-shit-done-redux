@@ -920,7 +920,9 @@ constraint itself. Every option resolves the conflict; accepting the plans with 
 open is NOT offered here — that choice belongs to the max-iteration escalation below. Re-spawn
 the planner with the chosen resolution. **Bounded:** if the planner returns a conflict naming the
 SAME `required_property` twice in a row, the resolution did not take — stop re-spawning and
-escalate as a stall.
+escalate as a stall. After re-spawning, **re-evaluate the planner's return from the top of this
+handler** — do not fall through to the checker spawn below; a second conflict is still a conflict,
+not a revised plan.
 
 **On any other return** → spawn checker again (verify_gap_plans logic)
 Increment iteration_count

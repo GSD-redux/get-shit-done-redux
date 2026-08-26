@@ -112,9 +112,11 @@ same loop, so spending retry budget on it only exhausts the cap:
 a conflict naming the SAME `required_property` twice in a row, the chosen resolution did not take.
 Stop re-spawning, report it as a stall, and escalate through the same gate the iteration cap uses.
 
-Where the host workflow has a configured arbitration loop, it may route there instead of asking
-directly — `plan-phase` records the conflict in REVIEWS.md for `workflow.plan_review_convergence`.
-A workflow with no such loop asks the user; that is the default, not the fallback.
+Asking the user is the route, in every workflow. A host that participates in an arbitration loop
+also RECORDS the conflict where that loop will see it — `plan-phase` appends a `- [ ]` line to the
+phase REVIEWS.md when `workflow.plan_review_convergence` is enabled, so an open conflict blocks
+convergence even if this run is abandoned — but recording is in addition to asking, never instead
+of it. No workflow hands a conflict to a loop and returns.
 
 ### After 3 Iterations
 

@@ -127,7 +127,9 @@ A quick task has no REVIEWS.md and no phase, so `workflow.plan_review_convergenc
 arbitrate over here; the user is the only route. `plan-phase` is where the convergence hand-off
 lives.
 
-Re-spawn the planner with the chosen resolution, then continue below.
+Re-spawn the planner with the chosen resolution, then **re-evaluate its return from the top of
+this handler** — do not fall through to the checker spawn below. A second conflict is still a
+conflict, not a revised plan.
 
 **Bounded:** if the planner returns a conflict naming the SAME `required_property` twice in a
 row, the resolution did not take — stop re-spawning and escalate as a stall, so declining to

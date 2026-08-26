@@ -252,6 +252,13 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       'the conflict gate must not become an early exit from a blocker');
   });
 
+  test('the shared contract does not describe a hand-off that no workflow performs', () => {
+    assert.match(flat(REVISION_LOOP), /recording is in addition to asking, never instead of it/,
+      'after #3771 round 2 no workflow hands a conflict to a loop and returns');
+    assert.doesNotMatch(flat(REVISION_LOOP), /it may route there instead of asking directly/,
+      'the superseded routing description must not survive as drift');
+  });
+
   test('an issue satisfied by a smaller mechanism counts as resolved for the loop checks', () => {
     assert.match(
       REVISION_LOOP,
@@ -323,6 +330,14 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     });
 
     // The conflict gate resolves the conflict; it must not become an early exit from a blocker.
+    test(`${name} re-evaluates a second conflict instead of falling through to the checker`, () => {
+      assert.match(
+        flat(content),
+        /re-evaluate (its|the [a-z]+'s) return from the top of this handler|return to this step/,
+        `${name} must loop back on the re-spawn, not fall through to the checker spawn`
+      );
+    });
+
     test(`${name} does not offer accepting the output with the blocker still open`, () => {
       assert.match(
         flat(content),
@@ -341,8 +356,16 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
       'the record branch must be gated on a condition the orchestrator can evaluate at runtime');
     assert.match(flat(PLAN_PHASE), /plan-phase never invokes `\/gsd:plan-review-convergence` for a conflict/,
       'plan-phase runs inside that loop; invoking it would be a cycle');
-    assert.match(flat(PLAN_PHASE), /plan-phase wrote the row, so plan-phase owns closing it; convergence only reads/,
-      'closure must have exactly one named owner, or a row can be orphaned open');
+    assert.match(flat(PLAN_PHASE), /plan-phase wrote the line, so plan-phase owns closing it; convergence only reads/,
+      'closure must have exactly one named owner, or a line can be orphaned open');
+    // A markdown table cannot be counted by any simple filter — its header and separator rows
+    // look like data. The recorded shape must be one the reader can match exactly.
+    assert.match(flat(PLAN_PHASE), /A checkbox, not a table row/,
+      'the recorded conflict must be countable without parsing a table');
+    assert.match(PLAN_PHASE, /- \[ \] \{dimension\}\/\{plan\} — required_property:/,
+      'plan-phase must record the open form the convergence gate matches');
+    assert.match(flat(PLAN_PHASE), /flips the line it wrote from `- \[ \]` to `- \[x\]`/,
+      'the close step must produce the resolved form the gate excludes');
   });
 
   test('convergence gates on the conflicts BEFORE it writes state or prints success', () => {
@@ -350,6 +373,14 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
       'the convergence loop must know about the section plan-phase writes');
     assert.match(CONVERGENCE, /OPEN_CONFLICTS=/,
       'the count must be read from REVIEWS.md — CYCLE_SUMMARY does not carry it');
+    // The counter and the writer must agree on the marker, or every resolved conflict reads as
+    // open and the loop deadlocks instead of converging.
+    assert.match(CONVERGENCE, /\/\^- \\\[ \\\]\//,
+      'the gate must count exactly the open-checkbox form plan-phase writes');
+    assert.doesNotMatch(CONVERGENCE, /grep -c '\^\| '/,
+      'counting table rows would include the header and separator and never reach zero');
+    assert.match(flat(CONVERGENCE), /escalates rather than deadlocking/,
+      'the gate must state that an unresolvable conflict still terminates at MAX_CYCLES');
     assert.match(
       CONVERGENCE,
       /\*\*If HIGH_COUNT == 0 and ACTIONABLE_COUNT == 0 and OPEN_CONFLICTS == 0 \(converged\):\*\*/,

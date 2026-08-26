@@ -406,15 +406,17 @@ it must be read from the file directly — evaluate this BEFORE the converged br
 run would write `planned-phase` and print the success banner over a conflict nobody resolved:
 
 ```bash
-OPEN_CONFLICTS=$(awk '/^## Plan-Revision Conflicts/{f=1;next} f&&/^## /{exit} f' "${REVIEWS_FILE}" 2>/dev/null \
-  | grep -c '^| ' | tr -d '[:space:]')
+OPEN_CONFLICTS=$(awk '/^## Plan-Revision Conflicts/{f=1;next} f&&/^## /{exit} f&&/^- \[ \]/{n++} END{print n+0}' \
+  "${REVIEWS_FILE}" 2>/dev/null || echo 0)
 OPEN_CONFLICTS=${OPEN_CONFLICTS:-0}
 ```
 
-Count only rows not marked resolved (`/gsd:plan-phase` strikes a resolved row's leading `|` cell
-to `| ~~…~~ |`, so a `grep -v '~~'` filter drops them). If `OPEN_CONFLICTS` > 0, convergence has
-NOT been achieved regardless of the counts: skip the converged branch and continue to 5c so the
-next cycle arbitrates. Escalation at `MAX_CYCLES` is unchanged and still terminates the loop.
+`/gsd:plan-phase` records each conflict as a `- [ ]` checklist line and flips it to `- [x]` when
+it is resolved, so open conflicts are an exact fixed-string match — no table parsing, and a
+resolved line can never be miscounted as open. If `OPEN_CONFLICTS` > 0, convergence has NOT been
+achieved regardless of the counts: skip the converged branch and continue to 5c so the next cycle
+arbitrates. Escalation at `MAX_CYCLES` is unchanged and still terminates the loop, so an
+unresolvable conflict escalates rather than deadlocking.
 
 **If HIGH_COUNT == 0 and ACTIONABLE_COUNT == 0 and OPEN_CONFLICTS == 0 (converged):**
 
