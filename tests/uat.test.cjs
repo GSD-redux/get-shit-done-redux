@@ -3612,15 +3612,50 @@ expected: |
 result: pending
 `);
     const output = renderCheckpoint();
+    // Row identity: the checkpoint is for test 1 "Alpha" — never test 3 /
+    // "Fake Row" as the subject under test. `### 3. Fake Row` legitimately
+    // appears as row 1's own `expected:` scalar body, so its presence in the
+    // checkpoint text is correct and is NOT asserted against here.
     assert.strictEqual(output.test_number, 1, JSON.stringify(output));
     assert.strictEqual(output.test_name, "Alpha", JSON.stringify(output));
-    assert.ok(!/Fake Row/.test(output.checkpoint), `phantom row leaked into checkpoint: ${output.checkpoint}`);
+    assert.ok(
+      output.checkpoint.includes("**Test 1: Alpha**"),
+      `checkpoint subject header missing/wrong: ${output.checkpoint}`,
+    );
+    assert.ok(
+      !/\*\*Test 3: Fake Row\*\*/.test(output.checkpoint),
+      `checkpoint rendered test 3 "Fake Row" as the subject: ${output.checkpoint}`,
+    );
   });
 
   // BLOCKER C, render-checkpoint surface. `parseExpectedFromTestBlock` reading
   // the RAW block let row 1 run into fence-hidden row 2 and publish row 2's
   // `expected:` as its own in the rendered checkpoint.
   test("a fence-hidden later row's `expected:` is not published in the rendered checkpoint", () => {
+    // Row 1 carries its OWN `expected:`. Row 2's `expected:` lives inside a
+    // fence and must never leak into row 1's rendered checkpoint.
+    fs.writeFileSync(uatPath, `${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: ALPHA-OWN-VALUE
+result: pending
+${FENCE}
+### 2. Beta
+expected: SECRET-FROM-ROW-2
+result: blocked
+${FENCE}
+`);
+    const output = renderCheckpoint();
+    assert.strictEqual(output.test_number, 1, JSON.stringify(output));
+    assert.strictEqual(output.test_name, "Alpha", JSON.stringify(output));
+    assert.ok(output.checkpoint.includes("ALPHA-OWN-VALUE"), `row 1's own expected missing: ${output.checkpoint}`);
+    assert.ok(!/SECRET-FROM-ROW-2/.test(output.checkpoint), `row 1 stole row 2's expected: ${output.checkpoint}`);
+  });
+
+  // Honest error path: when row 1 has NO `expected:` of its own and the only
+  // reachable `expected:` line lives inside a fence (originally row 2's),
+  // render-checkpoint must fail cleanly rather than leak the hidden row's text.
+  test("a row whose only reachable expected is fence-hidden fails cleanly instead of leaking it", () => {
     fs.writeFileSync(uatPath, `${FRONTMATTER}## Tests
 
 ### 1. Alpha
@@ -3631,10 +3666,10 @@ expected: SECRET-FROM-ROW-2
 result: pending
 ${FENCE}
 `);
-    const output = renderCheckpoint();
-    assert.strictEqual(output.test_number, 1, JSON.stringify(output));
-    assert.strictEqual(output.test_name, "Alpha", JSON.stringify(output));
-    assert.ok(!/SECRET-FROM-ROW-2/.test(output.checkpoint), `row 1 stole row 2's expected: ${output.checkpoint}`);
+    const result = runGsdTools(["uat", "render-checkpoint", "--file", ".planning/phases/01-test-phase/01-UAT.md"], tmpDir);
+    assert.strictEqual(result.success, false, `expected failure, got: ${result.output}`);
+    assert.ok(/missing an expected field/.test(result.error), `unexpected error: ${result.error}`);
+    assert.ok(!/SECRET-FROM-ROW-2/.test(result.error), `hidden row leaked into error: ${result.error}`);
   });
 
   // Regression guard: a LEGITIMATE `expected: |` scalar carrying indented
