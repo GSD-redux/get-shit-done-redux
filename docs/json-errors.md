@@ -58,6 +58,15 @@ assert on the exit code and (if needed) the plain-text message. The
 "parse stderr as JSON" guidance below applies only to the structured-envelope
 branch (non-`ExitError` failures).
 
+> **Which tools honor this.** Both surfaces that run `runMain` do: the compiled
+> `gsd-core/bin/lib/cli-exit.cjs` and the `scripts/lib/cli-exit.cjs` that the
+> repo's own `scripts/**` tooling requires. Before [#3904](https://github.com/open-gsd/gsd-core/issues/3904)
+> the latter was a separate hand-written copy that never gained the
+> structured-envelope branch, so a `scripts/`-side tool failing unexpectedly
+> printed a raw stack trace even under `--json-errors`. It is now generated from
+> the same source and byte-compared by `npm run lint:generated-sync`, so the two
+> cannot answer differently again.
+
 ## Degraded results vs faults — read this before writing a caller
 
 `gsd-tools` has **two** ways of telling you something went wrong, and they use **different exit

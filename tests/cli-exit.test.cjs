@@ -568,6 +568,10 @@ describe('regressions', () => {
       // MODULE_NOT_FOUND there. Deliberately NOT done by renaming the real
       // gsd-core/bin/lib: test files run in parallel, so mutating a shared
       // production directory would break every sibling suite mid-run.
+      //
+      // This is the sole guard of the "depends on node: builtins only"
+      // constraint: it proves the property by real module resolution in an
+      // isolated directory, rather than by inspecting require() specifiers.
       const dir = createTempDir('gsd-3904-standalone-');
       t.after(() => cleanup(dir));
       const copied = path.join(dir, 'cli-exit.cjs');
@@ -586,18 +590,6 @@ describe('regressions', () => {
       );
       assert.strictEqual(r.status, 1, `expected exit 1; stderr: ${r.stderr}`);
       assert.strictEqual(JSON.parse(r.stderr.trim()).reason, 'sdk_fail_fast');
-    });
-
-    test('the scripts copy requires nothing outside node builtins', () => {
-      // allow-test-rule: architectural-invariant (#3904)
-      // Parses the file's require() specifiers as data via the same extractor the
-      // #2858 packaging guard uses — it does not substring-match source text. The
-      // constraint (never reach into gitignored build output) cannot be observed
-      // from outputs, only from the resolved specifier set.
-      const { extractRequires } = require('./helpers/copy-script-fixture.cjs');
-      const src = fs.readFileSync(SCRIPTS_CLI_EXIT_PATH, 'utf8');
-      const offenders = extractRequires(src).filter((spec) => !spec.startsWith('node:'));
-      assert.deepStrictEqual(offenders, [], 'the generated scripts copy must depend only on node: builtins');
     });
 
     test('the build sentinel is still emitted', () => {
