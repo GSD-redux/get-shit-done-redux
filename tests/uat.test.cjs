@@ -6014,3 +6014,210 @@ v1.1 - Example Milestone
     assert.strictEqual(entry.archived_milestone, 'v0.5.0', describeAll());
   });
 });
+
+// ─── #3707-CR security review MEDIUM: a lone CR is not a line boundary anywhere ──
+//
+// [FAILING-FIRST, DO NOT "FIX" src/ TO MAKE THIS PASS — see dispatch brief]
+//
+// CommonMark treats a lone CR (no paired LF) as a line ending — a document
+// using it RENDERS as separate lines to a human reader. This parser's row
+// scan (`content.split('\n')` feeding both `tokenizeHeadings` and the
+// column-0 `TEST_HEADING_LINE_RE` shortfall scan, uat.cjs:1193/869) and the
+// #3078 round-7 symmetry invariant (both sides of the shortfall comparison
+// are whole-document, uat.cjs:1137-1166) both key on `\n` alone. A lone CR
+// never becomes a boundary on EITHER side, so a `### N.` row separated from
+// its predecessor only by CR is invisible to `tokenizeHeadings` (no token),
+// to the raw-line shortfall scan (`TEST_HEADING_LINE_RE.test(line)` only
+// matches `^`, and the whole multi-row chunk is now ONE unsplit "line" whose
+// `^` sits before earlier content, not before the buried heading), AND to
+// `parseGapsItems`'s own `content.split('\n')` walk. No item, no shortfall,
+// no headingsSeen: a TOTAL false-clean, not merely a missed row.
+const CR = String.fromCharCode(13);
+const LF = String.fromCharCode(10);
+const CRLF = CR + LF;
+
+describe('#3707-CR: a lone CR line ending must not hide an outstanding UAT row', () => {
+  /**
+   * `join(sep)` on lines already containing an embedded body — used so the
+   * fixture text itself stays free of literal CR characters that an editor
+   * or a diff viewer could silently rewrite (CLAUDE.md IO-injection rule).
+   */
+  function bodyWith(sep) {
+    return [
+      '---',
+      'status: partial',
+      'phase: 01-a',
+      '---',
+      '',
+      '## Tests',
+      '',
+      '### 1. Alpha',
+      'expected: ok',
+      'result: pass',
+      '',
+      'Notes.',
+      '### 2. Beta',
+      'expected: the export works',
+      'result: blocked',
+      '',
+    ].join(sep);
+  }
+
+  test('[RED] a lone-CR document should surface the hidden `### 2. Beta` row by full identity', () => {
+    const { items, headingsSeen, shortfallBlocks } = parseUatItemsWithStats(bodyWith(CR));
+    const describeAll = () => JSON.stringify({ items, headingsSeen, shortfallBlocks }, null, 2);
+
+    const beta = items.find((i) => i.name === 'Beta');
+    assert.ok(beta, `hidden row 2 "Beta" absent from items: ${describeAll()}`);
+    assert.strictEqual(beta.test, 2, describeAll());
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+  });
+
+  test('[GREEN] CONTROL: the LF equivalent of the same body surfaces the identical row identity', () => {
+    const { items } = parseUatItemsWithStats(bodyWith(LF));
+    const describeAll = () => JSON.stringify(items, null, 2);
+
+    const beta = items.find((i) => i.name === 'Beta');
+    assert.ok(beta, `row 2 "Beta" absent from LF control: ${describeAll()}`);
+    assert.strictEqual(beta.test, 2, describeAll());
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+  });
+
+  test('[GREEN] CONTROL: CRLF still parses exactly as today — no double-count, no strip', () => {
+    const { items, headingsSeen, shortfallBlocks } = parseUatItemsWithStats(bodyWith(CRLF));
+    const describeAll = () => JSON.stringify({ items, headingsSeen, shortfallBlocks }, null, 2);
+
+    assert.strictEqual(items.length, 1, describeAll());
+    const [beta] = items;
+    assert.strictEqual(beta.test, 2, describeAll());
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+    assert.strictEqual(shortfallBlocks, 0, describeAll());
+  });
+
+  test('[GREEN] CONTROL: a literal CR inside a fenced block is not torn into extra rows', () => {
+    const content = [
+      '## Tests',
+      '',
+      '### 1. Alpha',
+      'expected: |',
+      '```',
+      `sample${CR}line`,
+      '```',
+      'result: pass',
+      '',
+      '### 2. Beta',
+      'result: blocked',
+      '',
+    ].join(LF);
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    // Row 1 ("Alpha") carries `result: pass`, which is deliberately excluded
+    // from `items` by design (a PASS token is the one case a heading yields
+    // no item without being a parse gap) — so exactly ONE item is expected
+    // here, not two. Asserting `headingsSeen === 0` is what proves Alpha's
+    // heading was still correctly SEEN and attributed, not silently dropped
+    // by the embedded CR splitting its fence/scalar content into extra rows.
+    assert.strictEqual(items.length, 1, describeAll());
+    const beta = items.find((i) => i.test === 2);
+    assert.ok(beta, `row 2 absent: ${describeAll()}`);
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[GREEN] CONTROL: a literal CR inside an `expected: |` block-scalar body is not torn into extra rows', () => {
+    const content = [
+      '## Tests',
+      '',
+      '### 1. Alpha',
+      'expected: |',
+      `  line one${CR}still the scalar`,
+      '  line two',
+      'result: pass',
+      '',
+      '### 2. Beta',
+      'result: blocked',
+      '',
+    ].join(LF);
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    // Same PASS-exclusion rule as the fenced-CR control above: Alpha's
+    // `result: pass` yields no item by design, so exactly ONE item (Beta) is
+    // expected, and `headingsSeen === 0` proves Alpha was still attributed.
+    assert.strictEqual(items.length, 1, describeAll());
+    const beta = items.find((i) => i.test === 2);
+    assert.ok(beta, `row 2 absent: ${describeAll()}`);
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[RED] boundary: a lone CR at the very start of the document also hides the very first row', () => {
+    // A second manifestation of the same defect, not a distinct one: the
+    // leading CR is not a `\n`, so `content.split('\n')` yields a single
+    // first "line" of `"\r### 1. Alpha"` — the heading text no longer sits
+    // at column 0 of that split unit, so `TEST_HEADING_LINE_RE`'s `^#{3}`
+    // anchor and the tokenizer's own column-0 check both refuse it.
+    const content = CR + [
+      '### 1. Alpha',
+      'result: blocked',
+      '',
+    ].join(LF);
+    const { items } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify(items, null, 2);
+
+    const alpha = items.find((i) => i.name === 'Alpha');
+    assert.ok(alpha, `row "Alpha" absent: ${describeAll()}`);
+    assert.strictEqual(alpha.test, 1, describeAll());
+    assert.strictEqual(alpha.result, 'blocked', describeAll());
+  });
+
+  test('[GREEN] boundary: a lone CR at the very end of the document is harmless', () => {
+    const content = [
+      '### 1. Alpha',
+      'result: blocked',
+    ].join(LF) + CR;
+    const { items } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify(items, null, 2);
+
+    const alpha = items.find((i) => i.name === 'Alpha');
+    assert.ok(alpha, `row "Alpha" absent: ${describeAll()}`);
+    assert.strictEqual(alpha.test, 1, describeAll());
+    assert.strictEqual(alpha.result, 'blocked', describeAll());
+  });
+
+  test('[RED] boundary: two consecutive lone CRs between rows still hides the row, though the whole-document shortfall scan happens to flag it', () => {
+    // With no `\n` anywhere in this fixture, `content.split('\n')` returns
+    // ONE line: the entire document text. That single line legitimately
+    // starts with `### 1. Alpha` (true string start, column 0), so the raw
+    // `TEST_HEADING_LINE_RE` shortfall scan (uat.cjs:1193) counts exactly one
+    // shaped heading line for the WHOLE document, while the tokenizer-backed
+    // `subHeadings` side finds none it can attribute — `headingsSeen`/
+    // `shortfallBlocks` land at 1, so this shape is not a TOTAL silent
+    // false-clean like the primary repro. But `items` is still empty: the
+    // "Beta" row's own identity (number, name, result) is not recovered by
+    // that shortfall count, which is why this assertion is on identity, not
+    // presence of a nonzero counter.
+    const content = [
+      '### 1. Alpha',
+      'result: pass',
+      '',
+      '### 2. Beta',
+      'result: blocked',
+      '',
+    ].join(CR + CR);
+    const { items } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify(items, null, 2);
+
+    const beta = items.find((i) => i.name === 'Beta');
+    assert.ok(beta, `row 2 "Beta" absent: ${describeAll()}`);
+    assert.strictEqual(beta.test, 2, describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+  });
+});

@@ -1416,6 +1416,62 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     assert.strictEqual(payload.progress.accepted_phases.percent, null);
   });
 
+  // ─── #3707-CR security review MEDIUM ────────────────────────────────────────
+  //
+  // [FAILING-FIRST, DO NOT "FIX" src/ TO MAKE THIS PASS — see dispatch brief]
+  //
+  // `writeUatDoc`'s `eol` parameter lets a fixture join its body lines on a
+  // separator OTHER than `\n` (see `writeUatDoc`/`writeVerification` above,
+  // already exercised for CRLF elsewhere in this suite). Passing a LONE CR
+  // (`String.fromCharCode(13)`, no paired LF) produces a UAT document that
+  // CommonMark still renders as separate lines to a human reader, but that
+  // `gsd-core/bin/lib/uat.cjs`'s `content.split('\n')`-based scan (both the
+  // heading tokenizer and the whole-document shortfall comparison) cannot see
+  // as line-separated at all — see `tests/uat.test.cjs`'s
+  // "#3707-CR" describe block for the parser-level reproduction this
+  // end-to-end case is downstream of. The outstanding `result: blocked` row
+  // must not silently roll up into an affirmative 100%.
+  test('[RED] a lone-CR UAT document hides a blocked row and must not report an affirmative percentage', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phaseDir = declarePhase(tmpDir, '1', 'Foo');
+    writeVerification(phaseDir, '1', 'passed');
+    const CR = String.fromCharCode(13);
+    // Same content shape as `FENCE_STRADDLED_BLOCKED_BODY` above (a passing
+    // row followed by an outstanding `result: blocked` row), but separated
+    // by a lone CR instead of `\n` — the `eol` this file's own `writeUatDoc`
+    // helper already supports for CRLF fixtures.
+    writeUatDoc(phaseDir, '1', [
+      '---',
+      'status: complete',
+      '---',
+      '',
+      '### 1. Alpha',
+      'expected: a',
+      'result: pass',
+      '',
+      'Notes.',
+      '### 2. Beta',
+      'expected: the export works',
+      'result: blocked',
+      '',
+    ], CR);
+
+    const payload = parseInspect(tmpDir);
+    const phase = payload.phases[0];
+    const describeAll = () => JSON.stringify({ phase, diagnostics: payload.diagnostics }, null, 2);
+
+    // What must be ABSENT: the hidden `blocked` row must not roll up into an
+    // affirmative, fully-accepted milestone.
+    assert.notStrictEqual(payload.progress.accepted_phases.percent, 100, describeAll());
+    assert.strictEqual(payload.progress.accepted_phases.percent, null, describeAll());
+    assert.notStrictEqual(phase.uat.scope, 'complete', describeAll());
+    assert.ok(
+      payload.diagnostics.some((d) => d.code === 'uat_unreadable' && d.subject.includes('1-UAT.md')),
+      describeAll(),
+    );
+  });
+
   // ─── Multi-file degrade ─────────────────────────────────────────────────────
   //
   // Two files scope to the SAME phase: one carries a shortfall-only gap, one
