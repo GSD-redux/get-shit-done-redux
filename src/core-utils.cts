@@ -79,12 +79,13 @@ import shellCommandProjection = require('./shell-command-projection.cjs');
  * DELIBERATELY NOT folded here, unlike `\r`/`\r\n`. Folding is unnecessary:
  * `String.prototype.split('\n')` never treats U+2028/U+2029 as a delimiter,
  * so an exotic separator can never manufacture a fake line start for a
- * consumer that scans lines produced by `split('\n')` — as `src/uat.cts`'s
- * `result:` field scan does — rather than anchoring a multiline (`/m`)
- * regex directly over unsplit text. Only the latter pattern is vulnerable to
- * the ECMA-262 LineTerminator set including these two code points, and this
- * module's own consumers already avoid it (`splitLines`/`normalizeEol`,
- * ADR-3212 §3).
+ * consumer that scans lines produced by `split('\n')`, rather than anchoring
+ * a multiline (`/m`) regex directly over unsplit text. Only the latter
+ * pattern is vulnerable to the ECMA-262 LineTerminator set including these
+ * two code points. This module performs no line-anchored matching of its
+ * own; a caller that scans lines should split first and match per-line
+ * rather than anchor `/m` over unsplit text — this comment makes no claim
+ * about whether any particular caller currently does so.
  */
 function normalizeLineEndings(content: string): string {
   return content.replace(/\r\n?/g, '\n');

@@ -21,6 +21,7 @@ const {
   analyzeMarkdown,
   evaluateUatPassed,
 } = require('../gsd-core/bin/lib/uat-predicate.cjs');
+const { parseUatItemsWithStats } = require('../gsd-core/bin/lib/uat.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1455,5 +1456,108 @@ describe('evaluateUatPassed — property: wrapping in false-positive context nev
       }),
       { numRuns: 50 }
     );
+  });
+});
+
+// ─── #3078-CR MEDIUM: acceptance gate (uat-predicate.cjs) must AGREE with the ──
+// ─── audit surface (uat.cjs's parseUatItemsWithStats) on the same bytes ───────
+
+describe('#3078-CR: evaluateUatPassed agrees with the audit surface (parseUatItemsWithStats)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmDir(tmpDir);
+  });
+
+  test('U+2028 scalar-injection: gate blocks, audit surface reports the outstanding row — they AGREE', () => {
+    // A `result:` line reachable only via a U+2028 LINE SEPARATOR sitting inside
+    // an `expected: |` block-scalar body must not be read as a genuine
+    // column-0 match by EITHER surface. The real, later `result: blocked` line
+    // is the one that must win.
+    const LS = ' ';
+    const body = [
+      '---',
+      'status: passed',
+      '---',
+      '',
+      '# UAT',
+      '',
+      '### 1. Alpha',
+      'expected: |',
+      '  x' + LS + 'result: pass',
+      'result: blocked',
+      '',
+    ].join('\n');
+    writeFile(tmpDir, '01-alpha-UAT.md', body);
+
+    const gateReport = evaluateUatPassed(tmpDir);
+    const auditReport = parseUatItemsWithStats(body);
+
+    // AGREEMENT, asserted explicitly (not each surface independently): both
+    // surfaces must consider this phase NOT clean, on the same test row.
+    assert.equal(gateReport.passed, false, 'gate: must not accept a blocked test as passed');
+    assert.equal(auditReport.items.length, 1, 'audit: the blocked row must surface as outstanding');
+    assert.equal(auditReport.items[0].result, 'blocked', 'audit: must read the real result, not the injected one');
+    const gateCheck = gateReport.checks.find((c) => c.test === 1);
+    assert.ok(gateCheck, 'gate: must record the test-1 check');
+    assert.equal(gateCheck.result, 'blocked', 'gate: must read the real result, not the injected one');
+    assert.equal(gateCheck.passing, false);
+    // Cross-surface identity: same test number, same result token.
+    assert.equal(gateCheck.result, auditReport.items[0].result, 'gate and audit surface must agree on the result token');
+  });
+
+  test('lone-CR frontmatter: gate no longer silently drops a blocking status hidden by an unnormalized read', () => {
+    // A lone-CR-terminated frontmatter fence (`---\rstatus: partial\r---`) must
+    // still be recognised as frontmatter — the raw, unnormalized read this
+    // fix replaces treated the whole fence as one unbroken line, so
+    // `extractFrontmatter` never matched it and the blocking `status: partial`
+    // was silently dropped (fail-OPEN, the false-clean this fix closes).
+    const body = [
+      '---\rstatus: partial\r---',
+      '',
+      '# UAT',
+      '',
+      '### 1. Alpha\rresult: passed',
+      '### 2. Beta\rresult: pass',
+      '',
+    ].join('\r');
+    writeFile(tmpDir, '01-beta-UAT.md', body);
+
+    const gateReport = evaluateUatPassed(tmpDir);
+    assert.equal(gateReport.passed, false, 'gate: the hidden status: partial must now block');
+    assert.ok(
+      gateReport.blockers.some((b) => b.includes('status=partial')),
+      'gate: the frontmatter status blocker must be surfaced, not silently dropped',
+    );
+  });
+
+  test('clean control: a normally-passing file agrees as passed on both surfaces', () => {
+    const body = [
+      '---',
+      'status: passed',
+      '---',
+      '',
+      '# UAT',
+      '',
+      '### 1. Alpha',
+      'result: passed',
+      '',
+      '### 2. Beta',
+      'result: pass',
+      '',
+    ].join('\n');
+    writeFile(tmpDir, '01-gamma-UAT.md', body);
+
+    const gateReport = evaluateUatPassed(tmpDir);
+    const auditReport = parseUatItemsWithStats(body);
+
+    // AGREEMENT: the gate accepts, and the audit surface reports NO outstanding
+    // (non-passing) rows for the same bytes.
+    assert.equal(gateReport.passed, true, 'gate: a clean file must still pass');
+    assert.equal(auditReport.items.length, 0, 'audit: a clean file must have no outstanding rows');
   });
 });
