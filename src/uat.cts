@@ -182,10 +182,27 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
       // MAJOR: that broader signal false-positived on an all-pass file and on
       // a Gaps-only file with everything resolved). A file whose blocks all
       // passed, or that has no test blocks at all, never sets `headingsSeen`,
-      // so it never sets the flag regardless of status. The `status !==
-      // 'complete'` guard is kept alongside `headingsSeen` (rather than
-      // replacing it) so a file explicitly marked terminal stays unflagged
-      // even if a stray unparseable block remains in it.
+      // so it never sets the flag regardless of status.
+      //
+      // `status` deliberately does NOT gate this (#3078 security review). A
+      // terminal `status: complete` is an ASSERTION BY THE AUTHOR that the
+      // work is finished — and an assertion is exactly the thing that must
+      // not be allowed to switch off the detector that would contradict it.
+      // The earlier `status !== 'complete'` guard did precisely that: a file
+      // could declare itself complete and thereby suppress the report of the
+      // rows this tool could not read, which is a self-declared kill switch
+      // over the very detector this issue built. The distinction that
+      // actually matters is not "is it complete" but "is there anything the
+      // tool failed to parse":
+      //   - complete + `headingsSeen === 0` — nothing unread, so nothing to
+      //     contradict the claim. Still omitted entirely, exactly as before;
+      //     that is the whole point of a terminal status and must not
+      //     regress. (Same for a file whose blocks all parsed and passed.)
+      //   - complete + `headingsSeen > 0` — the author's claim of
+      //     completeness CANNOT BE VERIFIED against rows the parser could not
+      //     read, so the file is surfaced with `parse_gap` and the
+      //     `unparsed_blocks` count. The audit reports what it could not see
+      //     rather than trusting the frontmatter over the file body.
       //
       // This check is deliberately UNCONDITIONAL on `items.length` (#3707
       // follow-up BLOCKER): a MIXED file — some parseable rows plus some
@@ -195,7 +212,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
       // `headingsSeen` (and every unparseable row it counted) the instant any
       // single item existed anywhere in the file, including via the Gaps
       // union.
-      if (items.length > 0 || (headingsSeen > 0 && status !== 'complete')) {
+      if (items.length > 0 || headingsSeen > 0) {
         const entry: UatFileResult = {
           phase: phaseNum,
           phase_dir: dir,
@@ -206,7 +223,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
           archived_milestone: milestone,
           items,
         };
-        if (headingsSeen > 0 && status !== 'complete') {
+        if (headingsSeen > 0) {
           entry.parse_gap = true;
           entry.unparsed_blocks = headingsSeen;
         }

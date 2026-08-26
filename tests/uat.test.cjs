@@ -2429,9 +2429,10 @@ expected: Another thing should happen
 notes: result not yet recorded
 `;
 
-  // Control for FIX 4: a zero-item file whose frontmatter status IS the
-  // terminal `complete` must stay omitted — this is the case defect 3's old
-  // `items.length > 0` guard was legitimately protecting.
+  // #3078 security review: a terminal `complete` file that still contains
+  // `### N.` blocks the parser could not read. The author's claim of
+  // completeness cannot be verified against rows nobody could read, so this
+  // IS surfaced, with parse_gap.
   const ALL_UNPARSEABLE_ROWS_COMPLETE = `---
 status: complete
 phase: 01-foundation
@@ -2444,6 +2445,73 @@ updated: 2025-01-01T00:00:00Z
 ### 1. Still Being Written
 expected: Something should happen
 notes: result not yet recorded
+`;
+
+  // The genuinely-terminal case the old `status !== 'complete'` guard was
+  // really protecting: `complete` with NO `### N.` test blocks at all, so
+  // `headingsSeen === 0` and there is nothing unread to contradict the
+  // author's claim. Must stay omitted entirely.
+  const NO_BLOCKS_COMPLETE = `---
+status: complete
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+All scenarios were exercised manually and signed off; nothing left to record.
+
+## Notes
+
+Closed out at the milestone review.
+`;
+
+  // The other must-not-regress terminal case: `complete` where every row DID
+  // parse and every row passed. `headingsSeen` is never set for a parsed row,
+  // so this file stays quiet — a genuinely finished file must not become
+  // noise just because the status guard was removed.
+  const ALL_PASS_ROWS_COMPLETE = `---
+status: complete
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. First Scenario
+expected: Works fine
+result: pass
+
+### 2. Second Scenario
+expected: Also works fine
+result: pass
+`;
+
+  // The security reviewer's verbatim repro: a `status: complete` file with a
+  // column-0 fence that straddles a `### 2. ... result: blocked` row. The
+  // straddled row is hidden from the tokenizer, so it yields no item — under
+  // the old guard the terminal status ALSO suppressed the parse-gap entry and
+  // the audit reported the file totally clean with a `blocked` sitting in it.
+  const FENCE_STRADDLED_BLOCKED_COMPLETE = `---
+status: complete
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Alpha
+expected: Alpha works
+result: pass
+
+\`\`\`
+### 2. Straddled Blocked
+expected: Beta works
+result: blocked
+blocked_by: server team
 `;
 
   const UNRECOGNISED_RESULT_ROW = `---
@@ -2598,24 +2666,82 @@ result: pending
     assert.strictEqual(entry.parse_gap, true);
   });
 
-  // Control for FIX 4: a zero-item file whose status IS the terminal
-  // `complete` stays omitted entirely — parse_gap must not fire for a
-  // legitimately-finished file.
-  // Round-3 review MAJOR 2: the original fixture wrote `02-UAT.md` into phase
-  // dir `01-foundation`. Under #3511 phase scoping, `selectPhaseUatFiles`
-  // filters files against the phase dir's OWN token ("01"), so a `02-UAT.md`
-  // living in `01-foundation` is never even opened — `entry` was `undefined`
-  // for a reason unrelated to the terminal-status guard this test claims to
-  // exercise, i.e. vacuously green regardless of whether that guard exists.
-  // Using the default (matching) `01-foundation` / `01-UAT.md` pairing makes
-  // the file actually reachable, so the assertion is load-bearing on the
-  // guard at src/uat.cts (the `status !== 'complete'` check alongside
-  // `headingsSeen`), not on phase-scope filtering.
-  test("a zero-item file with a complete status is still omitted", () => {
-    writeUat(ALL_UNPARSEABLE_ROWS_COMPLETE);
+  // #3078 security review — REPLACES "a zero-item file with a complete status
+  // is still omitted". That test used ALL_UNPARSEABLE_ROWS_COMPLETE, whose
+  // `### 1.` block carries no `result:` line, so it is NOT a zero-item file in
+  // the sense the name claimed: it is a file with one block the parser could
+  // not read (`headingsSeen === 1`). Under the old `status !== 'complete'`
+  // guard the terminal status suppressed the entry anyway, which is the
+  // self-declared kill switch this change closes. The intent the old test
+  // meant to protect — a genuinely finished file stays quiet — is preserved
+  // and made STRICTER below, split across the two cases that actually differ:
+  // `headingsSeen === 0` (nothing unread) still omits, `headingsSeen > 0`
+  // (rows the tool could not read) now surfaces.
+  //
+  // Round-3 review MAJOR 2 still applies to all of these: the fixture must be
+  // written as `01-UAT.md` into `01-foundation`, because under #3511 phase
+  // scoping `selectPhaseUatFiles` filters files against the phase dir's own
+  // token, and a mismatched pair is never opened at all — making any
+  // "expected undefined" assertion vacuously green. `writeUat`'s defaults
+  // give the matching pairing.
+
+  // REPLACEMENT 1 — preserves the original intent, unweakened: terminal
+  // `complete` with no test blocks at all is omitted entirely.
+  test("a complete file with no test blocks at all is still omitted", () => {
+    writeUat(NO_BLOCKS_COMPLETE);
     const output = runAudit();
     const entry = output.results.find((r) => r.file === "01-UAT.md");
     assert.strictEqual(entry, undefined, `expected no results entry for 01-UAT.md, got ${JSON.stringify(entry)}`);
+    assert.strictEqual(output.summary.total_items, 0);
+  });
+
+  // REPLACEMENT 1b — the same intent for the other genuinely-finished shape:
+  // every row parsed and every row passed. This is the important
+  // non-regression for removing the status guard.
+  test("a complete file whose rows all parse and all pass is still omitted", () => {
+    writeUat(ALL_PASS_ROWS_COMPLETE);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.strictEqual(entry, undefined, `expected no results entry for 01-UAT.md, got ${JSON.stringify(entry)}`);
+    assert.strictEqual(output.summary.total_items, 0);
+  });
+
+  // REPLACEMENT 2 — the new distinction: terminal `complete` with `### N.`
+  // blocks the parser could not read IS surfaced. The author's assertion of
+  // completeness cannot be verified against rows nobody could read.
+  test("a complete file with unparseable test blocks is surfaced with parse_gap", () => {
+    writeUat(ALL_UNPARSEABLE_ROWS_COMPLETE);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry for 01-UAT.md, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.status, "complete");
+    assert.strictEqual(entry.parse_gap, true);
+    assert.strictEqual(entry.unparsed_blocks, 1);
+    assert.deepStrictEqual(entry.items, []);
+  });
+
+  // The security reviewer's actual repro. A column-0 fence straddles
+  // `### 2. ... result: blocked`, hiding it from the tokenizer; the terminal
+  // status used to suppress the resulting parse-gap entry too, so the audit
+  // reported nothing at all for a file with a `blocked` row in it.
+  test("a complete file with a fence-straddled blocked row is flagged, not silent", () => {
+    writeUat(FENCE_STRADDLED_BLOCKED_COMPLETE);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry for 01-UAT.md, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(entry.status, "complete");
+    assert.strictEqual(entry.parse_gap, true);
+    // Both `### N.` headings are counted by the whole-document shortfall
+    // comparison: row 1 parsed but passed (so yields no item) and row 2 is
+    // hidden by the unterminated fence entirely.
+    assert.strictEqual(entry.unparsed_blocks, 2);
+    // The gap counter is the straddled row's only trace. Assert by identity
+    // that the blocked row did NOT sneak through as an item.
+    assert.strictEqual(
+      entry.items.find((i) => i.test === 2),
+      undefined,
+      `the straddled row must not appear as an item, got ${JSON.stringify(entry.items)}`,
+    );
   });
 
   // Defect 1, design-decision case: the fix inverts the DROP-list filter to a
@@ -5000,7 +5126,9 @@ result: pass
       headingsSeen >= 1,
       `the fence-straddled row was not counted, so the file audits as clean: ${describeAll()}`,
     );
-    // parse_gap is `headingsSeen > 0 && status !== 'complete'` at the caller.
+    // parse_gap is exactly `headingsSeen > 0` at the caller (#3078: the
+    // `status !== 'complete'` term was removed — a self-declared terminal
+    // status may not switch off this detector).
     assert.strictEqual(headingsSeen > 0, true, describeAll());
     // The straddled row is HIDDEN from the tokenizer by construction, so it
     // must not appear as an item — the gap counter is the only trace it has.
@@ -5490,17 +5618,17 @@ result: pending
 // matters; every attempt to be clever about scope has produced a silent false
 // clean.
 //
-// `parse_gap` at the caller (`cmdAuditUat`) is exactly
-// `headingsSeen > 0 && status !== 'complete'`, so with no `status:` frontmatter
-// these documents flag iff `headingsSeen > 0`.
+// `parse_gap` at the caller (`cmdAuditUat`) is exactly `headingsSeen > 0`,
+// independent of frontmatter status, so these documents flag iff
+// `headingsSeen > 0`.
 describe('#3078 round 7 HIGH: a fence-straddled row outside the first ## Tests section still flags', () => {
   const BACKTICK = '```';
 
-  const parseGapOf = (headingsSeen, status) => headingsSeen > 0 && status !== 'complete';
+  const parseGapOf = (headingsSeen) => headingsSeen > 0;
 
   function report(label, content) {
     const { items, headingsSeen } = parseUatItemsWithStats(content);
-    const parseGap = parseGapOf(headingsSeen, 'unknown');
+    const parseGap = parseGapOf(headingsSeen);
     const describeAll = () =>
       `${label}: ${JSON.stringify({ items, headingsSeen, parse_gap: parseGap }, null, 2)}`;
     return { items, headingsSeen, parseGap, describeAll };
