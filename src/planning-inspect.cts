@@ -803,6 +803,13 @@ function buildPlanRows(phaseDir: string, diagnostics: Diagnostic[], planningRoot
 
 // ─── UAT ──────────────────────────────────────────────────────────────────────
 
+// `scope` and `foldScope` are, by decision, identical at every return site in
+// this function as of #3078 round-8 — they are not accidentally in sync. The
+// two-field shape is kept anyway because it lets `scope` (the row's own
+// honest answer) and `foldScope` (what the caller folds into the milestone)
+// diverge again later without a signature change, should some future gap
+// class need to be reported on the row but exempted from the fold, or vice
+// versa. If you find yourself "simplifying" this to one field, don't.
 function buildUatRows(
   phasesDir: string,
   phaseDirName: string,
@@ -1221,13 +1228,15 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
     const phaseId = token ? token[1] : null;
     const { goal, dependencies } = buildPhaseGoalAndDependencies(cwd, roadmapDoc, phaseId, phase.dir, diagnostics);
 
-    // `uat.foldScope`, NOT `uat.scope` (#3078 round-8). The two differ for
-    // exactly one case: a UAT document whose ONLY parse gap is the
-    // fence-suppression shortfall, `src/uat.cts`'s documented ACCEPTED
-    // OVER-REPORT class. That still reports honestly on the row itself
-    // (`uat.scope === "truncated"` plus the `uat_unreadable` diagnostic below),
-    // but it must not raise `phase_scope_degraded` and must not withhold the
-    // milestone's percentages — see `buildUatRows` for the full rationale.
+    // `uat.foldScope`, NOT `uat.scope` (#3078 round-8). The two currently
+    // agree at every call site — see `buildUatRows` for why the field is
+    // still kept separate — so folding either one here produces the same
+    // result today. `foldScope` is used because it is the field with teeth:
+    // it is what `worstScope` folds into the phase's overall scope, and a
+    // non-COMPLETE result here raises `phase_scope_degraded` and, via
+    // `makeFraction`, withholds the milestone's percentages. A phase whose
+    // UAT document could not be fully read must not contribute an
+    // affirmative completion to the milestone.
     const folded = worstScope(phase.scope, plans.scope, uat.foldScope, goal.scope, dependencies.scope);
     if (folded !== SCOPE.COMPLETE) {
       diagnostics.push({

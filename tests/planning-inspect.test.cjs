@@ -1416,14 +1416,24 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     assert.strictEqual(payload.progress.accepted_phases.percent, null);
   });
 
-  // ─── Multi-file order independence ─────────────────────────────────────────
+  // ─── Multi-file degrade ─────────────────────────────────────────────────────
   //
   // Two files scope to the SAME phase: one carries a shortfall-only gap, one
-  // is entirely clean. The fold must degrade regardless of which file
-  // `buildUatRows`'s per-file loop visits first — `fs.readdirSync` order is
-  // deterministically controlled via method monkeypatching (never mode bits;
-  // real directory order is OS/filesystem-dependent and would make this a
-  // flaky race), per CLAUDE.md's cross-platform IO-failure-injection rule.
+  // is entirely clean. The fold must degrade when EITHER file order is used —
+  // `fs.readdirSync` order is deterministically controlled via method
+  // monkeypatching (never mode bits; real directory order is OS/filesystem-
+  // dependent and would make this a flaky race), per CLAUDE.md's
+  // cross-platform IO-failure-injection rule.
+  //
+  // These two variants do NOT test file-order independence as a guarantee:
+  // `foldScope` in `buildUatRows` is monotonic (it is only ever set to
+  // `SCOPE.TRUNCATED`, never reset back to `SCOPE.COMPLETE`), so which file is
+  // visited first is structurally irrelevant to the current implementation,
+  // not something this test asserts. What the `shortfallFileFirst` variant
+  // DOES incidentally guard is a future regression that adds a reset path
+  // (e.g. code that sets `foldScope` back to COMPLETE upon encountering a
+  // later clean file) — running the shortfall file first and the clean file
+  // second is exactly the ordering such a bug would need to slip through.
 
   function writeCustomUatFile(phaseDir, fileName, status, bodyLines) {
     writeAbs(path.join(phaseDir, fileName), ['---', `status: ${status}`, '---', '', ...bodyLines].join('\n'));
@@ -1439,7 +1449,7 @@ describe('planning inspect — evidence kept separate, never folded', () => {
     ['cleanFileFirst', ['1-UAT-clean.md', '1-UAT-shortfall.md']],
     ['shortfallFileFirst', ['1-UAT-shortfall.md', '1-UAT-clean.md']],
   ]) {
-    test(`shortfallOnlyGapDegradesTheFoldRegardlessOfFileOrder_${label}`, (t) => {
+    test(`multiFileUatDegradesFoldWhenAnyFileHasShortfallOnlyGap_${label}`, (t) => {
       const tmpDir = createTempProject();
       t.after(() => cleanup(tmpDir));
       const phaseDir = declarePhase(tmpDir, '1', 'Foo');
