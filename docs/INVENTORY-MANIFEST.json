@@ -529,6 +529,7 @@
       "user-artifact-staging.cjs",
       "validate-command-router.cjs",
       "validate.cjs",
+      "vendor/js-yaml.cjs",
       "vendor/re2js.cjs",
       "verification-command-router.cjs",
       "verification.cjs",
