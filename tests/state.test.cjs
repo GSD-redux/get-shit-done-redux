@@ -1920,12 +1920,25 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
       /cannot read the plan position/i.test(output.error),
       `error should say the plan position could not be read; got: ${output.error}`,
     );
-    for (const shape of ['Total Plans in Phase', 'Plan: N of M', 'Current Plan: N of M']) {
+    // Coupling, not transcription: the message is DERIVED from
+    // `STATE_FIELD_SCHEMA.current_plan.acceptedShapes`, so this walks the
+    // schema rather than restating a list beside it. Widening the schema
+    // without widening the message (or vice versa) goes red here.
+    const { STATE_FIELD_SCHEMA } = require('../gsd-core/bin/lib/state-md-schema.cjs');
+    const declared = STATE_FIELD_SCHEMA['current_plan'].acceptedShapes;
+    assert.ok(declared.length > 0, 'schema must declare at least one shape, else this assertion is vacuous');
+    for (const shape of declared) {
+      const spelling = shape === 'N'
+        ? 'Total Plans in Phase'
+        : `Current Plan: ${shape}`;
       assert.ok(
-        output.error.includes(shape),
-        `error should name the accepted shape ${JSON.stringify(shape)}; got: ${output.error}`,
+        output.error.includes(spelling),
+        `error should name declared shape ${JSON.stringify(shape)} as ${JSON.stringify(spelling)}; got: ${output.error}`,
       );
     }
+    // The body-only `Plan` field has no schema row (buildStateFrontmatter never
+    // reads it into frontmatter), so it is named explicitly.
+    assert.ok(output.error.includes('Plan: N of M'), `error should name the Plan field shape; got: ${output.error}`);
   });
 
   test('advances plan in compound "Plan: X of Y" format', () => {

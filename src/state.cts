@@ -826,6 +826,34 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
 // ─── State Progression Engine ────────────────────────────────────────────────
 
 /**
+ * The "I could not read the plan position" message, DERIVED from
+ * `STATE_FIELD_SCHEMA.current_plan.acceptedShapes` rather than transcribed
+ * beside it.
+ *
+ * The accepted-shape set had two owners: the parser branches in
+ * `advancePlanCore` and an English list hand-written here. Nothing coupled
+ * them, so adding a branch left this message stale and removing one left it
+ * advertising a shape that errors — and no test could see either. ADR-3473
+ * §8.3 is "one implementation per rule"; the schema row is that one owner, and
+ * rows 23/24/25 already hold the parser to it.
+ *
+ * `Plan: N of M` is spelled out separately because there is no schema row for
+ * the body-only `Plan` field: `buildStateFrontmatter` never reads it into
+ * frontmatter, so it has no `current_*` key to hang a row on. That asymmetry is
+ * the schema's, not this function's.
+ */
+function advancePlanShapeError(): string {
+  const shapes = stateMdSchemaMod.STATE_FIELD_SCHEMA['current_plan']?.acceptedShapes ?? [];
+  const spellings = shapes.map((shape) => (
+    shape === 'N'
+      ? '`Current Plan: N` with `Total Plans in Phase: M`'
+      : `\`Current Plan: ${shape}\``
+  ));
+  spellings.push('`Plan: N of M`');
+  return `Cannot read the plan position from STATE.md. Expected one of: ${spellings.join(', ')}.`;
+}
+
+/**
  * Replace a STATE.md field with fallback field name support.
  * Tries `primary` first, then `fallback` (if provided), returns content unchanged
  * if neither matches. This consolidates the replaceWithFallback pattern that was
@@ -909,17 +937,7 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
       }, raw, undefined);
       return;
     }
-    // Name the shapes that would work. The old text asserted a specific cause
-    // ("Cannot parse Current Plan or Total Plans in Phase") while listing no
-    // accepted form, so a reader whose file WAS readable-looking had nothing
-    // to compare it against — which is how the hybrid shape in #3784 went
-    // unrecognised for as long as it did.
-    output({
-      error:
-        'Cannot read the plan position from STATE.md. Expected one of: ' +
-        '`Current Plan: N` with `Total Plans in Phase: M`, `Plan: N of M`, ' +
-        'or `Current Plan: N of M`.',
-    }, raw, undefined);
+    output({ error: advancePlanShapeError() }, raw, undefined);
     return;
   }
 

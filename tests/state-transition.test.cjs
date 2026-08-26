@@ -657,8 +657,11 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     ].join('\n');
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
     assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '05 of 06');
-    // and the compound field name was NOT introduced as a side effect
-    assert.ok(!/^Plan:/m.test(result.content), 'must not add a separate Plan: field');
+    // Identity, not a presence proxy: assert the whole section body, so a
+    // spurious extra field or a dropped line is visible rather than merely
+    // "no line starting with Plan:".
+    const section = result.content.slice(result.content.indexOf('## Current Position'));
+    assert.strictEqual(section.trimEnd(), ['## Current Position', '', 'Current Plan: 05 of 06'].join('\n'));
   });
 
   test('hybrid format: phase-complete branch still fires on the last plan', () => {
@@ -849,7 +852,7 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     const result = transitionCore(input, { kind: 'advancePlan' }, deps);
     assert.ok(/Current Plan: 05 of 06\r\n/.test(result.content),
       'the advanced line must keep its CRLF terminator');
-    assert.ok(!/[^\r]\n/.test(result.content), 'no line may be downgraded to bare LF');
+    assert.ok(!/(^|[^\r])\n/.test(result.content), 'no line may be downgraded to bare LF');
   });
 
   // RULESET.TESTS.property-based-testing: this is a parsing/transformation with
@@ -857,30 +860,82 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
   // examples. Contract: advancing rewrites ONLY the leading integer, pads it to
   // at least the original digit width, and leaves the rest of the value byte-
   // identical.
+  // Drives BOTH compound spellings — `Plan:` and the hybrid `Current Plan:`
+  // this PR adds — because a property that only exercises the pre-existing
+  // branch says nothing about the branch under review. `n` ranges past 99 so
+  // the 99 -> 100 width transition is covered by the property rather than by a
+  // single example.
   test('property: advancing preserves padding width and the " of M" remainder', () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 1, max: 97 }),
+        fc.integer({ min: 1, max: 150 }),
         fc.integer({ min: 1, max: 4 }),
         fc.integer({ min: 1, max: 4 }),
-        (n, planWidth, totalWidth) => {
+        fc.constantFrom('Plan', 'Current Plan'),
+        (n, planWidth, totalWidth, fieldName) => {
           const total = n + 2; // strictly greater, so the advance branch is taken
           const planStr = String(n).padStart(planWidth, '0');
           const totalStr = String(total).padStart(totalWidth, '0');
           const input = [
             '# Project State',
             '',
-            `**Plan:** ${planStr} of ${totalStr}`,
+            `**${fieldName}:** ${planStr} of ${totalStr}`,
             '**Status:** Executing Phase 7',
             '',
           ].join('\n');
           const result = transitionCore(input, { kind: 'advancePlan' }, deps);
           const expected = `${String(n + 1).padStart(planStr.length, '0')} of ${totalStr}`;
-          assert.strictEqual(stateExtractField(result.content, 'Plan'), expected);
+          assert.strictEqual(stateExtractField(result.content, fieldName), expected);
         },
       ),
       { numRuns: 200 },
     );
+  });
+
+  // The legacy pair's own format-preserving contract: the ` of M` remainder and
+  // the padding survive there too, and the sibling supplies the total.
+  test('property: the legacy pair preserves the written Current Plan value shape', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 150 }),
+        fc.integer({ min: 1, max: 4 }),
+        fc.option(fc.integer({ min: 1, max: 999 }), { nil: null }),
+        (n, planWidth, inlineTotal) => {
+          const total = n + 2;
+          const planStr = String(n).padStart(planWidth, '0');
+          const written = inlineTotal === null ? planStr : `${planStr} of ${inlineTotal}`;
+          const input = [
+            '# Project State',
+            '',
+            `**Current Plan:** ${written}`,
+            `**Total Plans in Phase:** ${total}`,
+            '**Status:** Executing Phase 7',
+            '',
+          ].join('\n');
+          const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+          const bumped = String(n + 1).padStart(planStr.length, '0');
+          const expected = inlineTotal === null ? bumped : `${bumped} of ${inlineTotal}`;
+          assert.strictEqual(stateExtractField(result.content, 'Current Plan'), expected);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  // m2: the degenerate end of the totalPlans threshold, and the shapes the
+  // anchored grammar must refuse. `0 of 0` is `currentPlan >= totalPlans`, so
+  // it is phase-complete rather than an error — pinned so the grammar
+  // tightening cannot silently reclassify it.
+  test('boundary: degenerate and malformed plan values', () => {
+    const drive = (value) => {
+      const input = ['# Project State', '', `**Current Plan:** ${value}`, '**Status:** Executing', ''].join('\n');
+      return transitionCore(input, { kind: 'advancePlan' }, deps).data;
+    };
+    assert.strictEqual(drive('0 of 0').reason, 'last_plan', '"0 of 0" is past the end, not an error');
+    assert.strictEqual(drive('0 of 3').advanced, true, '"0 of 3" advances to 1');
+    for (const bad of ['-1 of 6', '+2 of 6', '\u0663 of \u0665', '3 of', 'of 5', 'x of 5']) {
+      assert.strictEqual(drive(bad).error, true, `${JSON.stringify(bad)} must be refused`);
+    }
   });
 
   test('compound format: "Plan: 2 of 6" preserves compound shape', () => {
