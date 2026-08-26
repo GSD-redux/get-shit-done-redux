@@ -27,7 +27,35 @@ import stateMdSchemaMod = require('./state-md-schema.cjs');
 const { STATE_FIELD_SCHEMA } = stateMdSchemaMod;
 type StateFieldSchema = stateMdSchemaMod.StateFieldSchema;
 
-const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
+const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, FRONTMATTER_UNPARSEABLE } = frontmatter;
+
+/**
+ * ADR-3473 §8.1 (#3881, consequence 2 wiring): does `existingFm` carry the
+ * `FRONTMATTER_UNPARSEABLE` marker `extractFrontmatter` sets when a
+ * frontmatter-fenced region exists but failed to parse (malformed YAML, or a
+ * refused anchor/alias/merge key)? A plain `Object.keys(existingFm).length >
+ * 0` check cannot distinguish that case from "no frontmatter block at all" —
+ * both parse to `{}` — so every `hasFrontmatter`-gated reassemble below would
+ * silently drop the raw frontmatter block on the next write. The marker is a
+ * non-enumerable-to-Object.keys Symbol key, so this check is additive and
+ * never fires for the genuinely-empty case.
+ */
+function isUnparseableFrontmatter(existingFm: Record<string, unknown>): boolean {
+  return (existingFm as unknown as Record<symbol, unknown>)[FRONTMATTER_UNPARSEABLE] === true;
+}
+
+/**
+ * ADR-3473 §8.1 (#3881): the exact bytes `stripFrontmatter` removed from the
+ * front of `content` to produce `strippedBody` — i.e. `content`'s raw
+ * frontmatter-fenced prefix, verbatim, whether or not it parsed. Reassembling
+ * with this prefix (instead of dropping it under `hasFrontmatter === false`)
+ * is what preserves an UNPARSEABLE frontmatter block across a write; it is a
+ * no-op difference from `content` itself when `strippedBody === content`
+ * (nothing was stripped).
+ */
+function rawFrontmatterPrefix(content: string, strippedBody: string): string {
+  return content.slice(0, content.length - strippedBody.length);
+}
 
 // Stop predicate for section-body slicing: a level-2+ heading ends the section.
 const STOP_H2_PLUS = (lv: number): boolean => lv >= 2;
@@ -961,11 +989,17 @@ function beginPhaseCore(
   const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   let body = stripFrontmatter(content);
+  // ADR-3473 §8.1 (#3881): computed BEFORE `body` is reassigned below, so the
+  // captured prefix is the exact bytes stripped from the ORIGINAL content.
+  const fmPrefix = rawFrontmatterPrefix(content, body);
+  const unparseableFm = isUnparseableFrontmatter(existingFm);
 
   const reassemble = (b: string): string =>
     hasFrontmatter
       ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+      : unparseableFm
+        ? `${fmPrefix}${b}`
+        : b;
 
   const today = deps.clock.localToday();
 
@@ -1313,10 +1347,16 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   let body = stripFrontmatter(content);
+  // ADR-3473 §8.1 (#3881): computed BEFORE `body` is reassigned below, so the
+  // captured prefix is the exact bytes stripped from the ORIGINAL content.
+  const fmPrefix = rawFrontmatterPrefix(content, body);
+  const unparseableFm = isUnparseableFrontmatter(existingFm);
   const reassemble = (b: string): string =>
     hasFrontmatter
       ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+      : unparseableFm
+        ? `${fmPrefix}${b}`
+        : b;
 
   // Parse plan number — legacy first, then compound.
   const legacyPlan = stateExtractField(content, 'Current Plan');
@@ -1461,10 +1501,16 @@ function completePhaseCore(
   const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   let body = stripFrontmatter(content);
+  // ADR-3473 §8.1 (#3881): computed BEFORE `body` is reassigned below, so the
+  // captured prefix is the exact bytes stripped from the ORIGINAL content.
+  const fmPrefix = rawFrontmatterPrefix(content, body);
+  const unparseableFm = isUnparseableFrontmatter(existingFm);
   const reassemble = (b: string): string =>
     hasFrontmatter
       ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+      : unparseableFm
+        ? `${fmPrefix}${b}`
+        : b;
 
   // Current Phase — preserve the existing `of <total>` shape and the phase name
   // in parens (mirrors phase.cts:1675-1697 byte-for-behaviour).
@@ -1658,10 +1704,16 @@ function plannedPhaseCore(
   const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   let body = stripFrontmatter(content);
+  // ADR-3473 §8.1 (#3881): computed BEFORE `body` is reassigned below, so the
+  // captured prefix is the exact bytes stripped from the ORIGINAL content.
+  const fmPrefix = rawFrontmatterPrefix(content, body);
+  const unparseableFm = isUnparseableFrontmatter(existingFm);
   const reassemble = (b: string): string =>
     hasFrontmatter
       ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+      : unparseableFm
+        ? `${fmPrefix}${b}`
+        : b;
 
   const statusDefaults = KNOWN_TEMPLATE_DEFAULTS['Status'];
   const lastActivityDefaults = KNOWN_TEMPLATE_DEFAULTS['Last Activity'];
@@ -1943,10 +1995,16 @@ function milestoneCompleteCore(
   const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   let body = stripFrontmatter(content);
+  // ADR-3473 §8.1 (#3881): computed BEFORE `body` is reassigned below, so the
+  // captured prefix is the exact bytes stripped from the ORIGINAL content.
+  const fmPrefix = rawFrontmatterPrefix(content, body);
+  const unparseableFm = isUnparseableFrontmatter(existingFm);
   const reassemble = (b: string): string =>
     hasFrontmatter
       ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+      : unparseableFm
+        ? `${fmPrefix}${b}`
+        : b;
 
   // Status — `<version> milestone complete`.
   const statusAfter = stateReplaceFieldWithFallback(body, 'Status', null, `${version} milestone complete`);
@@ -2074,6 +2132,10 @@ function patchCore(
   const existingFm = extractFrontmatter(content) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   let body = stripFrontmatter(content);
+  // ADR-3473 §8.1 (#3881): computed BEFORE `body` is reassigned below, so the
+  // captured prefix is the exact bytes stripped from the ORIGINAL content.
+  const fmPrefix = rawFrontmatterPrefix(content, body);
+  const unparseableFm = isUnparseableFrontmatter(existingFm);
   const fm: Record<string, unknown> = { ...existingFm };
 
   const updated: string[] = [];
@@ -2124,7 +2186,9 @@ function patchCore(
 
   const result = hasFrontmatter
     ? `---\n${reconstructFrontmatter(fm as unknown as Frontmatter)}\n---\n\n${body}`
-    : body;
+    : unparseableFm
+      ? `${fmPrefix}${body}`
+      : body;
 
   return { content: result, updated, data: { updated, failed } };
 }
@@ -2148,6 +2212,9 @@ function updateCore(
   const existingFm = extractFrontmatter(content) as Record<string, unknown>;
   const hasFrontmatter = Object.keys(existingFm).length > 0;
   const body = stripFrontmatter(content);
+  // ADR-3473 §8.1 (#3881): the exact bytes stripped from the ORIGINAL content.
+  const fmPrefix = rawFrontmatterPrefix(content, body);
+  const unparseableFm = isUnparseableFrontmatter(existingFm);
   // #3699 review: session-scoped fields are written through the session-scoped
   // writer. A whole-body `stateReplaceField` matches the FIRST occurrence
   // anywhere, so with no `Stopped At:` line in `## Session` but a stale one in
@@ -2215,7 +2282,9 @@ function updateCore(
   }
   const reassembled = hasFrontmatter
     ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${result}`
-    : result;
+    : unparseableFm
+      ? `${fmPrefix}${result}`
+      : result;
   return { content: reassembled, updated: [intent.field], data: { updated: true } };
 }
 
