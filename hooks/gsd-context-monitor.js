@@ -27,17 +27,30 @@ const WARNING_THRESHOLD = 35;  // remaining_percentage <= 35%
 const CRITICAL_THRESHOLD = 25; // remaining_percentage <= 25%
 const STALE_SECONDS = 60;      // ignore metrics older than 60s
 const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
+// How long after a PreCompact readings stay suspect. The watermark records the
+// compaction's START; the compaction keeps running after it, and a statusline
+// render during it stamps the PRE-compaction reading with a CURRENT timestamp
+// (Codex review of #3808, round 3) — so "newer than the watermark" alone still
+// admits it. Everything inside this window is dropped instead. The cost is
+// bounded and benign: a healthy reading dropped here behaves identically to an
+// accepted one (it would exit above-threshold anyway), and a genuine
+// exhaustion warning is delayed by at most this window after a compact.
+const COMPACT_GRACE_SECONDS = 60;
 
 // One DEFINITION of what counts as a lifecycle event name, shared by the #3709
 // PreCompact reset and the #2289 output-envelope allowlist. Two call sites, one
 // rule — so the two cannot drift into disagreeing about what "no event name" is.
-// TOTAL, via String(): the old inline expression threw on a truthy non-string
-// hook_event_name, and hoisting it ahead of the pipeline would have moved that
-// throw ahead of the side effects #2289 documents as always running (review of
-// #3808, round 3). A malformed name now reads as an unknown event — silent,
+// TOTAL, and STRICT about type: only an actual string is an event name. The old
+// inline expression threw on a truthy non-string, and hoisting it ahead of the
+// pipeline would have moved that throw ahead of the side effects #2289
+// documents as always running; a String() coercion is no better — it renders
+// ['PreCompact'] as 'PreCompact' and would run the reset off a malformed
+// payload, and a hostile toString still throws (Codex review of #3808,
+// round 3). typeof does neither: any non-string reads as "no event" — silent,
 // side effects intact — on both call sites.
 function readEventName(data) {
-  return String((data && data.hook_event_name) || '').trim();
+  const name = data && data.hook_event_name;
+  return typeof name === 'string' ? name.trim() : '';
 }
 
 let input = '';
@@ -165,17 +178,29 @@ process.stdin.on('end', () => {
     const metrics = JSON.parse(metricsRaw);
     const now = Math.floor(Date.now() / 1000);
 
-    // #3709 (round 3): a reading not STRICTLY newer than the compaction
-    // watermark is the pre-compaction reading, whatever its timestamp says —
-    // the statusline can re-write the bridge mid-compaction and stamp the old
-    // remaining_percentage with a current time. `!(> at)` rather than `<= at`
-    // so a missing/zero/garbage timestamp is also dropped once a compaction
-    // has happened: an unstamped reading cannot prove it is post-compaction.
-    // No watermark (fresh session, or the best-effort write failed) degrades
-    // to the plain STALE_SECONDS behaviour below.
+    // #3709 (round 3): a reading not clearly PAST the compaction is suspect,
+    // whatever its timestamp says — the statusline re-writes the bridge on
+    // every render, and a render during the compaction stamps the OLD
+    // remaining_percentage with a current time. The watermark records the
+    // compaction's START, so "newer than the watermark" alone still admits a
+    // mid-compaction render (Codex review of #3808, round 3): the grace
+    // window covers the compaction's own duration. `!(>)` rather than `<=` so
+    // a missing/zero/garbage timestamp is also dropped once a compaction has
+    // happened — an unstamped reading cannot prove it is post-compaction.
+    //
+    // The watermark itself must be SANE to count: one stamped in the future
+    // (a clock step backwards, a stray file) would otherwise drop every
+    // reading indefinitely and silently self-disable monitoring — so it is
+    // honored only when its own timestamp is not ahead of this process's
+    // clock (small skew allowed). No watermark, an unreadable one, or an
+    // insane one all degrade to the plain STALE_SECONDS behaviour below.
     try {
       const watermark = JSON.parse(fs.readFileSync(watermarkPath, 'utf8'));
-      if (watermark && typeof watermark.at === 'number' && !(metrics.timestamp > watermark.at)) {
+      if (
+        watermark && typeof watermark.at === 'number'
+        && watermark.at <= now + 5
+        && !(metrics.timestamp > watermark.at + COMPACT_GRACE_SECONDS)
+      ) {
         process.exit(0);
       }
     } catch (e) { /* no watermark — nothing to compare against */ }

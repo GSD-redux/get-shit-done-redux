@@ -45,7 +45,17 @@ if (lstatMatch) {
   const realLstatSync = fs.lstatSync;
   fs.lstatSync = function lstatSyncClaimingFile(p) {
     const st = realLstatSync.apply(fs, arguments);
-    if (String(p).includes(lstatMatch)) st.isFile = () => true;
+    if (String(p).includes(lstatMatch)) {
+      st.isFile = () => true;
+      // Engagement marker: without it, a match string that silently stops
+      // matching lets the REAL lstat refuse the symlink and every assertion
+      // in the substitution-race row still passes — without O_NOFOLLOW ever
+      // being the guard under test (Codex review of #3808, round 3). The row
+      // asserts this file exists.
+      try {
+        fs.writeFileSync(`${p}.gsd-test-lstat-claimed`, '1');
+      } catch { /* marker is best-effort; the row will fail loudly without it */ }
+    }
     return st;
   };
 }

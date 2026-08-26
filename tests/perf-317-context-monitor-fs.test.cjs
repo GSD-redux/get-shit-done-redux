@@ -1264,13 +1264,16 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
             session_id: id,
             remaining_percentage: remaining,
             used_pct: 100 - remaining,
-            // +2s: deliberately a hair in the future. The compaction watermark
-            // has one-second granularity and these tests run PreCompact and
-            // the next PostToolUse inside the same second — a real session's
-            // post-compaction render lands seconds later. Future-stamping by
-            // 2s keeps the reading "strictly newer than the watermark" without
-            // touching the staleness math (a negative age is never > 60).
-            timestamp: Math.floor(Date.now() / 1000) + 2,
+            // +62s: deliberately beyond the compaction grace window
+            // (COMPACT_GRACE_SECONDS=60, +2 for the same-second start). These
+            // tests run PreCompact and the next PostToolUse inside one second,
+            // while a real post-compaction WARNING arrives minutes later when
+            // the context re-climbs — inside the grace window every alarming
+            // reading is dropped BY DESIGN (a mid-compaction render is
+            // indistinguishable from it). Future-stamping models "a reading
+            // from after the window" without touching the staleness math (a
+            // negative age is never > 60).
+            timestamp: Math.floor(Date.now() / 1000) + 62,
           }));
         } else {
           try { fs.unlinkSync(metricsPath); } catch { /* already absent */ }
@@ -1618,11 +1621,17 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
     fs.symlinkSync(victim, s.warnPath);
 
+    const marker = `${s.warnPath}.gsd-test-lstat-claimed`;
+    t.after(() => { try { fs.unlinkSync(marker); } catch { /* absent */ } });
     const r = s.call('PreCompact', 20, {
       failUnlinkMatching: '-warned.json',
       lstatClaimsFileMatching: '-warned.json',
     });
     assert.strictEqual(r.exitCode, 0, 'ELOOP is a give-up, never a hook failure');
+    assert.ok(fs.existsSync(marker),
+      'the lstat-claim arm must PROVE it engaged — without the marker, a match string that '
+      + 'silently stops matching lets the real lstat refuse the symlink and every other '
+      + 'assertion here passes without O_NOFOLLOW ever being the guard under test');
     assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious victim bytes',
       'with lstat blinded, only O_NOFOLLOW stands between the open and the victim — the target '
       + 'must be untouched');
@@ -1635,8 +1644,8 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     // process that re-writes it on every render — a render landing between the
     // clear and the compaction's completion re-creates the PRE-compaction
     // remaining with a CURRENT timestamp, sailing past STALE_SECONDS. The
-    // compaction watermark makes that reading identifiable: anything not
-    // strictly newer than the watermark is dropped.
+    // compaction watermark makes that reading identifiable: anything inside
+    // the grace window past the watermark is dropped.
     const s = makeSession(t, { gsdActive: true });
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
     assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
@@ -1652,32 +1661,86 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       'and no false context-exhaustion breadcrumb may be re-armed off it');
   });
 
-  test('round 3, Major 1: a genuinely post-compaction reading still warns', (t) => {
-    // The non-vacuity half: the watermark must drop the OLD reading, not all
-    // readings — a strictly newer one passes and the fresh cycle behaves like
-    // a fresh session.
+  test('round 3, Major 1: a DELAYED mid-compaction render is dropped too — the watermark marks the start, not the end', (t) => {
+    // Codex on the first watermark cut: PreCompact stamps the compaction's
+    // START, but the compaction keeps running — a statusline render one second
+    // later still carries the PRE-compaction reading, and "strictly newer than
+    // the watermark" admitted it. The grace window covers the compaction's own
+    // duration, so a reading barely past the watermark is still suspect.
+    const s = makeSession(t, { gsdActive: true });
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
+    const wm = s.watermark();
+    assert.ok(wm && typeof wm.at === 'number', 'PreCompact must leave a watermark');
+    s.writeBridge({ remaining_percentage: 20, used_pct: 80, timestamp: wm.at + 1 });
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
+    assert.strictEqual(stdout, '',
+      'one second past the watermark is still mid-compaction territory — the old reading under a '
+      + 'newer stamp must not re-fire the CRITICAL');
+    assert.strictEqual(s.warnRaw(), null, 'and no false breadcrumb may be re-armed off it');
+  });
+
+  test('round 3, Major 1: a reading from past the grace window still warns', (t) => {
+    // The non-vacuity half: the watermark must drop the compaction-window
+    // readings, not all readings — one clearly past the window passes and the
+    // fresh cycle behaves like a fresh session.
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
     assert.strictEqual(s.call('PreCompact', 20).exitCode, 0);
     const wm = s.watermark();
     assert.ok(wm && typeof wm.at === 'number', 'PreCompact must leave a watermark');
-    s.writeBridge({ remaining_percentage: 30, used_pct: 70, timestamp: wm.at + 1 });
+    // COMPACT_GRACE_SECONDS is 60; +61 is the first second the window no longer covers
+    s.writeBridge({ remaining_percentage: 30, used_pct: 70, timestamp: wm.at + 61 });
     const { stdout } = s.call('PostToolUse', 30, { metrics: 'keep' });
     assert.match(stdout, /CONTEXT WARNING/,
-      'a reading strictly newer than the watermark is the new cycle — it must warn immediately');
+      'a reading past the grace window is the new cycle — it must warn immediately');
   });
 
-  test('round 3, Minor 6: a malformed hook_event_name is silent, with side effects intact', (t) => {
-    // readEventName is TOTAL: a truthy non-string name (malformed or
-    // future-dialect payload) used to throw at the tail call site — AFTER the
-    // side effects — and hoisting it to the PreCompact check would have moved
-    // that throw ahead of them, silently breaking #2289's documented contract.
-    // Now it reads as an unknown event: no output, side effects run.
+  test('round 3: an insane FUTURE watermark is ignored, never a permanent mute', (t) => {
+    // Codex on the first watermark cut: a watermark stamped in the future — a
+    // clock step backwards, a stray or planted file — would otherwise drop
+    // every reading until wall-clock catches up: monitoring silently
+    // self-disabled. A watermark ahead of the reader's own clock is treated
+    // as garbage and the plain staleness rules apply.
     const s = makeSession(t);
-    const { stdout, exitCode } = s.call(42, 30);
-    assert.strictEqual(exitCode, 0, 'a malformed event name must never fail the hook');
-    assert.strictEqual(stdout, '', 'unknown events emit nothing (#2289 allowlist)');
-    assert.ok(s.warn(), 'the debounce sentinel side effect must still have run (#2289 contract)');
+    fs.writeFileSync(path.join(os.tmpdir(), `claude-ctx-${s.bridgeMatch.replace('.json', '')}-compacted.json`),
+      JSON.stringify({ at: Math.floor(Date.now() / 1000) + 3600 }));
+    const { stdout } = s.call('PostToolUse', 30);
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a future-stamped watermark must not be honored — dropping fresh readings against it mutes '
+      + 'the monitor indefinitely');
+  });
+
+  test('round 3, Minor 6: malformed hook_event_name values are silent, with side effects intact', (t) => {
+    // readEventName is TOTAL and STRICT about type: the old expression threw
+    // on a truthy non-string AFTER the side effects; hoisting would have moved
+    // the throw ahead of them; and a String() coercion renders ['PreCompact']
+    // as 'PreCompact' — running the RESET off a malformed payload — while a
+    // hostile toString still throws. typeof does neither: every non-string is
+    // "no event".
+    const s = makeSession(t);
+    for (const [label, badEvent] of [
+      ['number', 42],
+      ['object', { toString: 'not-callable' }],
+    ]) {
+      const { stdout, exitCode } = s.call(badEvent, 30);
+      assert.strictEqual(exitCode, 0, `${label}: a malformed event name must never fail the hook`);
+      assert.strictEqual(stdout, '', `${label}: unknown events emit nothing (#2289 allowlist)`);
+      assert.ok(s.warn(), `${label}: the debounce side effect must still have run (#2289 contract)`);
+    }
+  });
+
+  test('round 3, Minor 6: an ARRAY-wrapped PreCompact does not run the reset', (t) => {
+    // ['PreCompact'] under String() coercion reads as 'PreCompact' — a
+    // malformed payload triggering a state-clearing branch. Strict typeof
+    // treats it as no event: the sentinel survives.
+    const s = makeSession(t);
+    s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
+    const { stdout, exitCode } = s.call(['PreCompact'], 20);
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(stdout, '', 'a malformed event emits nothing');
+    assert.ok(s.warn(), 'the reset must NOT run off a non-string event name — the sentinel survives '
+      + '(the side-effect pipeline ran instead, which is the unknown-event contract)');
   });
 });
 
