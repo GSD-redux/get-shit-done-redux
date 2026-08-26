@@ -39,7 +39,19 @@ const { planningDir, planningPaths } = planningWorkspace;
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, propagateCommentChannel } = frontmatter;
+const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, propagateCommentChannel, FRONTMATTER_UNPARSEABLE } = frontmatter;
+
+/**
+ * ADR-3473 §8.1 (#3881, consequence 2 wiring): does `existingFm` carry the
+ * `FRONTMATTER_UNPARSEABLE` marker `extractFrontmatter` sets when a frontmatter-fenced region
+ * exists but failed to parse (malformed YAML, or a refused anchor/alias/merge key)? Mirrors
+ * `state-transition.cts`'s private helper of the same name/shape — kept local rather than
+ * exported+imported because the two modules' `existingFm` values come from independent
+ * `extractFrontmatter` calls and this predicate is a two-line symbol read, not shared state.
+ */
+function isUnparseableFrontmatter(existingFm: Record<string, unknown>): boolean {
+  return (existingFm as unknown as Record<symbol, unknown>)[FRONTMATTER_UNPARSEABLE] === true;
+}
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -2833,6 +2845,30 @@ function syncStateFrontmatter(
     content,
     cwd ? planningPaths(cwd).state : undefined,
   ) as Record<string, unknown>;
+
+  // #3881 review, second round: an UNPARSEABLE frontmatter block (malformed YAML, a git
+  // merge-conflict marker, a refused anchor) must never be silently REPLACED by a freshly
+  // re-derived one — that destroys the only copy of what the block actually contained, with
+  // no signal to the human that their document was in conflict. `beginFrontmatterReassembly`
+  // (state-transition.cts) already preserves the raw fmPrefix through the pure transform
+  // layer for every `transitionCore` kind; this was the gap — this function re-parses the
+  // ALREADY-preserved `content` and, finding {} + the marker, rebuilt a fresh block anyway,
+  // discarding the raw prefix the transform layer had just protected. Confirmed by execution
+  // against `state complete-phase`/`update`/`patch`/`begin-phase`: each returned success with
+  // the conflict markers gone and a freshly-derived, well-formed frontmatter block in their
+  // place (re-derivation, not deletion — the document never lost its frontmatter FENCE).
+  //
+  // `sanctionedPermanentEmptyFallback` is threaded ONLY from `writeStateMd`, itself consumed
+  // ONLY by `cmdStateSync` (#905) and `/gsd-health --repair`'s `REGENERATE_STATE` — ADR-3408
+  // §8.3's CLOSED list of commands whose documented contract is "body wins, re-derive
+  // unconditionally" (a factory reset / explicit resync). Those two are untouched here: this
+  // guard fires only on the OTHER call path (`syncAndPreserveStateMd`, i.e. every
+  // `readModifyWriteStateMd`-based command), where re-deriving over unparseable content was
+  // never the intended contract in the first place — it was an unhandled gap, not a decision.
+  if (!sanctionedPermanentEmptyFallback && isUnparseableFrontmatter(existingFm)) {
+    return content;
+  }
+
   const body = stripFrontmatter(content);
   // #3017: pass the stored milestone from the existing frontmatter so
   // buildStateFrontmatter scopes its disk scan to the correct milestone
@@ -3385,8 +3421,26 @@ function applyPostSyncPreservation(
   // above (null when resync:true) — these are independent snapshots.
   // Strip frontmatter before calling stateExtractField so the YAML `status:`
   // key in the frontmatter block cannot shadow the body field we are tracking.
-  const preBody = stripFrontmatter(originalContent);
   const preFmSnapshot = extractFrontmatter(originalContent, statePath) as Record<string, unknown>;
+
+  // #3881 review, second round: `syncStateFrontmatter` above already declines to re-derive
+  // over an UNPARSEABLE original frontmatter block (its own matching guard), so `syncedContent`
+  // here is `transformedContent` verbatim. But this function's own downstream preservation
+  // machinery (`applyStatePreservation` + the `authoritativeFm` reassertion below) reads
+  // `postFm = extractFrontmatter(syncedContent, ...)` — {} + the marker, since the block still
+  // doesn't parse — restores curated fields from `transaction.snapshot`, and reconstructs a
+  // FRESH frontmatter block from the result, destroying the raw block a second time even
+  // though `syncStateFrontmatter` just finished protecting it. `applyPostSyncPreservation` is
+  // reached ONLY via the non-sanctioned path (`syncAndPreserveStateMd`; `writeStateMd`'s two
+  // ADR-3408 §8.3 closed-list callers — `cmdStateSync` #905 and `/gsd-health --repair`'s
+  // `REGENERATE_STATE` — never call it at all), so this guard needs no extra parameter to stay
+  // scoped off that list. Confirmed by execution: `state begin-phase` on a conflict-marked
+  // STATE.md reached exactly this second clobber even after the `syncStateFrontmatter` fix.
+  if (isUnparseableFrontmatter(preFmSnapshot)) {
+    return transformedContent;
+  }
+
+  const preBody = stripFrontmatter(originalContent);
   const preBodyStatus = stateExtractField(preBody, 'Status');
   // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
   // mirroring buildStateFrontmatter's sessionBodyScope logic.

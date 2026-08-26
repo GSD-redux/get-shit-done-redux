@@ -20,7 +20,7 @@ const {
   _resetUnusableInputWarningsForTests,
   _unusableInputEmissionCountForTests,
 } = require('../gsd-core/bin/lib/unusable-input.cjs');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, runGsdTools, createTempProject } = require('./helpers.cjs');
 
 const fixedClock = Object.freeze({
   today: () => '2026-06-27',
@@ -159,16 +159,98 @@ describe('A2 unparseableDocumentKeepsItsFrontmatterBlock', () => {
     });
   }
 
-  // NOT covered here, and NOT green: the 8th site (`state.cts`'s `cmdStateCompletePhase`,
-  // reached via the `state complete-phase` CLI command) also calls `beginFrontmatterReassembly`
-  // and returns `reassemble(body)`, but `readModifyWriteStateMd` unconditionally runs
-  // `syncAndPreserveStateMd`/`syncStateFrontmatter` AFTER that return value, which does not
-  // consult `FRONTMATTER_UNPARSEABLE` and rebuilds a fresh frontmatter block from body/disk
-  // state — clobbering the raw preserved block `reassemble` just produced. Confirmed by
-  // execution against a temp project (`state complete-phase` on the same conflict-marker
-  // fixture): the command succeeds and the STATE.md conflict markers are GONE afterward. This
-  // is a distinct, deeper defect in the resync composition, outside this phase's fix — filed
-  // as a new finding for follow-up rather than silently marked green or silently dropped.
+});
+
+// ─── A2b. The 8th reassemble site — the real CLI path, not just the pure transform ─────────
+//
+// Post-#3881-review, second round: the 7 `transitionCore` kinds above preserve an unparseable
+// block at the PURE-TRANSFORM layer, but `state.cts`'s CLI adapters wrap every transform in
+// `readModifyWriteStateMd` -> `syncAndPreserveStateMd`, which reruns `extractFrontmatter` on
+// the (already-preserved) result and — before this fix — unconditionally re-derived a FRESH
+// frontmatter block, discarding the raw one a second time. Confirmed by execution: BEFORE the
+// fix, `state complete-phase` on a conflict-marker STATE.md returned success with the markers
+// GONE, replaced by a freshly-derived well-formed block (re-derivation, not fence deletion —
+// case (b), not (a)). Table-driven over the CLI verbs found to share the same
+// `readModifyWriteStateMd` path, plus a control proving the ADR-3408 §8.3 CLOSED-list "body
+// wins" contract (`state sync`) is untouched.
+describe('A2b unparseableFrontmatterSurvivesTheRealCliPath', () => {
+  const CONFLICT_FM_BLOCK = [
+    '---',
+    '<<<<<<< HEAD',
+    'status: foo',
+    '=======',
+    'status: bar',
+    '>>>>>>> feature',
+    '---',
+    '',
+  ].join('\n');
+  const CONFLICT_BODY = [
+    '# Project State',
+    '',
+    '## Current Position',
+    '',
+    'Phase: 1 — Foundation',
+    'Plan: 1 of 1',
+    'Status: Executing Phase 1',
+    'Last activity: 2026-07-01 — mid-flight',
+    '',
+  ].join('\n');
+
+  function writeConflictFixture(tmpDir) {
+    const planningDir = path.join(tmpDir, '.planning');
+    fs.mkdirSync(path.join(planningDir, 'phases', '01-foundation'), { recursive: true });
+    fs.writeFileSync(
+      path.join(planningDir, 'ROADMAP.md'),
+      ['# Roadmap', '', '### Phase 1: Foundation', '**Goal:** Setup', ''].join('\n'),
+    );
+    const statePath = path.join(planningDir, 'STATE.md');
+    fs.writeFileSync(statePath, CONFLICT_FM_BLOCK + CONFLICT_BODY);
+    return statePath;
+  }
+
+  const NON_SANCTIONED_VERBS = [
+    ['state complete-phase', ['state', 'complete-phase']],
+    ['state update', ['state', 'update', 'Last Activity', '2026-08-26']],
+    ['query state.patch', ['query', 'state.patch', JSON.stringify({ Status: 'Paused for review' })]],
+    ['state begin-phase', ['state', 'begin-phase', '--phase', '2', '--name', 'Next Phase']],
+  ];
+
+  for (const [label, args] of NON_SANCTIONED_VERBS) {
+    test(`${label}: a git merge-conflict-marked frontmatter block survives the real CLI write`, () => {
+      const tmpDir = createTempProject();
+      try {
+        const statePath = writeConflictFixture(tmpDir);
+        const result = runGsdTools(args, tmpDir);
+        assert.ok(result.success, `${label} failed: ${result.error}`);
+        const after = fs.readFileSync(statePath, 'utf-8');
+        assert.ok(
+          after.includes('<<<<<<< HEAD') && after.includes('=======') && after.includes('>>>>>>> feature'),
+          `${label}: conflict markers must survive; got:\n${after}`,
+        );
+      } finally {
+        cleanup(tmpDir);
+      }
+    });
+  }
+
+  test('control: state sync (ADR-3408 §8.3 CLOSED list — body wins) still overwrites unparseable frontmatter, unchanged', () => {
+    // The one command that MUST keep clobbering it — a regression here would mean the fix
+    // widened the closed list, which the review explicitly forbids.
+    const tmpDir = createTempProject();
+    try {
+      const statePath = writeConflictFixture(tmpDir);
+      const result = runGsdTools(['state', 'sync'], tmpDir);
+      assert.ok(result.success, `state sync failed: ${result.error}`);
+      const after = fs.readFileSync(statePath, 'utf-8');
+      assert.ok(
+        !after.includes('<<<<<<< HEAD'),
+        'state sync must still re-derive frontmatter from the body (its documented contract) — conflict markers must NOT survive',
+      );
+      assert.ok(/^---\r?\n/.test(after), 'state sync must still produce a well-formed frontmatter block');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
 });
 
 describe('A3 unparseableIsDistinguishableFromEmpty', () => {
