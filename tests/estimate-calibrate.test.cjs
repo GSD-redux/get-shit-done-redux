@@ -24,6 +24,10 @@ const path = require('node:path');
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 const est = require('../gsd-core/bin/lib/phase-estimation.cjs');
 const estimateCli = require('../gsd-core/bin/lib/estimate-cli.cjs');
+// io.cjs owns error()/ERROR_REASON/JSON-error-mode — driven directly here so
+// H1 below can assert a typed `reason`, mirroring tests/config-get-default.test.cjs's
+// established in-process CLI-error-path pattern.
+const io = require('../gsd-core/bin/lib/io.cjs');
 
 /** Write a phase dir containing a PLAN with an estimate and a SUMMARY with actuals. */
 function writePhase(tmpDir, phaseDir, { estTokens, actTokens, tasks = 3, commits = 4 }) {
@@ -375,7 +379,7 @@ describe('multi-plan phases pair per plan, not per phase', () => {
 // PLAN/SUMMARY pair carries an estimate/actuals block contributes a phantom
 // calibration sample.
 //
-// Governing constraint (docs/.gsd/phase/feat-3882-enumerations/50-test-matrix.md
+// Governing constraint (.gsd/phase/feat-3882-enumerations/50-test-matrix.md
 // row A1): computeCalibration is MEDIAN-based, so a single outlier sample does
 // not move a 3-sample factor at all — asserting "the factor is unchanged" against
 // exactly one sentinel would pass on the broken code for the wrong reason. The
@@ -481,5 +485,136 @@ describe('sentinel phases must not skew calibration (#3882)', () => {
       ],
       'the two genuine phases must still contribute their own, unchanged samples',
     );
+  });
+});
+
+// ─── PhasesUnreadableError / estimate_phases_unreadable (#3882, ADR-3473 §8.5,
+// review finding #2) ─────────────────────────────────────────────────────
+//
+// `collectCalibrationSamples` now routes through `listMilestonePhaseDirs`
+// (the #3882 fix above), which means an unreadable phases directory is no
+// longer output-identical to a genuinely empty one — it surfaces as
+// `scope: SCOPE.UNREADABLE`. `cmdEstimateCalibrate` converts that into a
+// refusal (`PhasesUnreadableError`, `process.exit(1)`,
+// `ERROR_REASON.ESTIMATE_PHASES_UNREADABLE`) instead of silently persisting
+// a phantom empty calibration document — a real behavior change (previously
+// silent-empty), disclosed and tested here rather than left as an
+// undocumented side effect of the routing fix.
+//
+// H1 drives the real `cmdEstimateCalibrate` IN-PROCESS: `runGsdTools` spawns
+// a real subprocess, and neither `fs.readdirSync` monkeypatching nor
+// `process.exit` interception crosses that process boundary. The pattern
+// below is the two established repo idioms composed, not invented: the
+// process.exit-interception + `--json-errors`-mode capture from
+// tests/config-get-default.test.cjs, and the `fs.readdirSync` method
+// monkeypatch (never chmod, which root/CI bypasses — CLAUDE.md's
+// cross-platform IO-failure-injection rule) already used in
+// tests/phase-locator.test.cjs for `listAllPhaseDirs`'s own unreadable case.
+describe('unreadable phases directory refuses calibration (#3882, ADR-3473 §8.5)', () => {
+  class _ExitSignal extends Error {
+    constructor(code, message) {
+      super(message ?? `process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  /** Runs cmdEstimateCalibrate in-process with process.exit + stderr(fd 2) captured. */
+  function runCalibrateExpectError(tmpDir) {
+    const origExit = process.exit;
+    const origWriteSync = fs.writeSync;
+    io.setJsonErrorMode(true);
+    let exitCount = 0;
+    let exitCode;
+    let stderr = '';
+    fs.writeSync = (fd, ...rest) => {
+      if (fd !== 2) return origWriteSync.call(fs, fd, ...rest);
+      const [data, offset = 0, length] = rest;
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset, offset + (length ?? data.length - offset)).toString('utf8')
+        : String(data);
+      stderr += chunk;
+      return Buffer.byteLength(chunk);
+    };
+    const lastError = () => {
+      const parts = stderr.split('\n').filter(Boolean);
+      try { return JSON.parse(parts[parts.length - 1]); } catch { return {}; }
+    };
+    process.exit = (code) => {
+      exitCount++;
+      exitCode = code;
+      throw new _ExitSignal(code, lastError().message);
+    };
+    try {
+      estimateCli.cmdEstimateCalibrate(tmpDir, [], false);
+    } catch (e) {
+      if (!(e instanceof _ExitSignal)) throw e;
+    } finally {
+      process.exit = origExit;
+      fs.writeSync = origWriteSync;
+      io.setJsonErrorMode(false);
+    }
+    assert.ok(exitCode !== 0 && exitCode !== undefined, 'expected a non-zero exit code');
+    assert.equal(exitCount, 1, 'error() must fire exactly once (production process.exit terminates)');
+    return { status: exitCode, ...lastError() };
+  }
+
+  test('H1: unreadable phases directory exits non-zero with estimate_phases_unreadable', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+
+    const originalReaddirSync = fs.readdirSync;
+    fs.readdirSync = (...args) => {
+      if (args[0] === phasesDir) {
+        const err = new Error('EACCES: permission denied, scandir');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReaddirSync.apply(fs, args);
+    };
+    let result;
+    try {
+      result = runCalibrateExpectError(tmpDir);
+    } finally {
+      fs.readdirSync = originalReaddirSync;
+    }
+
+    assert.equal(result.status, 1);
+    assert.equal(result.reason, io.ERROR_REASON.ESTIMATE_PHASES_UNREADABLE);
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.planning', 'estimation-calibration.json')),
+      'refusing the rebuild must not persist a phantom empty calibration document',
+    );
+  });
+
+  test('H2: a genuinely-empty phases directory still succeeds with empty calibration (boundary the H1 guard must not cross)', (t) => {
+    // Real CLI as a subprocess (runGsdTools) — this is the boundary case:
+    // .planning/phases/ EXISTS and is READABLE, but has zero entries. Must
+    // succeed, not be caught by the unreadable-directory refusal above.
+    // Overlaps the pre-existing "no phases at all is a clean no-op" test
+    // above; kept as its own named row because it pins THIS boundary
+    // specifically (see 50-test-matrix.md row H2), not incidentally.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    const r = runGsdTools('query estimate-calibrate', tmpDir);
+    assert.ok(r.success, `a readable, genuinely-empty phases dir must succeed: ${r.error}`);
+    const out = JSON.parse(r.output);
+    assert.equal(out.sample_count, 0);
+    assert.equal(out.applied, false);
+  });
+
+  test('H3: a normal project with real phases is unaffected by the unreadable-dir guard', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writePhase(tmpDir, '01-a', { estTokens: 100, actTokens: 200 });
+    writePhase(tmpDir, '02-b', { estTokens: 100, actTokens: 200 });
+    writePhase(tmpDir, '03-c', { estTokens: 100, actTokens: 200 });
+
+    const r = runGsdTools('query estimate-calibrate', tmpDir);
+    assert.ok(r.success, `a normal readable project must not be affected by the guard: ${r.error}`);
+    const out = JSON.parse(r.output);
+    assert.equal(out.sample_count, 3);
+    assert.equal(out.applied, true);
   });
 });
