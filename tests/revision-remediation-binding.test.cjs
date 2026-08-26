@@ -40,9 +40,14 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+// Project rules: temp dirs and their removal go through the shared helpers (cleanup carries the
+// Windows-EBUSY retry budget), and every synchronous spawn is bounded.
+const { createTempDir, cleanup } = require('./helpers.cjs');
+
+/** Bound for the extracted-gate subprocess: it runs one grep over a small fixture. */
+const GATE_TIMEOUT_MS = 30_000;
 
 const ROOT = path.join(__dirname, '..');
 
@@ -94,7 +99,7 @@ function extractConflictGate() {
 
 /** Run the extracted gate with REVIEWS_FILE set. Returns { status, stdout, stderr }. */
 function runConflictGate(reviewsFile) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3771-gate-'));
+  const dir = createTempDir('gsd-3771-gate-');
   try {
     const script = path.join(dir, 'gate.sh');
     fs.writeFileSync(script, `${extractConflictGate()}\nprintf '%s' "\${OPEN_CONFLICTS}"\n`);
@@ -103,25 +108,26 @@ function runConflictGate(reviewsFile) {
         env: { ...process.env, REVIEWS_FILE: reviewsFile },
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GATE_TIMEOUT_MS,
       });
       return { status: 0, stdout, stderr: '' };
     } catch (err) {
       return { status: err.status, stdout: err.stdout || '', stderr: err.stderr || '' };
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 }
 
 /** Write a REVIEWS.md fixture and hand its path to `fn`. */
 function withReviews(body, fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3771-reviews-'));
+  const dir = createTempDir('gsd-3771-reviews-');
   try {
     const file = path.join(dir, '07-REVIEWS.md');
     fs.writeFileSync(file, body);
     return fn(file);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 }
 
