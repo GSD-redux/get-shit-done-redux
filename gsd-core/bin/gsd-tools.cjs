@@ -1841,13 +1841,27 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           const promptIdx = args.indexOf('--prompt');
           const promptArg = promptIdx !== -1 ? args[promptIdx + 1] : undefined;
           // #3714: an explicit executor model pin. Normalized to `undefined`
-          // when absent or empty so an unpinned run reaches the resolver
-          // exactly as it did before this channel existed — the resolver
-          // treats an empty model as a caller bug and fails closed, which
-          // would degrade isolation to none for every unpinned user.
+          // when absent, empty, or not a model a host may actually be handed,
+          // so an unpinned run reaches the resolver exactly as it did before
+          // this channel existed — the resolver treats an empty model as a
+          // caller bug and fails closed, which would degrade isolation to none
+          // for every unpinned user.
+          //
+          // The posture filter lives HERE, not in resolveOrchestratorExec:
+          // that resolver is the runtime-neutral descriptor-to-argv seam and
+          // holds no host knowledge by ADR-1239 design. A malformed model
+          // shape is the resolver's problem; an inappropriate model is the
+          // caller's. GSD tier tokens and Anthropic-flavored ids are GSD's own
+          // vocabulary and mean nothing to a host CLI, so they are dropped
+          // silently — the same treatment ADR-2313 gives a whitespace-only
+          // override rather than failing a wave over a config typo.
+          const { VALID_TIERS, isAnthropicFlavoredModel } = require('./lib/model-catalog.cjs');
           const modelIdx = args.indexOf('--model');
           const modelRaw = modelIdx !== -1 ? args[modelIdx + 1] : undefined;
-          const modelArg = typeof modelRaw === 'string' && modelRaw.length > 0
+          const modelArg = typeof modelRaw === 'string'
+            && modelRaw.length > 0
+            && !VALID_TIERS.has(modelRaw)
+            && !isAnthropicFlavoredModel(modelRaw)
             ? modelRaw
             : undefined;
           const hostIntegration = require('./lib/host-integration.cjs');
