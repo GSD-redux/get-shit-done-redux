@@ -992,17 +992,34 @@ describe('#3873 phase-3 rows 23/24/25: parser accepts exactly the schema-declare
 
   // The worked case (#3784's three spellings): current_plan specifically.
   test('planNofMShapesAreExactlyTheDeclaredSet', () => {
-    assert.deepStrictEqual(Array.from(STATE_FIELD_SCHEMA.current_plan.acceptedShapes), ['N']);
+    // #3791 widened this row, exactly as the schema's own comment instructed.
+    assert.deepStrictEqual(Array.from(STATE_FIELD_SCHEMA.current_plan.acceptedShapes), ['N', 'N of M']);
 
     // Declared shape parses.
     assert.strictEqual(driveCurrentPlanShape('3', { withTotalSibling: true }), true, '"N" (paired with Total Plans in Phase) should parse');
 
-    // The hybrid shape is NOT declared today (#3784/#3791 boundary) and does
-    // NOT parse standalone in the Current Plan field.
-    assert.strictEqual(driveCurrentPlanShape('3 of 5'), false, '"N of M" standalone in Current Plan should NOT parse today');
+    // The hybrid shape is now declared AND parses standalone — #3784.
+    assert.strictEqual(driveCurrentPlanShape('3 of 5'), true, '"N of M" standalone in Current Plan should parse');
 
     // A fourth, never-declared spelling fails rather than quietly joining.
     assert.strictEqual(driveCurrentPlanShape('3/5'), false, '"N/M" should NOT parse — it has never been declared');
+
+    // Declaring "N of M" is a claim about an ANCHORED grammar, not about the
+    // substring "of". Prose that merely contains it must still be refused —
+    // otherwise `4 — blocked on review of 2 PRs` reads as "4 of 2", which is
+    // `currentPlan >= totalPlans` and WRITES a terminal phase-complete status.
+    for (const prose of [
+      '4 — blocked on review of 2 PRs',
+      '3 (waiting for refactor of 1 module)',
+      '2roof 5',
+      '+2 of 6',
+      '-1 of 6',
+    ]) {
+      assert.strictEqual(
+        driveCurrentPlanShape(prose), false,
+        `${JSON.stringify(prose)} must NOT parse — the declared shape is anchored`,
+      );
+    }
   });
 });
 
