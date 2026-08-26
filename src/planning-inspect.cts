@@ -889,23 +889,18 @@ function buildUatRows(
     // fold raises `phase_scope_degraded` AND, via `phaseScope`/`makeFraction`,
     // withholds BOTH progress percentages for the WHOLE milestone.
     //
-    // Those teeth cannot bite on `shortfallBlocks`: that is the subset of
-    // `headingsSeen` produced by the fence-suppression shortfall scan, the ONE
-    // gap class `src/uat.cts` documents as an ACCEPTED OVER-REPORT — a
-    // closed-fence documentation sample written with literal digits is provably
-    // indistinguishable from a genuinely fence-straddled row (fence-closedness
-    // is identical in both), so the scan deliberately over-reports. A COMPLETED
-    // phase is terminal: nobody reopens its UAT file, so a shortfall-only
-    // over-report there would withhold the project's percentages in every
-    // future audit FOREVER over a paragraph of prose. Reported-and-dismissible
-    // is the right shape for it; silent is not, and neither is permanent.
-    //
-    // Every OTHER gap class (a block with no `result:` line, an unattributed
-    // indented row, an unterminated fence) has no such false-positive story and
-    // still degrades the fold, as does the unreadable-FILE case above — which
-    // is what `SCOPE.TRUNCATED` means per src/planning-scope.cts: the scan
-    // could not SEE part of the evidence.
-    const { items: fileItems, headingsSeen, shortfallBlocks } = parseUatItemsWithStats(doc.text);
+    // The two now agree: EVERY gap class degrades both, including the
+    // fence-suppression shortfall. `shortfallBlocks` is not exempted here
+    // because it is a single tally incremented at ONE site in the scan and
+    // spans BOTH a harmless closed-fence documentation sample AND a genuinely
+    // fence-straddled `result: blocked` row — exempting the tally cannot
+    // exempt only the harmless case, it also publishes a milestone percentage
+    // over a real unread outstanding row. `SCOPE.TRUNCATED` means the scan
+    // could not SEE part of the evidence (src/planning-scope.cts), which is
+    // exactly the fence-straddled case. The accepted over-report itself is
+    // unchanged and still documented at src/uat.cts; what changed is only
+    // that it no longer buys an exemption from the fold.
+    const { items: fileItems, headingsSeen } = parseUatItemsWithStats(doc.text);
     items.push(...fileItems);
     if (headingsSeen > 0) {
       diagnostics.push({
@@ -914,7 +909,7 @@ function buildUatRows(
         detail: `UAT document has ${headingsSeen} test block(s) with no parseable result; unresolved is not a complete answer.`,
       });
       scope = SCOPE.TRUNCATED;
-      if (headingsSeen > shortfallBlocks) foldScope = SCOPE.TRUNCATED;
+      foldScope = SCOPE.TRUNCATED;
     }
   }
   return { items, scope, foldScope };
