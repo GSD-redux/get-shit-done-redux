@@ -18,7 +18,7 @@ The evidence base is #3473's filing (a systemic root-cause review of all 30 open
 
 | Invariant | Canonical owner | Reality on `next` |
 |---|---|---|
-| slug rule | `generateSlugInternal`, `src/core-utils.cts` | 13 inline copies across 5 modules; copies and generator already disagree on Cyrillic transliteration and trim-vs-truncate order (#2986) |
+| slug rule | `generateSlugInternal`, `src/core-utils.cts` | **11** inline copies across **7** files (measured in Phase 6, #3883 — the "13 across 5" written here was wrong twice over: two of the thirteen were an unrelated tokenizer regex, and the file count was never taken); copies and generator disagree on Cyrillic transliteration and trim-vs-truncate order (#2986) |
 | `isSentinelPhaseId` | `src/phase-id.cts` | consumed by 11 modules, absent from 4 phase-enumerating commands (#3372) |
 | verification-file discovery | *(none)* | independently implemented twice, both alphabetical-first (#3357) |
 | runtime identity | `bin/install.js` persists it | `resolveRuntime` never reads it back (#3364) |
