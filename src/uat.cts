@@ -43,7 +43,7 @@ const { loadConfig } = configLoader;
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type UatResult = string;
-type UatCategory = 'server_blocked' | 'device_needed' | 'build_needed' | 'third_party' | 'blocked' | 'skipped_unresolved' | 'pending' | 'human_uat' | 'unknown' | 'deferred';
+type UatCategory = 'server_blocked' | 'device_needed' | 'build_needed' | 'third_party' | 'blocked' | 'skipped_unresolved' | 'pending' | 'human_uat' | 'unknown' | 'deferred' | 'issue';
 
 interface UatItem {
   test?: number;
@@ -70,6 +70,15 @@ interface UatFileResult {
    */
   archived_milestone?: string;
   items: UatItem[];
+  /**
+   * True when this file parsed to ZERO items but its frontmatter `status:`
+   * is present and non-terminal (#3707) — a genuine parse gap (unrecognised
+   * row shape, or a row missing its `result:` field entirely) rather than a
+   * file whose every row legitimately passed. Distinguishes "nothing to see
+   * here" from "something here could not be read" so a zero-item, non-`complete`
+   * file is still surfaced instead of silently vanishing.
+   */
+  parse_gap?: boolean;
 }
 
 interface CurrentTest {
@@ -156,6 +165,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
       const uatFilePath = path.join(phaseDir, file);
       const content = fs.readFileSync(uatFilePath, 'utf-8');
       const items = parseUatItems(content);
+      const status = (extractFrontmatter(content, uatFilePath).status as string || 'unknown');
       if (items.length > 0) {
         results.push({
           phase: phaseNum,
@@ -163,9 +173,27 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
           file,
           file_path: toPosixPath(path.relative(cwd, path.join(phaseDir, file))),
           type: 'uat',
-          status: (extractFrontmatter(content, uatFilePath).status as string || 'unknown'),
+          status,
           archived_milestone: milestone,
           items,
+        });
+      } else if (status !== 'complete') {
+        // #3707 defect 3: a file whose rows all failed to parse (or that
+        // otherwise legitimately has none) is NOT the same as a file whose
+        // rows all passed. `complete` is the only terminal status a template-
+        // conformant UAT file writes on genuine completion (templates/UAT.md);
+        // missing/unrecognised status is treated as non-terminal (surfaced),
+        // matching this module's established fail-safe direction.
+        results.push({
+          phase: phaseNum,
+          phase_dir: dir,
+          file,
+          file_path: toPosixPath(path.relative(cwd, path.join(phaseDir, file))),
+          type: 'uat',
+          status,
+          archived_milestone: milestone,
+          items: [],
+          parse_gap: true,
         });
       }
     }
@@ -555,34 +583,67 @@ function buildCheckpoint(currentTest: { number: number; name: string; expected: 
 
 // ─── parseUatItems ────────────────────────────────────────────────────────────
 
+/**
+ * Result tokens treated as PASSING (#3707 defect 1). Deliberately MINIMAL —
+ * that minimality is the point. Every token NOT in this set surfaces as an
+ * outstanding item, mirroring the fail-safe direction `parseGapsItems`
+ * already documents for this exact false-negative class (#2286): a project
+ * that invents a novel pass-word gets a visible, correctable false positive
+ * (an extra row an agent can dismiss) rather than today's invisible drop (a
+ * genuinely outstanding row silently vanishing with no trace). This was the
+ * issue's one open design question and was decided deliberately, here, in
+ * favor of the fail-safe direction over a larger "known synonyms" allowlist.
+ */
+const UAT_PASS_RESULTS = new Set(['pass', 'passed']);
+
 function parseUatItems(content: string): UatItem[] {
   const items: UatItem[] = [];
-  // Match test blocks: ### N. Name\nexpected: ...\nresult: ...\n
-  // Accept both bare (result: pending) and bracketed (result: [pending]) formats (#2273)
-  const testPattern = /###\s*(\d+)\.\s*([^\n]+)\nexpected:\s*([^\n]+)\nresult:\s*\[?(\w+)\]?(?:\n(?:reported|reason|blocked_by):\s*[^\n]*)?/g;
-  let match: RegExpExecArray | null;
-  while ((match = testPattern.exec(content)) !== null) {
-    const [, num, name, expected, result] = match;
-    if (result === 'pending' || result === 'skipped' || result === 'blocked') {
-      // Extract optional fields — limit to current test block (up to next ### or EOF)
-      const afterMatch = content.slice(match.index);
-      const nextHeading = afterMatch.indexOf('\n###', 1);
-      const blockText = nextHeading > 0 ? afterMatch.slice(0, nextHeading) : afterMatch;
-      const reasonMatch = blockText.match(/reason:\s*(.+)/);
-      const blockedByMatch = blockText.match(/blocked_by:\s*(.+)/);
 
-      const item: UatItem = {
-        test: parseInt(num, 10),
-        name: name.trim(),
-        expected: expected.trim(),
-        result,
-        category: categorizeItem(result, reasonMatch?.[1], blockedByMatch?.[1]),
-      };
-      if (reasonMatch) item.reason = reasonMatch[1].trim();
-      if (blockedByMatch) item.blocked_by = blockedByMatch[1].trim();
-      items.push(item);
-    }
+  // Locate every `### N. Name` test heading across the WHOLE document (not
+  // adjacency-matched against `result:`, #3707 defect 2) and slice each one's
+  // own block from its heading to the next `###` heading (or EOF).
+  const subHeadings = tokenizeHeadings(content).filter(
+    (h) => h.level === 3 && /^\d+\.\s+/.test(h.text),
+  );
+
+  for (let i = 0; i < subHeadings.length; i += 1) {
+    const current = subHeadings[i];
+    const next = subHeadings[i + 1];
+    const block = next ? content.slice(current.offset, next.offset) : content.slice(current.offset);
+
+    // A block with no `result:` line at all is not a test row (e.g. still
+    // being drafted) — no item, no false positive.
+    const resultMatch = block.match(/^result:\s*\[?(\w+)\]?\s*$/im);
+    if (!resultMatch) continue;
+    const result = resultMatch[1];
+
+    // #3707 defect 1: invert the old DROP-list filter to a PASS set — see
+    // UAT_PASS_RESULTS's doc comment for why this direction was chosen.
+    if (UAT_PASS_RESULTS.has(result.toLowerCase())) continue;
+
+    const headingParts = current.text.match(/^(\d+)\.\s+(.+)$/);
+    const testNumber = headingParts ? parseInt(headingParts[1], 10) : undefined;
+    const testName = headingParts ? headingParts[2].trim() : current.text.trim();
+
+    // Reuse the existing block-scalar/inline `expected:` grammar rather than
+    // re-deriving a second one (#3707 defect 2).
+    const expected = parseExpectedFromTestBlock(block);
+
+    const reasonMatch = block.match(/reason:\s*(.+)/);
+    const blockedByMatch = block.match(/blocked_by:\s*(.+)/);
+
+    const item: UatItem = {
+      test: testNumber,
+      name: testName,
+      result,
+      category: categorizeItem(result, reasonMatch?.[1], blockedByMatch?.[1]),
+    };
+    if (expected) item.expected = expected;
+    if (reasonMatch) item.reason = reasonMatch[1].trim();
+    if (blockedByMatch) item.blocked_by = blockedByMatch[1].trim();
+    items.push(item);
   }
+
   items.push(...parseGapsItems(content));
   return items;
 }
@@ -1609,6 +1670,11 @@ function categorizeItem(result: string, reason?: string, blockedBy?: string): Ua
   }
   if (result === 'pending') return 'pending';
   if (result === 'human_needed') return 'human_uat';
+  // #3707: the template-sanctioned `result: issue` token (templates/UAT.md)
+  // has no UatCategory branch here, so a surfaced issue row previously fell
+  // through to 'unknown' — placed AFTER the blocked/skipped/pending checks
+  // above so it never shadows their more specific categorization.
+  if (result === 'issue') return 'issue';
   return 'unknown';
 }
 

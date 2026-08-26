@@ -2403,6 +2403,12 @@ result: blocked
 blocked_by: physical-device
 `;
 
+  // Post-FIX-1 both block-scalar and wrapped-inline `expected:` rows PARSE
+  // (defect 2 is fixed), so a fixture built from them would go green via
+  // FIX 1 alone and never exercise FIX 4 (#3707 review note). This fixture
+  // instead carries rows with NO `result:` line at all — genuinely
+  // unparseable as test rows under every fix — so the file still parses to
+  // ZERO items and FIX 4's parse_gap path is the thing actually exercised.
   const ALL_UNPARSEABLE_ROWS = `---
 status: partial
 phase: 01-foundation
@@ -2412,17 +2418,30 @@ updated: 2025-01-01T00:00:00Z
 
 ## Tests
 
-### 1. Wrapped Expected
-expected: |
-  Line one of the expected behavior.
-  Line two of the expected behavior.
-result: pending
+### 1. Still Being Written
+expected: Something should happen
+notes: result not yet recorded
 
-### 2. Wrapped Inline
-expected: Some behavior that wraps onto
-  a second indented line
-result: blocked
-blocked_by: physical-device
+### 2. Also Still Being Written
+expected: Another thing should happen
+notes: result not yet recorded
+`;
+
+  // Control for FIX 4: a zero-item file whose frontmatter status IS the
+  // terminal `complete` must stay omitted — this is the case defect 3's old
+  // `items.length > 0` guard was legitimately protecting.
+  const ALL_UNPARSEABLE_ROWS_COMPLETE = `---
+status: complete
+phase: 01-foundation
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Tests
+
+### 1. Still Being Written
+expected: Something should happen
+notes: result not yet recorded
 `;
 
   const UNRECOGNISED_RESULT_ROW = `---
@@ -2574,6 +2593,17 @@ result: pending
     const entry = output.results.find((r) => r.file === "01-UAT.md");
     assert.ok(entry, `expected a results entry for 01-UAT.md, got ${JSON.stringify(output.results)}`);
     assert.strictEqual(entry.status, "partial");
+    assert.strictEqual(entry.parse_gap, true);
+  });
+
+  // Control for FIX 4: a zero-item file whose status IS the terminal
+  // `complete` stays omitted entirely — parse_gap must not fire for a
+  // legitimately-finished file.
+  test("a zero-item file with a complete status is still omitted", () => {
+    writeUat(ALL_UNPARSEABLE_ROWS_COMPLETE, "01-foundation", "02-UAT.md");
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "02-UAT.md");
+    assert.strictEqual(entry, undefined, `expected no results entry for 02-UAT.md, got ${JSON.stringify(entry)}`);
   });
 
   // Defect 1, design-decision case: the fix inverts the DROP-list filter to a
