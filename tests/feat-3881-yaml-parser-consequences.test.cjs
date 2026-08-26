@@ -21,6 +21,10 @@ const {
   _unusableInputEmissionCountForTests,
 } = require('../gsd-core/bin/lib/unusable-input.cjs');
 const { createTempDir, cleanup, runGsdTools, createTempProject } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
 const fixedClock = Object.freeze({
   today: () => '2026-06-27',
@@ -247,6 +251,130 @@ describe('A2b unparseableFrontmatterSurvivesTheRealCliPath', () => {
         'state sync must still re-derive frontmatter from the body (its documented contract) — conflict markers must NOT survive',
       );
       assert.ok(/^---\r?\n/.test(after), 'state sync must still produce a well-formed frontmatter block');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+});
+
+// #3881 ADR-3473 §8.5: `state sync`'s "body wins" regeneration over an unparseable
+// frontmatter block (control test above, A2b) is correct and must not change — but it was
+// SILENT: `synced: true`, exit 0, no signal that the existing block (including any
+// merge-conflict markers) was unreadable and destroyed. §8.5: "a derived conclusion may not
+// be reported as authoritative when the derivation dropped input it could not resolve."
+// Table-driven per the dispatch brief's instruction to check sibling verbs on the same
+// ADR-3408 §8.3 sanctioned-regenerate list: `REGENERATE_STATE` (`/gsd-health --repair`) is
+// on that list too, but is DESTRUCTIVE-risk and unconditionally REFUSED by `applyRepairs`'s
+// dispatcher (src/health-diagnostic.cts) before `runRepairAction` is ever invoked — so
+// `state sync` is the only LIVE verb on the sanctioned path today. No table needed; a single
+// verb, driven through the real CLI, is the whole live surface.
+describe('A2c stateSyncWarnsOnUnparseableFrontmatterRegeneration', () => {
+  const CONFLICT_FM_BLOCK = [
+    '---',
+    '<<<<<<< HEAD',
+    'status: foo',
+    '=======',
+    'status: bar',
+    '>>>>>>> feature',
+    '---',
+    '',
+  ].join('\n');
+  const CONFLICT_BODY = [
+    '# Project State',
+    '',
+    '## Current Position',
+    '',
+    'Phase: 1 — Foundation',
+    'Plan: 1 of 1',
+    'Status: Executing Phase 1',
+    'Last activity: 2026-07-01 — mid-flight',
+    '',
+  ].join('\n');
+
+  function seedPhaseDirs(tmpDir) {
+    const planningDir = path.join(tmpDir, '.planning');
+    fs.mkdirSync(path.join(planningDir, 'phases', '01-foundation'), { recursive: true });
+    fs.mkdirSync(path.join(planningDir, 'phases', '02-next-phase'), { recursive: true });
+    fs.writeFileSync(
+      path.join(planningDir, 'ROADMAP.md'),
+      ['# Roadmap', '', '### Phase 1: Foundation', '**Goal:** Setup', '', '### Phase 2: Next', '**Goal:** More', ''].join('\n'),
+    );
+  }
+
+  function writeConflictState(tmpDir) {
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, CONFLICT_FM_BLOCK + CONFLICT_BODY);
+    return statePath;
+  }
+
+  function writeValidState(tmpDir) {
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const validFm = [
+      '---',
+      'gsd_state_version: \'1.0\'',
+      'status: executing',
+      'current_phase: 1',
+      '---',
+      '',
+    ].join('\n');
+    fs.writeFileSync(statePath, validFm + CONFLICT_BODY);
+    return statePath;
+  }
+
+  test('RED (pre-fix) proof: unparseable frontmatter — stderr carries the gsd: warning line and the JSON result surfaces it in `changes`', () => {
+    const tmpDir = createTempProject();
+    try {
+      seedPhaseDirs(tmpDir);
+      const statePath = writeConflictState(tmpDir);
+      const r = runNode([TOOLS_PATH, 'state', 'sync', '--raw'], { cwd: tmpDir, timeoutMs: PROBE_TIMEOUT_MS });
+      throwIfFailed(r, 'gsd-tools state sync --raw');
+
+      // Regeneration still happened (unchanged contract — the control test above pins this
+      // for the general case; re-asserted here on the same fixture this warning covers).
+      const after = fs.readFileSync(statePath, 'utf-8');
+      assert.ok(!after.includes('<<<<<<< HEAD'), 'state sync must still regenerate over the unparseable block');
+
+      // Human channel: matches the existing `gsd: warning — ... (#NNNN)` precedent (#3573).
+      assert.match(
+        r.stderr,
+        /gsd: warning — .*frontmatter.*could not be parsed.*regenerated.*\(#3881\)/s,
+        `expected a gsd: warning on stderr naming the unparseable frontmatter; got stderr:\n${r.stderr}\nstdout:\n${r.stdout}`,
+      );
+
+      // Machine channel: the JSON result's existing `changes` array (the mechanism this
+      // codebase already uses to surface sync-time signals — see the "Progress: skipped —
+      // ..." entries in src/state.cts) must carry the same disclosure.
+      const parsed = JSON.parse(r.stdout);
+      assert.ok(Array.isArray(parsed.changes), `expected a changes array in JSON result; got ${r.stdout}`);
+      assert.ok(
+        parsed.changes.some((c) => typeof c === 'string' && c.includes('could not be parsed') && c.includes('#3881')),
+        `expected 'changes' to include the unparseable-frontmatter warning; got ${JSON.stringify(parsed.changes)}`,
+      );
+      assert.strictEqual(parsed.synced, true, 'exit-0/synced:true stays correct — sync did what its contract says');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('control (cannot pass vacuously): valid, parseable frontmatter emits NO such warning', () => {
+    const tmpDir = createTempProject();
+    try {
+      seedPhaseDirs(tmpDir);
+      const statePath = writeValidState(tmpDir);
+      const r = runNode([TOOLS_PATH, 'state', 'sync', '--raw'], { cwd: tmpDir, timeoutMs: PROBE_TIMEOUT_MS });
+      throwIfFailed(r, 'gsd-tools state sync --raw');
+
+      assert.doesNotMatch(
+        r.stderr,
+        /#3881/,
+        `valid frontmatter must not trigger the unparseable-frontmatter warning; got stderr:\n${r.stderr}`,
+      );
+      const parsed = JSON.parse(r.stdout);
+      assert.ok(
+        !parsed.changes.some((c) => typeof c === 'string' && c.includes('#3881')),
+        `expected no #3881 warning in changes for valid frontmatter; got ${JSON.stringify(parsed.changes)}`,
+      );
+      void statePath;
     } finally {
       cleanup(tmpDir);
     }

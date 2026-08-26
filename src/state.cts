@@ -5167,6 +5167,19 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
 
   const verify = options && options.verify;
   const content = fs.readFileSync(statePath, 'utf-8');
+  // ADR-3473 §8.5 (#3881): `state sync` is on ADR-3408 §8.3's closed
+  // sanctioned-regenerate list — "the body wins" — and `syncStateFrontmatter`
+  // (below, via `writeStateMd`'s `sanctionedPermanentEmptyFallback`) is
+  // therefore CORRECT to overwrite even an unparseable existing frontmatter
+  // block (git merge-conflict markers, malformed YAML). What was missing was
+  // disclosure: a derived conclusion (`synced: true`) must not be reported as
+  // authoritative when the derivation dropped input it could not resolve
+  // (§8.5) — silently destroying the only copy of an unreadable block with no
+  // signal is "failure is a value" (§8.4) violated. Computed once, up front,
+  // from the pre-write snapshot so both the `--verify` (dry-run) and the real
+  // write branch can surface it identically.
+  const existingSyncFm = extractFrontmatter(content, statePath) as Record<string, unknown>;
+  const syncFrontmatterWasUnparseable = isUnparseableFrontmatter(existingSyncFm);
   const changes: string[] = [];
   let modified = content;
 
@@ -5323,12 +5336,27 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   const coreChanges = (syncResult.data as { changes?: string[] } | undefined)?.changes ?? [];
   changes.push(...coreChanges);
 
+  // #3881 (ADR-3473 §8.5): only warn when a write will actually regenerate the
+  // frontmatter — if nothing changed this run, the unparseable block (if any)
+  // was never touched, so there is nothing to disclose. Mirrors the exact
+  // condition the write branch below uses to decide whether to write at all.
+  const syncWillWrite = changes.length > 0 || modified !== content;
+  if (syncWillWrite && syncFrontmatterWasUnparseable) {
+    const unparseableWarning =
+      `gsd: warning — STATE.md's existing frontmatter could not be parsed (malformed YAML, or ` +
+      `unresolved content such as git merge-conflict markers) and was regenerated from the body; ` +
+      `any content in the old frontmatter block — including merge-conflict markers — has been ` +
+      `replaced. (#3881)`;
+    process.stderr.write(`${unparseableWarning}\n`);
+    changes.push(unparseableWarning);
+  }
+
   if (verify) {
     output({ synced: false, changes, dry_run: true }, raw, undefined);
     return;
   }
 
-  if (changes.length > 0 || modified !== content) {
+  if (syncWillWrite) {
     // ADR-3473 §8.6: `rebuild()` is the typed expression of #905's contract —
     // `state sync` exists to let the body win, so preservation must NOT run,
     // and the snapshot is carried anyway because §8.7's reporting needs it.
