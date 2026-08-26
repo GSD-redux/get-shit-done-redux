@@ -131,6 +131,7 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'emitted-attribution.test.cjs': ['docs/README.md', 'docs/tests', 'docs/tests/helpers/install-shared.cjs'],
   'eslint-rules.test.cjs': ['docs/readme.md'],
   'estimate-calibrate.test.cjs': [
+    'docs/.gsd/phase/feat-3882-enumerations/50-test-matrix.md',
     'docs/adr', 'docs/adr/2629-phase-effort-estimation-calibration.md', 'docs/reference',
     'docs/reference/planning-artifacts.md',
   ],

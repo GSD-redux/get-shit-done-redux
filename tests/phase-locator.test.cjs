@@ -27,8 +27,9 @@ const fc = require('./helpers/fast-check-setup.cjs');
 const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
 const planDependencyGraph = require('../gsd-core/bin/lib/plan-dependency-graph.cjs');
 const {
-  runGsdTools, createTempProject, cleanup, isolateWorkstreamEnv, restoreWorkstreamEnv,
+  runGsdTools, createTempProject, createTempDir, cleanup, isolateWorkstreamEnv, restoreWorkstreamEnv,
 } = require('./helpers.cjs');
+const driftGuard = require('../scripts/lint-phase-enumeration-drift.cjs');
 
 // ─── findPhaseInternal — basic active-phase lookup ────────────────────────────
 
@@ -1416,3 +1417,275 @@ describe('#2855: getArchivedPhaseDirs does not leak cross-workstream archived ph
 
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #3882 (ADR-3473 §8.2) — listAllPhaseDirs, the parity guarantee on
+// listMilestonePhaseDirs, sentinel-range boundaries, migrated-call-site
+// invariance, and the lint-phase-enumeration-drift.cjs guard's fail-capable
+// proof. `tests/estimate-calibrate.test.cjs` (rows A1a/A1b/A2/A3) covers the
+// actual calibration defect this issue fixes; this section covers rows
+// B1-B4, C1, D1-D3, E1/E2, F1-F3 from
+// .gsd/phase/feat-3882-enumerations/50-test-matrix.md.
+//
+// Per that doc's §G test-hermeticity rule: every fixture here builds its own
+// temp project via helpers.cjs and removes it through `cleanup()` — no raw
+// `fs.rmSync` (`local/no-raw-rmsync-in-tests`), and no fixture keyed to a
+// real repo path.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Build `<tmp>/.planning/phases/<name>` for each of `names`. Returns the phases dir. */
+function build3882PhasesFixture(names) {
+  const tmp = createTempDir('gsd-3882-');
+  const phasesDir = path.join(tmp, '.planning', 'phases');
+  fs.mkdirSync(phasesDir, { recursive: true });
+  for (const name of names) fs.mkdirSync(path.join(phasesDir, name));
+  return { tmp, phasesDir };
+}
+
+// ─── B. The new API — both axes, stated ────────────────────────────────────
+
+describe('listAllPhaseDirs (#3882, ADR-3473 §8.2)', () => {
+  test('B1: returns the physical set — every phase directory on disk, across milestone windows', (t) => {
+    const { tmp, phasesDir } = build3882PhasesFixture(['01-one', '02-two', '03A-suffix', '04.1-decimal']);
+    t.after(() => cleanup(tmp));
+
+    const result = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: false });
+    assert.deepEqual(result, { value: ['01-one', '02-two', '03A-suffix', '04.1-decimal'], scope: 'complete' });
+  });
+
+  test('B2: includeSentinels cannot be obtained by omission — compile-time only, pin each explicit runtime value', (t) => {
+    // TypeScript refuses `listAllPhaseDirs(phasesDir, {})` and
+    // `listAllPhaseDirs(phasesDir)` at the BUILD step (`opts.includeSentinels`
+    // has no `?` and no default) — `npm run build:lib` / `npx tsc --noEmit`
+    // are the actual compile-time gate for that contract; there is no
+    // runtime shape for "omitted" to assert against here (the compiled
+    // `.cjs` has no type information left to inspect). This row instead pins
+    // the two EXPLICIT values so their divergence (the entire point of the
+    // axis) is asserted, not merely documented.
+    const { tmp, phasesDir } = build3882PhasesFixture(['01-real', '999-icebox']);
+    t.after(() => cleanup(tmp));
+
+    const withSentinels = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: true }).value;
+    const withoutSentinels = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: false }).value;
+    assert.notDeepEqual(withSentinels, withoutSentinels,
+      'includeSentinels must change the returned set — a no-op boolean would defeat the whole axis');
+  });
+
+  test('B3: includeSentinels:false — physical set minus sentinels, the combination collectCalibrationSamples needs', (t) => {
+    const { tmp, phasesDir } = build3882PhasesFixture(['01-real', '02-real', '0-backlog', '999-icebox']);
+    t.after(() => cleanup(tmp));
+
+    const result = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: false });
+    assert.deepEqual(result, { value: ['01-real', '02-real'], scope: 'complete' });
+  });
+
+  test('B4: includeSentinels:true — the archival/lookup/diagnostic intent, sentinels kept', (t) => {
+    const { tmp, phasesDir } = build3882PhasesFixture(['01-real', '02-real', '0-backlog', '999-icebox']);
+    t.after(() => cleanup(tmp));
+
+    const result = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: true });
+    assert.deepEqual(result.value.sort(), ['0-backlog', '01-real', '02-real', '999-icebox'].sort());
+    assert.equal(result.scope, 'complete');
+  });
+
+  test('absent phases dir is a real empty (scope: complete), not a failure', (t) => {
+    const tmp = createTempDir('gsd-3882-');
+    t.after(() => cleanup(tmp));
+    const phasesDir = path.join(tmp, '.planning', 'phases'); // never created
+
+    assert.deepEqual(phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: true }), { value: [], scope: 'complete' });
+    assert.deepEqual(phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: false }), { value: [], scope: 'complete' });
+  });
+
+  test('an existing-but-unreadable phases dir is scope: unreadable, not a silent empty (#8.5)', () => {
+    const tmp = createTempDir('gsd-3882-');
+    const phasesDir = path.join(tmp, '.planning', 'phases');
+    fs.mkdirSync(phasesDir, { recursive: true });
+
+    // #3882/CLAUDE.md IO-failure-injection rule: mode-bit tricks are
+    // unreliable under root/CI (root bypasses 0o000 with zero coverage) and,
+    // worse here, leave the directory in a state `cleanup()`'s recursive
+    // rmSync cannot always tear down deterministically. Inject the failure
+    // deterministically via method monkeypatching on `fs.readdirSync`
+    // instead — restored, and the real directory removed via `cleanup()`,
+    // in a single `finally` so no failure mode can leak a broken permission
+    // bit or a raw `rmSync` call into this test.
+    const originalReaddirSync = fs.readdirSync;
+    fs.readdirSync = (...args) => {
+      if (args[0] === phasesDir) {
+        const err = new Error('EACCES: permission denied, scandir');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReaddirSync.apply(fs, args);
+    };
+    try {
+      const result = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: true });
+      assert.deepEqual(result, { value: [], scope: 'unreadable' });
+    } finally {
+      fs.readdirSync = originalReaddirSync;
+      cleanup(tmp);
+    }
+  });
+});
+
+// ─── C. Parity — listMilestonePhaseDirs is UNCHANGED (highest-risk row) ───
+
+describe('listMilestonePhaseDirs output is unchanged (#3882 row C1)', () => {
+  test('C1: byte-identical to a verbatim expectation captured from origin/next\'s built lib', (t) => {
+    // Captured by building origin/next (832dcbb7513d0e00bfe31c072c48751bb16e88cf)
+    // in an isolated worktree (`npm ci` -> build:lib's own `prepare` script)
+    // and calling `listMilestonePhaseDirs(phasesDir)` (no `cwd`) against this
+    // EXACT fixture set, BEFORE any change in this diff — never re-derived
+    // from the new code (#3427 anti-fixture-trap discipline).
+    const EXPECTED_FROM_NEXT = { value: ['01-one', '02-two', '03A-suffix', '04.1-decimal'], scope: 'complete' };
+
+    const { tmp, phasesDir } = build3882PhasesFixture([
+      '01-one', '02-two', '03A-suffix', '04.1-decimal', '0-backlog', '999-icebox',
+    ]);
+    t.after(() => cleanup(tmp));
+
+    const actual = phaseLocator.listMilestonePhaseDirs(phasesDir);
+    assert.deepEqual(actual, EXPECTED_FROM_NEXT,
+      `listMilestonePhaseDirs must be byte-identical to origin/next's behavior for the 16 callers depending on it; got ${JSON.stringify(actual)}`);
+  });
+});
+
+// ─── D. Boundaries — the sentinel range, limit-1/limit/limit+1 ────────────
+
+describe('sentinel-range boundaries, driven through the new API (#3882 rows D1-D3)', () => {
+  test('D1: lower edge — 0 is the sentinel; 1 (just above) is kept. (there is no "just below" 0 for a phase id)', (t) => {
+    const { tmp, phasesDir } = build3882PhasesFixture(['0-backlog', '01-real']);
+    t.after(() => cleanup(tmp));
+
+    const result = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: false });
+    assert.deepEqual(result.value, ['01-real']);
+  });
+
+  test('D2: upper edge — 998 (limit-1, kept), 999 (limit, sentinel, dropped), 1000 (limit+1, kept)', (t) => {
+    const { tmp, phasesDir } = build3882PhasesFixture(['998-real', '999-icebox', '1000-real']);
+    t.after(() => cleanup(tmp));
+
+    const result = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: false });
+    assert.deepEqual(result.value, ['998-real', '1000-real']);
+  });
+
+  test('D3: decimal/letter-suffix continuations at the edges are read conservatively (NOT dropped as sentinels)', (t) => {
+    // #1324's bracket-shaped continuations (e.g. a decimal sub-phase of 0 or
+    // 999, or a letter-suffixed one) are string-indistinguishable from a
+    // sentinel by a naive prefix test. isSentinelPhaseId's own documented
+    // residual ambiguity must not be silently resolved in passing here — pin
+    // today's reading rather than let it drift.
+    const { tmp, phasesDir } = build3882PhasesFixture(['0.1-decimal-of-backlog', '999A-suffix-of-icebox', '01-real']);
+    t.after(() => cleanup(tmp));
+
+    const withoutSentinels = phaseLocator.listAllPhaseDirs(phasesDir, { includeSentinels: false }).value;
+    // Pin whatever isSentinelPhaseId's canonical predicate actually decides —
+    // this row exists to CATCH a future drift in that reading, not to assert
+    // a specific outcome invented here.
+    const isSentinelModule = require('../gsd-core/bin/lib/phase-id.cjs');
+    const expectedKept = ['0.1-decimal-of-backlog', '999A-suffix-of-icebox', '01-real']
+      .filter((n) => !isSentinelModule.isSentinelPhaseId(n));
+    assert.deepEqual(withoutSentinels.sort(), expectedKept.sort());
+  });
+});
+
+// ─── E. Migrated call sites ─────────────────────────────────────────────
+
+describe('migrated exemptions behave identically (#3882 rows E1/E2)', () => {
+  test('E1: cmdRoadmapAnalyze\'s heading->directory lookup is unaffected by a sentinel directory\'s presence', () => {
+    // #3882: migrated `_phaseDirNames` (src/roadmap.cts) from a hand-rolled
+    // readdirSync to listAllPhaseDirs({includeSentinels:true}). Its own
+    // written exemption reason establishes WHY sentinel-inclusion is
+    // output-invariant here: every heading is tested with isSentinelPhaseId
+    // BEFORE this list is ever consulted (collectAnalyzePhases), so a
+    // sentinel directory can never be the value looked up. Assert that
+    // invariance directly, mirroring A1a/A1b's differential shape.
+    const tmpDir = createTempProject('gsd-3882-e1-');
+    try {
+      const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+      fs.writeFileSync(roadmapPath, [
+        '# ROADMAP',
+        '',
+        '## Milestone v1.0',
+        '',
+        '## Phase 01: Real Phase',
+        '**Goal:** ship it',
+        '',
+      ].join('\n'));
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-real'), { recursive: true });
+
+      const before = JSON.parse(runGsdTools('query roadmap.analyze', tmpDir).output);
+
+      fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '999-icebox'), { recursive: true });
+      const after = JSON.parse(runGsdTools('query roadmap.analyze', tmpDir).output);
+
+      assert.deepEqual(after.phases, before.phases,
+        'adding a sentinel phase directory must not change the resolved phase list');
+      assert.deepEqual(after.missing_details, before.missing_details);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('E2: unmigrated exemptions are still guarded by detector 1', () => {
+    // Retiring coverage for a call site that did NOT move would be a silent
+    // regression. Spot-check the exemptions this phase deliberately left in
+    // place (see the guard's own header comment for the written reasons).
+    const stillExempt = [
+      [path.join('src', 'milestone.cts'), 'archivePhaseDirectories'],
+      [path.join('src', 'milestone.cts'), 'cmdPhasesClear'],
+      [path.join('src', 'verify.cts'), 'cmdValidateHealth'],
+      [path.join('src', 'verify.cts'), 'cmdVerifySchemaDrift'],
+      [path.join('src', 'init.cts'), 'detectHasPriorPhases'],
+      [path.join('src', 'init.cts'), 'detectUiPhaseActive'],
+    ];
+    for (const [file, fn] of stillExempt) {
+      const exempt = driftGuard.FUNCTION_SCOPED_EXEMPTIONS.get(file);
+      assert.ok(exempt && exempt.has(fn), `${file} ${fn} must still carry a function-scoped exemption`);
+    }
+    // And the migrated ones must NOT still be listed (removing coverage
+    // silently would be one failure mode; leaving a stale, now-pointless
+    // exemption around would be a different but real one — this pins both).
+    const roadmapExempt = driftGuard.FUNCTION_SCOPED_EXEMPTIONS.get(path.join('src', 'roadmap.cts'));
+    assert.ok(!roadmapExempt || !roadmapExempt.has('cmdRoadmapAnalyze'),
+      'cmdRoadmapAnalyze must no longer carry an exemption — it no longer hand-rolls a readdirSync');
+    const initExempt = driftGuard.FUNCTION_SCOPED_EXEMPTIONS.get(path.join('src', 'init.cts'));
+    assert.ok(!initExempt || !initExempt.has('cmdInitMilestoneOp'),
+      'cmdInitMilestoneOp must no longer carry an exemption — its diskPhaseDirs lookup no longer hand-rolls a readdirSync');
+  });
+});
+
+// ─── F. The guard — both detectors, proven fail-capable ──────────────────
+
+describe('lint-phase-enumeration-drift.cjs guard (#3882 rows F1-F3)', () => {
+  test('F1: detector 2 (sentinel literal) still fires on a bare 999 outside phase-id.cts', () => {
+    const planted = "if (phaseNum === 999) return true;\n";
+    const violations = driftGuard.findPhaseEnumerationDrift(planted, path.join('src', 'not-an-owner.cts'));
+    assert.equal(violations.length, 1);
+    assert.equal(violations[0].line, 1);
+  });
+
+  test('F1b: detector 2 still fires on a bare SENTINEL_RANGES reference outside phase-id.cts', () => {
+    const planted = 'const x = SENTINEL_RANGES.includes(n);\n';
+    const violations = driftGuard.findPhaseEnumerationDrift(planted, path.join('src', 'not-an-owner.cts'));
+    assert.equal(violations.length, 1);
+  });
+
+  test('F2: detector 1 (enumeration) still fires on a hand-rolled readdirSync outside the owner', () => {
+    const planted = "const x = fs.readdirSync(phasesDir, { withFileTypes: true });\n";
+    const violations = driftGuard.findPhaseEnumerationDrift(planted, path.join('src', 'not-an-owner.cts'));
+    assert.equal(violations.length, 1);
+  });
+
+  test('F3: guardCanFail — both detectors are demonstrated failing above (not merely asserted passing), and the real tree is currently clean', () => {
+    const root = path.join(__dirname, '..');
+    const violations = driftGuard.scanRepo(root);
+    assert.deepEqual(violations, [], 'the real tree must currently pass — F1/F1b/F2 above already proved the detectors CAN fail on a planted violation');
+  });
+
+  test('the owner files themselves are exempt by construction', () => {
+    assert.ok(driftGuard.OWNER_FILES.has(path.join('src', 'phase-locator.cts')));
+    assert.ok(driftGuard.OWNER_FILES.has(path.join('src', 'phase-id.cts')));
+  });
+});

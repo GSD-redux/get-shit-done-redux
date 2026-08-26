@@ -84,7 +84,7 @@ const { harvestPriorVerifyCommands } = verifyCommandGrounding;
 const { output, error, ERROR_REASON } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
-const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocator;
+const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
 const {
   getRoadmapPhaseInternal,
   getMilestoneInfo,
@@ -2184,17 +2184,22 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
     const m = tok.match(/^(\d+)([A-Z]?(?:\.\d+)*)$/);
     return m ? String(parseInt(m[1], 10)) + m[2] : tok;
   };
+  // #3882 (ADR-3473 §8.2): this used to hand-roll a readdirSync over the
+  // phases directory (a heading->directory LOOKUP INDEX, same role as
+  // cmdRoadmapAnalyze's `_phaseDirNames` — `roadmapPhaseNumbers` above is
+  // already scoped/sentinel-excluded, so this map must see the PHYSICAL set
+  // to resolve each heading's phase number to its actual directory name;
+  // scoping it again would look up inside an already-scoped set for no
+  // benefit). Routed through the named "physical set, sentinels included"
+  // axis instead: every `num` looked up below came from `roadmapPhaseNumbers`
+  // (sentinels already excluded there), so a sentinel entry surviving in
+  // this map is never read — inclusion is output-invariant, this only
+  // removes the re-derivation.
   const diskPhaseDirs = new Map<string, string>();
-  try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      const m = stripProjectCodePrefix(e.name).match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`));
-      if (!m) continue;
-      diskPhaseDirs.set(canonicalizePhase(m[1]), e.name);
-    }
-  } catch {
-    /* intentionally empty */
+  for (const name of listAllPhaseDirs(phasesDir, { includeSentinels: true }).value) {
+    const m = stripProjectCodePrefix(name).match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`));
+    if (!m) continue;
+    diskPhaseDirs.set(canonicalizePhase(m[1]), name);
   }
 
   if (roadmapPhaseNumbers.length > 0) {
