@@ -201,6 +201,10 @@ const ERROR_REASON = Object.freeze({
   // graphify
   GRAPHIFY_NO_GRAPH: 'graphify_no_graph',
   GRAPHIFY_INVALID_QUERY: 'graphify_invalid_query',
+  // estimate-calibrate (#3882, ADR-3473 §8.2): the phases directory exists
+  // but could not be read — a NON-answer, distinct from a project that
+  // genuinely has zero completed phases yet.
+  ESTIMATE_PHASES_UNREADABLE: 'estimate_phases_unreadable',
   // hooks
   HOOKS_OPT_OUT: 'hooks_opt_out',
   // commit-docs-guard (#3588)
