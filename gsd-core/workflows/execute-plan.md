@@ -440,16 +440,28 @@ IS_WORKTREE=$([ -f .git ] && echo "true" || echo "false")
 
 # Skip in parallel mode — orchestrator handles STATE.md centrally
 if [ "$IS_WORKTREE" != "true" ]; then
-  # Advance plan counter (handles last-plan edge case)
-  gsd_run query state.advance-plan
+  # Advance plan counter (handles last-plan edge case).
+  #
+  # #3830/#3862: advance-plan REFUSES to advance when `## Current Position`
+  # disagrees with the plans on disk. It reports the refusal on stdout and exits
+  # 0, so it has to be READ — running the two steps below against a position that
+  # did not move is what makes the divergence invisible: progress is recalculated
+  # and a metric recorded for a plan that was never advanced past, and every later
+  # plan re-runs against the frozen counter.
+  ADVANCED=$(gsd_run query state.advance-plan --pick advanced)
+  if [ "${ADVANCED}" != "true" ]; then
+    echo "STOP: state.advance-plan did not advance (see the [gsd-tools] WARNING on stderr)." >&2
+    echo "Reconcile STATE.md's ## Current Position against the plans on disk before re-running" >&2
+    echo "this step: 'gsd_run query phase-plan-index' shows the real plan set." >&2
+  else
+    # Recalculate progress bar from disk state
+    gsd_run query state.update-progress
 
-  # Recalculate progress bar from disk state
-  gsd_run query state.update-progress
-
-  # Record execution metrics
-  gsd_run query state.record-metric \
-    --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
-    --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
+    # Record execution metrics
+    gsd_run query state.record-metric \
+      --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
+      --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
+  fi
 fi
 ```
 </step>

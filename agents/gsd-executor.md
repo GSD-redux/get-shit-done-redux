@@ -762,8 +762,17 @@ Do NOT skip. Do NOT proceed to state updates if self-check fails.
 After SUMMARY.md, update STATE.md using `gsd-tools query` state handlers (named flags):
 
 ```bash
-# Advance plan counter (handles edge cases automatically)
-gsd_run query state.advance-plan
+# Advance plan counter (handles edge cases automatically).
+#
+# #3830/#3862: advance-plan REFUSES to advance when `## Current Position`
+# disagrees with the plans on disk, reporting that on stdout with exit 0. Read
+# the result — the steps below assume the counter moved, and running them on a
+# frozen position records progress and a metric for a plan never advanced past.
+ADVANCED=$(gsd_run query state.advance-plan --pick advanced)
+if [ "${ADVANCED}" != "true" ]; then
+  echo "STOP: state.advance-plan did not advance (see the [gsd-tools] WARNING on stderr)." >&2
+  echo "Reconcile STATE.md's ## Current Position against the plans on disk before continuing." >&2
+fi
 
 # Recalculate progress bar from disk state
 gsd_run query state.update-progress

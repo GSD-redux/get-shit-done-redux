@@ -1092,6 +1092,49 @@ function resolvePlanSetForPhase(cwd: string, phase: string): stateTransitionMod.
   return { ok: true, phase: normalized, planCount, planCountAll };
 }
 
+/**
+ * #3862 review (Major): make `position_diverged` audible on stderr.
+ *
+ * The refusal itself is correct — it is reported on stdout as
+ * `{"advanced": false, "reason": "position_diverged", ...}` and exits 0 — but
+ * "reported" and "surfaced" are not the same claim, and the PR that added the
+ * refusal asserted the second. Both first-party callers
+ * (`gsd-core/workflows/execute-plan.md`, `agents/gsd-executor.md`) invoke
+ * `gsd_run query state.advance-plan` bare: stdout discarded, exit code untested.
+ * So on a diverged project the plan counter silently stopped advancing and the
+ * surrounding workflow carried on, which is quieter than the wrong write it
+ * replaced but is not a signal.
+ *
+ * Modelled on `warnMilestoneConflict` (src/milestone-lock.cts), the sibling
+ * warning this same verb already emits two lines up: stderr only, never stdout,
+ * so `--raw` / `--pick` consumers keep a clean parse; a `[gsd-tools] WARNING:`
+ * prefix so it reads the same as its neighbour in a workflow log; and the two
+ * numbers plus the repair path, because a warning that does not say what to run
+ * next just relocates the puzzle.
+ */
+function warnPositionDiverged(data: Record<string, unknown>): void {
+  // Narrow rather than `String(unknown)`: these fields come off a
+  // `Record<string, unknown>` payload, and blind stringification renders an
+  // unexpected shape as `[object Object]` inside an operator-facing warning —
+  // the one place a silently wrong value is worst. `@typescript-eslint/no-base-to-string`
+  // flags it, and the flag is right; `?` is the honest rendering of a field the
+  // refusal did not carry.
+  const scalar = (v: unknown): string =>
+    typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'bigint' ? v.toString() : '?';
+  const prose = (data['prose'] ?? {}) as Record<string, unknown>;
+  const disk = (data['disk'] ?? {}) as Record<string, unknown>;
+  const phase = disk['phase'] == null ? 'the current phase' : `phase ${scalar(disk['phase'])}`;
+  process.stderr.write(
+    `[gsd-tools] WARNING: state.advance-plan REFUSED to advance (#3830): ` +
+      `## Current Position says plan ${scalar(prose['current_plan'])} of ${scalar(prose['total_plans'])} ` +
+      `for ${phase}, but the plans on disk number ${scalar(disk['plan_count'])} ` +
+      `(${scalar(disk['plan_count_all'])} including superseded). The prose position matches neither, so ` +
+      `nothing was written and the plan counter did NOT advance. Reconcile STATE.md before continuing — ` +
+      `\`gsd-tools query phase-plan-index\` shows the real plan set; \`state rebuild\`, \`state sync\` or ` +
+      `\`state patch\` are the repair paths.\n`,
+  );
+}
+
 function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const statePath = planningPaths(cwd).state;
   if (!fs.existsSync(statePath)) { output({ error: 'STATE.md not found' }, raw, undefined); return; }
@@ -1308,6 +1351,24 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   // preservation restored that this transform never touched (#3345's
   // direction).
   const updated = reconcileReportedFields(statePath, preWriteState, precomputedUpdated, divergedFields);
+
+  // #3862 review (Major): the refusal must be AUDIBLE, not merely reported.
+  // `output(...)` writes stdout and exits 0, and neither first-party caller
+  // reads either — `gsd-core/workflows/execute-plan.md` and `agents/gsd-executor.md`
+  // both run `gsd_run query state.advance-plan` bare, discarding stdout and never
+  // testing the exit code. Without a stderr line the diverged case is a silent
+  // non-write: the counter stops advancing, the workflow proceeds to
+  // update-progress and record-metric as if it had, and every later plan re-runs
+  // against a frozen position with no operator-visible signal anywhere.
+  //
+  // The precedent is `warnMilestoneConflict` above (:975), added for exactly this
+  // reason and for exactly this verb. Same channel, same shape: a `[gsd-tools]
+  // WARNING:` line on stderr that says what was refused and what to do about it.
+  // stderr specifically, so it cannot pollute the JSON on stdout that `--pick`
+  // and `--raw` callers parse.
+  if (resultData['advanced'] === false && resultData['reason'] === 'position_diverged') {
+    warnPositionDiverged(resultData);
+  }
 
   if (resultData['advanced'] === false) {
     output({ ...resultData, updated, milestone_conflict: milestoneConflict }, raw, 'false');

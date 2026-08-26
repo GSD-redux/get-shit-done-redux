@@ -13,6 +13,19 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, captureFdSync } = require('./helpers.cjs');
+const stateTestHelpers = require('./helpers.cjs');
+const stateTestProcessSeam = require('./helpers/process-seam.cjs');
+// runGsdTools's legacy shape DROPS stderr on a zero exit, and the #3862 contract
+// is exactly that the divergence refusal is VISIBLE on stderr while still exiting
+// 0. Drive the process seam directly for those assertions — the same adapter
+// tests/milestone-lock.test.cjs uses for the sibling warning this one mirrors.
+function runToolsWithStderr(args, cwd, env = {}) {
+  return stateTestProcessSeam.runNode([stateTestHelpers.TOOLS_PATH, ...args], {
+    cwd,
+    env: { ...process.env, ...stateTestHelpers.TEST_ENV_BASE, ...env },
+    timeoutMs: 60000,
+  });
+}
 const { createFixture, seedWorkstream, writeState } = require('./fixtures/index.cjs');
 // ADR-3473 §8.7 (#3872): git-fixture spawns for the state_head rows (10/11)
 // go through the throw-preserving wrapper, never a raw execFileSync.
@@ -2311,6 +2324,53 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     assert.strictEqual(output.disk.plan_count, 12);
     assert.deepStrictEqual(output.updated, []);
     assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+  });
+
+  // #3862 review (Major): the refusal has to be AUDIBLE, not merely reported.
+  // Both first-party callers run `gsd_run query state.advance-plan` bare —
+  // stdout discarded, exit code untested — so a stdout-only refusal is a silent
+  // non-write. These pin the stderr channel, its content, and (critically) that
+  // adding it did not pollute the JSON those same callers may `--pick` from.
+  test('a divergence refusal is announced on stderr, not only on stdout', () => {
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 8');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, `the refusal must still exit 0: ${result.stderr}`);
+
+    const stderr = result.stderr || '';
+    assert.match(stderr, /\[gsd-tools\] WARNING:/, `expected a [gsd-tools] WARNING on stderr; got: ${JSON.stringify(stderr)}`);
+    assert.match(stderr, /REFUSED to advance/, 'the warning must say the advance did not happen');
+    // Both sides of the disagreement, so the operator can act without re-running anything.
+    assert.match(stderr, /2 of 8/, 'the warning must name the prose position');
+    assert.match(stderr, /12/, 'the warning must name the disk plan count');
+    // And the repair path, so the warning does not merely relocate the puzzle.
+    assert.match(stderr, /phase-plan-index/, 'the warning must name how to see the real plan set');
+  });
+
+  test('the stderr warning does not pollute the JSON on stdout', () => {
+    // The negative control for the test above: `--raw`/`--pick` consumers parse
+    // stdout, so a warning written to the wrong channel would break them.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 8');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.reason, 'position_diverged');
+    assert.ok(!result.stdout.includes('[gsd-tools] WARNING'), 'the warning must not reach stdout');
+  });
+
+  test('a normal advance emits no divergence warning', () => {
+    // Negative control the other way: the warning must be specific to the
+    // refusal, or it becomes noise every caller learns to ignore.
+    seedPhase('01-demo', 8);
+    writeState('Plan: 2 of 8');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, `Command should exit 0: ${result.stderr}`);
+    assert.strictEqual(JSON.parse(result.stdout).advanced, true);
+    assert.ok(!(result.stderr || '').includes('REFUSED to advance'),
+      `a successful advance must be silent on stderr; got: ${JSON.stringify(result.stderr)}`);
   });
 
   test('advances normally when the prose total matches the plans on disk', () => {
