@@ -61,14 +61,25 @@ MVP_MODE=$(gsd_run query phase.mvp-mode "${phase_number}" ${GSD_WS} --pick activ
 </step>
 
 <step name="verify_pre_hooks">
-**Verify:pre gate dispatch.** Before verification begins, dispatch every active
-gate hook registered at the `verify:pre` loop extension point. Each gate is
-data-driven — resolved from the capability registry, not hardcoded here.
+**Verify:pre capability dispatch.** Before verification begins, dispatch every
+active hook registered at the `verify:pre` loop extension point — of **every**
+kind, not gates alone. Each hook is data-driven — resolved from the capability
+registry, not hardcoded here.
 
 ```bash
 VERIFY_PRE_HOOKS_JSON=$(gsd_run loop render-hooks verify:pre --raw)
 PHASE_DIR=$(printf '%s' "$INIT" | jq -r '.phase_dir // empty')
 ```
+
+Read the `activeHooks` array from `VERIFY_PRE_HOOKS_JSON` in-context (do NOT pipe through a shell parser).
+
+**If `activeHooks` is empty or absent:** skip silently to `check_active_session`.
+
+**Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip when none), before the steps and gates below.
+
+**Step dispatch:** dispatch every `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md (skip when none) — not one shape of one. A step here is advisory: it never blocks the start of UAT, and a step that errors is routed by its own `onError` without failing verification. ⚠ **Validate `ref.command` in-context before any shell use** (third-party manifest input) — loop-hook-dispatch.md § `step`.
+
+Record the union of `produces` artefact names declared by the active step entries as `VERIFY_PRE_PRODUCED` — `extract_tests` consumes it below. An entry declaring `produces: []` contributes nothing, which is the normal case.
 
 ⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`.
 
@@ -186,6 +197,35 @@ Read the JSON result (`mode`, `total`, `all_auto_covered`, `auto_passed[]`, `pre
   - Surface any `errors[]` to the user (malformed coverage block) but still treat their entries as human checkpoints — **never drop a deliverable** (fail-safe).
 
 The cold-start smoke test injection below still applies in `coverage` mode.
+
+**Verify:pre produced-artefact seam (#3866).** If `VERIFY_PRE_PRODUCED` (recorded in
+`verify_pre_hooks`) is empty or absent, skip this paragraph entirely — derivation is unchanged.
+Otherwise, for each artefact name in it, locate the artefact the producing step wrote under
+`$PHASE_DIR` and merge its checkpoints into the test list **additively**.
+
+**The artefact contract.** A consumable artefact is a Markdown file holding a list of checkpoint
+entries in the **same shape `extract_tests` already emits and `create_uat_file` already consumes** —
+each entry a `name` (brief test name) and an `expected` (specific, user-observable outcome).
+Nothing else is read: extra fields are ignored, not an error. There is no new schema and no new
+parser — a producing step writes what a checkpoint already looks like. An artefact that yields zero
+parseable entries is treated exactly like an absent one (see below).
+
+Merge rules:
+
+- ⚠ **Validate the artefact name in-context before resolving it** (third-party manifest input).
+  An artefact name is a registry-declared name, **not** a path: check the value you read from
+  `produces` against `^[A-Za-z0-9][A-Za-z0-9._-]*$` yourself — **never** by pasting it into a
+  shell command to be tested there. A name carrying `/`, `..`, a leading `-`, a leading path
+  separator, or any shell metacharacter is a malformed manifest: record a warning, skip that
+  name, continue. Only a validated name is resolved, and only against what the step wrote inside
+  `$PHASE_DIR` — never above it, and never through a symlink that leaves it.
+- A name with no artefact on disk means that step was inactive, skipped, or failed. Note it to the
+  user and derive normally — **never drop a deliverable and never block UAT over it.**
+- Merged entries are added to, never subtracted from, what `coverage:` classification and the
+  prose fallback produce. An `auto_passed[]` entry stays un-presented; a `present[]` entry stays a
+  human checkpoint. This seam can deepen UAT, not suppress it.
+- Deduplicate against already-derived checkpoints by `name`, keeping the earlier entry's
+  `expected` text so a produced artefact cannot silently rewrite a criterion.
 
 **Extract testable deliverables from SUMMARY.md (legacy fallback — used when `mode: legacy`):**
 

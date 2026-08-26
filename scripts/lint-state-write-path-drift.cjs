@@ -5,12 +5,45 @@
  * Anti-divergence drift guard for the STATE.md WRITE PATH — epic #3408, issue
  * #3468, ADR-3408 Decision 5, contract §8.1/§8.2/§8.3
  * (`docs/adr/3408-state-write-path-preservation.md` is the contract this
- * guard enforces; read it first).
+ * guard enforces; read it first) — SHRUNK per ADR-3473 §8.6 (issue #3871).
  *
- * TWO AXES, ONE GUARD, because they fail together — a table that is
- * bypassed on dispatch and a seam that is bypassed on write are the same
- * failure mode ("policy declared, enforcement hand-rolled") applied to two
- * different call shapes:
+ * WHAT MOVED INTO THE TYPE SYSTEM (ADR-3473 §8.6): `writeStateMd`'s third
+ * parameter now REQUIRES a `StateTransaction` of `kind: 'rebuild'`, produced
+ * only by `openStateTransaction()` / `rebuildStateTransaction()`
+ * (`src/state-transition.cts`) — `writeStateMd` itself throws
+ * `STATE_TRANSACTION_KIND_INVALID` for anything else. The two exceptions this
+ * guard used to track as a RATCHETED STRING MATCH against
+ * `scripts/state-write-path-drift-baseline.json` — `cmdStateSync`
+ * (`src/state.cts`, #905's "let the body win") and `REGENERATE_STATE`
+ * (`src/health-diagnostic.cts`, `/gsd-health --repair`'s factory reset) — are
+ * NO LONGER TRACKED HERE. Both are now a constructor the type system names
+ * (`rebuildStateTransaction`), not an entry a human had to remember to keep
+ * acknowledging in a baseline file. That baseline file, and the whole
+ * ratchet machinery that existed ONLY to support it (loading it, the
+ * STALE-entry check, `--baseline` regeneration), is retired along with it —
+ * the `writeStateMd(` ARM of the old `findSeamBypasses` axis is gone for
+ * good, because the type system now names both of its exceptions.
+ *
+ * WHAT STAYED, RETITLED, AND MADE TERMINAL (issue #3871 review): the OTHER
+ * half of `findSeamBypasses` — every direct `syncStateFrontmatter(` /
+ * `applyPostSyncPreservation(` call outside their owner
+ * (`syncAndPreserveStateMd`, `src/state.cts`) — is NOT redundant. The type
+ * system gates `writeStateMd`'s THIRD PARAMETER; it says nothing about a call
+ * site that re-assembles `syncStateFrontmatter` + `applyPostSyncPreservation`
+ * itself instead of calling the one write-seam composition. ADR-3408 §8.3:
+ * "Assembling the stages at a call site is a re-derivation even when every
+ * step calls the owner." #3469 found exactly that shape live in
+ * `cmdPhaseComplete`'s atomic-commit adapter (`src/phase.cts`) — every step
+ * called an owner, so an owner-level test and this guard's OLD, narrower
+ * scan both stayed green while the composition itself drifted from
+ * `readModifyWriteStateMd`'s. See `findCompositionBypasses` below. Unlike
+ * the retired `writeStateMd(` arm, this one ships TERMINAL, not ratcheted —
+ * mirrors `findPromptSeamUses`'s own conversion in this same shrink: no
+ * legitimate call site outside the owner exists today, so any occurrence is
+ * a violation, not an entry to acknowledge.
+ *
+ * WHAT THIS GUARD STILL OWNS, because the type system cannot make it
+ * unrepresentable:
  *
  *   AXIS 1 — POLICY DISPATCH (§8.1). `applyStatePreservation` must select
  *   its branch from a `FIELD_CLASSIFICATION` row's `preservation` value,
@@ -27,12 +60,39 @@
  *   undetected by the call-shape check alone). Scoped to the identifier
  *   `field` only; see `FIELD_VAR_EQ_LITERAL_RE`'s own comment for why.
  *
- *   AXIS 2 — WRITE SEAM (§8.3), RATCHETED. `readModifyWriteStateMd` is the
- *   only path meant to write STATE.md. Every direct `writeStateMd(` or
- *   `syncStateFrontmatter(` call outside the owner's own definitions is a
- *   bypass that skips preservation and the #948 no-op guard — how #3374 and
- *   #3350 reproduce. This axis ships RATCHETED (see below), never a bare
- *   0-or-fail check.
+ *   AXIS 2 — RAW STATE WRITE (§8.6, RETAINED). A direct `fs.writeFileSync(`
+ *   call whose target argument is the state path (`statePath`, or a literal
+ *   containing `STATE.md`) is a write that skips BOTH the write seam
+ *   (`writeStateMd`/`syncAndPreserveStateMd`) AND the OS Shell Projection
+ *   seam (`platformWriteSync`, `src/shell-command-projection.cts`) entirely.
+ *   No constructor or type can make this unrepresentable — Node's `fs`
+ *   module is always one `import` away — so this axis stays a plain
+ *   string-match scan, unratcheted: any occurrence is a violation, because no
+ *   legitimate call site in this codebase writes STATE.md this way (every
+ *   real writer goes through `platformWriteSync`).
+ *
+ *   AXIS 3 — FRONTMATTER-SHAPED WRITE (§8.3(b), closed Phase 2 / #3469).
+ *   `findUnstrippedContentWrites` below flags a `stateReplaceField(` call
+ *   only when BOTH (a) its field-name argument is a VARIABLE, not a fixed
+ *   string literal, and (b) its content argument has not been run through
+ *   `stripFrontmatter` first (a narrow backward-scan approximation, not full
+ *   dataflow — see the function's own docstring).
+ *
+ *   AXIS 4 — PROMPT-LAYER WRITE (§8.3, Decision 4(d)). Prose in the prompt
+ *   layer instructing an agent to shell out to a write-side `gsd-tools`
+ *   subcommand is the same write seam, expressed as markdown rather than
+ *   TypeScript — a check the type system cannot reach at all, since markdown
+ *   is never compiled. Any occurrence is a violation.
+ *
+ *   AXIS 5 — COMPOSITION BYPASS (§8.3, RETAINED, issue #3871). A direct
+ *   `syncStateFrontmatter(` or `applyPostSyncPreservation(` call outside
+ *   their owner (`syncAndPreserveStateMd`) is a re-assembly of the write-seam
+ *   composition — the exact shape #3469 found live in `cmdPhaseComplete`.
+ *   `writeStateMd(` is deliberately NOT scanned here (that arm is retired,
+ *   §8.6) — `writeStateMd`'s own legitimate direct `syncStateFrontmatter(`
+ *   call (the sanctioned #905 exception) is instead exempted by function
+ *   name, same as the composition owner itself; see
+ *   `SEAM_OWNER_EXEMPT_FUNCTIONS`. Terminal: any occurrence is a violation.
  *
  * DESIGN CONSTRAINTS (ADR-3180 Decision 4, adopted verbatim by ADR-3408):
  *   - 4(a) whole-repo scan, never an allowlist. ADR-3180's own phases found
@@ -40,15 +100,9 @@
  *     nothing.
  *   - 4(d) the scan surface is DECLARED and is NOT just `src/` — `src/`
  *     alone is itself an allowlist one directory wide; #1762 traced a wrong
- *     count to a shell snippet in `gsd-core/workflows/progress.md`. And
- *     inward: the OWNER FILE (`src/state.cts`) is not exempt, only its
- *     named canonical FUNCTIONS are (`SEAM_OWNER_EXEMPT_FUNCTIONS` below).
- *   - 4(e) Axis 2 ships ratcheted because Phase 1 (this file) cannot
- *     consolidate the write seam — that is Phase 2 (#3469). Landing a
- *     guard later, against an already-clean tree, is the "found it, wrote
- *     it down, moved on" posture the epic removes.
+ *     count to a shell snippet in `gsd-core/workflows/progress.md`.
  *
- * GOODHART, PER ADR-3408 DECISION 5: "0 bypasses" is a LAGGING metric — a
+ * GOODHART, PER ADR-3408 DECISION 5: "0 violations" is a LAGGING metric — a
  * measure about to become a target. This guard's own `_comment` and its
  * human-readable success message both say so: the zero this guard reports
  * must NEVER be quoted alone; it is only meaningful beside the behavioral
@@ -62,42 +116,37 @@
  * to prevent. `stripComments` does not track quoted strings for exactly
  * this reason — see its own header.
  *
- * AXIS 3 — FRONTMATTER-SHAPED WRITE (§8.3(b)), CLOSED IN PHASE 2 (#3469).
- * Phase 1 left this as a DECLARED KNOWN GAP: `patchCore` ran
- * `stateReplaceField(` over the WHOLE document (body + frontmatter) instead
- * of stripping frontmatter first, the way `updateCore` does, and a naive
- * co-occurrence approximation ("does the enclosing function also call
- * `stripFrontmatter(`?") measured at 33 occurrences of `stateReplaceField(`,
- * of which only 4 were genuine write-seam bypasses and 29 were noise — the
- * definition of `stateReplaceField` itself, ~20 calls on `sectionBody` (a
- * body slice that is frontmatter-free by construction), and several calls
- * inside `readModifyWriteStateMd` callbacks. 29 false positives to 1 true
- * positive would have buried the signal.
- *
- * Phase 2 fixes `patchCore` (it now strips frontmatter first, matching
- * `updateCore`) AND closes the gap, using a narrower, two-factor shape that
- * does not reproduce that ratio: `findUnstrippedContentWrites` below flags a
- * `stateReplaceField(` call only when BOTH (a) its field-name argument is a
- * VARIABLE, not a fixed string literal — every OTHER call site in
- * `EXECUTOR_FILE` passes a fixed Title-Case literal (`'Phase'`, `'Total
- * Plans in Phase'`, ...) that can never collide with a lowercase/snake_case
- * YAML frontmatter key, so a literal field name is never a candidate
- * regardless of whether its content argument is stripped — and (b) its
- * content argument has not been run through `stripFrontmatter` first,
- * checked by a simple backward scan (within the same function) for the
- * nearest preceding assignment to that argument's variable name. This is
- * deliberately NOT full alias/dataflow tracking — see the function's own
- * docstring for the narrow, documented limitation this trades for
- * tractability.
+ * CORRECTION TO ADR-3473 §8.6's TEXT, RECORDED HERE SO A FUTURE READER
+ * COMPARING THE ADR TO THIS FILE DOES NOT CONCLUDE THE FILE DRIFTED:
+ * §8.6 says this guard "keeps only its raw-write check (`fs.writeFileSync`
+ * against the state path), which the type cannot make unrepresentable." That
+ * sentence is wrong on both halves. First, no such check existed anywhere in
+ * this file before this shrink — `findRawStateWrites` (Axis 2, below) is
+ * NET-NEW, written for this shrink, not retained from a prior version.
+ * Second, this file did not (and does not) drop to "only" one check: besides
+ * the retired `writeStateMd(` arm of the old `findSeamBypasses` axis (the
+ * half §8.6 correctly names for removal, since the type system now names
+ * both of its exceptions), `findPolicyDispatchDrift`, `findUnimplementedPolicies`,
+ * `findUnstrippedContentWrites`, `findPromptSeamUses`, and the RETAINED
+ * `syncStateFrontmatter`/`applyPostSyncPreservation` composition-bypass half
+ * of `findSeamBypasses` (now `findCompositionBypasses`, terminal — issue
+ * #3871 review) all remain, because §8.6 names neither them nor anything
+ * that makes what they check unrepresentable — a field-name-keyed dispatch
+ * branch, an unimplemented `FieldPreservation` policy, an unstripped
+ * frontmatter write, prompt-layer prose shelling out to `gsd-tools`, and a
+ * re-assembled write-seam composition are all still exactly as representable
+ * in TypeScript (or in markdown, for the prompt-layer one) after the
+ * state-transaction constructor as they were before it — the constructor
+ * gates `writeStateMd`'s third parameter, nothing about a call site that
+ * never goes through `writeStateMd` at all. Do not edit the ADR to match
+ * this file; this paragraph is the correction of record.
  */
 
-const fs = require('node:fs');
 const path = require('node:path');
 const { scanTree, sanitizeForReport } = require('./lib/drift-scan.cjs');
 const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const BASELINE_PATH = path.join(__dirname, 'state-write-path-drift-baseline.json');
 
 // Frozen REASON enum — mirrors `lint-state-field-drift.cjs`'s house style of
 // naming every failure shape explicitly rather than reusing one generic
@@ -110,44 +159,52 @@ const REASON = Object.freeze({
   // with a variable field-name argument whose content argument was not run
   // through `stripFrontmatter` first — see `findUnstrippedContentWrites`.
   UNSTRIPPED_CONTENT_WRITE: 'unstripped_content_write',
-  SEAM_BYPASS_UNRECORDED: 'seam_bypass_unrecorded',
-  SEAM_BYPASS_COUNT_GREW: 'seam_bypass_count_grew',
-  SEAM_BYPASS_COUNT_SHRANK: 'seam_bypass_count_shrank',
-  BASELINE_ENTRY_STALE: 'baseline_entry_stale',
-  BASELINE_UNREADABLE: 'baseline_unreadable',
+  // Axis 2 (§8.6, retained): a raw `fs.writeFileSync(` call targeting the
+  // state path — see `findRawStateWrites`.
+  RAW_STATE_WRITE: 'raw_state_write',
+  // Axis 4 (§8.3, Decision 4(d)): prompt-layer prose shelling out to a
+  // write-side `gsd-tools` subcommand — see `findPromptSeamUses`.
+  PROMPT_LAYER_STATE_WRITE: 'prompt_layer_state_write',
+  // Axis 5 (§8.3, RETAINED, issue #3871): a direct `syncStateFrontmatter(` or
+  // `applyPostSyncPreservation(` call outside their owner
+  // (`syncAndPreserveStateMd`) — see `findCompositionBypasses`.
+  COMPOSITION_BYPASS: 'composition_bypass',
 });
 
 // Scan surface — declared, per Decision 4(d), never inferred from `src/`
-// alone. `src/` covers the executor and the write-seam owner; the prompt
-// layer covers markdown that can shell out to `state.patch` / `phase.complete`
-// and post-process the result outside any TypeScript this guard could see.
+// alone. `src/` covers the executor; the prompt layer covers markdown that
+// can shell out to `state.patch` / `phase.complete` and post-process the
+// result outside any TypeScript this guard could see.
 const SRC_DIRS = ['src'];
 const SRC_EXT = new Set(['.cts']);
 const PROMPT_DIRS = ['gsd-core/workflows', 'commands', 'agents', 'skills'];
 const PROMPT_EXT = new Set(['.md']);
 
-// The executor (Axis 1) and the write-seam owner (Axis 2). Forward-slash
-// literals: every `rel` this guard compares against them is unconditionally
-// POSIX-normalized first (`toPosixRel` below) — never gated on
-// `process.platform`.
+// The executor (Axis 1 / Axis 3). Forward-slash literal: every `rel` this
+// guard compares against it is unconditionally POSIX-normalized first
+// (`toPosixRel` below) — never gated on `process.platform`.
 const EXECUTOR_FILE = 'src/state-transition.cts';
+
+// The write-seam composition owner (Axis 5). Forward-slash literal, same
+// POSIX-normalization rule as `EXECUTOR_FILE` above.
 const SEAM_OWNER_FILE = 'src/state.cts';
 
 // Per Decision 4(d)'s "owner FILE is not exempt, only its named canonical
-// FUNCTIONS are": a `writeStateMd(`/`syncStateFrontmatter(`/
-// `applyPostSyncPreservation(` call inside one of these two functions, in
-// `SEAM_OWNER_FILE` only, is the seam's own internal plumbing, not a bypass.
-// `writeStateMd` is the `cmdStateSync`/`REGENERATE_STATE` path's own I/O
-// wrapper calling `syncStateFrontmatter` directly (no preservation, by
-// design — §8.3's closed exception list). `syncAndPreserveStateMd` (#3469)
-// is the ONE write-seam composition — `syncStateFrontmatter` then
-// `applyPostSyncPreservation` — every OTHER caller needing a non-standard
-// I/O envelope routes through. Every OTHER function in `state.cts` — and
-// every function in every OTHER file — is still scanned and still flagged;
-// in particular, `readModifyWriteStateMd` is NOT exempt: after #3469 it no
-// longer contains a direct `syncStateFrontmatter(`/`applyPostSyncPreservation(`
-// call at all (it calls `syncAndPreserveStateMd` like everyone else), so if
-// one reappeared there it would be exactly the re-assembly shape this axis
+// FUNCTIONS are": a `syncStateFrontmatter(`/`applyPostSyncPreservation(` call
+// inside one of these two functions, in `SEAM_OWNER_FILE` only, is the
+// seam's own internal plumbing, not a bypass. `writeStateMd` is the
+// `cmdStateSync`/`REGENERATE_STATE` path's own I/O wrapper calling
+// `syncStateFrontmatter` directly (no preservation, by design — §8.3's
+// closed exception list; ADR-3473 §8.6 gates ITS third parameter, which is
+// an orthogonal, type-level check — this guard's exemption is about which
+// FUNCTION BODY a raw call to the two seam stages is allowed to live in).
+// `syncAndPreserveStateMd` is the ONE write-seam composition — every OTHER
+// caller needing a non-standard I/O envelope routes through it. Every OTHER
+// function in `state.cts` — and every function in every OTHER file — is
+// still scanned and still flagged; in particular `readModifyWriteStateMd` is
+// NOT exempt: it calls `syncAndPreserveStateMd` like everyone else, so if a
+// direct `syncStateFrontmatter(`/`applyPostSyncPreservation(` call
+// reappeared there it would be exactly the re-assembly shape this axis
 // exists to catch.
 const SEAM_OWNER_EXEMPT_FUNCTIONS = ['writeStateMd', 'syncAndPreserveStateMd'];
 
@@ -211,8 +268,9 @@ function stripComments(text) {
 }
 
 // A named function declaration, tolerating `export`/`async` prefixes — the
-// SAME shape `enclosingFunction` looks backward for and `findSeamBypasses`
-// uses to recognise (and skip) the seam functions' own definitions.
+// SAME shape `nearestPrecedingAssignment` uses as its backward-scan boundary,
+// and `enclosingFunction` below uses to recognise (and skip) the seam
+// functions' own definitions.
 const FUNCTION_DECL_LINE_RE = /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/;
 
 /**
@@ -323,8 +381,8 @@ function findPolicyDispatchDrift(rel, text) {
     // `file` is sanitized here, at construction, not just at the human
     // formatter: `rel` is exactly as attacker-controlled as `source` on a
     // fork PR (a tracked filename can legally carry C1 bytes or bidi
-    // overrides), and it reaches the committed baseline and `--json` stdout
-    // unfiltered otherwise — see `sanitizeForReport`'s own header.
+    // overrides), and it reaches `--json` stdout unfiltered otherwise — see
+    // `sanitizeForReport`'s own header.
     FIELD_NAME_DISPATCH_RE.lastIndex = 0;
     let m;
     while ((m = FIELD_NAME_DISPATCH_RE.exec(line)) !== null) {
@@ -336,7 +394,7 @@ function findPolicyDispatchDrift(rel, text) {
         // `field` is captured straight out of a quoted string literal in
         // repo source — attacker-controlled on the same fork-PR basis as
         // `file`/`source`, so sanitize it too rather than let it reach
-        // `--json` stdout / the baseline raw.
+        // `--json` stdout.
         field: sanitizeForReport(m[2]),
         source: sanitizeForReport(line.trim()),
       });
@@ -348,10 +406,6 @@ function findPolicyDispatchDrift(rel, text) {
         axis: 'policy-dispatch',
         file: sanitizeForReport(rel),
         line: i + 1,
-        // `field` is captured straight out of a quoted string literal in
-        // repo source — attacker-controlled on the same fork-PR basis as
-        // `file`/`source`, so sanitize it too rather than let it reach
-        // `--json` stdout / the baseline raw.
         field: sanitizeForReport(m[2]),
         source: sanitizeForReport(line.trim()),
       });
@@ -363,10 +417,6 @@ function findPolicyDispatchDrift(rel, text) {
         axis: 'policy-dispatch',
         file: sanitizeForReport(rel),
         line: i + 1,
-        // `field` is captured straight out of a quoted string literal in
-        // repo source — attacker-controlled on the same fork-PR basis as
-        // `file`/`source`, so sanitize it too rather than let it reach
-        // `--json` stdout / the baseline raw.
         field: sanitizeForReport(m[2]),
         source: sanitizeForReport(line.trim()),
       });
@@ -429,11 +479,9 @@ function isQuotedLiteralArg(arg) {
  * The nearest assignment to `varName` (`varName = <expr>` or
  * `const|let|var varName = <expr>`), scanning `lines` BACKWARD from `index`
  * (inclusive) and stopping at the nearest preceding named-function
- * declaration (mirrors `enclosingFunction`'s own boundary, so the scan
- * cannot walk into an unrelated function above the one containing the
- * call). Returns the assigned expression's trimmed text, or `null` when no
- * such assignment is found before the boundary — meaning `varName` is the
- * enclosing function's own untouched parameter.
+ * declaration. Returns the assigned expression's trimmed text, or `null`
+ * when no such assignment is found before the boundary — meaning `varName`
+ * is the enclosing function's own untouched parameter.
  *
  * Deliberately single-hop: this reports whatever the NEAREST assignment's
  * right-hand side literally is, and does not itself follow a further alias
@@ -506,31 +554,115 @@ function findUnstrippedContentWrites(rel, text) {
   return out;
 }
 
-// The three write-seam functions, matched only as CALLS (`\(` immediately
-// after, modulo whitespace) — never as bare mentions of the name.
-// `applyPostSyncPreservation` (#3469) is included alongside
-// `writeStateMd`/`syncStateFrontmatter`: after Phase 2, it is ONLY ever
-// legitimately called from inside `syncAndPreserveStateMd` (the seam
-// composition), so any OTHER call to it is either a re-assembly of the pair
-// (Phase 2's Finding 3 shape — a call site invoking both
-// `syncStateFrontmatter` and `applyPostSyncPreservation` itself instead of
-// the composition) or a bypass calling it alone; either way it belongs on
-// this axis.
-const SEAM_CALL_RE = /\b(writeStateMd|syncStateFrontmatter|applyPostSyncPreservation)\s*\(/g;
-// A line that IS one of the three seam functions' own definitions — skipped
-// outright, never counted as a call to itself.
-const SEAM_DEF_LINE_RE = /^\s*(?:export\s+)?(?:async\s+)?function\s+(?:writeStateMd|syncStateFrontmatter|applyPostSyncPreservation)\b/;
+// AXIS 2 (§8.6, retained): `fs.writeFileSync(<targetArg>, ...)`, capturing
+// the target-path argument up to the next comma. The type system (ADR-3473
+// §8.6's `StateTransaction` constructors) closes the `writeStateMd`/
+// `syncStateFrontmatter`/`applyPostSyncPreservation` bypass shape this guard
+// used to scan for by function name; it cannot close a call site that skips
+// those functions ENTIRELY and reaches for Node's raw `fs` module directly —
+// that residual risk is what this axis stays alive to catch.
+const RAW_WRITE_CALL_START_RE = /\bfs\.writeFileSync\s*\(/g;
 
 /**
- * AXIS 2a: every direct `writeStateMd(`/`syncStateFrontmatter(`/
- * `applyPostSyncPreservation(` call in `text`, outside the three functions'
- * own definitions and (only inside `SEAM_OWNER_FILE`) outside
- * `SEAM_OWNER_EXEMPT_FUNCTIONS`'s own bodies. No `reason` on these
- * findings — `applyRatchet` assigns one, since the same observed call site
- * is a different failure shape depending on whether the baseline already
- * knows about it.
+ * Capture `fs.writeFileSync`'s first-argument text starting at `startIdx`
+ * (the offset right after its opening `(`), stopping at the first TOP-LEVEL
+ * comma or the call's own closing paren — bracket/paren/brace depth and
+ * string-literal spans are tracked so a nested call in the target expression
+ * (e.g. `path.join(cwd, 'STATE.md')`) does not stop the scan at ITS internal
+ * comma. A naive `[^,]+` capture (the guard's prior encoding) stopped at
+ * `path.join(cwd` for exactly that shape, silently missing every
+ * `fs.writeFileSync(path.join(cwd, 'STATE.md'), …)` call in the wild
+ * (found via `tests/state-write-path-drift-guard.test.cjs` F1: "guard:
+ * fs.writeFileSync against a STATE.md literal is reported").
  */
-function findSeamBypasses(rel, text) {
+function captureFirstArg(line, startIdx) {
+  let depth = 0;
+  let inStr = null;
+  let i = startIdx;
+  for (; i < line.length; i++) {
+    const c = line[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === inStr) inStr = null;
+      continue;
+    }
+    if (c === '\'' || c === '"' || c === '`') { inStr = c; continue; }
+    if (c === '(' || c === '[' || c === '{') { depth++; continue; }
+    if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) break; // the call's own closing paren — no comma found
+      depth--;
+      continue;
+    }
+    if (c === ',' && depth === 0) break;
+  }
+  return line.slice(startIdx, i);
+}
+
+// True when the captured target-path expression plausibly names the STATE.md
+// path: either the canonical `statePath` identifier this codebase uses at
+// every real write site (see `src/state.cts`'s `writeStateMd`,
+// `readModifyWriteStateMd`, `cmdStateMilestoneSwitch`), or a literal/template
+// segment containing `STATE.md` outright.
+function targetsStatePath(arg) {
+  return /\bstatePath\b/.test(arg) || /STATE\.md/.test(arg);
+}
+
+/**
+ * AXIS 2: every `fs.writeFileSync(` call in `text` whose target argument
+ * names the state path is a raw write that bypasses BOTH the write seam
+ * (`writeStateMd` / `syncAndPreserveStateMd`) and the OS Shell Projection
+ * seam (`platformWriteSync`, `src/shell-command-projection.cts`) — no
+ * legitimate call site in this codebase writes STATE.md this way today
+ * (every real writer goes through `platformWriteSync`, whose OWN internal
+ * `fs.writeFileSync` calls take a generic `filePath`/`tmpPath` argument, not
+ * `statePath`, and are therefore never matched by `targetsStatePath` above).
+ * Unratcheted, unexempted: any occurrence is a violation.
+ */
+function findRawStateWrites(rel, text) {
+  const rawLines = text.split('\n');
+  const stripped = stripComments(text);
+  const out = [];
+  for (let i = 0; i < stripped.length; i++) {
+    const line = stripped[i];
+    if (!line.trim()) continue;
+    RAW_WRITE_CALL_START_RE.lastIndex = 0;
+    let m;
+    while ((m = RAW_WRITE_CALL_START_RE.exec(line)) !== null) {
+      const argStart = m.index + m[0].length;
+      const targetArg = captureFirstArg(line, argStart).trim();
+      if (!targetsStatePath(targetArg)) continue;
+      // `file`/`source` sanitized for the same fork-PR reason as every other
+      // finding in this guard.
+      out.push({
+        reason: REASON.RAW_STATE_WRITE,
+        axis: 'raw-write',
+        file: sanitizeForReport(rel),
+        line: i + 1,
+        source: sanitizeForReport(rawLines[i].trim()),
+      });
+    }
+  }
+  return out;
+}
+
+// The two write-seam STAGE functions, matched only as CALLS (`\(`
+// immediately after, modulo whitespace) — never as bare mentions of the
+// name. `writeStateMd(` is deliberately NOT included here (that arm is
+// retired — ADR-3473 §8.6 gates it at the type level instead).
+const SEAM_CALL_RE = /\b(syncStateFrontmatter|applyPostSyncPreservation)\s*\(/g;
+// A line that IS one of the two seam stage functions' own definitions —
+// skipped outright, never counted as a call to itself.
+const SEAM_DEF_LINE_RE = /^\s*(?:export\s+)?(?:async\s+)?function\s+(?:syncStateFrontmatter|applyPostSyncPreservation)\b/;
+
+/**
+ * AXIS 5 (§8.3, RETAINED, issue #3871): every direct `syncStateFrontmatter(`/
+ * `applyPostSyncPreservation(` call in `text`, outside the two functions' own
+ * definitions and (only inside `SEAM_OWNER_FILE`) outside
+ * `SEAM_OWNER_EXEMPT_FUNCTIONS`'s own bodies. Terminal: unlike the old
+ * `findSeamBypasses` this axis descends from, there is no ratchet — any
+ * occurrence is `REASON.COMPOSITION_BYPASS` directly.
+ */
+function findCompositionBypasses(rel, text) {
   const rawLines = text.split('\n');
   const stripped = stripComments(text);
   const out = [];
@@ -545,13 +677,11 @@ function findSeamBypasses(rel, text) {
         const fn = enclosingFunction(stripped, i);
         if (fn && SEAM_OWNER_EXEMPT_FUNCTIONS.includes(fn)) continue;
       }
-      // `file` is sanitized here, at construction, not just at the human
-      // formatter: `rel` is exactly as attacker-controlled as `source` on a
-      // fork PR (a tracked filename can legally carry C1 bytes or bidi
-      // overrides), and it reaches the committed baseline and `--json`
-      // stdout unfiltered otherwise — see `sanitizeForReport`'s own header.
+      // `file`/`source` sanitized for the same fork-PR reason as every other
+      // finding in this guard.
       out.push({
-        axis: 'write-seam',
+        reason: REASON.COMPOSITION_BYPASS,
+        axis: 'composition-bypass',
         file: sanitizeForReport(rel),
         line: i + 1,
         symbol: m[1],
@@ -600,10 +730,11 @@ function isInsideCodeSpan(line, index) {
 }
 
 /**
- * AXIS 2b: every prompt-layer line instructing an agent to shell out to a
- * write-side `gsd-tools` subcommand. Same finding shape as
- * `findSeamBypasses` (no `reason` — the ratchet assigns it), with a fixed
- * `symbol` since there is no single function name to report for prose.
+ * AXIS 4: every prompt-layer line instructing an agent to shell out to a
+ * write-side `gsd-tools` subcommand. Terminal (unratcheted): any occurrence
+ * is a violation — this baseline was always empty for the prompt layer (no
+ * prompt-layer entry was ever acknowledged), so removing the ratchet changes
+ * nothing observable here.
  *
  * A candidate occurrence enclosed in backticks is a MENTION, not an
  * invocation, and is deliberately not reported — CONTRIBUTING.md's "Every
@@ -614,8 +745,7 @@ function isInsideCodeSpan(line, index) {
  * wrong: the first `lint-phase-enumeration-drift.cjs` flagged JSDoc that
  * merely documented the canonical owner as drift, which trains readers to
  * reflexively exempt documentation instead of trusting the guard — the
- * opposite of Decision 4(a)'s intent. All 5 of this guard's original
- * prompt-layer baseline entries were exactly this false positive.
+ * opposite of Decision 4(a)'s intent.
  */
 function findPromptSeamUses(rel, text) {
   const lines = text.split('\n');
@@ -626,10 +756,11 @@ function findPromptSeamUses(rel, text) {
     let m;
     while ((m = PROMPT_SEAM_RE.exec(line)) !== null) {
       if (isInsideCodeSpan(line, m.index)) continue;
-      // `file` is sanitized here for the same reason as `findSeamBypasses`
-      // above: `rel` is attacker-controlled on a fork PR, exactly like
-      // `source`.
+      // `file` is sanitized here for the same reason as every other finding
+      // in this guard: `rel` is attacker-controlled on a fork PR, exactly
+      // like `source`.
       out.push({
+        reason: REASON.PROMPT_LAYER_STATE_WRITE,
         axis: 'write-seam',
         file: sanitizeForReport(rel),
         line: i + 1,
@@ -642,149 +773,23 @@ function findPromptSeamUses(rel, text) {
 }
 
 /**
- * Ratchet key for one write-seam finding — `(file, TRIMMED source text)`,
- * NEVER a line number, which churns on any unrelated edit to the same file
- * (mirrors `qa-smell-ratchet.cjs`'s own key shape). `v.source` is already
- * the trimmed, sanitized line text by the time it reaches this function.
- */
-function ratchetKey(v) {
-  return `${v.file} ${v.source}`;
-}
-
-/**
- * Read `BASELINE_PATH`. Returns `{ entries: [] }` when the file is ABSENT
- * (`ENOENT` — first run, or a fully-shrunk Phase 4 baseline that deleted the
- * file — ADR-3408 §8.3's roster foresees exactly this end state); returns
- * `{ entries: null, code }` when the file is present but could not be read
- * OR could not be parsed/shaped (missing/malformed `entries` array) — `code`
- * carries the underlying `fs` error code (e.g. `'EACCES'`) when the failure
- * happened at the read step, `null` when it happened at the parse/shape
- * step, so the caller can fail closed rather than silently ratcheting
- * against nothing. Returns the parsed object when the read+parse succeed.
+ * Run both scan passes (the `src/` tree for Axis 1 + Axis 2 + Axis 3 + Axis 5,
+ * the prompt layer for Axis 4) and return the flat, already-terminal finding
+ * list — every finding this guard produces carries its own `reason`; there
+ * is no longer a ratcheted axis needing a second pass against a baseline.
  *
- * Absent-vs-unreadable is deliberately NOT collapsed into one arm. This
- * guard exists to catch write paths whose failure and success are
- * output-identical (ADR-3180 / ADR-3408, "The failure mode that hides all
- * of it") — a `catch { return { entries: [] } }` around the read would
- * reproduce exactly that shape in the tool built to detect it: an
- * unreadable baseline (EACCES, EISDIR, EIO, ...) would be silently
- * indistinguishable from a legitimate absent one. Do not simplify this back
- * into a single catch arm.
+ * `root` defaults to `REPO_ROOT` (this repo) so every existing caller —
+ * `npm run lint:ci`, a bare `node scripts/lint-state-write-path-drift.cjs`,
+ * every other module that `require`s `collect` with no argument — is
+ * byte-identical to before this parameter existed. It is overridable so a
+ * test can exercise the guard's real scanning/reporting logic against a
+ * throwaway synthetic tree instead of mutating this repository's own `src/`
+ * to prove the guard can fail (see `--root` on the CLI, and F2 in
+ * `tests/state-write-path-drift-guard.test.cjs`).
  */
-function loadBaseline() {
-  let raw;
-  try {
-    raw = fs.readFileSync(BASELINE_PATH, 'utf8');
-  } catch (err) {
-    if (err && err.code === 'ENOENT') return { entries: [] };
-    return { entries: null, code: err && err.code ? err.code : 'UNKNOWN' };
-  }
-  let doc;
-  try {
-    doc = JSON.parse(raw);
-  } catch {
-    return { entries: null, code: null };
-  }
-  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.entries)) return { entries: null, code: null };
-  return doc;
-}
-
-/**
- * The ratchet — mirrors `scripts/qa-smell-ratchet.cjs`'s four invariants,
- * applied to write-seam bypass COUNTS instead of QA-smell fingerprints:
- *
- *   1. An observed key absent from the baseline is a brand-new,
- *      unacknowledged bypass — `SEAM_BYPASS_UNRECORDED`.
- *   2. An observed count greater than the acknowledged count is a NEW copy
- *      landing beside an already-acknowledged one — `SEAM_BYPASS_COUNT_GREW`.
- *   3. An observed count less than the acknowledged count is a PARTIAL
- *      migration — some but not all call sites at this exact key were
- *      removed, and the baseline still claims the old, larger number —
- *      `SEAM_BYPASS_COUNT_SHRANK`.
- *   4. A baseline key with zero current observations is a STALE
- *      acknowledgment: an entry may never outlive what it describes, and
- *      the baseline may only shrink (via `--baseline`, regenerated) —
- *      `BASELINE_ENTRY_STALE`.
- *
- * The occurrence COUNT (not just key presence) is what makes a partial
- * migration visible at all: two byte-identical call sites in one file are
- * otherwise a single indistinguishable key, so removing one of the two
- * would silently vanish from a presence-only check while the acknowledgment
- * still describes two.
- *
- * Every returned finding carries both `observed` and `acknowledged` counts.
- */
-function applyRatchet(observed, baseline) {
-  const observedByKey = new Map();
-  for (const finding of observed) {
-    const key = ratchetKey(finding);
-    let group = observedByKey.get(key);
-    if (!group) {
-      group = { count: 0, sample: finding };
-      observedByKey.set(key, group);
-    }
-    group.count += 1;
-  }
-
-  const baselineByKey = new Map();
-  for (const entry of baseline.entries) {
-    baselineByKey.set(`${entry.file} ${entry.source}`, entry);
-  }
-
-  const out = [];
-  for (const [key, group] of observedByKey) {
-    const entry = baselineByKey.get(key);
-    const acknowledged = entry && typeof entry.count === 'number' ? entry.count : 0;
-    let reason = null;
-    if (!entry) {
-      reason = REASON.SEAM_BYPASS_UNRECORDED;
-    } else if (group.count > acknowledged) {
-      reason = REASON.SEAM_BYPASS_COUNT_GREW;
-    } else if (group.count < acknowledged) {
-      reason = REASON.SEAM_BYPASS_COUNT_SHRANK;
-    }
-    if (!reason) continue;
-    out.push({
-      reason,
-      axis: 'write-seam',
-      file: group.sample.file,
-      line: group.sample.line,
-      symbol: group.sample.symbol,
-      source: group.sample.source,
-      observed: group.count,
-      acknowledged,
-    });
-  }
-
-  for (const [key, entry] of baselineByKey) {
-    if (observedByKey.has(key)) continue;
-    out.push({
-      reason: REASON.BASELINE_ENTRY_STALE,
-      axis: 'write-seam',
-      file: entry.file,
-      line: 0,
-      symbol: entry.symbol,
-      source: entry.source,
-      observed: 0,
-      acknowledged: typeof entry.count === 'number' ? entry.count : 0,
-    });
-  }
-
-  return out;
-}
-
-/**
- * Run both scan passes (the `src/` tree for Axis 1 + Axis 2a + Axis 3, the
- * prompt layer for Axis 2b) and split the combined findings by `axis` into
- * `{ policyFindings, seamFindings }`. `policyFindings` are already terminal
- * (each carries its own `reason`) — this bucket is every axis EXCEPT
- * `write-seam` (Axis 2), which alone is ratcheted; `seamFindings` are raw
- * write-seam observations — `applyRatchet` is what turns them into (or
- * clears them of) a finding.
- */
-function collect() {
+function collect(root = REPO_ROOT) {
   const srcFindings = scanTree({
-    root: REPO_ROOT,
+    root,
     scanDirs: SRC_DIRS,
     scanExt: SRC_EXT,
     onFile(rel, text) {
@@ -795,13 +800,14 @@ function collect() {
         found.push(...findUnimplementedPolicies(text, relPosix));
         found.push(...findUnstrippedContentWrites(relPosix, text));
       }
-      found.push(...findSeamBypasses(relPosix, text));
+      found.push(...findRawStateWrites(relPosix, text));
+      found.push(...findCompositionBypasses(relPosix, text));
       return found;
     },
   });
 
   const promptFindings = scanTree({
-    root: REPO_ROOT,
+    root,
     scanDirs: PROMPT_DIRS,
     scanExt: PROMPT_EXT,
     onFile(rel, text) {
@@ -809,96 +815,11 @@ function collect() {
     },
   });
 
-  const all = [...srcFindings, ...promptFindings];
-  return {
-    policyFindings: all.filter((f) => f.axis !== 'write-seam'),
-    seamFindings: all.filter((f) => f.axis === 'write-seam'),
-  };
-}
-
-/**
- * Group `seamFindings` by `ratchetKey` into the baseline entry shape
- * (`{file, source, symbol, count, owner}`), sorted by `file+source`.
- *
- * `owner` is NEVER invented by this mechanical regeneration — the guard can
- * observe WHERE a bypass is and HOW MANY there are, but not which issue owns
- * removing it; inventing one would violate the same "never guess" discipline
- * `qa-smell-ratchet.cjs` applies to its own `issue` field (its `--update`
- * never invents an issue number either). ADR-3408 §8.3 requires every
- * shipped entry to carry "a named ratchet entry carrying the issue that owns
- * its removal, never an unrecorded pass" — that owner is HUMAN-CURATED and
- * must be recorded before the entry ships.
- *
- * Because `--baseline` overwrites `BASELINE_PATH` wholesale, a naive
- * mechanical regeneration would silently re-null every curated `owner` on
- * each run. To avoid that, `existingEntries` (the baseline as it stood
- * BEFORE this regeneration, i.e. `loadBaseline().entries`) is optional and,
- * when supplied, its `owner` values are merged forward onto matching new
- * entries keyed on `(file, source)` — the same key `ratchetKey` /
- * `applyRatchet` use to identify a bypass. A key with no prior entry (a
- * brand-new bypass) still gets `owner: null`, exactly as before; only
- * already-curated owners survive the regeneration. Re-running `--baseline`
- * twice in a row is therefore idempotent with respect to `owner`.
- */
-function buildBaselineEntries(seamFindings, existingEntries) {
-  const priorOwnerByKey = new Map();
-  if (Array.isArray(existingEntries)) {
-    for (const entry of existingEntries) {
-      priorOwnerByKey.set(ratchetKey(entry), entry.owner);
-    }
-  }
-
-  const groups = new Map();
-  for (const finding of seamFindings) {
-    const key = ratchetKey(finding);
-    let group = groups.get(key);
-    if (!group) {
-      group = {
-        file: finding.file,
-        source: finding.source,
-        symbol: finding.symbol,
-        count: 0,
-        owner: priorOwnerByKey.has(key) ? priorOwnerByKey.get(key) : null,
-      };
-      groups.set(key, group);
-    }
-    group.count += 1;
-  }
-  return [...groups.values()].sort((a, b) => ratchetKey(a).localeCompare(ratchetKey(b)));
-}
-
-const BASELINE_COMMENT =
-  'ADR-3408 Decision 5 write-seam ratchet baseline (issue #3468, Phase 1; Phase 2 / #3469 lands the ' +
-  'single write seam and Amendment 2). Every entry here is a `writeStateMd(`/`syncStateFrontmatter(`/' +
-  '`applyPostSyncPreservation(` bypass this guard found by a whole-repo scan (Decision 4(a)) — it is ' +
-  'ACKNOWLEDGED, not endorsed: acknowledgment is in writing (this file), with the issue owning its ' +
-  'removal recorded in the entry\'s "owner" field. This baseline is SHRINK-ONLY — an entry that stops ' +
-  'firing goes STALE and fails the plain run until `--baseline` is re-run to drop it (ADR-3180 ' +
-  'Decision 4(e)\'s "the baseline may only shrink", adopted verbatim by ADR-3408). Phase 2 (#3469) ' +
-  'removed the `cmdPhaseComplete` (`src/phase.cts`) and `cmdMilestoneComplete` (`src/milestone.cts`) ' +
-  'entries by routing both through the single write-seam composition (`syncAndPreserveStateMd`, ' +
-  '`src/state.cts`). ADR-3408 Amendment 2: "0 bypasses" was never this baseline\'s target — TWO ' +
-  'entries are SANCTIONED PERMANENT, not debt, and Phase 4 (#3471) does NOT drive this file to empty: ' +
-  '`cmdStateSync` (`src/state.cts`) exists precisely to let the body win (#905 — `state sync` ' +
-  're-derives frontmatter FROM the body), so routing it through preservation would invert the command ' +
-  'rather than fix a bug; `REGENERATE_STATE` (`src/health-diagnostic.cts`) is `/gsd-health --repair`\'s ' +
-  'factory reset, which rebuilds STATE.md from scratch, so preservation would restore exactly the ' +
-  'values it was invoked to discard. Neither entry may be "consolidated" away — a guard reporting them ' +
-  'is reporting correctly, and a change that removes one is a regression, not progress.';
-
-function writeBaseline(seamFindings) {
-  const priorBaseline = loadBaseline();
-  const entries = buildBaselineEntries(
-    seamFindings,
-    Array.isArray(priorBaseline.entries) ? priorBaseline.entries : null,
-  );
-  const doc = { _comment: BASELINE_COMMENT, entries };
-  fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
-  return entries;
+  return { findings: [...srcFindings, ...promptFindings] };
 }
 
 const GOODHART_NOTE =
-  'Goodhart note (ADR-3408 Decision 5): this "0 write-path bypasses" is a LAGGING metric — report ' +
+  'Goodhart note (ADR-3408 Decision 5): this "0 write-path violations" is a LAGGING metric — report ' +
   'it only alongside the behavioral identity test\'s result (asserted at the consumer\'s output), ' +
   'never alone.';
 
@@ -910,81 +831,66 @@ function printFindings(findings) {
 }
 
 /**
- * `argv`: `--baseline` regenerates `BASELINE_PATH` from a fresh scan and
- * exits 0; `--json` (check mode only) prints the machine-readable finding
- * set instead of the human-readable report. Exit codes: 0 clean, 1 drift
- * (policy-dispatch violation, ratchet violation, or an unreadable
- * baseline), 2 usage error.
+ * Parse `argv` into `{ root, wantJson, unknown }`. `--root <dir>` overrides
+ * the scan root (default `REPO_ROOT`, resolved relative to `process.cwd()`
+ * when given); `--json` is a bare flag. Anything else lands in `unknown` so
+ * `main` can report a usage error rather than silently ignoring a typo.
+ */
+function parseArgs(argv) {
+  const args = argv || [];
+  let root = REPO_ROOT;
+  let wantJson = false;
+  const unknown = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--json') {
+      wantJson = true;
+      continue;
+    }
+    if (a === '--root') {
+      const value = args[i + 1];
+      if (typeof value !== 'string' || value.length === 0) {
+        return { error: '--root requires a directory argument' };
+      }
+      root = path.resolve(value);
+      i += 1;
+      continue;
+    }
+    unknown.push(a);
+  }
+  return { root, wantJson, unknown };
+}
+
+/**
+ * `argv`: `--json` prints the machine-readable finding set instead of the
+ * human-readable report; `--root <dir>` overrides the scan root (defaults to
+ * this repo — see `parseArgs`'s own docstring). Exit codes: 0 clean, 1 a
+ * finding was reported, 2 usage error.
  */
 function main(argv) {
-  const args = argv || [];
-  const recognized = new Set(['--baseline', '--json']);
-  const unknown = args.filter((a) => !recognized.has(a));
+  const parsed = parseArgs(argv);
+  if (parsed.error) {
+    process.stderr.write(`lint-state-write-path-drift: ${parsed.error}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const { root, wantJson, unknown } = parsed;
   if (unknown.length > 0) {
     process.stderr.write(
       `lint-state-write-path-drift: unrecognized argument(s): ${unknown.map((a) => sanitizeForReport(a)).join(', ')} ` +
-        '(expected --baseline and/or --json)\n',
+        '(expected --json and/or --root <dir>)\n',
     );
     process.exitCode = 2;
     return;
   }
 
-  if (args.includes('--baseline')) {
-    const { seamFindings } = collect();
-    const entries = writeBaseline(seamFindings);
-    process.stdout.write(`lint-state-write-path-drift: wrote ${entries.length} entries to ${BASELINE_PATH}\n`);
-    process.exitCode = 0;
-    return;
-  }
-
-  const wantJson = args.includes('--json');
-  const baseline = loadBaseline();
-
-  if (baseline.entries === null) {
-    const finding = {
-      reason: REASON.BASELINE_UNREADABLE,
-      axis: 'write-seam',
-      file: path.relative(REPO_ROOT, BASELINE_PATH),
-      line: 0,
-      symbol: null,
-      code: baseline.code,
-      source: sanitizeForReport(
-        baseline.code
-          ? `${BASELINE_PATH} is present but could not be read (${baseline.code}) — run \`node ${__filename} --baseline\` to regenerate it`
-          : `${BASELINE_PATH} is present but unparseable — run \`node ${__filename} --baseline\` to regenerate it`,
-      ),
-    };
-    if (wantJson) {
-      process.stdout.write(
-        `${JSON.stringify(
-          {
-            ok: false,
-            findings: [finding],
-            summary: { policyDispatchViolations: 0, seamBypassesObserved: 0, seamBypassesAcknowledged: 0, ratchetViolations: 0 },
-          },
-          null,
-          2,
-        )}\n`,
-      );
-    } else {
-      printFindings([finding]);
-    }
-    process.exitCode = 1;
-    return;
-  }
-
-  const { policyFindings, seamFindings } = collect();
-  const ratchetFindings = applyRatchet(seamFindings, baseline);
-  const findings = [...policyFindings, ...ratchetFindings];
-  const acknowledgedTotal = baseline.entries.reduce(
-    (sum, e) => sum + (typeof e.count === 'number' ? e.count : 0),
-    0,
-  );
+  const { findings } = collect(root);
   const summary = {
-    policyDispatchViolations: policyFindings.length,
-    seamBypassesObserved: seamFindings.length,
-    seamBypassesAcknowledged: acknowledgedTotal,
-    ratchetViolations: ratchetFindings.length,
+    policyDispatchViolations: findings.filter((f) => f.axis === 'policy-dispatch').length,
+    frontmatterWriteViolations: findings.filter((f) => f.axis === 'frontmatter-write').length,
+    rawWriteViolations: findings.filter((f) => f.axis === 'raw-write').length,
+    writeSeamViolations: findings.filter((f) => f.axis === 'write-seam').length,
+    compositionBypassViolations: findings.filter((f) => f.axis === 'composition-bypass').length,
   };
 
   if (wantJson) {
@@ -995,8 +901,8 @@ function main(argv) {
 
   if (findings.length === 0) {
     process.stdout.write(
-      'ok state-write-path-drift: no policy-dispatch violations, no unrecorded/grown/shrunk/stale ' +
-        'write-seam entries against the acknowledged baseline\n',
+      'ok state-write-path-drift: no policy-dispatch, frontmatter-write, raw-write, prompt-layer, or ' +
+        'composition-bypass violations found\n',
     );
     process.stdout.write(`${GOODHART_NOTE}\n`);
     process.exitCode = 0;
@@ -1004,8 +910,9 @@ function main(argv) {
   }
 
   process.stderr.write(
-    'state-write-path-drift: policy-dispatch and/or write-seam divergence found (ADR-3408 §8.1/§8.3). ' +
-      'See docs/adr/3408-state-write-path-preservation.md for the contract:\n',
+    'state-write-path-drift: violation(s) found (ADR-3408 §8.1/§8.3, ADR-3473 §8.6). See ' +
+      'docs/adr/3408-state-write-path-preservation.md and docs/adr/3473-enforcement-by-construction.md ' +
+      'for the contract:\n',
   );
   printFindings(findings);
   process.exitCode = 1;
@@ -1016,7 +923,6 @@ if (require.main === module) main(process.argv.slice(2));
 module.exports = {
   REASON,
   REPO_ROOT,
-  BASELINE_PATH,
   SRC_DIRS,
   SRC_EXT,
   PROMPT_DIRS,
@@ -1033,13 +939,12 @@ module.exports = {
   findUnstrippedContentWrites,
   isQuotedLiteralArg,
   nearestPrecedingAssignment,
-  findSeamBypasses,
+  findRawStateWrites,
+  targetsStatePath,
+  findCompositionBypasses,
   findPromptSeamUses,
   isInsideCodeSpan,
-  ratchetKey,
-  loadBaseline,
-  applyRatchet,
+  parseArgs,
   collect,
-  buildBaselineEntries,
   main,
 };

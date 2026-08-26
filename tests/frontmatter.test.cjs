@@ -1472,7 +1472,22 @@ describe('#1264: state.patch preserves curated progress frontmatter for non-prog
     assert.ok(patchResult.success, `state patch failed: ${patchResult.error}`);
 
     const output = JSON.parse(patchResult.output);
-    assert.deepEqual(output.updated, ['Total Plans in Phase']);
+    // MOVED under ADR-3473 §8.7 (#3872): every `progress.*` leaf here
+    // genuinely changed on disk (the curated 22/6/12/50 block is
+    // disk-derived-resynced to match the 8 real plan dirs this fixture
+    // creates) — this is exactly the #3743/#3818 direction §8.7 closes
+    // (design doc row 4): a field the OLD `reconcileReportedFields`
+    // suppressed via its `progress`-is-`preserve-always` classification
+    // filter, regardless of whether the value actually changed, is now
+    // reported at DOTTED-LEAF granularity because it actually did.
+    assert.deepEqual(output.updated.slice().sort(), [
+      'Total Plans in Phase',
+      'progress.completed_phases',
+      'progress.completed_plans',
+      'progress.percent',
+      'progress.total_phases',
+      'progress.total_plans',
+    ].sort());
 
     const progress = readPersistedProgress(statePath);
     assert.strictEqual(progress.total_plans, 8);
