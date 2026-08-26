@@ -258,6 +258,8 @@ Track: `outstanding_debt` — `summary.total_items` from the audit. Track `parse
 
 `summary.parse_gap_files` counts unparsed files in LIVE (non-archived) phases only. Files in phases already archived under a completed milestone are counted separately in `summary.archived_parse_gap_files` and MUST NOT be added to `parse_gap_files` or to the Verification Debt gate below: an archived milestone is signed-off history, so a parse gap there is not debt anyone can pay down, and gating on it would make this warning fire on every run of a mature project forever — which would train the reader to ignore the next real gap.
 
+This split deliberately does NOT extend to `outstanding_debt` (`summary.total_items`), which still counts outstanding rows in archived phases. The two are different in kind: an archived parse gap is a row nobody can read, so there is no action to take and the warning can never be cleared, whereas an archived `result: pending` row is known, legible work someone can still pay down by retesting. Debt that can be settled stays counted; a permanently unclearable warning does not.
+
 **If outstanding_debt > 0 OR parse_gap_files > 0:** Add a warning section to the progress report output (in the `report` step), placed between "## What's Next" and the route suggestion:
 
 ```markdown
