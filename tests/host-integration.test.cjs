@@ -1983,7 +1983,11 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
       { cwd: dir, env: ENV, timeoutMs: PROBE_TIMEOUT_MS },
     );
     throwIfFailed(r, `gsd-tools query ${verbArgs.join(' ')}`);
-    return r.stdout.trim();
+    // Strip TRAILING NEWLINES ONLY, exactly as `$(...)` command substitution
+    // does. A `.trim()` here would silently diverge from the shell it mirrors:
+    // it would turn a whitespace-only override into an empty one and make the
+    // whitespace case below pass vacuously, hiding a real defect.
+    return r.stdout.replace(/\n+$/, '');
   }
 
   /**
@@ -2039,19 +2043,75 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     assert.deepEqual(dispatch(t, { 'gsd-executor': 'inherit' }).exec.args, UNPINNED);
   });
 
-  for (const alias of ['opus', 'sonnet', 'haiku', 'claude-opus-4-8']) {
-    test(`a GSD tier alias or Anthropic-flavored id (${alias}) never reaches the argv`, (t) => {
+  // Both GSD tier vocabularies, not just one. `VALID_TIERS` holds the tier
+  // VALUES (opus/sonnet/haiku/inherit); `VALID_AGENT_TIERS` holds the agent
+  // tier TOKENS (heavy/standard/light) that `model_overrides` actually accepts.
+  // Filtering only the first set leaks `--model heavy` to the host.
+  for (const alias of [
+    'opus', 'sonnet', 'haiku', 'claude-opus-4-8',
+    'heavy', 'standard', 'light',
+  ]) {
+    test(`a GSD tier token or Anthropic-flavored id (${alias}) never reaches the argv`, (t) => {
       // These pass the config gate as real values, so the dispatch seam is the
       // only thing standing between them and a literal `--model opus`.
       assert.deepEqual(dispatch(t, { 'gsd-executor': alias }).exec.args, UNPINNED);
     });
   }
 
-  test('a host declaring no model channel is byte-identical with and without --model', () => {
-    const args = (id, extra) => JSON.parse(runNode(
-      [GSD_TOOLS, 'query', 'dispatch-isolation', '--json', '--cwd-target', '/tmp/wt', '--prompt', 'P', ...extra],
-      { cwd: REPO_ROOT, env: { ...ENV, GSD_RUNTIME: id }, timeoutMs: PROBE_TIMEOUT_MS },
-    ).stdout).exec.args;
+  test('a whitespace-only override is treated as absent, not forwarded verbatim', (t) => {
+    // `[ -n "   " ]` is true, so the workflow gate passes it through and the
+    // resolver hands it back unchanged. Without a trim the host is spawned
+    // with a blank `--model`, which it rejects — strictly worse than the
+    // pre-fix behavior, where the run simply proceeded on the session model.
+    assert.deepEqual(dispatch(t, { 'gsd-executor': '   ' }).exec.args, UNPINNED);
+  });
+
+  test('a leading-dash override degrades to no pin, never to a halted wave', (t) => {
+    // The resolver's `unsafe_leading_dash_model` guard fails the WHOLE
+    // resolution, so an unfiltered dash value yields isolation:"none" /
+    // exec:null and the workflow FATALs at its step 4 — after the worktree
+    // already exists. A config typo must cost the pin, not the wave.
+    const d = dispatch(t, { 'gsd-executor': '--dangerously-bypass' });
+    assert.equal(d.isolation, 'orchestrator-worktree', 'a typo must not degrade isolation');
+    assert.ok(d.exec, 'a typo must not leave the wave with nothing to spawn');
+    assert.deepEqual(d.exec.args, UNPINNED);
+  });
+
+  test('modelFlag is validated in lockstep with its sibling flag fields', () => {
+    // The trust boundary: a third-party descriptor carrying `modelFlag: 42`
+    // must be rejected at validation, not accepted and then hard-failed at
+    // dispatch time with `invalid_model_flag` on every wave. #2627 set this
+    // pattern for promptFlag; modelFlag must not be the odd one out.
+    const { validateRuntimeBody } = require('../gsd-core/bin/lib/capability-validator.cjs');
+    const errorsFor = (flag) => validateRuntimeBody({
+      id: 'x', role: 'runtime', runtime: { orchestratorExec: { command: 'codex', [flag]: 42 } },
+    }).filter((e) => e.includes('orchestratorExec'));
+
+    for (const flag of ['cwdFlag', 'promptFlag', 'modelFlag']) {
+      assert.equal(
+        errorsFor(flag).length, 1,
+        `${flag}: a non-string flag must produce exactly one validator error`,
+      );
+    }
+  });
+
+  test('a host declaring no model channel is byte-identical with and without --model', (t) => {
+    // Run from a temp dir, never REPO_ROOT: `dispatch-isolation` records its
+    // decision to `<cwd>/.gsd/` as an unconditional side effect, and a test
+    // must not stamp a sentinel into the working repo.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3714-hosts-'));
+    t.after(() => cleanup(dir));
+
+    const args = (id, extra) => {
+      const r = runNode(
+        [GSD_TOOLS, 'query', 'dispatch-isolation', '--json', '--cwd-target', '/tmp/wt', '--prompt', 'P', ...extra],
+        { cwd: dir, env: { ...ENV, GSD_RUNTIME: id }, timeoutMs: PROBE_TIMEOUT_MS },
+      );
+      // Without this a non-zero exit surfaces as `SyntaxError: Unexpected end
+      // of JSON input` instead of the actual stderr.
+      throwIfFailed(r, `dispatch-isolation ${id}`);
+      return JSON.parse(r.stdout).exec.args;
+    };
 
     for (const id of ['opencode', 'kimi', 'kimi-code']) {
       assert.deepEqual(
@@ -2062,21 +2122,87 @@ describe('#3714 explicit gsd-executor model pin reaches the dispatch argv', () =
     }
   });
 
-  test('the workflow still reads the override and forwards it', () => {
-    // Nothing in the route reads config — the gate and the forward live only
-    // in the workflow step, so without this every other case here stays green
-    // while real dispatch silently stops passing a pin.
-    const step = readFileNormalized(path.join(
-      REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase', 'steps', 'executor-isolation-dispatch.md',
-    ));
+  // Nothing in the route reads config — the gate and the forward live only in
+  // the workflow step. These RUN that step's real shell against a `gsd_run`
+  // stub rather than substring-matching the `.md`: a substring assertion would
+  // stay green if the gate's semantics inverted, and the JS `dispatch()` helper
+  // above is a reimplementation that could drift from the shell it mirrors
+  // without any test noticing.
+  const { runHook } = require('./helpers/process-seam.cjs');
+  const STEP_MD = path.join(
+    REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase', 'steps', 'executor-isolation-dispatch.md',
+  );
+
+  /**
+   * Run the workflow step's real bash block with `gsd_run` stubbed, and return
+   * every stubbed call's argv (pipe-delimited so an EMPTY argument stays
+   * visible — `--model||` vs `--model|gpt-5.6-sol|` is the whole point here).
+   */
+  function stepCalls(t, override) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3714-step-'));
+    t.after(() => cleanup(dir));
+
+    // CRLF-free by construction: the body is handed to bash, which treats an
+    // embedded \r as part of the token (same trap bashBlockContaining documents).
+    const text = readFileNormalized(STEP_MD);
+    const block = [...text.matchAll(/```bash\r?\n([\s\S]*?)```/g)]
+      .map((m) => m[1])
+      .find((b) => b.includes('EXECUTOR_MODEL'));
+    assert.ok(block, 'no bash block carrying EXECUTOR_MODEL in the dispatch step');
+
+    const log = path.join(dir, 'calls.log');
+    const harness = [
+      'set -u',
+      `gsd_run() { for a in "$@"; do printf '%s|' "$a" >> ${JSON.stringify(log)}; done;`,
+      `  printf '\\n' >> ${JSON.stringify(log)};`,
+      '  case "$*" in',
+      `    *"config-get model_overrides.gsd-executor"*) printf '%s' ${JSON.stringify(override)} ;;`,
+      // Mirrors the real resolver's observed behavior for an explicit pin: it
+      // hands the override straight back.
+      `    *"resolve-model gsd-executor"*) printf '%s' ${JSON.stringify(override)} ;;`,
+      '    *"dispatch-isolation"*) printf \'{"isolation":"orchestrator-worktree","exec":{"command":"codex","args":[],"cwd":"/tmp/wt"}}\' ;;',
+      "    *) printf '' ;;",
+      '  esac; }',
+      'ORCH_ROOT=' + JSON.stringify(dir),
+      'WAVE_WORKTREE_MANIFEST=' + JSON.stringify(path.join(dir, 'manifest.json')),
+      'EXPECTED_BASE=deadbeef',
+      'PLAN_FILES=a.js',
+      'PLAN_DELETIONS=',
+      'EXECUTOR_PROMPT=P',
+      block,
+    ].join('\n');
+
+    const scriptPath = path.join(dir, 'step.sh');
+    fs.writeFileSync(scriptPath, harness);
+    // Bounded by construction: pure shell against a stub — no git, no network.
+    const res = runHook(scriptPath, [], { interpreter: 'bash', timeoutMs: PROBE_TIMEOUT_MS });
+    assert.equal(res.outcome, 'exited', `step block did not complete: ${res.stderr || ''}`);
+    assert.equal(res.exitCode, 0, `step block exited ${res.exitCode}: ${res.stderr}`);
+
+    return fs.readFileSync(log, 'utf-8').split(/\r?\n/).filter(Boolean);
+  }
+
+  const dispatchCall = (calls) => calls.find((c) => c.includes('dispatch-isolation|'));
+
+  test('the workflow shell forwards an explicit pin to dispatch', (t) => {
+    const calls = stepCalls(t, 'gpt-5.6-sol');
     assert.ok(
-      step.includes('config-get model_overrides.gsd-executor'),
-      'the workflow must gate on the raw override before resolving',
+      calls.some((c) => c.includes('resolve-model|gsd-executor|')),
+      'an explicit override must be run through the model resolver',
     );
+    assert.match(dispatchCall(calls), /\|--model\|gpt-5\.6-sol\|/);
+  });
+
+  test('the workflow shell forwards an empty model when nothing is pinned', (t) => {
+    const calls = stepCalls(t, '');
+    // The gate is the whole point: resolve-model always answers with a
+    // concrete model, so calling it unpinned would pin one for a user who
+    // pinned nothing. A substring test could never catch that inversion.
     assert.ok(
-      step.includes('--model "$EXECUTOR_MODEL"'),
-      'the workflow must forward the resolved model to dispatch-isolation',
+      !calls.some((c) => c.includes('resolve-model|')),
+      'with no override the resolver must not be consulted at all',
     );
+    assert.match(dispatchCall(calls), /\|--model\|\|/);
   });
 });
 
