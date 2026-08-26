@@ -360,6 +360,52 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
       );
     });
 
+    test('verify-work accepts an INFO-only issues block without entering its revision loop', () => {
+      // Round-4 Blocker: verify_gap_plans is the SECOND multi-plan consumer of the
+      // checker's sentinels (agent-contracts.md), spawning it over all phase plans with
+      // no dimension override — so 3b is live there and its handler must be
+      // severity-aware, or the guaranteed replan #3724 fixed survives on that surface.
+      const verifyWork = fs.readFileSync(
+        path.join(ROOT, 'gsd-core', 'workflows', 'verify-work.md'), 'utf-8');
+      const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+      const handler = splitLines(verifyWork).find((line) =>
+        line.startsWith('- **ISSUES FOUND:**')
+      );
+      assert.ok(handler, 'verify-work.md must carry the ISSUES FOUND handler line');
+      assert.match(
+        handler,
+        /Count BLOCKER \+ WARNING/,
+        'the verify_gap_plans handler must gate its revision loop on BLOCKER + WARNING counts'
+      );
+      assert.match(
+        handler,
+        /only INFO entries/,
+        'the verify_gap_plans handler must accept an INFO-only issues block without revising'
+      );
+    });
+
+    test('plan-phase iteration cap (limit+1) recounts severities instead of gating on advisories', () => {
+      // Round-4 Minor 1 / boundary coverage: the INFO-only accept must hold at
+      // iteration_count >= 3 too, or an advisory-only third check halts the workflow
+      // on a "0 issues remain" user gate.
+      const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
+      const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+      const lines = splitLines(planPhase);
+      const armIndex = lines.findIndex((line) => line.startsWith('**If iteration_count >= 3:**'));
+      assert.ok(armIndex >= 0, 'plan-phase.md must carry the iteration_count >= 3 arm');
+      const armWindow = lines.slice(armIndex, armIndex + 5).join(' ');
+      assert.match(
+        armWindow,
+        /Recount BLOCKER \+ WARNING/,
+        'the >= 3 arm must recount BLOCKER + WARNING before gating'
+      );
+      assert.match(
+        armWindow,
+        /INFO-only.*proceed to step 13/,
+        'an INFO-only result at the iteration cap must accept, not halt on the user gate'
+      );
+    });
+
     test('the planner routes to the coupling reference, and the reference teaches the rule', () => {
       const planner = fs.readFileSync(PLANNER_PATH, 'utf-8');
       assert.match(
