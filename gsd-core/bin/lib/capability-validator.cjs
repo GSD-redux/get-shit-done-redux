@@ -1588,6 +1588,16 @@ function validateRuntimeBody(cap) {
           'runtime.orchestratorExec.promptFlag must be a string or null (got: ' + JSON.stringify(oe.promptFlag) + ')',
         );
       }
+
+      // modelFlag — optional; string or null (#3714). `null`/absent means the
+      // host offers no per-invocation model override on this exec path; a
+      // string names the flag that pins the executor's model (codex: --model).
+      // Deliberately asymmetric: only codex declares this today.
+      if (oe.modelFlag !== undefined && oe.modelFlag !== null && typeof oe.modelFlag !== 'string') {
+        errors.push(
+          'runtime.orchestratorExec.modelFlag must be a string or null (got: ' + JSON.stringify(oe.modelFlag) + ')',
+        );
+      }
     }
   }
 
