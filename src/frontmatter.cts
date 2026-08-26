@@ -412,21 +412,80 @@ function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCom
  * refusal/null-byte/comment-channel glue below. Renaming closes that gap literally: nothing in
  * this module still answers to the old hand-rolled scanner's name.
  *
- * No reader-side leniency repair (post-#3881-followup): a prior revision of this function fell
- * back, on a throw, to two hand-rolled re-implementations of YAML dialect
- * (`repairAmbiguousColonValues` for `key: value: extra`/`key: value:`-shaped ambiguous colons,
- * `repairMalformedInlineArrays`+`splitLegacyInlineArrayItems` for a malformed/unclosed `[...]`)
- * — itself the exact class of hand-rolled parsing ADR-3473 §8.1 exists to delete, just moved
- * from the primary path to a fallback one. Measured against every tracked `*.md` file with a
- * frontmatter fence in this repo (910 files): disabling each repair independently changed the
- * parse result for **zero** documents. Both were deleted outright rather than kept on the
- * "the old scanner did this" assumption; see the commit message for the sweep methodology.
+ * RESTORED (fix #3881/#3881-followup-2, closes the #3705-shaped regression reported against
+ * `tests/smart-entry.unit.test.cjs:867`/`tests/smart-entry.property.test.cjs`): a prior revision
+ * of this function fell back, on a throw, to TWO hand-rolled re-implementations of YAML dialect —
+ * `repairAmbiguousColonValues` (below) for `key: value: extra`-shaped ambiguous colons, and
+ * `repairMalformedInlineArrays`/`splitLegacyInlineArrayItems` for a malformed/unclosed `[...]`.
+ * Both were deleted in 810e5e508 after a sweep of every tracked `*.md` file in this repo (910
+ * files) showed disabling each repair independently changed the parse result for zero documents.
+ *
+ * THAT SWEEP MEASURED THE WRONG POPULATION. `repairAmbiguousColonValues`'s one real dependent is
+ * not a document committed anywhere in this repo — it is user hand-edited STATE.md content that
+ * exists only on end users' machines and is pinned here by `tests/smart-entry.unit.test.cjs` (see
+ * its own in-file comment: "silently re-opened #2571/#2570 for hand-edited STATE.md that omits
+ * the template em dash"). The exact shape: `last_activity: 2026-06-08: reviewed the PR queue` — a
+ * colon-separated date+description a user typed by hand instead of the template's ` — ` (em dash)
+ * separator. js-yaml correctly refuses this as genuinely ambiguous YAML (a colon+space inside an
+ * unquoted scalar opens a nested mapping key); the old hand-rolled scanner tolerated it by taking
+ * everything after the first `key:` verbatim. A future sweep of tracked `.md` files will AGAIN
+ * show zero dependents for this exact reason — the dependent never lives in this repo's tree, it
+ * lives in a user's own `.planning/STATE.md`. Do not delete this again on that evidence alone;
+ * `tests/smart-entry.unit.test.cjs` and the frontmatter-level row in
+ * `tests/feat-3881-yaml-parser-consequences.test.cjs` are the actual proof the dependent exists.
+ *
+ * `repairMalformedInlineArrays`/`splitLegacyInlineArrayItems` stay deleted: their zero-dependents
+ * finding was reverified directly (frontmatter/smart-entry/verify/roadmap suites all pass without
+ * them) and, unlike the colon repair, nothing in the test suite or #2570/#2571 documents a
+ * hand-edited-STATE.md shape that depends on inline-array leniency.
  */
+function loadWithAmbiguousColonRepair(yaml: string): unknown {
+  try {
+    return yamlLoad(yaml, YAML_LOAD_OPTS);
+  } catch (e) {
+    const repaired = repairAmbiguousColonValues(yaml);
+    if (repaired === yaml) throw e; // nothing to repair — surface the original error
+    try {
+      return yamlLoad(repaired, YAML_LOAD_OPTS);
+    } catch {
+      throw e; // repair didn't help (still invalid, possibly for another reason) — surface the original
+    }
+  }
+}
+
+/**
+ * Double-quote (and escape) any column-0 `key: value` line whose (single-line) value contains an
+ * unquoted colon+whitespace or a trailing bare colon — the exact shape that reads as an ambiguous
+ * nested mapping key to a real YAML parser (`key: value: extra`, `key: value:`). Lines that are
+ * already safely quoted or open a flow/block collection (`"`, `'`, `[`, `{`) are left untouched
+ * (js-yaml already handles those); an empty value (`key:` alone, opening a nested block) is left
+ * untouched too, since repairing it would change a legitimate nested-map opener into a scalar.
+ * Only column-0 lines are considered — an indented line is either already-valid nested content or
+ * a genuinely different malformation this repair does not claim to fix.
+ *
+ * Restored (fix #3881/#3881-followup-2) — see `loadWithAmbiguousColonRepair`'s docblock for why a
+ * tracked-document sweep cannot see this function's one real dependent (hand-edited STATE.md,
+ * #2571/#2570, pinned by `tests/smart-entry.unit.test.cjs`).
+ */
+function repairAmbiguousColonValues(yaml: string): string {
+  return splitLines(yaml)
+    .map((line) => {
+      const m = /^([A-Za-z0-9_][A-Za-z0-9_-]*):[ \t](.+)$/.exec(line);
+      if (!m) return line;
+      const [, key, value] = m;
+      if (/^["'[{]/.test(value)) return line; // already safely quoted/collection-opened
+      if (!/:(?:[ \t]|$)/.test(value)) return line; // no ambiguous colon in the value
+      const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      return `${key}: "${escaped}"`;
+    })
+    .join('\n');
+}
+
 function parseGuardedYamlRegion(yaml: string): Frontmatter {
   refuseAnchorsAndAliases(yaml);
   refuseIfSentinelPresent(yaml);
   const escaped = escapeNullBytesForParse(yaml);
-  const raw: unknown = yamlLoad(escaped, YAML_LOAD_OPTS);
+  const raw: unknown = loadWithAmbiguousColonRepair(escaped);
   const normalized = normalizeParsedValue(raw, false);
   const root: Record<string, unknown> =
     normalized && typeof normalized === 'object' && !Array.isArray(normalized)

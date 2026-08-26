@@ -586,6 +586,27 @@ describe('A8 aliasExpansionCannotExhaustMemory', () => {
   });
 });
 
+// A9: fix #3881/#3881-followup-2 (regression pinned by tests/smart-entry.unit.test.cjs:867,
+// tests/smart-entry.property.test.cjs). `repairAmbiguousColonValues`'s only real dependent is
+// hand-edited STATE.md content that never lives in this repo's own tracked `*.md` files — a
+// tracked-document sweep will always show zero dependents for this function, which is exactly
+// the wrong signal to delete it on (see `loadWithAmbiguousColonRepair`'s docblock in
+// src/frontmatter.cts). This row pins the dependency at the frontmatter layer itself, so the
+// next document sweep sees it here too, not only three modules away in smart-entry.
+describe('A9 ambiguousColonRepairSurvivesHandEditedStateMd (#2571/#2570)', () => {
+  test('a colon-separated date+description value parses to the full string after the first colon', () => {
+    const doc = '---\nlast_activity: 2026-06-08: reviewed the PR queue\n---\n\nbody\n';
+
+    const parsed = extractFrontmatter(doc);
+
+    assert.equal(
+      parsed.last_activity,
+      '2026-06-08: reviewed the PR queue',
+      'the ambiguous colon must be repaired rather than the whole region going unparseable'
+    );
+  });
+});
+
 describe('finding 3: null-byte sentinel round-trip is injective', () => {
   const E000 = String.fromCharCode(0xE000);
 
