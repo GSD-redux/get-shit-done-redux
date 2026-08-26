@@ -135,7 +135,7 @@ Decisions 1–7 answer *how* this epic is organized. This section says *what the
 - Amending a rule here is an amendment to this ADR, not a code change with a comment.
 - Each rule carries a **status**: *Enforced* or *Required — Phase N*.
 
-#### 8.1 One YAML parser — *Required — phase unassigned*
+#### 8.1 One YAML parser — *Required — Phase 4*
 
 **Question.** What parses and serializes `.planning/` frontmatter?
 
@@ -161,6 +161,68 @@ So this is a **type-contract migration across ~50 call sites**, not a parser sub
 Both close #3349 and #3360, which are **read-side** defects a real parser fixes regardless of the value types it hands back. (b) is the larger prize and is its own epic-sized change.
 
 **Sequencing note, decided 2026-08-25.** This rule lands **after** Phases 1–3. §8.8's schema declares each key's real type, cardinality and enum — which is precisely the artifact that makes (b) tractable rather than epic-sized. Answering the fork before the schema exists means guessing the type contract; answering it after means reading it off the schema.
+
+> **ANSWER, 2026-08-26 (Phase 4, #3881) — the fork is (a), a string-coercing adapter.** The forcing
+> function above is discharged here: the question is answered before the implementation PR opens.
+>
+> The sequencing note's bet did not pay. Measured against the merged schema rather than predicted:
+> `extractFrontmatter` has **78 non-test call sites across 23 files**, and only **33 of them (42%)**
+> read STATE.md. The other 45 read PLAN, VERIFICATION, SUMMARY, UAT, roadmap or generic agent/skill
+> frontmatter — document kinds §8.8's schema does not model. `FRONTMATTER_SCHEMAS` still declares
+> four kinds with **no type declaration for any of them**, and `STATE_FIELD_SCHEMA` has no
+> cross-reference to it. (b) would therefore still require net-new type contracts for four-plus
+> document kinds: the schema shrank the STATE.md slice of an otherwise unchanged epic-sized
+> migration.
+>
+> The prize is also smaller than the list above implies. Of the five compensating mechanisms named,
+> **two survive real types**: `frontmatterDeepEqual` (17 lines, 3 callers) is required for
+> no-op/dirty-key detection whatever the value types are, and the #3257 comment channel is orthogonal
+> to typing — a faithful parser discards comments, so that channel is needed *more* under (b), not
+> less. Only `sliceTopLevelFrontmatterSegments`, the `[object Object]` guard and
+> `noOpObjectListSetError` die: **~31 lines across 3 call sites.**
+>
+> (b) remains the larger prize and is **not** silently dropped — it is recorded here with the numbers
+> that say why it stays epic-sized, so a future reader inherits the measurement rather than the
+> intuition.
+>
+> Implementation note: fork (a) needs **no hand-written coercion layer.** js-yaml's `FAILSAFE_SCHEMA`
+> resolves only `!!str`/`!!seq`/`!!map`, so every scalar returns a string by spec — today's contract
+> exactly. `gap_closure: true` stays `"true"` and
+> `FRONTMATTER_SCHEMAS['plan-gap-closure'].requiredValues` keeps matching with no call site changed.
+
+> **Amendment, 2026-08-26 (Phase 4, #3881) — the justifying sentence above is wrong, and this is the
+> THIRD wrong premise in this ADR.** The claim *"Both close #3349 and #3360, which are read-side
+> defects a real parser fixes regardless of the value types it hands back"* describes defects that no
+> longer exist. Verified by **executing** the compiled parser at `ddde001af`, not by reading it:
+>
+> - **#3349** (escape never inverted on read → `b → 2b+1` growth per read-modify-write until OOM): four
+>   successive round-trips of a value containing `"` and `\` return it **byte-identical every time**,
+>   length stable. `unescapeDoubleQuoted` is a genuine inverse, shipped under **#3497**.
+> - **#3360** (`\s` at `^` under `/m` eating the `\n` of a CRLF pair → `[]` for every CRLF `must_haves`
+>   block): LF and CRLF inputs both return `["alpha","beta"]`.
+>
+> Both issues are CLOSED. After §8.6's "keeps only its raw-write check" (no such check existed) and
+> §8.8's "delete `lint-state-field-drift.cjs`" (it guards an unrelated contract), the pattern is now
+> established firmly enough to be stated as a rule: **a factual claim in this ADR is a hypothesis
+> until the implementing phase executes it.** Decision 6 obliges a phase to verify a claim before
+> acting on it, not merely to count the result.
+>
+> **The Rule survives the collapse; only the justification died.** *"Escaping, quoting, CRLF handling
+> and indentation leave this repo's maintenance surface"* is untouched, and the evidence for it is
+> better than the two dead issues ever were: #1779, #1882, #1572, #1660, #3257 and #3497 are all this
+> repo paying, repeatedly, to maintain a YAML parser.
+>
+> **And the phase found live defects the dead ones did not cover.** A differential across all 901
+> frontmatter-bearing tracked documents shows **99.1% exact key-set agreement** and 2,177 of 2,178
+> scalars byte-identical — with **every disagreement being the legacy parser wrong**:
+> - **Block scalars are not parsed at all.** `commands/gsd/add-tests.md` declares
+>   `argument-instructions: |`; the legacy parser returns the block indicator `"|"` as the value,
+>   discards the instruction text, and invents a **phantom top-level key `Example`** from inside the
+>   block body. A live defect in a shipped artifact.
+> - **A Unicode key is silently dropped.**
+>
+> §8.1 closes both by construction. That is the payoff this rule actually has, and it is recorded
+> from measurement rather than inherited from a sentence.
 
 #### 8.2 Enumerations return correct values by construction — *Required — phase unassigned*
 
@@ -305,9 +367,37 @@ Net across the set: one guard retired, one increase recorded honestly. The incre
 |---|---|
 | `scripts/lint-state-write-path-drift.cjs` | retained, shrunk (§8.6) — seam-bypass `writeStateMd(` arm and its ratchet retired at Phase 1; composition-bypass arm retained and made terminal; raw-write check added net-new. See §8.6's amendment. |
 | `scripts/lint-state-field-drift.cjs` | **RETAINED** — the Phase-3 retirement instruction rested on a wrong premise about what this guard does; see §8.8's amendment. It guards the ADR-3180 §7.7 / #3187 coercion ladder, which no schema makes unrepresentable. |
-| `scripts/lint-vendored-deps.cjs` | reused as-is for §8.1's vendoring rule |
+| `scripts/lint-vendored-deps.cjs` | **not reusable as-is** — generalized to a manifest by §8.1; see the correction below |
 | `local/no-external-require-in-bin` | reused as-is; enforces §8.1's packaging rule |
 | `local/no-adhoc-markdown-parsing` | widened past `src/**/*.cts` per Decision 5 (coverage fix, tracked on #3426/#3239) |
 | `local/no-adhoc-regex-escape` | widened to `MemberExpression`/`TSAsExpression` with a `.source`-aware exemption (§8.3) |
-| `scripts/lint-frontmatter-scalar-broad-grep.cjs` | expected casualty of §8.1; phase unassigned |
-| `scripts/lint-phase-enumeration-drift.cjs` | expected casualty of §8.2; phase unassigned |
+| `scripts/lint-frontmatter-scalar-broad-grep.cjs` | **NOT a casualty of §8.1 — retained.** See the correction below. |
+| `scripts/lint-phase-enumeration-drift.cjs` | expected casualty of §8.2 — **verify before retiring** (Phase 5) |
+
+> **Correction, 2026-08-26 (Phase 4, #3881) — two rows in this roster were wrong, and they are the
+> FOURTH and FIFTH wrong premises in this ADR.** Both were caught by applying the rule recorded in
+> §8.1's amendment — *a factual claim in this ADR is a hypothesis until the implementing phase
+> executes it* — on its first use.
+>
+> **`lint-frontmatter-scalar-broad-grep.cjs` is not a casualty of §8.1 and is retained.** It has
+> nothing to do with the TypeScript parser. It is `DEFECT.FRONTMATTER-SCALAR-BROAD-GREP` (#586 /
+> PR #650): it scans fenced ```bash / ```sh blocks in `gsd-core/workflows/*.md`, `agents/*.md` and
+> `commands/**/*.md` for shell `grep "^key:"` invocations that read a frontmatter scalar from the
+> whole markdown body instead of scoping to the frontmatter block — the failure that once yielded
+> `passed+gaps_found+human_needed` instead of `passed` and blocked a passing phase. **The prompt
+> layer does not call our parser; it runs `grep` in a shell.** Vendoring js-yaml makes a shell grep
+> no safer, so retiring this guard would be a pure coverage loss dressed as a guard-count win —
+> the Goodhart outcome Decision 6 exists to prevent, and the third time in this epic that a
+> retirement claim has pointed at a guard whose actual contents it did not describe.
+>
+> **`lint-vendored-deps.cjs` cannot be "reused as-is."** All four of its checks name `re2js`
+> literally, as does its `REFRESH_COMMAND`. Vendoring a second package by pasting a second hardcoded
+> block would violate **§8.3, "one implementation per rule"**, inside the epic that exists to end
+> that. Phase 4 generalizes it to a table-driven manifest, preserving re2js's four checks unchanged.
+>
+> A further wrinkle the roster did not anticipate: js-yaml ships **no type declarations** and
+> `@types/js-yaml` is not installed, so the re2js precedent's verbatim `.d.cts` copy has no upstream
+> to copy from. `src/vendor/js-yaml.d.cts` is hand-authored, declaring only `load`, `dump`,
+> `FAILSAFE_SCHEMA` and `YAMLException` — which also makes anchors, aliases and custom types
+> unreachable from typed code, a capability gate rather than a shortcut. It is therefore excluded
+> from the byte-compare and pinned by a test instead.
