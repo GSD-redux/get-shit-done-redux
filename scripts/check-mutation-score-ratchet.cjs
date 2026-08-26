@@ -36,8 +36,13 @@
  * exit code already reports that).
  *
  * CLI:
- *   node scripts/check-mutation-score-ratchet.cjs --module <name> [--report <path>]
+ *   node scripts/check-mutation-score-ratchet.cjs --module <name> [--report <path>] [--matrix <path>]
  * `--report` defaults to reports/mutation/mutation.json (Stryker's own default).
+ * `--matrix` defaults to this repo's own scripts/mutation-matrix.cjs; it is an injectable seam
+ * so tests can point the CLI at a synthetic COVERED fixture instead of the real, live-ratcheting
+ * config (see tests/mutation-score-ratchet.test.cjs — a test asserting this script's fail/pass
+ * behaviour must never hardcode a real module's numeric floor, because that floor is exactly
+ * what this mechanism exists to move).
  */
 
 const fs = require('node:fs');
@@ -94,13 +99,15 @@ function extractAchievedScore(report) {
 }
 
 function parseArgs(argv) {
-  const out = { module: null, report: 'reports/mutation/mutation.json' };
+  const out = { module: null, report: 'reports/mutation/mutation.json', matrix: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--module') {
       out.module = argv[++i];
     } else if (arg === '--report') {
       out.report = argv[++i];
+    } else if (arg === '--matrix') {
+      out.matrix = argv[++i];
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -111,10 +118,11 @@ function parseArgs(argv) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const { COVERED } = require('./mutation-matrix.cjs');
+  const matrixPath = args.matrix ? path.resolve(args.matrix) : path.join(__dirname, 'mutation-matrix.cjs');
+  const { COVERED } = require(matrixPath);
   const entry = COVERED[args.module];
   if (!entry) {
-    throw new ExitError(1, `check-mutation-score-ratchet: unknown module '${args.module}' — not in scripts/mutation-matrix.cjs COVERED`);
+    throw new ExitError(1, `check-mutation-score-ratchet: unknown module '${args.module}' — not in ${args.matrix ? matrixPath : 'scripts/mutation-matrix.cjs'} COVERED`);
   }
 
   const reportPath = path.resolve(args.report);

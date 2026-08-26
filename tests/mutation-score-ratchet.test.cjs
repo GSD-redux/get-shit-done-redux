@@ -84,6 +84,30 @@ describe('extractAchievedScore: Stryker json-reporter document', () => {
 });
 
 // ── CLI end-to-end: fail on a planted over-floor score, pass when the floor is raised ───
+// SYNTHETIC_FLOOR is a fixture value this test file owns outright — never a real module's
+// minScore from scripts/mutation-matrix.cjs. That real config ratchets UP as modules improve
+// (exactly what this script's own CLI enforces), so a row that hardcodes a real floor breaks
+// every time the ratchet does its job (see config-schema: 52 -> 74 by commit 973321541, which
+// broke this file's previous PLANTED/RESTORED rows). Building a synthetic `--matrix` fixture
+// with a floor this test controls makes the rows indifferent to any real module's floor moving.
+const SYNTHETIC_MODULE = 'synthetic-ratchet-fixture';
+const SYNTHETIC_FLOOR = 65;
+
+function withMatrixFixture(floor, fn) {
+  const dir = createTempDir('mutation-score-ratchet-matrix-');
+  const matrixPath = path.join(dir, 'fixture-mutation-matrix.cjs');
+  fs.writeFileSync(
+    matrixPath,
+    `'use strict';\nmodule.exports = { COVERED: { '${SYNTHETIC_MODULE}': { minScore: ${floor} } } };\n`,
+    'utf8'
+  );
+  try {
+    return fn(matrixPath);
+  } finally {
+    cleanup(dir);
+  }
+}
+
 function withReportFixture(mutationScore, fn) {
   // Build a Stryker json-reporter-shaped document whose achieved score is EXACTLY
   // `mutationScore` via N killed + (100 - N) survived out of 100 mutants — avoids floating
@@ -114,46 +138,54 @@ function withReportFixture(mutationScore, fn) {
 }
 
 describe('check-mutation-score-ratchet CLI: end-to-end fail-then-pass', () => {
-  test('PLANTED: achieved score far above config-schema\'s real floor (52) FAILS the ratchet', () => {
-    withReportFixture(52 + RATCHET_SLACK + 10, (reportPath) => {
-      const result = runNode(
-        [SCRIPT, '--module', 'config-schema', '--report', reportPath],
-        { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS }
-      );
-      assert.notEqual(result.exitCode, 0, `expected nonzero exit; stderr: ${result.stderr}`);
-      assert.match(result.stderr, /raise the floor/);
-      assert.match(result.stderr, /config-schema/);
+  test(`PLANTED: achieved score far above a synthetic module's floor (${SYNTHETIC_FLOOR}) FAILS the ratchet`, () => {
+    withMatrixFixture(SYNTHETIC_FLOOR, (matrixPath) => {
+      withReportFixture(SYNTHETIC_FLOOR + RATCHET_SLACK + 10, (reportPath) => {
+        const result = runNode(
+          [SCRIPT, '--module', SYNTHETIC_MODULE, '--report', reportPath, '--matrix', matrixPath],
+          { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS }
+        );
+        assert.notEqual(result.exitCode, 0, `expected nonzero exit; stderr: ${result.stderr}`);
+        assert.match(result.stderr, /raise the floor/);
+        assert.match(result.stderr, new RegExp(SYNTHETIC_MODULE));
+      });
     });
   });
 
-  test('RESTORED: an achieved score within slack of the same floor PASSES', () => {
-    withReportFixture(52 + 1, (reportPath) => {
-      const result = runNode(
-        [SCRIPT, '--module', 'config-schema', '--report', reportPath],
-        { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS }
-      );
-      assert.equal(result.exitCode, 0, `expected exit 0; stderr: ${result.stderr}`);
-      assert.match(result.stdout, /ok mutation-score-ratchet/);
+  test('RESTORED: an achieved score within slack of the same synthetic floor PASSES', () => {
+    withMatrixFixture(SYNTHETIC_FLOOR, (matrixPath) => {
+      withReportFixture(SYNTHETIC_FLOOR + 1, (reportPath) => {
+        const result = runNode(
+          [SCRIPT, '--module', SYNTHETIC_MODULE, '--report', reportPath, '--matrix', matrixPath],
+          { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS }
+        );
+        assert.equal(result.exitCode, 0, `expected exit 0; stderr: ${result.stderr}`);
+        assert.match(result.stdout, /ok mutation-score-ratchet/);
+      });
     });
   });
 
   test('an unknown --module exits nonzero with a clear message', () => {
-    withReportFixture(90, (reportPath) => {
-      const result = runNode(
-        [SCRIPT, '--module', 'does-not-exist', '--report', reportPath],
-        { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS }
-      );
-      assert.notEqual(result.exitCode, 0);
-      assert.match(result.stderr, /unknown module/);
+    withMatrixFixture(SYNTHETIC_FLOOR, (matrixPath) => {
+      withReportFixture(90, (reportPath) => {
+        const result = runNode(
+          [SCRIPT, '--module', 'does-not-exist', '--report', reportPath, '--matrix', matrixPath],
+          { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS }
+        );
+        assert.notEqual(result.exitCode, 0);
+        assert.match(result.stderr, /unknown module/);
+      });
     });
   });
 
   test('a missing report file exits nonzero with a clear message', () => {
-    const result = runNode(
-      [SCRIPT, '--module', 'config-schema', '--report', path.join(os.tmpdir(), 'does-not-exist-mutation.json')],
-      { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS }
-    );
-    assert.notEqual(result.exitCode, 0);
-    assert.match(result.stderr, /report not found/);
+    withMatrixFixture(SYNTHETIC_FLOOR, (matrixPath) => {
+      const result = runNode(
+        [SCRIPT, '--module', SYNTHETIC_MODULE, '--report', path.join(os.tmpdir(), 'does-not-exist-mutation.json'), '--matrix', matrixPath],
+        { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS }
+      );
+      assert.notEqual(result.exitCode, 0);
+      assert.match(result.stderr, /report not found/);
+    });
   });
 });
