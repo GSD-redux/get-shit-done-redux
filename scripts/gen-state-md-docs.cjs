@@ -137,8 +137,17 @@ function renderFrontmatterRegion(schema) {
       );
     }
   }
+  // NOTE: this body deliberately opens the SAME ```markdown fence the
+  // hand-authored File Template body continues in — it does NOT wrap the
+  // frontmatter in its own separate ```yaml fence. `tests/state-transition
+  // .test.cjs`'s bug #21 regression guard extracts the entire ```markdown
+  // ... ``` block and asserts the extracted text STARTS with '---': a
+  // separate preceding fence broke that contract (#3873 fixed-forward). The
+  // END marker therefore lands inside the still-open fence, right after the
+  // frontmatter's closing '---' and before the hand-authored '# Project
+  // State' line — that is intentional, not a rendering bug.
   return [
-    '```yaml',
+    '```markdown',
     '---',
     "gsd_state_version: '1.0'  # placeholder; syncStateFrontmatter overwrites on first state.* call",
     'status: planning',
@@ -149,7 +158,6 @@ function renderFrontmatterRegion(schema) {
     '  completed_plans: 0',
     '  percent: 0',
     '---',
-    '```',
   ].join('\n');
 }
 

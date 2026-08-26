@@ -305,28 +305,54 @@ describe('gen-state-md-docs.cjs generated template validity (#3873 row 27)', () 
     const templateTarget = gen.TARGETS.find((t) => t.key === 'template');
     const templateText = fs.readFileSync(path.join(tmpDir, templateTarget.relPath), 'utf8');
 
-    // Extract the generated region via the generator's own marker locator
-    // (never an ad-hoc regex over file content) — the region body is
-    // `gen.renderFrontmatterRegion`'s own output, fenced in ```yaml.
+    // Deliberately DOES NOT go through `gen.findRegion` / `gen.startMarker` /
+    // `gen.renderFrontmatterRegion` — a check built from the generator's own
+    // marker-location and rendering logic can never catch a defect IN that
+    // logic (the #3873 regression this row exists to prevent: the generator
+    // wrapped its output in its own ```yaml fence, ahead of and separate from
+    // the ```markdown fence the File Template actually ships in — every
+    // marker-based assertion above still passed while the real contract
+    // silently broke). Instead this re-derives the SAME independent
+    // extraction `tests/state-transition.test.cjs`'s bug #21 regression guard
+    // and `tests/state.test.cjs`'s `readShippedStateTemplateBody` use: find
+    // the first ```markdown ... ``` fence by raw regex and assert directly on
+    // its content, exactly as an external consumer (an AI agent creating
+    // .planning/STATE.md, or gsd-tools reading the shipped template) would.
+    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own state.md template, fixed-size author-controlled content
+    const fenced = templateText.match(/```markdown\r?\n([\s\S]*?)```/);
+    assert.ok(fenced, 'the File Template section must contain a ```markdown fenced block');
+    const body = fenced[1];
+
+    assert.ok(
+      body.trimStart().startsWith('---'),
+      `File Template must start with '---' (YAML frontmatter), but starts with: ${JSON.stringify(body.slice(0, 60))}`,
+    );
+
+    // Minimal frontmatter-key parser, independent of the generator's own
+    // rendering — mirrors the bug #21 test's `parseFrontmatterKeys`.
+    const keys = new Set();
+    const bodyLines = splitLines(body.trimStart());
+    let inBlock = false;
+    for (const line of bodyLines) {
+      const trimmed = line.trim();
+      if (!inBlock) {
+        if (trimmed === '---') { inBlock = true; continue; }
+        break;
+      }
+      if (trimmed === '---') break;
+      const colonIdx = trimmed.indexOf(':');
+      if (colonIdx > 0) keys.add(trimmed.slice(0, colonIdx).trim());
+    }
+
+    assert.ok(keys.has('gsd_state_version'), `frontmatter must include 'gsd_state_version', found: ${[...keys].join(', ')}`);
+    assert.ok(keys.has('status'), `frontmatter must include 'status', found: ${[...keys].join(', ')}`);
+    assert.ok(keys.has('progress'), `frontmatter must include 'progress', found: ${[...keys].join(', ')}`);
+
+    // And the marked region must still exist and still be the mechanism that
+    // produced this content — checked SEPARATELY from (never substituting
+    // for) the structural assertions above.
     const { range } = gen.findRegion(templateText, templateTarget.relPath, 'frontmatter');
     assert.ok(range, 'frontmatter region markers must still be present after --write');
-    const regionLines = splitLines(templateText.slice(range[0], range[1]));
-    assert.equal(regionLines[0], gen.startMarker('frontmatter'));
-    assert.equal(regionLines[regionLines.length - 1], gen.endMarker('frontmatter'));
-    const yamlLines = regionLines.slice(2, -2); // drop START marker, ```yaml, ```, END marker
-
-    assert.equal(yamlLines[0], '---', 'frontmatter must open with a bare --- delimiter');
-    assert.equal(yamlLines[yamlLines.length - 1], '---', 'frontmatter must close with a bare --- delimiter');
-    assert.ok(yamlLines.some((l) => l.startsWith("gsd_state_version: '1.0'")));
-    assert.ok(yamlLines.includes('status: planning'));
-    assert.ok(yamlLines.includes('  total_phases: 0'));
-
-    // The hand-authored body (outside the marked region) must still open
-    // with the real STATE.md heading right after the fence, line-for-line.
-    const afterRegion = splitLines(templateText.slice(range[1]));
-    const markdownFenceIdx = afterRegion.findIndex((l) => l === '```markdown');
-    assert.ok(markdownFenceIdx !== -1, 'the hand-authored body fence must survive --write');
-    assert.equal(afterRegion[markdownFenceIdx + 1], '# Project State');
   });
 });
 

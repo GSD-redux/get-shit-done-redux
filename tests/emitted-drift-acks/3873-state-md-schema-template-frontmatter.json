@@ -1,9 +1,0 @@
-{
-  "$comment": "Hash ack (#2914 fragment). Reason: #3873 (ADR-3473 §8.8, Phase 3) makes gsd-core/templates/state.md's frontmatter block a MARKED, GENERATED region owned by scripts/gen-state-md-docs.cjs and projected from src/state-md-schema.cts's STATE_FIELD_SCHEMA. The generator's `--write` re-splices the block between STATE-MD-SCHEMA:START:frontmatter/END:frontmatter HTML-comment markers so a future schema change and the shipped template cannot silently disagree (the #3873 design doc's own worked example: FRONTMATTER_BODY_SOURCE carried last_activity while FRONTMATTER_KEY_TO_BODY_LABEL did not). Landing the markers moved the frontmatter block from a plain fenced ```markdown sample into its own ```yaml fence wrapped by the two marker comments, plus a short explanatory paragraph above it — the installer copies the whole gsd-core/templates/ tree verbatim, so this is an ordinary hashed emitted PATH key, not a growth-by-filename one (the file is not under gsd-core/workflows/ or agents/).",
-  "version": 1,
-  "paths": {
-    "gsd-core/templates/state.md": {
-      "reason": "#3873: the frontmatter block is now a generated, marked region (scripts/gen-state-md-docs.cjs --write, src/state-md-schema.cts) with a short explanatory paragraph and START/END marker comments added around it; content unchanged (same keys/values), structure and byte length moved"
-    }
-  }
-}
