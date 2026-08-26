@@ -6428,3 +6428,135 @@ describe('#3707-CR follow-up MAJOR: VERIFICATION.md and deferred-items.md ingres
     }
   });
 });
+
+// #3078-CR: two column-0-adjacent asymmetries in `parseUatItemsWithStats`'s
+// `result:` scan, reproduced directly against the LIVE built copy
+// (`../gsd-core/bin/lib/uat.cjs`, imported at the top of this file) rather
+// than through a rebuilt fixture, so these rows fail against the ACTUAL
+// shipped parser, not a stale mental model of it.
+//
+// DEFECT A: `/^result:.../im` treats U+2028 LINE SEPARATOR and U+2029
+// PARAGRAPH SEPARATOR as line-start boundaries (native JS `/m` behaviour),
+// but `normalizeLineEndings` (core-utils.cjs) folds only `\r`/`\r\n` and never
+// touches U+2028/U+2029, and neither does `split('\n')` or the heading
+// tokenizer. A `result:`-shaped line living INSIDE an `expected: |` scalar
+// body, immediately after one of these separators, is therefore read as a
+// real line start by the regex engine and — because `.match()` without `/g`
+// returns the LEFTMOST match in the whole string — wins over a genuine
+// column-0 `result:` line appearing later, discarding it with no gap raised.
+//
+// DEFECT B: the same `.match()` call has no notion of "more than one
+// column-0 `result:` line in this block" at all. Two column-0 `result:`
+// lines resolve to whichever the regex engine reaches first, with the
+// second recorded nowhere — not as an item, not as a parse gap.
+describe('parseUatItemsWithStats — result: line-scan boundary defects (#3078-CR)', () => {
+  const LINE_SEPARATOR = String.fromCharCode(0x2028);
+  const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
+
+  // Row 1 ("### 1. Alpha") by IDENTITY: test number AND name AND result.
+  // A bare count or a bare `result` check both pass for the wrong reason —
+  // e.g. a phantom row from the scalar's OWN `result: pass` clause matching
+  // `items.length === 1` just as readily as the real blocked row would.
+  function findAlphaBlocked(items) {
+    return items.find((i) => i.test === 1 && i.name === 'Alpha' && i.result === 'blocked');
+  }
+  function findAnyPassItem(items) {
+    return items.find((i) => i.result === 'pass' || i.result === 'passed');
+  }
+
+  function defectADoc(marker) {
+    // An `expected: |` scalar body whose text ends in "...x<marker>result:
+    // pass", followed by the block's REAL column-0 "result: blocked" line.
+    return '## Tests\n\n### 1. Alpha\nexpected: |\n  x' + marker + 'result: pass\nresult: blocked\n';
+  }
+
+  test('[RED] A1: U+2028 inside an expected scalar must not swallow the column-0 blocked row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(defectADoc(LINE_SEPARATOR));
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(findAlphaBlocked(items), `expected outstanding row 1/Alpha/blocked absent: ${describeAll()}`);
+    assert.strictEqual(findAnyPassItem(items), undefined, `a phantom pass item must not be emitted: ${describeAll()}`);
+  });
+
+  test('[RED] A2: U+2029 inside an expected scalar must not swallow the column-0 blocked row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(defectADoc(PARAGRAPH_SEPARATOR));
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(findAlphaBlocked(items), `expected outstanding row 1/Alpha/blocked absent: ${describeAll()}`);
+    assert.strictEqual(findAnyPassItem(items), undefined, `a phantom pass item must not be emitted: ${describeAll()}`);
+  });
+
+  test('[CONTROL] A3: an ordinary (non-line-terminator) marker in the same position still yields the blocked row', () => {
+    // Proves A1/A2 are a SEPARATOR defect, not a content defect: swap the
+    // exotic separator for two literal "@@" characters, which JS never
+    // treats as a line terminator under any regex flag.
+    const { items, headingsSeen } = parseUatItemsWithStats(defectADoc('@@'));
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(findAlphaBlocked(items), `control document must still surface 1/Alpha/blocked: ${describeAll()}`);
+    assert.strictEqual(findAnyPassItem(items), undefined, describeAll());
+  });
+
+  test('[CONTROL] A4: U+2028 living in ordinary prose (not faking a line start) parses unaffected', () => {
+    // The separator sits between two prose words, never immediately before a
+    // "result:"-shaped token, so it cannot fake a line start that matters —
+    // this must parse exactly as it does today, both before and after any
+    // future fix to the boundary handling.
+    const doc = '## Tests\n\n### 1. Alpha\nexpected: |\n  some prose' + LINE_SEPARATOR + 'continues here\nresult: blocked\n';
+    const { items, headingsSeen } = parseUatItemsWithStats(doc);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(findAlphaBlocked(items), `legitimate U+2028 content must not perturb parsing: ${describeAll()}`);
+    assert.strictEqual(items.length, 1, `no extra/phantom item may appear: ${describeAll()}`);
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[RED] B1: two column-0 result: lines (pass then blocked) must report ambiguity as a gap, not resolve to "pass"', () => {
+    const doc = '### 1. Alpha\nexpected: ok\nresult: pass\nresult: blocked\n';
+    const { items, headingsSeen } = parseUatItemsWithStats(doc);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    // Pin the CONTRACT (ambiguity is a gap), not an implementation detail of
+    // how the gap is counted: assert the identity-negative (no confident
+    // pass item — and no confident item of ANY result for this ambiguous
+    // block) plus the fact that the block registered as an unparsed gap.
+    assert.strictEqual(findAnyPassItem(items), undefined, `an ambiguous block must never confidently resolve to pass: ${describeAll()}`);
+    assert.strictEqual(items.find((i) => i.test === 1), undefined, `an ambiguous block must not emit ANY confident item for row 1: ${describeAll()}`);
+    assert.strictEqual(headingsSeen, 1, `the ambiguous block must count as exactly one parse gap: ${describeAll()}`);
+  });
+
+  test('[RED] B2: the reverse order (blocked then pass) must behave IDENTICALLY to B1 — order must not decide meaning', () => {
+    const doc = '### 1. Alpha\nexpected: ok\nresult: blocked\nresult: pass\n';
+    const { items, headingsSeen } = parseUatItemsWithStats(doc);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.strictEqual(findAnyPassItem(items), undefined, `an ambiguous block must never confidently resolve to pass: ${describeAll()}`);
+    assert.strictEqual(items.find((i) => i.test === 1), undefined, `an ambiguous block must not emit ANY confident item for row 1 regardless of result-line order: ${describeAll()}`);
+    assert.strictEqual(headingsSeen, 1, `the ambiguous block must count as exactly one parse gap, same as B1: ${describeAll()}`);
+  });
+
+  test('[CONTROL] B3: a block with exactly one result: line is unchanged', () => {
+    const doc = '### 1. Alpha\nexpected: ok\nresult: blocked\n';
+    const { items, headingsSeen } = parseUatItemsWithStats(doc);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.ok(findAlphaBlocked(items), `unambiguous single-result block must still surface 1/Alpha/blocked: ${describeAll()}`);
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[CONTROL] B4: a result: line inside a fenced code sample does not count as a second column-0 occurrence', () => {
+    // The fenced "result: pass" sample line is document content (a fenced
+    // code block is stripped before the result-line scan runs), not a
+    // second real result declaration — only the genuine column-0
+    // "result: blocked" line below the fence is the row's outcome.
+    const doc = '### 1. Alpha\nexpected: ok\n```\nresult: pass\n```\nresult: blocked\n';
+    const { items, headingsSeen } = parseUatItemsWithStats(doc);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.ok(findAlphaBlocked(items), `fenced sample result: line must not compete with the real row: ${describeAll()}`);
+    assert.strictEqual(findAnyPassItem(items), undefined, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+});
