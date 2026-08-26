@@ -497,20 +497,52 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
  * inline arm and published the literal `">"` as the value, discarding the
  * whole scalar. The opener character is now captured (group 1) so the caller
  * can apply YAML's fold semantics for `>` while leaving `|` untouched.
+ *
+ * TRAILING COMMENT (#3078 round-6 MINOR 1): YAML permits a comment after a
+ * block-scalar header — `expected: | # sample`, `reason: >- # note` are both
+ * legal and open a scalar exactly as the bare forms do. The grammar was
+ * `$`-anchored immediately after the indicator, so those headers matched
+ * NEITHER `extractScalarField`'s opener (the value silently fell through to
+ * the inline arm and published the literal `"|"`) NOR
+ * `ANY_KEY_SCALAR_HEADER_LINE_RE` (so `countUnattributedIndentedRows` treated
+ * the scalar's own indented body heading as an unattributed lost row — a FALSE
+ * parse gap). `(?:#[^\r\n]*)?` closes both at the single shared source.
  */
-const EXPECTED_SCALAR_HEADER = String.raw`expected:[ \t]*([|>])(?:[1-9][+-]?|[+-][1-9]?)?[ \t]*`;
-
-const EXPECTED_SCALAR_OPENER = String.raw`^${EXPECTED_SCALAR_HEADER}\r?\n`;
+const SCALAR_HEADER_BODY = String.raw`[ \t]*([|>])(?:[1-9][+-]?|[+-][1-9]?)?[ \t]*(?:#[^\r\n]*)?`;
 
 /**
- * The same `expected:` block-scalar HEADER grammar as `EXPECTED_SCALAR_OPENER`,
- * matched against ONE already-CR-stripped source line instead of against a
- * multi-line block. Derived from the SAME `EXPECTED_SCALAR_HEADER` source so
- * the two cannot drift into disagreeing about which openers (`|`, `|-`, `|+`,
- * `|2`, `|-2`, `>`, `>-`, `>+`, `>2+`, ...) start a scalar body — the
- * generative-divergence class this repo pins elsewhere.
+ * Build the block-scalar HEADER grammar for an arbitrary `key:` — the ONE
+ * source shared by `expected:`, `reason:` and `blocked_by:` (#3078 MINOR 2:
+ * `reason:`/`blocked_by:` previously had no block-scalar grammar of their own
+ * at all, and silently published the literal `"|"` / `">"` for a `|`/`>`
+ * value, discarding it). A key is always a hardcoded literal at each call
+ * site in this module (never untrusted input), so no escaping is needed.
  */
-const EXPECTED_SCALAR_HEADER_LINE_RE = new RegExp(`^${EXPECTED_SCALAR_HEADER}$`);
+function scalarHeaderFor(key: string): string {
+  return String.raw`${key}:${SCALAR_HEADER_BODY}`;
+}
+
+/**
+ * ANY key's block-scalar HEADER line (#3078 MINOR 1), matched against ONE
+ * already-CR-stripped source line instead of against a multi-line block.
+ * Derived from the SAME `SCALAR_HEADER_BODY` source `scalarHeaderFor` uses
+ * so the opener grammars (`|`, `|-`, `|+`, `|2`, `|-2`, `>`, `>-`, `>+`, `>2+`,
+ * ...) cannot drift between them — the generative-divergence class this repo
+ * pins elsewhere.
+ *
+ * `countUnattributedIndentedRows` walks back from an indented `### N.`-shaped
+ * line to the nearest preceding column-0 line and asks whether THAT line
+ * opened a block scalar that still owns the indented line as its body.
+ * Testing only an `expected:`-ONLY grammar there meant an indented
+ * heading-shaped line inside ANY OTHER block scalar — `reported: |`
+ * (templates/UAT.md), `reason: |`, a verbatim user response containing
+ * `  ### 9. Section Nine` — was miscounted as a lost row even though nothing
+ * is missing. YAML's indentation rule (any column-0 line terminates a scalar)
+ * does not care WHICH key opened the scalar, only that a `[|>]`-family opener
+ * did, so the walk-back only needs to recognise the opener grammar, not the
+ * specific key.
+ */
+const ANY_KEY_SCALAR_HEADER_LINE_RE = new RegExp(String.raw`^[A-Za-z_][\w-]*:${SCALAR_HEADER_BODY}$`);
 
 /**
  * Apply YAML FOLDED-scalar (`>`) line-joining to an already-dedented,
@@ -535,21 +567,35 @@ function foldScalarBody(body: string): string {
   return paragraphs.join('\n');
 }
 
-function parseExpectedFromTestBlock(block: string): string | null {
-  const expectedBlockMatch = block.match(new RegExp(`${EXPECTED_SCALAR_OPENER}([\\s\\S]*?)(?=^\\w[\\w-]*:\\s)`, 'm'))
-    || block.match(new RegExp(`${EXPECTED_SCALAR_OPENER}([\\s\\S]+)`, 'm'));
-  if (expectedBlockMatch) {
-    const opener = expectedBlockMatch[1];
-    const dedented = expectedBlockMatch[2]
+/**
+ * Extract a YAML-lite `key:` field's value from `block` — block-scalar
+ * (`|`/`>` family, dedented and, for `>`, YAML-folded) OR plain inline.
+ * Generalized from the `expected:`-only reader (#3078 MINOR 2) so `reason:`
+ * and `blocked_by:` — which previously had NO block-scalar grammar at all and
+ * silently published the literal `"|"` / `">"` for a multi-line value,
+ * discarding it — go through the exact same opener grammar and fold
+ * semantics instead of a third, hand-rolled dialect.
+ */
+function extractScalarField(block: string, key: string): string | null {
+  const opener = String.raw`^${scalarHeaderFor(key)}\r?\n`;
+  const blockMatch = block.match(new RegExp(`${opener}([\\s\\S]*?)(?=^\\w[\\w-]*:\\s)`, 'm'))
+    || block.match(new RegExp(`${opener}([\\s\\S]+)`, 'm'));
+  if (blockMatch) {
+    const openerChar = blockMatch[1];
+    const dedented = blockMatch[2]
       .split('\n')
       .map((line: string) => line.replace(/\r$/, '').replace(/^ {2}/, ''))
       .join('\n')
       .trim();
-    return opener === '>' ? foldScalarBody(dedented) : dedented;
+    return openerChar === '>' ? foldScalarBody(dedented) : dedented;
   }
 
-  const expectedInlineMatch = block.match(/^expected:\s*(.+)\s*$/m);
-  return expectedInlineMatch ? expectedInlineMatch[1].trim() : null;
+  const inlineMatch = block.match(new RegExp(String.raw`^${key}:\s*(.+)\s*$`, 'm'));
+  return inlineMatch ? inlineMatch[1].trim() : null;
+}
+
+function parseExpectedFromTestBlock(block: string): string | null {
+  return extractScalarField(block, 'expected');
 }
 
 // ─── buildCheckpoint ──────────────────────────────────────────────────────────
@@ -945,6 +991,27 @@ function blankIndentedFenceDelimiters(content: string): string {
     // "fix" it back.
     blank.add(block.openLineIdx);
     if (block.closeLineIdx !== -1) blank.add(block.closeLineIdx);
+
+    // #3078 round-6 MAJOR: the two fence engines must not disagree about the
+    // text handed downstream. `scanFencedBlocks` classified the ORIGINAL
+    // lines, but `tokenizeHeadings` re-runs its own CommonMark state machine
+    // over this MUTATED copy. A COLUMN-0 delimiter-shaped line that was mere
+    // fence CONTENT in the original — e.g. a ```-run inside an indented
+    // ````-pair — is PROMOTED to a real opener the instant its enclosing
+    // delimiters are blanked, hiding every later heading to EOF. Blank those
+    // too, so the mutation cannot manufacture structure that the classifying
+    // engine never saw.
+    //
+    // DELIMITER-SHAPED LINES ONLY. A column-0 `### N.` heading between
+    // neutralised delimiters stays a heading (the pinned "column 0 is
+    // structure" behaviour), and the field lines of a row living between two
+    // rows' scalars survive untouched — both are pinned by test. This adds
+    // exactly one shape to the blank set: a line that would itself be read as
+    // a fence delimiter.
+    const inner = block.closeLineIdx === -1 ? lines.length : block.closeLineIdx;
+    for (let i = block.openLineIdx + 1; i < inner; i += 1) {
+      if (FENCE_OPENER_RE.test(lines[i].replace(/\r$/, ''))) blank.add(i);
+    }
   }
   if (blank.size === 0) return content;
 
@@ -1058,26 +1125,42 @@ function dropTopLevelFencedRegions(rawLines: string[]): string {
  * Attribution is structural and cheap: walk BACK from the indented heading to
  * the first non-blank line at column 0 (a block-scalar body is indented by
  * construction, and blank lines are legal inside one). The heading is scalar
- * VALUE exactly when that line is an `expected:` scalar header, per the SAME
- * grammar the reader itself uses (`EXPECTED_SCALAR_HEADER_LINE_RE`, derived
- * from `EXPECTED_SCALAR_HEADER`). No second opener dialect, and no attempt to
- * model YAML indentation levels.
+ * VALUE exactly when that line is ANY `key:` scalar header — not `expected:`
+ * only (#3078 MINOR 1: testing the `expected:`-only grammar false-positived
+ * on an indented heading-shaped line inside a DIFFERENT block scalar, e.g. a
+ * template-sanctioned `reported: |` holding verbatim user prose, or a
+ * `reason: |` body) — per `ANY_KEY_SCALAR_HEADER_LINE_RE`, derived from the
+ * SAME `[|>]`-family opener grammar the reader itself uses. No second opener
+ * dialect, and no attempt to model YAML indentation levels.
  */
 function countUnattributedIndentedRows(surface: string): number {
   const lines = surface.split('\n');
-  let count = 0;
 
+  // LINEAR, not quadratic (#3078 round-6 MINOR 2). The walk-back above was
+  // re-scanned per indented row, so a document of N rows and N lines cost
+  // O(N^2) — measured 4x per 2x on real input (1000 rows 20ms → 16000 rows
+  // 3.6s). The walk only ever asks ONE question of the prefix — "which is the
+  // nearest preceding non-blank COLUMN-0 line?" — and that is a running value,
+  // so a single forward pass computes it for every line at once. The
+  // ATTRIBUTION RULE IS UNCHANGED: a blank line and an indented line are both
+  // transparent (a block-scalar body is indented by construction and may
+  // contain blank lines), and the first line that is neither terminates the
+  // scalar; the heading is value text exactly when THAT line is any key's
+  // block-scalar header.
+  const stripped = lines.map((line) => line.replace(/\r$/, ''));
+  const nearestColumnZero: number[] = new Array<number>(lines.length);
+  let last = -1;
+  for (let i = 0; i < stripped.length; i += 1) {
+    nearestColumnZero[i] = last;
+    const line = stripped[i];
+    if (line.trim() !== '' && !/^[ \t]/.test(line)) last = i;
+  }
+
+  let count = 0;
   for (let i = 0; i < lines.length; i += 1) {
     if (!INDENTED_TEST_HEADING_LINE_RE.test(lines[i])) continue;
-
-    let ownedByScalar = false;
-    for (let j = i - 1; j >= 0; j -= 1) {
-      const previous = lines[j].replace(/\r$/, '');
-      if (previous.trim() === '') continue; // blank line: still inside a scalar body
-      if (/^[ \t]/.test(previous)) continue; // indented line: still inside a scalar body
-      ownedByScalar = EXPECTED_SCALAR_HEADER_LINE_RE.test(previous);
-      break;
-    }
+    const owner = nearestColumnZero[i];
+    const ownedByScalar = owner !== -1 && ANY_KEY_SCALAR_HEADER_LINE_RE.test(stripped[owner]);
     if (!ownedByScalar) count += 1;
   }
 
@@ -1166,12 +1249,38 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     { levelBounded: true },
   );
   const shapeScanSurface = testsSectionForShapeScan ? testsSectionForShapeScan.body : content;
+  // #3078 round-6 HIGH: BOTH SIDES OF THIS COMPARISON MUST COME FROM THE SAME
+  // SURFACE. The raw line scan is SECTION-SCOPED (`## Tests` body) but
+  // `subHeadings` is built from `allHeadings`, tokenized over the WHOLE
+  // DOCUMENT — so a perfectly legal `### 9. Old / result: pass` row in a
+  // preceding `## Prior` section (or a trailing `## Notes`) decremented the
+  // shortfall by one and SILENTLY DISABLED the fence-straddle detector: two
+  // byte-identical `## Tests` bodies, one reporting `headingsSeen=1,
+  // parse_gap true` and the other `headingsSeen=0`, no gap, purely because of
+  // a row living somewhere else in the file. Compounded, a document whose rows
+  // render as ordinary blocked rows in any CommonMark renderer audits as
+  // totally clean.
+  //
+  // The chosen scoping is to FILTER THE TOKEN SIDE BY OFFSET SPAN, not to
+  // re-tokenize the section body standalone: `Section` already carries the
+  // invariant `content.slice(bodyStart, bodyEnd) === body`, so the span is
+  // exactly the surface the line scan reads — no second tokenizer pass, no
+  // second set of offsets to keep in step with `isColumnZeroHeading`, and the
+  // PARSE side (`subHeadings`, which must keep reading rows wherever they
+  // live, including a file with no `## Tests` heading at all) is left
+  // completely untouched. Only the COUNTING comparison narrows.
+  const scanStart = testsSectionForShapeScan ? testsSectionForShapeScan.bodyStart : 0;
+  const scanEnd = testsSectionForShapeScan ? testsSectionForShapeScan.bodyEnd : content.length;
+  let tokenizedRowsInScanSurface = 0;
+  for (const { heading } of subHeadings) {
+    if (heading.offset >= scanStart && heading.offset < scanEnd) tokenizedRowsInScanSurface += 1;
+  }
   let shapedHeadingLines = 0;
   for (const line of shapeScanSurface.split('\n')) {
     if (TEST_HEADING_LINE_RE.test(line)) shapedHeadingLines += 1;
   }
-  if (shapedHeadingLines > subHeadings.length) {
-    headingsSeen += shapedHeadingLines - subHeadings.length;
+  if (shapedHeadingLines > tokenizedRowsInScanSurface) {
+    headingsSeen += shapedHeadingLines - tokenizedRowsInScanSurface;
   }
 
   // #3078 round-4 MAJOR 2: an INDENTED `### N.` row is refused by the parse
@@ -1279,19 +1388,26 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // publish it as its own. See `clipBlockAtFirstFence`.
     const expected = parseExpectedFromTestBlock(clipBlockAtFirstFence(block));
 
-    const reasonMatch = fenceStrippedBlock.match(/reason:\s*(.+)/);
-    const blockedByMatch = fenceStrippedBlock.match(/blocked_by:\s*(.+)/);
-    const reason = reasonMatch?.[1]?.trim();
+    // #3078 MINOR 2: `reason:`/`blocked_by:` previously had no block-scalar
+    // grammar at all (only a plain `/key:\s*(.+)/` single-line match), so a
+    // `reason: |`/`reason: >`/`blocked_by: |` value silently published as the
+    // literal string `"|"` / `">"`, discarding the real multi-line value the
+    // author wrote — and `categorizeItem` below reads exactly this field, so a
+    // discarded `reason` could silently change an item's category. Routed
+    // through the SAME `extractScalarField` machinery `expected:` already
+    // uses rather than adding a third hand-rolled opener dialect.
+    const reason = extractScalarField(fenceStrippedBlock, 'reason') ?? undefined;
+    const blockedBy = extractScalarField(fenceStrippedBlock, 'blocked_by') ?? undefined;
 
     const item: UatItem = {
       test: testNumber,
       name: testName,
       result,
-      category: categorizeItem(result, reason, blockedByMatch?.[1]),
+      category: categorizeItem(result, reason, blockedBy),
     };
     if (expected) item.expected = expected;
     if (reason) item.reason = reason;
-    if (blockedByMatch) item.blocked_by = blockedByMatch[1].trim();
+    if (blockedBy) item.blocked_by = blockedBy;
     items.push(item);
   }
 

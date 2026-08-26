@@ -4781,3 +4781,487 @@ blocked_by: Server team
     assert.strictEqual(items[1].category, 'server_blocked', describeAll());
   });
 });
+
+// ─── #3078 MINOR 1: the indented-row counter is not `expected:`-ONLY ──────────
+//
+// `countUnattributedIndentedRows` walked back from an indented `### N.`-shaped
+// line to the nearest preceding column-0 line and tested it against an
+// `expected:`-ONLY grammar. A `reported: |` or `reason: |` block scalar
+// (both template-sanctioned — `reported:` ships in gsd-core/templates/UAT.md)
+// holding free-form prose that happens to contain an indented `### N.`-shaped
+// line was therefore miscounted as a lost row on a file with nothing missing.
+describe('#3078 MINOR 1: indented-row counter recognizes ANY key\'s block scalar, not only expected:', () => {
+  test('an indented `### N.`-shaped line inside `reported: |` is not counted', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: human_needed
+reported: |
+  The user said:
+  ### 9. Section Nine
+  looked wrong.
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 1, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('an indented `### N.`-shaped line inside `reason: |` is not counted', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: skipped
+reason: |
+  See report:
+  ### 9. Section Nine
+  for details.
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 1, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // The walk-back logic itself must stay sound: a genuinely indented row that
+  // is NOT the value of any preceding block scalar is still counted — this
+  // fix must not just switch the counter off entirely.
+  test('a genuinely indented row OUTSIDE any scalar is still counted', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: pass
+
+  ### 2. Indented Row
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.deepStrictEqual(items, [], describeAll());
+    assert.ok(headingsSeen >= 1, describeAll());
+  });
+});
+
+// ─── #3078 MINOR 2: `reason:`/`blocked_by:` gain block-scalar grammar ─────────
+//
+// `reason:` and `blocked_by:` had no block-scalar grammar at all: `reason: |`
+// published the literal string `"|"`, discarding the entire multi-line value;
+// `reason: >` gave `">"`; `blocked_by: |` gave `"|"`. Not a regression
+// (origin/next captures the same `"|"` on this fixture) but fixed anyway
+// because `categorizeItem` reads exactly this field, so a discarded `reason`
+// can silently change an item's category.
+describe('#3078 MINOR 2: reason: and blocked_by: support block-scalar (|, >) values', () => {
+  test('`reason: |` with a two-line body yields the exact multi-line value', () => {
+    const { items } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: skipped
+reason: |
+  Line one.
+  Line two.
+`);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].reason, 'Line one.\nLine two.', describeAll());
+  });
+
+  test('`reason: >` folds a two-line body into one space-joined line', () => {
+    const { items } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: skipped
+reason: >
+  Line one
+  continues here.
+`);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].reason, 'Line one continues here.', describeAll());
+  });
+
+  test('`blocked_by: |` with a multi-line body yields the exact value', () => {
+    const { items } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: blocked
+blocked_by: |
+  Waiting on the
+  staging server team.
+`);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].blocked_by, 'Waiting on the\nstaging server team.', describeAll());
+  });
+
+  test('a plain inline `reason: text` is unchanged', () => {
+    const { items } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: skipped
+reason: not running locally
+`);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].reason, 'not running locally', describeAll());
+  });
+
+  test('a plain inline `blocked_by: text` is unchanged', () => {
+    const { items } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: blocked
+blocked_by: #123
+`);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].blocked_by, '#123', describeAll());
+  });
+
+  // Categorization consequence: a `reason:` block scalar whose text mentions
+  // "server" must categorize as `server_blocked` — impossible before this fix
+  // because the value was thrown away and replaced with the literal `"|"`.
+  test('a reason: block scalar mentioning "server" categorizes as server_blocked', () => {
+    const { items } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: skipped
+reason: |
+  The staging
+  server is down.
+`);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].reason, 'The staging\nserver is down.', describeAll());
+    assert.strictEqual(items[0].category, 'server_blocked', describeAll());
+  });
+});
+
+// ─── #3078 round 6 HIGH: the shortfall scan must compare ONE surface ──────────
+//
+// `countUnattributedIndentedRows` / the shortfall logic compared a
+// SECTION-SCOPED raw line count (the `## Tests` body) against a DOCUMENT-WIDE
+// token count (`subHeadings`, built from `allHeadings` over the whole file).
+// Any legal `### N.` row living OUTSIDE `## Tests` therefore decremented the
+// shortfall by one and SILENTLY DISABLED the fence-straddle detector: two
+// byte-identical `## Tests` bodies audited differently purely because of a row
+// somewhere else in the document. Same unit-mismatch class as the earlier
+// UTF-16-vs-code-point defect, relocated from code units to scope.
+describe('#3078 round 6 HIGH: the fence-straddle detector survives legal rows outside ## Tests', () => {
+  const BACKTICK = '```';
+
+  // The `## Tests` body is byte-identical in every document below. A plain
+  // column-0 fence straddle hides `### 2. Blocked` with an outstanding result.
+  const TESTS_BODY = `## Tests
+
+### 1. Alpha
+result: pass
+
+${BACKTICK}
+### 2. Blocked
+result: blocked
+${BACKTICK}
+`;
+
+  const PRIOR = `## Prior
+
+### 9. Old
+result: pass
+
+`;
+
+  const NOTES = `
+## Notes
+
+### 7. Note Row
+result: pass
+
+### 6. Note Row Two
+result: pass
+`;
+
+  function assertStraddleReported(label, content) {
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => `${label}: ${JSON.stringify({ items, headingsSeen }, null, 2)}`;
+    assert.ok(
+      headingsSeen >= 1,
+      `the fence-straddled row was not counted, so the file audits as clean: ${describeAll()}`,
+    );
+    // parse_gap is `headingsSeen > 0 && status !== 'complete'` at the caller.
+    assert.strictEqual(headingsSeen > 0, true, describeAll());
+    // The straddled row is HIDDEN from the tokenizer by construction, so it
+    // must not appear as an item — the gap counter is the only trace it has.
+    assert.strictEqual(items.find((i) => i.test === 2), undefined, describeAll());
+    return { items, headingsSeen, describeAll };
+  }
+
+  test('D1: the straddle alone is reported', () => {
+    const { headingsSeen, describeAll } = assertStraddleReported('D1', TESTS_BODY);
+    assert.strictEqual(headingsSeen, 1, describeAll());
+  });
+
+  test('D2: one legal row in a PRECEDING ## Prior section does not disable the detector', () => {
+    const { items, headingsSeen, describeAll } = assertStraddleReported('D2', PRIOR + TESTS_BODY);
+    assert.strictEqual(headingsSeen, 1, describeAll());
+    // The out-of-section row legitimately passed, so it yields no item — but it
+    // must not have been spent cancelling the in-section shortfall either.
+    assert.strictEqual(items.length, 0, describeAll());
+  });
+
+  test('D3: rows in ## Prior, ## Tests AND ## Notes — the scoping is not merely off-by-one', () => {
+    const { headingsSeen, describeAll } = assertStraddleReported(
+      'D3',
+      `${PRIOR}### 8. Older
+result: pass
+
+${TESTS_BODY}${NOTES}`,
+    );
+    assert.strictEqual(headingsSeen, 1, describeAll());
+  });
+
+  // The counter must not simply be switched off: an outstanding row in an
+  // out-of-section fence straddle is NOT a `## Tests` gap and must not inflate
+  // the tally either.
+  test('a fenced row sample living only in ## Notes contributes nothing to the tally', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: pass
+
+## Notes
+
+${BACKTICK}
+### 4. Sample Row
+result: blocked
+${BACKTICK}
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(headingsSeen, 0, describeAll());
+    assert.strictEqual(items.length, 0, describeAll());
+  });
+});
+
+// ─── #3078 round 6 MAJOR: the two fence engines must agree on the text ────────
+//
+// `scanFencedBlocks` classifies the ORIGINAL lines; `tokenizeHeadings` re-runs
+// its own state machine over the MUTATED (neutralised) copy. A COLUMN-0
+// delimiter run that was fence CONTENT in the original — a ```-run inside an
+// indented ````-pair — was PROMOTED to an opener once the enclosing indented
+// delimiters were blanked, hiding every later heading to EOF.
+describe('#3078 round 6 MAJOR: neutralising a block must not promote its own content into a fence', () => {
+  const BACKTICK = '```';
+  const QUAD = '````';
+
+  // The run must be ODD inside the pair — an even number of column-0 runs
+  // pairs up with itself once promoted and hides nothing, so this repro would
+  // vacuously pass against the unfixed code. Measured: unfixed, this document
+  // yields items=[] with headingsSeen=2; rows 2 and 3 are absent from the
+  // token stream entirely.
+  test('a column-0 ``` run inside an indented ```` pair does not swallow the later rows', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: |
+   ${QUAD}
+${BACKTICK}
+   ${QUAD}
+result: pass
+
+### 2. Bravo
+result: blocked
+reason: server down
+
+### 3. Charlie
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    const bravo = items.find((i) => i.test === 2);
+    const charlie = items.find((i) => i.test === 3);
+    assert.ok(bravo, `row 2 was swallowed by a promoted fence: ${describeAll()}`);
+    assert.strictEqual(bravo.name, 'Bravo', describeAll());
+    assert.strictEqual(bravo.result, 'blocked', describeAll());
+    assert.strictEqual(bravo.reason, 'server down', describeAll());
+    assert.ok(charlie, `row 3 was swallowed by a promoted fence: ${describeAll()}`);
+    assert.strictEqual(charlie.name, 'Charlie', describeAll());
+    assert.strictEqual(charlie.result, 'pending', describeAll());
+    assert.strictEqual(items.length, 2, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // COMPOUNDED WITH THE HIGH ABOVE, the promoted fence used to go completely
+  // SILENT: the two legal `## Prior` rows cancelled the in-section shortfall,
+  // so the document audited as totally clean while hiding two outstanding
+  // rows. Measured against the unfixed code: items=[], headingsSeen=0.
+  test('compounded with an out-of-section row, the promoted fence is still not silent', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Prior
+
+### 8. Older
+result: pass
+
+### 9. Old
+result: pass
+
+## Tests
+
+### 1. Alpha
+expected: |
+   ${QUAD}
+${BACKTICK}
+   ${QUAD}
+result: pass
+
+### 2. Bravo
+result: blocked
+reason: server down
+
+### 3. Charlie
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.deepStrictEqual(items.map((i) => i.test), [2, 3], describeAll());
+    assert.strictEqual(items[0].result, 'blocked', describeAll());
+    assert.strictEqual(items[1].result, 'pending', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // The blanking widening is DELIMITER-SHAPED LINES ONLY. These two pins are
+  // the constraints it must not trade away — both are also covered by the
+  // round-4/round-5 suites above; asserted here against the new shape so the
+  // widening cannot regress them silently.
+  test('a column-0 `### N.` between neutralised delimiters is STILL a heading', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: x
+  ${BACKTICK}
+### 9. Phantom
+  ${BACKTICK}
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 9, describeAll());
+    assert.strictEqual(items[0].result, 'pending', describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
+  });
+
+  test('field lines between two neutralised scalars still reach their own row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: |
+  ${BACKTICK}
+  sample one
+  ${BACKTICK}
+result: blocked
+blocked_by: Server team
+
+### 2. Bravo
+expected: |
+  ${BACKTICK}
+  sample two
+  ${BACKTICK}
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    const alpha = items.find((i) => i.test === 1);
+    const bravo = items.find((i) => i.test === 2);
+    assert.ok(alpha, describeAll());
+    assert.strictEqual(alpha.result, 'blocked', describeAll());
+    assert.strictEqual(alpha.blocked_by, 'Server team', describeAll());
+    assert.strictEqual(alpha.expected, `${BACKTICK}\nsample one\n${BACKTICK}`, describeAll());
+    assert.ok(bravo, describeAll());
+    assert.strictEqual(bravo.result, 'pending', describeAll());
+    assert.strictEqual(bravo.expected, `${BACKTICK}\nsample two\n${BACKTICK}`, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+});
+
+// ─── #3078 round 6 MINOR: a scalar header may carry a trailing comment ────────
+//
+// `expected: | # sample` and `expected: >- # note` are legal YAML block-scalar
+// headers. The shared header grammar was `$`-anchored right after the
+// indicator, so those headers matched neither the reader's opener (the value
+// fell through to the INLINE arm and published the literal `"|"`) nor the
+// indented-row counter's walk-back test (so the scalar's own indented body
+// heading was counted as a lost row — a FALSE parse gap).
+describe('#3078 round 6 MINOR: a block-scalar header with a trailing comment still opens a scalar', () => {
+  test('`expected: | # sample` extracts the body and raises no false parse gap', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: | # sample
+  first line
+  second line
+result: blocked
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].expected, 'first line\nsecond line', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('`expected: >- # note` folds its body exactly as the bare `>-` form does', () => {
+    const commented = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: >- # note
+  folded one
+  folded two
+result: blocked
+`);
+    const bare = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: >-
+  folded one
+  folded two
+result: blocked
+`);
+    const describeAll = () => JSON.stringify({ commented, bare }, null, 2);
+    assert.strictEqual(commented.items[0].expected, 'folded one folded two', describeAll());
+    assert.deepStrictEqual(commented.items, bare.items, describeAll());
+    assert.strictEqual(commented.headingsSeen, 0, describeAll());
+  });
+
+  test('an indented `### N.`-shaped line inside a COMMENTED header\'s body is not a lost row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: | # sample
+  ### 9. Section Nine
+result: blocked
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].expected, '### 9. Section Nine', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('`reason:` and `blocked_by:` share the same commented-header grammar', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: blocked
+reason: | # why
+  staging is down
+blocked_by: >- # who
+  Server
+  team
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items[0].reason, 'staging is down', describeAll());
+    assert.strictEqual(items[0].blocked_by, 'Server team', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // A `#` that is NOT after a scalar indicator must stay an ordinary inline
+  // value — the comment allowance must not swallow a plain `key: value`.
+  test('an inline value containing a `#` is untouched by the comment allowance', () => {
+    const { items } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: build #42 succeeds
+result: blocked
+`);
+    assert.strictEqual(items[0].expected, 'build #42 succeeds', JSON.stringify(items, null, 2));
+  });
+});
