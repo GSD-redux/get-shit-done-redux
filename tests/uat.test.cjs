@@ -790,16 +790,25 @@ All checks passed.
       const output = JSON.parse(result.output);
       assert.strictEqual(output.summary.total_items, 1,
         'total_items must reflect the frontmatter array, not the unstructured body prose');
-      // #2286 review LOW finding: extractFrontmatter's generic array-item
-      // parser has no notion of nested key/value objects — a `- test: "..."`
-      // entry is ALWAYS flattened to the raw post-"- " text, verbatim (only
-      // its own wrapping quote is stripped, and only at the string's outer
-      // edges). normalizeHumanVerificationEntry deliberately does NOT strip
-      // a leading "key:"-shaped prefix (see its doc comment) because doing
-      // so is indistinguishable from truncating a legitimate plain string
-      // that starts with a word and a colon — so this documented, slightly
-      // ugly artifact is the CORRECT (non-data-lossy) output for this shape.
-      assert.strictEqual(output.results[0].items[0].name, 'test: "Confirm the widget renders correctly');
+      // ADR-3473 §8.1 (#3881): pre-migration, extractFrontmatter's hand-rolled array-item
+      // scanner had no notion of nested key/value objects — a `- test: "..."` entry was
+      // flattened via a REGEX quote-strip (`.replace(/^["']|["']$/g, '')`) that only ever
+      // matches a quote at the very start or very end of the WHOLE post-"- " string. Since
+      // this string starts with `test:` (not a quote), only the regex's END anchor matched,
+      // stripping the trailing `"` but leaving the opening one embedded mid-string — a
+      // documented but genuinely ugly artifact (`test: "Confirm the widget renders correctly`,
+      // unbalanced quote and all).
+      //
+      // Under js-yaml (ADR-3473 §8.1), `- test: "..."` is parsed as real YAML — a proper
+      // mapping `{test: "Confirm the widget renders correctly"}` — and `flattenObjectListItem`
+      // re-joins it as `key: value` with the value's OWN quoting already resolved by the real
+      // parser, not re-derived by a second regex. The embedded quote is gone because it was
+      // never data to begin with; it was YAML's own value-delimiter syntax. This is strictly
+      // more correct (no unbalanced-quote artifact) and the `normalizeHumanVerificationEntry`
+      // consumer is unaffected — it still receives a `name` string of the same shape (still not
+      // lossy of the `test:` label prefix, which is a deliberate, documented, and unrelated
+      // decision — see normalizeHumanVerificationEntry's doc comment).
+      assert.strictEqual(output.results[0].items[0].name, 'test: Confirm the widget renders correctly');
       assert.strictEqual(output.results[0].items[0].category, 'human_uat');
     });
 

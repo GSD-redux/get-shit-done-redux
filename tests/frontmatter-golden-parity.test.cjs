@@ -114,7 +114,18 @@ const DIVERGING_FILES = new Set(DIVERGENCES.map((d) => d.file));
 
 /** Every git-tracked *.md file whose content opens with a byte-0 `---` fence. */
 function listFrontmatterCarryingFiles() {
-  const raw = execFileSync('git', ['ls-files', '*.md'], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 15000 });
+  // `-c safe.directory=*` (process-scoped, never written to any config file) rather than
+  // `git config --global --add safe.directory` (persistent, requires write access to a global
+  // config, and races other concurrent test runs sharing the same HOME): the remote runner
+  // clones/mounts this repo as a different UID than the process running the suite, which git
+  // treats as "dubious ownership" and refuses to operate on at all — this test's ONLY read is
+  // `ls-files`, so trusting the directory for this one invocation is sufficient and leaves no
+  // side effect behind. `--` bounds the pathspec so `*.md` is never misread as a flag.
+  const raw = execFileSync(
+    'git',
+    ['-c', 'safe.directory=*', 'ls-files', '--', '*.md'],
+    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 15000 },
+  );
   const files = raw.split('\n').filter(Boolean);
   const carrying = [];
   for (const rel of files) {

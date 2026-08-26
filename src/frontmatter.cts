@@ -114,12 +114,63 @@ type FullLineCommentChannel = { leading: Record<string, string[]>; trailing: str
 const FRONTMATTER_UNPARSEABLE = Symbol('frontmatterUnparseable');
 
 function unparseableResult(): Frontmatter {
-  // Null-prototype (post-#3881-review, finding 3): consistent with every other Frontmatter
-  // object this module hands back, so a bracket read/`in` check against it never resolves an
-  // inherited Object.prototype member (constructor, toString, hasOwnProperty, valueOf, ...).
-  const fm: Frontmatter = Object.create(null) as Frontmatter;
-  (fm as Record<symbol, unknown>)[FRONTMATTER_UNPARSEABLE as unknown as symbol] = true;
-  return fm;
+  // Plain-prototype (post-remote-runner-fix, #3881): the PUBLIC parse surface must keep
+  // handing callers ordinary `{}`-shaped objects — `assert.deepStrictEqual` compares
+  // prototypes, and 50+ existing call sites/tests compare against object literals. The
+  // Symbol marker is still attached via `Object.defineProperty` rather than bracket
+  // assignment, which is what actually matters for prototype-pollution safety: a data
+  // property named e.g. `__proto__` set through `defineProperty` never invokes the
+  // inherited `Object.prototype.__proto__` accessor setter the way `fm[k] = v` would.
+  const fm: Record<string, unknown> = {};
+  Object.defineProperty(fm, FRONTMATTER_UNPARSEABLE, {
+    value: true, writable: true, enumerable: true, configurable: true,
+  });
+  return fm as Frontmatter;
+}
+
+/**
+ * Convert an internal, possibly null-prototype, YAML-derived value tree into an ordinary
+ * plain-prototype tree for the public parse surface (post-remote-runner-fix, #3881).
+ *
+ * The internal construction (`normalizeParsedValue`, `restoreNullBytesDeep`,
+ * `extractCommentChannel`) deliberately builds with `Object.create(null)` so a hostile key
+ * like `__proto__`/`constructor`/`toString` is always a genuine own data property and never
+ * resolves to (or overwrites) an inherited `Object.prototype` member WHILE THE TREE IS BEING
+ * BUILT. That safety property has nothing to do with what prototype the FINAL object callers
+ * receive — `assert.deepStrictEqual` compares prototypes, so handing back a null-prototype
+ * object silently broke every caller comparing against `{}` object literals (57+ tests). This
+ * walks the tree exactly once at the return boundary and re-homes every string/number-keyed
+ * own property onto an ordinary `{}` via `Object.defineProperty` (never `out[k] = v`), which
+ * is what keeps the copy itself safe: `defineProperty` always creates a real own data
+ * property, even for a key literally named `__proto__`, and never triggers the inherited
+ * setter the way bracket assignment would.
+ *
+ * The `FULL_LINE_COMMENTS` Symbol channel is copied across by reference, NOT recursed into —
+ * it stays null-prototype. It is purely internal plumbing (only `reconstructFrontmatter` /
+ * `propagateCommentChannel`, both in this module, ever read `channel.leading[key]` with an
+ * arbitrary user-authored key), invisible to every external reader (`Object.keys` /
+ * `Object.entries` / `JSON.stringify` / `for-in` all skip symbols), and re-plaining it would
+ * reopen the exact `leading[key]` inherited-member bug the null prototype exists to close.
+ */
+function toPlainValueTree(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(toPlainValueTree);
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(value)) {
+      Object.defineProperty(out, k, {
+        value: toPlainValueTree((value as Record<string, unknown>)[k]),
+        writable: true, enumerable: true, configurable: true,
+      });
+    }
+    for (const s of Object.getOwnPropertySymbols(value)) {
+      Object.defineProperty(out, s, {
+        value: (value as Record<symbol, unknown>)[s], // internal channel: copied raw, not recursed
+        writable: true, enumerable: true, configurable: true,
+      });
+    }
+    return out;
+  }
+  return value;
 }
 
 /**
@@ -361,11 +412,140 @@ function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCom
  * refusal/null-byte/comment-channel glue below. Renaming closes that gap literally: nothing in
  * this module still answers to the old hand-rolled scanner's name.
  */
+/**
+ * Post-remote-runner-fix (#3881): the legacy hand-rolled scanner captured a top-level line's
+ * value with a plain `(.*)` regex group — any text after the FIRST `key:` was accepted
+ * verbatim, colons and all (`title: a: b` parsed to `{title: "a: b"}`). Real YAML has no such
+ * leniency: a colon followed by whitespace inside an unquoted scalar is core block-mapping
+ * syntax (it opens a nested key), so `last_activity: 2026-06-08: reviewed the PR queue` is
+ * genuinely ambiguous/invalid YAML and js-yaml throws ("bad indentation of a mapping entry")
+ * on the WHOLE region — not just that one value. That is a real, common shape: hand-edited
+ * STATE.md files that skip the template's em-dash separator and use a plain colon instead
+ * (#2571). Before this fix the entire frontmatter block came back `unparseableResult()` for
+ * one ordinary, non-hostile line — total data loss for every OTHER key in the block too.
+ *
+ * This is a FALLBACK-ONLY retry, never the primary path: the unmodified `yaml` is tried first,
+ * and this repair only runs when that attempt already threw. A well-formed (or genuinely
+ * malformed-for-other-reasons) document is completely unaffected — zero behavior change, zero
+ * added parse cost, on every document that already parses. Only a document that parses
+ * SPECIFICALLY because of this repair benefits; if the repaired text still fails to parse, the
+ * repair is a no-op and the original error is what callers see (never silently swallowed).
+ */
+function loadWithAmbiguousColonRepair(yaml: string): unknown {
+  try {
+    return yamlLoad(yaml, YAML_LOAD_OPTS);
+  } catch (e) {
+    for (const repair of [repairAmbiguousColonValues, repairMalformedInlineArrays]) {
+      const repaired = repair(yaml);
+      if (repaired === yaml) continue; // this repair found nothing to change
+      try {
+        return yamlLoad(repaired, YAML_LOAD_OPTS);
+      } catch {
+        continue; // still invalid (possibly for another reason) — try the next repair
+      }
+    }
+    throw e; // no repair helped — surface the original error
+  }
+}
+
+/**
+ * Post-remote-runner-fix (#3881): the legacy hand-rolled scanner's inline-array handling
+ * (`splitInlineArray`) was a tolerant, quote-aware comma-split over whatever sat between a
+ * literal `[` and `]` on one line — consecutive commas and whitespace-only items were silently
+ * filtered (`[a,,b]` -> `['a','b']`, `[ , ]` -> `[]`), and a `[` with nothing else on the line
+ * was treated exactly like an empty value: an open nested context, populated by any `- item`
+ * block-sequence lines that followed, or left an empty array if none did. A real YAML flow
+ * sequence has none of that leniency — `[a,,b]` is a syntax error (empty flow-sequence entry),
+ * and an unclosed `[` is an unterminated collection — so js-yaml throws on all four shapes,
+ * where the legacy scanner silently recovered. This restores that recovery, scoped to exactly
+ * the two shapes it covered: a single-line `key: [...]` (repaired into a well-formed, re-
+ * parseable flow sequence with empty items dropped) and a bare unclosed `key: [` (rewritten to
+ * either `key:` — so a following block-sequence parses normally — or `key: []` when nothing
+ * follows, preserving the ARRAY-typed empty result the literal `[` signaled, as distinct from
+ * the empty-OBJECT contract of a bare `key:` line with no bracket at all).
+ */
+function repairMalformedInlineArrays(yaml: string): string {
+  const lines = splitLines(yaml);
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = /^([A-Za-z0-9_-]+):\s*\[(.*)$/.exec(line);
+    if (!m) { out.push(line); continue; }
+    const [, key, afterBracket] = m;
+    const closeIdx = afterBracket.indexOf(']');
+    if (closeIdx !== -1) {
+      const inner = afterBracket.slice(0, closeIdx);
+      const trailing = afterBracket.slice(closeIdx + 1);
+      const items = splitLegacyInlineArrayItems(inner).map((it) =>
+        /[,:#[\]{}]/.test(it) || /^\s|\s$/.test(it) ? `"${it.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : it,
+      );
+      out.push(`${key}: [${items.join(', ')}]${trailing}`);
+      continue;
+    }
+    if (afterBracket.trim() === '') {
+      const next = lines[i + 1];
+      out.push(next !== undefined && /^\s+-\s/.test(next) ? `${key}:` : `${key}: []`);
+      continue;
+    }
+    out.push(line); // an unrecognized shape this repair doesn't claim to fix
+  }
+  return out.join('\n');
+}
+
+/** Quote-aware comma split mirroring the legacy scanner's `splitInlineArray`: an item may be
+ * wrapped in matching quotes (a comma inside stays part of the item), otherwise split on bare
+ * commas. Empty / whitespace-only items are filtered — the exact "consecutive commas" /
+ * "whitespace-only items" tolerance the legacy scanner pinned.
+ */
+function splitLegacyInlineArrayItems(inner: string): string[] {
+  const items: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (const ch of inner) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; current += ch; continue; }
+    if (ch === ',') { items.push(current); current = ''; continue; }
+    current += ch;
+  }
+  items.push(current);
+  return items
+    .map((it) => it.trim().replace(/^["']|["']$/g, ''))
+    .filter((it) => it !== '');
+}
+
+/**
+ * Double-quote (and escape) any column-0 `key: value` line whose (single-line) value contains
+ * an unquoted colon+whitespace or a trailing bare colon — the exact shape that reads as an
+ * ambiguous nested mapping key to a real YAML parser. Lines that are already safely quoted or
+ * open a flow/block collection (`"`, `'`, `[`, `{`) are left untouched (js-yaml already handles
+ * those); an empty value (`key:` alone, opening a nested block) is left untouched too, since
+ * repairing it would change a legitimate nested-map opener into a scalar. Only column-0 lines
+ * are considered — an indented line is either already-valid nested content or a genuinely
+ * different malformation this repair does not claim to fix.
+ */
+function repairAmbiguousColonValues(yaml: string): string {
+  return splitLines(yaml)
+    .map((line) => {
+      const m = /^([A-Za-z0-9_][A-Za-z0-9_-]*):[ \t](.+)$/.exec(line);
+      if (!m) return line;
+      const [, key, value] = m;
+      if (/^["'[{]/.test(value)) return line; // already safely quoted/collection-opened
+      if (!/:(?:[ \t]|$)/.test(value)) return line; // no ambiguous colon in the value
+      const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      return `${key}: "${escaped}"`;
+    })
+    .join('\n');
+}
+
 function parseGuardedYamlRegion(yaml: string): Frontmatter {
   refuseAnchorsAndAliases(yaml);
   refuseIfSentinelPresent(yaml);
   const escaped = escapeNullBytesForParse(yaml);
-  const raw: unknown = yamlLoad(escaped, YAML_LOAD_OPTS);
+  const raw: unknown = loadWithAmbiguousColonRepair(escaped);
   const normalized = normalizeParsedValue(raw, false);
   const root: Record<string, unknown> =
     normalized && typeof normalized === 'object' && !Array.isArray(normalized)
@@ -377,7 +557,9 @@ function parseGuardedYamlRegion(yaml: string): Frontmatter {
   if (commentChannel) {
     (restored as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = commentChannel;
   }
-  return restored;
+  // Plain-prototype at the public-surface boundary (post-remote-runner-fix, #3881): see
+  // `toPlainValueTree`'s docblock. Everything above this line stays null-prototype internally.
+  return toPlainValueTree(restored) as Frontmatter;
 }
 
 /**
@@ -503,7 +685,7 @@ function countTopLevelKeyShapedLines(region: string): number {
  *   hold only an in-memory string; those dedup on a content digest instead.
  */
 function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
-  // #2977: tolerate a single leading UTF-8 BOM (﻿), which Windows tooling
+  // #2977: tolerate a single leading UTF-8 BOM (U+FEFF), which Windows tooling
   // (PowerShell `>`/`Out-File` on PS 5.1, several editors) writes by default. Without this
   // strip, the byte-0 `startsWith('---')` fence check below fails on the BOM and the whole
   // parse collapses to {} — every frontmatter field silently disappears, and the engine
@@ -1128,6 +1310,14 @@ function cmdFrontmatterSet(cwd: string, filePath: string, field: string | undefi
   const fm = extractFrontmatter(content, fullPath);
   let parsedValue: unknown;
   try { parsedValue = JSON.parse(value as string); } catch { parsedValue = value; }
+  // #1660 (broadened): a lossy object-list field being genuinely CHANGED must fail closed
+  // before it is regenerated, not just when the regenerated result happens to be byte-identical
+  // to the original (see objectListFieldWouldLoseData's docblock).
+  const lossyErr = objectListFieldWouldLoseData(content, field as string, parsedValue);
+  if (lossyErr) {
+    output({ error: lossyErr, field }, raw, undefined);
+    return;
+  }
   fm[field as string] = parsedValue as FrontmatterValue;
   const newContent = spliceFrontmatter(content, fm);
   // #1660: a no-op set (newContent unchanged) with a dict-valued field means the lossy
@@ -1157,6 +1347,58 @@ function noOpObjectListSetError(originalContent: string, newContent: string, par
   if (newContent !== originalContent) return null;
   if (parsedValue === null || typeof parsedValue !== 'object' || Array.isArray(parsedValue)) return null;
   return 'frontmatter set had no effect — the supplied value is equivalent to the existing field under the frontmatter parser, which cannot faithfully round-trip object-list fields like must_haves. Edit the file directly.';
+}
+
+/**
+ * #1660 (broadened, ADR-3473 §8.1 / #3881): `noOpObjectListSetError` only catches the
+ * BYTE-IDENTICAL no-op case. Under the js-yaml migration, `flattenObjectListItem` correctly
+ * joins EVERY sub-key of an object-list item (`path: X, provides: Y`) instead of the legacy
+ * hand-rolled scanner's accidental behavior of silently discarding every field but the one on
+ * the dash line itself. That fixes a real data-loss bug on READ, but it also means a `set` that
+ * replaces such a field with a plainly-flattened string (e.g. `{artifacts: ["path: X"]}`,
+ * omitting `provides`) is no longer byte-identical to the original — so it no longer trips the
+ * no-op guard, sails through `regenerateFrontmatterKey` (which only refuses when the NEW value
+ * itself contains a live JS object), and silently writes a version with `provides` gone.
+ *
+ * This is the general form of the same "cannot faithfully round-trip" contract: a field is
+ * lossy exactly when regenerating its OWN already-parsed value fails to reproduce its own raw
+ * source text byte-for-byte (proof, not a guess, that this key's original shape does not
+ * survive parse → reconstruct). When that is true AND the caller is genuinely changing the
+ * field (not merely re-supplying an equal value, which `frontmatterDeepEqual` already lets
+ * through), the set is refused — matching `regenerateFrontmatterKey`'s own fail-closed
+ * philosophy for the mirror-image case (new value carries a nested object outright).
+ */
+function objectListFieldWouldLoseData(content: string, field: string, newValue: unknown): string | null {
+  // A NEW value that itself carries a live nested object (rather than an already-flattened
+  // string) is the mirror-image case `regenerateFrontmatterKey` already refuses on its own
+  // (the "[object Object]" guard, via spliceFrontmatter) — leave that path's existing throw
+  // behavior alone rather than intercepting it here with a different (non-throwing) contract.
+  try { regenerateFrontmatterKey(field, newValue as FrontmatterValue); } catch { return null; }
+
+  let originalParsed: Frontmatter;
+  try { originalParsed = extractFrontmatter(content); } catch { return null; }
+  if (!Object.prototype.hasOwnProperty.call(originalParsed, field)) return null;
+  const originalValue = originalParsed[field];
+  if (frontmatterDeepEqual(newValue, originalValue)) return null;
+
+  const fmMatch = content.match(/^---\r?\n([\s\S]+?)\r?\n---/);
+  if (!fmMatch) return null;
+  const original = sliceTopLevelFrontmatterSegments(fmMatch[1]).find((s) => s.key === field);
+  if (!original) return null;
+
+  let regeneratedOriginal: string;
+  try {
+    regeneratedOriginal = regenerateFrontmatterKey(field, originalValue);
+  } catch {
+    return `frontmatter set refused — the existing "${field}" field contains a nested object-list ` +
+      `(e.g. must_haves.artifacts) the frontmatter writer cannot faithfully represent, and this change ` +
+      `would silently discard data. Edit the file directly instead of using frontmatter set/merge.`;
+  }
+  if (regeneratedOriginal.trim() === original.raw.trim()) return null;
+
+  return `frontmatter set refused — the existing "${field}" field cannot be faithfully round-tripped by ` +
+    `the frontmatter writer (its structure would be flattened and data, such as a nested object-list ` +
+    `field, silently dropped). Edit the file directly instead of using frontmatter set/merge.`;
 }
 
 function cmdFrontmatterMerge(cwd: string, filePath: string, data: string | undefined, raw: boolean): void {
