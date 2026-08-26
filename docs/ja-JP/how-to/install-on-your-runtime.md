@@ -214,7 +214,7 @@ npx @opengsd/gsd-core@latest --augment --global
 npx @opengsd/gsd-core@latest --antigravity --global
 ```
 
-インストーラーは Antigravity の設定ディレクトリ（`~/.gemini/antigravity`、`~/.gemini/antigravity-ide`、または `~/.gemini/antigravity-cli`）を自動検出します。Gemini 互換の設定ポリシーを使用します。
+インストーラーはデフォルトで `~/.gemini/config` を使用し、既存の Antigravity 設定ディレクトリ（`~/.gemini/config`、`~/.gemini/antigravity`、`~/.gemini/antigravity-ide`、または `~/.gemini/antigravity-cli`）を自動検出します。Gemini 互換の設定ポリシーを使用します。
 
 **インストールディレクトリの上書き:**
 

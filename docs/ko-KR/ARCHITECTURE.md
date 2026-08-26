@@ -486,7 +486,7 @@ UI-SPEC.md (단계별) ───────────────────
 - **Gemini CLI:** `~/.gemini/` 전역 또는 `./.gemini/` 로컬
 - **Codex:** `~/.codex/` 전역 또는 `./.codex/` 로컬
 - **Copilot:** `~/.copilot/` 전역 또는 `./.github/` 로컬
-- **Antigravity:** 자동 감지된 전역 루트 (`~/.gemini/antigravity/`, `~/.gemini/antigravity-ide/`, 또는 `~/.gemini/antigravity-cli/`) 또는 `./.agent/` 로컬
+- **Antigravity:** `~/.gemini/config/` (기본값) 또는 자동 감지된 레거시/IDE 루트 (`~/.gemini/antigravity/`, `~/.gemini/antigravity-ide/`, 또는 `~/.gemini/antigravity-cli/`) 또는 `./.agents/` (레거시 `./.agent/`) 로컬
 - **Cursor:** `~/.cursor/` 전역 또는 `./.cursor/` 로컬
 - **Windsurf:** `~/.codeium/windsurf/` 전역 또는 `./.windsurf/` 로컬
 - **Augment Code:** `~/.augment/` 전역 또는 `./.augment/` 로컬
@@ -707,7 +707,7 @@ GSD는 통합된 명령어/워크플로우 아키텍처를 통해 여러 AI 코�
 | Gemini CLI | `~/.gemini` | `./.gemini` | `commands/gsd/*.toml` | `agents/gsd-*.md` | `settings.json` 기능 플래그, 훅, statusline |
 | Codex | `~/.codex` | `./.codex` | `skills/gsd-*/SKILL.md` | `agents/` 소스 마크다운 + 에이전트별 TOML | `config.toml` `[agents.gsd-*]`, `[features].hooks` (정규; 레거시 별칭 `codex_hooks`는 인식되며 재설치 시 마이그레이션됨, #3566), 훅 테이블 |
 | GitHub Copilot | `~/.copilot` | `./.github` | `skills/gsd-*/SKILL.md` 및 `copilot-instructions.md` | `.agent.md` 파일 | GSD 훅 또는 statusline 없음 |
-| Antigravity | 자동 감지: `~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, 또는 `~/.gemini/antigravity-cli` | `./.agent` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | GSD가 설치 시 Gemini 스타일 `settings.json` 훅 항목 |
+| Antigravity | `~/.gemini/config` (기본값; 자동 감지: `~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, 또는 `~/.gemini/antigravity-cli`) | `./.agents` (레거시 `./.agent` 감지됨) | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | GSD가 설치 시 Gemini 스타일 `settings.json` 훅 항목 |
 | Cursor | `~/.cursor` | `./.cursor` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | `rules/` 하의 규칙 참조; GSD 훅 없음 |
 | Windsurf | `~/.codeium/windsurf` | `./.windsurf` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | `rules/` 하의 규칙 참조; GSD 훅 없음 |
 | Augment Code | `~/.augment` | `./.augment` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | GSD 훅 또는 statusline 없음 |

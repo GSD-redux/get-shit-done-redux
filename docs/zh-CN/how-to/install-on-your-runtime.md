@@ -214,7 +214,7 @@ npx @opengsd/gsd-core@latest --augment --global
 npx @opengsd/gsd-core@latest --antigravity --global
 ```
 
-安装程序自动检测 Antigravity 配置目录（`~/.gemini/antigravity`、`~/.gemini/antigravity-ide` 或 `~/.gemini/antigravity-cli`）。使用与 Gemini 兼容的设置策略。
+安装程序默认使用 `~/.gemini/config`，并自动检测已存在的 Antigravity 配置目录（`~/.gemini/config`、`~/.gemini/antigravity`、`~/.gemini/antigravity-ide` 或 `~/.gemini/antigravity-cli`）。使用与 Gemini 兼容的设置策略。
 
 **覆盖安装目录：**
 

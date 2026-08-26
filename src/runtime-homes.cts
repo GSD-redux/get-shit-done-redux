@@ -376,7 +376,7 @@ export function resolveAntigravityGlobalDir(opts: ResolveAntigravityOpts = {}): 
   return resolveConfigHomeFromDescriptor(
     {
       kind: 'dot-home-nested',
-      name: 'antigravity',
+      name: 'config',
       parent: '.gemini',
       env: ['ANTIGRAVITY_CONFIG_DIR'],
       probe: ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'],
@@ -393,7 +393,7 @@ export function resolveAntigravityGlobalDir(opts: ResolveAntigravityOpts = {}): 
 }
 
 export interface AntigravityAmbiguity {
-  /** True when more than one ~/.gemini/antigravity{,-ide,-cli} dir is present. */
+  /** True when more than one ~/.gemini/{config,antigravity,antigravity-ide,antigravity-cli} dir is present. */
   ambiguous: boolean;
   /** The dir GSD currently resolves to (where install/update will write). */
   resolved: string;
@@ -412,7 +412,7 @@ export interface AntigravityAmbiguity {
 
 /**
  * Detect whether the Antigravity config-dir resolution is ambiguous — i.e. more
- * than one of ~/.gemini/{antigravity,antigravity-ide,antigravity-cli} exists, so
+ * than one of ~/.gemini/{config,antigravity,antigravity-ide,antigravity-cli} exists, so
  * a user upgrading from a pre-#217 install may have had GSD written into the
  * wrong sibling dir (the legacy/IDE dir shadowing an active CLI dir).
  *
@@ -432,7 +432,7 @@ export function detectAntigravityDirAmbiguity(
   const existsSyncFn = opts.existsSync ?? fs.existsSync;
   const marker = path.join('gsd-core', 'VERSION');
   const base = path.join(home, '.gemini');
-  const candidates = ['antigravity', 'antigravity-ide', 'antigravity-cli'].map((c) =>
+  const candidates = ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'].map((c) =>
     path.join(base, c),
   );
   const presentDirs = candidates.filter((dir) => existsSyncFn(dir));

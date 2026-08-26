@@ -1149,7 +1149,7 @@ const EXPECTED_RUNTIME_PROBES = {
   codebuddy:   '.codebuddy}/gsd-core/bin/',
   cline:       '.cline}/gsd-core/bin/',
   grok:        '.agents}/gsd-core/bin/',
-  antigravity: '.gemini/config}/gsd-core/bin/',
+  antigravity: ['.gemini/config}/gsd-core/bin/', '.gemini/antigravity}/gsd-core/bin/'],
   opencode:    'opencode}/gsd-core/bin/',
   kilo:        'kilo}/gsd-core/bin/',
 };
@@ -1266,8 +1266,11 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
 
     const missing = [];
     for (const [runtime, probe] of Object.entries(EXPECTED_RUNTIME_PROBES)) {
-      if (!snippetContent.includes(probe)) {
-        missing.push(`${runtime}: expected snippet to contain "${probe}"`);
+      const probes = Array.isArray(probe) ? probe : [probe];
+      for (const p of probes) {
+        if (!snippetContent.includes(p)) {
+          missing.push(`${runtime}: expected snippet to contain "${p}"`);
+        }
       }
     }
 
@@ -1291,15 +1294,18 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
     assert.ok(errorPos  !== -1, 'Snippet must contain exit 1 (hard-error guard)');
 
     for (const [runtime, probe] of Object.entries(EXPECTED_RUNTIME_PROBES)) {
-      const probePos = snippetContent.indexOf(probe);
-      assert.ok(
-        probePos !== -1,
-        `Snippet must contain probe for ${runtime} ("${probe}")`,
-      );
-      assert.ok(
-        probePos < errorPos,
-        `${runtime} probe must appear before "exit 1" in snippet (found at ${probePos}, exit 1 at ${errorPos})`,
-      );
+      const probes = Array.isArray(probe) ? probe : [probe];
+      for (const p of probes) {
+        const probePos = snippetContent.indexOf(p);
+        assert.ok(
+          probePos !== -1,
+          `Snippet must contain probe for ${runtime} ("${p}")`,
+        );
+        assert.ok(
+          probePos < errorPos,
+          `${runtime} probe must appear before "exit 1" in snippet (found at ${probePos}, exit 1 at ${errorPos})`,
+        );
+      }
     }
   });
 

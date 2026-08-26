@@ -501,7 +501,7 @@ Caminhos equivalentes para outros runtimes:
 - **Gemini CLI:** `~/.gemini/` global ou `./.gemini/` local
 - **Codex:** `~/.codex/` global ou `./.codex/` local
 - **Copilot:** `~/.copilot/` global ou `./.github/` local
-- **Antigravity:** raiz global detectada automaticamente (`~/.gemini/antigravity/`, `~/.gemini/antigravity-ide/`, ou `~/.gemini/antigravity-cli/`) ou `./.agent/` local
+- **Antigravity:** `~/.gemini/config/` (padrão) ou raízes legadas/IDE detectadas automaticamente (`~/.gemini/antigravity/`, `~/.gemini/antigravity-ide/`, ou `~/.gemini/antigravity-cli/`) ou `./.agents/` (legado `./.agent/`) local
 - **Cursor:** `~/.cursor/` global ou `./.cursor/` local
 - **Windsurf:** `~/.codeium/windsurf/` global ou `./.windsurf/` local
 - **Augment Code:** `~/.augment/` global ou `./.augment/` local
@@ -739,7 +739,7 @@ A propriedade específica de migração e os snapshots de fonte vivem em
 | Gemini CLI | `~/.gemini` | `./.gemini` | `commands/gsd/*.toml` | `agents/gsd-*.md` | flag de funcionalidade, hooks e statusline em `settings.json` |
 | Codex | `~/.codex` | `./.codex` | `skills/gsd-*/SKILL.md` | markdown de origem de agentes mais TOML por agente | `config.toml` `[agents.gsd-*]`, `[features].hooks` (canônico; alias legado `codex_hooks` é reconhecido e migrado no reinstall, #3566) e tabelas de hooks |
 | GitHub Copilot | `~/.copilot` | `./.github` | `skills/gsd-*/SKILL.md` e `copilot-instructions.md` | arquivos `.agent.md` | Sem hooks ou statusline do GSD |
-| Antigravity | detectado automaticamente: `~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, ou `~/.gemini/antigravity-cli` | `./.agent` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | Entradas de hook `settings.json` no estilo Gemini quando instalado pelo GSD |
+| Antigravity | `~/.gemini/config` (padrão; detectado automaticamente: `~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, ou `~/.gemini/antigravity-cli`) | `./.agents` (legado `./.agent` detectado) | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | Entradas de hook `settings.json` no estilo Gemini quando instalado pelo GSD |
 | Cursor | `~/.cursor` | `./.cursor` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | Referências de regras em `rules/`; sem hooks do GSD |
 | Windsurf | `~/.codeium/windsurf` | `./.windsurf` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | Referências de regras em `rules/`; sem hooks do GSD |
 | Augment Code | `~/.augment` | `./.augment` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | Sem hooks ou statusline do GSD |

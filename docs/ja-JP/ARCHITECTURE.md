@@ -448,7 +448,7 @@ UI-SPEC.md (per phase) ───────────────────
 - **Gemini CLI:** `~/.gemini/` global または `./.gemini/` local
 - **Codex:** `~/.codex/` global または `./.codex/` local
 - **Copilot:** `~/.copilot/` global または `./.github/` local
-- **Antigravity:** auto-detected global root（`~/.gemini/antigravity/`、`~/.gemini/antigravity-ide/`、または `~/.gemini/antigravity-cli/`）または `./.agent/` local
+- **Antigravity:** `~/.gemini/config/`（デフォルト）または自動検出されたレガシー/IDE ルート（`~/.gemini/antigravity/`、`~/.gemini/antigravity-ide/`、または `~/.gemini/antigravity-cli/`）または `./.agents/`（レガシー `./.agent/`）local
 - **Cursor:** `~/.cursor/` global または `./.cursor/` local
 - **Windsurf:** `~/.codeium/windsurf/` global または `./.windsurf/` local
 - **Augment Code:** `~/.augment/` global または `./.augment/` local
@@ -636,7 +636,7 @@ GSD Core は統一されたコマンド/ワークフローアーキテクチャ�
 | Gemini CLI | `~/.gemini` | `./.gemini` | `commands/gsd/*.toml` | `agents/gsd-*.md` | `settings.json` フィーチャーフラグ、フック、statusline |
 | Codex | `~/.codex` | `./.codex` | `skills/gsd-*/SKILL.md` | エージェントソース markdown + エージェントごとの TOML | `config.toml` `[agents.gsd-*]`、`[features].hooks`、フックテーブル |
 | GitHub Copilot | `~/.copilot` | `./.github` | `skills/gsd-*/SKILL.md` と `copilot-instructions.md` | `.agent.md` ファイル | GSD フックまたは statusline なし |
-| Antigravity | auto-detected：`~/.gemini/antigravity`、`~/.gemini/antigravity-ide`、または `~/.gemini/antigravity-cli` | `./.agent` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | GSD がインストールした場合の Gemini スタイル `settings.json` フックエントリ |
+| Antigravity | `~/.gemini/config`（デフォルト；自動検出：`~/.gemini/antigravity`、`~/.gemini/antigravity-ide`、または `~/.gemini/antigravity-cli`） | `./.agents`（レガシー `./.agent` も検出） | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | GSD がインストールした場合の Gemini スタイル `settings.json` フックエントリ |
 | Cursor | `~/.cursor` | `./.cursor` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | `rules/` 下のルール参照；GSD フックなし |
 | Windsurf | `~/.codeium/windsurf` | `./.windsurf` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | `rules/` 下のルール参照；GSD フックなし |
 | Augment Code | `~/.augment` | `./.augment` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | GSD フックまたは statusline なし |

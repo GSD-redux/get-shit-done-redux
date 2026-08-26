@@ -214,7 +214,7 @@ npx @opengsd/gsd-core@latest --augment --global
 npx @opengsd/gsd-core@latest --antigravity --global
 ```
 
-인스톨러는 Antigravity 설정 디렉터리(`~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, 또는 `~/.gemini/antigravity-cli`)를 자동으로 감지합니다. Gemini 호환 설정 정책을 사용합니다.
+인스톨러는 기본적으로 `~/.gemini/config`를 사용하며 기존 Antigravity 설정 디렉터리(`~/.gemini/config`, `~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, 또는 `~/.gemini/antigravity-cli`)를 자동으로 감지합니다. Gemini 호환 설정 정책을 사용합니다.
 
 **설치 디렉터리 재정의:**
 

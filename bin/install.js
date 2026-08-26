@@ -19,6 +19,7 @@ const {
   projectCodexHookTomlCommand,
   shellHookOmitsBashRunner,
   buildLocalShellHookCommand,
+  posixNormalize,
 } = require('../gsd-core/bin/lib/shell-command-projection.cjs');
 
 // Bidirectional GSD slash-command namespace transformer (#3583).
@@ -1096,7 +1097,7 @@ function getConfigDirFromHome(runtime, isGlobal) {
       return segments.map((seg) => `'${seg}'`).join(', ');
     }
     // If resolution points outside HOME (e.g. via env override), keep the
-    // stable legacy template so generated path.join() calls remain valid.
+    // stable default template so generated path.join() calls remain valid.
     return "'.gemini', 'config'";
   }
   // All other runtimes: single source-of-truth fragment table (ADR-1239 Phase B,
@@ -2337,14 +2338,52 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
  * @param {string} content - Source content to convert
  * @param {boolean} [isGlobal=false] - Whether this is a global install
  */
-function convertClaudeToAntigravityContent(content, isGlobal = false) {
+function convertClaudeToAntigravityContent(content, isGlobal = false, configDir = null) {
   let c = content;
   if (isGlobal) {
-    c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/config/');
-    c = c.replace(/~\/\.claude\//g, '~/.gemini/config/');
+    let homeDollarTarget = '$HOME/.gemini/config';
+    let homeTildeTarget = '~/.gemini/config';
+    if (typeof configDir === 'string' && configDir.trim().length > 0) {
+      const raw = configDir.trim();
+      if (raw.startsWith('$HOME/')) {
+        const seg = raw.slice(6).split(/[/\\]+/).filter(Boolean).join('/');
+        homeDollarTarget = `$HOME/${seg}`;
+        homeTildeTarget = `~/${seg}`;
+      } else if (raw.startsWith('~/') || raw.startsWith('~\\')) {
+        const seg = raw.slice(2).split(/[/\\]+/).filter(Boolean).join('/');
+        homeDollarTarget = `$HOME/${seg}`;
+        homeTildeTarget = `~/${seg}`;
+      } else if (raw.startsWith('~')) {
+        const seg = raw.slice(1).split(/[/\\]+/).filter(Boolean).join('/');
+        homeDollarTarget = `$HOME/${seg}`;
+        homeTildeTarget = `~/${seg}`;
+      } else if (path.isAbsolute(raw)) {
+        const home = os.homedir();
+        const rel = path.relative(home, raw);
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+          const seg = rel.split(/[/\\]+/).filter(Boolean).join('/');
+          homeDollarTarget = `$HOME/${seg}`;
+          homeTildeTarget = `~/${seg}`;
+        } else {
+          // Custom absolute configDir outside $HOME: embed the absolute target directly
+          const absTarget = posixNormalize(path.resolve(raw));
+          homeDollarTarget = absTarget;
+          homeTildeTarget = absTarget;
+        }
+      } else {
+        const seg = raw.split(/[/\\]+/).filter(Boolean).join('/');
+        if (seg.length > 0) {
+          homeDollarTarget = `$HOME/${seg}`;
+          homeTildeTarget = `~/${seg}`;
+        }
+      }
+    }
+
+    c = c.replace(/\$HOME\/\.claude\//g, `${homeDollarTarget}/`);
+    c = c.replace(/~\/\.claude\//g, `${homeTildeTarget}/`);
     // Bare form (no trailing slash) — must come after slash form to avoid double-replace
-    c = c.replace(/\$HOME\/\.claude\b/g, '$HOME/.gemini/config');
-    c = c.replace(/~\/\.claude\b/g, '~/.gemini/config');
+    c = c.replace(/\$HOME\/\.claude\b/g, homeDollarTarget);
+    c = c.replace(/~\/\.claude\b/g, homeTildeTarget);
   } else {
     c = c.replace(/\$HOME\/\.claude\//g, '.agents/');
     c = c.replace(/~\/\.claude\//g, '.agents/');
@@ -2367,8 +2406,8 @@ function convertClaudeToAntigravityContent(content, isGlobal = false) {
  * Transforms frontmatter to minimal name + description only.
  * Body passes through with path/command conversions applied.
  */
-function convertClaudeCommandToAntigravitySkill(content, skillName, _runtime = null, _cmdNames = null, isGlobal = false) {
-  const converted = convertClaudeToAntigravityContent(content, isGlobal);
+function convertClaudeCommandToAntigravitySkill(content, skillName, _runtime = null, _cmdNames = null, isGlobal = false, configDir = null) {
+  const converted = convertClaudeToAntigravityContent(content, isGlobal, configDir);
   const { frontmatter, body } = extractFrontmatterAndBody(converted);
   if (!frontmatter) return converted;
 
@@ -2385,8 +2424,8 @@ function convertClaudeCommandToAntigravitySkill(content, skillName, _runtime = n
  * Convert a Claude agent (.md) to an Antigravity agent.
  * Uses Gemini tool names since Antigravity runs on Gemini 3 backend.
  */
-function convertClaudeAgentToAntigravityAgent(content, isGlobal = false) {
-  const converted = convertClaudeToAntigravityContent(content, isGlobal);
+function convertClaudeAgentToAntigravityAgent(content, isGlobal = false, configDir = null) {
+  const converted = convertClaudeToAntigravityContent(content, isGlobal, configDir);
   const { frontmatter, body } = extractFrontmatterAndBody(converted);
   if (!frontmatter) return converted;
 
@@ -7501,9 +7540,9 @@ const RUNTIME_CONTENT_DISPATCH = {
   },
   antigravity: {
     mdSkipGenericRewrite: true,
-    md: (content, ctx) => convertClaudeToAntigravityContent(content, ctx.isGlobal),
+    md: (content, ctx) => convertClaudeToAntigravityContent(content, ctx.isGlobal, ctx.pathPrefix),
     mdReattributeAfter: true,
-    js: (content, ctx) => convertClaudeToAntigravityContent(content, ctx.isGlobal),
+    js: (content, ctx) => convertClaudeToAntigravityContent(content, ctx.isGlobal, ctx.pathPrefix),
   },
   cursor: {
     md: (content) => convertClaudeToCursorMarkdown(content),

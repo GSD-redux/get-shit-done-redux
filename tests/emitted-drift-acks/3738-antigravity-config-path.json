@@ -261,6 +261,276 @@
     },
     "update.md": {
       "reason": "gsd-core/workflows/update.md grew 35 bytes: added the new .gemini/config probe entry to the runtime-classification prose and the cache-clear probe loop so /gsd-update can find a fresh antigravity install at the new default location (gsd-core#3738)."
+    },
+    "hooks/gsd-check-update.js": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). Emitted hook copy updated accordingly."
+    },
+    "hooks/gsd-ensure-canonical-path.js": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). Emitted hook copy updated accordingly."
+    },
+    "hooks/gsd-statusline.js": {
+      "reason": "Antigravity global-install content conversion (convertClaudeToAntigravityContent, src/runtime-artifact-conversion.cts) now rewrites $HOME/.claude and ~/.claude path references to ~/.gemini/config instead of the deprecated ~/.gemini/antigravity (gsd-core#3738). Emitted hook copy updated accordingly."
+    },
+    "add-backlog.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "add-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "add-tests.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "add-todo.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "ai-integration-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "audit-fix.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "audit-milestone.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "audit-uat.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "autonomous.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "check-todos.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "cleanup.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "code-review-fix.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "code-review.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "complete-milestone.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "debug.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "diagnose-issues.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "discuss-phase-assumptions.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "discuss-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "do.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "docs-update.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "edit-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "eval-review.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "execute-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "execute-plan.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "explore.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "extract-learnings.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "fast.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "forensics.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "graduation.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "health.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "import.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "inbox.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "ingest-docs.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "insert-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "list-seeds.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "list-workspaces.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "manager.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "map-codebase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "milestone-summary.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "mvp-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "new-milestone.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "new-project.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "new-workspace.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "next.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "pause-work.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "plan-review-convergence.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "plant-seed.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "pr-branch.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "profile-user.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "progress.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "quick.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "remove-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "remove-workspace.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "resume-project.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "scan.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "secure-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "settings-advanced.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "settings-integrations.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "settings.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "ship.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "sketch-wrap-up.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "sketch.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "smart-entry.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "spec-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "spike-wrap-up.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "spike.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "stats.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "sync-skills.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "thread.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "transition.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "ui-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "ui-review.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "ultraplan-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "undo.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "validate-phase.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-code-fixer.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-debug-session-manager.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-debugger.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-eval-auditor.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-executor.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-intel-updater.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-phase-researcher.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-plan-checker.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-planner.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-project-researcher.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-ui-researcher.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
+    },
+    "gsd-verifier.md": {
+      "reason": "Workflow/agent file grew 81 bytes from syncing _runtime-launcher.snippet.sh, which restores ~/.gemini/antigravity legacy fallback beside ~/.gemini/config in the runtime launcher probe chain (gsd-core#3738)."
     }
   }
 }

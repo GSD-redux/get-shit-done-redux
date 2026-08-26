@@ -63,7 +63,7 @@ const EXPECTED_ALL_HOOKS = [
 
 const RUNTIME_META = {
   claude:       { localDir: '.claude',           globalSuffix: '.claude' },
-  antigravity:  { localDir: '.agents',           globalSuffix: path.join('.gemini', 'antigravity') },
+  antigravity:  { localDir: '.agents',           globalSuffix: path.join('.gemini', 'config') },
   augment:      { localDir: '.augment',          globalSuffix: '.augment' },
   cline:        { localDir: '.cline',            globalSuffix: '.cline' },
   codebuddy:    { localDir: '.codebuddy',        globalSuffix: '.codebuddy' },

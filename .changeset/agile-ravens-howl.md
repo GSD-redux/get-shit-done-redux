@@ -2,4 +2,4 @@
 type: Fixed
 pr: 3876
 ---
-Global antigravity installs now target ~/.gemini/config instead of the deprecated ~/.gemini/antigravity, matching current antigravity-cli's scan directory; existing legacy installs keep resolving to their own dir via marker-priority detection (gsd-core#3738)
+**Global Antigravity installs target ~/.gemini/config** — default global Antigravity installs now resolve to `~/.gemini/config` instead of the deprecated `~/.gemini/antigravity` to match current Antigravity CLI scan discovery, while existing legacy installs keep resolving to their own directory via marker-priority detection (#3738).

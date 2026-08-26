@@ -1015,12 +1015,15 @@ describe('skills wrapper threads install scope into converter isGlobal (regressi
       // reference, so the GLOBAL install surfaces the global home marker. If this
       // assertion ever fails, the source skills lost their path references — fix
       // the fixture/source, do not delete this test.
-      assert.ok(gCombined.includes(globalMarker),
-        `${runtime}: precondition — global install should contain '${globalMarker}'`);
+      const expectedGlobalMarker = runtime === 'antigravity'
+        ? path.resolve(globalDir).replace(/\\/g, '/')
+        : globalMarker;
+      assert.ok(gCombined.includes(expectedGlobalMarker),
+        `${runtime}: precondition — global install should contain '${expectedGlobalMarker}'`);
 
       // The actual regression: a LOCAL install must NOT leak the global home path…
-      assert.ok(!lCombined.includes(globalMarker),
-        `${runtime}: local install must NOT leak global home path '${globalMarker}'`);
+      assert.ok(!lCombined.includes(expectedGlobalMarker),
+        `${runtime}: local install must NOT leak global home path '${expectedGlobalMarker}'`);
       // …and SHOULD reference the workspace-relative path.
       assert.ok(lCombined.includes(localMarker),
         `${runtime}: local install must reference workspace path '${localMarker}'`);

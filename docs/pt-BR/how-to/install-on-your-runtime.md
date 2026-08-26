@@ -214,7 +214,7 @@ As habilidades são instaladas em `~/.augment/`. O GSD instala habilidades e age
 npx @opengsd/gsd-core@latest --antigravity --global
 ```
 
-O instalador detecta automaticamente o diretório de configuração do Antigravity (`~/.gemini/antigravity`, `~/.gemini/antigravity-ide` ou `~/.gemini/antigravity-cli`). Usa a política de configurações compatível com Gemini.
+O instalador usa `~/.gemini/config` por padrão e detecta automaticamente os diretórios existentes do Antigravity (`~/.gemini/config`, `~/.gemini/antigravity`, `~/.gemini/antigravity-ide` ou `~/.gemini/antigravity-cli`). Usa a política de configurações compatível com Gemini.
 
 **Substituir o diretório de instalação:**
 

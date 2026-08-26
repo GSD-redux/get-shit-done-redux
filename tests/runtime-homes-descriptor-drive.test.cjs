@@ -610,7 +610,7 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
       const result = resolveConfigHomeFromDescriptor(
         {
           kind: 'dot-home-nested',
-          name: 'antigravity',
+          name: 'config',
           parent: '.gemini',
           env: ['ANTIGRAVITY_CONFIG_DIR'],
           probe: ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'],
@@ -630,10 +630,10 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
       const result = resolveConfigHomeFromDescriptor(
         {
           kind: 'dot-home-nested',
-          name: 'antigravity',
+          name: 'config',
           parent: '.gemini',
           env: ['ANTIGRAVITY_CONFIG_DIR'],
-          probe: ['antigravity', 'antigravity-ide', 'antigravity-cli'],
+          probe: ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'],
         },
         { env: {}, home: tmpHome, existsSync: (p) => p === hitPath },
       );
@@ -650,10 +650,10 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
       const result = resolveConfigHomeFromDescriptor(
         {
           kind: 'dot-home-nested',
-          name: 'antigravity',
+          name: 'config',
           parent: '.gemini',
           env: ['ANTIGRAVITY_CONFIG_DIR'],
-          probe: ['antigravity', 'antigravity-ide', 'antigravity-cli'],
+          probe: ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'],
         },
         { env: {}, home: tmpHome, existsSync: (p) => p === hitPath },
       );
@@ -670,10 +670,10 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
       const result = resolveConfigHomeFromDescriptor(
         {
           kind: 'dot-home-nested',
-          name: 'antigravity',
+          name: 'config',
           parent: '.gemini',
           env: ['ANTIGRAVITY_CONFIG_DIR'],
-          probe: ['antigravity', 'antigravity-ide', 'antigravity-cli'],
+          probe: ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'],
         },
         { env: {}, home: tmpHome, existsSync: (p) => p === hitPath },
       );
@@ -681,6 +681,57 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
     } finally {
       cleanup(tmpHome);
     }
+  });
+
+  test('antigravity registry descriptor resolves to ~/.gemini/config on clean machine (hermetic tmpHome)', () => {
+    const { runtimes } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'capability-registry.cjs'));
+    const antigravityCap = runtimes.antigravity;
+    assert.ok(antigravityCap, 'capability-registry must contain antigravity runtime entry');
+    assert.ok(antigravityCap.runtime?.configHome, 'antigravity must define configHome');
+
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-antigravity-reg-clean-'));
+    try {
+      const result = resolveConfigHomeFromDescriptor(
+        antigravityCap.runtime.configHome,
+        { env: {}, home: tmpHome, existsSync: () => false },
+      );
+      assert.strictEqual(
+        result,
+        path.join(tmpHome, '.gemini', 'config'),
+        'Registry configHome descriptor must resolve to ~/.gemini/config when no candidate dirs exist',
+      );
+    } finally {
+      cleanup(tmpHome);
+    }
+  });
+
+  test('antigravity capability.json and capability-registry.cjs probe order parity', () => {
+    const capJsonPath = path.join(ROOT, 'capabilities', 'antigravity', 'capability.json');
+    const capJson = JSON.parse(fs.readFileSync(capJsonPath, 'utf8'));
+    const { runtimes } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'capability-registry.cjs'));
+    const regAntigravity = runtimes.antigravity;
+
+    const expectedProbe = ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'];
+    assert.deepStrictEqual(
+      capJson.runtime.configHome.probe,
+      expectedProbe,
+      'capabilities/antigravity/capability.json probe must be [config, antigravity, antigravity-ide, antigravity-cli]',
+    );
+    assert.deepStrictEqual(
+      regAntigravity.runtime.configHome.probe,
+      expectedProbe,
+      'capability-registry.cjs antigravity probe must match capability.json probe order',
+    );
+    assert.strictEqual(
+      capJson.runtime.configHome.name,
+      'config',
+      'capability.json configHome.name must be "config"',
+    );
+    assert.strictEqual(
+      regAntigravity.runtime.configHome.name,
+      'config',
+      'capability-registry.cjs configHome.name must be "config"',
+    );
   });
 
   // ── #213/#217 coexistence regression: probeExists disambiguation ──────────
@@ -694,7 +745,7 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
   function antigravityDescriptor(withMarker) {
     const d = {
       kind: 'dot-home-nested',
-      name: 'antigravity',
+      name: 'config',
       parent: '.gemini',
       env: ['ANTIGRAVITY_CONFIG_DIR'],
       probe: AG_PROBE,
@@ -790,10 +841,10 @@ describe('descriptor-driven equivalence: dot-home-nested antigravity probe hit/m
     const result = resolveConfigHomeFromDescriptor(
       {
         kind: 'dot-home-nested',
-        name: 'antigravity',
+        name: 'config',
         parent: '.gemini',
         env: ['ANTIGRAVITY_CONFIG_DIR'],
-        probe: ['antigravity', 'antigravity-ide', 'antigravity-cli'],
+        probe: ['config', 'antigravity', 'antigravity-ide', 'antigravity-cli'],
       },
       { env: { ANTIGRAVITY_CONFIG_DIR: '/custom/ag' }, home: '/home/u', existsSync: () => true },
     );
@@ -820,7 +871,7 @@ describe('detectAntigravityDirAmbiguity (migration/operator-guidance signal)', (
   const dir = (name) => path.join(HOMEU, '.gemini', name);
   const markerOf = (name) => path.join(dir(name), 'gsd-core', 'VERSION');
 
-  test('single dir present → not ambiguous', () => {
+  test('single dir present → not ambiguous (cli)', () => {
     const cli = dir('antigravity-cli');
     const r = detectAntigravityDirAmbiguity({
       env: {},
@@ -832,6 +883,47 @@ describe('detectAntigravityDirAmbiguity (migration/operator-guidance signal)', (
     assert.deepStrictEqual(r.presentDirs, [cli]);
     assert.deepStrictEqual(r.gsdMarkedDirs, [cli]);
     assert.strictEqual(r.envOverridden, false);
+  });
+
+  test('single dir present → not ambiguous (config)', () => {
+    const cfg = dir('config');
+    const r = detectAntigravityDirAmbiguity({
+      env: {},
+      home: HOMEU,
+      existsSync: (p) => p === cfg || p === markerOf('config'),
+    });
+    assert.strictEqual(r.ambiguous, false);
+    assert.strictEqual(r.resolved, cfg);
+    assert.deepStrictEqual(r.presentDirs, [cfg]);
+    assert.deepStrictEqual(r.gsdMarkedDirs, [cfg]);
+    assert.strictEqual(r.envOverridden, false);
+  });
+
+  test('no dirs present → not ambiguous, resolves to config default', () => {
+    const r = detectAntigravityDirAmbiguity({
+      env: {},
+      home: HOMEU,
+      existsSync: () => false,
+    });
+    assert.strictEqual(r.ambiguous, false);
+    assert.strictEqual(r.resolved, dir('config'));
+    assert.deepStrictEqual(r.presentDirs, []);
+    assert.deepStrictEqual(r.gsdMarkedDirs, []);
+    assert.strictEqual(r.envOverridden, false);
+  });
+
+  test('config + legacy both present, GSD marked in config → ambiguous, resolves to config', () => {
+    const cfg = dir('config');
+    const legacy = dir('antigravity');
+    const r = detectAntigravityDirAmbiguity({
+      env: {},
+      home: HOMEU,
+      existsSync: (p) => p === cfg || p === legacy || p === markerOf('config'),
+    });
+    assert.strictEqual(r.ambiguous, true, 'two probe dirs present must flag ambiguity');
+    assert.strictEqual(r.resolved, cfg, 'marker disambiguates resolution to config');
+    assert.deepStrictEqual(r.presentDirs.sort(), [cfg, legacy].sort());
+    assert.deepStrictEqual(r.gsdMarkedDirs, [cfg]);
   });
 
   test('legacy + cli both present, GSD marked in cli → ambiguous, resolves to cli', () => {
@@ -1210,35 +1302,26 @@ function withEnv(key, value, fn) {
   }
 }
 
-describe('bug #3126: runtime-homes getGlobalConfigDir — defaults', () => {
-  // antigravity is excluded from this real-filesystem loop: getGlobalConfigDir
-  // probes real fs.existsSync, and a machine with a pre-existing
-  // ~/.gemini/{config,antigravity,antigravity-ide,antigravity-cli} dir (e.g. a
-  // real local antigravity install) would make this assert on which of those
-  // happens to exist on disk rather than on probe[0]-fallback behavior itself
-  // (issue #3738 fix surfaced this: this dev machine has a real
-  // ~/.gemini/antigravity, so the old '.gemini/antigravity' expectation here
-  // was passing for the wrong reason — bare-existence, not true fallback).
-  // Hermetic probe-miss/hit coverage for antigravity already exists above in
-  // the "GOLDEN DOT-HOME-NESTED (antigravity probe)" describe block, which
-  // injects existsSync instead of hitting the real filesystem.
+describe('bug #3126: runtime-homes getGlobalConfigDir — defaults (hermetic tmpHome)', () => {
   const defaults = [
-    ['claude',      path.join(os.homedir(), '.claude')],
-    ['cursor',      path.join(os.homedir(), '.cursor')],
-    ['codex',       path.join(os.homedir(), '.codex')],
-    ['copilot',     path.join(os.homedir(), '.copilot')],
-    ['windsurf',    path.join(os.homedir(), '.codeium', 'windsurf')],
-    ['augment',     path.join(os.homedir(), '.augment')],
-    ['trae',        path.join(os.homedir(), '.trae')],
-    ['qwen',        path.join(os.homedir(), '.qwen')],
-    ['hermes',      path.join(os.homedir(), '.hermes')],
-    ['codebuddy',   path.join(os.homedir(), '.codebuddy')],
-    ['cline',       path.join(os.homedir(), '.cline')],
-    ['opencode',    path.join(os.homedir(), '.config', 'opencode')],
-    ['kilo',        path.join(os.homedir(), '.config', 'kilo')],
+    ['claude',      path.join('.claude')],
+    ['antigravity', path.join('.gemini', 'config')],
+    ['cursor',      path.join('.cursor')],
+    ['codex',       path.join('.codex')],
+    ['copilot',     path.join('.copilot')],
+    ['windsurf',    path.join('.codeium', 'windsurf')],
+    ['augment',     path.join('.augment')],
+    ['trae',        path.join('.trae')],
+    ['qwen',        path.join('.qwen')],
+    ['hermes',      path.join('.hermes')],
+    ['codebuddy',   path.join('.codebuddy')],
+    ['cline',       path.join('.cline')],
+    ['opencode',    path.join('.config', 'opencode')],
+    ['kilo',        path.join('.config', 'kilo')],
   ];
-  for (const [runtime, expected] of defaults) {
+  for (const [runtime, relExpected] of defaults) {
     test(`${runtime} default configDir`, () => {
+      const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-default-${runtime}-`));
       // Derive env-var list from the registry so new runtimes are auto-covered.
       // GROK_AGENTS_HOME is kept explicitly (grok has no registry entry).
       const { runtimes: _reg3126 } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'capability-registry.cjs'));
@@ -1249,22 +1332,39 @@ describe('bug #3126: runtime-homes getGlobalConfigDir — defaults', () => {
         const skillsEnvs = ch.skillsHome && Array.isArray(ch.skillsHome.env) ? ch.skillsHome.env : [];
         return [...envs, ...skillsEnvs];
       });
-      const envKeys = [...new Set([..._regEnvKeys3126, 'GROK_AGENTS_HOME', 'XDG_CONFIG_HOME'])];
+      const envKeys = [...new Set([..._regEnvKeys3126, 'GROK_AGENTS_HOME', 'XDG_CONFIG_HOME', 'HOME', 'USERPROFILE'])];
       const saved = {};
       for (const k of envKeys) { saved[k] = process.env[k]; delete process.env[k]; }
+      process.env.HOME = tmpHome;
+      process.env.USERPROFILE = tmpHome;
       try {
-        assert.strictEqual(getGlobalConfigDir(runtime), expected);
+        assert.strictEqual(getGlobalConfigDir(runtime), path.join(tmpHome, relExpected));
       } finally {
         for (const k of envKeys) {
           if (saved[k] !== undefined) process.env[k] = saved[k];
+          else delete process.env[k];
         }
+        cleanup(tmpHome);
       }
     });
   }
   test('unknown runtime falls back to ~/.claude', () => {
-    withEnv('CLAUDE_CONFIG_DIR', undefined, () => {
-      assert.strictEqual(getGlobalConfigDir('unknown-xyz'), path.join(os.homedir(), '.claude'));
-    });
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-default-unknown-'));
+    const savedHome = process.env.HOME;
+    const savedUser = process.env.USERPROFILE;
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    try {
+      withEnv('CLAUDE_CONFIG_DIR', undefined, () => {
+        assert.strictEqual(getGlobalConfigDir('unknown-xyz'), path.join(tmpHome, '.claude'));
+      });
+    } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome;
+      else delete process.env.HOME;
+      if (savedUser !== undefined) process.env.USERPROFILE = savedUser;
+      else delete process.env.USERPROFILE;
+      cleanup(tmpHome);
+    }
   });
 });
 

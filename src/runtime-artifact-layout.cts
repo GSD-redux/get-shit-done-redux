@@ -436,7 +436,7 @@ function convertedAgentsKind(
       // boolean `stageAgentsForRuntimeWithConverter`'s positional API
       // requires — see its doc comment in install-scope.cts.
       const rawConverter = _resolveNamedConverter(converterName, 'agents') as
-        (content: string, arg2?: boolean | { isAgent?: boolean; modelOverride?: string | null; variant?: string | null }) => string;
+        (content: string, arg2?: boolean | { isAgent?: boolean; modelOverride?: string | null; variant?: string | null }, configDir?: string) => string;
 
       // #2875 Part 2 (J5-J8): kilo/opencode agent converters take an options
       // bag (`{isAgent, modelOverride}`), not the `isGlobal` boolean every
@@ -490,10 +490,11 @@ function convertedAgentsKind(
         };
       } else {
         // isGlobal is threaded so scope-aware agent converters (copilot, antigravity)
-        // choose global-home vs workspace-relative paths; converters that only take
-        // (content) ignore the extra positional arg. Mirrors skillsKind's scope
-        // threading (#1173).
-        converter = (content) => rawConverter(content, isGlobalScope(scope));
+        // choose global-home vs workspace-relative paths; configDir is passed
+        // so antigravity can target the resolved directory (#3738).
+        // Converters that only take (content) ignore the extra positional arg.
+        // Mirrors skillsKind's scope threading (#1173).
+        converter = (content) => rawConverter(content, isGlobalScope(scope), configDir);
       }
       // ADR-1235 §1: when agentCtx is provided (by createRuntimeArtifactInstallPlan
       // for descriptor-driven runtimes), thread it through so stageAgentsForRuntimeWithConverter
@@ -592,13 +593,14 @@ function skillsKind(
     prefix,
     converter: converterName,
     stage: (resolved) => {
-      const realConverter = _resolveNamedConverter(converterName, 'skills') as (content: string, skillName: string, runtime: string, cmdNames: string[], isGlobal: boolean) => string;
+      const realConverter = _resolveNamedConverter(converterName, 'skills') as (content: string, skillName: string, runtime: string, cmdNames: string[], isGlobal: boolean, configDir?: string) => string;
       // Compute cmdNames once per stage call for performance (#3583).
       // Extra trailing args are ignored by converters that don't need them. The
       // isGlobal flag is the 5th positional (NOT the 3rd): the 3rd positional is
       // `runtime` for the claude/kimi/cline converters, so the scope-aware
       // converters (antigravity, copilot) read isGlobal from position 5 to avoid
       // colliding with `runtime` and always taking the global branch.
+      // Position 6 passes configDir so antigravity can target the resolved directory (#3738).
       const cmdNames = conversionExports.readGsdCommandNames
         ? conversionExports.readGsdCommandNames()
         : [];
@@ -618,7 +620,7 @@ function skillsKind(
       // it must run AFTER it instead, once the `@`-include is in its final
       // rewritten shape.
       const wrappedConverter = (content: string, skillName: string): string =>
-        realConverter(content, skillName, runtime, cmdNames, isGlobal);
+        realConverter(content, skillName, runtime, cmdNames, isGlobal, configDir);
       return stageSkillsForRuntimeAsSkills(findInstallSourceRoot(configDir), resolved, wrappedConverter, prefix, nested, capabilityRegistry);
     },
   };

@@ -118,7 +118,7 @@ describe('getGlobalConfigDir — all runtimes default paths', () => {
     }
   });
 
-  for (const runtime of allRuntimes.filter(runtime => runtime !== 'kimi')) {
+  for (const runtime of allRuntimes.filter(runtime => runtime !== 'kimi' && runtime !== 'antigravity')) {
     test(`getGlobalConfigDir('${runtime}') returns expected home-relative path`, () => {
       const expected = path.join(os.homedir(), RUNTIME_META[runtime].globalSuffix);
       assert.strictEqual(getGlobalConfigDir(runtime), expected);
@@ -141,6 +141,43 @@ describe('getGlobalConfigDir/getConfigDirFromHome — antigravity 2.x layout det
     else delete process.env.USERPROFILE;
     if (saved.ANTIGRAVITY_CONFIG_DIR !== undefined) process.env.ANTIGRAVITY_CONFIG_DIR = saved.ANTIGRAVITY_CONFIG_DIR;
     else delete process.env.ANTIGRAVITY_CONFIG_DIR;
+  });
+
+  test('falls back to ~/.gemini/config when no candidate dirs exist (fresh install)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-antigravity-fresh-'));
+    try {
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      assert.strictEqual(
+        getGlobalConfigDir('antigravity'),
+        path.join(home, '.gemini', 'config'),
+      );
+      assert.strictEqual(
+        getConfigDirFromHome('antigravity', true),
+        "'.gemini', 'config'",
+      );
+    } finally {
+      cleanup(home);
+    }
+  });
+
+  test('uses ~/.gemini/config when config dir exists bare', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-antigravity-config-'));
+    try {
+      fs.mkdirSync(path.join(home, '.gemini', 'config'), { recursive: true });
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      assert.strictEqual(
+        getGlobalConfigDir('antigravity'),
+        path.join(home, '.gemini', 'config'),
+      );
+      assert.strictEqual(
+        getConfigDirFromHome('antigravity', true),
+        "'.gemini', 'config'",
+      );
+    } finally {
+      cleanup(home);
+    }
   });
 
   test('uses ~/.gemini/antigravity-ide when legacy dir is absent and ide dir exists', () => {

@@ -486,7 +486,7 @@ UI-SPEC.md (per phase) ───────────────────
 - **Gemini CLI：** `~/.gemini/` 全局或 `./.gemini/` 本地
 - **Codex：** `~/.codex/` 全局或 `./.codex/` 本地
 - **Copilot：** `~/.copilot/` 全局或 `./.github/` 本地
-- **Antigravity：** 自动检测全局根目录（`~/.gemini/antigravity/`、`~/.gemini/antigravity-ide/` 或 `~/.gemini/antigravity-cli/`）或 `./.agent/` 本地
+- **Antigravity：** `~/.gemini/config/`（默认）或自动检测遗留/IDE 根目录（`~/.gemini/antigravity/`、`~/.gemini/antigravity-ide/` 或 `~/.gemini/antigravity-cli/`）或 `./.agents/`（遗留 `./.agent/`）本地
 - **Cursor：** `~/.cursor/` 全局或 `./.cursor/` 本地
 - **Windsurf：** `~/.codeium/windsurf/` 全局或 `./.windsurf/` 本地
 - **Augment Code：** `~/.augment/` 全局或 `./.augment/` 本地
@@ -705,7 +705,7 @@ GSD 通过统一的命令/工作流架构支持多种 AI 编码运行时：
 | Gemini CLI | `~/.gemini` | `./.gemini` | `commands/gsd/*.toml` | `agents/gsd-*.md` | `settings.json` 功能标志、hook 和 statusline |
 | Codex | `~/.codex` | `./.codex` | `skills/gsd-*/SKILL.md` | `agents/` 源 markdown 加每个 Agent 的 TOML | `config.toml` `[agents.gsd-*]`、`[features].hooks`（规范；遗留别名 `codex_hooks` 在重新安装时被识别并迁移到新版本，#3566）以及 hook 表 |
 | GitHub Copilot | `~/.copilot` | `./.github` | `skills/gsd-*/SKILL.md` 和 `copilot-instructions.md` | `.agent.md` 文件 | 无 GSD hook 或 statusline |
-| Antigravity | 自动检测：`~/.gemini/antigravity`、`~/.gemini/antigravity-ide` 或 `~/.gemini/antigravity-cli` | `./.agent` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | GSD 安装时的 Gemini 风格 `settings.json` hook 条目 |
+| Antigravity | `~/.gemini/config`（默认；自动检测：`~/.gemini/antigravity`、`~/.gemini/antigravity-ide` 或 `~/.gemini/antigravity-cli`） | `./.agents`（检测遗留 `./.agent`） | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | GSD 安装时的 Gemini 风格 `settings.json` hook 条目 |
 | Cursor | `~/.cursor` | `./.cursor` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | `rules/` 下的规则引用；无 GSD hook |
 | Windsurf | `~/.codeium/windsurf` | `./.windsurf` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | `rules/` 下的规则引用；无 GSD hook |
 | Augment Code | `~/.augment` | `./.augment` | `skills/gsd-*/SKILL.md` | `agents/gsd-*.md` | 无 GSD hook 或 statusline |

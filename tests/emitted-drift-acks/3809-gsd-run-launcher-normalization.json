@@ -3,7 +3,7 @@
   "version": 1,
   "paths": {
     "gsd-research-synthesizer.md": {
-      "reason": "descriptive comment reworded to name no command, so the file's first gsd_run token stays behind its canonical preamble (runtime-launcher-parity B-agents); +3 bytes"
+      "reason": "descriptive comment reworded to name no command, so the file's first gsd_run token stays behind its canonical preamble (runtime-launcher-parity B-agents); +3 bytes Also grew 81 bytes from syncing _runtime-launcher.snippet.sh for Antigravity legacy fallback (#3738)."
     }
   }
 }

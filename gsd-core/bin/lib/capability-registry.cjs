@@ -97,7 +97,7 @@ const capabilities = {
     "role": "runtime",
     "version": "1.11.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/config (falls back to legacy ~/.gemini/antigravity{,-ide,-cli} for pre-existing installs); probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity — nested under ~/.gemini/config with legacy fallback; Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -106,7 +106,7 @@ const capabilities = {
     "runtime": {
       "configHome": {
         "kind": "dot-home-nested",
-        "name": "antigravity",
+        "name": "config",
         "parent": ".gemini",
         "env": [
           "ANTIGRAVITY_CONFIG_DIR"
@@ -5247,7 +5247,7 @@ const runtimes = {
     "role": "runtime",
     "version": "1.11.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/config (falls back to legacy ~/.gemini/antigravity{,-ide,-cli} for pre-existing installs); probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity — nested under ~/.gemini/config with legacy fallback; Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -5256,7 +5256,7 @@ const runtimes = {
     "runtime": {
       "configHome": {
         "kind": "dot-home-nested",
-        "name": "antigravity",
+        "name": "config",
         "parent": ".gemini",
         "env": [
           "ANTIGRAVITY_CONFIG_DIR"

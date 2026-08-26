@@ -79,7 +79,7 @@ configHome: {
 ```
 
 - `dot-home` → `~/.{name}` (claude, cursor, codex, copilot, augment, trae, qwen, hermes, codebuddy, cline).
-- `dot-home-nested` → `~/{parent}/{name}` (antigravity `~/.gemini/antigravity` + probe; windsurf `~/.codeium/windsurf`).
+- `dot-home-nested` → `~/{parent}/{name}` (antigravity `~/.gemini/config` default + probe; windsurf `~/.codeium/windsurf`).
 - `xdg` → `$XDG_CONFIG_HOME/{name}` ?? `~/.config/{name}` (opencode, kilo).
 - `generic-agents-root` → the shared `~/.config/agents` / `~/.agents` first-existing root (kimi).
 

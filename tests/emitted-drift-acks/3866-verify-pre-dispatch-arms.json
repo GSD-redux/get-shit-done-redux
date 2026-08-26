@@ -3,7 +3,7 @@
   "version": 1,
   "paths": {
     "verify-work.md": {
-      "reason": "#3866: verify:pre gains contribution + step dispatch arms and extract_tests gains the produces[] consumption seam with its in-context name allowlist and artefact-shape contract; the dispatch contract is executable prose, so the arms cannot be expressed shorter; +3239 bytes"
+      "reason": "#3866: verify:pre gains contribution + step dispatch arms and extract_tests gains the produces[] consumption seam with its in-context name allowlist and artefact-shape contract; the dispatch contract is executable prose, so the arms cannot be expressed shorter; +3239 bytes. Also grew 81 bytes from syncing _runtime-launcher.snippet.sh for Antigravity legacy fallback (#3738)."
     }
   }
 }

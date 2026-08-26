@@ -17,6 +17,8 @@ const {
   convertClaudeToOpencodeFrontmatter,
   convertClaudeToKiloFrontmatter,
   convertClaudeAgentToAntigravityAgent,
+  convertClaudeCommandToAntigravitySkill,
+  convertClaudeToAntigravityContent,
   convertClaudeCommandToTraeSkill,
   convertClaudeCommandToKimiSkill,
   buildKimiAgentArtifacts,
@@ -2579,3 +2581,101 @@ describe('#3706: the layout seam actually threads the variant', () => {
   });
 });
 
+describe('Antigravity converters configDir parameterization (#3738)', () => {
+  const os = require('node:os');
+  const path = require('node:path');
+
+  const SAMPLE_CONTENT = [
+    'Check $HOME/.claude/gsd-core and ~/.claude/skills.',
+    'Run node $HOME/.claude/gsd-core/bin/gsd-tools.cjs or see ~/.claude for details.',
+    'Use gsd:progress to track status.',
+  ].join('\n');
+
+  test('convertClaudeToAntigravityContent: local scope targets .agents/', () => {
+    const res = convertClaudeToAntigravityContent(SAMPLE_CONTENT, false);
+    assert.ok(res.includes('.agents/gsd-core'));
+    assert.ok(res.includes('.agents/skills'));
+    assert.ok(res.includes('.agents/gsd-core/bin/gsd-tools.cjs'));
+    assert.ok(res.includes('see .agents for details'));
+    assert.ok(res.includes('gsd-progress'));
+    assert.ok(!res.includes('.claude'));
+  });
+
+  test('convertClaudeToAntigravityContent: global scope defaults to ~/.gemini/config', () => {
+    const res = convertClaudeToAntigravityContent(SAMPLE_CONTENT, true);
+    assert.ok(res.includes('$HOME/.gemini/config/gsd-core'));
+    assert.ok(res.includes('~/.gemini/config/skills'));
+    assert.ok(res.includes('$HOME/.gemini/config/gsd-core/bin/gsd-tools.cjs'));
+    assert.ok(res.includes('see ~/.gemini/config for details'));
+    assert.ok(!res.includes('.claude'));
+  });
+
+  test('convertClaudeToAntigravityContent: global scope with tilde configDir (~/.gemini/antigravity)', () => {
+    const res = convertClaudeToAntigravityContent(SAMPLE_CONTENT, true, '~/.gemini/antigravity');
+    assert.ok(res.includes('$HOME/.gemini/antigravity/gsd-core'));
+    assert.ok(res.includes('~/.gemini/antigravity/skills'));
+    assert.ok(res.includes('$HOME/.gemini/antigravity/gsd-core/bin/gsd-tools.cjs'));
+    assert.ok(res.includes('see ~/.gemini/antigravity for details'));
+    assert.ok(!res.includes('.claude'));
+  });
+
+  test('convertClaudeToAntigravityContent: global scope with $HOME-prefixed configDir', () => {
+    const res = convertClaudeToAntigravityContent(SAMPLE_CONTENT, true, '$HOME/.gemini/antigravity-ide');
+    assert.ok(res.includes('$HOME/.gemini/antigravity-ide/gsd-core'));
+    assert.ok(res.includes('~/.gemini/antigravity-ide/skills'));
+    assert.ok(!res.includes('.claude'));
+  });
+
+  test('convertClaudeToAntigravityContent: global scope with absolute configDir under $HOME', () => {
+    const target = path.join(os.homedir(), '.gemini', 'antigravity-cli');
+    const res = convertClaudeToAntigravityContent(SAMPLE_CONTENT, true, target);
+    assert.ok(res.includes('$HOME/.gemini/antigravity-cli/gsd-core'));
+    assert.ok(res.includes('~/.gemini/antigravity-cli/skills'));
+    assert.ok(!res.includes('.claude'));
+  });
+
+  test('convertClaudeToAntigravityContent: global scope with absolute configDir outside $HOME embeds directly', () => {
+    const customDir = '/opt/antigravity';
+    const res = convertClaudeToAntigravityContent(SAMPLE_CONTENT, true, customDir);
+    assert.ok(res.includes('/opt/antigravity/gsd-core'));
+    assert.ok(res.includes('/opt/antigravity/skills'));
+    assert.ok(res.includes('/opt/antigravity/gsd-core/bin/gsd-tools.cjs'));
+    assert.ok(res.includes('see /opt/antigravity for details'));
+    assert.ok(!res.includes('.claude'));
+    assert.ok(!res.includes('~/opt'));
+    assert.ok(!res.includes('$HOME//opt'));
+  });
+
+  test('convertClaudeCommandToAntigravitySkill: preserves configDir in skill body', () => {
+    const src = [
+      '---',
+      'name: gsd-custom',
+      'description: Custom command',
+      '---',
+      '# Custom',
+      'Execute: node $HOME/.claude/gsd-core/bin/gsd-tools.cjs',
+    ].join('\n');
+
+    const resTilde = convertClaudeCommandToAntigravitySkill(src, 'gsd-custom', null, null, true, '~/.gemini/antigravity');
+    assert.ok(resTilde.includes('$HOME/.gemini/antigravity/gsd-core/bin/gsd-tools.cjs'));
+
+    const resAbs = convertClaudeCommandToAntigravitySkill(src, 'gsd-custom', null, null, true, '/opt/antigravity');
+    assert.ok(resAbs.includes('/opt/antigravity/gsd-core/bin/gsd-tools.cjs'));
+  });
+
+  test('convertClaudeAgentToAntigravityAgent: preserves configDir in agent body', () => {
+    const src = [
+      '---',
+      'name: gsd-custom-agent',
+      'description: Custom agent',
+      '---',
+      'Refer to ~/.claude/skills for procedures.',
+    ].join('\n');
+
+    const resTilde = convertClaudeAgentToAntigravityAgent(src, true, '~/.gemini/antigravity');
+    assert.ok(resTilde.includes('~/.gemini/antigravity/skills'));
+
+    const resAbs = convertClaudeAgentToAntigravityAgent(src, true, '/opt/antigravity');
+    assert.ok(resAbs.includes('/opt/antigravity/skills'));
+  });
+});

@@ -41,8 +41,8 @@ host.
 - **VS Code** — in the workspace MCP servers list.
 - **Antigravity** — under the `mcpServers` block of its standalone
   `mcp_config.json` profile (not embedded in `settings.json`) — global at
-  `~/.gemini/antigravity/mcp_config.json` (or the sibling
-  `antigravity-ide`/`antigravity-cli` dir GSD resolved into), project-local at
+  `~/.gemini/config/mcp_config.json` (or the sibling legacy
+  `antigravity`/`antigravity-ide`/`antigravity-cli` dir GSD resolved into), project-local at
   `.agents/mcp_config.json`. GSD's installer configures this entry
   automatically (`--antigravity` installs).
 - **OpenCode** — under the `mcp` key (**not** `mcpServers`), in
