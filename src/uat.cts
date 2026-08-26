@@ -778,6 +778,20 @@ const UAT_PASS_RESULTS = new Set(['pass', 'passed']);
 const FENCE_OPENER_RE = /^(?:`{3,}|~{3,})/;
 
 /**
+ * The CommonMark-tolerant (0-3 leading spaces) twin of `FENCE_OPENER_RE`,
+ * used ONLY by the inner delimiter-shape sweep in
+ * `blankIndentedFenceDelimiters` (#3078 round-7 MAJOR). That sweep runs
+ * strictly BETWEEN a neutralised block's own (already-blanked) delimiters,
+ * looking for a line `tokenizeHeadings` would itself read as a fence opener
+ * once those delimiters are gone — and `tokenizeHeadings` tolerates up to
+ * three leading spaces on an opener, so a column-0-anchored test here misses
+ * an INDENTED delimiter-shaped line and lets the mutation manufacture exactly
+ * the structure `scanFencedBlocks` never saw. `FENCE_OPENER_RE` itself stays
+ * column-0-anchored: every OTHER call site depends on that anchoring.
+ */
+const INDENT_TOLERANT_DELIM_RE = /^ {0,3}(?:`{3,}|~{3,})/;
+
+/**
  * A raw source line whose shape is a UAT `### N.` test heading — the line-level
  * twin of the `h.level === 3 && /^\d+\.(?!\d)/` token filter in
  * `parseUatItemsWithStats`, and anchored at COLUMN 0 to match that filter's
@@ -846,7 +860,7 @@ function parseTestRowHeadingText(text: string): { number: number; name: string }
  * vanishing silently is the exact defect class this issue exists to close, so
  * the row now surfaces as a PARSE GAP instead.
  */
-const INDENTED_TEST_HEADING_LINE_RE = /^ {1,3}#{3}(?!#)[ \t]+\d+\.(?!\d)/;
+const INDENTED_TEST_HEADING_LINE_RE = /^[ \t]+#{3}(?!#)[ \t]+\d+\.(?!\d)/;
 
 /**
  * True when `heading` starts at COLUMN 0 of its source line in `content`.
@@ -1010,7 +1024,7 @@ function blankIndentedFenceDelimiters(content: string): string {
     // a fence delimiter.
     const inner = block.closeLineIdx === -1 ? lines.length : block.closeLineIdx;
     for (let i = block.openLineIdx + 1; i < inner; i += 1) {
-      if (FENCE_OPENER_RE.test(lines[i].replace(/\r$/, ''))) blank.add(i);
+      if (INDENT_TOLERANT_DELIM_RE.test(lines[i].replace(/\r$/, ''))) blank.add(i);
     }
   }
   if (blank.size === 0) return content;
@@ -1226,61 +1240,56 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // inside an `expected: |` value — which is value text, not a suppressed row —
   // cannot inflate the tally.
   //
-  // #3078 follow-up MINOR 1: a `### N.`-shaped line living inside a properly
-  // CLOSED fenced code sample used to document the UAT row format — the
-  // ordinary way to explain the syntax inside a UAT file, typically in prose
-  // like a `## Notes` section — was still counted by this raw-text scan even
-  // though `tokenizeHeadings` correctly hid it (it is documentation, not a
-  // suppressed row). Fence-stripping the WHOLE document is NOT a safe fix
-  // here: the exact case this scan exists to catch (the fence-straddle
-  // BLOCKER above) is ALSO a "properly closed" fence — fence-closedness alone
-  // cannot distinguish a documentation sample from a genuinely hidden row.
-  // What differs between them is SECTION: a `### N.`-shaped line only ever
-  // means a test row inside `## Tests` itself, so scoping this raw scan to
-  // that section's own body (the same `collectSection` seam
-  // `parseFirstPendingTest` already uses to locate `## Tests`) excludes a
-  // fenced sample living elsewhere in the file while leaving the in-section
-  // straddle detection above completely intact. Falls back to the WHOLE
-  // document when no `## Tests` heading exists at all, preserving prior
-  // behavior for a non-conformant file that never had one.
-  const testsSectionForShapeScan = collectSection(
-    content,
-    (h) => /^tests$/i.test(h.text) && h.level === 2,
-    { levelBounded: true },
-  );
-  const shapeScanSurface = testsSectionForShapeScan ? testsSectionForShapeScan.body : content;
-  // #3078 round-6 HIGH: BOTH SIDES OF THIS COMPARISON MUST COME FROM THE SAME
-  // SURFACE. The raw line scan is SECTION-SCOPED (`## Tests` body) but
-  // `subHeadings` is built from `allHeadings`, tokenized over the WHOLE
-  // DOCUMENT — so a perfectly legal `### 9. Old / result: pass` row in a
-  // preceding `## Prior` section (or a trailing `## Notes`) decremented the
-  // shortfall by one and SILENTLY DISABLED the fence-straddle detector: two
-  // byte-identical `## Tests` bodies, one reporting `headingsSeen=1,
-  // parse_gap true` and the other `headingsSeen=0`, no gap, purely because of
-  // a row living somewhere else in the file. Compounded, a document whose rows
-  // render as ordinary blocked rows in any CommonMark renderer audits as
-  // totally clean.
+  // #3078 round-7 HIGH — SYMMETRY IS THE INVARIANT. BOTH SIDES OF THIS
+  // COMPARISON ARE WHOLE-DOCUMENT. DO NOT SCOPE EITHER ONE. Read this whole
+  // comment before "optimising" the `## Notes` noise back out; three separate
+  // HIGH-severity silent false-cleans have been produced by three separate
+  // attempts to be clever about scope here, and every one of them was a
+  // regression against origin/next's plain whole-file regex.
   //
-  // The chosen scoping is to FILTER THE TOKEN SIDE BY OFFSET SPAN, not to
-  // re-tokenize the section body standalone: `Section` already carries the
-  // invariant `content.slice(bodyStart, bodyEnd) === body`, so the span is
-  // exactly the surface the line scan reads — no second tokenizer pass, no
-  // second set of offsets to keep in step with `isColumnZeroHeading`, and the
-  // PARSE side (`subHeadings`, which must keep reading rows wherever they
-  // live, including a file with no `## Tests` heading at all) is left
-  // completely untouched. Only the COUNTING comparison narrows.
-  const scanStart = testsSectionForShapeScan ? testsSectionForShapeScan.bodyStart : 0;
-  const scanEnd = testsSectionForShapeScan ? testsSectionForShapeScan.bodyEnd : content.length;
-  let tokenizedRowsInScanSurface = 0;
-  for (const { heading } of subHeadings) {
-    if (heading.offset >= scanStart && heading.offset < scanEnd) tokenizedRowsInScanSurface += 1;
-  }
+  // History of the failures, so they are not re-derived:
+  //   - round-6 HIGH: the raw line scan was SECTION-SCOPED to the `## Tests`
+  //     body while `subHeadings` stayed whole-document, so a legal
+  //     `### 9. Old / result: pass` row in a preceding `## Prior` section
+  //     decremented the shortfall by one and SILENTLY DISABLED the
+  //     fence-straddle detector.
+  //   - round-7 HIGH: "equalising" that by ALSO scoping the token side to the
+  //     section's offset span made the two counters agree with each other but
+  //     left the PARSE side whole-document — so a `### N.` row living OUTSIDE
+  //     the first `## Tests` section was parsed and surfaced normally when
+  //     visible, yet vanished with NO item AND NO parse_gap the moment a fence
+  //     straddled it: neither side of the comparison covered it. Reproduced
+  //     three ways — a straddle inside a `## Regression Tests` section, a
+  //     straddle inside a SECOND `## Tests` section (`collectSection` takes the
+  //     FIRST match only), and, as control, the identical straddle in a file
+  //     with no `## Tests` heading at all, which alone reported correctly.
+  //
+  // THE RULE: the parse side reads rows wherever they live in the document, so
+  // the counting side must too. Scan shaped `### N.` lines over the ENTIRE
+  // document and compare against ALL tokenized row headings. Any narrowing of
+  // one side that is not matched by the other manufactures a blind spot, and a
+  // blind spot here is a SILENT FALSE CLEAN — a file with an outstanding
+  // `result: blocked` in it that never even enters `results`.
+  //
+  // ACCEPTED CONSEQUENCE, DELIBERATELY TRADED (this replaces the #3078
+  // follow-up MINOR 1 scoping): a `### N.`-shaped line inside a properly
+  // CLOSED fence in a `## Notes` section — a documentation sample of the row
+  // format, the ordinary way to explain the syntax inside a UAT file — is
+  // counted as a suppressed row and raises a parse gap on a file with nothing
+  // actually missing. That is an OVER-report: noisy, but VISIBLE and FAIL-SAFE
+  // (an agent reads the file and dismisses it). Fence-closedness cannot
+  // distinguish it from a genuinely hidden row, because the fence-straddle
+  // case this scan exists to catch is ALSO a properly closed fence — so the
+  // only lever left is scope, and scope is exactly what produced the two
+  // silent false-cleans above. This entire issue exists to eliminate false
+  // cleans, so the trade goes this way ON PURPOSE: an extra noisy row beats an
+  // invisible missing one. The behaviour is pinned by test; do not "fix" it.
   let shapedHeadingLines = 0;
-  for (const line of shapeScanSurface.split('\n')) {
+  for (const line of content.split('\n')) {
     if (TEST_HEADING_LINE_RE.test(line)) shapedHeadingLines += 1;
   }
-  if (shapedHeadingLines > tokenizedRowsInScanSurface) {
-    headingsSeen += shapedHeadingLines - tokenizedRowsInScanSurface;
+  if (shapedHeadingLines > subHeadings.length) {
+    headingsSeen += shapedHeadingLines - subHeadings.length;
   }
 
   // #3078 round-4 MAJOR 2: an INDENTED `### N.` row is refused by the parse
@@ -1289,7 +1298,14 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // heading that is the VALUE of a preceding `expected:` block scalar is
   // excluded from this tally (it is value text, not a row), keeping the
   // scalar-body pins intact while a genuinely indented ROW surfaces as a gap.
-  headingsSeen += countUnattributedIndentedRows(shapeScanSurface);
+  //
+  // WHOLE-DOCUMENT, for the same reason as the shortfall scan above: this
+  // counter has no token-side twin to disagree with, but scoping it to a
+  // `## Tests` body would silently drop an indented row living anywhere else
+  // in the file — the identical vanishing-row class. Its own false-positive
+  // guard is STRUCTURAL (scalar attribution via
+  // `ANY_KEY_SCALAR_HEADER_LINE_RE`), not positional, so it needs no scope.
+  headingsSeen += countUnattributedIndentedRows(content);
 
   // #3078: an UNTERMINATED fence swallows the entire remainder of the
   // document — every later test row AND a trailing `## Gaps` section — so the

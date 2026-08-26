@@ -3955,15 +3955,19 @@ result: pending
 
 });
 
-// ─── #3078 review follow-up: shortfall counter must not over-count documentation ──
+// ─── #3078 round 7 HIGH: the shortfall scan is symmetric, and over-reports ────
 //
-// MINOR 1: `TEST_HEADING_LINE_RE` used to be scanned over the scalar-masked
-// copy but not fence-stripped, so a `### N.`-shaped line inside a properly
-// CLOSED fenced code sample — the ordinary way to document the UAT row format
-// inside a UAT file — counted as a "suppressed row" `tokenizeHeadings`
-// correctly hid, flagging a `parse_gap` against nothing.
-describe("#3078 review MINOR 1: a documented row-format sample inside a closed fence must not inflate the shortfall counter", () => {
-  test("a clean pending row plus a `## Notes` fence containing `### 9. Example row` yields no parse_gap", () => {
+// The `## Tests`-section scoping that used to keep a documentation sample quiet
+// (review MINOR 1) is RETIRED. Scoping the raw line scan while the PARSE side
+// stayed whole-document produced two separate HIGH-severity SILENT FALSE
+// CLEANS (see the round-7 describe block at the end of this file). Both sides
+// of the comparison are now whole-document, and the documented consequence —
+// pinned here so it is visible rather than surprising — is that a closed-fence
+// row-format sample in `## Notes` raises a parse gap on a file with nothing
+// missing. That is an OVER-report: noisy, visible, fail-safe. It is the
+// deliberate trade; do not "optimise" it back into a scope.
+describe("#3078 round 7: a documented row-format sample inside a closed fence is an ACCEPTED over-report", () => {
+  test("a clean pending row plus a `## Notes` fence containing `### 9. Example row` raises a parse gap (accepted over-report, not a false clean)", () => {
     const content = `## Tests
 
 ### 1. Alpha
@@ -3982,7 +3986,9 @@ result: pending
     assert.strictEqual(items.length, 1, describeAll());
     assert.strictEqual(items[0].test, 1, describeAll());
     assert.strictEqual(items[0].name, "Alpha", describeAll());
-    assert.strictEqual(headingsSeen, 0, describeAll());
+    // The `### 9.` sample line is heading-SHAPED at column 0 but hidden from
+    // the tokenizer by its fence, so it registers as a shortfall of exactly 1.
+    assert.strictEqual(headingsSeen, 1, describeAll());
   });
 
   // Regression guard: the fence-straddle BLOCKER this same counter exists to
@@ -4358,9 +4364,10 @@ result: pending
     assert.strictEqual(headingsSeen, 1, describeAll());
   });
 
-  // Boundary coverage on the CommonMark indent tolerance: 1, 2 and 3 spaces
-  // are heading-shaped and must be counted; 4 spaces is an indented CODE BLOCK
-  // to CommonMark, not a heading at all, so it must NOT inflate the tally.
+  // Boundary coverage on the counter's indent tolerance: 1, 2 and 3 spaces are
+  // heading-shaped and must be counted. 4+ spaces and a leading TAB are ALSO
+  // counted since #3078 round 7 — see the replacement test below for why the
+  // old "indented code block, not a row" carve-out was retired.
   for (const spaces of [1, 2, 3]) {
     test(`a row indented ${spaces} space(s) is counted as an unparsed block`, () => {
       const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
@@ -4374,7 +4381,15 @@ result: pending
     });
   }
 
-  test('a line indented 4 spaces is an indented code block, not a row, and is not counted', () => {
+  // REPLACES the retired 'a line indented 4 spaces is an indented code block,
+  // not a row, and is not counted' pin (#3078 round 7). That carve-out read
+  // the line as CommonMark would and therefore dropped it with no trace at
+  // all — items=[], headingsSeen=0 — which is exactly the vanishing-row class
+  // this counter exists to close, and which origin/next's unanchored
+  // `###\s*(\d+)\.` did surface. The counter now takes `^[ \t]+`, so a row
+  // indented 4+ spaces or with a leading TAB is still refused by the PARSE
+  // gate (`isColumnZeroHeading` is unchanged) but is visible as a parse gap.
+  test('a line indented 4 spaces is still refused by the parse gate but IS counted, not dropped silently', () => {
     const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
 
 ### 1. Alpha
@@ -4385,7 +4400,7 @@ result: blocked
     const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
     assert.strictEqual(items.length, 1, describeAll());
     assert.strictEqual(items[0].name, 'Alpha', describeAll());
-    assert.strictEqual(headingsSeen, 0, describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
   });
 
   // The counting loosening must NOT reach an indented `### N.` that is the
@@ -5017,10 +5032,14 @@ ${TESTS_BODY}${NOTES}`,
     assert.strictEqual(headingsSeen, 1, describeAll());
   });
 
-  // The counter must not simply be switched off: an outstanding row in an
-  // out-of-section fence straddle is NOT a `## Tests` gap and must not inflate
-  // the tally either.
-  test('a fenced row sample living only in ## Notes contributes nothing to the tally', () => {
+  // #3078 round 7: this pin is INVERTED, deliberately. It used to assert that
+  // a fenced row sample outside `## Tests` contributed nothing — which is only
+  // achievable by scoping the raw scan, and scoping the raw scan is precisely
+  // what produced the round-7 silent false cleans. A fence-hidden `### N.`
+  // line outside `## Tests` is indistinguishable, by any fence- or
+  // closedness-based rule, from a genuinely suppressed row living there (see
+  // `## Regression Tests` in the round-7 block below), so it is now counted.
+  test('a fenced row sample living only in ## Notes DOES inflate the tally — the accepted over-report', () => {
     const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
 
 ### 1. Alpha
@@ -5034,7 +5053,7 @@ result: blocked
 ${BACKTICK}
 `);
     const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
-    assert.strictEqual(headingsSeen, 0, describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
     assert.strictEqual(items.length, 0, describeAll());
   });
 });
@@ -5263,5 +5282,391 @@ expected: build #42 succeeds
 result: blocked
 `);
     assert.strictEqual(items[0].expected, 'build #42 succeeds', JSON.stringify(items, null, 2));
+  });
+});
+
+// ─── #3078 round 7 MAJOR: the inner delimiter sweep tolerates indented shapes ──
+//
+// The sweep that blanks delimiter-shaped lines strictly BETWEEN a neutralised
+// block's own delimiters tested `FENCE_OPENER_RE` — column-0-anchored — so an
+// INDENTED delimiter-shaped line inside that block (mere content in the
+// original, since CommonMark tolerates 1-3 spaces on an opener) was NOT
+// blanked, and got promoted to a real fence opener the instant the enclosing
+// pair was blanked, swallowing every later row to EOF.
+describe('#3078 round 7 MAJOR: the inner delimiter sweep tolerates indented delimiter shapes', () => {
+  const BACKTICK = '```';
+  const TILDE = '~~~';
+  const QUAD = '````';
+  const LONG_BACKTICK = '`````';
+
+  // Reproduced against the unfixed code: items=[], headingsSeen=1 — row 2's
+  // `result: blocked` / `blocked_by: server team` vanish entirely.
+  test('an indented ``` run inside an indented ````` pair does not swallow the later row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: |
+  ${LONG_BACKTICK}
+  ${BACKTICK}
+  ${LONG_BACKTICK}
+result: pass
+
+### 2. Outstanding
+result: blocked
+blocked_by: server team
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    const outstanding = items.find((i) => i.test === 2);
+    assert.ok(outstanding, `row 2 was swallowed by a promoted indented fence: ${describeAll()}`);
+    assert.strictEqual(outstanding.name, 'Outstanding', describeAll());
+    assert.strictEqual(outstanding.result, 'blocked', describeAll());
+    assert.strictEqual(outstanding.blocked_by, 'server team', describeAll());
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // Byte-identical document except the inner run sits at column 0 — this
+  // already worked pre-fix, which isolates the defect to the ANCHOR, not to
+  // the sweep's existence.
+  test('control: the byte-equivalent column-0 inner run already surfaces the row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: |
+  ${LONG_BACKTICK}
+${BACKTICK}
+  ${LONG_BACKTICK}
+result: pass
+
+### 2. Outstanding
+result: blocked
+blocked_by: server team
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    const outstanding = items.find((i) => i.test === 2);
+    assert.ok(outstanding, describeAll());
+    assert.strictEqual(outstanding.result, 'blocked', describeAll());
+    assert.strictEqual(outstanding.blocked_by, 'server team', describeAll());
+  });
+
+  // Same defect, mixed delimiter characters — an indented `~~~` run inside an
+  // indented ```` pair — so the fix cannot be a backtick-only special case.
+  test('an indented ~~~ run inside an indented ```` pair reproduces identically', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: |
+  ${QUAD}
+  ${TILDE}
+  ${QUAD}
+result: pass
+
+### 2. Outstanding
+result: blocked
+blocked_by: server team
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    const outstanding = items.find((i) => i.test === 2);
+    assert.ok(outstanding, describeAll());
+    assert.strictEqual(outstanding.result, 'blocked', describeAll());
+    assert.strictEqual(outstanding.blocked_by, 'server team', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // GUARD: the pinned "column 0 is structure" behaviour is unaffected — a
+  // column-0 `### N.` between neutralised delimiters is STILL a heading.
+  test('GUARD: a column-0 `### N.` between neutralised delimiters is still a heading', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: x
+  ${BACKTICK}
+### 9. Phantom
+  ${BACKTICK}
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 9, describeAll());
+    assert.strictEqual(items[0].result, 'pending', describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
+  });
+
+  // GUARD: field lines between two neutralised scalars still reach their own
+  // row — the widened sweep must add ONLY delimiter-shaped lines.
+  test('GUARD: field lines between two neutralised scalars still reach their own row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+expected: |
+  ${BACKTICK}
+  sample one
+  ${BACKTICK}
+result: blocked
+blocked_by: Server team
+
+### 2. Bravo
+expected: |
+  ${BACKTICK}
+  sample two
+  ${BACKTICK}
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    const alpha = items.find((i) => i.test === 1);
+    const bravo = items.find((i) => i.test === 2);
+    assert.ok(alpha, describeAll());
+    assert.strictEqual(alpha.result, 'blocked', describeAll());
+    assert.strictEqual(alpha.blocked_by, 'Server team', describeAll());
+    assert.strictEqual(alpha.expected, `${BACKTICK}\nsample one\n${BACKTICK}`, describeAll());
+    assert.ok(bravo, describeAll());
+    assert.strictEqual(bravo.result, 'pending', describeAll());
+    assert.strictEqual(bravo.expected, `${BACKTICK}\nsample two\n${BACKTICK}`, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+});
+
+// ─── #3078 round 7 MINOR: the indented-row counter is not limited to 1-3 spaces ──
+//
+// `INDENTED_TEST_HEADING_LINE_RE` matched `^ {1,3}`, so a test row indented 4+
+// spaces, or with a leading TAB, was neither parsed nor counted — origin/next's
+// unanchored `###\s*(\d+)\.` surfaced every indent width; this HEAD silently
+// dropped anything past 3 spaces with no trace at all (items=[], headingsSeen=0).
+// The parse gate (`isColumnZeroHeading`) is unchanged: refusing to PARSE an
+// indented row stays correct; only the COUNTER is widened.
+describe('#3078 round 7 MINOR: the indented-row counter surfaces every indent width, not just 1-3 spaces', () => {
+  const cases = [
+    ['1 space', ' '],
+    ['3 spaces', '   '],
+    ['4 spaces', '    '],
+    ['8 spaces', '        '],
+    ['a leading tab', '\t'],
+  ];
+
+  for (const [label, indent] of cases) {
+    test(`a row indented with ${label} is counted, not parsed`, () => {
+      const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: pass
+
+${indent}### 2. Deep Indented Row
+result: pending
+`);
+      const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+      assert.deepStrictEqual(items, [], describeAll());
+      assert.ok(headingsSeen >= 1, describeAll());
+    });
+  }
+
+  // GUARD: a column-0 row is unaffected — still parsed normally, not counted
+  // as a gap.
+  test('GUARD: a column-0 row is still parsed normally', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(`## Tests
+
+### 1. Alpha
+result: pass
+
+### 2. Normal
+result: pending
+`);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 2, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+});
+
+// ─── #3078 round 7 HIGH: the shortfall scan is whole-document on BOTH sides ───
+//
+// Round 6 scoped the RAW LINE SCAN to the first `## Tests` section body while
+// the token count stayed whole-document. Round 7's first attempt "equalized"
+// that by ALSO scoping the token side to the section's offset span — which made
+// the two counters agree with each other but left the PARSE side
+// whole-document. A `### N.` row living OUTSIDE the first `## Tests` section is
+// parsed and surfaced normally when visible, yet vanished with NO item AND NO
+// parse_gap the moment a fence straddled it: neither side of the comparison
+// covered it. Both sides are now whole-document. Symmetry is the property that
+// matters; every attempt to be clever about scope has produced a silent false
+// clean.
+//
+// `parse_gap` at the caller (`cmdAuditUat`) is exactly
+// `headingsSeen > 0 && status !== 'complete'`, so with no `status:` frontmatter
+// these documents flag iff `headingsSeen > 0`.
+describe('#3078 round 7 HIGH: a fence-straddled row outside the first ## Tests section still flags', () => {
+  const BACKTICK = '```';
+
+  const parseGapOf = (headingsSeen, status) => headingsSeen > 0 && status !== 'complete';
+
+  function report(label, content) {
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const parseGap = parseGapOf(headingsSeen, 'unknown');
+    const describeAll = () =>
+      `${label}: ${JSON.stringify({ items, headingsSeen, parse_gap: parseGap }, null, 2)}`;
+    return { items, headingsSeen, parseGap, describeAll };
+  }
+
+  // CASE 1 — the reported repro. Before the fix this yielded items: [],
+  // headingsSeen: 0, so the file never entered `results` and the audit
+  // reported totally clean with a `result: blocked` sitting in it.
+  const REGRESSION_SECTION_DOC = `## Tests
+
+### 1. Alpha
+result: pass
+
+## Regression Tests
+
+${BACKTICK}
+### 2. Straddled Blocked
+result: blocked
+blocked_by: server team
+
+### 3. Straddled Pending
+result: pending
+${BACKTICK}
+`;
+
+  test('CASE 1: a straddle inside a `## Regression Tests` section is FLAGGED, not silently clean', () => {
+    const { items, headingsSeen, parseGap, describeAll } = report('C1', REGRESSION_SECTION_DOC);
+    // Both straddled rows are hidden from the tokenizer by construction, so the
+    // gap counter is the only trace they have — but it MUST exist.
+    assert.deepStrictEqual(items, [], describeAll());
+    assert.strictEqual(headingsSeen, 2, describeAll());
+    assert.ok(headingsSeen >= 1, describeAll());
+    assert.strictEqual(parseGap, true, describeAll());
+  });
+
+  // The same document WITHOUT the fence parses both rows normally, with full
+  // identity — which is what makes the fenced form a REGRESSION (origin/next's
+  // whole-file regex surfaced them) rather than an intentional exclusion.
+  test('CASE 1 twin: the identical document without the fence surfaces both rows with full identity', () => {
+    const { items, headingsSeen, parseGap, describeAll } = report(
+      'C1-twin',
+      REGRESSION_SECTION_DOC.split('\n').filter((l) => l !== BACKTICK).join('\n'),
+    );
+    assert.strictEqual(items.length, 2, describeAll());
+    assert.strictEqual(items[0].test, 2, describeAll());
+    assert.strictEqual(items[0].name, 'Straddled Blocked', describeAll());
+    assert.strictEqual(items[0].result, 'blocked', describeAll());
+    assert.strictEqual(items[0].blocked_by, 'server team', describeAll());
+    assert.strictEqual(items[0].category, 'server_blocked', describeAll());
+    assert.strictEqual(items[1].test, 3, describeAll());
+    assert.strictEqual(items[1].name, 'Straddled Pending', describeAll());
+    assert.strictEqual(items[1].result, 'pending', describeAll());
+    assert.strictEqual(items[1].category, 'pending', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+    assert.strictEqual(parseGap, false, describeAll());
+  });
+
+  // CASE 2 — `collectSection` takes the FIRST match only, so a SECOND
+  // `## Tests` section was outside the scan span for the same reason.
+  test('CASE 2: a straddle in a SECOND `## Tests` section is FLAGGED', () => {
+    const { items, headingsSeen, parseGap, describeAll } = report(
+      'C2',
+      `## Tests
+
+### 1. Alpha
+result: pass
+
+## Other
+
+prose.
+
+## Tests
+
+${BACKTICK}
+### 2. Straddled Blocked
+result: blocked
+${BACKTICK}
+`,
+    );
+    assert.deepStrictEqual(items, [], describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
+    assert.strictEqual(parseGap, true, describeAll());
+  });
+
+  // CASE 3 — the control. This one reported correctly even before the fix
+  // (no `## Tests` heading meant the scan fell back to the whole document),
+  // which is what isolated the defect to the SCOPING rather than to the
+  // straddle detector itself. It must keep reporting.
+  test('CASE 3 (control): the identical straddle with NO `## Tests` heading at all still flags', () => {
+    const { items, headingsSeen, parseGap, describeAll } = report(
+      'C3',
+      `# Phase 1 UAT
+
+${BACKTICK}
+### 2. Straddled Blocked
+result: blocked
+${BACKTICK}
+`,
+    );
+    assert.deepStrictEqual(items, [], describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
+    assert.strictEqual(parseGap, true, describeAll());
+  });
+
+  // CASE 4 — THE ACCEPTED OVER-REPORT, pinned so the trade is visible rather
+  // than surprising. A `### N.`-shaped line inside a properly CLOSED fence in
+  // a `## Notes` section is a DOCUMENTATION SAMPLE of the row format, and
+  // nothing is missing from this file — yet it raises a parse gap, because no
+  // fence- or closedness-based rule can tell it apart from CASE 1's genuinely
+  // suppressed row, and the only rule that could (scope) is what produced two
+  // HIGH-severity silent false cleans. Noisy-but-visible beats invisible: this
+  // whole issue exists to eliminate false cleans, so the trade goes this way
+  // deliberately. If this test starts failing, the scoping has been
+  // reintroduced and CASES 1 and 2 have silently regressed with it.
+  test('CASE 4: a `## Notes` closed-fence documentation sample raises a parse gap — the ACCEPTED over-report', () => {
+    const { items, headingsSeen, parseGap, describeAll } = report(
+      'C4',
+      `## Tests
+
+### 1. Alpha
+result: pending
+
+## Notes
+
+Write each row like this:
+
+${BACKTICK}
+### 9. Example Row
+result: pending
+${BACKTICK}
+`,
+    );
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 1, describeAll());
+    assert.strictEqual(items[0].name, 'Alpha', describeAll());
+    assert.strictEqual(items[0].result, 'pending', describeAll());
+    assert.strictEqual(items[0].category, 'pending', describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
+    assert.strictEqual(parseGap, true, describeAll());
+  });
+
+  // CASE 5 — regression guard: the ordinary single-`## Tests` straddle, the
+  // case the counter was built for, is unchanged by the widening.
+  test('CASE 5 (regression): a normal single-`## Tests` straddle still flags exactly as before', () => {
+    const { items, headingsSeen, parseGap, describeAll } = report(
+      'C5',
+      `## Tests
+
+### 1. Alpha
+result: pass
+
+${BACKTICK}
+### 2. Straddled Blocked
+result: blocked
+${BACKTICK}
+
+### 3. Gamma
+result: pending
+`,
+    );
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 3, describeAll());
+    assert.strictEqual(items[0].name, 'Gamma', describeAll());
+    assert.strictEqual(items[0].result, 'pending', describeAll());
+    assert.strictEqual(items.find((i) => i.test === 2), undefined, describeAll());
+    assert.strictEqual(headingsSeen, 1, describeAll());
+    assert.strictEqual(parseGap, true, describeAll());
   });
 });
