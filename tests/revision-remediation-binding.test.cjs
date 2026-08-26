@@ -40,7 +40,9 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -69,6 +71,62 @@ const UI_RESEARCHER = read('agents', 'gsd-ui-researcher.md');
 const CONTRACTS = read('gsd-core', 'references', 'agent-contracts.md');
 
 // ── Helpers ────────────────────────────────────────────────────────
+
+/**
+ * The convergence conflict gate, extracted from the workflow and RUN.
+ *
+ * Everything else in this suite asserts on prose. That is the right instrument for a prompt,
+ * but this one block is real shell that an orchestrator executes, and it has been wrong three
+ * times — a section scan a heading could truncate, a `|| true` that laundered grep's error
+ * status into zero, and an `if !` whose `$?` reported the negation instead of the command.
+ * Every one of those passed the text assertions that existed at the time. So this block gets
+ * executed against fixtures instead of read.
+ *
+ * Located by content (the fence containing the OPEN_CONFLICTS assignment), not by line number,
+ * so re-ordering the document cannot silently point this at the wrong block.
+ */
+function extractConflictGate() {
+  const fences = CONVERGENCE.split(/```/);
+  const block = fences.find((f) => /^bash\r?\n/.test(f) && /OPEN_CONFLICTS=\$\(grep -c/.test(f));
+  assert.ok(block, 'could not find the bash fence containing the OPEN_CONFLICTS gate');
+  return block.replace(/^bash\r?\n/, '');
+}
+
+/** Run the extracted gate with REVIEWS_FILE set. Returns { status, stdout, stderr }. */
+function runConflictGate(reviewsFile) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3771-gate-'));
+  try {
+    const script = path.join(dir, 'gate.sh');
+    fs.writeFileSync(script, `${extractConflictGate()}\nprintf '%s' "\${OPEN_CONFLICTS}"\n`);
+    try {
+      const stdout = execFileSync('bash', [script], {
+        env: { ...process.env, REVIEWS_FILE: reviewsFile },
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return { status: 0, stdout, stderr: '' };
+    } catch (err) {
+      return { status: err.status, stdout: err.stdout || '', stderr: err.stderr || '' };
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Write a REVIEWS.md fixture and hand its path to `fn`. */
+function withReviews(body, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3771-reviews-'));
+  try {
+    const file = path.join(dir, '07-REVIEWS.md');
+    fs.writeFileSync(file, body);
+    return fn(file);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const OPEN = (id) => `- [ ] ${id} — required_property: p | conflicts with: D-1 | alternatives: a`;
+const RESOLVED = (id) => `- [x] ${id} — required_property: p | resolved: adopted alternative`;
 
 /**
  * Every fenced YAML issue example that names a `fix_hint`. Each block is returned
@@ -307,6 +365,49 @@ describe('#3771 generic revision pattern carries the same separation', () => {
     // failure as success. The status must be read in the else branch.
     assert.doesNotMatch(CONVERGENCE, /if ! OPEN_CONFLICTS=\$\(grep/,
       'a negated if inverts $? and makes the status check always see 0');
+  });
+
+  // ── The gate, EXECUTED ───────────────────────────────────────────
+  // Source assertions above prove the text says the right thing. These prove the shell does it.
+  describe('#3771 the extracted conflict gate behaves', () => {
+    test('counts open conflicts and ignores resolved ones', () => {
+      withReviews(`## Plan-Revision Conflicts\n${OPEN('a/1')}\n${RESOLVED('b/2')}\n${OPEN('c/3')}\n`, (f) => {
+        const r = runConflictGate(f);
+        assert.equal(r.status, 0, `gate should succeed; stderr: ${r.stderr}`);
+        assert.equal(r.stdout, '2', 'two open, one resolved');
+      });
+    });
+
+    test('grep status 1 (no matches) is a legitimate zero, not an error', () => {
+      withReviews('## Reviews\n\nNothing here.\n', (f) => {
+        const r = runConflictGate(f);
+        assert.equal(r.status, 0, `no matches must not fail the gate; stderr: ${r.stderr}`);
+        assert.equal(r.stdout, '0');
+      });
+    });
+
+    // The defect that started this: a section-scoped scan stops at the first `## ` it meets.
+    test('an injected heading cannot hide a conflict beneath it', () => {
+      withReviews(`## Plan-Revision Conflicts\n${RESOLVED('a/1')}\n## Injected By Agent Text\n${OPEN('b/2')}\n`, (f) => {
+        const r = runConflictGate(f);
+        assert.equal(r.status, 0, `gate should succeed; stderr: ${r.stderr}`);
+        assert.equal(r.stdout, '1', 'the conflict below the injected heading must still count');
+      });
+    });
+
+    // `|| true` laundered grep's exit 2 into an empty capture that rendered as 0.
+    test('a scan failure BLOCKS instead of reporting zero conflicts', () => {
+      const r = runConflictGate('/nonexistent/definitely-not-here/07-REVIEWS.md');
+      assert.notEqual(r.status, 0, 'an unreadable REVIEWS.md must not converge');
+      assert.match(r.stderr, /BLOCKED/, 'the gate must say why it refused');
+      assert.notEqual(r.stdout.trim(), '0', 'it must not emit a zero count on failure');
+    });
+
+    test('an empty REVIEWS_FILE path BLOCKS', () => {
+      const r = runConflictGate('');
+      assert.notEqual(r.status, 0, 'an unresolved path must not converge');
+      assert.match(r.stderr, /BLOCKED/);
+    });
   });
 
   // The section is a blocking gate's state. One writer, or it can be forged.
