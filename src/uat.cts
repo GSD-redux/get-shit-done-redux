@@ -1476,8 +1476,49 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // doing so previously changed `categorizeItem`'s classification for
     // shapes origin/next categorized differently (an unpinned behavior
     // change, not something the blocker required).
-    const resultLineMatch = fenceStrippedBlock.match(/^result:\s*\[?(\w+)\]?.*$/im);
-    if (!resultLineMatch) {
+    // #3078-CR defect A + defect B, fixed together as one split-then-match
+    // scan (ADR-3212 §3 pattern, `text-lines.cts`'s own doc comment): the
+    // previous `.match()` against `/^result:.../im` ran a MULTILINE regex
+    // anchor directly over unsplit block text, which carries TWO independent
+    // bugs baked into that one call:
+    //   - defect A: ECMA-262's LineTerminator set for `^`/`$` under `/m`
+    //     includes U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, but
+    //     `content.split('\n')` and this module's own heading tokenizer do
+    //     NOT treat either as a boundary. A `result:`-shaped line inside an
+    //     `expected: |` scalar body, sitting immediately after one of these
+    //     separators instead of an ordinary character, is therefore read as
+    //     a genuine line start by the regex engine even though it is not
+    //     `\n`-delimited from anything — it is exactly as much "one line" to
+    //     every other consumer as the ordinary-character control case.
+    //   - defect B: even restricted to genuine `\n`-delimited lines, a
+    //     non-global `.match()` returns only the LEFTMOST column-0 `result:`
+    //     line, silently resolving a block with two such lines to whichever
+    //     the regex engine reaches first — order decides meaning with no
+    //     ambiguity signalled either way.
+    // Splitting on `\n` FIRST and testing each already-split line against a
+    // single-line (`/im`-anchor-free) pattern fixes both at once: a line is
+    // never split by U+2028/U+2029 (`String.prototype.split` matches only
+    // its literal separator argument, never the wider ECMA-262
+    // LineTerminator set), so a `result:`-shaped line reachable only via one
+    // of those separators can never register as its own split line — the
+    // split view and the regex view are back in agreement, by construction,
+    // exactly the way `splitLines` module is documented to be immune to the
+    // sibling `\r` bug. Counting every genuinely `\n`-delimited column-0
+    // match instead of taking the first then makes more-than-one an
+    // explicit, order-independent AMBIGUOUS case: it is reported as a parse
+    // gap (`headingsSeen += 1`, no item emitted for this heading) exactly
+    // like a block with NO `result:` line, rather than resolving to either
+    // candidate. `fenceStrippedBlock` already excludes a `result:`-shaped
+    // line living inside a fenced code sample (control B4), and a
+    // block-scalar body line can never be column 0 in the first place (it is
+    // indented by construction), so neither is miscounted as a second
+    // occurrence.
+    const RESULT_LINE_RE = /^result:\s*\[?(\w+)\]?.*$/i;
+    const resultLineMatches = fenceStrippedBlock
+      .split('\n')
+      .map((line) => line.match(RESULT_LINE_RE))
+      .filter((m): m is RegExpMatchArray => m !== null);
+    if (resultLineMatches.length !== 1) {
       headingsSeen += 1;
       continue;
     }
@@ -1486,7 +1527,7 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // lower-cases internally, below). No consumer needs the original casing —
     // `uat-predicate.cts` runs its own independent parser and already
     // lower-cases too — so the raw-cased form is kept nowhere.
-    const result = resultLineMatch[1].toLowerCase();
+    const result = resultLineMatches[0][1].toLowerCase();
 
     // #3707 defect 1: invert the old DROP-list filter to a PASS set — see
     // UAT_PASS_RESULTS's doc comment for why this direction was chosen.

@@ -60,6 +60,27 @@ import shellCommandProjection = require('./shell-command-projection.cjs');
  * This is deliberately NOT a length-preserving transform (CRLF, two UTF-16
  * units, becomes LF, one), so any offsets a caller computes must be compared
  * only against THIS normalized string, never against the original raw text.
+ *
+ * U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR (#3078-CR) are
+ * DELIBERATELY NOT folded here, unlike `\r`/`\r\n` — even though a JS regex
+ * `/m` anchor (`^`/`$`) treats both as LineTerminators (ECMA-262 §11.3) while
+ * `split('\n')` does not, the SAME asymmetry the CR case above exploits.
+ * Folding them into a literal `\n` here would be length-preserving (unlike
+ * the CRLF case), so it is tempting — but it is also INDISTINGUISHABLE
+ * downstream from a genuine authored `\n`, which destroys exactly the signal
+ * a consumer needs: `src/uat.cts`'s `result:` line-scan must tell "a
+ * `result:`-shaped line that only LOOKS like a line start because of an
+ * ECMA-262-only separator sitting inside a YAML block-scalar value" apart
+ * from "a real second column-0 `result:` declaration" (the latter is a
+ * genuine authoring error and must be flagged as ambiguous; the former must
+ * not count at all). Once folded to `\n` at this shared seam, that
+ * distinction is unrecoverable for every downstream consumer, including ones
+ * that need it. The fix for `src/uat.cts`'s specific regex vulnerability
+ * lives there instead (a split(`\n`)-then-match scan, per this module's own
+ * `splitLines`/`normalizeEol` pattern — ADR-3212 §3 — which is immune by
+ * construction because it never invokes a multiline regex anchor against
+ * unsplit text), rather than teaching this shared seam a transform that
+ * would erase information a caller still needs.
  */
 function normalizeLineEndings(content: string): string {
   return content.replace(/\r\n?/g, '\n');
