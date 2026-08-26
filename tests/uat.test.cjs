@@ -16,6 +16,8 @@ const {
   CHECKPOINT_LANGUAGE_ALIASES,
   resolveCheckpointFrame,
   parseDeferredItems,
+  parseUatItemsWithStats,
+  maskBlockScalarBodies,
 } = require('../gsd-core/bin/lib/uat.cjs');
 
 describe('audit-uat command', () => {
@@ -3556,6 +3558,135 @@ result: pending
     assert.strictEqual(entry.items[0].name, "Alpha", describeItems(entry));
     assert.strictEqual(entry.items[0].expected, "chomped value", describeItems(entry));
   });
+
+  // #3078 follow-up (security review): `BLOCK_SCALAR_OPENER_RE` admitted the
+  // chomping indicator (`|-`, `|+`) but not YAML's explicit INDENTATION
+  // indicator (`1`-`9`), which may appear before OR after the chomping
+  // indicator (`|2`, `|2-`, `|-2`, `>2`, `>2+`, ...). Pre-fix, none of these
+  // openers were recognized, so the scalar body was never masked and a
+  // `### N.`-shaped line inside it was tokenized as a real heading — the same
+  // row-theft class this masking exists to prevent. Row IDENTITY (number AND
+  // name) is asserted for every variant, never just a count, per the finding.
+  for (const opener of ["|2", "|2-", "|-2", ">2"]) {
+    test(`an \`expected: ${opener}\` scalar with an explicit indentation indicator does not let its body steal row identity`, () => {
+      writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: ${opener}
+  ### 2. Phantom
+  result: pending
+result: blocked
+`);
+      const output = runAudit();
+      const entry = output.results.find((r) => r.file === "01-UAT.md");
+      assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+
+      assert.strictEqual(entry.items.length, 1, describeItems(entry));
+      assert.strictEqual(entry.items[0].test, 1, describeItems(entry));
+      assert.strictEqual(entry.items[0].name, "Alpha", describeItems(entry));
+      assert.strictEqual(entry.items[0].result, "blocked", describeItems(entry));
+
+      // No phantom row numbered 2, and specifically none named "Phantom".
+      assert.deepStrictEqual(
+        entry.items.filter((i) => i.test === 2),
+        [],
+        `phantom row 2 present: ${describeItems(entry)}`,
+      );
+      assert.ok(
+        !entry.items.some((i) => i.name === "Phantom"),
+        `a row named Phantom was surfaced: ${describeItems(entry)}`,
+      );
+    });
+  }
+
+  // Regression guard: the plain (no indentation indicator) openers this
+  // module already handled must behave exactly as before the fix above.
+  for (const opener of ["|", "|-", "|+", ">"]) {
+    test(`regression: an \`expected: ${opener}\` scalar (no indentation indicator) still masks its body`, () => {
+      writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: ${opener}
+  ### 2. Phantom
+  result: pending
+result: blocked
+`);
+      const output = runAudit();
+      const entry = output.results.find((r) => r.file === "01-UAT.md");
+      assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+
+      assert.strictEqual(entry.items.length, 1, describeItems(entry));
+      assert.strictEqual(entry.items[0].test, 1, describeItems(entry));
+      assert.strictEqual(entry.items[0].name, "Alpha", describeItems(entry));
+      assert.strictEqual(entry.items[0].result, "blocked", describeItems(entry));
+      assert.deepStrictEqual(
+        entry.items.filter((i) => i.test === 2),
+        [],
+        `phantom row 2 present: ${describeItems(entry)}`,
+      );
+    });
+  }
+
+  // #3078 follow-up: the `>` FOLDED-scalar family hit the same
+  // silent-field-loss class already fixed twice in this file for `|` — the
+  // opener grammar only ever matched `|`, so `expected: >` fell through to
+  // the INLINE arm and published the literal `">"` as the value. Assert the
+  // EXACT extracted value (not merely non-empty) for every reproduced
+  // opener, in both LF and CRLF form.
+  for (const [opener, crlf] of [
+    ["|", false], ["|-", false], ["|+", false], ["|2", false], ["|2-", false], ["|-2", false],
+    [">", false], [">-", false], [">+", false], [">2", false], [">2+", false],
+    ["|", true], [">", true],
+  ]) {
+    test(`\`expected: ${opener}\`${crlf ? " (CRLF)" : ""} extracts the exact value, not the literal opener`, () => {
+      let doc = `${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: ${opener}
+  first line
+  second line
+result: pending
+`;
+      if (crlf) doc = doc.replace(/\n/g, "\r\n");
+      writeUat(doc);
+      const output = runAudit();
+      const entry = output.results.find((r) => r.file === "01-UAT.md");
+      assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+      assert.strictEqual(entry.items.length, 1, describeItems(entry));
+      assert.strictEqual(entry.items[0].test, 1, describeItems(entry));
+      assert.strictEqual(entry.items[0].name, "Alpha", describeItems(entry));
+      assert.notStrictEqual(entry.items[0].expected, opener, describeItems(entry));
+
+      const expectedValue = opener.startsWith(">")
+        ? "first line second line"
+        : "first line\nsecond line";
+      assert.strictEqual(entry.items[0].expected, expectedValue, describeItems(entry));
+    });
+  }
+
+  // #3078 follow-up: `>` folding — a blank line in the body becomes a literal
+  // `\n` in the folded output, per YAML's fold semantics (distinct from `|`,
+  // which preserves every newline).
+  test("an `expected: >` scalar folds a blank line in its body to a newline", () => {
+    writeUat(`${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: >
+  first paragraph
+  still first
+
+  second paragraph
+result: pending
+`);
+    const output = runAudit();
+    const entry = output.results.find((r) => r.file === "01-UAT.md");
+    assert.ok(entry, `expected a results entry, got ${JSON.stringify(output.results)}`);
+    assert.strictEqual(
+      entry.items[0].expected,
+      "first paragraph still first\nsecond paragraph",
+      describeItems(entry),
+    );
+  });
 });
 
 // ─── #3078 follow-up: parseFirstPendingTest shares the same exposure ──────────
@@ -3693,5 +3824,268 @@ result: pending
     assert.ok(output.checkpoint.includes("The banner renders."), output.checkpoint);
     assert.ok(output.checkpoint.includes(`${FENCE}\nresult: pending\n${FENCE}`), output.checkpoint);
     assert.ok(output.checkpoint.includes("Done."), output.checkpoint);
+  });
+
+  // #3078 follow-up (security review), render-checkpoint surface: an
+  // `expected: |2` scalar (explicit indentation indicator) must mask its body
+  // on this path too — otherwise the rendered checkpoint would confirm a
+  // phantom test 2 "Phantom" instead of the real, pending test 1 "Alpha".
+  test("an `expected: |2` scalar with an explicit indentation indicator does not become the rendered checkpoint", () => {
+    fs.writeFileSync(uatPath, `${FRONTMATTER}## Tests
+
+### 1. Alpha
+expected: |2
+  ### 2. Phantom
+  result: pending
+result: pending
+`);
+    const output = renderCheckpoint();
+    assert.strictEqual(output.test_number, 1, JSON.stringify(output));
+    assert.strictEqual(output.test_name, "Alpha", JSON.stringify(output));
+    assert.ok(
+      output.checkpoint.includes("**Test 1: Alpha**"),
+      `checkpoint subject header missing/wrong: ${output.checkpoint}`,
+    );
+    assert.ok(
+      !/\*\*Test 2: Phantom\*\*/.test(output.checkpoint),
+      `checkpoint rendered a phantom test 2 "Phantom": ${output.checkpoint}`,
+    );
+  });
+});
+
+// ─── #3078 review follow-up: UTF-16 vs. code-point framing in maskBlockScalarBodies ──
+//
+// BLOCKER: `maskBlockScalarBodies` computed `lineStart[]` offsets and
+// `lines[k].length` in UTF-16 units but spliced into `Array.from(content)` — a
+// CODE POINT array. Every astral character (surrogate pair) earlier in the
+// document shifted every later mask write one slot too far right, blanking
+// the wrong characters and spilling a body's mask past its own line boundary
+// into the next line. On a fixture whose test NAME carries emoji plus an
+// `expected: |` scalar body containing a `### 3.` line and a `result:` line,
+// this stole the real row's fields and published a phantom row 3 instead.
+describe("#3078 review: maskBlockScalarBodies must not corrupt astral (surrogate-pair) offsets", () => {
+  function fixtureWithEmoji(emojiCount) {
+    const emoji = "\u{1F600}".repeat(emojiCount);
+    return `## Tests
+
+### 1. Row ${emoji}
+expected: |
+  ### 3. Phantom
+result: blocked
+`;
+  }
+
+  for (const emojiCount of [1, 3, 6, 10]) {
+    test(`a name with ${emojiCount} emoji does not shift the scalar mask (row 1 intact, no phantom row 3)`, () => {
+      const { items, headingsSeen } = parseUatItemsWithStats(fixtureWithEmoji(emojiCount));
+      const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+      assert.strictEqual(items.length, 1, describeAll());
+      assert.strictEqual(items[0].test, 1, describeAll());
+      assert.strictEqual(items[0].name, `Row ${"\u{1F600}".repeat(emojiCount)}`, describeAll());
+      assert.strictEqual(items[0].result, "blocked", describeAll());
+      assert.strictEqual(items[0].expected, "### 3. Phantom", describeAll());
+
+      assert.deepStrictEqual(
+        items.filter((i) => i.test === 3),
+        [],
+        `phantom row 3 present: ${describeAll()}`,
+      );
+      assert.strictEqual(headingsSeen, 0, describeAll());
+    });
+  }
+
+  // Same fixture through the render-checkpoint path (`parseFirstPendingTest`
+  // shares `maskBlockScalarBodies`) must resume test 1, never a phantom.
+  describe("render-checkpoint path", () => {
+    let tmpDir;
+    let uatPath;
+
+    beforeEach(() => {
+      tmpDir = createTempProject();
+      const phaseDir = path.join(tmpDir, ".planning", "phases", "01-test-phase");
+      fs.mkdirSync(phaseDir, { recursive: true });
+      uatPath = path.join(phaseDir, "01-UAT.md");
+    });
+
+    afterEach(() => {
+      cleanup(tmpDir);
+    });
+
+    const FRONTMATTER = `---
+status: partial
+phase: 01-test-phase
+---
+
+## Current Test
+
+[testing paused — 1 item outstanding]
+
+`;
+
+    test("renders test 1 with its emoji name intact, not a phantom row 3", () => {
+      const emoji = "\u{1F600}\u{1F601}\u{1F602}";
+      fs.writeFileSync(
+        uatPath,
+        `${FRONTMATTER}## Tests
+
+### 1. Row ${emoji}
+expected: |
+  ### 3. Phantom
+result: pending
+`,
+      );
+      const result = runGsdTools(
+        ["uat", "render-checkpoint", "--file", ".planning/phases/01-test-phase/01-UAT.md"],
+        tmpDir,
+      );
+      assert.strictEqual(result.success, true, `render-checkpoint failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.test_number, 1, JSON.stringify(output));
+      assert.strictEqual(output.test_name, `Row ${emoji}`, JSON.stringify(output));
+      assert.ok(
+        output.checkpoint.includes(`**Test 1: Row ${emoji}**`),
+        `checkpoint subject header missing/wrong: ${output.checkpoint}`,
+      );
+      assert.ok(
+        !/\*\*Test 3: Phantom\*\*/.test(output.checkpoint),
+        `checkpoint rendered a phantom test 3 "Phantom": ${output.checkpoint}`,
+      );
+    });
+  });
+
+  // Property-style check: `maskBlockScalarBodies` output must always have the
+  // same UTF-16 `.length` and the same line count as its input. No `fast-check`
+  // dependency added — the file does not already use one for this module — a
+  // loop over an explicit list covers ASCII, astral characters (in a heading,
+  // in a scalar body, and scattered outside any scalar), CRLF, tabs, and a
+  // scalar running all the way to EOF with no trailing newline.
+  test("output length and line count are invariant across a spread of inputs (ASCII, emoji, CRLF, tabs, EOF scalar)", () => {
+    const inputs = [
+      "### 1. Alpha\nexpected: |\n  line one\n  line two\nresult: pending\n",
+      "### 1. \u{1F600}\nexpected: |\n  \u{1F600}\u{1F601} body line\n  more\nresult: pending\n",
+      "### 1. Alpha\r\nexpected: |\r\n  line one\r\n  line two\r\nresult: pending\r\n",
+      "### 1. Alpha\n\texpected: |\n\t\tline one\n\t\tline two\nresult: pending\n",
+      "### 1. Alpha\nexpected: |\n  line one\n  line two",
+      "\u{1F602}\u{1F602}\u{1F602}\n### 1. Alpha\nexpected: |\n  \u{1F680} body\nresult: pending\n\u{1F389}",
+    ];
+
+    for (const input of inputs) {
+      const output = maskBlockScalarBodies(input);
+      assert.strictEqual(output.length, input.length, `length mismatch for ${JSON.stringify(input)}`);
+      assert.strictEqual(
+        output.split("\n").length,
+        input.split("\n").length,
+        `line count mismatch for ${JSON.stringify(input)}`,
+      );
+    }
+  });
+});
+
+// ─── #3078 review follow-up: shortfall counter must not over-count documentation ──
+//
+// MINOR 1: `TEST_HEADING_LINE_RE` used to be scanned over the scalar-masked
+// copy but not fence-stripped, so a `### N.`-shaped line inside a properly
+// CLOSED fenced code sample — the ordinary way to document the UAT row format
+// inside a UAT file — counted as a "suppressed row" `tokenizeHeadings`
+// correctly hid, flagging a `parse_gap` against nothing.
+describe("#3078 review MINOR 1: a documented row-format sample inside a closed fence must not inflate the shortfall counter", () => {
+  test("a clean pending row plus a `## Notes` fence containing `### 9. Example row` yields no parse_gap", () => {
+    const content = `## Tests
+
+### 1. Alpha
+result: pending
+
+## Notes
+
+\`\`\`
+### 9. Example row
+result: pending
+\`\`\`
+`;
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.strictEqual(items[0].test, 1, describeAll());
+    assert.strictEqual(items[0].name, "Alpha", describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  // Regression guard: the fence-straddle BLOCKER this same counter exists to
+  // catch is ALSO a "properly closed" fence — closedness alone cannot
+  // distinguish documentation from a genuinely hidden row, so this must still
+  // flag. What differs is section: the straddle lives INSIDE `## Tests`.
+  test("a fence straddling two real rows INSIDE `## Tests` still flags a parse_gap", () => {
+    const FENCE = "```";
+    const content = `## Tests
+
+### 1. Alpha
+result: pending
+
+${FENCE}
+### 2. Beta
+result: blocked
+${FENCE}
+
+### 3. Gamma
+result: pending
+`;
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(headingsSeen >= 1, `expected a flagged shortfall, got ${describeAll()}`);
+    const byNumber = new Map(items.filter((i) => i.test !== undefined).map((i) => [i.test, i]));
+    assert.strictEqual(byNumber.get(1).name, "Alpha", describeAll());
+    assert.strictEqual(byNumber.get(3).name, "Gamma", describeAll());
+  });
+});
+
+// ─── #3078 review follow-up: clipBlockAtFirstFence must not drop a late expected: ──
+//
+// MINOR 2: clipping was unconditional on field order, so an `expected:`
+// appearing AFTER a fenced sample in the same block was discarded even when it
+// sat entirely outside the fence. Fix distinguishes "expected after the fence
+// closes" from "expected inside the fence" by tracking fence open/close state
+// (on the scalar-masked copy) and reconstructing the block with every
+// TOP-LEVEL fenced region dropped: an `expected:` that survives that
+// reconstruction was outside every fence (i.e. after one closed); an
+// `expected:` that never survives it was inside one and stays unreachable —
+// the anti-theft property is unchanged.
+describe("#3078 review MINOR 2: an expected: after a closed fence must survive; one inside a fence must not", () => {
+  const FENCE = "```";
+
+  test("an `expected:` after a closed fence is preserved", () => {
+    const content = `## Tests
+
+### 1. Alpha
+result: pending
+${FENCE}
+sample
+${FENCE}
+expected: THE REAL VALUE
+`;
+    const { items } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    const row1 = items.find((i) => i.test === 1);
+    assert.ok(row1, describeAll());
+    assert.strictEqual(row1.expected, "THE REAL VALUE", describeAll());
+  });
+
+  test("an `expected:` living strictly inside a fence is still not stolen", () => {
+    const content = `## Tests
+
+### 1. Alpha
+result: pending
+${FENCE}
+expected: SECRET-INSIDE
+${FENCE}
+`;
+    const { items } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify(items, null, 2);
+    const row1 = items.find((i) => i.test === 1);
+    assert.ok(row1, describeAll());
+    assert.notStrictEqual(row1.expected, "SECRET-INSIDE", `fence-hidden expected was stolen: ${describeAll()}`);
+    assert.strictEqual(row1.expected, undefined, describeAll());
   });
 });

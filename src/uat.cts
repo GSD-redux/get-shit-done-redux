@@ -466,22 +466,57 @@ function parseFirstPendingTest(content: string): CurrentTest | null {
  * through to the INLINE arm, which happily captured the pipe character itself
  * and published `expected: "|"`, discarding the entire multi-line value with no
  * trace. `\r?` on the opener plus a per-line `\r` strip on the body fixes it.
- * `[+-]?` additionally admits the `|-` / `|+` chomping indicators, keeping this
- * reader in step with `BLOCK_SCALAR_OPENER_RE` (which already masks their
- * bodies) — otherwise a `expected: |-` value would be structurally masked but
- * then read as the literal string `"|-"` by the same fall-through.
+ * `(?:[1-9][+-]?|[+-][1-9]?)?` additionally admits the `|-` / `|+` chomping
+ * indicators AND the explicit indentation indicator (`|2`, `|2-`, `|-2`, ...,
+ * in either order per the YAML header grammar), keeping this reader in step
+ * with `BLOCK_SCALAR_OPENER_RE` (which already masks their bodies) —
+ * otherwise a `expected: |-` or `expected: |2` value would be structurally
+ * masked but then read as the literal string `"|-"` / `"|2"` by the same
+ * fall-through.
+ *
+ * `[|>]` (#3078 follow-up): the `>` FOLDED-scalar family (`>`, `>-`, `>+`,
+ * `>2`, `>2+`, ...) hit the exact same fall-through as the CRLF/`|-`/`|+`
+ * bugs above — the opener only ever matched `|`, so `expected: >` fell to the
+ * inline arm and published the literal `">"` as the value, discarding the
+ * whole scalar. The opener character is now captured (group 1) so the caller
+ * can apply YAML's fold semantics for `>` while leaving `|` untouched.
  */
-const EXPECTED_SCALAR_OPENER = String.raw`^expected:[ \t]*\|[+-]?[ \t]*\r?\n`;
+const EXPECTED_SCALAR_OPENER = String.raw`^expected:[ \t]*([|>])(?:[1-9][+-]?|[+-][1-9]?)?[ \t]*\r?\n`;
+
+/**
+ * Apply YAML FOLDED-scalar (`>`) line-joining to an already-dedented,
+ * CRLF-stripped block-scalar body: lines within a paragraph (no blank line
+ * between them) join with a single space; a blank line between paragraphs
+ * becomes a literal `\n` in the result. `|` (LITERAL) bodies are returned
+ * unchanged — folding is `>`-only.
+ */
+function foldScalarBody(body: string): string {
+  const lines = body.split('\n');
+  const paragraphs: string[] = [];
+  let current: string[] = [];
+  for (const line of lines) {
+    if (line === '') {
+      paragraphs.push(current.join(' '));
+      current = [];
+    } else {
+      current.push(line);
+    }
+  }
+  paragraphs.push(current.join(' '));
+  return paragraphs.join('\n');
+}
 
 function parseExpectedFromTestBlock(block: string): string | null {
   const expectedBlockMatch = block.match(new RegExp(`${EXPECTED_SCALAR_OPENER}([\\s\\S]*?)(?=^\\w[\\w-]*:\\s)`, 'm'))
     || block.match(new RegExp(`${EXPECTED_SCALAR_OPENER}([\\s\\S]+)`, 'm'));
   if (expectedBlockMatch) {
-    return expectedBlockMatch[1]
+    const opener = expectedBlockMatch[1];
+    const dedented = expectedBlockMatch[2]
       .split('\n')
       .map((line: string) => line.replace(/\r$/, '').replace(/^ {2}/, ''))
       .join('\n')
       .trim();
+    return opener === '>' ? foldScalarBody(dedented) : dedented;
   }
 
   const expectedInlineMatch = block.match(/^expected:\s*(.+)\s*$/m);
@@ -660,13 +695,18 @@ function indentWidthOf(prefix: string): number {
 }
 
 /**
- * A `<key>: |` (or `|-`, `|+`, `>`, `>-`, `>+`) block-scalar OPENER line — the
- * only shape whose following, more-indented lines are opaque VALUE text rather
- * than document structure. The optional `- ` allows the bullet-borne form
- * (`- expected: |`); the key column is measured AFTER the bullet marker so the
- * body test stays strict (a line must out-indent the KEY, not the dash).
+ * A `<key>: |` (or `|-`, `|+`, `>`, `>-`, `>+`, and the explicit-indentation-
+ * indicator forms `|2`, `|2-`, `|-2`, `>2`, `>2+`, ...) block-scalar OPENER
+ * line — the only shape whose following, more-indented lines are opaque VALUE
+ * text rather than document structure. Per the YAML block-scalar header
+ * grammar, the indentation indicator (`1`-`9`, never `0`) and the chomping
+ * indicator (`+`/`-`) are each optional and may appear in EITHER order
+ * (`|2-` and `|-2` are both valid). The optional `- ` allows the bullet-borne
+ * form (`- expected: |`); the key column is measured AFTER the bullet marker
+ * so the body test stays strict (a line must out-indent the KEY, not the
+ * dash).
  */
-const BLOCK_SCALAR_OPENER_RE = /^([ \t]*(?:-[ \t]+)?)[A-Za-z_][\w-]*[ \t]*:[ \t]*[|>][+-]?[ \t]*\r?$/;
+const BLOCK_SCALAR_OPENER_RE = /^([ \t]*(?:-[ \t]+)?)[A-Za-z_][\w-]*[ \t]*:[ \t]*[|>](?:[1-9][+-]?|[+-][1-9]?)?[ \t]*\r?$/;
 
 /** A fenced-code OPENER line (``` or ~~~, up to 3 leading spaces). */
 const FENCE_OPENER_RE = /^ {0,3}(?:`{3,}|~{3,})/;
@@ -702,15 +742,21 @@ const TEST_HEADING_LINE_RE = /^ {0,3}#{3}(?!#)[ \t]+\d+\.(?!\d)/;
  * are not counted as part of it either.
  */
 function maskBlockScalarBodies(content: string): string {
+  // #3078 follow-up BLOCKER: this used to compute `lineStart[]` offsets and
+  // `lines[k].length` (both UTF-16 units) and splice them into `Array.from(content)`
+  // (a CODE POINT array). Every astral character (surrogate pair) earlier in the
+  // document shifted every later mask write one slot too far right, blanking the
+  // wrong characters and spilling a body's mask past its own newline into the
+  // next line. Rebuilding BY LINE is frame-agnostic: `lines[i].length` and
+  // `' '.repeat(lines[i].length)` are both measured in the SAME (UTF-16) units as
+  // the string itself, and `.join('\n')` reproduces the exact original length and
+  // line count regardless of code-point/code-unit framing. This also handles CRLF
+  // correctly without special-casing it: `content.split('\n')` leaves any `\r`
+  // attached to the end of its line (never stripped here), so a masked CRLF line's
+  // trailing `\r` is replaced by a space exactly as it always was pre-fix, and an
+  // unmasked line's `\r` round-trips untouched through the rejoin.
   const lines = content.split('\n');
-  const lineStart: number[] = new Array<number>(lines.length);
-  let acc = 0;
-  for (let i = 0; i < lines.length; i += 1) {
-    lineStart[i] = acc;
-    acc += lines[i].length + 1;
-  }
-
-  const chars = Array.from(content);
+  const shouldMask = new Array<boolean>(lines.length).fill(false);
   let masked = false;
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -727,14 +773,14 @@ function maskBlockScalarBodies(content: string): string {
     }
 
     for (let k = i + 1; k <= lastBodyLine; k += 1) {
-      const start = lineStart[k];
-      for (let p = 0; p < lines[k].length; p += 1) chars[start + p] = ' ';
+      shouldMask[k] = true;
       if (lines[k].length > 0) masked = true;
     }
     i = lastBodyLine;
   }
 
-  return masked ? chars.join('') : content;
+  if (!masked) return content;
+  return lines.map((line, i) => (shouldMask[i] ? ' '.repeat(line.length) : line)).join('\n');
 }
 
 /**
@@ -755,12 +801,81 @@ function maskBlockScalarBodies(content: string): string {
  */
 function clipBlockAtFirstFence(block: string): string {
   const maskedLines = maskBlockScalarBodies(block).split('\n');
+  const rawLines = block.split('\n');
+
+  let firstFenceLine = -1;
   for (let i = 0; i < maskedLines.length; i += 1) {
     if (FENCE_OPENER_RE.test(maskedLines[i])) {
-      return block.split('\n').slice(0, i).join('\n');
+      firstFenceLine = i;
+      break;
     }
   }
-  return block;
+  if (firstFenceLine === -1) return block;
+
+  const beforeFence = rawLines.slice(0, firstFenceLine).join('\n');
+  if (parseExpectedFromTestBlock(beforeFence)) return beforeFence;
+
+  // #3078 follow-up MINOR 2: an `expected:` field appearing AFTER a fence has
+  // CLOSED is not a theft risk — only content strictly INSIDE the fence must
+  // stay hidden. The plain "clip at first opener" result above silently
+  // discards a late `expected:` even when it sits outside every fence.
+  // Reconstruct the block with every top-level FENCED REGION dropped (fence
+  // boundaries tracked on the MASKED copy — the same anti-theft rule as above,
+  // so a fenced-looking line living inside a legitimate `expected: |` value can
+  // never be mistaken for a real fence), keeping RAW text everywhere else. This
+  // exposes a late `expected:` living after a fence closes, while an
+  // `expected:` living strictly inside the fence is dropped along with it and
+  // stays unreachable — the "inside a fence" vs. "after a closed fence" split
+  // falls straight out of whether the fence-tracking state machine below is
+  // OPEN or CLOSED at that line, not out of position relative to the FIRST
+  // fence opener alone.
+  const visible = dropTopLevelFencedRegions(rawLines, maskedLines);
+  if (parseExpectedFromTestBlock(visible)) return visible;
+
+  return beforeFence;
+}
+
+/**
+ * Reconstruct `rawLines` with every TOP-LEVEL fenced region removed, tracking
+ * fence open/close state on the parallel `maskedLines` (so a fence-shaped line
+ * living inside a masked block-scalar body can never be mistaken for a real
+ * fence). Mirrors `stripFencedCode`'s own delimiter algorithm exactly — a
+ * fence run of the SAME character and at least the SAME length, with no
+ * trailing content, is what closes an open fence — so "inside a fence" here
+ * means the same thing it means to the rest of this module's fence handling.
+ * An UNTERMINATED fence (open at EOF) drops everything from its opener to the
+ * end, same as `stripFencedCode`.
+ */
+function dropTopLevelFencedRegions(rawLines: string[], maskedLines: string[]): string {
+  const kept: string[] = [];
+  let openFence: { char: string; len: number } | null = null;
+  const delimRe = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+
+  for (let i = 0; i < maskedLines.length; i += 1) {
+    const line = maskedLines[i].replace(/\r$/, '');
+    const m = delimRe.exec(line);
+    if (m) {
+      const char = m[2][0];
+      const len = m[2].length;
+      const trailing = m[3];
+      if (openFence === null) {
+        if (char === '`' && trailing.includes('`')) {
+          // Not a valid fence opener (CommonMark: backtick info string must
+          // not contain a backtick) — ordinary content.
+          kept.push(rawLines[i]);
+          continue;
+        }
+        openFence = { char, len };
+      } else if (char === openFence.char && len >= openFence.len && /^\s*$/.test(trailing)) {
+        openFence = null;
+      }
+      continue; // all delimiter lines are dropped, opener or closer
+    }
+    if (openFence === null) kept.push(rawLines[i]);
+    // Lines inside an open fence are silently dropped.
+  }
+
+  return kept.join('\n');
 }
 
 function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number } {
@@ -808,8 +923,32 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
   // silently clean. Counted over the MASKED copy, not the raw document, so a
   // `### N.`-shaped line living inside an `expected: |` value — which is value
   // text, not a suppressed row — cannot inflate the tally.
+  //
+  // #3078 follow-up MINOR 1: a `### N.`-shaped line living inside a properly
+  // CLOSED fenced code sample used to document the UAT row format — the
+  // ordinary way to explain the syntax inside a UAT file, typically in prose
+  // like a `## Notes` section — was still counted by this raw-text scan even
+  // though `tokenizeHeadings` correctly hid it (it is documentation, not a
+  // suppressed row). Fence-stripping the WHOLE document is NOT a safe fix
+  // here: the exact case this scan exists to catch (the fence-straddle
+  // BLOCKER above) is ALSO a "properly closed" fence — fence-closedness alone
+  // cannot distinguish a documentation sample from a genuinely hidden row.
+  // What differs between them is SECTION: a `### N.`-shaped line only ever
+  // means a test row inside `## Tests` itself, so scoping this raw scan to
+  // that section's own body (the same `collectSection` seam
+  // `parseFirstPendingTest` already uses to locate `## Tests`) excludes a
+  // fenced sample living elsewhere in the file while leaving the in-section
+  // straddle detection above completely intact. Falls back to the WHOLE
+  // masked document when no `## Tests` heading exists at all, preserving
+  // prior behavior for a non-conformant file that never had one.
+  const testsSectionForShapeScan = collectSection(
+    maskedContent,
+    (h) => /^tests$/i.test(h.text) && h.level === 2,
+    { levelBounded: true },
+  );
+  const shapeScanSurface = testsSectionForShapeScan ? testsSectionForShapeScan.body : maskedContent;
   let shapedHeadingLines = 0;
-  for (const line of maskedContent.split('\n')) {
+  for (const line of shapeScanSurface.split('\n')) {
     if (TEST_HEADING_LINE_RE.test(line)) shapedHeadingLines += 1;
   }
   if (shapedHeadingLines > subHeadings.length) {
@@ -1974,6 +2113,7 @@ export = {
   parseCurrentTest,
   parseUatItems,
   parseUatItemsWithStats,
+  maskBlockScalarBodies,
   selectPhaseUatFiles,
   buildCheckpoint,
   CHECKPOINT_FRAMES,
