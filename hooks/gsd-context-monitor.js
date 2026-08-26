@@ -126,16 +126,31 @@ process.stdin.on('end', () => {
           if (e && e.code === 'ENOENT') continue;   // already absent — that IS the reset
           // Windows can hold a handle (EPERM/EBUSY), and a failed unlink would
           // leave the original bug silently intact, indistinguishable from
-          // success. Truncate to EMPTY instead — '' is the one payload both
-          // readers treat exactly like deletion, because JSON.parse('') throws:
-          // the sentinel read falls to its catch, so firstWarn stays true, and
-          // the bridge read falls to the outer catch and exits 0 silently. A
-          // well-formed "neutral" value is NOT equivalent (review of #3709):
-          // '{}' parses fine, so the first post-compaction warning is debounced
-          // — AC2 undone on this path — and '{"timestamp":0}' is never stale
-          // (the staleness guard is `metrics.timestamp && ...`, and 0 is
-          // falsy), so the flow reaches emit with remaining === undefined.
-          try { fs.writeFileSync(stale, ''); } catch (e2) { /* give up, never throw */ }
+          // success. Truncate to EMPTY instead — an empty file is the one state
+          // both readers treat exactly like deletion, because JSON.parse('')
+          // throws: the sentinel read falls to its catch, so firstWarn stays
+          // true, and the bridge read falls to the outer catch and exits 0
+          // silently. A well-formed "neutral" value is NOT equivalent (review
+          // of #3709): '{}' parses fine, so the first post-compaction warning
+          // is debounced — AC2 undone on this path — and '{"timestamp":0}' is
+          // never stale (the staleness guard is `metrics.timestamp && ...`,
+          // and 0 is falsy), so the flow reaches emit with
+          // remaining === undefined.
+          //
+          // O_NOFOLLOW, not writeFileSync: these paths live in a shared sticky
+          // tmpdir, where an unlink of a file another user planted is exactly
+          // what EPERM looks like — and a planted SYMLINK would make a plain
+          // truncating write empty out its TARGET instead (Codex review of
+          // #3808). Refusing to follow (ELOOP) lands in the same give-up arm.
+          // On Windows the constant is absent; `|| 0` keeps the fallback alive
+          // there, where the held-handle case it exists for actually occurs
+          // and temp dirs are per-user.
+          try {
+            fs.closeSync(fs.openSync(
+              stale,
+              fs.constants.O_WRONLY | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0)
+            ));
+          } catch (e2) { /* give up, never throw */ }
         }
       }
       process.exit(0);

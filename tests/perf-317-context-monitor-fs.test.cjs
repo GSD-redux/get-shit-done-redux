@@ -1500,4 +1500,28 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     assert.strictEqual(s.warn(), null,
       'and no sentinel may be rebuilt off the truncated bridge — criticalRecorded stays un-re-armed');
   });
+
+  test('the truncation fallback refuses to follow a planted symlink', (t) => {
+    // Codex review of #3808. The per-session paths live in a shared sticky
+    // tmpdir, where "unlink fails with EPERM" is exactly what a file PLANTED by
+    // another user produces — so the fallback's write must not follow links: a
+    // plain truncating write would empty out the symlink's TARGET, weaponising
+    // the hook against any file its own user can write. O_NOFOLLOW makes the
+    // open fail with ELOOP, which lands in the same give-up arm as any other
+    // fallback failure.
+    if (process.platform === 'win32') {
+      t.skip('symlink planting is a POSIX shared-sticky-tmpdir scenario; Windows temp is per-user');
+      return;
+    }
+    const s = makeSession(t);
+    const victim = path.join(os.tmpdir(), `fix-3709-victim-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(victim, 'precious victim bytes');
+    t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
+    fs.symlinkSync(victim, s.warnPath);
+
+    const r = s.call('PreCompact', 20, { failUnlinkMatching: '-warned.json' });
+    assert.strictEqual(r.exitCode, 0, 'refusing the symlink is a give-up, never a hook failure');
+    assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious victim bytes',
+      'the symlink TARGET must be untouched — a truncating write that follows links empties it');
+  });
 });
