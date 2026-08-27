@@ -3412,6 +3412,26 @@ function applyAgentPathRewrites(content: string, runtime: string, pathPrefix: st
   content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
   content = content.replace(/~\/\.claude\b/g, normalizedPathPrefix);
   content = content.replace(/\$HOME\/\.claude\b/g, normalizedPathPrefix);
+  // #3719: the THIRD emit path that needed this restore. #3133 added it to the
+  // skill/command pipeline (`_applyRuntimeRewrites` case 'claude') and #3544 to
+  // bin/install.js's spec-tree copy; the agents pipeline never got it, so every
+  // `@~/.claude/...` include in a global Claude install shipped as `@$HOME/...`
+  // and resolved to NOTHING (27 of 34 emitted agents, 103 lines).
+  //
+  // Guarded on `claude` for the same reason the sibling call site lives inside
+  // `case 'claude'`: the helper self-guards only on the `$HOME` PREFIX, and every
+  // runtime's global prefix is a `$HOME` form (`$HOME/.cursor/`, ...), so an
+  // unguarded call would rewrite `@`-refs for runtimes whose resolver has no
+  // documented `~` expansion at all.
+  //
+  // Passed the NORMALIZED prefix, not `pathPrefix`. The two word-boundary
+  // replaces above emit the trailing-slash-free form, and the helper's regex is
+  // anchored to the exact prefix string it is handed — so `restore(pathPrefix)`
+  // fixes `@$HOME/.claude/x` and leaves a bare `@$HOME/.claude` broken. The
+  // normalized form is a PREFIX of both, so one call covers both.
+  if (runtime === 'claude') {
+    content = restoreClaudeGlobalAtRefTilde(content, normalizedPathPrefix);
+  }
   return content;
 }
 
