@@ -25,12 +25,48 @@ node gsd-tools.cjs <command> [args] [--raw] [--cwd <path>]
 **Global flags (CJS):**
 
 
-| Flag           | Description                                                                  |
-| -------------- | ---------------------------------------------------------------------------- |
-| `--raw`        | Machine-readable output (JSON or plain text, no formatting)                  |
-| `--cwd <path>` | Override working directory (for sandboxed subagents)                         |
-| `--ws <name>`  | Workstream context for `.planning/workstreams/<name>` paths |
+| Flag                | Description                                                                  |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `--raw`             | Machine-readable output (JSON or plain text, no formatting)                  |
+| `--cwd <path>`      | Override working directory (for sandboxed subagents)                         |
+| `--ws <name>`       | Workstream context for `.planning/workstreams/<name>` paths |
+| `--pick <field>`    | Extract one field from a command's JSON output — see [`--pick <field>` contract](#--pick-field-contract) below |
 
+
+---
+
+### `--pick <field>` contract
+
+`--pick <field>` runs `<command>` as normal, parses its stdout as JSON, and
+extracts one field by name (dotted paths and `[N]` array indices are
+supported, e.g. `a.b.c`, `directories[-1]`). As of ADR-3473 §8.4 / #3884, the
+three possible outcomes are distinguished **by exit code**, never by an
+ambiguous empty string:
+
+| Outcome | stdout | stderr | Exit code |
+| --- | --- | --- | --- |
+| Field present | The field's value, coerced to a string | (none) | `0` |
+| Field absent (missing key, out-of-range index, dotted path partially missing, or a non-object JSON root) | empty | Diagnostic naming the field and the available top-level keys (or the actual JSON root type) | `1` (`pick_field_absent`) |
+| Command output is not JSON (including `--raw` output, which is plain text/human-readable, not JSON) | empty | Diagnostic saying the output was not JSON | `1` (`pick_output_not_json`) |
+
+A `null` or empty-string (`''`) field value is a real answer, not an absence
+— it still prints (an empty line) at exit **0**. Only the *absence of the
+field itself* is a failure. This is why `--raw` and `--pick` are, in
+practice, mutually exclusive: `--raw` output is not JSON, so combining them
+always hits `pick_output_not_json`.
+
+**This replaces the previous behavior.** Before #3884, an absent field (or
+non-JSON output) silently printed an empty string at exit `0` — indistinguishable
+from a field that genuinely held `null` or `''`. That coercion is gone. The
+common shell idiom
+
+```bash
+X=$(gsd_run query some.command --pick some_field 2>/dev/null) || X=default
+```
+
+now works as written: the `|| X=default` arm fires exactly when the field
+could not be resolved, and never fires merely because the resolved value
+happens to be empty.
 
 ---
 

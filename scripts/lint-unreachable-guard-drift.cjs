@@ -8,37 +8,43 @@
  * Design:      .gsd/phase/feat-3409-unreachable-shell-guard-lint/40-design.md
  * Test matrix: .gsd/phase/feat-3409-unreachable-shell-guard-lint/50-test-matrix.md
  *
- * `gsd-tools.cjs`'s `--pick <field>` extractor coerces a missing/absent
- * field to the empty string and exits **0** (probe-confirmed in
- * 40-design.md). So in `$(gsd_run query V --pick F 2>/dev/null || echo D)`
- * the `|| echo D` arm can fire only on a typo in the verb name — never on
- * the field absence it was written to handle. Three shipped shell guards
- * silently relied on that unreachable arm (#3365's Walking Skeleton gate,
- * `PHASE_REQ_IDS`, and `complete-milestone.md`'s bare `cat <glob>`, all
- * fixed alongside this guard — see `tests/unreachable-shell-guard.test.cjs`,
- * which this file does not touch).
+ * RETIRED — Detector A (`--pick` + `|| echo` on one line), #3884.
+ * `gsd-tools.cjs`'s `--pick <field>` extractor used to coerce a missing/
+ * absent field to the empty string and exit **0**, which made the `|| echo D`
+ * arm in `$(gsd_run query V --pick F 2>/dev/null || echo D)` unreachable on
+ * field absence — the exact defect Detector A existed to flag (this file's
+ * own prior header quoted the premise verbatim: "the `|| echo D` arm can
+ * fire only on a typo in the verb name, never on the field absence it was
+ * written to handle"). ADR-3473 §8.4 ("Failure is a value") makes `--pick`
+ * exit **non-zero** on an absent field (see
+ * `.gsd/phase/feat-3884-failure-is-a-value/40-design.md` rows B6-B14), so
+ * that premise is now FALSE: the `|| echo D` arm is reachable, and the shape
+ * Detector A forbade is the CORRECT idiom going forward. Keeping Detector A
+ * would forbid the fix, so it is removed rather than updated — see this
+ * file's Guard ledger entry in 40-design.md ("net: −1 detector, 0 added").
+ * `docs/how-to/resolve-unreachable-guard-findings.md` Shape A was updated in
+ * the same change (#3884) to say the same thing. The three shell guards this
+ * file's Detector A shipped alongside (#3365's Walking Skeleton gate,
+ * `PHASE_REQ_IDS`, `complete-milestone.md`'s bare `cat <glob>`) were fixed
+ * under #3409 with remedies that never took the now-retired shape (a bare
+ * `--pick` with no fallback, a two-line `X=…`/`X="${X:-D}"` split, and an
+ * array expansion, respectively) — see
+ * `tests/unreachable-shell-guard.test.cjs`, which this file does not touch
+ * and which #3884 confirmed still passes unchanged.
  *
- * TWO detectors, each narrow by design (mirroring the sibling drift guards'
- * precedent of a small, specific shape rather than a wide heuristic):
- *
- *   Detector A — a line carrying BOTH a `--pick` token AND a `|| echo`
- *   fallback. `--pick` is the discriminator: a `|| echo` default WITHOUT
- *   `--pick` (e.g. `config-get k 2>/dev/null || echo "default"`, ~132 of the
- *   141 `$(… || echo …)` lines in the prompt layer) genuinely observes a
- *   nonzero exit code and is left alone — see 40-design.md's Rejected #2
- *   ("detect on `gsd_run` + `|| echo`" was tried and reverted for exactly
- *   this false-positive volume).
+ * ONE detector remains, unaffected by the above — its mechanism (nullglob
+ * success-on-empty) has nothing to do with `--pick`'s exit code:
  *
  *   Detector B — `cat` or `ls` invoked in COMMAND POSITION with an operand
- *   containing an unquoted glob metacharacter (`*` or `?`). Both detectors
- *   are, at bottom, the SAME shape: a fallback/guard arm that a
- *   success-on-empty case silently defeats. Detector A is `--pick … ||
- *   echo`; Detector B-ii below is `ls <glob> … || echo` — the identical
- *   defect, one level down the stack, with `ls`'s own nullglob-driven
- *   success-on-empty standing in for `--pick`'s absence-coerced-to-''.
- *   SCOPED to exactly three fired shapes, per a full measurement across the
- *   four SCAN_DIRS (measured counts recorded in the PR description; 0 sites
- *   for B-iii today, by design — see KNOWN LIMITS):
+ *   containing an unquoted glob metacharacter (`*` or `?`). At bottom the
+ *   same class of bug Detector A used to catch one level up the stack: a
+ *   fallback/guard arm that a success-on-empty case silently defeats.
+ *   Detector B-ii below is `ls <glob> … || echo` — with `ls`'s own
+ *   nullglob-driven success-on-empty standing in for what used to be
+ *   `--pick`'s absence-coerced-to-''. SCOPED to exactly three fired shapes,
+ *   per a full measurement across the four SCAN_DIRS (measured counts
+ *   recorded in the PR description; 0 sites for B-iii today, by design — see
+ *   KNOWN LIMITS):
  *
  *     B-i.   `cat <glob>` fires UNCONDITIONALLY. This is the stdin-hang
  *            shape (measured rc=137 at 3s under an unmatched glob +
@@ -96,9 +102,6 @@
  * `npm run lint:ci` runs CodeQL js/redos over this repo, the same
  * discipline `lint-planning-prompt-drift.cjs` documents in its own header:
  *
- *   - PICK_RE / ECHO_FALLBACK_RE carry only a single bounded `\s*`
- *     quantifier each, over a fixed literal — no nesting, nothing to
- *     backtrack.
  *   - CAT_LS_COMMAND_RE's alternation is a FIXED, non-overlapping set (a
  *     handful of literal command-position anchors, then a fixed
  *     `(cat|ls)`), with one `[ \t]*` quantifier between the anchor and the
@@ -171,11 +174,6 @@
  * SCAN_EXT: `.md` only.
  *
  * KNOWN, ACCEPTED limits (same tradeoffs the sibling guards document):
- *   - A cross-line split defeats Detector A (`--pick` on one line, `|| echo`
- *     on the next) — left to code review, per-line textual scan only.
- *   - `|| printf` and other non-`echo` fallbacks are not detected by
- *     Detector A — narrow by design; widening is a one-line change if a
- *     site ever appears.
  *   - Detector B's command-position anchor set (line start; `;`, `&`, `|`,
  *     `(`; the keywords `if`/`then`/`elif`/`while`/`do`) is what lets
  *     `$(cat …)` / `$(ls …)` — the dominant real invocation idiom in this
@@ -213,16 +211,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const driftScan = require('./lib/drift-scan.cjs');
 const { sanitizeForReport, scanTree } = driftScan;
-
-// ─── Detector A — `--pick` + `|| echo` ────────────────────────────────────
-//
-// `--pick` is the discriminator (see module header); `|| echo` is the
-// unreachable fallback arm it silently defeats. Both must be present on the
-// SAME line for the shape to be the exact unreachable-arm defect #3409
-// fixes — see the module header for why a bare "`gsd_run` + `|| echo`" rule
-// was tried and reverted (Rejected #2).
-const PICK_RE = /--pick\b/;
-const ECHO_FALLBACK_RE = /\|\|\s*echo\b/;
 
 // ─── Detector B — cat <glob> (B-i), ls <glob> … || <real fallback> (B-ii),
 // or ls <glob> at the head of if/elif/while (B-iii) ────────────────────────
@@ -378,22 +366,28 @@ const BASELINE_REL_PATH = path.join('scripts', 'baselines', 'unreachable-guard-d
 
 // The tracking issue this guard's own baseline entries are owned by, absent
 // a more specific site owner named at `--update` time. #3409 is this
-// guard's own issue: any site it finds that this PR does not convert is a
-// "one careless line from the same class" per 40-design.md's Postel's Law
-// section, tracked here until the upstream `--pick` contract fix (#3473)
-// or a per-site conversion lands.
+// guard's own issue: any Detector B site it finds that this PR does not
+// convert is a "one careless line from the same class" per 40-design.md's
+// Postel's Law section, tracked here until a per-site conversion lands.
+// (Detector A's own entries, if any had ever existed, would have been
+// tracked the same way until the upstream `--pick` contract fix landed —
+// #3884 — but the baseline shipped with zero Detector A entries; see the
+// retirement note at the top of this file.)
 const RATCHET_OWNER_ISSUE = '#3409';
 
 /**
- * Pure: scan `text` (one file's content) for Detector A / Detector B
- * violations and malformed escape-marker declarations. `relPath` is the
- * repo-relative path (native separators or POSIX, either accepted) —
- * normalized via `toPosixRel` and attached as `file` on every result.
+ * Pure: scan `text` (one file's content) for Detector B violations and
+ * malformed escape-marker declarations. `relPath` is the repo-relative path
+ * (native separators or POSIX, either accepted) — normalized via
+ * `toPosixRel` and attached as `file` on every result.
  *
  * Returns `{ violations, malformed }`:
- *   - `violations`: `[{ file, line, kind: 'A'|'B', found, text }]` — `text`
- *     is the TRIMMED source line (the baseline key), `found` names the
- *     discriminating token (`--pick` for A, `cat`/`ls` for B).
+ *   - `violations`: `[{ file, line, kind: 'B', found, text }]` — `text` is
+ *     the TRIMMED source line (the baseline key), `found` names the
+ *     discriminating command (`cat`/`ls`). `kind` is retained as a field
+ *     (rather than dropped now that only one detector remains) so the
+ *     baseline JSON shape and the `--json` report shape are unchanged by
+ *     Detector A's retirement.
  *   - `malformed`: `[{ file, line, text, reason }]` — an ATTEMPTED
  *     `# gsd-scan-ignore:` declaration whose reason names no issue and no
  *     URL. Checked on EVERY line independent of whether that line also
@@ -428,9 +422,6 @@ function findUnreachableGuardDrift(text, relPath) {
     }
     if (exempt) continue;
 
-    if (PICK_RE.test(line) && ECHO_FALLBACK_RE.test(line)) {
-      violations.push({ file, line: lineNo, kind: 'A', found: '--pick', text: line.trim() });
-    }
     const globInfo = detectGlobOperand(line);
     if (globInfo) {
       violations.push({ file, line: lineNo, kind: 'B', found: globInfo.command, text: line.trim() });
@@ -774,8 +765,6 @@ function main() {
   if (!json) {
     if (fresh.length > 0) {
       process.stderr.write('unreachable-guard-drift: NEW unreachable shell-guard shape(s) found in the prompt layer.\n');
-      process.stderr.write('Detector A (--pick + || echo): the fallback can never fire on field absence — replace with an\n');
-      process.stderr.write('explicit -z/empty-string test on the resolved value.\n');
       process.stderr.write('Detector B (cat/ls over a glob operand): under a nullglob set elsewhere in the same shell\n');
       process.stderr.write('session, an unmatched glob reads from stdin (cat) or lists the cwd (ls) — use an array\n');
       process.stderr.write('expansion or an existence test instead.\n');
@@ -825,8 +814,6 @@ module.exports = {
   dedupeViolationsForBaseline,
   sortEntries,
   writeBaseline,
-  PICK_RE,
-  ECHO_FALLBACK_RE,
   CAT_LS_COMMAND_RE,
   HEREDOC_AFTER_COMMAND_RE,
   EXIT_TESTING_KEYWORDS,

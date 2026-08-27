@@ -19,7 +19,7 @@ import { INIT_SUBCOMMANDS } from './command-aliases.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import cjsCommandRouterAdapter = require('./cjs-command-router-adapter.cjs');
 const { routeCjsCommandFamily } = cjsCommandRouterAdapter;
-import { parseNamedArgs } from './command-arg-projection.cjs';
+import { parseNamedArgsOrExit } from './command-arg-projection.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       // single source of truth for flag ABSENCE and gates on value truthiness,
       // so `namedArgs` is passed through here uncoerced.
       'execute-phase': () => {
-        const namedArgs = parseNamedArgs(args, [], ['validate', 'tdd', 'wave']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['validate', 'tdd', 'wave'], positionals: 3 }, error);
         init.cmdInitExecutePhase(cwd, args[2], raw, {
           validate: namedArgs['validate'],
           tdd: namedArgs['tdd'],
@@ -85,10 +85,14 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
         });
       },
       'plan-phase': () => {
-        const namedArgs = parseNamedArgs(
+        const namedArgs = parseNamedArgsOrExit(
           args,
-          ['granularity', 'prd', 'ingest', 'research-phase'],
-          ['validate', 'tdd', 'reviews', 'chunked'],
+          {
+            valueFlags: ['granularity', 'prd', 'ingest', 'research-phase'],
+            booleanFlags: ['validate', 'tdd', 'reviews', 'chunked'],
+            positionals: 3,
+          },
+          error,
         );
         init.cmdInitPlanPhase(cwd, args[2], raw, {
           validate: namedArgs['validate'],
@@ -102,21 +106,25 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
         });
       },
       'new-project': () => {
-        const namedArgs = parseNamedArgs(args, [], ['auto']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['auto'], positionals: 2 }, error);
         init.cmdInitNewProject(cwd, raw, { auto: namedArgs['auto'] });
       },
       'new-milestone': () => {
-        const namedArgs = parseNamedArgs(args, [], ['reset-phase-numbers']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['reset-phase-numbers'], positionals: 2 }, error);
         init.cmdInitNewMilestone(cwd, raw, {
           'reset-phase-numbers': namedArgs['reset-phase-numbers'],
         });
       },
       onboard: () => {
-        const namedArgs = parseNamedArgs(args, [], ['fast', 'text']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['fast', 'text'], positionals: 2 }, error);
         init.cmdInitOnboard(cwd, raw, { fast: namedArgs['fast'], text: namedArgs['text'] });
       },
       quick: () => {
-        const namedArgs = parseNamedArgs(args, [], ['discuss', 'research', 'validate', 'full']);
+        // #3180 Decision 4a / L2 (ADR-3473 §8.4): `positionals: 'rest'` because
+        // everything after `init quick` is a free-text description — strict
+        // undeclared-flag rejection would break
+        // `/gsd-quick add a --dry-run option`, which works today.
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['discuss', 'research', 'validate', 'full'], positionals: 'rest' }, error);
         // #2994: `args.slice(2)` is the free-text description, but section-manifest
         // gating (buildSectionManifestField, src/init.cts) now requires forwarding
         // --discuss/--research/--validate/--full alongside it — a plain `.join(' ')`
@@ -140,19 +148,19 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       'verify-work': () => init.cmdInitVerifyWork(cwd, args[2], raw),
       'phase-op': () => init.cmdInitPhaseOp(cwd, args[2], raw),
       'code-review': () => {
-        const namedArgs = parseNamedArgs(args, [], ['fix']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['fix'], positionals: 3 }, error);
         init.cmdInitCodeReview(cwd, args[2], raw, { fix: namedArgs['fix'] });
       },
       review: () => init.cmdInitReview(cwd, args[2], raw, {}),
       'discuss-phase-assumptions': () => {
-        const namedArgs = parseNamedArgs(args, [], ['auto']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['auto'], positionals: 3 }, error);
         init.cmdInitDiscussPhaseAssumptions(cwd, args[2], raw, { auto: namedArgs['auto'] });
       },
       todos: () => init.cmdInitTodos(cwd, args[2], raw),
       'milestone-op': () => init.cmdInitMilestoneOp(cwd, raw),
       'map-codebase': () => init.cmdInitMapCodebase(cwd, raw),
       progress: () => {
-        const namedArgs = parseNamedArgs(args, [], ['forensic']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['forensic'], positionals: 2 }, error);
         init.cmdInitProgress(cwd, raw, { forensic: namedArgs['forensic'] });
       },
       // Keep manager on CJS for now so runtime-specific command rendering
@@ -160,7 +168,7 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       manager: () => init.cmdInitManager(cwd, raw),
       'complete-milestone': () => init.cmdInitCompleteMilestone(cwd, raw),
       autonomous: () => {
-        const namedArgs = parseNamedArgs(args, [], ['converge', 'cross-ai']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['converge', 'cross-ai'], positionals: 2 }, error);
         init.cmdInitAutonomous(cwd, raw, {
           converge: namedArgs['converge'],
           'cross-ai': namedArgs['cross-ai'],
@@ -168,12 +176,12 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       },
       'docs-update': () => init.cmdInitDocsUpdate(cwd, raw, {}),
       update: () => {
-        const namedArgs = parseNamedArgs(args, [], ['next', 'rc']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['next', 'rc'], positionals: 2 }, error);
         init.cmdInitUpdate(cwd, raw, { next: namedArgs['next'], rc: namedArgs['rc'] });
       },
       transition: () => init.cmdInitTransition(cwd, raw, {}),
       debug: () => {
-        const namedArgs = parseNamedArgs(args, [], ['diagnose']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['diagnose'], positionals: 2 }, error);
         init.cmdInitDebug(cwd, raw, { diagnose: namedArgs['diagnose'] });
       },
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),

@@ -216,6 +216,11 @@ const ERROR_REASON = Object.freeze({
   COMMIT_DOCS_GUARD_HOOKS_PATH_SET: 'commit_docs_guard_hooks_path_set',
   // security-scan
   SECURITY_SCAN_FAILED: 'security_scan_failed',
+  // --pick (#3365 / #3358, ADR-3473 §8.4): an absent field or non-JSON
+  // command output is a failure, never a demotion to an empty answer at
+  // exit 0. See .gsd/phase/feat-3884-failure-is-a-value/40-design.md.
+  PICK_FIELD_ABSENT: 'pick_field_absent',
+  PICK_OUTPUT_NOT_JSON: 'pick_output_not_json',
   // generic
   USAGE: 'usage',
   UNKNOWN: 'unknown',

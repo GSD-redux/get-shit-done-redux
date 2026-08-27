@@ -13,82 +13,104 @@ const fc = require('./helpers/fast-check-setup.cjs');
 // ---------------------------------------------------------------------------
 
 test('value flag with valid value', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs(['--name', 'foo'], ['name']),
-    { name: 'foo' }
-  );
+  const result = parseNamedArgs(['--name', 'foo'], { valueFlags: ['name'], positionals: 0 });
+  assert.deepStrictEqual(result, { ok: true, data: { name: 'foo' } });
 });
 
+// ADR-3473 §8.4 A2/A13: previously asserted `{ name: null }` (silent
+// value-drop). A value flag whose next token is another flag is now a loud
+// InvalidArgs — the whole point of the strict pass.
 test('value flag followed by another flag (value rejected)', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs(['--name', '--other'], ['name']),
-    { name: null }
-  );
+  const result = parseNamedArgs(['--name', '--other'], { valueFlags: ['name'], positionals: 0 });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.kind, 'InvalidArgs');
+  assert.strictEqual(result.arg, '--name');
 });
 
+// ADR-3473 §8.4 A3: previously asserted `{ name: null }` (silent). A value
+// flag with no following token at all is now a loud InvalidArgs.
 test('value flag at end of array (no following token)', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs(['--name'], ['name']),
-    { name: null }
-  );
+  const result = parseNamedArgs(['--name'], { valueFlags: ['name'], positionals: 0 });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.kind, 'InvalidArgs');
+  assert.strictEqual(result.arg, '--name');
 });
 
-test('value flag absent from args', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs(['--x', 'y'], ['name']),
-    { name: null }
-  );
+// The original 'value flag absent from args' row passed `['--x', 'y']` with
+// only `name` declared. Under strict mode `--x` is itself an unknown flag —
+// split into two rows so neither original intent (an undeclared flag is
+// null when TRULY absent; `--x` is rejected) is silently dropped.
+test('absent declared flag resolves to null (not an error)', () => {
+  const result = parseNamedArgs([], { valueFlags: ['name'], positionals: 0 });
+  assert.deepStrictEqual(result, { ok: true, data: { name: null } });
+});
+
+test('an undeclared flag token is rejected, not silently ignored', () => {
+  const result = parseNamedArgs(['--x', 'y'], { valueFlags: ['name'], positionals: 0 });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.kind, 'InvalidArgs');
+  assert.strictEqual(result.arg, '--x');
 });
 
 test('boolean flag present', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs(['--write'], [], ['write']),
-    { write: true }
-  );
+  const result = parseNamedArgs(['--write'], { booleanFlags: ['write'], positionals: 0 });
+  assert.deepStrictEqual(result, { ok: true, data: { write: true } });
 });
 
 test('boolean flag absent', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs([], [], ['write']),
-    { write: false }
-  );
+  const result = parseNamedArgs([], { booleanFlags: ['write'], positionals: 0 });
+  assert.deepStrictEqual(result, { ok: true, data: { write: false } });
 });
 
+// Negative space N4: a repeated flag is not an unknown token — first
+// occurrence still wins, and each occurrence is itself a well-formed
+// flag+value pair, so strict validation still passes.
 test('first-occurrence-wins: duplicate value flag uses first index', () => {
   // Locks the indexOf-first semantics that the Map must preserve (#312)
-  assert.deepStrictEqual(
-    parseNamedArgs(['--name', 'a', '--name', 'b'], ['name']),
-    { name: 'a' }
-  );
+  const result = parseNamedArgs(['--name', 'a', '--name', 'b'], { valueFlags: ['name'], positionals: 0 });
+  assert.deepStrictEqual(result, { ok: true, data: { name: 'a' } });
 });
 
 test('mixed multiple flags (the O(flags*argv) case)', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs(['--a', '1', '--flag', '--b', '2'], ['a', 'b'], ['flag']),
-    { a: '1', b: '2', flag: true }
+  const result = parseNamedArgs(
+    ['--a', '1', '--flag', '--b', '2'],
+    { valueFlags: ['a', 'b'], booleanFlags: ['flag'], positionals: 0 },
   );
+  assert.deepStrictEqual(result, { ok: true, data: { a: '1', b: '2', flag: true } });
 });
 
 test('empty args with multiple declared flags', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs([], ['name', 'path'], ['verbose', 'dry-run']),
-    { name: null, path: null, verbose: false, 'dry-run': false }
+  const result = parseNamedArgs(
+    [],
+    { valueFlags: ['name', 'path'], booleanFlags: ['verbose', 'dry-run'], positionals: 0 },
   );
+  assert.deepStrictEqual(result, {
+    ok: true,
+    data: { name: null, path: null, verbose: false, 'dry-run': false },
+  });
 });
 
-test('value flag value undefined via array boundary', () => {
-  // --count is last token; args[idx+1] is undefined — must return null
-  assert.deepStrictEqual(
-    parseNamedArgs(['--other', 'x', '--count'], ['count']),
-    { count: null }
+// ADR-3473 §8.4 A2/A3: the original row asserted `{ count: null }` for a
+// value flag exhausted by the array boundary. That silent-null outcome is
+// exactly what the strict pass supersedes — a value flag with no following
+// value is now always InvalidArgs, including when it is preceded by another
+// well-formed flag+value pair.
+test('value flag at end of argv is rejected even when preceded by another flag', () => {
+  const result = parseNamedArgs(
+    ['--other', 'x', '--count'],
+    { valueFlags: ['other', 'count'], positionals: 0 },
   );
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.kind, 'InvalidArgs');
+  assert.strictEqual(result.arg, '--count');
 });
 
 test('boolean flag does not clobber an already-set value-flag key when names differ', () => {
-  assert.deepStrictEqual(
-    parseNamedArgs(['--msg', 'hello', '--verbose'], ['msg'], ['verbose']),
-    { msg: 'hello', verbose: true }
+  const result = parseNamedArgs(
+    ['--msg', 'hello', '--verbose'],
+    { valueFlags: ['msg'], booleanFlags: ['verbose'], positionals: 0 },
   );
+  assert.deepStrictEqual(result, { ok: true, data: { msg: 'hello', verbose: true } });
 });
 
 // ---------------------------------------------------------------------------

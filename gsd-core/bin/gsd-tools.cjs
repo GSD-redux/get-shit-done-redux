@@ -325,7 +325,7 @@ const { routeAgentCommand, AGENT_FAILURE_CLASSES } = require('./lib/agent-comman
 const smartEntryMod = require('./lib/smart-entry.cjs');
 const { routeCheckCommand } = require('./lib/check-command-router.cjs');
 const { routeTaskCommand } = require('./lib/task-command-router.cjs');
-const { parseNamedArgs, parseMultiwordArg } = require('./lib/command-arg-projection.cjs');
+const { parseNamedArgsOrExit, parseMultiwordArg } = require('./lib/command-arg-projection.cjs');
 const { cmdGitBaseBranch } = require('./lib/git-base-branch.cjs');
 const { getEffectiveAuthority, classifyDriftSeverity, comparePhaseStatus } = require('./lib/plan-drift-guard.cjs');
 
@@ -963,7 +963,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
   function routePrSubrepo({ args, cwd, raw, error }) {
     const message = args[1];
-          const { repo, branch } = parseNamedArgs(args, ['repo', 'branch']);
+          const { repo, branch } = parseNamedArgsOrExit(args, { valueFlags: ['repo', 'branch'], positionals: 2 }, error);
           commands.cmdPrSubrepo(cwd, repo, branch, message, raw);
   }
 
@@ -980,7 +980,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             template.cmdTemplateSelect(cwd, args[2], raw);
           } else if (subcommand === 'fill') {
             const templateType = args[2];
-            const { phase, plan, name, type, wave, fields: fieldsRaw } = parseNamedArgs(args, ['phase', 'plan', 'name', 'type', 'wave', 'fields']);
+            const { phase, plan, name, type, wave, fields: fieldsRaw } = parseNamedArgsOrExit(args, { valueFlags: ['phase', 'plan', 'name', 'type', 'wave', 'fields'], positionals: 3 }, error);
             let fields = {};
             if (fieldsRaw) {
               const { safeJsonParse } = require('./lib/security.cjs');
@@ -1029,14 +1029,14 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           }
           // CJS fallback (SDK unavailable or unknown subcommand)
           if (subcommand === 'get') {
-            frontmatter.cmdFrontmatterGet(cwd, file, parseNamedArgs(args, ['field']).field, raw);
+            frontmatter.cmdFrontmatterGet(cwd, file, parseNamedArgsOrExit(args, { valueFlags: ['field'], positionals: 3 }, error).field, raw);
           } else if (subcommand === 'set') {
-            const { field, value } = parseNamedArgs(args, ['field', 'value']);
+            const { field, value } = parseNamedArgsOrExit(args, { valueFlags: ['field', 'value'], positionals: 3 }, error);
             frontmatter.cmdFrontmatterSet(cwd, file, field, value !== null ? value : undefined, raw);
           } else if (subcommand === 'merge') {
-            frontmatter.cmdFrontmatterMerge(cwd, file, parseNamedArgs(args, ['data']).data, raw);
+            frontmatter.cmdFrontmatterMerge(cwd, file, parseNamedArgsOrExit(args, { valueFlags: ['data'], positionals: 3 }, error).data, raw);
           } else if (subcommand === 'validate') {
-            frontmatter.cmdFrontmatterValidate(cwd, file, parseNamedArgs(args, ['schema']).schema, raw);
+            frontmatter.cmdFrontmatterValidate(cwd, file, parseNamedArgsOrExit(args, { valueFlags: ['schema'], positionals: 3 }, error).schema, raw);
           } else {
             error('Unknown frontmatter subcommand. Available: get, set, merge, validate', ERROR_REASON.SDK_UNKNOWN_COMMAND);
           }
@@ -1160,7 +1160,15 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // to the pure appendQuickTaskRow (markdown-table.cjs); this case only
           // handles the I/O (read STATE.md, resolve date/commit, write STATE.md).
           const qtaArgs = args.slice(1);
-          const qtaTask = parseNamedArgs(qtaArgs, ['task']).task || args[1];
+          // Ambiguous boundary (ADR-3473 §8.4 Item 2 note): this command accepts
+          // EITHER a positional free-text description (qtaArgs[0]) OR --task
+          // <value> — the same token index is a caller-owned positional in one
+          // input shape and a flag in the other, which a single fixed
+          // `positionals` cursor cannot represent. `positionals: 'rest'`
+          // disables the boundary walk (as with `init quick`) so extraction
+          // (used for the --task form) and the `|| args[1]` fallback (used for
+          // the positional form) both keep working unchanged.
+          const qtaTask = parseNamedArgsOrExit(qtaArgs, { valueFlags: ['task'], positionals: 'rest' }, error).task || args[1];
           if (!qtaTask) {
             error('quick-tasks-append requires --task <description> (or a positional description)', ERROR_REASON.USAGE);
           }
@@ -2429,11 +2437,11 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const subcommand = args[1];
           if (subcommand === 'render-checkpoint') {
             const uat = require('./lib/uat.cjs');
-            const options = parseNamedArgs(args, ['file']);
+            const options = parseNamedArgsOrExit(args, { valueFlags: ['file'], positionals: 2 }, error);
             uat.cmdRenderCheckpoint(cwd, options, raw);
           } else if (subcommand === 'classify-coverage') {
             const coverage = require('./lib/coverage.cjs');
-            const options = parseNamedArgs(args, ['summary', 'file']);
+            const options = parseNamedArgsOrExit(args, { valueFlags: ['summary', 'file'], positionals: 2 }, error);
             coverage.cmdClassify(cwd, options, raw);
           } else {
             error('Unknown uat subcommand. Available: render-checkpoint, classify-coverage', ERROR_REASON.SDK_UNKNOWN_COMMAND);
@@ -2458,8 +2466,13 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
   function routeScaffold({ args, cwd, raw, error }) {
     const scaffoldType = args[1];
+          // `--name` is multi-word (consumed separately by parseMultiwordArg,
+          // below) — a token count the single-token-per-flag boundary walk
+          // cannot represent. `positionals: 'rest'` disables that walk for
+          // this call, matching the existing (unchanged) permissive behavior
+          // for --name; --phase extraction is unaffected either way.
           const scaffoldOptions = {
-            phase: parseNamedArgs(args, ['phase']).phase,
+            phase: parseNamedArgsOrExit(args, { valueFlags: ['phase'], positionals: 'rest' }, error).phase,
             name: parseMultiwordArg(args, 'name'),
           };
           commands.cmdScaffold(cwd, scaffoldType, scaffoldOptions, raw);
@@ -4510,19 +4523,37 @@ async function main() {
   }
 
   // When --pick is active, capture stdout and extract the requested field.
+  // ADR-3473 §8.4 (#3365, #3358): an absent field or non-JSON command output
+  // is a failure ("I could not answer"), never a demotion to an empty answer
+  // at exit 0. `resolveAtFileOutput` MUST run before JSON.parse — @file:
+  // payloads (io.cjs output() writes these for JSON > 50KB) are not
+  // themselves JSON text, so resolving late would make every large result a
+  // false "output was not JSON" (negative space N8).
   if (pickField) {
     const captured = await captureStdoutSyncWrites(async () => {
       await runCommand(command, args, cwd, raw, defaultValue, originalCommand, workstreamContext);
     });
     const resolved = resolveAtFileOutput(captured);
+    let obj;
     try {
-      const obj = JSON.parse(resolved);
-      const value = extractField(obj, pickField);
-      const result = value === null || value === undefined ? '' : String(value);
-      fs.writeSync(1, result);
+      obj = JSON.parse(resolved);
     } catch {
-      fs.writeSync(1, captured);
+      error(`--pick ${pickField}: command output was not JSON`, ERROR_REASON.PICK_OUTPUT_NOT_JSON);
+      return;
     }
+    const { found, value } = extractField(obj, pickField);
+    if (!found) {
+      const rootDescription = isPlainRecord(obj)
+        ? `available top-level keys: ${Object.keys(obj).join(', ') || '(none)'}`
+        : `the command's output is a JSON ${describeJsonRootType(obj)}, not an object with that field`;
+      error(`--pick ${pickField}: field not found; ${rootDescription}`, ERROR_REASON.PICK_FIELD_ABSENT);
+      return;
+    }
+    // N1/N2: `null` and `''` are answers, not failures — an absent field
+    // above already exited non-zero, so reaching here means the field EXISTS
+    // and this is its real value (including `0` and `false`, #3365).
+    const result = value === null || value === undefined ? '' : String(value);
+    fs.writeSync(1, result);
     return;
   }
 
@@ -4584,27 +4615,56 @@ function resolveAtFileOutput(captured) {
   return fs.readFileSync(captured.slice(6), 'utf-8');
 }
 
+// A plain object root/intermediate value — everything else (null, an array,
+// a number, a string, a boolean) is treated as non-object for NAMED-key
+// lookup purposes (#3365 / #3358, ADR-3473 §8.4): only bracket notation may
+// reach into an array.
+function isPlainRecord(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+// Describes the JSON root's shape for a --pick "field not found" message
+// when the root is NOT a plain object (so listing "top-level keys" would be
+// meaningless).
+function describeJsonRootType(v) {
+  if (Array.isArray(v)) return 'array';
+  if (v === null) return 'null';
+  return typeof v;
+}
+
 /**
  * Extract a field from an object using dot-notation and bracket syntax.
  * Supports: 'field', 'parent.child', 'arr[-1]', 'arr[0]'
+ *
+ * Returns a discriminated `{ found, value }` rather than a bare value so a
+ * caller can distinguish "the field exists and is null/''/0/false" (an
+ * ANSWER, exit 0) from "no such field" (an absence, exit non-zero) — #3365.
+ * Reports NOT-FOUND for: a missing key; a dotted path that dies partway; an
+ * array index out of range (after negative-index normalization); a bracket
+ * applied to a non-array; and any key lookup against a non-object (null, a
+ * number, a string, a boolean, or an array root).
  */
 function extractField(obj, fieldPath) {
   const parts = fieldPath.split('.');
   let current = obj;
   for (const part of parts) {
-    if (current === null || current === undefined) return undefined;
     const bracketMatch = part.match(/^(.+?)\[(-?\d+)]$/);
     if (bracketMatch) {
       const key = bracketMatch[1];
       const index = parseInt(bracketMatch[2], 10);
-      current = current[key];
-      if (!Array.isArray(current)) return undefined;
-      current = index < 0 ? current[current.length + index] : current[index];
+      if (!isPlainRecord(current)) return { found: false, value: undefined };
+      const arr = current[key];
+      if (!Array.isArray(arr)) return { found: false, value: undefined };
+      const resolvedIndex = index < 0 ? arr.length + index : index;
+      if (resolvedIndex < 0 || resolvedIndex >= arr.length) return { found: false, value: undefined };
+      current = arr[resolvedIndex];
     } else {
+      if (!isPlainRecord(current)) return { found: false, value: undefined };
+      if (!Object.prototype.hasOwnProperty.call(current, part)) return { found: false, value: undefined };
       current = current[part];
     }
   }
-  return current;
+  return { found: true, value: current };
 }
 
 async function runCommand(command, args, cwd, raw, defaultValue, originalCommand, workstreamContext = null) {
