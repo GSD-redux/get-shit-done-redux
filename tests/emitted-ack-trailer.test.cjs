@@ -279,6 +279,25 @@ describe('boundary: MAX_ACK_TRAILERS cap', () => {
       'one over the cap must throw rather than silently truncating the listing',
     );
   });
+
+  test(
+    '100 identical repeats of ONE trailer do not throw — the cap is counted AFTER '
+    + 'same-key dedup, not on the raw input count. A commit trailer, unlike the pre-'
+    + '#3942 fragment-directory listing this cap descends from, legitimately survives a '
+    + "rebase: `git log` over the range reports the SAME trailer text once per rebased "
+    + 'commit it still lives on, so counting raw occurrences would throw on an entirely '
+    + 'legitimate branch that never declared more than one distinct acknowledgment.',
+    () => {
+      const values = Array.from(
+        { length: 100 },
+        () => 'rebased/path.md — identical reason on every rebased commit',
+      );
+      const { hash, errors } = parseAckTrailers({ hash: values, growth: [] });
+      assert.deepEqual(errors, []);
+      assert.equal(hash.size, 1, 'all 100 raw values collapse to the one distinct declaration they represent');
+      assert.equal(hash.get('rebased/path.md').reason, 'identical reason on every rebased commit');
+    },
+  );
 });
 
 // ─── real fixture reads via readAckTrailers — rows 1-7, 25-27, 31, 34, 35 ────
@@ -330,6 +349,60 @@ describe('real fixture reads via readAckTrailers', () => {
     assert.equal(r.hash.get('gsd-core/workflows/bar.md')?.reason, 'ripple reason');
     assert.equal(r.growth.get('bar.md')?.reason, 'growth reason');
   });
+
+  test(
+    'two trailers of the SAME name on one commit arrive as separate entries, not '
+    + 'joined into one value (regression: `separator=1d` in the git --format string was '
+    + 'a literal two-character value, not the `%x1d` escape — the record NEVER split on '
+    + 'the real \\x1d byte the code expects, silently collapsing multiple same-key '
+    + 'trailers into one joined string). The existing "both spaces coexist" test (row 3) '
+    + 'uses Hash+Growth — two DIFFERENT trailer names — so it only exercises the field '
+    + 'separator, never the value separator between multiple values of the SAME key; '
+    + 'this test is what actually exercises `separator=` in the git --format string.',
+    (t) => {
+      const dir = makeTempRepo('gsd-ack-trailer-sep-');
+      withCleanup(t, dir);
+      commitMessage(dir, 'init\n\nbaseline commit, no trailer\n');
+      const baseSha = headSha(dir);
+      commitMessage(
+        dir,
+        'two same-name trailers, different keys\n\n'
+        + `${trailerLine(ACK_TRAILER_HASH, 'one/path.md', 'reason one')}\n`
+        + `${trailerLine(ACK_TRAILER_HASH, 'two/path.md', 'reason two')}\n`,
+      );
+      const r = readAckTrailers({ baseRef: baseSha, headRef: 'HEAD', cwd: dir });
+      assert.equal(r.errors.length, 0);
+      assert.equal(r.hash.size, 2, 'two distinct trailers of the same name must arrive as two entries');
+      assert.equal(r.hash.get('one/path.md')?.reason, 'reason one');
+      assert.equal(r.hash.get('two/path.md')?.reason, 'reason two');
+    },
+  );
+
+  test(
+    'two trailers of the SAME name and the SAME key with different reasons on one '
+    + 'commit are surfaced as an ambiguous-conflict error, not silently merged '
+    + '(regression, same root cause as the test immediately above: under the broken '
+    + 'separator, this exact input produced NO error and a corrupted reason string like '
+    + '"reason one1dtwo/path.md — reason two" — a truncation the ambiguous-duplicate '
+    + 'error exists to catch, but never fired because the value never reached the '
+    + 'parser split into two pieces)',
+    (t) => {
+      const dir = makeTempRepo('gsd-ack-trailer-sep-conflict-');
+      withCleanup(t, dir);
+      commitMessage(dir, 'init\n\nbaseline commit, no trailer\n');
+      const baseSha = headSha(dir);
+      commitMessage(
+        dir,
+        'two same-name trailers, same key, conflicting reasons\n\n'
+        + `${trailerLine(ACK_TRAILER_HASH, 'same/path.md', 'reason A')}\n`
+        + `${trailerLine(ACK_TRAILER_HASH, 'same/path.md', 'reason B')}\n`,
+      );
+      const r = readAckTrailers({ baseRef: baseSha, headRef: 'HEAD', cwd: dir });
+      assert.equal(r.hash.has('same/path.md'), false, 'an ambiguous declaration must not silently pick a winner');
+      assert.equal(r.errors.length, 1, 'the split must yield exactly two distinct raw values, not one merged one');
+      assert.match(r.errors[0], /ambiguous|conflict/i);
+    },
+  );
 
   test('clean tree needs no trailer — row 4', (t) => {
     const dir = makeTempRepo('gsd-ack-trailer-4-');

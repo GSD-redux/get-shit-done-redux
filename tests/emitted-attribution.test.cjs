@@ -78,6 +78,8 @@ const {
   formatReport,
   ACK_TRAILER_HASH,
   ACK_TRAILER_GROWTH,
+  INVISIBLE,
+  normalizeAckReason,
   parseAckTrailers,
   renderAckTrailer,
 } = require('./helpers/emitted-diff.cjs');
@@ -483,6 +485,114 @@ test('a live ack and a stale ack together: only the stale one is named', () => {
   assert.deepEqual(r.staleAcks, [{ key: SKILL_KEY, space: 'hash' }], 'the live one must not be named');
 });
 
+// ─── normalizeAckReason / INVISIBLE (#3942 anti-gaming prose normalization) ──
+//
+// Both are on the live path via `parseAckTrailers`'s own same-key dedup
+// (tests/helpers/emitted-diff.cjs) but had ZERO test references repo-wide before this
+// block — the old suite's coverage (origin/next:1069, :1084, :1307, :1322) called
+// `ackProse`/`ACK_INVISIBLE` from `scripts/lint-emitted-drift-ack.cjs`, which ADR-3942
+// §6 deletes outright (the legacy JSON-ack-file lint/guard/sweep script this repo no
+// longer has any use for), so those tests are NOT restorable verbatim. This block is a
+// from-scratch equivalent against the CURRENT, sole surface: `INVISIBLE` and
+// `normalizeAckReason`, both exported directly from `tests/helpers/emitted-diff.cjs`.
+// Each assertion is written so that removing any ONE codepoint from `INVISIBLE`'s
+// definition fails a specific test, not just the aggregate.
+
+describe('normalizeAckReason / INVISIBLE (#3942 anti-gaming prose normalization)', () => {
+  // The exact six codepoints INVISIBLE strips (tests/helpers/emitted-diff.cjs): soft
+  // hyphen, the zero-width family, word joiner, BOM. Individually named (not just
+  // looped) so a single dropped codepoint fails its OWN assertion, not a shared one.
+  const INVISIBLE_CODEPOINTS = {
+    'U+00AD SOFT HYPHEN': 0x00AD,
+    'U+200B ZERO WIDTH SPACE': 0x200B,
+    'U+200C ZERO WIDTH NON-JOINER': 0x200C,
+    'U+200D ZERO WIDTH JOINER': 0x200D,
+    'U+2060 WORD JOINER': 0x2060,
+    'U+FEFF ZERO WIDTH NO-BREAK SPACE (BOM)': 0xFEFF,
+  };
+
+  for (const [label, cp] of Object.entries(INVISIBLE_CODEPOINTS)) {
+    test(`normalizeAckReason strips ${label}`, () => {
+      const ch = String.fromCodePoint(cp);
+      assert.equal(normalizeAckReason(`a${ch}b`), 'ab', `${label} must be stripped, not left in place`);
+      assert.equal(
+        normalizeAckReason(`same${ch} reason`), 'same reason',
+        `${label} inserted mid-word must not survive into the normalized reason`,
+      );
+    });
+  }
+
+  test('INVISIBLE.test() agrees with normalizeAckReason for every one of the six codepoints (regex/function parity)', () => {
+    for (const cp of Object.values(INVISIBLE_CODEPOINTS)) {
+      const ch = String.fromCodePoint(cp);
+      INVISIBLE.lastIndex = 0; // global-flagged regex — .test() is stateful, reset before use
+      const matches = INVISIBLE.test(ch);
+      INVISIBLE.lastIndex = 0;
+      assert.equal(matches, true, `INVISIBLE regex must itself match U+${cp.toString(16).toUpperCase().padStart(4, '0')}`);
+    }
+  });
+
+  test('a codepoint OUTSIDE the six is left alone by normalizeAckReason (only these six are invisible, not "any non-ASCII")', () => {
+    // U+00E9 (é) is a real, visible character with no whitespace/invisible meaning —
+    // proves normalizeAckReason is not accidentally stripping a broader class than the
+    // six named codepoints.
+    assert.equal(normalizeAckReason('café reason'), 'café reason');
+  });
+
+  test('whitespace runs collapse to a single space', () => {
+    assert.equal(normalizeAckReason('doubled  internal   space'), 'doubled internal space');
+    assert.equal(normalizeAckReason('tab\ttab'), 'tab tab');
+    assert.equal(normalizeAckReason('multi\n\n\nline'), 'multi line');
+  });
+
+  test('leading/trailing whitespace is trimmed', () => {
+    assert.equal(normalizeAckReason('  leading and trailing space  '), 'leading and trailing space');
+    assert.equal(normalizeAckReason('\t\ttabbed on both ends\t\t'), 'tabbed on both ends');
+  });
+
+  test('CRLF collapses the same as a single space, matching LF', () => {
+    assert.equal(normalizeAckReason('crlf\r\nline'), 'crlf line');
+    assert.equal(
+      normalizeAckReason('same\r\nwords'), normalizeAckReason('same\nwords'),
+      'CRLF and LF must normalize identically for the same underlying words',
+    );
+  });
+
+  test('an invisible codepoint cannot fake a distinct reason once whitespace-collapsed and trimmed together', () => {
+    const zwsp = String.fromCodePoint(0x200B);
+    assert.equal(
+      normalizeAckReason(`  same${zwsp}  reason  `),
+      normalizeAckReason('same reason'),
+      'stripping the invisible codepoint and collapsing the surrounding whitespace run must land on the identical string',
+    );
+  });
+
+  test('property: normalizeAckReason never leaves an INVISIBLE-matched codepoint in its output, seeded (#3942)', () => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 0, maxLength: 60 }), (s) => {
+        const out = normalizeAckReason(s);
+        INVISIBLE.lastIndex = 0;
+        assert.equal(INVISIBLE.test(out), false, 'no invisible codepoint may survive normalization');
+        INVISIBLE.lastIndex = 0;
+        assert.equal(out, out.trim(), 'output must already be trimmed (idempotent under trim)');
+        assert.doesNotMatch(out, /\s{2,}/, 'no whitespace run of 2+ may survive collapsing');
+      }),
+      { seed: 3942, numRuns: 300 },
+    );
+  });
+
+  test('property: normalizeAckReason is idempotent — normalizing twice equals normalizing once, seeded (#3942)', () => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 0, maxLength: 60 }), (s) => {
+        const once = normalizeAckReason(s);
+        const twice = normalizeAckReason(once);
+        assert.equal(once, twice);
+      }),
+      { seed: 3942, numRuns: 300 },
+    );
+  });
+});
+
 // ADR-3942 removed the whole ack-persistence-lifecycle mechanism this section tested: §2
 // makes spentness structural (a trailer scoped to merge-base..HEAD has no base-side copy
 // to compare against, so nothing can ever be "spent"), which deletes diffEmitted's
@@ -684,9 +794,9 @@ test('REMEDIATION.ackTrailerExample itself round-trips through parseAckTrailers'
 });
 
 test('the remediation surface is frozen and teaches the trailer, not the legacy fragment file', () => {
-  // #3942: the remedy is a commit TRAILER, never a fragment file under the (now-legacy)
-  // ACK_DIR — asserting on ackFile/ackDir here would pin the exact mechanism this design
-  // replaces.
+  // #3942: the remedy is a commit TRAILER, never a fragment file under the legacy
+  // fragment directory — asserting on the legacy file/directory paths here would pin
+  // the exact mechanism this design replaces.
   assert.ok(Object.isFrozen(REMEDIATION), 'the exported surface must not be mutable');
   assert.equal(REMEDIATION.ackFile, undefined, 'there is no fragment file to name any more');
   assert.equal(REMEDIATION.ackDir, undefined, 'there is no fragment directory to name any more');
@@ -785,6 +895,15 @@ test('the validation early-return renders instead of throwing', () => {
     { baseline: {}, current: null, changedPaths: [] },
     { baseline: {}, current: {}, changedPaths: null },
     { baseline: [], current: {}, changedPaths: [] },
+    // #3942: ackHash/ackGrowth are new inputs (a pre-parsed Map, not a JSON document)
+    // and were NOT gated the way baseline/current/changedPaths already are above — the
+    // identical #2778 crash class, just on a newer parameter pair.
+    { baseline: {}, current: {}, changedPaths: [], ackHash: {} },
+    { baseline: {}, current: {}, changedPaths: [], ackHash: null },
+    { baseline: {}, current: {}, changedPaths: [], ackHash: 'x' },
+    { baseline: {}, current: {}, changedPaths: [], ackGrowth: {} },
+    { baseline: {}, current: {}, changedPaths: [], ackGrowth: null },
+    { baseline: {}, current: {}, changedPaths: [], ackGrowth: 'x' },
   ]) {
     const r = diffEmitted(bad);
     assert.ok(!r.ok);
@@ -795,6 +914,48 @@ test('the validation early-return renders instead of throwing', () => {
     assert.equal(blockOf(report, 'errors').count, r.errors.length, 'the errors must render');
     assert.deepEqual(report.ackable, [], 'a malformed input is not something to acknowledge');
   }
+});
+
+describe('diffEmitted validates ackHash/ackGrowth (#2778-shape defect, #3942)', () => {
+  // #3942 changed diffEmitted's ack inputs from a parsed JSON document to a pre-parsed
+  // Map per space (parseAckTrailers' output). baseline/current/changedPaths already had
+  // a validation guard for exactly this class of bad input (:296-301) — ackHash/
+  // ackGrowth did not, so a bad shape reached `liveAckHash.has(rel)` /
+  // `liveAckGrowth.has(name)` further down and threw an unhandled TypeError instead of
+  // an error verdict, rather than being caught and named up front like every other
+  // input.
+  const BAD_SHAPES = [
+    { label: 'plain object', value: {} },
+    { label: 'null', value: null },
+    { label: 'string', value: 'x' },
+    { label: 'array', value: [] },
+  ];
+
+  for (const { label, value } of BAD_SHAPES) {
+    test(`ackHash=${label} raises an error verdict naming ackHash, never throws`, () => {
+      const r = diffEmitted({
+        baseline: mf({}), current: mf({}), changedPaths: [], ackHash: value,
+      });
+      assert.equal(r.ok, false);
+      assert.ok(r.errors.some((e) => e.includes('ackHash')), `errors must name ackHash: ${JSON.stringify(r.errors)}`);
+    });
+
+    test(`ackGrowth=${label} raises an error verdict naming ackGrowth, never throws`, () => {
+      const r = diffEmitted({
+        baseline: mf({}), current: mf({}), changedPaths: [], ackGrowth: value,
+      });
+      assert.equal(r.ok, false);
+      assert.ok(r.errors.some((e) => e.includes('ackGrowth')), `errors must name ackGrowth: ${JSON.stringify(r.errors)}`);
+    });
+  }
+
+  test('a well-formed Map for both ackHash and ackGrowth is accepted (the healthy steady state is not gated away)', () => {
+    const r = diffEmitted({
+      baseline: mf({}), current: mf({}), changedPaths: [], ackHash: new Map(), ackGrowth: new Map(),
+    });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.errors, []);
+  });
 });
 
 test('a failed git diff renders as an error, never as "nothing changed"', () => {

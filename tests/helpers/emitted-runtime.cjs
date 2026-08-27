@@ -787,9 +787,18 @@ function readAckTrailers({ baseRef, headRef = 'HEAD', cwd = REPO_ROOT, timeoutMs
     );
   }
 
+  // `separator=` inside a `%(trailers:...)` placeholder is itself a PRETTY-FORMAT
+  // string, not a literal — git substitutes `%x<hex>` escapes within it (same as it
+  // does for the top-level `--format` string). The hex code alone (no `%x` prefix) is
+  // therefore emitted as its own two literal characters, never the control byte, and
+  // the `.split(ACK_TRAILER_VALUE_SEP)` below then never finds a real separator: two
+  // trailers of the SAME key on one commit collapse into a single joined value instead
+  // of splitting into separate entries (silent data loss — the exact failure class
+  // `MAX_ACK_TRAILERS` exists to prevent). Fixed by emitting the `%x` escape.
+  const ackValueSepHex = `%x${ACK_TRAILER_VALUE_SEP.codePointAt(0).toString(16).padStart(2, '0')}`;
   const format =
-    `${ACK_TRAILER_RECORD_SEP}%(trailers:key=${ACK_TRAILER_HASH},valueonly,separator=${ACK_TRAILER_VALUE_SEP.codePointAt(0).toString(16).padStart(2, '0')})`
-    + `${ACK_TRAILER_FIELD_SEP}%(trailers:key=${ACK_TRAILER_GROWTH},valueonly,separator=${ACK_TRAILER_VALUE_SEP.codePointAt(0).toString(16).padStart(2, '0')})`;
+    `${ACK_TRAILER_RECORD_SEP}%(trailers:key=${ACK_TRAILER_HASH},valueonly,separator=${ackValueSepHex})`
+    + `${ACK_TRAILER_FIELD_SEP}%(trailers:key=${ACK_TRAILER_GROWTH},valueonly,separator=${ackValueSepHex})`;
 
   let raw;
   try {

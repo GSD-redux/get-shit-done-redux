@@ -44,17 +44,6 @@ const { attributeEmittedPath } = require('./emitted-provenance.cjs');
 const RESERVED_ACK_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 /**
- * The pre-ADR-3942 acknowledgment file/directory names, preserved as historical
- * constants only — #2778's single file, then #2914's per-PR fragment directory. Neither
- * is read anymore: ADR-3942 §1 moves the acknowledgment to a commit trailer, and §6
- * retires both the fragment directory and its README as write targets. Kept here (and
- * exported) only where a still-live caller names one of these paths for an unrelated
- * reason (e.g. `NEW_FILE_CAP`'s doc comment below references `ACK_DIR` by name).
- */
-const ACK_FILE = 'tests/emitted-drift-ack.json';
-const ACK_DIR = 'tests/emitted-drift-acks';
-
-/**
  * Characters that render as nothing: soft hyphen, the zero-width family, word joiner,
  * BOM. Stripped before reasons are compared, so an invisible edit cannot re-arm a spent
  * acknowledgment. Spelled as codepoints on purpose — a literal character class here
@@ -107,21 +96,6 @@ function normalizeAckReason(reason) {
 const NEW_FILE_CAP = 32768;
 
 /**
- * Pre-ADR-3942 upper bound on how many fragment files a `readdirSync` of `ACK_DIR`
- * could return in one pass, preserved as a historical constant only — ADR-3942 §1
- * retires the fragment directory as a write target (the acknowledgment is now a commit
- * trailer, bounded instead by `MAX_ACK_TRAILERS`, further down this file). Nothing reads
- * `ACK_DIR` anymore, so nothing consults this bound either.
- *
- * 500 was ample headroom over any real repo's fragment count, which stayed in the
- * single digits between releases (fragments were deleted once spent). Exceeding it
- * threw rather than silently truncating: a truncated listing would have silently dropped
- * acknowledgments from the merged set, which is exactly the class of silent failure
- * `MAX_ACK_TRAILERS` now guards in the trailer world.
- */
-const MAX_ACK_FRAGMENTS = 500;
-
-/**
  * Trailer key naming an emitted PATH whose HASH moved (grammar: 40-design.md).
  * Relocated ahead of `REMEDIATION` (which follows immediately below and calls
  * `renderAckTrailer` at module-eval time, so these three consts must already be
@@ -152,8 +126,8 @@ const ACK_TRAILER_DELIM = ' — ';
  */
 const REMEDIATION = Object.freeze({
   /**
-   * #3942: the remedy is a COMMIT TRAILER on this PR, never a new file — the fragment
-   * directory (`ACK_DIR`) and the legacy single file are both retired as write targets.
+   * #3942: the remedy is a COMMIT TRAILER on this PR, never a new file — the legacy
+   * fragment directory and the legacy single file are both retired as write targets.
    *
    * Split into two SPACE-SPECIFIC fields rather than one combined sentence: the two
    * trailer names key on structurally distinct spaces (RULESET.EMITTED_ATTRIBUTION), and
@@ -290,6 +264,17 @@ function diffEmitted({
     // "nothing changed" — that would make every moved hash unattributable and produce
     // a failure storm that reads like a real finding.
     errors.push('changedPaths must be an array (a failed git diff is an error, not an empty set)');
+  }
+  // #2778-shape guard, extended to the two #3942 ack Maps: without this, `{}`, `null`,
+  // or a plain string handed to `ackHash`/`ackGrowth` reaches `liveAckHash.has(rel)` /
+  // `liveAckGrowth.has(name)` below and throws an unhandled TypeError instead of an
+  // error verdict naming the offending parameter — the same crash class `baseline`/
+  // `current`/`changedPaths` are already guarded against, immediately above.
+  if (!(ackHash instanceof Map)) {
+    errors.push('ackHash must be a Map of parseAckTrailers output (readAckTrailers().hash)');
+  }
+  if (!(ackGrowth instanceof Map)) {
+    errors.push('ackGrowth must be a Map of parseAckTrailers output (readAckTrailers().growth)');
   }
   if (errors.length) {
     return {
@@ -683,25 +668,23 @@ const MAX_ACK_TRAILERS = 64;
  * silently pick a winner. The two spaces (`hash`/`growth`) are independent namespaces:
  * the same key may legally appear in both (row 18).
  *
- * The cap (`MAX_ACK_TRAILERS`) is checked on the RAW input count BEFORE any parsing —
- * throwing above it, never truncating, because a truncated read would silently drop
- * acknowledgments — the same law the pre-#3942 fragment-directory cap (now the historical
- * `MAX_ACK_FRAGMENTS`, above) enforced for `ACK_DIR`.
+ * The cap (`MAX_ACK_TRAILERS`) is checked on the DISTINCT (key, reason) count, AFTER
+ * the same-key dedup above — never on the raw input count. A commit trailer, unlike the
+ * pre-#3942 fragment file it replaces, legitimately survives a rebase: the identical
+ * trailer text is carried forward on each rebased commit, and `git log` over the range
+ * then reports it once per commit it lives on. Counting the raw values would throw on a
+ * perfectly legitimate branch purely because it was rebased across many commits, even
+ * though every value collapses to the SAME map entry above. Counting only what actually
+ * survives dedup is what makes the cap mean "too many distinct declarations" rather
+ * than "too many git objects happen to carry this text" — still throwing, never
+ * truncating, on a genuine overflow, because a truncated read would silently drop
+ * acknowledgments (the same law the pre-#3942 fragment-directory cap enforced for its
+ * own listing).
  *
  * @param {{hash?: string[], growth?: string[]}} [trailers]
  * @returns {{hash: Map<string, {reason: string}>, growth: Map<string, {reason: string}>, errors: string[]}}
  */
 function parseAckTrailers({ hash = [], growth = [] } = {}) {
-  const totalCount = hash.length + growth.length;
-  if (totalCount > MAX_ACK_TRAILERS) {
-    throw new Error(
-      `emitted-drift ack: ${totalCount} commit trailers were found in range, exceeding the `
-      + `cap of ${MAX_ACK_TRAILERS} trailers. Refusing to read only some of them — a `
-      + 'truncated read would silently drop acknowledgments. Prune spent trailers (amend '
-      + 'or drop them) rather than letting the count grow unbounded.',
-    );
-  }
-
   const errors = [];
   const spaces = [
     { name: ACK_TRAILER_HASH, values: hash, map: new Map() },
@@ -767,6 +750,20 @@ function parseAckTrailers({ hash = [], growth = [] } = {}) {
     }
   }
 
+  // Post-dedup: distinct (key, reason) declarations that actually survive into the
+  // returned Maps — see this function's doc comment for why raw input count is the
+  // wrong thing to cap on. A key dropped above (an ambiguous conflicting duplicate) is
+  // already absent from `space.map` here and correctly does not count either.
+  const distinctCount = spaces[0].map.size + spaces[1].map.size;
+  if (distinctCount > MAX_ACK_TRAILERS) {
+    throw new Error(
+      `emitted-drift ack: ${distinctCount} distinct commit trailer declarations were found `
+      + `in range, exceeding the cap of ${MAX_ACK_TRAILERS} trailers. Refusing to read only `
+      + 'some of them — a truncated read would silently drop acknowledgments. Prune spent '
+      + 'trailers (amend or drop them) rather than letting the count grow unbounded.',
+    );
+  }
+
   return { hash: spaces[0].map, growth: spaces[1].map, errors };
 }
 
@@ -786,10 +783,7 @@ function renderAckTrailer(trailerName, key, reason) {
 }
 
 module.exports = {
-  ACK_FILE,
-  ACK_DIR,
   NEW_FILE_CAP,
-  MAX_ACK_FRAGMENTS,
   REMEDIATION,
   INVISIBLE,
   normalizeAckReason,
