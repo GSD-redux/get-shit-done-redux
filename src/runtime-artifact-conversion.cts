@@ -3410,8 +3410,14 @@ function applyAgentPathRewrites(content: string, runtime: string, pathPrefix: st
   const normalizedPathPrefix = pathPrefix.replace(/\/$/, '');
   content = content.replace(/~\/\.claude\//g, pathPrefix);
   content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
-  content = content.replace(/~\/\.claude\b/g, normalizedPathPrefix);
-  content = content.replace(/\$HOME\/\.claude\b/g, normalizedPathPrefix);
+  // #3719 review (MAJOR): a bare `\b` is satisfied by ANY non-word character,
+  // including '-' — for a --config-dir whose name EXTENDS '.claude' (e.g.
+  // '.claude-work'), this re-matched the '.claude' PREFIX of the emitted
+  // '.claude-work' path and corrupted it to '.claude-work-work'. Guard with
+  // the SAME negative-lookahead convention already used at
+  // copyWithPathReplacement's call site (bin/install.js:7729-7730).
+  content = content.replace(/~\/\.claude(?![\w-])/g, normalizedPathPrefix);
+  content = content.replace(/\$HOME\/\.claude(?![\w-])/g, normalizedPathPrefix);
   // #3719: the THIRD emit path that needed this restore. #3133 added it to the
   // skill/command pipeline (`_applyRuntimeRewrites` case 'claude') and #3544 to
   // bin/install.js's spec-tree copy; the agents pipeline never got it, so every

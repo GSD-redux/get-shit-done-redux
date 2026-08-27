@@ -851,16 +851,48 @@ describe('#3719: applyAgentPathRewrites must restore @-anchored $HOME refs to ti
     assert.strictEqual(out, '@~/.claude/gsd-core/references/mandatory-initial-read.md\n');
   });
 
-  test('row 2 [CONTROL] — a plain prose path through the agents path stays $HOME/…', () => {
-    const src = 'Run: node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" query state\n';
+  // #3719 review (MINOR 3): the original control string contained no `@` at
+  // all, so `restoreClaudeGlobalAtRefTilde`'s `atRefRe` (which only matches
+  // an `@`-anchored sequence) could never match it — the row passed even
+  // with the quote-lookbehind deleted entirely, proving nothing about
+  // quote-awareness. A real control needs an `@`-anchored $HOME reference
+  // INSIDE quotes: `~` does not expand inside double-quoted shell strings
+  // (#1284), so a quoted `@~/.claude/x` must stay on `@$HOME/.claude/x`
+  // after the restore pass, not be rewritten back to `@~/`. Confirmed this
+  // row fails (asserts the wrong string) if the lookbehind
+  // `(?<!["'])` is deleted from `restoreClaudeGlobalAtRefTilde`'s `atRefRe` —
+  // without it the quoted `@$HOME/.claude/x` matches unconditionally and is
+  // rewritten to `@~/.claude/x`, breaking the assertion below.
+  test('row 2 [CONTROL] — a quoted @-reference stays on $HOME (quote-aware, #1284)', () => {
+    const src = 'echo "@~/.claude/x"\n';
     const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
-    assert.strictEqual(out, 'Run: node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" query state\n');
+    assert.strictEqual(out, 'echo "@$HOME/.claude/x"\n');
   });
 
   test('row 7 [CONTROL] — a noPathRewrite runtime (copilot) is untouched', () => {
     const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
     const out = applyAgentPathRewrites(src, 'copilot', globalHomePrefix);
     assert.strictEqual(out, src, 'noPathRewrite runtimes must be returned unchanged (no substitutions at all)');
+  });
+
+  // #3719 review (MINOR 2): row 7 (copilot) returns early at the
+  // `noPathRewrite` check and never reaches the `if (runtime === 'claude')`
+  // restore guard at all — zero coverage of the guard itself. Cursor and
+  // Kilo are NOT noPathRewrite, so they exercise the base `.claude/` ->
+  // pathPrefix substitution AND then hit the guard, which must suppress the
+  // `@~` restore because they are not `claude`.
+  test('row 10 [CONTROL] — cursor (non-claude, non-noPathRewrite) keeps @$HOME/.cursor/…, does not restore to tilde', () => {
+    const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
+    const out = applyAgentPathRewrites(src, 'cursor', '$HOME/.cursor/');
+    assert.strictEqual(out, '@$HOME/.cursor/gsd-core/references/mandatory-initial-read.md\n',
+      'cursor must keep the @$HOME/.cursor/ form — the runtime guard must suppress the claude-only tilde restore');
+  });
+
+  test('row 11 [CONTROL] — kilo (non-claude, non-noPathRewrite) keeps @$HOME/.kilo/…, does not restore to tilde', () => {
+    const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
+    const out = applyAgentPathRewrites(src, 'kilo', '$HOME/.kilo/');
+    assert.strictEqual(out, '@$HOME/.kilo/gsd-core/references/mandatory-initial-read.md\n',
+      'kilo must keep the @$HOME/.kilo/ form — the runtime guard must suppress the claude-only tilde restore');
   });
 
   // ── boundary rows ──

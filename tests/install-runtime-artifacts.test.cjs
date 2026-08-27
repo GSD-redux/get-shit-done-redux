@@ -7518,7 +7518,7 @@ describe('#3719: real global Claude install — agents/*.md @-refs must resolve 
       if (!file.endsWith('.md')) continue;
       const content = fs.readFileSync(file, 'utf8');
       for (const line of splitLines(content)) {
-        if (/^@\$HOME\//.test(line)) failures.push({ file, line });
+        if (/@\$HOME\//.test(line)) failures.push({ file, line });
       }
     }
     return failures;
@@ -7532,7 +7532,7 @@ describe('#3719: real global Claude install — agents/*.md @-refs must resolve 
       if (!file.endsWith('.md')) continue;
       const content = fs.readFileSync(file, 'utf8');
       for (const line of splitLines(content)) {
-        if (/^@\$HOME\//.test(line)) failures.push(`${path.relative(agentsDir, file)}: ${line}`);
+        if (/@\$HOME\//.test(line)) failures.push(`${path.relative(agentsDir, file)}: ${line}`);
       }
     }
     assert.deepStrictEqual(failures, [], `agents/*.md files with a broken @$HOME/ include:\n${failures.join('\n')}`);
