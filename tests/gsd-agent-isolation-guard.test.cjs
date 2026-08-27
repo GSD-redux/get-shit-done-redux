@@ -937,6 +937,95 @@ describe('#3045 CORE REDESIGN — dispatch-isolation records as an unconditional
     assert.equal(read.phase, '2');
     assert.equal(read.plan, 'p1');
   });
+
+  // #3737 — the project-level opt-out (workflow.use_worktrees === false) is
+  // decided by the workflow shell AFTER the resolve, so pre-fix any plain
+  // re-query re-persisted the naturally-resolved host capability over the
+  // mandated `--force-isolation none` record, and the guard then denied the
+  // sequential dispatch the config explicitly asked for.
+  function writeUseWorktrees(dir, value) {
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ runtime: 'claude', workflow: { use_worktrees: value } }),
+    );
+  }
+
+  test('#3737: use_worktrees=false — a plain re-query records none and does not clobber the forced record', (t) => {
+    const dir = createTempProject('gsd-3737-optout-');
+    t.after(() => cleanup(dir));
+    writeUseWorktrees(dir, false);
+
+    const forced = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw', '--force-isolation', 'none'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(forced.success, true, forced.error);
+    assert.equal(forced.output.trim(), 'none');
+
+    // The workflow's own re-record step, then the plain re-query that pre-fix
+    // flipped the sentinel back to harness-worktree (#3737 reproduction).
+    const requery = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(requery.success, true, requery.error);
+    assert.equal(requery.output.trim(), 'none', '#3737: the opt-out must win on every host');
+    const sentinel = readSentinelRaw(dir);
+    assert.equal(sentinel.isolation, 'none', '#3737: a plain re-query must not re-persist the host capability over the opt-out');
+    assert.equal(sentinel.harness_flag, null);
+  });
+
+  test('#3737: use_worktrees=false resolves and records none on the first plain query (--json agrees)', (t) => {
+    const dir = createTempProject('gsd-3737-optout-');
+    t.after(() => cleanup(dir));
+    writeUseWorktrees(dir, false);
+
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--json'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    const parsed = JSON.parse(result.output);
+    assert.equal(parsed.isolation, 'none');
+    assert.equal(parsed.harnessFlag, null);
+    assert.equal(parsed.exec, null);
+    const sentinel = readSentinelRaw(dir);
+    assert.equal(sentinel.isolation, 'none');
+    assert.equal(sentinel.harness_flag, null);
+  });
+
+  test('#3737: use_worktrees=true keeps the natural harness-worktree record', (t) => {
+    const dir = createTempProject('gsd-3737-optout-');
+    t.after(() => cleanup(dir));
+    writeUseWorktrees(dir, true);
+
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.output.trim(), 'harness-worktree');
+    assert.equal(readSentinelRaw(dir).isolation, 'harness-worktree');
+  });
+
+  test('#3737: a non-boolean "false" string is not an opt-out (strict === false)', (t) => {
+    const dir = createTempProject('gsd-3737-optout-');
+    t.after(() => cleanup(dir));
+    writeUseWorktrees(dir, 'false');
+
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.output.trim(), 'harness-worktree', 'a string "false" must degrade to the default (worktrees on), never coerce');
+    assert.equal(readSentinelRaw(dir).isolation, 'harness-worktree');
+  });
 });
 
 describe('#3045 MAJOR — --harness-flag can now accept a bare CLI-flag value (Cursor real registry value + generalized parsing)', () => {
