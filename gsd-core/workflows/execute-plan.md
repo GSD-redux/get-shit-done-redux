@@ -443,16 +443,24 @@ if [ "$IS_WORKTREE" != "true" ]; then
   # Advance plan counter (handles last-plan edge case).
   #
   # #3830/#3862: advance-plan REFUSES to advance when `## Current Position`
-  # disagrees with the plans on disk. It reports the refusal on stdout and exits
-  # 0, so it has to be READ — running the two steps below against a position that
-  # did not move is what makes the divergence invisible: progress is recalculated
-  # and a metric recorded for a plan that was never advanced past, and every later
-  # plan re-runs against the frozen counter.
-  ADVANCED=$(gsd_run query state.advance-plan --pick advanced)
-  if [ "${ADVANCED}" != "true" ]; then
-    echo "STOP: state.advance-plan did not advance (see the [gsd-tools] WARNING on stderr)." >&2
-    echo "Reconcile STATE.md's ## Current Position against the plans on disk before re-running" >&2
-    echo "this step: 'gsd_run query phase-plan-index' shows the real plan set." >&2
+  # disagrees with the plans on disk. It reports the refusal on stdout at exit 0,
+  # so it has to be READ — running the two steps below against a position that did
+  # not move is what makes the divergence invisible: progress is recalculated and a
+  # metric recorded for a plan that was never advanced past, and every later plan
+  # re-runs against the frozen counter.
+  #
+  # Key on the REASON, never on `advanced` alone. `advanced: false` is ALSO the
+  # ordinary last-plan answer (`reason: last_plan`, phase now
+  # `ready_for_verification`) — the very edge case this step's own heading names —
+  # so branching on `advanced` would skip the final plan's progress and metric on
+  # every phase. A normal advance carries no `reason`; only `position_diverged`
+  # stops the run.
+  ADVANCE_REASON=$(gsd_run query state.advance-plan --pick reason)
+  if [ "${ADVANCE_REASON}" = "position_diverged" ]; then
+    echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
+    echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
+    echo "Reconcile it before re-running this step: 'gsd_run query phase-plan-index'" >&2
+    echo "shows the real plan set. Do NOT record progress or metrics against it." >&2
   else
     # Recalculate progress bar from disk state
     gsd_run query state.update-progress

@@ -2360,6 +2360,44 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     assert.ok(!result.stdout.includes('[gsd-tools] WARNING'), 'the warning must not reach stdout');
   });
 
+  // #3862 RV6.5 adversarial review (MISSED finding): `advanced: false` is NOT
+  // synonymous with "refused". The ordinary phase-complete answer is also
+  // `advanced: false`, with `reason: 'last_plan'`. A caller keyed on `advanced`
+  // alone therefore treats the LAST PLAN of every phase as a failure and skips
+  // its progress and metric recording — which is exactly what the first cut of
+  // this round's caller fix did. These pin the discriminator both callers now use.
+  test('the last plan is advanced:false with reason last_plan, not a refusal', () => {
+    seedPhase('01-demo', 12);
+    writeState('Plan: 12 of 12');
+
+    const result = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(result.exitCode, 0, `last plan must exit 0: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.advanced, false, 'the last plan does not advance');
+    assert.strictEqual(parsed.reason, 'last_plan', 'and it must be distinguishable from a refusal');
+    assert.notStrictEqual(parsed.reason, 'position_diverged');
+    assert.ok(!(result.stderr || '').includes('REFUSED to advance'),
+      `the last plan is not a refusal and must not warn; got: ${JSON.stringify(result.stderr)}`);
+  });
+
+  test('--pick reason is the discriminator callers branch on', () => {
+    // The three outcomes a first-party caller must tell apart, through the exact
+    // projection `workflows/execute-plan.md` and `agents/gsd-executor.md` use.
+    seedPhase('01-demo', 12);
+
+    writeState('Plan: 3 of 12');
+    assert.strictEqual(runGsdTools('state advance-plan --pick reason', tmpDir).output.trim(), '',
+      'a normal advance carries no reason');
+
+    writeState('Plan: 12 of 12');
+    assert.strictEqual(runGsdTools('state advance-plan --pick reason', tmpDir).output.trim(), 'last_plan',
+      'the last plan reports last_plan');
+
+    writeState('Plan: 2 of 8');
+    assert.strictEqual(runGsdTools('state advance-plan --pick reason', tmpDir).output.trim(), 'position_diverged',
+      'only a divergence reports position_diverged');
+  });
+
   test('a normal advance emits no divergence warning', () => {
     // Negative control the other way: the warning must be specific to the
     // refusal, or it becomes noise every caller learns to ignore.
