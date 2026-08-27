@@ -92,11 +92,14 @@ function readStdinSync() {
 // confirmed equivalent mutant is acceptable.
 //
 // HOW TO UPDATE:
-//   1. The per-module Stryker shard CANNOT be run locally: Stryker's command
-//      runner invokes `node --test` once per mutant (see stryker.config.mjs),
-//      and this repo hard-blocks local `node --test` via
-//      .claude/hooks/block-local-node-test.sh. Push the branch instead and
-//      let CI run the shard for the changed module.
+//   1. The per-module Stryker shard CANNOT be run locally: Stryker's tap
+//      runner (see stryker.config.mjs) spawns
+//      `node --test-reporter=tap -r <hook> <testFile>` once per covering test
+//      file per mutant, and .claude/hooks/block-local-node-test.sh's matcher
+//      still denies that form — its pattern `node(\s+-\S+)*\s+--test([\s=-]|$)`
+//      matches `--test-reporter` because `-` is in the trailing character
+//      class. Push the branch instead and let CI run the shard for the
+//      changed module.
 //   2. Read the measured score from the CI shard's output.
 //   3. Set minScore = floor(measured) - 1 (never lower than current value)
 //      and update the matching RATCHET_BASELINE entry in the same diff.
@@ -420,10 +423,11 @@ const COVERED = {
     // previous 180. Scoped to this shard only via timeoutMinutes below — every other shard
     // keeps the 15-minute default.
     timeoutMinutes: 60,
-    // isolation: intentionally NOT set (defaults to 'process' below) — unchanged from the
-    // prior audit: 'none' showed no reliable win once the test set grew past 3 files
-    // (overlapping distributions), and dropping frontmatter.test.cjs only shrinks the set
-    // further, so there is no new basis to revisit that call.
+    // isolation: no knob left to tune (#3915). Per-file process isolation is now INHERENT
+    // to @stryker-mutator/tap-runner — it drives Node's own `--test-reporter=tap` once per
+    // covering test FILE, so every file already runs in its own process by construction.
+    // The prior audit's 'none' vs 'process' comparison (recorded here before this change)
+    // is moot: there is nothing left to opt in or out of.
   },
   // adr-parser / config-schema / active-workstream-store / core-utils: derivation reproduces
   // their prior hand lists exactly (every constraining file's own name already matched the
@@ -696,9 +700,6 @@ function buildResult(moduleNames) {
     mutate: COVERED[name].cjs,
     tests: COVERED[name].tests.join(' '),
     minScore: COVERED[name].minScore,
-    // node:test's default per-file process isolation; only modules that document a
-    // measured, audited need for 'none' opt out.
-    isolation: COVERED[name].isolation || 'process',
     // Per-shard CI job timeout in minutes. Defaults to 15 (the shared per-shard budget);
     // only a module that documents a measured need for more (see the frontmatter entry
     // above) sets a higher value. Threaded through mutation.yml's job-level
@@ -724,7 +725,6 @@ function printHuman(result, changedFiles) {
     console.log(`    mutate:   ${shard.mutate}`);
     console.log(`    tests:    ${shard.tests}`);
     console.log(`    minScore: ${shard.minScore}`);
-    console.log(`    isolation:${shard.isolation}`);
     console.log(`    timeoutMinutes:${shard.timeoutMinutes}`);
   }
 }
@@ -786,12 +786,92 @@ function resolveMutationBreak(raw) {
   return n;
 }
 
+/**
+ * Sorted, de-duplicated union of every COVERED module's `tests` array. This
+ * is the tap-runner's local/full-run default (see resolveMutationTestFiles
+ * below) — the same union stryker.config.mjs's since-removed DEFAULT_TEST_CMD
+ * string used to build for the command runner.
+ *
+ * @returns {string[]}
+ */
+function allCoveredTests() {
+  return [...new Set(Object.values(COVERED).flatMap((mod) => mod.tests))].sort();
+}
+
+// ── MUTATION_TEST_FILES resolver ──────────────────────────────────────────────
+/**
+ * Resolves the per-shard tap-runner test-file list from the MUTATION_TEST_FILES
+ * env var. Fail-closed twin of resolveMutationBreak above, for #3915's swap from
+ * Stryker's `command` runner to `@stryker-mutator/tap-runner`: the tap runner
+ * takes an explicit `tap.testFiles` array rather than a shell command, so there
+ * is no single string to inject a per-shard test list into — this function is
+ * that injection point instead.
+ *
+ * Fail-closed contract:
+ *   - undefined → allCoveredTests() (local run: no env set, documented backstop)
+ *   - non-string → throws (the realistic caller mistake: COVERED[*].tests is an
+ *     array, but the env var this reads is the SPACE-JOINED STRING form of it —
+ *     passing the array itself, or any other non-string, is a wiring bug)
+ *   - set but empty/whitespace-only → throws (CI shard wiring is broken:
+ *     matrix.tests missing)
+ *   - otherwise → trim, split on whitespace, de-duplicate, sort, and verify
+ *     every entry exists on disk relative to the repo root — a missing file
+ *     throws naming the missing path(s)
+ *
+ * This function is the single call site for reading MUTATION_TEST_FILES.
+ * stryker.config.mjs imports and calls it, so a bad value must fail
+ * immediately rather than silently degrade: the tap runner's own
+ * `findTestyLookingFiles` resolves `tap.testFiles` via `glob()`, and a
+ * non-matching glob pattern yields an EMPTY list SILENTLY — which would
+ * produce a fast, confident, meaningless mutation run (every mutant reported
+ * killed or survived against zero tests) instead of a loud error.
+ *
+ * The `undefined` branch also runs the same on-disk existence check as every
+ * other branch, so a stale `extraTests`/`excludeTests` entry in COVERED fails
+ * loudly here rather than silently producing a shard pointed at a phantom file.
+ *
+ * @param {string|undefined} raw - value of process.env.MUTATION_TEST_FILES
+ * @returns {string[]} sorted, de-duplicated, existence-checked test file paths
+ */
+function resolveMutationTestFiles(raw) {
+  let entries;
+  if (raw === undefined) {
+    // Local run with no MUTATION_TEST_FILES set — use the derived full-run default.
+    entries = allCoveredTests();
+  } else if (typeof raw !== 'string') {
+    throw new Error(
+      `MUTATION_TEST_FILES must be a string (space-joined test file paths), got ${typeof raw} — ` +
+      "COVERED[*].tests is an array internally, but the env var this reads is always the " +
+      'SPACE-JOINED STRING form of it; passing the array (or any other non-string) directly is a wiring bug'
+    );
+  } else if (raw.trim() === '') {
+    throw new Error(
+      'MUTATION_TEST_FILES is set but empty — CI shard wiring is broken (matrix.tests missing?)'
+    );
+  } else {
+    entries = [...new Set(raw.trim().split(/\s+/))].sort();
+  }
+
+  const path = require('node:path');
+  const repoRoot = path.join(__dirname, '..');
+  const missing = entries.filter((entry) => !fs.existsSync(path.join(repoRoot, entry)));
+  if (missing.length > 0) {
+    throw new Error(
+      `MUTATION_TEST_FILES names ${missing.length} file(s) that do not exist on disk: ${missing.join(', ')}`
+    );
+  }
+
+  return entries;
+}
+
 // Export internals for programmatic use (tests/mutation-matrix-ratchet.test.cjs).
 // The require.main guard prevents main() from running when this file is require()d.
 module.exports = {
   COVERED,
   TARGET_MUTATION_SCORE,
   resolveMutationBreak,
+  allCoveredTests,
+  resolveMutationTestFiles,
   readStdinSync,
   // Derivation-engine internals — exported for tests/mutation-test-derivation-drift.test.cjs
   // and scripts/lint-mutation-test-derivation-drift.cjs.
