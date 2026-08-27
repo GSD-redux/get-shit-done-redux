@@ -127,11 +127,19 @@ describe('assumption-delta scan query — phase-section detection (#1561)', () =
     assert.deepStrictEqual(parsed.signals, []);
   });
 
-  test('unknown phase → detected:false, no throw (graceful)', () => {
+  test('unknown phase → skipped, no throw (graceful) (#3909)', () => {
     tmpDir = makeRoadmapProject();
     const r = scanQuery(tmpDir, 999, ['--json']);
     assert.ok(r.success, `scan should succeed on unknown phase. stderr: ${r.error}`);
-    assert.strictEqual(JSON.parse(r.output).detected, false);
+    const parsed = JSON.parse(r.output);
+    // This asserted `detected:false` until #3909. That was the fabrication
+    // itself pinned as intended behavior: phase 999 does not exist, so the
+    // detector was handed the empty string and its "no core assumption
+    // changed" answer described nothing. The graceful-degradation contract
+    // the test was protecting (succeeds, does not throw) is unchanged.
+    assert.strictEqual(parsed.skipped, true);
+    assert.strictEqual(parsed.reason, 'phase_unresolved');
+    assert.strictEqual(parsed.detected, undefined);
   });
 
   test('--terms override narrows the vocabulary (custom cue fires, default cue does not)', () => {
