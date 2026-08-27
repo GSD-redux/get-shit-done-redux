@@ -417,6 +417,17 @@ describe('#3741: the loose /PLAN/i fallback counts only a delimited PLAN token',
     assert.strictEqual(scan.planCount, 1);
     assert.ok(scan.planFiles.includes('01-PLAN-02.md'));
   });
+
+  test('legacy PLAN-token + numeric + slug names still count (#3128 shape, #3741 review)', (t) => {
+    const dir = createTempDir('gsd-3741-slug-');
+    t.after(() => cleanup(dir));
+    // gsd-plan-phase writes this form; #3128 is the historical bug where
+    // dropping it made plan_count read 0. The anchor must keep it.
+    writeFile(dir, '3-PLAN-01-setup.md', planBody());
+    const scan = planScan(dir);
+    assert.strictEqual(scan.planCount, 1);
+    assert.ok(scan.planFiles.includes('3-PLAN-01-setup.md'));
+  });
 });
 
 describe('case sensitivity: plan.md/Plan.md counted, summary.md/Summary.md NOT (#3183 asymmetry)', () => {
