@@ -6577,6 +6577,7 @@ const path = require('node:path');
 
 const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
 const { getCodexSkillAdapterHeader } = INSTALL;
+const { tokenizeHeadings } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 /**
  * Extract the "Execute mode fallback" section text from the adapter header.
@@ -6584,8 +6585,22 @@ const { getCodexSkillAdapterHeader } = INSTALL;
  * "Execute mode fallback:" label up to the next heading or </codex_skill_adapter> tag.
  */
 function extractExecuteModeFallback(header) {
-  const m = header.match(/Execute mode fallback:\s*\n([\s\S]*?)(?=\n##\s|\n<\/codex_skill_adapter>)/);
-  return m ? m[1].trim() : null;
+  const label = 'Execute mode fallback:';
+  const labelIdx = header.indexOf(label);
+  if (labelIdx === -1) return null;
+  const bodyStart = header.indexOf('\n', labelIdx + label.length);
+  if (bodyStart === -1) return null;
+
+  // End at whichever comes first: the next "## " heading (via the canonical
+  // heading tokenizer, not an ad-hoc regex) or the closing adapter tag.
+  const headings = tokenizeHeadings(header).filter((h) => h.level === 2 && h.offset > bodyStart);
+  const nextHeadingOffset = headings.length > 0 ? headings[0].offset - 1 : Infinity; // -1 for the leading \n
+  const closeTagIdx = header.indexOf('</codex_skill_adapter>', bodyStart);
+  const closeTagOffset = closeTagIdx === -1 ? Infinity : closeTagIdx - 1; // -1 for the leading \n
+  const bodyEnd = Math.min(nextHeadingOffset, closeTagOffset);
+  if (bodyEnd === Infinity) return null;
+
+  return header.slice(bodyStart + 1, bodyEnd).trim();
 }
 
 /**
@@ -9300,6 +9315,7 @@ const path = require('node:path');
 
 const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
 const { getCodexSkillAdapterHeader } = INSTALL;
+const { tokenizeHeadings } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 /**
  * Extract the "Execute mode fallback" section text from the adapter header.
@@ -9307,8 +9323,22 @@ const { getCodexSkillAdapterHeader } = INSTALL;
  * "Execute mode fallback:" label up to the next heading or </codex_skill_adapter> tag.
  */
 function extractExecuteModeFallback(header) {
-  const m = header.match(/Execute mode fallback:\s*\n([\s\S]*?)(?=\n##\s|\n<\/codex_skill_adapter>)/);
-  return m ? m[1].trim() : null;
+  const label = 'Execute mode fallback:';
+  const labelIdx = header.indexOf(label);
+  if (labelIdx === -1) return null;
+  const bodyStart = header.indexOf('\n', labelIdx + label.length);
+  if (bodyStart === -1) return null;
+
+  // End at whichever comes first: the next "## " heading (via the canonical
+  // heading tokenizer, not an ad-hoc regex) or the closing adapter tag.
+  const headings = tokenizeHeadings(header).filter((h) => h.level === 2 && h.offset > bodyStart);
+  const nextHeadingOffset = headings.length > 0 ? headings[0].offset - 1 : Infinity; // -1 for the leading \n
+  const closeTagIdx = header.indexOf('</codex_skill_adapter>', bodyStart);
+  const closeTagOffset = closeTagIdx === -1 ? Infinity : closeTagIdx - 1; // -1 for the leading \n
+  const bodyEnd = Math.min(nextHeadingOffset, closeTagOffset);
+  if (bodyEnd === Infinity) return null;
+
+  return header.slice(bodyStart + 1, bodyEnd).trim();
 }
 
 /**

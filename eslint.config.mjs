@@ -492,6 +492,11 @@ export default tseslint.config(
       // ADR-3212 Phase 1 (#3412): pattern-construction seam prohibition —
       // see the src/**/*.cts block above for detail.
       'local/no-adhoc-regex-escape': 'error',
+      // ADR-1372 T7 widening (#3951 Rung B): reach extended from src/**/*.cts
+      // to scripts/**/*.cjs — see the src/**/*.cts block above for detail.
+      // The rule self-gates on filename too (eslint-rules/no-adhoc-markdown-parsing.cjs),
+      // so registering here alone would be inert without that gate change.
+      'local/no-adhoc-markdown-parsing': 'error',
     },
   },
 
@@ -656,6 +661,11 @@ export default tseslint.config(
       // // allow-adhoc-regex-escape: comments (design doc Notes: "not a 13th
       // production copy").
       'local/no-adhoc-regex-escape': 'error',
+      // ADR-1372 T7 widening (#3951 Rung B): reach extended from src/**/*.cts
+      // to tests/**/*.cjs — see the src/**/*.cts block above for detail.
+      // The rule self-gates on filename too (eslint-rules/no-adhoc-markdown-parsing.cjs),
+      // so registering here alone would be inert without that gate change.
+      'local/no-adhoc-markdown-parsing': 'error',
       // Ban raw setTimeout sync + elapsed/duration-style assertions via no-restricted-syntax
       'no-restricted-syntax': [
         'error',

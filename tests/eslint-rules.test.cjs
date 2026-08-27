@@ -1780,15 +1780,63 @@ describe('no-adhoc-markdown-parsing rule', () => {
     });
   });
 
-  test('valid: the same fingerprint OUTSIDE src/ is NOT linted (gate and registration must agree)', () => {
+  test('valid: the same fingerprint OUTSIDE src/+tests/+scripts/ is NOT linted (gate and registration must agree)', () => {
     ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
       valid: [
         {
           code: String.raw`const cellPattern = /\|[^|]*\|/;`,
-          filename: 'tests/foo.test.cjs',
+          filename: 'gsd-core/bin/lib/foo.cjs',
         },
       ],
       invalid: [],
+    });
+  });
+
+  // ── #3951 Rung B: filename-gate reach — tests/**/*.cjs and scripts/**/*.cjs ──
+  // The gate self-restricted to src/**/*.cts only. eslint.config.mjs also
+  // registers the rule on tests/**/*.cjs and scripts/**/*.cjs (Rung B); these
+  // rows pin that the gate and the registration agree for BOTH new globs —
+  // a path each registration covers must not be silently skipped by the
+  // gate, and a path outside all three globs stays exempt (mirrors the
+  // src/ subdirectory rows above, which pinned the same contract for #3951
+  // B6(b)).
+
+  test('invalid: a table-regex fingerprint under tests/**/*.cjs is linted (gate/registration parity)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'tests/some.test.cjs',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: a table-regex fingerprint under a tests/ SUBDIRECTORY is linted (gate reach)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'tests/fixtures/some.test.cjs',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: a table-regex fingerprint under scripts/**/*.cjs is linted (gate/registration parity)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'scripts/some-tool.cjs',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
     });
   });
 

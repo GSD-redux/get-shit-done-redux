@@ -37,6 +37,40 @@ const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 const frontmatterLib = require('../gsd-core/bin/lib/frontmatter.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const workstreamInventory = require('../gsd-core/bin/lib/workstream-inventory.cjs');
+const { collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
+
+/**
+ * Test-side helper mirroring the ad-hoc "## Heading ... up to next heading"
+ * extraction previously hand-rolled at many call sites in this file — routes
+ * through the canonical markdown-sectionizer seam instead. Returns an object
+ * shaped like a regex exec match (`[1]` is the body) so existing call sites
+ * that destructure `match[1]` keep working, or `null` when the heading is
+ * absent (matching `String.prototype.match`'s null-on-no-match contract).
+ */
+function sectionMatchOf(text, headingName) {
+  const section = collectSection(text, (h) => h.text.toLowerCase() === headingName.toLowerCase());
+  return section ? [section.body, section.body] : null;
+}
+
+/**
+ * Return the second cell of a headerless `| Label | Value |` row inside
+ * `section` whose first cell equals `label` (case-insensitive), or null when
+ * absent. STATE.md's Current Position/Configuration tables have no header/
+ * delimiter row, so parseMarkdownTable's GFM-table contract does not apply —
+ * splitTableRow is the correct-granularity seam call here.
+ */
+function pipeTableCell(section, label) {
+  for (const line of section.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) continue;
+    const cells = splitTableRow(trimmed);
+    if (cells[0] && cells[0].toLowerCase() === label.toLowerCase()) {
+      return cells[1] !== undefined ? cells[1] : null;
+    }
+  }
+  return null;
+}
 // Phase 12 (#3310, ADR-3180 §8.4 rule 3): `cmdStateValidate`'s `warnings` are
 // now `Diagnostic[]` (S0NN codes), not bare strings, and `drift` is gone.
 const { SEVERITY } = require('../gsd-core/bin/lib/health-diagnostic-types.cjs');
@@ -113,7 +147,7 @@ function readShippedStateTemplateBody(replacements) {
   const templatePath = path.join(__dirname, '..', 'gsd-core', 'templates', 'state.md');
   const template = fs.readFileSync(templatePath, 'utf-8');
   // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own state.md template, fixed-size author-controlled content
-  const fencedDocument = template.match(/```markdown\r?\n([\s\S]*?)```/);
+  const fencedDocument = template.match(/```markdown\r?\n([\s\S]*?)```/); // allow-adhoc-markdown: deliberately independent of the generator's own fence-handling — regresses #3873
   assert.ok(fencedDocument, 'gsd-core/templates/state.md must contain a fenced markdown document');
 
   let body = fencedDocument[1];
@@ -2473,8 +2507,7 @@ describe('cmdStateResolveBlocker (state resolve-blocker)', () => {
     assert.ok(!updated.includes('- Single blocker'), 'resolved blocker should be removed');
 
     // Section should contain "None" placeholder, not be empty
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-    const sectionMatch = updated.match(/## Blockers\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+    const sectionMatch = sectionMatchOf(updated, 'Blockers');
     assert.ok(sectionMatch, 'Blockers section should still exist');
     assert.ok(sectionMatch[1].includes('None'), 'Blockers section should contain None placeholder');
   });
@@ -2877,8 +2910,7 @@ Progress: [..........] 0%
     );
 
     // Extract the Current Position section
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-    const posMatch = content.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+    const posMatch = sectionMatchOf(content, 'Current Position');
     assert.ok(posMatch, 'Current Position section should exist');
     const posSection = posMatch[1];
 
@@ -2979,8 +3011,7 @@ Progress: [..........] 0%
     const content = fs.readFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'
     );
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-    const posMatch = content.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+    const posMatch = sectionMatchOf(content, 'Current Position');
     assert.ok(posMatch, 'Current Position section should exist after advance-plan');
     const posSection = posMatch[1];
 
@@ -4097,8 +4128,7 @@ Progress: [##########] 20%
     );
 
     // Current Position Status: line must also be "Ready to execute"
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-    const posMatch = stateContent.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+    const posMatch = sectionMatchOf(stateContent, 'Current Position');
     assert.ok(posMatch, 'Current Position section not found');
     const posStatusMatch = posMatch[1].match(/^Status:\s*(.+)/m);
     assert.ok(posStatusMatch, 'Status field not found in Current Position section');
@@ -4153,8 +4183,7 @@ Progress: [##########] 20%
     const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
 
     // Locate the Current Position section and verify the Status line there.
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-    const posMatch = stateContent.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+    const posMatch = sectionMatchOf(stateContent, 'Current Position');
     assert.ok(posMatch, 'Current Position section not found');
     const posStatusMatch = posMatch[1].match(/^Status:\s*(.+)/m);
     assert.ok(posStatusMatch, 'Status field not found in Current Position section');
@@ -8024,7 +8053,7 @@ describe('state add-roadmap-evolution (bug #1140)', () => {
   // Body of `## Accumulated Context` bounded by the next h2 (or EOF), so
   // placement assertions prove a subsection sits INSIDE that section.
   const accumulatedContextBody = (state) => {
-    const m = state.match(/##\s*Accumulated Context\s*\r?\n([\s\S]*?)(?=\n##[^#]|$)/);
+    const m = sectionMatchOf(state, 'Accumulated Context');
     return m ? m[1] : null;
   };
 
@@ -8940,8 +8969,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract the ## Current Position section only, to avoid matching Configuration rows
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-      const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+      const cpMatch = sectionMatchOf(after, 'Current Position');
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
 
@@ -8953,8 +8981,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
 
       // Last activity cell must include date + narrative (not bare date)
       assert.ok(
-        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
-        /\|\s*Last activity\s*\|[^|]*—\s*Phase 1 execution started\s*\|/i.test(cpSection),
+        /—\s*Phase 1 execution started\s*$/i.test(pipeTableCell(cpSection, 'Last activity') || ''),
         `Current Position Last activity cell must include narrative '— Phase 1 execution started'; got Current Position:\n${cpSection}`
       );
     } finally {
@@ -9017,8 +9044,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract the ## Current Position section only, to avoid matching Configuration rows
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-      const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+      const cpMatch = sectionMatchOf(after, 'Current Position');
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
 
@@ -9040,8 +9066,7 @@ describe('#1255 — begin/complete-phase advance status for pipe-table STATE.md'
 
       // Bug 2: Last activity cell must include date + narrative (not bare date)
       assert.ok(
-        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
-        /\|\s*Last activity\s*\|[^|]*—\s*Phase 1 marked complete\s*\|/i.test(cpSection),
+        /—\s*Phase 1 marked complete\s*$/i.test(pipeTableCell(cpSection, 'Last activity') || ''),
         `Current Position Last activity cell must include narrative '— Phase 1 marked complete'; got Current Position:\n${cpSection}`
       );
     } finally {
@@ -9189,8 +9214,7 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       // Extract the ## Configuration section (stops before ## Current Position)
       // to avoid false-positive from the Current Position table (which IS updated
       // by updateCurrentPositionFields).
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-      const cfgMatch = after.match(/##\s*Configuration\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+      const cfgMatch = sectionMatchOf(after, 'Configuration');
       assert.ok(cfgMatch, '## Configuration section must exist');
       const cfgSection = cfgMatch[1];
 
@@ -9247,15 +9271,13 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract ## Current Position section only
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-      const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+      const cpMatch = sectionMatchOf(after, 'Current Position');
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
 
       // The pipe-table Phase cell must be updated to reflect the executing phase
       assert.ok(
-        // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md generated by the tool under test against a bounded fixture project, not adversarial input
-        /\|\s*Phase\s*\|[^|]*1[^|]*EXECUTING[^|]*\|/i.test(cpSection),
+        /1[\s\S]*EXECUTING/i.test(pipeTableCell(cpSection, 'Phase') || ''),
         `Current Position pipe-table Phase cell must contain phase 1 EXECUTING; got Current Position:\n${cpSection}`
       );
 
@@ -9283,8 +9305,7 @@ describe('#1257 — planned-phase and begin-phase pipe-table regressions', () =>
       const after = fs.readFileSync(path.join(dir, '.planning', 'STATE.md'), 'utf8');
 
       // Extract ## Current Position section only
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses STATE.md this test just wrote via a fixture, fixed-size test-controlled content
-      const cpMatch = after.match(/##\s*Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
+      const cpMatch = sectionMatchOf(after, 'Current Position');
       assert.ok(cpMatch, '## Current Position section must exist');
       const cpSection = cpMatch[1];
 

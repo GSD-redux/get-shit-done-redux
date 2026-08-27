@@ -40,6 +40,7 @@ const {
   readWorkflowCombined,
 } = require('./helpers.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const REVIEW_WORKFLOW = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
 
@@ -95,10 +96,10 @@ function extractBuildPromptBlock() {
 /** Every fenced ```bash block of review.md (+steps), for the structural row. */
 function extractAllBashBlocks() {
   const content = readWorkflowCombined(REVIEW_WORKFLOW);
-  const blocks = [];
-  const re = /```bash\r?\n([\s\S]*?)\r?\n```/g;
-  let m;
-  while ((m = re.exec(content)) !== null) blocks.push(m[1]);
+  const lines = content.split(/\r?\n/);
+  const blocks = scanFencedBlocks(lines)
+    .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash')
+    .map((b) => lines.slice(b.openLineIdx + 1, b.closeLineIdx).join('\n'));
   assert.ok(blocks.length > 0, 'no ```bash blocks found in review.md (+steps)');
   return blocks;
 }

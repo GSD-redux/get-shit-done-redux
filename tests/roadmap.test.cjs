@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 describe('roadmap get-phase command', () => {
   let tmpDir;
@@ -1953,9 +1954,12 @@ describe('bug #2661: execute-plan.md update_roadmap gating', () => {
     // The sync call must be inside an `if [ "$IS_WORKTREE" != "true" ]` block,
     // i.e. it must NOT be unconditional and it must NOT appear on the worktree branch.
     // We verify by extracting the bash block and checking the call sits under the gate.
-    const bashMatch = step.match(/```bash\s*([\s\S]*?)```/);
-    assert.ok(bashMatch, 'update_roadmap must contain a bash block');
-    const bash = bashMatch[1];
+    const stepLines = step.split(/\r?\n/);
+    const bashFence = scanFencedBlocks(stepLines).find(
+      (b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash',
+    );
+    assert.ok(bashFence, 'update_roadmap must contain a bash block');
+    const bash = stepLines.slice(bashFence.openLineIdx + 1, bashFence.closeLineIdx).join('\n');
 
     assert.ok(
       /IS_WORKTREE/.test(bash),

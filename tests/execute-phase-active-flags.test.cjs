@@ -15,6 +15,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const COMMAND_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'execute-phase.md');
 
@@ -140,11 +141,12 @@ function assertConfigGetBeforeMakefile(filePath, label) {
   // Extract bash blocks to check ordering within each block.
   // Use the actual Makefile test ([ -f "Makefile" ]) not just the word "Makefile"
   // (which appears in comments before the config-get call).
-  const bashBlockRe = /```bash([\s\S]*?)```/g;
-  let match;
+  const lines = content.split(/\r?\n/);
   let anyBlockCorrectlyOrdered = false;
-  while ((match = bashBlockRe.exec(content)) !== null) {
-    const block = match[1];
+  for (const fenced of scanFencedBlocks(lines)) {
+    if (fenced.closeLineIdx === -1) continue;
+    if ((fenced.infoString || '').trim() !== 'bash') continue;
+    const block = lines.slice(fenced.openLineIdx + 1, fenced.closeLineIdx).join('\n');
     if (block.includes('workflow.test_command') && block.includes('[ -f "Makefile"')) {
       const configIdx = block.indexOf('workflow.test_command');
       const makefileIdx = block.indexOf('[ -f "Makefile"');

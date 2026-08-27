@@ -25,6 +25,7 @@ const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 // above, and `run()` below at 15000ms for a lighter query-only call).
 const PHASE_COMPLETE_TIMEOUT_MS = 60000;
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const GSD_TOOLS_BIN = path.resolve(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
@@ -9628,6 +9629,7 @@ const { cleanup, runGsdTools } = require('./helpers.cjs');
 // CJS implementation directly since that is where the bug lives.
 const phaseModule = require('../gsd-core/bin/lib/phase.cjs');
 const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 const { cmdPhaseComplete } = phaseModule;
 
 function writePassedVerificationFile(phaseDir, phase = '01') {
@@ -9752,15 +9754,19 @@ function roadmapCompletionSnapshot(roadmapContent) {
       continue;
     }
 
-    match = line.match(/^\|\s*(\d+[A-Z]?(?:\.\d+)*)\.?\s*([^|]*)\|\s*([^|]*)\|\s*([^|]*)\|\s*([^|]*)\|$/i);
-    if (match) {
-      snapshot.progressRows.push({
-        phase: match[1].trim(),
-        title: match[2].trim(),
-        plans: match[3].trim(),
-        status: match[4].trim(),
-        completed: match[5].trim(),
-      });
+    if (line.trim().startsWith('|')) {
+      const cells = splitTableRow(line);
+      const phaseTitleMatch = cells.length === 4
+        && /^(\d+[A-Z]?(?:\.\d+)*)\.?\s*(.*)$/i.exec((cells[0] || '').trim());
+      if (phaseTitleMatch) {
+        snapshot.progressRows.push({
+          phase: phaseTitleMatch[1].trim(),
+          title: phaseTitleMatch[2].trim(),
+          plans: cells[1].trim(),
+          status: cells[2].trim(),
+          completed: cells[3].trim(),
+        });
+      }
     }
   }
 
@@ -10198,16 +10204,15 @@ describe('#3511: cmdPhaseComplete — advisory pre-scan warnings are phase-scope
  * 4-col (Phase | Plans | Status | Completed) or 5-col (Phase | Milestone | Plans | Status | Completed).
  */
 function extractCompletedCell(roadmapContent, phaseNum) {
-  // Match the full progress table row whose first cell starts with the phase number.
-  // Use [^|\n] to avoid crossing line boundaries. Capture everything up to the final '|'.
-  const re = new RegExp(`^(\\|\\s*${phaseNum}[^|\\n]*(?:\\|[^|\\n]*)*)\\|\\s*$`, 'm');
-  const m = roadmapContent.match(re);
-  if (!m) return null;
-  // m[1] = '| 01. Foundation | 1/1 | Complete    | 2026-01-01 '
-  // Split on '|' → ['', ' 01. Foundation ', ' 1/1 ', ' Complete    ', ' 2026-01-01 ']
-  // Drop the leading empty string and take the last element.
-  const cells = m[1].split('|').slice(1); // drop leading ''
-  return cells[cells.length - 1].trim();
+  // Find the progress table row whose first cell starts with the phase number.
+  for (const line of roadmapContent.split(/\r?\n/)) {
+    if (!line.trim().startsWith('|')) continue;
+    const cells = splitTableRow(line);
+    if (cells.length > 0 && cells[0].startsWith(String(phaseNum))) {
+      return cells[cells.length - 1].trim();
+    }
+  }
+  return null;
 }
 
 /**
@@ -11525,9 +11530,12 @@ describe('issue #2334: ghost-REQ-ID classification must probe write surfaces, no
           /-\s*\[x\]\s*\*\*KNOWN-01\*\*/i.test(reqContent),
           `#2334 HIGH 2b FAILED (fixture invariant): checkbox must have been ticked.\n${reqContent}`,
         );
+        const traceabilityRow = reqContent.split(/\r?\n/)
+          .filter((l) => l.trim().startsWith('|'))
+          .map((l) => splitTableRow(l))
+          .find((cells) => cells[0] && cells[0].trim().toLowerCase() === 'known-01');
         assert.ok(
-          // eslint-disable-next-line local/no-unbounded-quantifier -- parses REQUIREMENTS.md the test itself wrote via build2334GhostSurfaceFixture, bounded fixed-size fixture, not adversarial input
-          /\|\s*KNOWN-01\s*\|[^|]*\|\s*Complete\s*\|/i.test(reqContent),
+          traceabilityRow && /^Complete$/i.test(traceabilityRow[traceabilityRow.length - 1].trim()),
           `#2334 HIGH 2b FAILED (fixture invariant): Traceability row must have flipped to Complete.\n${reqContent}`,
         );
         assert.strictEqual(parsed.requirements_updated, true, '#2334 HIGH 2b FAILED: requirements_updated must be true');

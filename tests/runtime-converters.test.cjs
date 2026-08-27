@@ -1579,9 +1579,22 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
   // script, so the harness is written to a file rather than passed as `-c`.
   const { runHook } = require('./helpers/process-seam.cjs');
   const { readFileNormalized, createTempDir, cleanup: cleanupDir } = require('./helpers.cjs');
+  const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
   // Skipped on Windows, where there is no bash. Checked by platform rather than
   // by shelling out to `which`, which is itself non-portable.
   const NO_BASH = process.platform === 'win32';
+
+  /** The first ```bash fenced block in `src` whose body includes `marker`. */
+  function bashBlockContaining(src, marker) {
+    const lines = src.split(/\r?\n/);
+    for (const block of scanFencedBlocks(lines)) {
+      if (block.closeLineIdx === -1) continue;
+      if ((block.infoString || '').trim() !== 'bash') continue;
+      const body = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+      if (body.includes(marker)) return body;
+    }
+    return undefined;
+  }
 
   describe('#2486 regression: settings/health worktrees isolation branch', () => {
     // Review round 2 (#2584 Phase 3): isolation is a DECLARED CAPABILITY, not a
@@ -1799,9 +1812,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       const src = readFileNormalized(
         path.join(__dirname, '..', 'gsd-core', 'workflows', 'health.md'),
       );
-      const block = [...src.matchAll(/```bash\r?\n([\s\S]*?)```/g)]
-        .map(m => m[1])
-        .find(b => b.includes('W025:'));
+      const block = bashBlockContaining(src, 'W025:');
       assert.ok(block, 'health.md: no ```bash block containing the W025 diagnostic');
 
       /** Run the shipped block with `gsd_run` stubbed to the given answers. */
@@ -1872,9 +1883,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       const src = readFileNormalized(
         path.join(__dirname, '..', 'gsd-core', 'workflows', 'health.md'),
       );
-      const block = [...src.matchAll(/```bash\r?\n([\s\S]*?)```/g)]
-        .map(m => m[1])
-        .find(b => b.includes('W025:'));
+      const block = bashBlockContaining(src, 'W025:');
       assert.ok(block, 'health.md: no ```bash block containing the W025 diagnostic');
 
       // `resolves` false = the inspect call exits non-zero, the real shape of a
