@@ -410,6 +410,7 @@
   "hooks/lib/exit-code-registry.js",
   "hooks/lib/git-cmd.js",
   "hooks/lib/gsd-graphify-rebuild.sh",
+  "hooks/lib/hook-exit.js",
   "hooks/lib/injection-patterns.js",
   "hooks/lib/isolation-deny-reason.js",
   "hooks/lib/isolation-sentinel.js",

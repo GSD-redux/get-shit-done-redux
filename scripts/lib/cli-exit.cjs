@@ -300,9 +300,21 @@ function runMain(main) {
  * it.
  *
  * @param outcome - declared outcome name, projected via projectOutcome.
- * @param payload - JSON-serializable value written to fd 1 (and, on a deny,
- *   fd 2 too — Kimi's native hook bus feeds stderr, not stdout, back to the
- *   model on exit 2, per hooks/gsd-write-guard.js's emitBlock).
+ * @param payload - JSON-serializable value written to fd 1 (and, on a deny
+ *   for which no `stderrPayload` is given, fd 2 too — this is the
+ *   backward-compatible default every existing caller relies on).
+ * @param stderrPayload - optional, deny-only. When omitted (the default),
+ *   fd 2 gets the SAME serialized `payload` fd 1 got — unchanged behavior.
+ *   When provided, fd 2 gets THIS instead: a string is written raw
+ *   (verbatim, not JSON-stringified), anything else is JSON-stringified
+ *   like `payload`. This exists because `hooks/gsd-write-guard.js`'s
+ *   emitBlock does NOT write the same bytes to both streams today — it
+ *   writes the full JSON `output` to stdout but only the plain-text
+ *   `output.reason` STRING to stderr, because Kimi's native hook bus reads
+ *   stderr verbatim back to the model on exit 2. Migrating that call site
+ *   onto terminateNow requires a way to say "fd 2 gets this different,
+ *   plain-text value" — `stderrPayload` is that seam. Ignored entirely for
+ *   a non-deny outcome: stderr is a deny-only channel.
  *
  * PAYLOAD-SIZE CONSTRAINT FOR CALLERS (measured for #3906, relevant to P7/
  * #3911 wiring 19 enforcement hooks onto this function): the write-until-
@@ -325,7 +337,7 @@ function runMain(main) {
  * arrives whole" test, which hit exactly this constructing its own fixture
  * before being rewritten to build the payload inside the child instead.
  */
-function terminateNow(outcome, payload) {
+function terminateNow(outcome, payload, stderrPayload) {
     // terminateNow is total by construction: its callers are enforcement hooks
     // (P7/#3911, 19 of them) whose OWN outer catch may fail open (some end in
     // `process.exit(0)`). If resolving the contract version, projecting the
@@ -367,9 +379,12 @@ function terminateNow(outcome, payload) {
                 offset += node_fs_1.default.writeSync(1, buf, offset, buf.length - offset);
             }
             if (projected === HOOK_DENY_CODE) {
+                const stderrBuf = stderrPayload === undefined
+                    ? buf
+                    : Buffer.from(typeof stderrPayload === 'string' ? stderrPayload : JSON.stringify(stderrPayload), 'utf8');
                 let stderrOffset = 0;
-                while (stderrOffset < buf.length) {
-                    stderrOffset += node_fs_1.default.writeSync(2, buf, stderrOffset, buf.length - stderrOffset);
+                while (stderrOffset < stderrBuf.length) {
+                    stderrOffset += node_fs_1.default.writeSync(2, stderrBuf, stderrOffset, stderrBuf.length - stderrOffset);
                 }
             }
         }

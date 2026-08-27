@@ -1154,6 +1154,48 @@ describe('#3906: terminateNow', () => {
     assert.equal(r.stderr, '');
   });
 
+  test('#3911: HOOK_DENY with NO stderrPayload arg — backward-compatible default: fd1 and fd2 both get the serialized payload', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', { reason: 'blocked-default' });`,
+    ]);
+    assert.equal(r.status, 2);
+    assert.deepEqual(JSON.parse(r.stdout), { reason: 'blocked-default' });
+    assert.deepEqual(JSON.parse(r.stderr), { reason: 'blocked-default' });
+  });
+
+  test('#3911: HOOK_DENY with a STRING stderrPayload — fd1 gets JSON, fd2 gets the raw string verbatim', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', { decision: 'block', reason: 'shrink too large' }, 'shrink too large');`,
+    ]);
+    assert.equal(r.status, 2);
+    assert.deepEqual(JSON.parse(r.stdout), { decision: 'block', reason: 'shrink too large' });
+    assert.equal(r.stderr, 'shrink too large', `expected raw string on stderr, got: ${r.stderr}`);
+    assert.throws(() => JSON.parse(r.stderr), SyntaxError,
+      'a raw reason string must NOT itself be JSON-parseable as an object');
+  });
+
+  test('#3911: HOOK_DENY with an OBJECT stderrPayload — fd2 gets that object serialized, not the fd1 payload', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', { full: 'stdout-payload' }, { distinct: 'stderr-payload' });`,
+    ]);
+    assert.equal(r.status, 2);
+    assert.deepEqual(JSON.parse(r.stdout), { full: 'stdout-payload' });
+    assert.deepEqual(JSON.parse(r.stderr), { distinct: 'stderr-payload' });
+  });
+
+  test('#3911: a PASS outcome with a stderrPayload writes NOTHING to stderr — stderr is a deny-only channel', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('PASS', { ok: true }, 'should never reach stderr');`,
+    ]);
+    assert.equal(r.status, 0);
+    assert.deepEqual(JSON.parse(r.stdout), { ok: true });
+    assert.equal(r.stderr, '', `expected empty stderr for a non-deny outcome; got: ${r.stderr}`);
+  });
+
   // Cross-platform IO-failure injection: a monkeypatched THROWING fs.writeSync,
   // restored implicitly by process exit — never chmod (CONTRIBUTING.md /
   // CLAUDE.md: mode-bit tricks are bypassed by root/CI and leak resources).
