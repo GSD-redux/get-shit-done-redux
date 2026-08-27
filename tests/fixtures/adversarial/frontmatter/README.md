@@ -29,3 +29,12 @@ Categories present:
 - `huge-bounded.md` — a deliberately-large but bounded frontmatter
   block (~64KB of array items). Parser must complete in reasonable
   time with a typed result, not OOM or hang.
+- `anchor-alias-bomb.md` — a 7-line "billion laughs" frontmatter of
+  nested YAML anchors/aliases. Parser must refuse it (zero keys,
+  `FRONTMATTER_UNPARSEABLE` set) rather than expand it — ADR-3473
+  §8.1 consequence 6.
+- `anchor-alias-bomb-quoted.md` — the same "billion laughs" bomb, spelled with
+  quoted keys (`"a": &a [...]`) instead of bare keys. Added after #3881
+  review found the original raw-text anchor/alias refusal regex matched only
+  the bare-key line shape and was bypassable by this (and other) spellings.
+  Must refuse identically to `anchor-alias-bomb.md`.
