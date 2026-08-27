@@ -160,6 +160,18 @@ const AGENT_TRANSFORM_SRCS = [
   'src/model-catalog.cts',
 ];
 
+// #3738: antigravity's global skills pass through the antigravity converter
+// (src/runtime-artifact-conversion.cts, mirrored hand-authored in bin/install.js
+// per ADR-1508), whose rewrites — e.g. ~/.claude/skills/ → ~/.gemini/config/skills/
+// — can move emitted bytes with NO commands/gsd source changing. Declaring the
+// transform here attributes that ripple class permanently, the same way
+// AGENT_TRANSFORM_SRCS does for agents; scoped to runtime 'antigravity' so a
+// converter change never blankets the other skills runtimes' attribution.
+const ANTIGRAVITY_SKILL_TRANSFORM_SRCS = [
+  'src/runtime-artifact-conversion.cts',
+  'bin/install.js',
+];
+
 /**
  * A `sources` entry ending in `/` is a PREFIX, not a file: it means "any repo path
  * under this directory legitimately explains this emitted path". Used where an
@@ -481,6 +493,9 @@ const PROVENANCE_RULES = [
     roots: SKILLS_ROOTS,
     pattern: /^([^/]+)\/SKILL\.md$/,
     sources: (m) => [`${COMMANDS_SRC}/${stripSkillPrefix(m[1])}.md`],
+    // #3738: see ANTIGRAVITY_SKILL_TRANSFORM_SRCS above — antigravity's skill
+    // bytes are converter-produced, so a converter change explains the ripple.
+    transforms: (_m, ctx) => (ctx.runtime === 'antigravity' ? ANTIGRAVITY_SKILL_TRANSFORM_SRCS : []),
   },
   {
     id: 'skills-nested-from-commands',

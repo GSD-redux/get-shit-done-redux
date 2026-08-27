@@ -311,38 +311,49 @@ describe('init.debug --diagnose forwarding and hostile argv (matrix §C)', () =>
     assert.equal(output.diagnose, true);
   });
 
-  test('ignores an unrecognized flag (row C4)', () => {
+  test('rejects an unrecognized flag with the flag named (row C4)', () => {
+    // ADR-3473 §8.4 (Bucket-B correction): "`parseNamedArgs` rejects
+    // unrecognized ... tokens with a non-zero exit — it is called by agents
+    // that will drift again." An unrecognized flag is exactly the mandated
+    // rejection, not a thing to silently absorb.
     const result = runGsdTools(['init', 'debug', '--nope'], tmpDir);
-    assert.ok(result.success, `an unknown flag must not fail the command: ${result.error}`);
-    const output = JSON.parse(result.output);
-    assert.equal(output.diagnose, false);
+    assert.equal(result.success, false, 'an unknown flag must now fail the command');
+    assert.match(result.error, /--nope/, 'the rejection must name the offending flag');
   });
 
-  test('survives a flag-shaped trailing token (row C5)', () => {
+  test('rejects a flag-shaped trailing token, naming it (row C5)', () => {
     const result = runGsdTools(['init', 'debug', '--diagnose', '--weird'], tmpDir);
-    assert.ok(result.success, `must not crash on a flag-shaped token: ${result.error}`);
-    assert.equal(JSON.parse(result.output).diagnose, true);
+    assert.equal(result.success, false, 'an unrecognized flag-shaped token must now fail the command');
+    assert.match(result.error, /--weird/, 'the rejection must name the offending flag');
   });
 
-  test('does not interpolate shell metacharacters (row C6)', () => {
+  test('does not interpolate shell metacharacters even though the hostile positional is now rejected (row C6)', () => {
     const canary = path.join(tmpDir, 'PWNED');
     const hostile = `; touch ${canary}; $(touch ${canary}) \`touch ${canary}\` && touch ${canary}`;
 
     const result = runGsdTools(['init', 'debug', hostile], tmpDir);
 
-    assert.ok(result.success, `hostile argv must not fail the command: ${result.error}`);
+    // §8.4 now rejects this as an unexpected positional argument (exit
+    // non-zero) instead of silently absorbing it — that is at least as safe
+    // as the old accept-and-ignore behavior. The canary assertion is the
+    // actual point of this test and is unchanged: no shell ever touches this
+    // string, whether the token is accepted or rejected.
+    assert.equal(result.success, false, 'a stray positional argument must now fail the command');
     assert.equal(fs.existsSync(canary), false, 'no shell interpolation of an attacker-controlled argument');
-    assert.equal(result.output.includes('    at '), false, 'no stack trace in non-debug output');
+    assert.equal(result.error.includes('    at '), false, 'no stack trace in non-debug output');
   });
 
-  test('survives a very long argument (row C7/C8)', () => {
+  test('rejects a very long or unicode positional argument, not just tolerates it (row C7/C8)', () => {
+    // Classified as the same §8.4 unexpected-positional-argument shape as
+    // C6: `init debug` declares no positionals, so any bare token here is a
+    // stray positional and must now be rejected rather than silently
+    // absorbed.
     const long = 'x'.repeat(8192);
     const unicode = 'ünïcødé-🐛-测试';
 
     for (const arg of [long, unicode]) {
       const result = runGsdTools(['init', 'debug', arg], tmpDir);
-      assert.ok(result.success, `argument of length ${arg.length} must not crash: ${result.error}`);
-      assert.equal(JSON.parse(result.output).diagnose, false);
+      assert.equal(result.success, false, `argument of length ${arg.length} must now fail the command, not crash`);
     }
   });
 });

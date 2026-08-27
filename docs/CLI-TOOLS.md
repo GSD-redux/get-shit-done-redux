@@ -25,12 +25,48 @@ node gsd-tools.cjs <command> [args] [--raw] [--cwd <path>]
 **Global flags (CJS):**
 
 
-| Flag           | Description                                                                  |
-| -------------- | ---------------------------------------------------------------------------- |
-| `--raw`        | Machine-readable output (JSON or plain text, no formatting)                  |
-| `--cwd <path>` | Override working directory (for sandboxed subagents)                         |
-| `--ws <name>`  | Workstream context for `.planning/workstreams/<name>` paths |
+| Flag                | Description                                                                  |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `--raw`             | Machine-readable output (JSON or plain text, no formatting)                  |
+| `--cwd <path>`      | Override working directory (for sandboxed subagents)                         |
+| `--ws <name>`       | Workstream context for `.planning/workstreams/<name>` paths |
+| `--pick <field>`    | Extract one field from a command's JSON output — see [`--pick <field>` contract](#--pick-field-contract) below |
 
+
+---
+
+### `--pick <field>` contract
+
+`--pick <field>` runs `<command>` as normal, parses its stdout as JSON, and
+extracts one field by name (dotted paths and `[N]` array indices are
+supported, e.g. `a.b.c`, `directories[-1]`). As of ADR-3473 §8.4 / #3884, the
+three possible outcomes are distinguished **by exit code**, never by an
+ambiguous empty string:
+
+| Outcome | stdout | stderr | Exit code |
+| --- | --- | --- | --- |
+| Field present | The field's value, coerced to a string | (none) | `0` |
+| Field absent (missing key, out-of-range index, dotted path partially missing, or a non-object JSON root) | empty | Diagnostic naming the field and the available top-level keys (or the actual JSON root type) | `1` (`pick_field_absent`) |
+| Command output is not JSON (including `--raw` output, which is plain text/human-readable, not JSON) | empty | Diagnostic saying the output was not JSON | `1` (`pick_output_not_json`) |
+
+A `null` or empty-string (`''`) field value is a real answer, not an absence
+— it still prints (an empty line) at exit **0**. Only the *absence of the
+field itself* is a failure. This is why `--raw` and `--pick` are, in
+practice, mutually exclusive: `--raw` output is not JSON, so combining them
+always hits `pick_output_not_json`.
+
+**This replaces the previous behavior.** Before #3884, an absent field (or
+non-JSON output) silently printed an empty string at exit `0` — indistinguishable
+from a field that genuinely held `null` or `''`. That coercion is gone. The
+common shell idiom
+
+```bash
+X=$(gsd_run query some.command --pick some_field 2>/dev/null) || X=default
+```
+
+now works as written: the `|| X=default` arm fires exactly when the field
+could not be resolved, and never fires merely because the resolved value
+happens to be empty.
 
 ---
 
@@ -214,6 +250,38 @@ Scope and limits, so the output is not read as more than it is:
 
 Every path the scan does recover is checked — there is no cap. The standalone
 `verify-summary` verb keeps its historical default of checking the first two.
+
+### `phase-plan-index`: unresolved `depends_on` tokens (ADR-3473 §8.5, #3427/#3885)
+
+A plan's `depends_on:` token must resolve to another plan in the same phase (by
+exact id or by canonical id). When a token resolves to neither, the edge is
+dropped and the dependent plan becomes a DAG root — `phase-plan-index` now
+names this in `warnings[]` instead of silently discarding it:
+
+```text
+Plan 03-02: depends_on token "typo-plan-id" does not resolve to any plan in this
+phase — edge dropped, wave placement for this plan may be unreliable
+```
+
+The token is escaped (quoted, control characters and embedded newlines
+backslash-escaped) before it is embedded in the warning, so a `depends_on`
+value crafted to contain a newline or a quote cannot forge a second,
+fabricated warning entry when `warnings[]` is printed one-per-line.
+
+**The wave-mismatch warning is suppressed for an affected plan.** Normally a
+plan whose declared `wave:` disagrees with the computed DAG wave gets its own
+warning (`"declared wave: N but depends_on DAG places it in wave M"`). When
+the disagreement is caused by a dropped edge on that same plan, that warning
+would blame the author for a mismatch the tool itself manufactured by losing
+an edge — so it does not fire for that plan; the unresolved-token warning above
+stands in its place. A plan with **no** dropped edges and a genuinely wrong
+`wave:` still gets the mismatch warning as before.
+
+This does not repair `waves` / `wave` themselves — those fields stay computed
+from the DAG with the edge missing, since the edge cannot be invented. A
+consumer using `wave` for scheduling (`WAVE_FILTER`, the wave-safety check)
+is still working from the degraded assignment; only the diagnostic surfaces
+the loss.
 
 ---
 
@@ -504,6 +572,42 @@ hatch for a flag-shaped value the space-separated form cannot express — e.g.
 | `predicates` | array | Each entry is a live `Predicate` — `id`, `klass`, `value`, `line` (1-based source line), `section` (nearest enclosing heading) |
 
 This command is strictly read-only — no config writes, no disk mutation. See [ADR-1671](adr/1671-dynamic-context-management-platform.md) and [Architecture — CLI Tools](ARCHITECTURE.md#cli-tools-gsd-corebin).
+
+---
+
+## Intel Commands
+
+```bash
+node gsd-tools.cjs intel query <term>
+```
+
+Searches every JSON intel file under `.planning/intel/` (keys and values, including
+`arch-decisions.json`) for `<term>`. No-ops with `{ enabled: false }` when the `intel`
+capability is not active (`intel.enabled` in config).
+
+**Output JSON:**
+
+```json
+{ "matches": [{ "source": "file-roles.json", "entries": [...] }], "term": "…", "total": 3, "truncated": false }
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `total` | number | Count of matched entries across every intel file |
+| `truncated` | boolean | `true` when the recursive walk of at least one intel file hit the 48-level depth ceiling before finishing — see below |
+
+### The 48-level recursion ceiling and `truncated` (ADR-3473 §8.5, #3885)
+
+The search recurses into nested objects/arrays up to **48 levels deep** (the bound is on
+depth, not breadth or total node count — a wide-but-shallow structure is unaffected). A
+match at or above the ceiling is not returned, and `truncated` is set to `true` on the
+result so a caller can tell "I stopped looking" apart from "there is no match here."
+
+`truncated: false` means the walk reached the bottom of every branch it visited — it does
+**not** by itself mean anything was found; check `total` for that. Before this fix, a
+search past the ceiling threw an uncaught `RangeError: Maximum call stack size exceeded`
+instead of returning a diagnosable result; a shallower search (depth ≤ 48) is unaffected
+and its result is unchanged.
 
 ---
 

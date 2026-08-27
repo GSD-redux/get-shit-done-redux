@@ -37,7 +37,7 @@ import { platformWriteSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import io = require('./io.cjs');
 const { output, error: ioError } = io;
-import { parseNamedArgs } from './command-arg-projection.cjs';
+import { parseNamedArgsOrExit } from './command-arg-projection.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1593,19 +1593,28 @@ function resolvePhaseTargetDir(planDir: string, cwd: string, phase: string, arch
  * any read or write is attempted.
  */
 function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
+  // args already has the family + subcommand tokens stripped by the caller
+  // (audit-command-router.cts:147 passes `hubArgs.slice(2)`), so validation
+  // begins at index 0 — there is no positional this handler owns itself.
   const {
     category, milestone, at: atFlag,
     phase, file, 'archived-milestone': archivedMilestone,
     slug, 'seed-id': seedId, dir: quickDir, filename, text,
-  } = parseNamedArgs(args, [
-    'category', 'milestone', 'at',
-    'phase', 'file', 'archived-milestone',
-    'slug', 'seed-id', 'dir', 'filename', 'text',
-  ]) as Record<string, string | null>;
+  } = parseNamedArgsOrExit(args, {
+    valueFlags: [
+      'category', 'milestone', 'at',
+      'phase', 'file', 'archived-milestone',
+      'slug', 'seed-id', 'dir', 'filename', 'text',
+    ],
+    positionals: 0,
+  }, ioError);
 
   if (!category) ioError('--category is required');
   if (!milestone) ioError('--milestone is required');
-  const at = atFlag || new Date().toISOString().slice(0, 10);
+  // All declared flags above are value flags, so each resolves to `string |
+  // null` at runtime; the cast narrows away the `boolean` arm of
+  // ParsedNamedArgs's value type that this call site never produces.
+  const at = (atFlag as string | null) || new Date().toISOString().slice(0, 10);
 
   const planDir = planningDir(cwd);
   const markerBase = { milestone: milestone as string, at };
@@ -1630,7 +1639,7 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
   if (PHASE_SCOPED.has(category as string)) {
     if (!phase) ioError('--phase is required for this --category');
     if (!file) ioError('--file is required for this --category');
-    const targetDir = resolvePhaseTargetDir(planDir, cwd, phase as string, archivedMilestone);
+    const targetDir = resolvePhaseTargetDir(planDir, cwd, phase as string, archivedMilestone as string | null);
     if (!targetDir) {
       ioError(`no phase directory found for phase "${phase as string}"${archivedMilestone ? ` (archived-milestone "${archivedMilestone}")` : ''}`);
     }

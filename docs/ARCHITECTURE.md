@@ -688,7 +688,7 @@ Equivalent paths for other runtimes:
 - **Kimi CLI:** first-existing generic global root (`~/.config/agents/` recommended, then `~/.agents/` if its `skills/` directory already exists); local install is deferred and guarded
 - **Codex:** `~/.codex/` global or `./.codex/` local
 - **Copilot:** `~/.copilot/` global or `./.github/` local
-- **Antigravity:** auto-detected global root (`~/.gemini/antigravity/`, `~/.gemini/antigravity-ide/`, or `~/.gemini/antigravity-cli/`) or `./.agent/` local
+- **Antigravity:** auto-detected global root (`~/.gemini/antigravity/`, `~/.gemini/antigravity-ide/`, or `~/.gemini/antigravity-cli/`) for settings and runtime files; global skills/agents under `~/.gemini/config/` (the machine-local discovery dir, #3738) or `./.agent/` local
 - **Cursor:** `~/.cursor/` global or `./.cursor/` local
 - **Windsurf/Devin Desktop:** `~/.codeium/windsurf/` global config or `./.windsurf/` local workflows
 - **Augment Code:** `~/.augment/` global or `./.augment/` local
@@ -952,7 +952,7 @@ The migration-specific ownership and source snapshots live in
 | Kimi CLI | First-existing generic root: `~/.config/agents` recommended, then `~/.agents` when `~/.agents/skills` exists and `~/.config/agents/skills` does not | Deferred and guarded | `skills/gsd-*/SKILL.md` (flat) invoked as `/skill:gsd-*` | `agents/gsd.yaml`, `agents/gsd.md`, and `agents/subagents/gsd-*` YAML/prompt pairs | Explicit `kimi --agent-file <configRoot>/agents/gsd.yaml`; no GSD hooks or statusline |
 | Codex | `~/.codex` | `./.codex` | `skills/gsd-*/SKILL.md` (flat) | `agents/` source markdown plus per-agent TOML (Codex auto-discovers each `agents/gsd-*.toml`; this is the sole canonical role registration, #2406) | `config.toml` bare `[agents]` dispatch-tuning scalar (`max_depth`, no per-role `[agents.gsd-*]` tables), `[features].hooks` (canonical; legacy alias `codex_hooks` is recognized and migrated forward on reinstall, #3566), and hook tables |
 | GitHub Copilot | `~/.copilot` | `./.github` | `skills/gsd-*/SKILL.md` (flat), `copilot-instructions.md`, and `AGENTS.md` (repo root, local) | `.agent.md` files | Self-contained `sessionStart` hook (`hooks/gsd-session.json`, inline `command` type); no statusline |
-| Antigravity | auto-detected: `~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, or `~/.gemini/antigravity-cli` | `./.agent` | `skills/gsd-*/SKILL.md` (flat, #1614) | `agents/gsd-*.md` | Gemini-style `settings.json` hook entries when installed by GSD |
+| Antigravity | auto-detected: `~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, or `~/.gemini/antigravity-cli` | `./.agent` | `~/.gemini/config/skills/gsd-*/SKILL.md` (flat, #1614; global home override #3738) | `~/.gemini/config/agents/gsd-*.md` (#3738) | Gemini-style `settings.json` hook entries when installed by GSD |
 | Cursor | `~/.cursor` | `./.cursor` | `skills/gsd-*/SKILL.md` (flat) | `agents/gsd-*.md` | Rule references under `rules/`; `hooks.json` with sessionStart context injection and postToolUse STATE.md monitor (#777) |
 | Windsurf | `~/.codeium/windsurf` config | `./.windsurf` | `workflows/gsd-*.md` slash-command workflows | No custom-agent artifact surface | No GSD hooks |
 | Augment Code | `~/.augment` | `./.augment` | `skills/gsd-ns-*/SKILL.md` (6 routers) + `skills/gsd-ns-*/skills/<name>/SKILL.md` (nested concretes) | `agents/gsd-*.md` | No GSD hooks or statusline |

@@ -37,7 +37,7 @@
  * a present escape: `installOpencodeFamilySkills`, which sits behind the
  * combined-family early return and honors `skillsKindEntry.home` (no
  * combined-family runtime declares one), and `installAgentsKindStandalone`, which
- * honors `agentsKindEntry.home` and prunes it (no agents kind declares one).
+ * honors `agentsKindEntry.home` and prunes it (antigravity's global agents kind declares one since #3738; it was the first agents-kind override).
  * The sixth is `migrateLegacyDevPreferencesToSkill`, which resolves the skills
  * kind's `home` and writes `SKILL.md` under it. It CREATES rather than prunes,
  * which is why the first pass of this fix missed it, and it runs from

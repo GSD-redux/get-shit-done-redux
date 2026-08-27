@@ -29,6 +29,7 @@ const {
 } = require('./helpers.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { toPosixPath } = require('../gsd-core/bin/lib/shell-command-projection.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const REVIEW_MD_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'review.md');
@@ -572,5 +573,456 @@ describe('#3034 serial and parallel dispatch produce equivalent artifacts', () =
       const parallelMd = fs.readFileSync(path.join(parallel.runDir, `gsd-review-${slug}.md`), 'utf-8');
       assert.equal(serialMd, parallelMd, `gsd-review-${slug}.md must be byte-identical between the two paths`);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3352 (ADR-3473 §8.5, phase #3885 item 3) — `write_reviews` must not emit
+// REVIEWS.md from failed inputs, and `present_results` must preserve
+// per-lane evidence before `rm -rf "{run_dir}"` destroys it.
+//
+// SEAM CHOICE: `write_reviews`/`present_results` are markdown PROSE
+// instructing an LLM agent, not a single executable program — "do not write
+// REVIEWS.md" and "display this message" are natural-language directives to
+// the agent, not `if`/`fi` around a `Write` call this suite could invoke.
+// Asserting on that prose text directly would be source-grep
+// (`local/no-source-grep`), which this repo bans. What IS literal,
+// deterministic bash in both steps — and is exactly what R2's gate condition
+// depends on — is:
+//   (1) `write_reviews`'s new gate block, which computes
+//       `TOTAL_LANE_FAILURE`/`ALL_LANES_SKIPPED` from the aggregate JSONL
+//       and the lane stub files (the ONLY inputs the prose instructions key
+//       off of to decide whether to write REVIEWS.md at all);
+//   (2) `write_reviews`'s commit block (unchanged text, still real bash);
+//   (3) `present_results`'s new preserve-evidence block and its `rm -rf`
+//       cleanup block.
+// Each is extracted and EXECUTED for real. To observe the documented
+// consequence of the gate flags (whether REVIEWS.md and the commit actually
+// happen), the driver below applies the step's OWN written contract —
+// "If ALL_LANES_SKIPPED=true or TOTAL_LANE_FAILURE=true: do NOT write
+// REVIEWS.md and do NOT run the commit. Otherwise: proceed" (review.md, the
+// `write_reviews` step, verbatim) — as harness scaffolding around the real
+// extracted blocks, the same way STUB_PREAMBLE above supplies scaffolding
+// (`arg_after`/`in_list`/...) the extracted `invoke_reviewers` block calls
+// into. This is not a re-typed copy of the logic under test: the FLAG
+// computation is 100% the real fenced bash; only the "then do the file I/O"
+// half — which the real workflow leaves to the LLM's own tool calls — is
+// harness glue.
+//
+// R46 (`preservedEvidenceIsNotSweptIntoTheCommit`) is a regression guard for
+// N6, not failing-first evidence: the commit fence's `--files` argument is
+// byte-identical before and after #3352 (only the surrounding prose gained
+// gating language), so this exact assertion also holds against the pre-fix
+// text. It is retained because the invariant it pins (the commit step must
+// never widen from the single REVIEWS.md path to a directory glob that
+// would sweep `.review-diagnostics/` into a commit) is real and worth a
+// permanent pin, and because it only runs at all through this same
+// full-flow driver, whose surrounding gate/preserve blocks did not exist
+// pre-fix (see the STEP 2 report for the exact pre-fix observation).
+
+function extractStepBody(stepName) {
+  const content = readFileNormalized(REVIEW_MD_PATH);
+  const stepMarker = `<step name="${stepName}">`;
+  const stepIdx = content.indexOf(stepMarker);
+  if (stepIdx === -1) {
+    throw new Error(`extractStepBody: could not find "${stepMarker}" in ${REVIEW_MD_PATH}`);
+  }
+  const afterStep = content.slice(stepIdx + stepMarker.length);
+  const endIdx = afterStep.indexOf('</step>');
+  if (endIdx === -1) {
+    throw new Error(`extractStepBody: could not find closing "</step>" after ${stepName} in ${REVIEW_MD_PATH}`);
+  }
+  return afterStep.slice(0, endIdx);
+}
+
+/** Finds the first ```bash/```sh fence in `stepBody` whose text contains every string in `mustInclude`. */
+function extractBashFenceContaining(stepBody, mustInclude, label) {
+  const fenceRe = /```(?:bash|sh)\r?\n([\s\S]*?)```/g;
+  let m;
+  while ((m = fenceRe.exec(stepBody)) !== null) {
+    const block = m[1];
+    if (mustInclude.every((s) => block.includes(s))) return block;
+  }
+  throw new Error(`extractBashFenceContaining: no fence matching ${label} found (looked for ${JSON.stringify(mustInclude)})`);
+}
+
+function extractWriteReviewsGateBash() {
+  return extractBashFenceContaining(
+    extractStepBody('write_reviews'),
+    ['TOTAL_LANE_FAILURE', 'ALL_LANES_SKIPPED', 'DISPATCH_SLUGS'],
+    'write_reviews #3352 gate block',
+  );
+}
+
+function extractWriteReviewsCommitBash() {
+  return extractBashFenceContaining(
+    extractStepBody('write_reviews'),
+    ['gsd_run query commit', 'REVIEWS.md'],
+    'write_reviews commit block',
+  );
+}
+
+// #3885: preserve-evidence and cleanup are ONE fenced block (a shell variable
+// cannot survive across separate fences), gated on `_PRESERVE_OK` so a failed
+// `mkdir -p`/`cp` skips the `rm -rf` and leaves `{run_dir}` intact instead of
+// destroying the only copy of the evidence it exists to protect.
+function extractPresentResultsPreserveAndCleanupBash() {
+  return extractBashFenceContaining(
+    extractStepBody('present_results'),
+    ['DIAG_DIR', 'nullglob', 'rm -rf', '{run_dir}', '_PRESERVE_OK'],
+    'present_results #3352/#3885 preserve+cleanup block',
+  );
+}
+
+/**
+ * Runs the real extracted write_reviews gate+commit blocks and the real
+ * present_results preserve+cleanup block, in the documented order, against
+ * a fixture run dir. `opts.jsonlLines` seeds the aggregate JSONL (omit/empty
+ * for "every lane failed"); `opts.lanes` seeds per-slug `gsd-review-<slug>.md`
+ * / `.md`'s sibling `.err`. See the seam-choice comment above this describe
+ * block for what is real bash vs. harness glue.
+ *
+ * `opts.blockDiagDirWithFile`: #3885 root-safe failure injection. Root
+ * bypasses `chmod 0o000` entirely (a Docker/CI default), so permission bits
+ * cannot induce a `mkdir -p`/`cp` failure deterministically. A filesystem
+ * TYPE conflict is root-safe instead: pre-creating a plain FILE at the exact
+ * path `mkdir -p` needs to create as a DIRECTORY makes `mkdir -p` fail with
+ * "not a directory" for every caller, root included, because it is not a
+ * permissions check at all.
+ */
+function runWriteReviewsFlow(t, opts) {
+  const scriptDir = createTempDir('gsd-3352-script-');
+  const runDir = createTempDir('gsd-3352-rundir-');
+  const phaseDir = createTempDir('gsd-3352-phasedir-');
+  t.after(() => {
+    cleanup(scriptDir);
+    cleanup(runDir);
+    cleanup(phaseDir);
+  });
+
+  if (opts.blockDiagDirWithFile) {
+    fs.writeFileSync(path.join(phaseDir, '.review-diagnostics'), 'blocking file, not a directory\n');
+  }
+
+  if (opts.jsonlLines && opts.jsonlLines.length > 0) {
+    fs.writeFileSync(
+      path.join(runDir, 'gsd-review-lane-results.jsonl'),
+      opts.jsonlLines.map((l) => JSON.stringify(l)).join('\n') + '\n',
+    );
+  }
+  for (const [slug, files] of Object.entries(opts.lanes || {})) {
+    if (files.md !== undefined && files.md !== null) {
+      fs.writeFileSync(path.join(runDir, `gsd-review-${slug}.md`), files.md);
+    }
+    if (files.err !== undefined && files.err !== null) {
+      fs.writeFileSync(path.join(runDir, `gsd-review-${slug}.err`), files.err);
+    }
+  }
+
+  const gateBlock = extractWriteReviewsGateBash();
+  const commitBlock = extractWriteReviewsCommitBash();
+  const preserveAndCleanupBlock = extractPresentResultsPreserveAndCleanupBash();
+
+  const tracePath = path.join(scriptDir, 'commit-trace.log');
+  const reviewsMdPath = path.join(phaseDir, '03-REVIEWS.md');
+
+  // #3885 Windows fix: splice POSIX-form paths into the bash source text, not
+  // the OS-native ones `createTempDir()` returns. This is a fixture fix, not
+  // a product one — the real workflow never hits this seam with a backslash
+  // path in the first place: `{run_dir}` is created by `mktemp -d` running
+  // INSIDE the bash block itself (always POSIX-style, even under Git Bash on
+  // Windows), and `{phase_dir}` is the `phase_dir` field from
+  // `gsd_run query init.review`, which gsd-core/bin/lib/init.cjs already
+  // pipes through this exact same `toPosixPath()` before it is ever
+  // serialized (see the `phase_dir: ... toPosixPath(...)` call sites there).
+  // Splicing a native `C:\Users\...` string directly into unquoted bash
+  // source (e.g. the pre-existing, unquoted
+  // `--files {phase_dir}/{padded_phase}-REVIEWS.md` commit line) hits bash's
+  // own unquoted-backslash removal and silently drops every separator — a
+  // test-harness-only failure mode that following the fixture's own
+  // production analogue eliminates.
+  const runDirPosix = toPosixPath(runDir);
+  const phaseDirPosix = toPosixPath(phaseDir);
+
+  const substitute = (block) => block
+    .split('{run_dir}').join(runDirPosix)
+    .split('{phase_dir}').join(phaseDirPosix)
+    .split('{padded_phase}').join('03')
+    .split('{N}').join('3');
+
+  const script = [
+    '#!/usr/bin/env bash',
+    'set -u',
+    `SELECTED_REVIEWERS='${opts.selected}'`,
+    `TRACE='${tracePath}'`,
+    'gsd_run() { printf "%s\\n" "$*" >> "$TRACE"; }',
+    substitute(gateBlock),
+    'echo "GATE:TOTAL_LANE_FAILURE=$TOTAL_LANE_FAILURE"',
+    'echo "GATE:ALL_LANES_SKIPPED=$ALL_LANES_SKIPPED"',
+    'if [ "$TOTAL_LANE_FAILURE" = "false" ] && [ "$ALL_LANES_SKIPPED" = "false" ]; then',
+    // Harness glue standing in for the agent's own Write tool call (see the
+    // seam-choice comment above): the prose says "combine ... into
+    // REVIEWS.md" only when the gate above did not fire.
+    `  touch '${reviewsMdPath}'`,
+    substitute(commitBlock),
+    'fi',
+    substitute(preserveAndCleanupBlock),
+  ].join('\n');
+
+  fs.writeFileSync(path.join(scriptDir, 'flow.sh'), script, { mode: 0o755 });
+
+  // cwd is deliberately scriptDir, NOT runDir: every path this flow touches
+  // ($RUN_DIR, $DIAG_DIR, {phase_dir}) is already absolute in the extracted
+  // bash text, so the child's cwd is not load-bearing for anything the
+  // blocks do — but on Windows a process cannot delete a directory that is
+  // its OWN current working directory (unlike POSIX, where rm -rf on your
+  // cwd succeeds). Setting cwd to runDir here was a harness artifact with no
+  // production analogue (review.md never `cd`s into $RUN_DIR — see
+  // gsd-core/workflows/review.md's use of $RUN_DIR, always by absolute
+  // path), and it silently defeated `rm -rf "$RUN_DIR"` under Git-Bash on
+  // windows-latest: the directory's *contents* were removed but the
+  // still-open-as-cwd directory entry itself survived, so
+  // `fs.existsSync(runDir)` kept reporting true. This was the actual defect
+  // behind the two Windows-only failures — not a path-separator mismatch.
+  const result = runHook(path.join(scriptDir, 'flow.sh'), [], {
+    interpreter: 'bash',
+    cwd: scriptDir,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
+  });
+
+  const stdout = result.stdout || '';
+  const diagDir = path.join(phaseDir, '.review-diagnostics');
+  const commitTrace = fs.existsSync(tracePath)
+    ? readFileNormalized(tracePath).split('\n').filter((l) => l.trim() !== '')
+    : [];
+
+  return {
+    outcome: result.outcome,
+    exitCode: result.exitCode,
+    stderr: result.stderr,
+    totalLaneFailure: /GATE:TOTAL_LANE_FAILURE=(\S+)/.exec(stdout)?.[1],
+    allLanesSkipped: /GATE:ALL_LANES_SKIPPED=(\S+)/.exec(stdout)?.[1],
+    reviewsMdExists: fs.existsSync(reviewsMdPath),
+    runDirExists: fs.existsSync(runDir),
+    diagDir,
+    diagDirExists: fs.existsSync(diagDir),
+    commitTrace,
+    runDir,
+    phaseDir,
+  };
+}
+
+const BUDGET_SKIP_MD = (slug) => `${slug} review skipped: prompt budget (500 tokens) too small for the minimum review set.`;
+const LANE_FAILURE_MD = (slug) => `${slug} review failed: exit 1`;
+
+describe('#3352 every lane failed writes no REVIEWS.md', () => {
+  test('totalLaneFailureWritesNoReviewsMd_3352', (t) => {
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini,claude',
+      jsonlLines: [],
+      lanes: {
+        codex: { md: LANE_FAILURE_MD('codex'), err: 'stack trace: codex crashed\n' },
+        gemini: { md: LANE_FAILURE_MD('gemini'), err: 'stack trace: gemini crashed\n' },
+        claude: { md: LANE_FAILURE_MD('claude'), err: 'stack trace: claude crashed\n' },
+      },
+    });
+    assert.equal(result.outcome, 'exited');
+    assert.equal(result.totalLaneFailure, 'true', `expected TOTAL_LANE_FAILURE=true; stderr=${result.stderr}`);
+    assert.equal(result.allLanesSkipped, 'false');
+    assert.equal(result.reviewsMdExists, false, 'no REVIEWS.md may be written when every lane failed');
+    assert.deepEqual(result.commitTrace, [], 'the commit must not run when every lane failed');
+  });
+});
+
+describe('#3352 one successful lane still writes REVIEWS.md (R1, must stay green)', () => {
+  test('oneSuccessfulLaneStillWritesReviews', (t) => {
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini,claude',
+      jsonlLines: [{ slug: 'codex' }],
+      lanes: {
+        codex: { md: '# Codex review\nlooks good\n' },
+        gemini: { md: LANE_FAILURE_MD('gemini'), err: 'stack trace: gemini crashed\n' },
+        claude: { md: LANE_FAILURE_MD('claude'), err: 'stack trace: claude crashed\n' },
+      },
+    });
+    assert.equal(result.totalLaneFailure, 'false');
+    assert.equal(result.allLanesSkipped, 'false');
+    assert.equal(result.reviewsMdExists, true, 'at least one lane succeeded — REVIEWS.md must still be written');
+    assert.equal(result.commitTrace.length, 1, 'the commit must run exactly once');
+  });
+});
+
+describe('#3352 a budget-skipped lane is not a failure (N5)', () => {
+  test('budgetSkippedLanesAreNotFailures', (t) => {
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini,claude',
+      jsonlLines: [],
+      lanes: {
+        codex: { md: BUDGET_SKIP_MD('codex') },
+        gemini: { md: BUDGET_SKIP_MD('gemini') },
+        claude: { md: BUDGET_SKIP_MD('claude') },
+      },
+    });
+    assert.equal(result.allLanesSkipped, 'true', `every lane was budget-skipped, not failed; stderr=${result.stderr}`);
+    assert.equal(result.totalLaneFailure, 'false', 'a budget skip must never be classified as a failure');
+    assert.equal(result.reviewsMdExists, false, 'nothing to review — REVIEWS.md still must not be written');
+    assert.deepEqual(result.commitTrace, []);
+  });
+});
+
+describe('#3352 successful-lane count boundary (0/1/2)', () => {
+  test('successfulLaneCountBoundary', (t) => {
+    const zero = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini',
+      jsonlLines: [],
+      lanes: {
+        codex: { md: LANE_FAILURE_MD('codex'), err: 'boom\n' },
+        gemini: { md: LANE_FAILURE_MD('gemini'), err: 'boom\n' },
+      },
+    });
+    assert.equal(zero.totalLaneFailure, 'true');
+    assert.equal(zero.reviewsMdExists, false, '0 successful lanes: no REVIEWS.md');
+
+    const one = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini',
+      jsonlLines: [{ slug: 'codex' }],
+      lanes: {
+        codex: { md: '# Codex\nok\n' },
+        gemini: { md: LANE_FAILURE_MD('gemini'), err: 'boom\n' },
+      },
+    });
+    assert.equal(one.totalLaneFailure, 'false');
+    assert.equal(one.reviewsMdExists, true, '1 successful lane: REVIEWS.md is written');
+
+    const two = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini',
+      jsonlLines: [{ slug: 'codex' }, { slug: 'gemini' }],
+      lanes: {
+        codex: { md: '# Codex\nok\n' },
+        gemini: { md: '# Gemini\nok\n' },
+      },
+    });
+    assert.equal(two.totalLaneFailure, 'false');
+    assert.equal(two.reviewsMdExists, true, '2 successful lanes: REVIEWS.md is written');
+  });
+});
+
+describe('#3352 per-lane evidence survives cleanup (R3)', () => {
+  test('laneEvidenceSurvivesCleanup_3352', (t) => {
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini,claude',
+      jsonlLines: [],
+      lanes: {
+        codex: { md: LANE_FAILURE_MD('codex'), err: 'stack trace: codex crashed\n' },
+        gemini: { md: '', err: '' }, // ran, wrote nothing, no error either — nothing to preserve for this slug's .err
+        claude: { md: LANE_FAILURE_MD('claude'), err: 'stack trace: claude crashed\n' },
+      },
+    });
+
+    assert.equal(result.runDirExists, false, 'the run dir must still be destroyed');
+    assert.equal(result.diagDirExists, true, 'diagnostics must have been preserved somewhere under phase_dir');
+
+    const codexMd = path.join(result.diagDir, 'gsd-review-codex.md');
+    const codexErr = path.join(result.diagDir, 'gsd-review-codex.err');
+    const claudeErr = path.join(result.diagDir, 'gsd-review-claude.err');
+    assert.ok(fs.existsSync(codexMd), 'codex .md evidence must be preserved');
+    assert.equal(fs.readFileSync(codexMd, 'utf-8'), LANE_FAILURE_MD('codex'));
+    assert.ok(fs.existsSync(codexErr), 'codex non-empty .err evidence must be preserved');
+    assert.ok(fs.existsSync(claudeErr), 'claude non-empty .err evidence must be preserved');
+
+    const geminiErr = path.join(result.diagDir, 'gsd-review-gemini.err');
+    assert.equal(fs.existsSync(geminiErr), false, 'an empty .err must not be copied as if it were real evidence');
+  });
+});
+
+describe('#3885 nothing to preserve still cleans up (must stay green)', () => {
+  test('nothingToPreserveStillCleansUp_3885', (t) => {
+    // No .md/.err fixtures written at all: `_DIAG_MD`/`_DIAG_ERR` are both
+    // empty, so this is the "nothing to preserve" branch, not a failure —
+    // `_PRESERVE_OK` starts (and stays) `true`, so cleanup proceeds exactly
+    // as if preservation had succeeded.
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini,claude',
+      jsonlLines: [],
+      lanes: {},
+    });
+
+    assert.equal(result.runDirExists, false, 'nothing to preserve is not a failure — run dir must still be removed');
+    assert.equal(result.diagDirExists, false, 'no diagnostics directory should be created when there is nothing to copy');
+  });
+});
+
+describe('#3885 failed preservation leaves run_dir intact (no silent swallow)', () => {
+  test('failedPreservationLeavesRunDirIntact_3885', (t) => {
+    // Root-safe failure injection: pre-create a plain FILE at the exact path
+    // `mkdir -p "$DIAG_DIR"` needs to create as a directory. This is a
+    // filesystem TYPE conflict, not a permission check, so it fails `mkdir -p`
+    // even when the test runs as root in Docker/CI (where `chmod 0o000`
+    // would be silently bypassed and this test would pass with zero real
+    // coverage — see #3885's brief).
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini,claude',
+      jsonlLines: [],
+      blockDiagDirWithFile: true,
+      lanes: {
+        codex: { md: LANE_FAILURE_MD('codex'), err: 'stack trace: codex crashed\n' },
+        gemini: { md: LANE_FAILURE_MD('gemini'), err: 'stack trace: gemini crashed\n' },
+        claude: { md: LANE_FAILURE_MD('claude'), err: 'stack trace: claude crashed\n' },
+      },
+    });
+
+    assert.equal(
+      result.runDirExists,
+      true,
+      'a failed mkdir -p on DIAG_DIR must skip rm -rf and leave run_dir intact — this is the #3885 regression guard',
+    );
+    // The warning is emitted by the substituted bash script, which names
+    // $RUN_DIR in its POSIX-spliced form (see the #3885 comment in
+    // runWriteReviewsFlow) — compare against that same form rather than the
+    // OS-native `result.runDir`.
+    assert.ok(
+      result.stderr.includes(toPosixPath(result.runDir)),
+      `the failure warning must name the intact run_dir holding the un-preserved evidence; got stderr: ${result.stderr}`,
+    );
+    // The original per-lane evidence is still readable at its original
+    // location, uncorrupted, because it was never moved or destroyed.
+    assert.equal(
+      fs.readFileSync(path.join(result.runDir, 'gsd-review-codex.md'), 'utf-8'),
+      LANE_FAILURE_MD('codex'),
+    );
+  });
+});
+
+describe('#3352 preserved evidence is never swept into the commit (N6)', () => {
+  test('preservedEvidenceIsNotSweptIntoTheCommit', (t) => {
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex',
+      jsonlLines: [{ slug: 'codex' }],
+      lanes: {
+        codex: { md: '# Codex\nok\n', err: '' },
+      },
+    });
+    assert.equal(result.commitTrace.length, 1, 'exactly one commit call must run');
+    const commitArgs = result.commitTrace[0];
+    // The commit fence splices `{phase_dir}` into unquoted bash source as a
+    // POSIX-form path (see the #3885 comment in runWriteReviewsFlow) — build
+    // the expected string the same way rather than via `path.join`, which on
+    // win32 would re-insert native backslashes the substituted script never
+    // produces.
+    assert.ok(
+      commitArgs.includes(`${toPosixPath(result.phaseDir)}/03-REVIEWS.md`),
+      `commit must name the single REVIEWS.md file; got: ${commitArgs}`,
+    );
+    assert.ok(
+      !commitArgs.includes('.review-diagnostics'),
+      `commit must never name the diagnostics directory; got: ${commitArgs}`,
+    );
+    // The commit step's --files value is a single path, never a glob: a
+    // directory glob would expand to MULTIPLE argv tokens by the time
+    // `gsd_run` sees them, so more than one path after "--files" is itself
+    // the defect this row guards against.
+    const filesIdx = commitArgs.indexOf('--files ');
+    const afterFiles = commitArgs.slice(filesIdx + '--files '.length).trim();
+    assert.equal(afterFiles.split(/\s+/).length, 1, `--files must carry exactly one path; got: ${afterFiles}`);
   });
 });

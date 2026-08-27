@@ -110,7 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     # Per-shard; lower than the old 30-min serial budget. Matrix-driven so only shards that
     # document a measured need (mutation-matrix.cjs COVERED[<module>].timeoutMinutes, e.g.
-    # frontmatter's 180) get more; every other shard keeps the 15-minute default emitted by
+    # frontmatter's 60) get more; every other shard keeps the 15-minute default emitted by
     # buildResult() in scripts/mutation-matrix.cjs.
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     strategy:
@@ -133,7 +133,10 @@ jobs:
         run: npm ci
 
       - name: Run Stryker — ${{ matrix.name }}
-        # MUTATION_TEST_CMD scopes the command runner to only this module's tests.
+        # MUTATION_TEST_FILES supplies the per-shard tap.testFiles list to
+        #   stryker.config.mjs (resolveMutationTestFiles). With coverageAnalysis:
+        #   perTest, Stryker re-runs only the files that actually cover each mutant
+        #   rather than the whole list per mutant (#3915: tap-runner swap).
         # --mutate scopes mutation to only the changed module's built artifact.
         # --incremental reuses cached results for unchanged mutants.
         # MUTATION_BREAK passes the per-module minScore ratchet floor to
@@ -147,15 +150,14 @@ jobs:
         # repo's no-defer rule.
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
-          MUTATION_TEST_CMD: node --test --test-isolation=${{ matrix.isolation }} ${{ matrix.tests }}
+          MUTATION_TEST_FILES: ${{ matrix.tests }}
           MUTATION_BREAK: ${{ matrix.minScore }}
           MODULE_NAME: ${{ matrix.name }}
           MUTATE_GLOB: ${{ matrix.mutate }}
-          MODULE_TESTS: ${{ matrix.tests }}
         run: |
           echo "Module:   ${MODULE_NAME}"
           echo "Mutate:   ${MUTATE_GLOB}"
-          echo "Tests:    ${MODULE_TESTS}"
+          echo "Tests:    ${MUTATION_TEST_FILES}"
           echo "MinScore: ${MUTATION_BREAK}"
           npx stryker run --incremental --mutate "${MUTATE_GLOB}"
 
