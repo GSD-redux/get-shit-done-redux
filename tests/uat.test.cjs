@@ -16,6 +16,8 @@ const {
   CHECKPOINT_LANGUAGE_ALIASES,
   resolveCheckpointFrame,
   parseDeferredItems,
+  parseDeferredItemsWithStatus,
+  acknowledgeDeferredItem,
   parseUatItems,
   parseUatItemsWithStats,
 } = require('../gsd-core/bin/lib/uat.cjs');
@@ -6570,5 +6572,54 @@ describe('parseUatItemsWithStats — result: line-scan boundary defects (#3078-C
     assert.ok(findAlphaBlocked(withSeparatorResult.items), `expected outstanding row 1/Alpha/blocked absent: ${describeAll()}`);
     assert.deepStrictEqual(withSeparatorResult.items, plainLfResult.items, `must match the plain-LF twin by identity: ${describeAll()}`);
     assert.strictEqual(withSeparatorResult.headingsSeen, plainLfResult.headingsSeen, describeAll());
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #3740: acknowledgeDeferredItem must agree with the field extractor on
+// what a status-field line is. The writer's search regex was marker-optional
+// while the reader (extractGapEntryFields) deliberately strips a bullet
+// marker on line 0 ONLY — a later `- ` line is a nested sub-list, not a
+// field. Pre-fix, a nested `  - status: open` line was rewritten and `ok`
+// returned, but no reader ever saw the rewrite: the entry stayed outstanding
+// after a "successful" acknowledgement.
+// ────────────────────────────────────────────────────────────────────────
+describe('#3740: acknowledge round-trips through the reader (parse → acknowledge → parse)', () => {
+  function roundTrip(body) {
+    const content = '## Deferred Items\n\n' + body + '\n';
+    const before = parseDeferredItemsWithStatus(content);
+    assert.equal(before.length, 1, `fixture must parse to exactly one entry, got ${before.length}`);
+    const ack = acknowledgeDeferredItem(content, before[0].name);
+    const after = parseDeferredItemsWithStatus(ack.content);
+    assert.equal(after.length, 1, 'acknowledged file must still parse to one entry');
+    return { ack, before: before[0], after: after[0], content: ack.content };
+  }
+
+  test('nested-marker status line: ack returns ok and the entry is no longer outstanding', () => {
+    const r = roundTrip('- alpha\n  - status: open');
+    assert.equal(r.ack.status, 'ok');
+    assert.equal(r.after.status, 'acknowledged',
+      '#3740: a nested `- status:` line is not a field line to the reader; the ack must take the insert branch the reader parses');
+  });
+
+  test('nested-marker status line, CRLF variant: same outcome', () => {
+    const r = roundTrip('- alpha\r\n  - status: open');
+    assert.equal(r.ack.status, 'ok');
+    assert.equal(r.after.status, 'acknowledged');
+  });
+
+  test('control: marker-free status line is still rewritten in place, not duplicated', () => {
+    const r = roundTrip('- alpha\n  status: open');
+    assert.equal(r.ack.status, 'ok');
+    assert.equal(r.after.status, 'acknowledged');
+    const statusLines = r.content.split('\n').filter((l) => /status:\s*/.test(l));
+    assert.equal(statusLines.length, 1, `exactly one status line must remain, got ${JSON.stringify(statusLines)}`);
+    assert.match(statusLines[0], /status:\s*acknowledged/);
+  });
+
+  test('control: entry with no status line keeps the insert branch', () => {
+    const r = roundTrip('- alpha');
+    assert.equal(r.ack.status, 'ok');
+    assert.equal(r.after.status, 'acknowledged');
   });
 });
