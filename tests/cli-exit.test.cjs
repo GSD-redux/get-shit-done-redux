@@ -21,6 +21,13 @@ const IO_PATH = path.resolve(__dirname, '../gsd-core/bin/lib/io.cjs');
 const SCRIPTS_CLI_EXIT_PATH = path.resolve(__dirname, '../scripts/lib/cli-exit.cjs');
 const EXIT_CODE_REGISTRY_PATH = path.resolve(__dirname, '../gsd-core/bin/lib/exit-code-registry.cjs');
 
+// #3911 (ADR-3889 Phase 7): the THIRD emitted copy, for hooks/ consumers that
+// must terminate through terminateNow without depending on any build
+// artifact (gsd-core/bin/lib is gitignored tsc output, absent on a raw
+// plugin-marketplace or git-clone install).
+const HOOKS_CLI_EXIT_PATH = path.resolve(__dirname, '../hooks/lib/cli-exit.js');
+const HOOKS_EXIT_CODE_REGISTRY_PATH = path.resolve(__dirname, '../hooks/lib/exit-code-registry.js');
+
 const { EXIT_CODES } = require(EXIT_CODE_REGISTRY_PATH);
 const REGISTERED_NAMES = EXIT_CODES.map((e) => e.name);
 const VERSIONS = ['v1', 'v2'];
@@ -1366,6 +1373,61 @@ describe('#3906: cross-copy — the built copy and the scripts copy agree', () =
     }
   });
 
+  // #3911 (ADR-3889 Phase 7) A6: EXTENDS the two-copy parity above to the
+  // THIRD emitted copy (hooks/lib/cli-exit.js + hooks/lib/exit-code-registry.js)
+  // rather than duplicating it. Outcome names are enumerated from the hooks
+  // registry itself — never hardcoded — so a future registry addition is
+  // covered automatically and a hooks-registry omission fails loudly here
+  // instead of silently under-testing the hooks copy.
+  test('the hooks copy agrees with both existing copies for every registered outcome/version', () => {
+    const built = require(BUILT_CLI_EXIT_PATH);
+    const scripts = require(SCRIPTS_CLI_EXIT_PATH);
+    const hooks = require(HOOKS_CLI_EXIT_PATH);
+    const { EXIT_CODES: hooksExitCodes } = require(HOOKS_EXIT_CODE_REGISTRY_PATH);
+    const hooksNames = hooksExitCodes.map((e) => e.name);
+
+    assert.deepStrictEqual(
+      [...hooksNames].sort(), [...REGISTERED_NAMES].sort(),
+      'the hooks registry must declare the exact same outcome set as the primary registry',
+    );
+
+    for (const version of VERSIONS) {
+      for (const outcome of ['PASS', 'FAIL', ...REGISTERED_NAMES]) {
+        const fromBuilt = built.projectOutcome(outcome, version);
+        const fromScripts = scripts.projectOutcome(outcome, version);
+        const fromHooks = hooks.projectOutcome(outcome, version);
+        assert.equal(fromScripts, fromBuilt, `scripts vs built disagree for ${outcome}/${version}`);
+        assert.equal(fromHooks, fromBuilt, `hooks vs built disagree for ${outcome}/${version}`);
+      }
+    }
+  });
+
+  // #3911 A6: the json-error-mode cell is a `globalThis`-backed shared cell
+  // (see the #3906 "ONE json-error-mode cell" tests above for the built/scripts
+  // pair) — prove the hooks copy reads and writes the SAME cell, not a third,
+  // independent module-level flag that would silently diverge.
+  test('the json-error-mode cell is genuinely shared across all three copies (built, scripts, hooks)', () => {
+    const built = require(BUILT_CLI_EXIT_PATH);
+    const scripts = require(SCRIPTS_CLI_EXIT_PATH);
+    const hooks = require(HOOKS_CLI_EXIT_PATH);
+    const saved = built.getJsonErrorMode();
+    try {
+      built.setJsonErrorMode(true);
+      assert.equal(scripts.getJsonErrorMode(), true, 'scripts must observe the mode set through built');
+      assert.equal(hooks.getJsonErrorMode(), true, 'hooks must observe the mode set through built');
+
+      hooks.setJsonErrorMode(false);
+      assert.equal(built.getJsonErrorMode(), false, 'built must observe the mode set through hooks');
+      assert.equal(scripts.getJsonErrorMode(), false, 'scripts must observe the mode set through hooks');
+
+      scripts.setJsonErrorMode(true);
+      assert.equal(built.getJsonErrorMode(), true, 'built must observe the mode set through scripts');
+      assert.equal(hooks.getJsonErrorMode(), true, 'hooks must observe the mode set through scripts');
+    } finally {
+      built.setJsonErrorMode(saved);
+    }
+  });
+
   test('scripts/lib/cli-exit.cjs + its sibling exit-code-registry.cjs load standalone, no gsd-core sibling', (t) => {
     const dir = createTempDir('gsd-3906-standalone-');
     t.after(() => cleanup(dir));
@@ -1412,5 +1474,170 @@ describe('#3906: cross-copy — the built copy and the scripts copy agree', () =
       { built: 'v2', scripts: 'v2' },
       'both copies must read the version resolved through only ONE of them — two independent cells would diverge here',
     );
+  });
+});
+
+// ─── #3911 (ADR-3889 Phase 7, issue #3911): the hooks copy is load-bearing ──
+//
+// The WHOLE POINT of hooks/lib/cli-exit.js is that a shipped enforcement hook
+// can terminate through terminateNow WITHOUT depending on any build
+// artifact. gsd-core/bin/lib is gitignored tsc output and is ABSENT on a raw
+// plugin-marketplace or git-clone install. These tests prove that property
+// hermetically: by copying ONLY hooks/lib/cli-exit.js and its sibling
+// hooks/lib/exit-code-registry.js into a fresh, otherwise-empty tmpdir (no
+// gsd-core sibling, no node_modules) and requiring the copy from a CHILD
+// process rooted there.
+describe('#3911: hooks/lib/cli-exit.js loads and terminates with no build present (A4, load-bearing)', () => {
+  /** Copy both hooks/lib artifacts into a fresh, otherwise-empty tmpdir. */
+  function makeStandaloneHooksCopy(t) {
+    const dir = createTempDir('gsd-3911-hooks-standalone-');
+    t.after(() => cleanup(dir));
+    const copiedExit = path.join(dir, 'cli-exit.js');
+    const copiedRegistry = path.join(dir, 'exit-code-registry.js');
+    fs.copyFileSync(HOOKS_CLI_EXIT_PATH, copiedExit);
+    fs.copyFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH, copiedRegistry);
+    return { dir, copiedExit, copiedRegistry };
+  }
+
+  // This test must FAIL if hooks/lib/cli-exit.js ever gains a require
+  // reaching outside hooks/lib/ (e.g. back into gsd-core/bin/lib, or a
+  // node_modules package): the tmpdir contains NOTHING else, so any such
+  // require resolves to MODULE_NOT_FOUND and the child crashes before
+  // terminateNow ever runs, failing every assertion below.
+  test('terminateNow(PASS) exits 0 with the payload on stdout, from a build-free tmpdir', (t) => {
+    const { dir, copiedExit } = makeStandaloneHooksCopy(t);
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(copiedExit)});`,
+      `c.terminateNow('PASS', { ok: true, from: 'hooks-standalone' });`,
+    ].join('\n')], { cwd: dir, timeoutMs: PROBE_TIMEOUT_MS }));
+
+    assert.ok(
+      !r.stderr.includes('MODULE_NOT_FOUND'),
+      `the hooks copy must not require anything outside hooks/lib/; got: ${r.stderr.slice(0, 400)}`,
+    );
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.deepEqual(JSON.parse(r.stdout), { ok: true, from: 'hooks-standalone' });
+  });
+
+  test('terminateNow(HOOK_DENY) exits 2 with the payload on BOTH stdout and stderr, from a build-free tmpdir', (t) => {
+    const { dir, copiedExit } = makeStandaloneHooksCopy(t);
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(copiedExit)});`,
+      `c.terminateNow('HOOK_DENY', { reason: 'blocked-by-guard', from: 'hooks-standalone' });`,
+    ].join('\n')], { cwd: dir, timeoutMs: PROBE_TIMEOUT_MS }));
+
+    assert.ok(
+      !r.stderr.includes('MODULE_NOT_FOUND'),
+      `the hooks copy must not require anything outside hooks/lib/; got: ${r.stderr.slice(0, 400)}`,
+    );
+    assert.equal(r.status, 2, `stderr: ${r.stderr}`);
+    const expected = { reason: 'blocked-by-guard', from: 'hooks-standalone' };
+    assert.deepEqual(JSON.parse(r.stdout), expected);
+    assert.deepEqual(JSON.parse(r.stderr), expected);
+  });
+
+  // A5: sibling resolution. hooks/lib/cli-exit.js requires its OWN sibling
+  // (./exit-code-registry.js), not some other copy sitting elsewhere on the
+  // machine — proven by DELETING the sibling from the tmpdir and observing
+  // the require actually fail, then restoring it and observing success again.
+  test('resolves its OWN sibling exit-code-registry.js, not some other copy (A5)', (t) => {
+    const { dir, copiedExit, copiedRegistry } = makeStandaloneHooksCopy(t);
+    const registryBytes = fs.readFileSync(copiedRegistry);
+
+    // Sanity: with the sibling present, the copy loads clean.
+    const before = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(copiedExit)});`,
+      `process.stdout.write(JSON.stringify({ hasTerminateNow: typeof c.terminateNow }));`,
+    ].join('\n')], { cwd: dir, timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.equal(before.status, 0, `stderr: ${before.stderr}`);
+    assert.deepEqual(JSON.parse(before.stdout), { hasTerminateNow: 'function' });
+
+    // Prove the failure: delete the sibling, require must fail. Single-file
+    // removal of a fixture we immediately restore below (not directory
+    // teardown; cleanup(dir) still runs via t.after() for the whole tmpdir).
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- see comment above
+    fs.rmSync(copiedRegistry);
+    try {
+      const missing = toLegacyResult(runNode(['-e', [
+        `require(${JSON.stringify(copiedExit)});`,
+      ].join('\n')], { cwd: dir, timeoutMs: PROBE_TIMEOUT_MS }));
+      assert.notEqual(missing.status, 0, 'require must fail once the sibling registry is removed');
+      assert.ok(
+        missing.stderr.includes('MODULE_NOT_FOUND') || missing.stderr.includes('Cannot find module'),
+        `expected a module-resolution failure naming the missing sibling; got: ${missing.stderr.slice(0, 400)}`,
+      );
+    } finally {
+      // Restore in a finally so a failing assertion above cannot leave the
+      // tmpdir fixture (owned by this test, not a committed artifact) broken
+      // for any later step in this same test.
+      fs.writeFileSync(copiedRegistry, registryBytes);
+    }
+
+    // Confirm restoration actually fixes it — the negative-space check is
+    // meaningless without this positive control.
+    const after = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(copiedExit)});`,
+      `process.stdout.write(JSON.stringify({ hasTerminateNow: typeof c.terminateNow }));`,
+    ].join('\n')], { cwd: dir, timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.equal(after.status, 0, `stderr: ${after.stderr}`);
+    assert.deepEqual(JSON.parse(after.stdout), { hasTerminateNow: 'function' });
+  });
+});
+
+// ─── #3911 A3: the --check generator guards can actually fail ──────────────
+//
+// CONTEXT.md's prove-it-can-fail rule: a guard that has never been observed
+// to fail is not a guard. For BOTH new committed artifacts, corrupt the
+// committed file, run the generator's --check, assert it fails and names the
+// file, then restore in a `finally` (so a failing assertion here can never
+// leave a committed artifact corrupted) and re-run --check to confirm the
+// restore actually cleared the guard.
+describe('#3911: the --check guards for the new hooks/lib artifacts can actually fail (A3)', () => {
+  const REPO_ROOT = path.resolve(__dirname, '..');
+  const GEN_HOOKS_CLI_EXIT = path.join(REPO_ROOT, 'scripts', 'gen-hooks-cli-exit.cjs');
+  const GEN_EXIT_CODE_REGISTRY = path.join(REPO_ROOT, 'scripts', 'gen-exit-code-registry.cjs');
+  // gen-hooks-cli-exit.cjs --check runs a real tsc compile of the whole
+  // project to a throwaway outDir (see its own COMPILE_TIMEOUT_MS=60000) —
+  // this needs a longer bound than a plain probe.
+  const CHECK_TIMEOUT_MS = 90000;
+
+  test('gen-hooks-cli-exit.cjs --check fails on a corrupted hooks/lib/cli-exit.js, names the file, and clears on restore', () => {
+    const original = fs.readFileSync(HOOKS_CLI_EXIT_PATH);
+    let corrupted = false;
+    try {
+      fs.appendFileSync(HOOKS_CLI_EXIT_PATH, '\n// corrupted-by-A3-test\n');
+      corrupted = true;
+      const r = toLegacyResult(runNode([GEN_HOOKS_CLI_EXIT, '--check'], { timeoutMs: CHECK_TIMEOUT_MS }));
+      assert.notEqual(r.status, 0, `--check must fail on a corrupted committed artifact; stderr: ${r.stderr}`);
+      assert.ok(
+        r.stderr.includes('cli-exit.js'),
+        `expected the failure to name the drifted file; got: ${r.stderr.slice(0, 400)}`,
+      );
+    } finally {
+      if (corrupted) fs.writeFileSync(HOOKS_CLI_EXIT_PATH, original);
+    }
+
+    const restored = toLegacyResult(runNode([GEN_HOOKS_CLI_EXIT, '--check'], { timeoutMs: CHECK_TIMEOUT_MS }));
+    assert.equal(restored.status, 0, `--check must pass again once the artifact is restored; stderr: ${restored.stderr}`);
+  });
+
+  test('gen-exit-code-registry.cjs --check fails on a corrupted hooks/lib/exit-code-registry.js, names the file, and clears on restore', () => {
+    const original = fs.readFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH);
+    let corrupted = false;
+    try {
+      fs.appendFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH, '\n// corrupted-by-A3-test\n');
+      corrupted = true;
+      const r = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check'], { timeoutMs: PROBE_TIMEOUT_MS }));
+      assert.notEqual(r.status, 0, `--check must fail on a corrupted committed artifact; stderr: ${r.stderr}`);
+      assert.ok(
+        r.stderr.includes('exit-code-registry.js'),
+        `expected the failure to name the drifted file; got: ${r.stderr.slice(0, 400)}`,
+      );
+    } finally {
+      if (corrupted) fs.writeFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH, original);
+    }
+
+    const restored = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check'], { timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.equal(restored.status, 0, `--check must pass again once the artifact is restored; stderr: ${restored.stderr}`);
   });
 });

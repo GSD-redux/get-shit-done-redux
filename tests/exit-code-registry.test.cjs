@@ -34,6 +34,10 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const GEN_SCRIPT = path.join(REPO_ROOT, 'scripts', 'gen-exit-code-registry.cjs');
 const REAL_DECLARATION_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared', 'exit-codes.json');
 const REAL_ARTIFACT_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib', 'exit-code-registry.cjs');
+const REAL_SCRIPTS_ARTIFACT_PATH = path.join(REPO_ROOT, 'scripts', 'lib', 'exit-code-registry.cjs');
+const REAL_HOOKS_ARTIFACT_PATH = path.join(REPO_ROOT, 'hooks', 'lib', 'exit-code-registry.js');
+const REAL_DTS_ARTIFACT_PATH = path.join(REPO_ROOT, 'src', 'exit-code-registry.d.cts');
+const REAL_SH_ARTIFACT_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared', 'exit-codes.sh');
 
 const generator = require(GEN_SCRIPT);
 const registry = require(REAL_ARTIFACT_PATH);
@@ -53,21 +57,23 @@ function makeEntry(overrides) {
 }
 
 /**
- * #3906 (ADR-3889 Phase 2): the generator now emits THREE artifacts — a
+ * #3906 (ADR-3889 Phase 2): the generator now emits FIVE artifacts — a
  * primary (gsd-core/bin/lib), a secondary (scripts/lib), and the ambient
  * `.d.cts` type declaration (src/exit-code-registry.d.cts). #3908 (Phase 4)
  * added a FOURTH: the shell-sourceable fragment (gsd-core/bin/shared/
- * exit-codes.sh). Every existing call site below only overrides the PRIMARY
- * path via `--out`; without matching `--scripts-out`/`--dts-out`/`--sh-out`
- * overrides, a `--write` here would clobber the real committed
- * `scripts/lib/exit-code-registry.cjs`, `src/exit-code-registry.d.cts`, and
- * `gsd-core/bin/shared/exit-codes.sh` — dangerous since test files in this
- * repo run in parallel. Rather than touch every call site, this single seam
- * derives co-located, per-call-unique secondary/dts/sh paths from whatever
- * `--out` value the test already supplies, whenever the caller has not
- * already supplied its own `--scripts-out`/`--dts-out`/`--sh-out`. Calls
- * with no explicit `--out` (the "real committed set" checks) are left
- * untouched.
+ * exit-codes.sh). #3911 (Phase 7) added a FIFTH: the hooks/lib/ copy
+ * (hooks/lib/exit-code-registry.js). Every existing call site below only
+ * overrides the PRIMARY path via `--out`; without matching
+ * `--scripts-out`/`--hooks-out`/`--dts-out`/`--sh-out` overrides, a
+ * `--write` here would clobber the real committed
+ * `scripts/lib/exit-code-registry.cjs`, `hooks/lib/exit-code-registry.js`,
+ * `src/exit-code-registry.d.cts`, and `gsd-core/bin/shared/exit-codes.sh` —
+ * dangerous since test files in this repo run in parallel. Rather than
+ * touch every call site, this single seam derives co-located,
+ * per-call-unique secondary/hooks/dts/sh paths from whatever `--out` value
+ * the test already supplies, whenever the caller has not already supplied
+ * its own `--scripts-out`/`--hooks-out`/`--dts-out`/`--sh-out`. Calls with
+ * no explicit `--out` (the "real committed set" checks) are left untouched.
  */
 function ensureScriptsOut(args) {
   const outIdx = args.indexOf('--out');
@@ -75,6 +81,7 @@ function ensureScriptsOut(args) {
   const outValue = args[outIdx + 1];
   const extra = [];
   if (!args.includes('--scripts-out')) extra.push('--scripts-out', `${outValue}.secondary.cjs`);
+  if (!args.includes('--hooks-out')) extra.push('--hooks-out', `${outValue}.hooks.js`);
   if (!args.includes('--dts-out')) extra.push('--dts-out', `${outValue}.d.cts`);
   if (!args.includes('--sh-out')) extra.push('--sh-out', `${outValue}.sh`);
   return extra.length === 0 ? args : [...args, ...extra];
@@ -561,6 +568,37 @@ describe('gen-exit-code-registry: CLI', () => {
     assert.equal(result.exitCode, 1);
     assert.equal(report.ok, false);
     assert.equal(report.reason, generator.REASON.EMPTY_DECLARATION);
+  });
+
+  // Regression (#3911 follow-up): ensureScriptsOut derived --scripts-out/
+  // --dts-out/--sh-out from --out but did not derive --hooks-out, so any
+  // --write test here silently clobbered the real committed
+  // hooks/lib/exit-code-registry.js. Assert over ALL FIVE committed
+  // artifacts so the next added target is covered by construction.
+  test('a --write run redirected to a tmpdir leaves every committed artifact untouched', () => {
+    const before = {
+      out: fs.readFileSync(REAL_ARTIFACT_PATH, 'utf8'),
+      scripts: fs.readFileSync(REAL_SCRIPTS_ARTIFACT_PATH, 'utf8'),
+      hooks: fs.readFileSync(REAL_HOOKS_ARTIFACT_PATH, 'utf8'),
+      dts: fs.readFileSync(REAL_DTS_ARTIFACT_PATH, 'utf8'),
+      sh: fs.readFileSync(REAL_SH_ARTIFACT_PATH, 'utf8'),
+    };
+
+    const decl = validDeclarationPath(tmpDir, 'l-decl.json');
+    const out = path.join(tmpDir, 'l-out.cjs');
+    const write = runGen(['--write', '--declaration', decl, '--out', out]);
+    assert.equal(write.exitCode, 0, write.stderr);
+
+    assert.equal(fs.readFileSync(REAL_ARTIFACT_PATH, 'utf8'), before.out, 'primary artifact must be untouched');
+    assert.equal(fs.readFileSync(REAL_SCRIPTS_ARTIFACT_PATH, 'utf8'), before.scripts, 'scripts artifact must be untouched');
+    assert.equal(fs.readFileSync(REAL_HOOKS_ARTIFACT_PATH, 'utf8'), before.hooks, 'hooks artifact must be untouched');
+    assert.equal(fs.readFileSync(REAL_DTS_ARTIFACT_PATH, 'utf8'), before.dts, '.d.cts artifact must be untouched');
+    assert.equal(fs.readFileSync(REAL_SH_ARTIFACT_PATH, 'utf8'), before.sh, '.sh artifact must be untouched');
+
+    assert.ok(fs.existsSync(`${out}.hooks.js`), 'expected the redirected hooks copy to land in the tmpdir');
+    assert.ok(fs.existsSync(`${out}.secondary.cjs`), 'expected the redirected scripts copy to land in the tmpdir');
+    assert.ok(fs.existsSync(`${out}.d.cts`), 'expected the redirected .d.cts copy to land in the tmpdir');
+    assert.ok(fs.existsSync(`${out}.sh`), 'expected the redirected .sh copy to land in the tmpdir');
   });
 });
 

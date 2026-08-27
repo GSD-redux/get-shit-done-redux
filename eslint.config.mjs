@@ -347,6 +347,12 @@ export default tseslint.config(
       // (stricter than lint: it forbids ANY hand edit, not just bad ones).
       // Lint the src/cli-exit.cts source, not this emitted copy.
       'scripts/lib/cli-exit.cjs',
+      // #3911 (ADR-3889 Phase 7): tsc-generated runtime artifact — generated
+      // by scripts/gen-hooks-cli-exit.cjs from the SAME fresh compile of
+      // src/cli-exit.cts (sibling registry require rewritten to `.js`), and
+      // byte-guarded by `npm run lint:generated-sync`. Lint the
+      // src/cli-exit.cts source, not this emitted copy.
+      'hooks/lib/cli-exit.js',
     ],
   },
 
