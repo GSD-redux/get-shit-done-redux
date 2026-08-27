@@ -391,6 +391,7 @@
   "scripts/lib/allowlist-ratchet.cjs",
   "scripts/lib/cli-exit.cjs",
   "scripts/lib/drift-scan.cjs",
+  "scripts/lib/exit-code-registry.cjs",
   "skills/gsd-ns-context/SKILL.md",
   "skills/gsd-ns-context/skills/docs-update/SKILL.md",
   "skills/gsd-ns-context/skills/extract-learnings/SKILL.md",

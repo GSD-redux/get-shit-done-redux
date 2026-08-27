@@ -1,21 +1,29 @@
 'use strict';
 
-const { describe, test } = require('node:test');
+const { describe, test, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const { ExitError, runMain } = require('../scripts/lib/cli-exit.cjs');
+const {
+  ExitError, runMain, projectOutcome, resolveContractVersion, getContractVersion,
+} = require('../scripts/lib/cli-exit.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const fc = require('./helpers/fast-check-setup.cjs');
 
 // Paths to the compiled product seam (src/cli-exit.cts → gsd-core/bin/lib/cli-exit.cjs)
 // used for json-error mode regression tests which require io.cjs integration.
 const BUILT_CLI_EXIT_PATH = path.resolve(__dirname, '../gsd-core/bin/lib/cli-exit.cjs');
 const IO_PATH = path.resolve(__dirname, '../gsd-core/bin/lib/io.cjs');
 const SCRIPTS_CLI_EXIT_PATH = path.resolve(__dirname, '../scripts/lib/cli-exit.cjs');
+const EXIT_CODE_REGISTRY_PATH = path.resolve(__dirname, '../gsd-core/bin/lib/exit-code-registry.cjs');
+
+const { EXIT_CODES } = require(EXIT_CODE_REGISTRY_PATH);
+const REGISTERED_NAMES = EXIT_CODES.map((e) => e.name);
+const VERSIONS = ['v1', 'v2'];
 
 /** Settle the runMain promise chain before asserting. */
 async function settle() {
@@ -169,6 +177,59 @@ describe('runMain', () => {
       process.stderr.write = origWrite;
       process.exitCode = saved !== undefined ? saved : 0;
     }
+  });
+
+  // #3906 (ADR-3889 Phase 2): runMain gained the ability to accept a declared
+  // outcome STRING return, projected through the same projectOutcome() the
+  // sibling terminator (terminateNow) uses. Every arm above this one is
+  // byte-for-byte unchanged — this is the only new arm.
+  describe('#3906: runMain accepts a declared outcome string', () => {
+    test('a returned registered name projects through the current contract version', async () => {
+      const saved = process.exitCode;
+      try {
+        resolveContractVersion({ argv: ['node', 'x'], env: {} }); // v1 (default)
+        runMain(() => 'USAGE');
+        await settle();
+        assert.equal(process.exitCode, 64);
+      } finally {
+        process.exitCode = saved || 0;
+      }
+    });
+
+    test('a returned DEGRADED projects to 0 under v1 and 80 under v2', async () => {
+      const saved = process.exitCode;
+      try {
+        resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v1'], env: {} });
+        runMain(() => 'DEGRADED');
+        await settle();
+        assert.equal(process.exitCode, 0);
+
+        resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
+        runMain(() => 'DEGRADED');
+        await settle();
+        assert.equal(process.exitCode, 80);
+      } finally {
+        resolveContractVersion({ argv: ['node', 'x'], env: {} }); // restore default
+        process.exitCode = saved || 0;
+      }
+    });
+
+    test('an unregistered outcome string rejects the same way projectOutcome does (surfaces as the generic-throw arm)', async () => {
+      const saved = process.exitCode;
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = () => true;
+      try {
+        runMain(() => 'NOT_A_REAL_OUTCOME');
+        await settle();
+        // The string arm's projectOutcome() call throws synchronously inside
+        // the .then() callback, which the SAME .catch() below it already
+        // handles as a generic (non-ExitError) throw -> exit code 1.
+        assert.equal(process.exitCode, 1);
+      } finally {
+        process.stderr.write = origWrite;
+        process.exitCode = saved || 0;
+      }
+    });
   });
 });
 
@@ -606,10 +667,20 @@ describe('regressions', () => {
       // This is the sole guard of the "depends on node: builtins only"
       // constraint: it proves the property by real module resolution in an
       // isolated directory, rather than by inspecting require() specifiers.
+      //
+      // #3906 (ADR-3889 Phase 2): scripts/lib/cli-exit.cjs now also requires
+      // its OWN generated sibling, ./exit-code-registry.cjs (dual-emitted by
+      // scripts/gen-exit-code-registry.cjs to this exact directory) — so the
+      // standalone set this test proves is now TWO files, not one. Copying
+      // only cli-exit.cjs here would (correctly) MODULE_NOT_FOUND on the
+      // registry require; that failure mode is exercised on its own by the
+      // dedicated #3906 standalone-load test below, which is the one that
+      // asserts the CORRECT two-file set loads clean.
       const dir = createTempDir('gsd-3904-standalone-');
       t.after(() => cleanup(dir));
       const copied = path.join(dir, 'cli-exit.cjs');
       fs.copyFileSync(SCRIPTS_CLI_EXIT_PATH, copied);
+      fs.copyFileSync(path.resolve(__dirname, '../scripts/lib/exit-code-registry.cjs'), path.join(dir, 'exit-code-registry.cjs'));
 
       const r = toLegacyResult(runNode(['-e', [
         `const c = require(${JSON.stringify(copied)});`,
@@ -633,5 +704,554 @@ describe('regressions', () => {
         'gsd-core/bin/lib/cli-exit.cjs must remain tsc output — it is the build sentinel',
       );
     });
+  });
+});
+
+// ─── #3906 (ADR-3889 Phase 2): two terminators over one registry ────────────
+//
+// projectOutcome/resolveContractVersion are pure (no process.exit, no real
+// I/O) and are exercised IN-PROCESS. runMain/terminateNow are exercised as
+// SUBPROCESSES via tests/helpers/process-seam.cjs — terminateNow really
+// calls process.exit(), which would kill the test runner if called in-process.
+
+const NON_DEGRADED_REGISTERED_NAMES = REGISTERED_NAMES.filter((n) => n !== 'DEGRADED');
+
+describe('#3906: projectOutcome', () => {
+  test('PASS projects to 0 under both versions', () => {
+    for (const v of VERSIONS) assert.equal(projectOutcome('PASS', v), 0);
+  });
+
+  test('FAIL projects to 1 under both versions', () => {
+    for (const v of VERSIONS) assert.equal(projectOutcome('FAIL', v), 1);
+  });
+
+  test('DEGRADED projects to 0 under v1 and 80 under v2', () => {
+    assert.equal(projectOutcome('DEGRADED', 'v1'), 0);
+    assert.equal(projectOutcome('DEGRADED', 'v2'), 80);
+  });
+
+  test('every other registered name is version-invariant', () => {
+    for (const name of NON_DEGRADED_REGISTERED_NAMES) {
+      assert.equal(
+        projectOutcome(name, 'v1'), projectOutcome(name, 'v2'),
+        `${name} must project identically under v1 and v2`,
+      );
+    }
+  });
+
+  test('a registered name resolves through the registry, not a hardcoded table', () => {
+    // HOOK_DENY=2, USAGE=64, NO_INPUT=66, UNAVAILABLE=69, INTERNAL=70 — pinned
+    // to the shipped table so a future re-allocation is caught here too.
+    assert.equal(projectOutcome('HOOK_DENY', 'v1'), 2);
+    assert.equal(projectOutcome('USAGE', 'v2'), 64);
+    assert.equal(projectOutcome('NO_INPUT', 'v1'), 66);
+    assert.equal(projectOutcome('UNAVAILABLE', 'v2'), 69);
+    assert.equal(projectOutcome('INTERNAL', 'v1'), 70);
+  });
+
+  const badOutcomes = [
+    ['unregistered name', 'NOT_A_REAL_OUTCOME'],
+    ['empty string', ''],
+    ['null', null],
+    ['undefined', undefined],
+    ['number', 0],
+    ['plain object', {}],
+    ['wrong case', 'pass'],
+    ['wrong case registered name', 'usage'],
+    ['untrimmed', ' PASS '],
+  ];
+  for (const [label, value] of badOutcomes) {
+    test(`throws for ${label} outcome`, () => {
+      assert.throws(() => projectOutcome(value, 'v1'));
+      assert.throws(() => projectOutcome(value, 'v2'));
+    });
+  }
+
+  const badVersions = [
+    ['v3', 'v3'],
+    ['garbage', 'garbage'],
+    ['empty string', ''],
+    ['null', null],
+    ['undefined', undefined],
+    ['uppercase V1', 'V1'],
+    ['number', 1],
+  ];
+  for (const [label, value] of badVersions) {
+    test(`throws for ${label} version`, () => {
+      assert.throws(() => projectOutcome('PASS', value));
+    });
+  }
+
+  test('every projection is an integer', () => {
+    for (const v of VERSIONS) {
+      for (const outcome of ['PASS', 'FAIL', ...REGISTERED_NAMES]) {
+        const result = projectOutcome(outcome, v);
+        assert.equal(Number.isInteger(result), true, `${outcome}/${v} -> ${result} must be an integer`);
+      }
+    }
+  });
+
+  test('every v2 projection except PASS is non-zero', () => {
+    for (const outcome of ['FAIL', ...REGISTERED_NAMES]) {
+      assert.notEqual(projectOutcome(outcome, 'v2'), 0, `${outcome} must be non-zero under v2`);
+    }
+  });
+
+  test('fast-check: every projection over the closed outcome/version space is a non-negative integer', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('PASS', 'FAIL', ...REGISTERED_NAMES),
+        fc.constantFrom(...VERSIONS),
+        (outcome, version) => {
+          const result = projectOutcome(outcome, version);
+          assert.equal(Number.isInteger(result), true);
+          assert.ok(result >= 0);
+        },
+      ),
+      { seed: 3906, numRuns: 200 },
+    );
+  });
+});
+
+describe('#3906: resolveContractVersion', () => {
+  // Every test in this describe leaves the shared globalThis cell restored to
+  // the documented default so later describes (and other test files requiring
+  // either copy of this module in the SAME worker) do not observe a version
+  // some earlier test selected.
+  afterEach(() => { resolveContractVersion({ argv: ['node', 'x'], env: {} }); });
+
+  test('no flag, no env -> v1 (documented default)', () => {
+    assert.equal(resolveContractVersion({ argv: ['node', 'x'], env: {} }), 'v1');
+  });
+
+  test('--exit-contract=v2 flag -> v2', () => {
+    assert.equal(resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} }), 'v2');
+  });
+
+  test('GSD_EXIT_CONTRACT=v2 env -> v2', () => {
+    assert.equal(resolveContractVersion({ argv: ['node', 'x'], env: { GSD_EXIT_CONTRACT: 'v2' } }), 'v2');
+  });
+
+  test('flag v1 beats env v2', () => {
+    assert.equal(
+      resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v1'], env: { GSD_EXIT_CONTRACT: 'v2' } }),
+      'v1',
+    );
+  });
+
+  test('flag v2 beats env v1 (both directions)', () => {
+    assert.equal(
+      resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: { GSD_EXIT_CONTRACT: 'v1' } }),
+      'v2',
+    );
+  });
+
+  test('an empty GSD_EXIT_CONTRACT reads as unset, not as an explicit selection', () => {
+    assert.equal(resolveContractVersion({ argv: ['node', 'x'], env: { GSD_EXIT_CONTRACT: '' } }), 'v1');
+  });
+
+  for (const bad of ['v3', 'garbage', '--exit-contract=']) {
+    const flagArg = bad === '--exit-contract=' ? bad : `--exit-contract=${bad}`;
+    test(`--exit-contract=${bad === '--exit-contract=' ? '<empty>' : bad} is REJECTED, not silently defaulted`, () => {
+      assert.throws(() => resolveContractVersion({ argv: ['node', 'x', flagArg], env: {} }));
+    });
+  }
+
+  test('GSD_EXIT_CONTRACT=v3 (env garbage) is rejected the same way', () => {
+    assert.throws(() => resolveContractVersion({ argv: ['node', 'x'], env: { GSD_EXIT_CONTRACT: 'v3' } }));
+  });
+
+  test('casing is decided: uppercase V2 is rejected, not silently accepted', () => {
+    assert.throws(() => resolveContractVersion({ argv: ['node', 'x', '--exit-contract=V2'], env: {} }));
+    assert.throws(() => resolveContractVersion({ argv: ['node', 'x'], env: { GSD_EXIT_CONTRACT: 'V2' } }));
+  });
+
+  test('resolveContractVersion persists into the shared cell read by getContractVersion', () => {
+    resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
+    assert.equal(getContractVersion(), 'v2');
+    resolveContractVersion({ argv: ['node', 'x'], env: {} });
+    assert.equal(getContractVersion(), 'v1');
+  });
+});
+
+describe('#3906: parity — runMain and terminateNow project identically (mandatory per ADR-3889 §3)', () => {
+  // #3906 follow-up: this MUST drive the version through the REAL ambient
+  // mechanism (GSD_EXIT_CONTRACT in the child's env, never touched by the
+  // script body itself), not by calling resolveContractVersion() explicitly
+  // inside the child. A test that pre-seeds the shared cell before invoking
+  // either terminator can pass even if getContractVersion() never actually
+  // wires the ambient process in at all — which is exactly the defect this
+  // matrix exists to catch (both terminators reading the SAME un-wired
+  // default 'v1' would still "agree", 16/16, while GSD_EXIT_CONTRACT was
+  // silently ignored). Neither script below calls resolveContractVersion or
+  // passes --exit-contract; the version reaches the process ONLY via env.
+  function runMainExit(outcome, version) {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.runMain(() => ${JSON.stringify(outcome)});`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    return toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { ...process.env, GSD_EXIT_CONTRACT: version },
+    }));
+  }
+
+  function terminateNowExit(outcome, version) {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow(${JSON.stringify(outcome)}, { outcome: ${JSON.stringify(outcome)} });`,
+    ].join('\n');
+    return toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { ...process.env, GSD_EXIT_CONTRACT: version },
+    }));
+  }
+
+  for (const version of VERSIONS) {
+    for (const outcome of ['PASS', 'FAIL', ...REGISTERED_NAMES]) {
+      test(`${outcome} under ${version}: runMain and terminateNow agree`, () => {
+        const fromRunMain = runMainExit(outcome, version);
+        const fromTerminateNow = terminateNowExit(outcome, version);
+        assert.equal(
+          fromRunMain.status, fromTerminateNow.status,
+          `runMain exited ${fromRunMain.status} (stderr: ${fromRunMain.stderr}) but terminateNow exited `
+          + `${fromTerminateNow.status} (stderr: ${fromTerminateNow.stderr}) for ${outcome}/${version}`,
+        );
+      });
+    }
+  }
+
+  // #3906 follow-up: a matrix where every row merely agrees between the two
+  // terminators is satisfiable by a build that ignores GSD_EXIT_CONTRACT
+  // entirely (both terminators would then agree on the un-wired v1 default
+  // for every row, 16/16, and the matrix above would still read green). This
+  // block is the non-vacuousness proof the brief demands: it asserts the ONE
+  // row that MUST be version-sensitive actually differs by version, and
+  // spot-checks a control row that must NOT.
+  test('non-vacuousness: DEGRADED is version-sensitive via ambient GSD_EXIT_CONTRACT', () => {
+    const runMainV1 = runMainExit('DEGRADED', 'v1');
+    const runMainV2 = runMainExit('DEGRADED', 'v2');
+    const terminateNowV1 = terminateNowExit('DEGRADED', 'v1');
+    const terminateNowV2 = terminateNowExit('DEGRADED', 'v2');
+
+    assert.equal(runMainV1.status, 0, `runMain DEGRADED under v1 must be 0; stderr: ${runMainV1.stderr}`);
+    assert.equal(runMainV2.status, 80, `runMain DEGRADED under v2 must be 80; stderr: ${runMainV2.stderr}`);
+    assert.equal(
+      terminateNowV1.status, 0,
+      `terminateNow DEGRADED under v1 must be 0; stderr: ${terminateNowV1.stderr}`,
+    );
+    assert.equal(
+      terminateNowV2.status, 80,
+      `terminateNow DEGRADED under v2 must be 80; stderr: ${terminateNowV2.stderr}`,
+    );
+    assert.notEqual(
+      runMainV1.status, runMainV2.status,
+      'the matrix above is vacuous unless at least one outcome actually differs by version',
+    );
+  });
+
+  test('control: a non-DEGRADED outcome (FAIL) stays version-invariant via ambient GSD_EXIT_CONTRACT', () => {
+    const runMainV1 = runMainExit('FAIL', 'v1');
+    const runMainV2 = runMainExit('FAIL', 'v2');
+    assert.equal(runMainV1.status, 1);
+    assert.equal(runMainV2.status, 1);
+  });
+});
+
+// ─── #3906 acceptance criterion, made executable ────────────────────────────
+//
+// "user can run the gsd-tools command with --exit-contract=v2 (or
+// GSD_EXIT_CONTRACT=v2 in the environment) and observe the v2 registry
+// projection on the exit status; absent both, the same command yields the v1
+// integers." Nothing in the module wired the ambient process to the
+// terminators before this: getContractVersion() only ever read the shared
+// cell, and nothing populated that cell absent an explicit
+// resolveContractVersion()/setContractVersion() call — so a bare
+// `GSD_EXIT_CONTRACT=v2 node -e "...terminateNow('DEGRADED')..."` exited 0,
+// not 80. These tests spawn a fresh child per case (a fresh process has an
+// empty cell) and touch NOTHING but the documented public surface.
+describe('#3906: ambient GSD_EXIT_CONTRACT/--exit-contract wiring (acceptance criterion)', () => {
+  test('terminateNow: GSD_EXIT_CONTRACT=v2 -> DEGRADED exits 80', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('DEGRADED', {});`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' } }));
+    assert.equal(r.status, 80, `stderr: ${r.stderr}`);
+  });
+
+  test('terminateNow: no env, no flag -> DEGRADED exits 0 (v1 default unchanged)', () => {
+    const env = { ...process.env };
+    delete env.GSD_EXIT_CONTRACT;
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('DEGRADED', {});`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env }));
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  });
+
+  test('runMain: GSD_EXIT_CONTRACT=v2 -> DEGRADED exits 80', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.runMain(() => 'DEGRADED');`,
+      `setImmediate(() => {});`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' } }));
+    assert.equal(r.status, 80, `stderr: ${r.stderr}`);
+  });
+
+  test('runMain: no env, no flag -> DEGRADED exits 0 (v1 default unchanged)', () => {
+    const env = { ...process.env };
+    delete env.GSD_EXIT_CONTRACT;
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.runMain(() => 'DEGRADED');`,
+      `setImmediate(() => {});`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env }));
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  });
+
+  // `node -e "<script>" --exit-contract=v2` makes NODE itself consume the
+  // trailing flag (Node's own CLI parser reports an unknown-option usage
+  // error, exit 9) rather than leaving it in the CHILD's process.argv. A
+  // real CLI entrypoint is invoked as `node <file> --exit-contract=v2`, so
+  // the flag path is proven with a real temp script file, not `-e`.
+  test('flag path: node <file> --exit-contract=v2 -> terminateNow DEGRADED exits 80', () => {
+    const dir = createTempDir('gsd-3906-flag-');
+    try {
+      const scriptPath = path.join(dir, 'terminate-degraded.cjs');
+      fs.writeFileSync(scriptPath, [
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow('DEGRADED', {});`,
+        '',
+      ].join('\n'));
+      const env = { ...process.env };
+      delete env.GSD_EXIT_CONTRACT;
+      const r = toLegacyResult(runNode([scriptPath, '--exit-contract=v2'], { timeoutMs: PROBE_TIMEOUT_MS, env }));
+      assert.equal(r.status, 80, `stderr: ${r.stderr}`);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('flag path: node <file> with no flag -> terminateNow DEGRADED exits 0', () => {
+    const dir = createTempDir('gsd-3906-flag-');
+    try {
+      const scriptPath = path.join(dir, 'terminate-degraded.cjs');
+      fs.writeFileSync(scriptPath, [
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow('DEGRADED', {});`,
+        '',
+      ].join('\n'));
+      const env = { ...process.env };
+      delete env.GSD_EXIT_CONTRACT;
+      const r = toLegacyResult(runNode([scriptPath], { timeoutMs: PROBE_TIMEOUT_MS, env }));
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  // setContractVersion itself is internal (not exported); resolveContractVersion
+  // is the module's own sanctioned way to write an explicit version into the
+  // shared cell, and it is what this precedence rests on: getContractVersion's
+  // lazy ambient-resolution path must be skipped entirely once the cell is
+  // already populated, so a later read of GSD_EXIT_CONTRACT must NOT unseat it.
+  test('an explicit resolveContractVersion() call beats a later ambient GSD_EXIT_CONTRACT read (precedence)', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.resolveContractVersion({ argv: ['node','x','--exit-contract=v1'], env: {} });`,
+      `c.terminateNow('DEGRADED', {});`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' } }));
+    assert.equal(
+      r.status, 0,
+      `an explicit resolveContractVersion('v1') call must beat a later ambient GSD_EXIT_CONTRACT=v2 read; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('GSD_EXIT_CONTRACT=v3 (invalid) still THROWS on the lazy ambient path, never silently v1', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('DEGRADED', {});`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v3' } }));
+    assert.equal(r.status, 1, `expected the generic-throw exit code 1; stderr: ${r.stderr}`);
+    assert.ok(
+      /unrecognized exit-contract version/.test(r.stderr),
+      `expected the resolveContractVersion rejection message on stderr; got: ${r.stderr.slice(0, 300)}`,
+    );
+  });
+});
+
+describe('#3906: terminateNow', () => {
+  function spawnTerminateNow(lines) {
+    return toLegacyResult(runNode(['-e', lines.join('\n')], { timeoutMs: PROBE_TIMEOUT_MS }));
+  }
+
+  test('HOOK_DENY exits 2 with the payload written to stdout', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', { reason: 'blocked-by-guard', detail: 'x' });`,
+    ]);
+    assert.equal(r.status, 2);
+    assert.deepEqual(JSON.parse(r.stdout), { reason: 'blocked-by-guard', detail: 'x' });
+  });
+
+  test('HOOK_DENY writes the SAME payload to both stdout and stderr (Kimi reads exit-2 output from stderr)', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', { reason: 'blocked' });`,
+    ]);
+    assert.equal(r.status, 2);
+    assert.deepEqual(JSON.parse(r.stdout), { reason: 'blocked' });
+    assert.deepEqual(JSON.parse(r.stderr), { reason: 'blocked' });
+  });
+
+  test('a non-deny outcome writes stdout only, not stderr', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('FAIL', { reason: 'not-a-deny' });`,
+    ]);
+    assert.equal(r.status, 1);
+    assert.deepEqual(JSON.parse(r.stdout), { reason: 'not-a-deny' });
+    assert.equal(r.stderr, '');
+  });
+
+  // Cross-platform IO-failure injection: a monkeypatched THROWING fs.writeSync,
+  // restored implicitly by process exit — never chmod (CONTRIBUTING.md /
+  // CLAUDE.md: mode-bit tricks are bypassed by root/CI and leak resources).
+  test('a failed write still exits with the projected code (the fail-open control)', () => {
+    const r = spawnTerminateNow([
+      `const fs = require('node:fs');`,
+      `fs.writeSync = () => { throw new Error('injected write failure'); };`,
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('FAIL', { reason: 'x' });`,
+    ]);
+    assert.equal(r.status, 1, 'the exit code must still be the projected one, not corrupted by the write failure');
+    assert.equal(r.stdout, '', 'nothing could be written, so stdout must be empty (not a partial payload)');
+  });
+
+  test('a failed write still exits 2 for a deny, including the stderr write attempt', () => {
+    const r = spawnTerminateNow([
+      `const fs = require('node:fs');`,
+      `fs.writeSync = () => { throw new Error('injected write failure'); };`,
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', { reason: 'x' });`,
+    ]);
+    assert.equal(r.status, 2);
+    assert.equal(r.stdout, '');
+    assert.equal(r.stderr, '');
+  });
+
+  test('does not return: nothing after the call executes', () => {
+    const r = spawnTerminateNow([
+      `const fs = require('node:fs');`,
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('PASS', { ok: true });`,
+      `fs.writeSync(1, 'SHOULD_NEVER_APPEAR');`,
+    ]);
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, JSON.stringify({ ok: true }));
+    assert.ok(!r.stdout.includes('SHOULD_NEVER_APPEAR'), `code after terminateNow must never run; got: ${r.stdout}`);
+  });
+
+  test('a large payload (bigger than a pipe buffer) arrives whole', () => {
+    // 256KB comfortably exceeds every common OS pipe-buffer size (64KB on
+    // Linux, 16 pages, is the largest common default), so a single
+    // fs.writeSync call is very likely to under-write without the
+    // write-until-drained loop.
+    const bigString = 'x'.repeat(256 * 1024);
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('PASS', { big: ${JSON.stringify(bigString)} });`,
+    ]);
+    assert.equal(r.status, 0);
+    const parsed = JSON.parse(r.stdout);
+    assert.equal(parsed.big.length, bigString.length, 'the payload must arrive byte-for-byte whole, not truncated');
+    assert.equal(parsed.big, bigString);
+  });
+});
+
+describe('#3906: runMain stays drain-then-exit (the reason two terminators exist)', () => {
+  test('process.on(\'exit\') still fires, and a pending timer is allowed to run before exit', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const fs = require('node:fs');`,
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `process.on('exit', () => { fs.writeSync(1, 'ON_EXIT_FIRED\\n'); });`,
+      `setTimeout(() => { fs.writeSync(1, 'TIMER_FIRED\\n'); }, 20);`,
+      `c.runMain(() => 'FAIL');`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS }));
+
+    assert.equal(r.status, 1, `expected exit 1 from FAIL; stderr: ${r.stderr}`);
+    // If runMain had hard-exited (like terminateNow), the 20ms timer below
+    // would never have gotten to run — proving the process instead drained
+    // its event loop naturally (process.exitCode, never process.exit).
+    assert.ok(r.stdout.includes('TIMER_FIRED'), `pending timer must run before exit; got: ${JSON.stringify(r.stdout)}`);
+    assert.ok(r.stdout.includes('ON_EXIT_FIRED'), `'exit' handler must fire; got: ${JSON.stringify(r.stdout)}`);
+    assert.ok(
+      r.stdout.indexOf('TIMER_FIRED') < r.stdout.indexOf('ON_EXIT_FIRED'),
+      `the timer must fire BEFORE the 'exit' handler; got: ${JSON.stringify(r.stdout)}`,
+    );
+  });
+});
+
+describe('#3906: cross-copy — the built copy and the scripts copy agree', () => {
+  test('projectOutcome agrees across both copies for every outcome/version', () => {
+    const built = require(BUILT_CLI_EXIT_PATH);
+    const scripts = require(SCRIPTS_CLI_EXIT_PATH);
+    for (const version of VERSIONS) {
+      for (const outcome of ['PASS', 'FAIL', ...REGISTERED_NAMES]) {
+        assert.equal(
+          built.projectOutcome(outcome, version), scripts.projectOutcome(outcome, version),
+          `built vs scripts disagree for ${outcome}/${version}`,
+        );
+      }
+    }
+  });
+
+  test('scripts/lib/cli-exit.cjs + its sibling exit-code-registry.cjs load standalone, no gsd-core sibling', (t) => {
+    const dir = createTempDir('gsd-3906-standalone-');
+    t.after(() => cleanup(dir));
+    const copiedExit = path.join(dir, 'cli-exit.cjs');
+    const copiedRegistry = path.join(dir, 'exit-code-registry.cjs');
+    fs.copyFileSync(SCRIPTS_CLI_EXIT_PATH, copiedExit);
+    fs.copyFileSync(path.resolve(__dirname, '../scripts/lib/exit-code-registry.cjs'), copiedRegistry);
+
+    // This directory contains ONLY these two files — no node_modules, no
+    // gsd-core sibling. A successful load here is the behavioral proof (per
+    // CONTRIBUTING.md's ban on source-grepping a generated .cjs for its
+    // require() specifiers) that this module's only dependencies are
+    // node: builtins plus ./exit-code-registry.cjs: anything else would
+    // MODULE_NOT_FOUND in this exact isolation.
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(copiedExit)});`,
+      `process.stdout.write(JSON.stringify({`,
+      `  degradedV2: c.projectOutcome('DEGRADED', 'v2'),`,
+      `  hasTerminateNow: typeof c.terminateNow,`,
+      `  hasRunMain: typeof c.runMain,`,
+      `}));`,
+    ].join('\n')], { cwd: dir, timeoutMs: PROBE_TIMEOUT_MS }));
+
+    assert.ok(!r.stderr.includes('MODULE_NOT_FOUND'), `unexpected require failure; stderr: ${r.stderr}`);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.deepEqual(JSON.parse(r.stdout), { degradedV2: 80, hasTerminateNow: 'function', hasRunMain: 'function' });
+  });
+
+  test('the contract-version cell is shared across both copies', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const built = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `const scripts = require(${JSON.stringify(SCRIPTS_CLI_EXIT_PATH)});`,
+      `if (built === scripts) throw new Error('expected two distinct module instances');`,
+      `built.resolveContractVersion({ argv: ['node','x','--exit-contract=v2'], env: {} });`,
+      `process.stdout.write(JSON.stringify({`,
+      `  built: built.getContractVersion(),`,
+      `  scripts: scripts.getContractVersion(),`,
+      `}));`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS }));
+
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.deepEqual(
+      JSON.parse(r.stdout),
+      { built: 'v2', scripts: 'v2' },
+      'both copies must read the version resolved through only ONE of them — two independent cells would diverge here',
+    );
   });
 });

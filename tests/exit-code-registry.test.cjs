@@ -52,8 +52,27 @@ function makeEntry(overrides) {
   };
 }
 
+/**
+ * #3906 (ADR-3889 Phase 2): the generator now dual-emits a primary
+ * (gsd-core/bin/lib) and a secondary (scripts/lib) artifact. Every existing
+ * call site below only overrides the PRIMARY path via `--out`; without a
+ * matching `--scripts-out` override, a `--write` here would clobber the
+ * real committed `scripts/lib/exit-code-registry.cjs` — dangerous since
+ * test files in this repo run in parallel. Rather than touch every call
+ * site, this single seam derives a co-located, per-call-unique secondary
+ * path from whatever `--out` value the test already supplies, whenever the
+ * caller has not already supplied its own `--scripts-out`. Calls with no
+ * explicit `--out` (the "real committed pair" checks) are left untouched.
+ */
+function ensureScriptsOut(args) {
+  const outIdx = args.indexOf('--out');
+  if (outIdx === -1 || args.includes('--scripts-out')) return args;
+  const outValue = args[outIdx + 1];
+  return [...args, '--scripts-out', `${outValue}.secondary.cjs`];
+}
+
 function runGen(args, opts = {}) {
-  return runNode([GEN_SCRIPT, ...args], { timeoutMs: PROBE_TIMEOUT_MS, ...opts });
+  return runNode([GEN_SCRIPT, ...ensureScriptsOut(args)], { timeoutMs: PROBE_TIMEOUT_MS, ...opts });
 }
 
 /**

@@ -1,23 +1,31 @@
 #!/usr/bin/env node
 /**
- * gen-exit-code-registry.cjs — generates gsd-core/bin/lib/exit-code-registry.cjs
- * from the declaration at gsd-core/bin/shared/exit-codes.json.
+ * gen-exit-code-registry.cjs — generates TWO byte-identical copies of the
+ * registry lookup module from the declaration at
+ * gsd-core/bin/shared/exit-codes.json:
+ *   - gsd-core/bin/lib/exit-code-registry.cjs   (tsc-adjacent build tree)
+ *   - scripts/lib/exit-code-registry.cjs        (committed, for scripts/
+ *     consumers that must work on an unbuilt clone — same reason
+ *     scripts/lib/cli-exit.cjs exists alongside gsd-core/bin/lib/cli-exit.cjs;
+ *     see scripts/gen-scripts-cli-exit.cjs).
  *
  * ADR-3889 ("One exit-code registry — 0 and 1 are free, everything else is
- * allocated") Phase 1 (#3905): this script builds the ALLOCATOR. It owns
- * validating the declaration (band rules, one-number-one-meaning, one-owner)
- * and hand-serializing the generated lookup module — the same
- * declaration -> generator -> `--check` gate pattern this repo already uses
- * for capability-registry.cjs, the model catalog, and the ADR index.
+ * allocated") Phase 1 (#3905) built the single-output allocator; Phase 2
+ * (#3906) added the second emission so scripts/ has its own committed copy
+ * instead of reaching into gitignored build output.
+ *
+ * The two artifacts are byte-identical: serializeRegistry() only encodes the
+ * DECLARATION path (for the banner comment), never the output path, so one
+ * generated string is written to both locations unchanged.
  *
  * Nothing in this script emits a registered exit code itself; wiring
- * consumers onto the registry is a later phase (#3906).
+ * consumers onto the registry is separate work.
  *
  * Usage:
  *   node scripts/gen-exit-code-registry.cjs                # same as --write
- *   node scripts/gen-exit-code-registry.cjs --write         # write the artifact
- *   node scripts/gen-exit-code-registry.cjs --check         # exit 1 if the committed artifact is stale
- *   node scripts/gen-exit-code-registry.cjs --declaration <path> --out <path>   # override for tests
+ *   node scripts/gen-exit-code-registry.cjs --write         # write both artifacts
+ *   node scripts/gen-exit-code-registry.cjs --check         # exit 1 if EITHER committed artifact is stale
+ *   node scripts/gen-exit-code-registry.cjs --declaration <path> --out <path> --scripts-out <path>   # override for tests
  *   node scripts/gen-exit-code-registry.cjs --json          # emit ONE JSON report on stdout instead of human prose
  */
 
@@ -29,6 +37,7 @@ const path = require('node:path');
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_DECLARATION_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared', 'exit-codes.json');
 const DEFAULT_OUTPUT_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib', 'exit-code-registry.cjs');
+const DEFAULT_SCRIPTS_OUTPUT_PATH = path.join(REPO_ROOT, 'scripts', 'lib', 'exit-code-registry.cjs');
 
 /** Frozen reason codes so tests assert on structure, not prose. */
 const REASON = Object.freeze({
@@ -48,12 +57,13 @@ const REASON = Object.freeze({
 });
 
 const USAGE_MESSAGE = [
-  'Usage: node scripts/gen-exit-code-registry.cjs [--write|--check] [--declaration <path>] [--out <path>] [--json]',
+  'Usage: node scripts/gen-exit-code-registry.cjs [--write|--check] [--declaration <path>] [--out <path>] [--scripts-out <path>] [--json]',
   '  (no flag)        same as --write',
-  '  --write          write the generated registry artifact',
-  '  --check          exit 1 if the committed artifact is stale',
+  '  --write          write both generated registry artifacts',
+  '  --check          exit 1 if EITHER committed artifact is stale',
   '  --declaration    override the declaration path (default: gsd-core/bin/shared/exit-codes.json)',
-  '  --out            override the output artifact path (default: gsd-core/bin/lib/exit-code-registry.cjs)',
+  '  --out            override the primary output artifact path (default: gsd-core/bin/lib/exit-code-registry.cjs)',
+  '  --scripts-out    override the secondary output artifact path (default: scripts/lib/exit-code-registry.cjs)',
   '  --json           emit ONE JSON report ({ok, reason, context, detail?}) on stdout instead of human-readable prose',
 ].join('\n');
 
@@ -274,7 +284,10 @@ function serializeRegistry(entries, declarationPath) {
     '// GENERATED FILE — DO NOT EDIT BY HAND.',
     `// Source of truth: ${relDeclaration}. Regenerate with:`,
     '//   node scripts/gen-exit-code-registry.cjs --write',
-    '// Byte-compared by `npm run lint:generated-sync` (#3905, ADR-3889 Phase 1).',
+    '// This exact content is emitted to TWO locations — gsd-core/bin/lib/exit-code-registry.cjs',
+    '// and scripts/lib/exit-code-registry.cjs (the latter committed so scripts/',
+    '// consumers work on an unbuilt clone) — both byte-compared by',
+    '// `npm run lint:generated-sync` (#3905 ADR-3889 Phase 1; #3906 Phase 2 added the second copy).',
     '//',
     '// exitCodeFor(name) / nameForExitCode(code) are pure and total over this',
     '// closed table — each throws for anything not registered here.',
@@ -393,61 +406,94 @@ function emitOk(reason, humanMessage, json) {
   console.log(humanMessage);
 }
 
-function doWrite(declarationPath, outPath, json) {
+function doWrite(declarationPath, outPath, scriptsOutPath, json) {
   const result = buildRegistryContent(declarationPath);
   if (!result.ok) {
     emitFail(result, json);
     return 1;
   }
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, result.content, 'utf8');
-  emitOk(REASON.OK, `ok gen-exit-code-registry: wrote ${outPath}`, json);
-  return 0;
-}
-
-function doCheck(declarationPath, outPath, json) {
-  const result = buildRegistryContent(declarationPath);
-  if (!result.ok) {
-    emitFail(result, json);
-    return 1;
+  // Both artifacts are byte-identical copies of the same generated content
+  // (serializeRegistry never encodes the output path), so the same string
+  // is written to both locations unchanged.
+  for (const target of [outPath, scriptsOutPath]) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, result.content, 'utf8');
   }
-
-  if (!fs.existsSync(outPath)) {
-    emitFail(
-      {
-        reason: REASON.MISSING_ARTIFACT,
-        message: `${outPath} does not exist. Run:\n  node scripts/gen-exit-code-registry.cjs --write`,
-      },
-      json,
-    );
-    return 1;
-  }
-
-  const committed = fs.readFileSync(outPath, 'utf8');
-  if (committed !== result.content) {
-    emitFail(
-      {
-        reason: REASON.DRIFTED,
-        message:
-          `${outPath} (${committed.length} bytes) != freshly generated content (${result.content.length} bytes)\n\n`
-          + 'Regenerate with:\n  node scripts/gen-exit-code-registry.cjs --write',
-      },
-      json,
-    );
-    return 1;
-  }
-
-  emitOk(REASON.OK, `ok gen-exit-code-registry: ${outPath} matches ${declarationPath}`, json);
+  emitOk(
+    REASON.OK,
+    `ok gen-exit-code-registry: wrote ${outPath}\nok gen-exit-code-registry: wrote ${scriptsOutPath}`,
+    json,
+  );
   return 0;
 }
 
 /**
- * @returns {{mode:'write'|'check', declarationPath:?string, outPath:?string, json:boolean}}
+ * Verify one committed artifact against the freshly generated content.
+ * @returns {{ok:true}|{ok:false,reason:string,message:string,context:object}}
+ */
+function checkOneArtifact(artifactLabel, artifactPath, content) {
+  if (!fs.existsSync(artifactPath)) {
+    return {
+      ok: false,
+      reason: REASON.MISSING_ARTIFACT,
+      message: `${artifactPath} (${artifactLabel}) does not exist. Run:\n  node scripts/gen-exit-code-registry.cjs --write`,
+      context: { artifact: artifactLabel, path: artifactPath },
+    };
+  }
+
+  const committed = fs.readFileSync(artifactPath, 'utf8');
+  if (committed !== content) {
+    return {
+      ok: false,
+      reason: REASON.DRIFTED,
+      message:
+        `${artifactPath} (${artifactLabel}, ${committed.length} bytes) != freshly generated content (${content.length} bytes)\n\n`
+        + 'Regenerate with:\n  node scripts/gen-exit-code-registry.cjs --write',
+      context: { artifact: artifactLabel, path: artifactPath },
+    };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * --check verifies BOTH committed artifacts against the same freshly
+ * generated content and fails naming which one drifted (or is missing) if
+ * either does. Checked in a fixed order (primary, then secondary) so a
+ * single-artifact failure is always reported deterministically.
+ */
+function doCheck(declarationPath, outPath, scriptsOutPath, json) {
+  const result = buildRegistryContent(declarationPath);
+  if (!result.ok) {
+    emitFail(result, json);
+    return 1;
+  }
+
+  for (const [artifactLabel, artifactPath] of [['primary', outPath], ['secondary', scriptsOutPath]]) {
+    const checked = checkOneArtifact(artifactLabel, artifactPath, result.content);
+    if (!checked.ok) {
+      emitFail(checked, json);
+      return 1;
+    }
+  }
+
+  emitOk(
+    REASON.OK,
+    `ok gen-exit-code-registry: ${outPath} matches ${declarationPath}\n`
+    + `ok gen-exit-code-registry: ${scriptsOutPath} matches ${declarationPath}`,
+    json,
+  );
+  return 0;
+}
+
+/**
+ * @returns {{mode:'write'|'check', declarationPath:?string, outPath:?string, scriptsOutPath:?string, json:boolean}}
  */
 function parseArgs(argv) {
   let mode = null;
   let declarationPath = null;
   let outPath = null;
+  let scriptsOutPath = null;
   let json = false;
 
   for (let i = 0; i < argv.length; i++) {
@@ -471,12 +517,18 @@ function parseArgs(argv) {
       outPath = value;
     } else if (arg.startsWith('--out=')) {
       outPath = arg.slice('--out='.length);
+    } else if (arg === '--scripts-out') {
+      const value = argv[++i];
+      if (value === undefined) throw new Error('--scripts-out requires a value');
+      scriptsOutPath = value;
+    } else if (arg.startsWith('--scripts-out=')) {
+      scriptsOutPath = arg.slice('--scripts-out='.length);
     } else {
       throw new Error(`unrecognized argument: ${arg}`);
     }
   }
 
-  return { mode: mode || 'write', declarationPath, outPath, json };
+  return { mode: mode || 'write', declarationPath, outPath, scriptsOutPath, json };
 }
 
 function main() {
@@ -496,8 +548,11 @@ function main() {
 
   const declarationPath = args.declarationPath || DEFAULT_DECLARATION_PATH;
   const outPath = args.outPath || DEFAULT_OUTPUT_PATH;
+  const scriptsOutPath = args.scriptsOutPath || DEFAULT_SCRIPTS_OUTPUT_PATH;
 
-  return args.mode === 'check' ? doCheck(declarationPath, outPath, args.json) : doWrite(declarationPath, outPath, args.json);
+  return args.mode === 'check'
+    ? doCheck(declarationPath, outPath, scriptsOutPath, args.json)
+    : doWrite(declarationPath, outPath, scriptsOutPath, args.json);
 }
 
 if (require.main === module) process.exitCode = main();
@@ -507,6 +562,7 @@ module.exports = {
   USAGE_MESSAGE,
   DEFAULT_DECLARATION_PATH,
   DEFAULT_OUTPUT_PATH,
+  DEFAULT_SCRIPTS_OUTPUT_PATH,
   isAllocatableCode,
   bandFor,
   validateEntry,
