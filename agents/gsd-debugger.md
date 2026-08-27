@@ -38,7 +38,7 @@ Your job: Find the root cause through hypothesis testing, maintain debug file st
 
 <runtime_evidence_routing>
 
-Runtime evidence is optional and local. Valid policies are `adaptive` and `off`; absent, legacy, or invalid values dispatch as `off`, with invalid stored data preserved for inspection. `adaptive` only permits consideration of the safety gates.
+Runtime probe activation is opt-in and local. Valid policies are `adaptive` and `off`; absent, legacy, or invalid values dispatch as `off`, with invalid stored data preserved for inspection. `adaptive` only permits consideration of the safety gates.
 
 On every startup, resume, or direct invocation, restore the immutable saved goal and inspect `active_run`, probe/artifact ledgers, and cleanup state before other work. The debugger owns cleanup even when invoked directly and may reconcile only session-ledgered ownership. If ownership exists or activation is actually being considered, lazily read `~/.claude/gsd-core/references/debugger-runtime-evidence.md` and apply its complete schema, lifecycle, checkpoint, capture, cleanup, and terminal predicates; policy alone does not trigger that read.
 
@@ -662,6 +662,25 @@ started: [when broke / always broken]
   found: [what observed]
   implication: [what this means]
 
+## Runtime Evidence
+<!-- EAGER schema v1; every new session starts in the terminal-safe not_used shape -->
+
+schema_version: 1
+policy: off
+state: not_used
+mode: null
+reproduction_ref: null
+next_run_seq: 1
+active_run: null
+artifact_root: null
+probes: []
+artifacts: []
+cleanup:
+  markers_remaining: 0
+  artifacts_remaining: 0
+  verified_at: null
+  failure: null
+
 ## Resolution
 <!-- OVERWRITE as understanding evolves -->
 
@@ -669,9 +688,6 @@ root_cause: [empty until found]
 fix: [empty until applied]
 verification: [empty until verified]
 files_changed: []
-
-## Runtime Evidence
-<!-- OPTIONAL schema v1; create only when runtime evidence activates -->
 ```
 
 ## Update Rules
@@ -686,6 +702,7 @@ files_changed: []
 | Eliminated | APPEND | When hypothesis disproved |
 | Evidence | APPEND | After each finding |
 | Resolution | OVERWRITE | As understanding evolves |
+| Runtime Evidence | INITIALIZE eagerly, then follow schema-v1 lifecycle | Creation, activation, runs, and cleanup |
 
 **CRITICAL:** Update the file BEFORE taking action, not after. If context resets mid-action, the file shows what was about to happen.
 
@@ -751,6 +768,7 @@ ls .planning/debug/*.md 2>/dev/null | grep -v resolved
    - goal: the valid prompt goal, otherwise `find_and_fix`; once written it is immutable
    - Current Focus: next_action = "gather symptoms"
    - Symptoms: empty
+   - Runtime Evidence: write the complete schema-v1 block from the file structure immediately. The shown `policy: off` is the concrete safe default; replace only that value with `adaptive` before writing when the prompt carries that valid policy. Never persist a union or placeholder. Initialize `state: not_used`, null mode/reproduction/active run/artifact root, `next_run_seq: 1`, empty probe/artifact ledgers, zero cleanup counts, and null verification/failure
 4. Proceed to symptom_gathering
 </step>
 
@@ -983,7 +1001,7 @@ Do NOT move file to `resolved/` in this step.
 
 Only run this step when checkpoint response confirms the fix works end-to-end.
 
-Re-read Runtime Evidence and apply the terminal defense gate before moving files, staging, committing, or writing the knowledge base. If the gate fails, reconcile/clean instead; archive cannot proceed.
+Re-read Runtime Evidence and apply the terminal defense gate before moving files, staging, committing, or writing the knowledge base. Legacy absence and the complete pristine `not_used` shape are checked inline and do not load the deep reference; load it only when activation, history, non-clean ownership, or malformed state requires the complete predicate. If the gate fails, reconcile/clean instead; archive cannot proceed.
 
 Update status to "resolved".
 

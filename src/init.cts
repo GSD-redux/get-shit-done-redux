@@ -3045,19 +3045,23 @@ function cmdInitDebug(
   raw: boolean,
   options: Record<string, unknown> = {},
   continueSlug: string | null = null,
+  debugGlobalFlags: string[] = [],
 ): void {
   const config = loadConfig(cwd);
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
-  const runtimeEvidencePolicy = resolveRuntimeEvidencePolicy(cwd, options, continueSlug);
-  // Adaptive sessions need activation routing. Every continuation also needs
-  // reconciliation routing because an explicit off override must still clean
-  // any session-owned probes, runs, or capture artifacts.
-  const runtimeEvidenceEligible = runtimeEvidencePolicy !== 'off' || continueSlug !== null;
   const subcommand = options['subcommand'] === 'list'
     || options['subcommand'] === 'status'
     || options['subcommand'] === 'continue'
     ? options['subcommand']
     : 'debug';
+  const description = typeof options['description'] === 'string' ? options['description'] : '';
+  const runtimeEvidencePolicy = resolveRuntimeEvidencePolicy(cwd, options, continueSlug);
+  // Adaptive sessions need activation routing. Every continuation also needs
+  // reconciliation routing because an explicit off override must still clean
+  // any session-owned probes, runs, or capture artifacts. Picker resumes are
+  // re-projected as continuations before dispatch, so they reach this same
+  // disjunct instead of relying on the initial bare bundle.
+  const runtimeEvidenceEligible = runtimeEvidencePolicy !== 'off' || continueSlug !== null;
 
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
@@ -3069,8 +3073,11 @@ function cmdInitDebug(
     tdd_mode: Boolean(wf['tdd_mode']),
     subcommand,
     slug: typeof options['slug'] === 'string' ? options['slug'] : null,
-    description: typeof options['description'] === 'string' ? options['description'] : '',
+    description,
     diagnose: options['diagnose'] === true,
+    // The router owns this fixed-token projection. Clone it so the output
+    // cannot mutate the route object that established the invocation facts.
+    debug_global_flags: [...debugGlobalFlags],
     runtime_evidence_override:
       options['runtime-evidence-override'] === 'adaptive'
       || options['runtime-evidence-override'] === 'off'

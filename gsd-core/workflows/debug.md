@@ -35,7 +35,7 @@ if ! INIT=$(gsd_run query init.debug "${DEBUG_ARGV[@]}"); then exit 1; fi
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 ```
 
-One round-trip carries everything this workflow needs (#3149 — this call replaces the former `state.load` + `resolve-model` + `config-get` trio). Extract from init JSON:
+Step 0 owns the single `init.debug` call shape that carries everything this workflow needs (#3149 — it replaces the former `state.load` + `resolve-model` + `config-get` trio). A later picker selection may re-run this same call shape once with a continuation argv and replace the initial bundle; it never introduces a second resolver. Extract from init JSON:
 
 - `commit_docs` — whether planning docs are committed.
 - `response_language` — TOP-LEVEL field, present ONLY when configured. Absent means English; absence is not a degraded read.
@@ -44,6 +44,10 @@ One round-trip carries everything this workflow needs (#3149 — this call repla
 - `tdd_mode` — used as `{TDD_MODE}` in the session parameter blocks below.
 - `subcommand`, `slug`, and `description` — the single authoritative invocation projection. Use these as `SUBCMD`, `SLUG`, and the issue description everywhere below; never reparse `$ARGUMENTS`.
 - `diagnose` — the validated diagnose-only boolean. Use it as `diagnose_only`; the saved session goal remains authoritative on continue.
+- `debug_global_flags` — the router-owned, deduplicated exact-token flags from
+  this invocation. Preserve this array unchanged if a later picker selection
+  re-enters the continuation projection; never reconstruct it from policy or
+  prose.
 - `runtime_evidence_override` — `adaptive`, `off`, or `null` after exact global-token parsing.
 - `runtime_evidence_policy` — effective policy resolved once as explicit override → valid saved policy → `off`.
 - `runtime_evidence_eligible` — activation-or-reconciliation routing fact used only for applicability-section selection; eligibility is not authorization to install probes.
@@ -120,7 +124,7 @@ For every continue invocation, read and preserve the saved immutable goal before
 
 Check `.planning/debug/{SLUG}.md` exists. If not, print "No active debug session found with slug: {SLUG}. Check `/gsd:debug list` for active sessions." and stop.
 
-Read the saved immutable `goal` before dispatch. Accept only `find_and_fix` or `find_root_cause_only`; legacy absence resolves to `find_and_fix`. The saved goal is authoritative for continue and every later auto-resume—never replace or upgrade it from invocation defaults. Read the optional Runtime Evidence section as well. If an explicit probe override was supplied, persist only its `policy` value before dispatch; do not reset any other runtime field. When the section is legacy-absent, an explicit override may instantiate the complete schema-v1 section in its initial `not_used` shape. With no override, do not perform a migration-only rewrite. Use `{runtime_evidence_policy}` from INIT as the effective dispatch policy. Policy `off` still requires reconciliation when saved ownership is non-clean.
+Read the saved immutable `goal` before dispatch. Accept only `find_and_fix` or `find_root_cause_only`; legacy absence resolves to `find_and_fix`. The saved goal is authoritative for continue and every later auto-resume—never replace or upgrade it from invocation defaults. Read Runtime Evidence as well; every new session writes it eagerly, while a legacy session may omit it. If an explicit probe override was supplied, persist only its `policy` value before dispatch; do not reset any other runtime field. When the section is legacy-absent, an explicit override may instantiate the complete schema-v1 section in its initial `not_used` shape. With no override, do not perform a migration-only rewrite. Use `{runtime_evidence_policy}` from INIT as the effective dispatch policy. Policy `off` still requires reconciliation when saved ownership is non-clean.
 
 Read file and print Current Focus block to console:
 
@@ -193,6 +197,27 @@ When SUBCMD=debug:
 If active sessions exist AND the projected `description` is empty:
 - List sessions with status, hypothesis, next action
 - User picks number to resume OR describes new issue
+
+If the user picks an existing session, do not dispatch from the initial bare
+`init.debug` bundle. Resolve the picked slug from the displayed session path,
+apply the same slug validation as Section 1c, and re-enter the authoritative
+continuation projection before reading or spawning anything:
+
+- Preserve the initial `debug_global_flags` array while replacing the rest of
+  INIT. Re-run Step 0's authoritative init call with those exact tokens followed
+  by `continue` and the picked slug as one argv token. Do not reconstruct flags
+  from `diagnose`, policy, or prose. This deliberately re-applies the normal
+  continuation restrictions, including rejection of `--diagnose`; never
+  concatenate or evaluate the slug as shell text.
+- Unwrap an `@file:` result exactly as in Step 0. Require the refreshed bundle
+  to report `subcommand: continue` and the exact picked slug, then replace INIT
+  and re-extract every field listed in Step 0, including effective policy,
+  reconciliation eligibility, and `section_manifest`.
+- Enter Section 1c with that refreshed bundle. Section 1c must read and bind the
+  saved immutable goal before dispatch, preserve or explicitly override only
+  the saved policy, load any newly selected runtime-evidence routing, and use
+  the existing session file. Do not pass through symptom gathering or create a
+  new session file.
 
 If the projected `description` is non-empty OR the user describes a new issue:
 - Continue to symptom gathering

@@ -365,15 +365,21 @@ describe('projectDebugInvocation (#3128)', () => {
       ok: true,
       data: {
         subcommand: 'list', slug: null, description: '', diagnose: false, runtimeEvidenceOverride: null,
+        debugGlobalFlags: [],
       },
     });
     assert.deepStrictEqual(projectDebugInvocation(['status', 'cache-miss']), {
       ok: true,
       data: {
         subcommand: 'status', slug: 'cache-miss', description: '', diagnose: false, runtimeEvidenceOverride: null,
+        debugGlobalFlags: [],
       },
     });
-    assert.equal(projectDebugInvocation(['continue', 'cache-miss', '--runtime-probes']).ok, true);
+    const continued = projectDebugInvocation([
+      '--runtime-probes', 'continue', 'cache-miss', '--runtime-probes',
+    ]);
+    assert.equal(continued.ok, true);
+    assert.deepEqual(continued.data.debugGlobalFlags, ['--runtime-probes']);
     assert.equal(projectDebugInvocation(['--diagnose', 'continue', 'cache-miss']).ok, false);
     assert.equal(projectDebugInvocation(['--runtime-probes', 'list']).ok, false);
     assert.equal(projectDebugInvocation(['status', 'cache-miss', '--no-runtime-probes']).ok, false);
@@ -413,6 +419,10 @@ describe('projectDebugInvocation (#3128)', () => {
             result.data.runtimeEvidenceOverride,
             hasAdaptive ? 'adaptive' : hasOff ? 'off' : null,
           );
+          assert.deepEqual(
+            result.data.debugGlobalFlags,
+            [...new Set(entries.filter(({ kind }) => kind === 'flag').map(({ token }) => token))],
+          );
         },
       ),
       { seed: 3128, numRuns: 200 },
@@ -435,6 +445,7 @@ describe('projectDebugInvocation (#3128)', () => {
           assert.equal(result.ok, true);
           assert.equal(result.data.description, `${lookalike} ${token}`);
           assert.equal(result.data.runtimeEvidenceOverride, null);
+          assert.deepEqual(result.data.debugGlobalFlags, []);
         },
       ),
       { seed: 3128, numRuns: 200 },

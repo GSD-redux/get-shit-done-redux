@@ -29,9 +29,9 @@ Additionally, ADR-1671's `WHEN_VOCABULARY` is **closed**: every growth from 14 t
 
 ## Decision
 
-1. **The applicability atom is a resolved boolean, `state:runtime-evidence-eligible` — never the raw flag.** `when=` takes exactly one operator-free atom, but policy precedence is explicit flag → **valid saved session policy** → default. A resumed session (`continue <slug>`) that already persisted `policy: adaptive` passes no flag on the resume invocation, so a flag-keyed atom evaluates `false` on exactly the sessions already running the protocol — ADR-1671's silent-exclusion failure arriving through a different door. An explicit `off` continuation can also own probes or an interrupted run that still requires cleanup. Only a resolved boolean can see both cases. The fact is folded once in `cmdInitDebug` as `policy !== 'off' || valid continue route`, following the `state:chunked-mode` precedent that a compound resolves in the FACT, never in the grammar. Inclusion routes activation or reconciliation; it never authorizes a new probe.
+1. **The applicability atom is a resolved boolean, `state:runtime-evidence-eligible` — never the raw flag.** `when=` takes exactly one operator-free atom, but policy precedence is explicit flag → **valid saved session policy** → default. A resumed session (`continue <slug>`) that already persisted `policy: adaptive` passes no flag on the resume invocation, so a flag-keyed atom evaluates `false` on exactly the sessions already running the protocol — ADR-1671's silent-exclusion failure arriving through a different door. An explicit `off` continuation can also own probes or an interrupted run that still requires cleanup. Only a resolved boolean can see both cases. The fact is folded once in `cmdInitDebug` as `policy !== 'off' || valid continue route`, following the `state:chunked-mode` precedent that a compound resolves in the FACT, never in the grammar. A session selected through the bare-invocation picker must re-enter the same `init.debug continue <slug>` projection before dispatch, carrying the router-owned global-token array, so its saved policy and reconciliation route cannot be bypassed. Inclusion routes activation or reconciliation; it never authorizes a new probe.
 
-2. **The session gains an immutable `goal` and an optional `Runtime Evidence` section at `schema_version: 1`.** Legacy sessions are read without migration-only rewrites: an absent `goal` means `find_and_fix`; an absent Runtime Evidence section means `off` + `not_used`. A `find_root_cause_only` session never offers or applies a fix and never edits tracked source.
+2. **The session gains an immutable `goal` and a `Runtime Evidence` section at `schema_version: 1`.** Every newly created session writes the complete terminal-safe `not_used` block and its effective policy immediately. Optional absence is legacy compatibility only: existing sessions are read without migration-only rewrites, an absent `goal` means `find_and_fix`, and an absent Runtime Evidence section means `off` + `not_used`. A `find_root_cause_only` session never offers or applies a fix and never edits tracked source.
 
 3. **Every agent-authored source edit is ledgered before it is made, and cleanup is fail-closed.** Paired non-nested markers carrying exact `gsd-debug-probe:start|end <slug> <probe-id>` payloads, plus a pre-edit SHA-256 over the complete raw UTF-8 block including both marker lines and the file's existing line-ending form. Cleanup removes only a complete balanced block whose bytes still match its saved hash; anything else is `cleanup_failed`, and edits outside the owned block are preserved.
 
@@ -39,7 +39,7 @@ Additionally, ADR-1671's `WHEN_VOCABULARY` is **closed**: every growth from 14 t
 
 5. **The protocol body is one contiguous fragment; the policy checks stay inline.** This is what makes the atom admissible rather than a repeat of `flag:--verify-only`, which was surveyed and rejected for being interleaved across three non-contiguous touch-points.
 
-6. **The agent-side share of the protocol is bounded by the absence of any lazy-load path.** `agents/*.md` pull references with eager `@`-includes and the fragment platform is workflow-only, so extraction relocates bytes without reducing per-dispatch cost. Agent files carry routing and gates only; the protocol body lives workflow-side.
+6. **The agent-side share stays bounded through an explicit on-demand read, never an eager include.** The debug agents do not `@`-include the deep reference. They carry only routing and fail-closed gates, then read `gsd-core/references/debugger-runtime-evidence.md` when activation is actually considered or persisted ownership requires reconciliation. This preserves prompt headroom while keeping direct invocation subject to the same complete protocol.
 
 7. **Nothing is added that must be operated.** No daemon, collector, server, telemetry, network transport, external dependency, hosted service, SDK, or shared application-runtime trace.
 
@@ -78,7 +78,7 @@ A coordinated-change guard in `src/section-manifest.cts` throws at module load i
 
 Issue #3128 is the authority for the literal field list. The invariants this ADR locks:
 
-- **Additive and optional.** Absent section ⇒ `off` + `not_used`. Absent `goal` ⇒ `find_and_fix`. No migration-only rewrites of files already on disk in user projects.
+- **Eager for new sessions; optional only for legacy compatibility.** Every new session writes the complete schema in the terminal-safe `not_used` shape with its effective policy. An absent legacy section ⇒ `off` + `not_used`; an absent legacy `goal` ⇒ `find_and_fix`. No migration-only rewrites of files already on disk in user projects.
 - **Effective policy precedence** is explicit override → valid saved policy → `off`. An invalid saved value stays on disk for inspection while dispatch fails safe to `off` — the fail-safe direction is now the same as the default, so an unreadable policy can never widen behavior.
 - **An override changes only `policy`.** It never resets `state`, `mode`, probes, artifacts, `active_run`, or cleanup data. Switching to `off` still reconciles and cleans an existing non-clean ledger.
 - **Run IDs are allocated write-ahead and never reused.** Read `next_run_seq: N`, persist `active_run.run_id: run-N` with its phase, exact reproduction reference and start time, advance to `N+1`, *then* execute. An interrupted run with no attributable result is appended as `inconclusive` and cleared before another ID is allocated.
@@ -144,7 +144,7 @@ Crossing a tier cap means extracting to `references/`, never a `+N` bump.
 
 1. **Does the maintainer permit the contributor's pre-existing prototype to be used as reference?** #3128 discloses a near-complete uncommitted fork-first implementation and makes continuation conditional on an explicit answer. Unanswered as of this ADR; it blocks the contributor, not the design.
 2. ~~**Should `adaptive` or `off` be the shipped default?**~~ **Resolved: `off`** — see Decision 8. Decided by the maintainer on #3128 after this ADR first merged; recorded here rather than left as an open question, because it is the point an implementer reads first.
-3. **How much of the protocol can the two debug agents carry** before extraction is forced, given they have no lazy-load path? Answerable only against the real diff, and it is a per-PR review gate either way.
+3. ~~**How much of the protocol can the two debug agents carry before extraction is forced?**~~ **Resolved: routing and gates only.** The implemented agents explicitly read the deep runtime-evidence reference on activation or reconciliation and never eager-include it; the measured agent-size ratchet remains a per-PR gate.
 
 ## Related
 

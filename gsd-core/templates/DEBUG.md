@@ -51,12 +51,12 @@ started: [when it broke / always broken]
   implication: [what this means]
 
 ## Runtime Evidence
-<!-- OPTIONAL additive schema. Legacy absence means policy off + state not_used. -->
+<!-- EAGER for new sessions. Legacy absence means policy off + state not_used. -->
 
 schema_version: 1
-policy: adaptive | off
-state: not_used | planned | active | cleanup_pending | clean | cleanup_failed
-mode: null | passive | source_probes
+policy: off
+state: not_used
+mode: null
 reproduction_ref: null
 next_run_seq: 1
 active_run: null  # or {run_id, phase, reproduction_ref, sink_artifact_id, started_at}
@@ -119,7 +119,7 @@ files_changed: []
 - Builds the case for root cause
 
 **Runtime Evidence:**
-- OPTIONAL additive schema version 1. A missing section in a legacy session means `policy: off` and `state: not_used`; do not rewrite merely to migrate it.
+- Every new session eagerly writes the complete schema version 1 block in its terminal-safe `not_used` shape. A missing section in a legacy session means `policy: off` and `state: not_used`; do not rewrite merely to migrate it.
 - Valid policy is `adaptive | off`. An invalid saved policy remains stored for inspection while effective dispatch fails safe to `off`.
 - An explicit policy override changes only `policy`; it never resets state, mode, reproduction, runs, probes, artifacts, or cleanup.
 - Probe and artifact entries, write-ahead runs, bounded Evidence digests, and exact cleanup follow `gsd-core/references/debugger-runtime-evidence.md` when the protocol is active or needs reconciliation.

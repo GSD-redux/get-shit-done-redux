@@ -12,7 +12,7 @@ The session's immutable `goal` is `find_and_fix | find_root_cause_only`. Set it 
 
 ## Runtime Evidence schema version 1
 
-The section is additive and optional. Do not rewrite a legacy session merely to migrate it. When present, use this exact top-level shape and enums:
+Every newly created session writes the complete section immediately in the terminal-safe `not_used` shape with its effective policy. Absence is supported only for legacy compatibility: treat it as `off` plus `not_used`, and do not rewrite a legacy session merely to migrate it. Use this exact top-level shape and enums:
 
 ```yaml
 schema_version: 1

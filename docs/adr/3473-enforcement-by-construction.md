@@ -339,7 +339,7 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 #### 8.4 Failure is a value — *Required — phase unassigned*
 
-**Rule.** Every routine that can fail returns `Result`. `parseNamedArgs` rejects unrecognized and positional tokens with a non-zero exit — it is called by agents that will drift again.
+**Rule.** Every routine that can fail returns `Result`. `parseNamedArgs` rejects unrecognized and positional tokens with a non-zero exit — it is called by agents that will drift again. The only intentional `positionals: 'rest'` routes are `init quick` and `init debug`: both consume a free-text description after their declared global flags, and each records that exception at its router call site.
 
 **Rule.** A count query returns `0`, not `""`, and never `""` with exit 0 (#3365).
 

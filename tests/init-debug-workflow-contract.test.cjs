@@ -116,10 +116,57 @@ function writeSession(projectDir, slug, policy) {
   ].join('\n'));
 }
 
+function writeNonCleanSession(projectDir, slug, policy, goal = 'find_and_fix') {
+  const debugDir = path.join(projectDir, '.planning', 'debug');
+  fs.mkdirSync(debugDir, { recursive: true });
+  fs.writeFileSync(path.join(debugDir, `${slug}.md`), [
+    '---',
+    'status: investigating',
+    `goal: ${goal}`,
+    '---',
+    '',
+    '## Runtime Evidence',
+    '',
+    'schema_version: 1',
+    `policy: ${policy}`,
+    'state: active',
+    'mode: passive',
+    'reproduction_ref: test:picker-reproduction',
+    'next_run_seq: 2',
+    'active_run:',
+    '  run_id: run-1',
+    '  phase: baseline',
+    '  reproduction_ref: test:picker-reproduction',
+    '  sink_artifact_id: null',
+    '  started_at: 2026-08-27T00:00:00Z',
+    'artifact_root: null',
+    'probes: []',
+    'artifacts: []',
+    'cleanup:',
+    '  markers_remaining: 0',
+    '  artifacts_remaining: 0',
+    '  verified_at: null',
+    '  failure: null',
+    '',
+  ].join('\n'));
+}
+
+function pickerSection() {
+  const start = workflow.indexOf('## 1d. Check Active Sessions');
+  const end = workflow.indexOf('## 2. Gather Symptoms', start);
+  assert.notEqual(start, -1, 'debug workflow must ship the picker path');
+  assert.notEqual(end, -1, 'picker path must end before symptom gathering');
+  return workflow.slice(start, end);
+}
+
+function replayPickedSession(initialInit, slug, cwd, { codex = false } = {}) {
+  return runStepZero([...initialInit.debug_global_flags, 'continue', slug].join(' '), cwd, { codex });
+}
+
 describe('debug.md Step 0 init contract (#3149, matrix §F)', () => {
-  test('calls init.debug exactly once (row F1)', () => {
+  test('ships exactly one owned init.debug call shape (row F1)', () => {
     const initDebugCalls = queryInvocations(workflow).filter((q) => q === 'init.debug');
-    assert.equal(initDebugCalls.length, 1, 'exactly one init.debug round-trip');
+    assert.equal(initDebugCalls.length, 1, 'picker replay must reuse the one owned init.debug call shape');
   });
 
   test('no longer makes the three replaced calls (row F2)', () => {
@@ -231,6 +278,63 @@ describe('debug.md Step 0 init contract (#3149, matrix §F)', () => {
       assert.equal(multiline.outcome, OUTCOME.EXITED);
       assert.equal(multiline.exitCode, 0);
       assert.equal(multiline.init.description, 'investigate cache');
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+
+  test('the bare-session picker re-enters init.debug as a continuation before dispatch', () => {
+    const projectDir = createTempProject('debug-workflow-picker-');
+    try {
+      writeNonCleanSession(
+        projectDir,
+        'picked-adaptive',
+        'adaptive',
+        'find_root_cause_only',
+      );
+
+      for (const codex of [false, true]) {
+        const initial = runStepZero('', projectDir, { codex });
+        assert.equal(initial.outcome, OUTCOME.EXITED);
+        assert.equal(initial.exitCode, 0);
+        assert.equal(initial.init.subcommand, 'debug');
+        assert.equal(initial.init.runtime_evidence_policy, 'off');
+        assert.equal(initial.init.runtime_evidence_eligible, false);
+        assert.deepEqual(initial.init.debug_global_flags, []);
+
+        const picked = replayPickedSession(initial.init, 'picked-adaptive', projectDir, { codex });
+        assert.equal(picked.outcome, OUTCOME.EXITED);
+        assert.equal(picked.exitCode, 0);
+        assert.equal(picked.init.subcommand, 'continue');
+        assert.equal(picked.init.slug, 'picked-adaptive');
+        assert.equal(picked.init.runtime_evidence_policy, 'adaptive');
+        assert.equal(picked.init.runtime_evidence_eligible, true);
+        assert.deepEqual(picked.init.section_manifest.included, ['runtime-evidence-protocol']);
+
+        const explicitOff = runStepZero('--no-runtime-probes', projectDir, { codex });
+        assert.deepEqual(explicitOff.init.debug_global_flags, ['--no-runtime-probes']);
+        const pickedOff = replayPickedSession(explicitOff.init, 'picked-adaptive', projectDir, { codex });
+        assert.equal(pickedOff.exitCode, 0);
+        assert.equal(pickedOff.init.runtime_evidence_policy, 'off');
+        assert.equal(pickedOff.init.runtime_evidence_eligible, true);
+        assert.deepEqual(pickedOff.init.section_manifest.included, ['runtime-evidence-protocol']);
+
+        const diagnose = runStepZero('--diagnose --no-runtime-probes', projectDir, { codex });
+        assert.deepEqual(
+          diagnose.init.debug_global_flags,
+          ['--diagnose', '--no-runtime-probes'],
+        );
+        const rejected = replayPickedSession(diagnose.init, 'picked-adaptive', projectDir, { codex });
+        assert.equal(rejected.outcome, OUTCOME.EXITED);
+        assert.notEqual(rejected.exitCode, 0);
+        assert.equal(rejected.init, null);
+      }
+
+      const picker = pickerSection();
+      assert.match(picker, /Preserve the initial `debug_global_flags` array/);
+      assert.match(picker, /Enter Section 1c with that refreshed bundle/);
+      assert.match(picker, /saved immutable goal before dispatch/);
+      assert.match(picker, /Do not pass through symptom gathering or create a\s{1,8}new session file/);
     } finally {
       cleanup(projectDir);
     }

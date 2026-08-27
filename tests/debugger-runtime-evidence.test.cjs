@@ -22,6 +22,7 @@ const FILES = Object.freeze({
   diagnoseIssues: path.join(ROOT, 'gsd-core/workflows/diagnose-issues.md'),
   fullHelp: path.join(ROOT, 'gsd-core/workflows/help/modes/full.md'),
   adr1671: path.join(ROOT, 'docs/adr/1671-dynamic-context-management-platform.md'),
+  adr3128: path.join(ROOT, 'docs/adr/3128-adaptive-runtime-evidence.md'),
   packageJson: path.join(ROOT, 'package.json'),
 });
 
@@ -48,6 +49,17 @@ function sliceBetween(value, start, end, label) {
 function assertIncludesAll(value, expected, label) {
   for (const item of expected) {
     assert.ok(value.includes(item), `${label}: missing ${JSON.stringify(item)}`);
+  }
+}
+
+function assertExactLines(value, expected, label) {
+  const lines = value.split(/\r?\n/).map(line => line.replace(/\s+#.*$/, ''));
+  for (const line of expected) {
+    assert.equal(
+      lines.filter(candidate => candidate === line).length,
+      1,
+      `${label}: expected exactly one line ${JSON.stringify(line)}`,
+    );
   }
 }
 
@@ -186,6 +198,90 @@ describe('adaptive runtime evidence command and applicability contract (#3128)',
 });
 
 describe('policy persistence and immutable session goal (#3128)', () => {
+  test('new and direct sessions eagerly persist a terminal-safe not_used block', () => {
+    const debuggerAgent = read(FILES.debugger);
+    const manager = read(FILES.manager);
+    const template = read(FILES.template);
+    const workflow = read(FILES.workflow);
+    const reference = flat(read(FILES.reference));
+    const adr = flat(read(FILES.adr3128));
+    const initialFields = [
+      'schema_version: 1',
+      'policy: off',
+      'state: not_used',
+      'mode: null',
+      'reproduction_ref: null',
+      'next_run_seq: 1',
+      'active_run: null',
+      'artifact_root: null',
+      'probes: []',
+      'artifacts: []',
+      'cleanup:',
+      '  markers_remaining: 0',
+      '  artifacts_remaining: 0',
+      '  verified_at: null',
+      '  failure: null',
+    ];
+    const debuggerBlock = sliceBetween(
+      debuggerAgent,
+      '## Runtime Evidence',
+      '## Resolution',
+      'debugger initial Runtime Evidence block',
+    );
+    const templateBlock = sliceBetween(
+      template,
+      '## Runtime Evidence',
+      '## Resolution',
+      'DEBUG template initial Runtime Evidence block',
+    );
+
+    assertExactLines(debuggerBlock, initialFields, 'direct debugger initial block');
+    assertExactLines(templateBlock, initialFields, 'workflow DEBUG template initial block');
+
+    const directCreation = sliceBetween(
+      debuggerAgent,
+      '<step name="create_debug_file">',
+      '</step>',
+      'direct debugger creation step',
+    );
+    assertMatchesAll(directCreation, [
+      /write the complete schema-v1 block.{0,260}immediately/i,
+      /shown `policy: off`.{0,260}replace only that value with `adaptive`/i,
+      /Never persist a union or placeholder/i,
+    ], 'direct debugger eager creation');
+
+    assertIncludesAll(manager, [
+      'present pristine `not_used` block',
+      'without loading the deep reference',
+      'mere section presence or policy alone never triggers that read',
+    ], 'manager lazy-load gate for eager not_used sessions');
+    assertIncludesAll(debuggerAgent, [
+      'complete pristine `not_used` shape are checked inline',
+      'load it only when activation, history, non-clean ownership, or malformed state',
+    ], 'direct debugger lazy-load gate for eager not_used sessions');
+
+    const workflowCreation = sliceBetween(
+      workflow,
+      '## 3. Initial Session Setup',
+      '## 4. Session Management',
+      'managed debug creation step',
+    );
+    assertMatchesAll(workflowCreation, [
+      /Runtime Evidence schema version 1.{0,420}state: not_used/i,
+      /Persist the runtime policy even when it is the default `off`/i,
+    ], 'managed eager creation');
+    assert.match(
+      reference,
+      /Every newly created session.{0,260}complete section.{0,260}not_used/i,
+      'the deep protocol must make optional absence legacy-only',
+    );
+    assert.match(
+      adr,
+      /Every newly created session.{0,260}complete terminal-safe `not_used` block/i,
+      'ADR-3128 must govern eager creation rather than contradict runtime surfaces',
+    );
+  });
+
   test('the session schema persists an immutable goal with a legacy find-and-fix default', () => {
     const template = flat(read(FILES.template));
 
@@ -241,8 +337,9 @@ describe('policy persistence and immutable session goal (#3128)', () => {
 });
 
 describe('Runtime Evidence schema v1 and write-ahead runs (#3128)', () => {
-  test('the optional section declares the complete additive schema and exact enums', () => {
+  test('the eager section declares the complete initial schema and the reference owns exact enums', () => {
     const template = read(FILES.template);
+    const reference = read(FILES.reference);
     const runtimeSection = sliceBetween(
       template,
       '## Runtime Evidence',
@@ -267,10 +364,13 @@ describe('Runtime Evidence schema v1 and write-ahead runs (#3128)', () => {
       'verified_at:',
       'failure:',
     ], 'Runtime Evidence schema v1');
-    assert.match(runtimeSection, /policy:[^\n]*(?:adaptive\s*\|\s*off|off\s*\|\s*adaptive)/);
+    assert.match(runtimeSection, /^policy: off$/m);
+    assert.match(runtimeSection, /^state: not_used$/m);
+    assert.match(runtimeSection, /^mode: null$/m);
     assert.doesNotMatch(runtimeSection, /policy:[^\n]*\bforce\b/);
-    assert.match(runtimeSection, /state:[^\n]*not_used[^\n]*planned[^\n]*active[^\n]*cleanup_pending[^\n]*clean[^\n]*cleanup_failed/);
-    assert.match(runtimeSection, /mode:[^\n]*(?:null[^\n]*passive[^\n]*source_probes|passive[^\n]*source_probes[^\n]*null)/);
+    assert.match(reference, /policy:[^\n]*(?:adaptive\s*\|\s*off|off\s*\|\s*adaptive)/);
+    assert.match(reference, /state:[^\n]*not_used[^\n]*planned[^\n]*active[^\n]*cleanup_pending[^\n]*clean[^\n]*cleanup_failed/);
+    assert.match(reference, /mode:[^\n]*(?:null[^\n]*passive[^\n]*source_probes|passive[^\n]*source_probes[^\n]*null)/);
   });
 
   test('passive and source-probe entries have distinct ownership shapes', () => {

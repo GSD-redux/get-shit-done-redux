@@ -55,6 +55,7 @@ interface InitModule {
     raw: boolean,
     options?: Record<string, string | boolean | null | undefined>,
     continueSlug?: string | null,
+    debugGlobalFlags?: string[],
   ): void;
   cmdInitNewWorkspace(cwd: string, raw: boolean): void;
   cmdInitListWorkspaces(cwd: string, raw: boolean): void;
@@ -78,6 +79,7 @@ interface DebugInvocationProjection {
   description: string;
   diagnose: boolean;
   runtimeEvidenceOverride: RuntimeEvidenceOverride;
+  debugGlobalFlags: string[];
 }
 
 type DebugInvocationResult =
@@ -114,6 +116,9 @@ function projectDebugInvocation(tokens: string[]): DebugInvocationResult {
     : noRuntimeProbes
       ? 'off'
       : null;
+  const debugGlobalFlags = [...new Set(
+    tokens.filter((token) => DEBUG_GLOBAL_FLAG_TOKENS.has(token)),
+  )];
 
   if (first === 'list') {
     if (hasRecognizedFlag || positionals.length !== 1) {
@@ -121,7 +126,14 @@ function projectDebugInvocation(tokens: string[]): DebugInvocationResult {
     }
     return {
       ok: true,
-      data: { subcommand: 'list', slug: null, description: '', diagnose: false, runtimeEvidenceOverride: null },
+      data: {
+        subcommand: 'list',
+        slug: null,
+        description: '',
+        diagnose: false,
+        runtimeEvidenceOverride: null,
+        debugGlobalFlags: [],
+      },
     };
   }
 
@@ -135,7 +147,14 @@ function projectDebugInvocation(tokens: string[]): DebugInvocationResult {
     }
     return {
       ok: true,
-      data: { subcommand: 'status', slug, description: '', diagnose: false, runtimeEvidenceOverride: null },
+      data: {
+        subcommand: 'status',
+        slug,
+        description: '',
+        diagnose: false,
+        runtimeEvidenceOverride: null,
+        debugGlobalFlags: [],
+      },
     };
   }
 
@@ -152,7 +171,14 @@ function projectDebugInvocation(tokens: string[]): DebugInvocationResult {
     }
     return {
       ok: true,
-      data: { subcommand: 'continue', slug, description: '', diagnose: false, runtimeEvidenceOverride },
+      data: {
+        subcommand: 'continue',
+        slug,
+        description: '',
+        diagnose: false,
+        runtimeEvidenceOverride,
+        debugGlobalFlags,
+      },
     };
   }
 
@@ -168,6 +194,7 @@ function projectDebugInvocation(tokens: string[]): DebugInvocationResult {
       description: positionals.join(' '),
       diagnose,
       runtimeEvidenceOverride,
+      debugGlobalFlags,
     },
   };
 }
@@ -316,6 +343,9 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       },
       transition: () => init.cmdInitTransition(cwd, raw, {}),
       debug: () => {
+        // ADR-3473 §8.4: debug accepts a free-text description after its
+        // declared global flags, so this route intentionally consumes `rest`;
+        // undeclared flag-shaped tokens remain description data.
         const namedArgs = parseNamedArgsOrExit(
           args,
           {
@@ -340,7 +370,7 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
           slug: route.slug,
           description: route.description,
           'runtime-evidence-override': route.runtimeEvidenceOverride,
-        }, continueSlug);
+        }, continueSlug, route.debugGlobalFlags);
       },
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
       'list-workspaces': () => init.cmdInitListWorkspaces(cwd, raw),
