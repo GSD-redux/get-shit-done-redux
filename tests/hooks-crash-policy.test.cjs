@@ -1,0 +1,448 @@
+'use strict';
+
+/**
+ * hooks-crash-policy.test.cjs — table-driven coverage of ADR-3889 Phase 7
+ * (#3911): every enforcement hook under hooks/*.js now terminates through
+ * hooks/lib/hook-exit.js (allow/deny/crash) instead of a raw process.exit().
+ *
+ * Rather than ~76 hand-written tests (19 hooks x 4 cases), this file drives
+ * ONE table — one row per hook, each row derived by reading that hook's own
+ * source (never guessed) — through four generic cases:
+ *
+ *   C1 allow                — normal input -> exit 0.
+ *   C2 deny                 — normal input that trips the hook's block path
+ *                             (only the 6 hooks that HAVE one) -> exit 2,
+ *                             asserting the actual stream(s) that hook uses.
+ *   C3 crash honors policy  — an input that makes the hook's own outer catch
+ *                             fire, asserting the exit code matches its
+ *                             DECLARED HOOK_ON_CRASH policy. Hooks that never
+ *                             call crash(ON_CRASH, ...) at all (no declared
+ *                             policy) are t.skip()'d with an explicit reason
+ *                             — never silently passed via a bare return.
+ *   C4 stdin never closes   — spawn with no stdin input and never end it;
+ *                             assert the process still terminates (via its
+ *                             own bounded stdin-timeout -> allow()) instead
+ *                             of hanging on the parent's outer spawn timeout.
+ *
+ * The table is the single source of truth: a guard test at the bottom
+ * enumerates hooks/*.js and fails if a new terminating hook is added without
+ * a row here.
+ *
+ * Crash trigger: malformed JSON on stdin ('{not json'). Every one of the 9
+ * hooks that declares an ON_CRASH policy parses its stdin payload as the
+ * FIRST statement inside its outer try — `JSON.parse(input)` (or the Kimi-
+ * normalized `normalizeKimiPayload(JSON.parse(input))`) — so a syntax error
+ * there throws before any applicability logic runs and is a real, hook-
+ * authored crash, not a synthetic fault injected by this suite.
+ */
+
+const { describe, test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+const { createTempDir, cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
+const { runHook: runHookSeam, OUTCOME } = require('./helpers/process-seam.cjs');
+const { gitOrThrow, GIT_FIXTURE_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
+
+const HOOKS_DIR = path.join(__dirname, '..', 'hooks');
+
+// Hook scripts that ship under hooks/ but never terminate through
+// hooks/lib/hook-exit.js at all — they are long-running/update-check helpers,
+// not PreToolUse/PostToolUse/SessionStart enforcement hooks, so #3911's
+// migration (and this table) does not apply to them.
+const NON_TERMINATING_HOOKS = new Set([
+  'gsd-check-update.js',
+  'gsd-check-update-worker.js',
+  'gsd-update-banner.js',
+]);
+
+function hookPath(name) {
+  return path.join(HOOKS_DIR, name);
+}
+
+function baseEnv(extra = {}) {
+  return { ...TEST_ENV_BASE, ...extra };
+}
+
+/**
+ * Run a hook with a payload on stdin (or, for C4, no `input` key at all —
+ * see below). Thin wrapper over the process-seam so every case in this file
+ * shares one spawn path and one required timeout.
+ */
+function runHook(name, { payload, cwd, env, timeoutMs = 15000 } = {}) {
+  const opts = { env: baseEnv(env), timeoutMs };
+  if (cwd !== undefined) opts.cwd = cwd;
+  if (payload !== undefined) {
+    opts.input = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  }
+  return runHookSeam(hookPath(name), [], opts);
+}
+
+const MALFORMED_JSON = '{not json';
+
+// ---------------------------------------------------------------------------
+// Shared fixtures
+// ---------------------------------------------------------------------------
+
+let fixtures = {};
+const cleanupPaths = [];
+
+function tempDir(prefix) {
+  const dir = createTempDir(prefix);
+  cleanupPaths.push(dir);
+  return dir;
+}
+
+before(() => {
+  // --- worktree fixture: a linked git worktree on an agent-* branch, used by
+  // gsd-worktree-path-guard.js's deny case (absolute path escaping the active
+  // worktree's git root) and gsd-windsurf-pre-write.js's deny case (same
+  // escape shape, different protocol). ---------------------------------------
+  const mainRepo = tempDir('hooks-crash-main-');
+  gitOrThrow(['init', '-q', mainRepo], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  gitOrThrow(['-C', mainRepo, 'config', 'user.email', 'hooks-crash@test.local'], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  gitOrThrow(['-C', mainRepo, 'config', 'user.name', 'hooks-crash'], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  fs.writeFileSync(path.join(mainRepo, 'README.md'), 'hello\n');
+  gitOrThrow(['-C', mainRepo, 'add', '-A'], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  gitOrThrow(['-C', mainRepo, 'commit', '-m', 'seed'], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  const worktreePath = path.join(os.tmpdir(), `hooks-crash-wt-${process.pid}-${Date.now()}`);
+  gitOrThrow(['-C', mainRepo, 'worktree', 'add', '-b', 'agent-test', worktreePath], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  cleanupPaths.push(worktreePath);
+
+  // --- gsd-write-guard.js: a curated ROADMAP.md big enough to trip the 40%
+  // shrink-ratio guard (well above the FLOOR_LINES=40 exemption). -------------
+  const wgProject = tempDir('hooks-crash-wg-');
+  fs.mkdirSync(path.join(wgProject, '.planning'), { recursive: true });
+  const roadmapPath = path.join(wgProject, '.planning', 'ROADMAP.md');
+  fs.writeFileSync(roadmapPath, Array.from({ length: 292 }, (_, i) => `line ${i + 1}`).join('\n') + '\n');
+
+  // --- gsd-workflow-guard.js: a repo on an agent-* branch with
+  // hooks.workflow_guard enabled, so `git add -f` trips the ONE hard-block. --
+  const wfRepo = tempDir('hooks-crash-wf-');
+  gitOrThrow(['init', '-q', '-b', 'agent-test', wfRepo], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  gitOrThrow(['-C', wfRepo, 'config', 'user.email', 'hooks-crash@test.local'], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  gitOrThrow(['-C', wfRepo, 'config', 'user.name', 'hooks-crash'], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  fs.mkdirSync(path.join(wfRepo, '.planning'), { recursive: true });
+  fs.writeFileSync(path.join(wfRepo, '.planning', 'config.json'), JSON.stringify({ hooks: { workflow_guard: true } }));
+  fs.writeFileSync(path.join(wfRepo, 'seed.txt'), 'seed\n');
+  gitOrThrow(['-C', wfRepo, 'add', '-A'], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+  gitOrThrow(['-C', wfRepo, 'commit', '-m', 'seed'], { timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+
+  // --- gsd-agent-isolation-guard.js: `.planning/config.json` as a DIRECTORY
+  // (EISDIR) — the guard's documented "cannot verify -> DENY" fail-closed
+  // path (mirrors tests/gsd-agent-isolation-guard.test.cjs's own fixture). ---
+  const aigProject = tempDir('hooks-crash-aig-');
+  fs.mkdirSync(path.join(aigProject, '.planning', 'config.json'), { recursive: true });
+
+  fixtures = { mainRepo, worktreePath, wgProject, roadmapPath, wfRepo, aigProject };
+});
+
+after(() => {
+  for (const p of cleanupPaths) cleanup(p);
+});
+
+// ---------------------------------------------------------------------------
+// The table — one row per enforcement hook, derived from reading its source.
+// ---------------------------------------------------------------------------
+
+const TABLE = [
+  {
+    file: 'gsd-worktree-path-guard.js',
+    stdinTimeoutMs: 3000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: { tool_name: 'Read' } }),
+    deny: () => ({
+      payload: { tool_name: 'Write', tool_input: { file_path: path.join(fixtures.mainRepo, 'README.md') } },
+      cwd: fixtures.worktreePath,
+    }),
+    assertDeny: (r) => {
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.decision, 'block');
+      assert.match(r.stderr, /differs from the active worktree root/);
+      assert.equal(r.stderr, out.reason, 'stderr must carry the plain reason string (deny stderrPayload)');
+    },
+  },
+  {
+    file: 'gsd-write-guard.js',
+    stdinTimeoutMs: 3000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: { tool_name: 'Read' } }),
+    deny: () => ({
+      payload: { tool_name: 'Write', tool_input: { file_path: fixtures.roadmapPath, content: 'short\n' } },
+      env: { GSD_ALLOW_PLANNING_SHRINK: undefined },
+    }),
+    assertDeny: (r) => {
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.decision, 'block');
+      assert.equal(out.oldLines, 292);
+      assert.match(r.stderr, /shrink/);
+      assert.equal(r.stderr, out.reason);
+    },
+  },
+  {
+    file: 'gsd-workflow-guard.js',
+    stdinTimeoutMs: 3000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: { tool_name: 'Read' } }),
+    deny: () => ({
+      payload: { tool_name: 'Bash', cwd: fixtures.wfRepo, tool_input: { command: 'git add -f secret.txt' } },
+    }),
+    assertDeny: (r) => {
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.decision, 'block');
+      assert.equal(out.code, 'WORKTREE_AGENT_FORCE_ADD_FORBIDDEN');
+      assert.match(r.stderr, /force-add|force/i);
+      assert.equal(r.stderr, out.reason);
+    },
+  },
+  {
+    file: 'gsd-context-monitor.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: {} }), // no session_id -> allow(undefined)
+  },
+  {
+    file: 'gsd-config-reload.js',
+    stdinTimeoutMs: 8000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: { file_path: '/tmp/not-a-gsd-config.json' } }), // basename mismatch -> allow
+  },
+  {
+    file: 'gsd-read-injection-scanner.js',
+    stdinTimeoutMs: 5000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: { tool_name: 'Bash' } }), // not in SCANNED_TOOLS -> allow
+  },
+  {
+    file: 'gsd-prompt-guard.js',
+    stdinTimeoutMs: 3000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: { tool_name: 'Read' } }),
+  },
+  {
+    file: 'gsd-read-guard.js',
+    stdinTimeoutMs: 3000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: { tool_name: 'Read' } }),
+  },
+  {
+    file: 'gsd-agent-isolation-guard.js',
+    stdinTimeoutMs: 3000,
+    declaredOnCrash: 'allow',
+    allow: () => ({ payload: { tool_name: 'Read' } }),
+    deny: () => ({
+      payload: { tool_name: 'Task', tool_input: { subagent_type: 'gsd-executor' } },
+      cwd: fixtures.aigProject,
+      env: { GSD_RUNTIME: undefined },
+    }),
+    assertDeny: (r) => {
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.decision, 'block');
+      assert.equal(out.reason_code, 'CONFIG_UNREADABLE');
+      assert.match(r.stderr, /could not read or resolve/);
+      assert.equal(r.stderr, out.reason);
+    },
+  },
+  {
+    file: 'gsd-windsurf-pre-command.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: null, // catch calls allow(undefined) directly — no HOOK_ON_CRASH declared
+    allow: () => ({ payload: { tool_info: { command_line: 'ls -la' } } }),
+    deny: () => ({ payload: { tool_info: { command_line: 'rm -rf /' } } }),
+    assertDeny: (r) => {
+      assert.equal(r.stdout, '', 'deny(undefined, reason) must skip the fd 1 write entirely');
+      assert.match(r.stderr, /rm -rf targeting the filesystem root/);
+    },
+  },
+  {
+    file: 'gsd-windsurf-pre-write.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: null, // catch calls allow(undefined) directly — no HOOK_ON_CRASH declared
+    allow: () => ({ payload: { tool_info: { file_path: 'nonexistent.txt' } }, cwd: os.tmpdir() }),
+    deny: () => ({
+      payload: { tool_info: { file_path: path.join(fixtures.mainRepo, 'README.md') } },
+      cwd: fixtures.worktreePath,
+    }),
+    assertDeny: (r) => {
+      assert.equal(r.stdout, '', 'deny(undefined, reason) must skip the fd 1 write entirely');
+      assert.match(r.stderr, /resolves to git root/);
+    },
+  },
+  {
+    file: 'gsd-statusline.js',
+    stdinTimeoutMs: 3000,
+    declaredOnCrash: 'allow',
+    crashSkipReason:
+      'the crash() call this hook declares ON_CRASH for guards only the require.main ' +
+      "self-heal block (ensureRuntimeBuild() failing on an unbuilt gsd-core/bin/lib tree) — " +
+      "the per-request stdin handler's own catch is a silent fail with no crash() call at all. " +
+      'Forcing the self-heal path to fail would require corrupting the built lib tree or actually ' +
+      'invoking a build, both out of scope for a behavioral spawn test.',
+    allow: () => ({ payload: {} }),
+  },
+  {
+    file: 'gsd-ensure-canonical-path.js',
+    stdinTimeoutMs: null, // never reads stdin at all — see the C4 note below
+    declaredOnCrash: null, // no HOOK_ON_CRASH import/usage; allow(undefined) is unconditional
+    allow: () => ({ payload: undefined }),
+  },
+  {
+    file: 'gsd-cursor-post-tool.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: null,
+    allow: () => ({ payload: { tool_name: 'Read' } }),
+  },
+  {
+    file: 'gsd-cursor-pre-tool.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: null,
+    allow: () => ({ payload: { tool_name: 'Read' } }),
+  },
+  {
+    file: 'gsd-cursor-session-start.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: null,
+    allow: () => ({ payload: {} }),
+  },
+  {
+    file: 'gsd-cursor-stop.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: null,
+    allow: () => ({ payload: {} }),
+  },
+  {
+    file: 'gsd-cursor-subagent-start.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: null,
+    allow: () => ({ payload: {} }),
+  },
+  {
+    file: 'gsd-cursor-subagent-stop.js',
+    stdinTimeoutMs: 10000,
+    declaredOnCrash: null,
+    allow: () => ({ payload: {} }),
+  },
+];
+
+// ---------------------------------------------------------------------------
+// C1 — allow
+// ---------------------------------------------------------------------------
+
+describe('hooks-crash-policy: C1 normal allow -> exit 0', () => {
+  for (const row of TABLE) {
+    test(`${row.file}: allow input -> exit 0`, () => {
+      const { payload, cwd, env } = row.allow();
+      const r = runHook(row.file, { payload, cwd, env });
+      assert.equal(r.outcome, OUTCOME.EXITED, `expected a clean exit; got ${r.outcome} stderr=${r.stderr}`);
+      assert.equal(r.exitCode, 0, `stdout=${r.stdout} stderr=${r.stderr}`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// C2 — deny (only the 6 hooks with a real block path)
+// ---------------------------------------------------------------------------
+
+describe('hooks-crash-policy: C2 normal deny -> exit 2, correct stream(s)', () => {
+  const denyRows = TABLE.filter((row) => typeof row.deny === 'function');
+
+  test('exactly 6 hooks in this table declare a deny case', () => {
+    assert.equal(denyRows.length, 6, denyRows.map((r) => r.file).join(', '));
+  });
+
+  for (const row of denyRows) {
+    test(`${row.file}: deny input -> exit 2`, () => {
+      const { payload, cwd, env } = row.deny();
+      const r = runHook(row.file, { payload, cwd, env });
+      assert.equal(r.outcome, OUTCOME.EXITED, `expected a clean exit; got ${r.outcome} stderr=${r.stderr}`);
+      assert.equal(r.exitCode, 2, `stdout=${r.stdout} stderr=${r.stderr}`);
+      row.assertDeny(r);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// C3 — crash honors the DECLARED policy (malformed JSON forces the outer
+// catch). Hooks with no declared policy are t.skip()'d, never bare-returned.
+// ---------------------------------------------------------------------------
+
+describe('hooks-crash-policy: C3 crash -> declared ON_CRASH policy', () => {
+  const EXPECTED_EXIT = { allow: 0, deny: 2 };
+
+  for (const row of TABLE) {
+    test(`${row.file}: malformed-JSON crash honors declared policy`, (t) => {
+      if (!row.declaredOnCrash) {
+        t.skip(
+          `${row.file} never calls crash(ON_CRASH, ...) — its outer catch calls allow()/nothing ` +
+          'directly, so it declares no HOOK_ON_CRASH policy for this case to verify.'
+        );
+        return;
+      }
+      if (row.crashSkipReason) {
+        t.skip(row.crashSkipReason);
+        return;
+      }
+      const r = runHook(row.file, { payload: MALFORMED_JSON });
+      assert.equal(r.outcome, OUTCOME.EXITED, `expected a clean exit; got ${r.outcome} stderr=${r.stderr}`);
+      assert.equal(
+        r.exitCode,
+        EXPECTED_EXIT[row.declaredOnCrash],
+        `declared ON_CRASH=${row.declaredOnCrash} -> expected exit ${EXPECTED_EXIT[row.declaredOnCrash]}; ` +
+        `stdout=${r.stdout} stderr=${r.stderr}`
+      );
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// C4 — stdin never closes: no `input` is supplied to the seam at all, so the
+// child's stdin pipe is left open. Only the hook's OWN bounded stdin-timeout
+// (-> allow() -> terminateNow -> a real process.exit) can end it; a bare
+// `process.exitCode = N` inside that timer would never actually terminate a
+// process still blocked reading stdin. Never assert on elapsed time — only
+// that it terminated, and with what code.
+// ---------------------------------------------------------------------------
+
+describe('hooks-crash-policy: C4 stdin never closes -> bounded termination, not a hang', () => {
+  for (const row of TABLE) {
+    test(`${row.file}: unclosed stdin still terminates`, () => {
+      const outerTimeoutMs = (row.stdinTimeoutMs ?? 3000) + 10000;
+      // No `payload` key at all -> the seam omits `options.input` -> the
+      // child's stdin is never written to or closed by the parent.
+      const r = runHook(row.file, { timeoutMs: outerTimeoutMs });
+      assert.equal(
+        r.outcome, OUTCOME.EXITED,
+        `expected the hook's own stdin-timeout to terminate it before the outer ` +
+        `${outerTimeoutMs}ms spawn bound; got ${r.outcome} (a TIMED_OUT/KILLED outcome here means ` +
+        `the hook hung on stdin instead of self-terminating). stderr=${r.stderr}`
+      );
+      assert.equal(r.exitCode, 0, `expected the stdin-timeout's allow() fallback (exit 0); stdout=${r.stdout} stderr=${r.stderr}`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Drift guard — the table must not silently fall behind hooks/*.js.
+// ---------------------------------------------------------------------------
+
+describe('hooks-crash-policy: table drift guard', () => {
+  test('every terminating hook file under hooks/ has a table row, and vice versa', () => {
+    const onDisk = fs.readdirSync(HOOKS_DIR)
+      .filter((name) => name.endsWith('.js') && !NON_TERMINATING_HOOKS.has(name))
+      .sort();
+    const inTable = TABLE.map((row) => row.file).sort();
+    assert.deepEqual(
+      inTable, onDisk,
+      'hooks/*.js and this table have drifted — add/remove a row so every ' +
+      'enforcement hook (excluding the declared NON_TERMINATING_HOOKS) is covered.'
+    );
+  });
+
+  test('NON_TERMINATING_HOOKS names actually exist on disk (no stale exclusion)', () => {
+    for (const name of NON_TERMINATING_HOOKS) {
+      assert.ok(fs.existsSync(hookPath(name)), `${name} is excluded but no longer exists under hooks/`);
+    }
+  });
+});
