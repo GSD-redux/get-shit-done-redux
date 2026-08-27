@@ -762,25 +762,14 @@ Do NOT skip. Do NOT proceed to state updates if self-check fails.
 After SUMMARY.md, update STATE.md using `gsd-tools query` state handlers (named flags):
 
 ```bash
-# Advance plan counter (handles edge cases automatically).
+# Advance the plan counter, then READ the answer: the steps below assume it moved.
+# advance-plan REFUSES to advance when `## Current Position` disagrees with the
+# plans on disk, and reports that on stdout at exit 0 (#3830/#3862).
 #
-# #3830/#3862: advance-plan REFUSES to advance when `## Current Position`
-# disagrees with the plans on disk, reporting that on stdout at exit 0. Read the
-# result — the steps below assume the counter moved, and running them on a frozen
-# position records progress and a metric for a plan never advanced past.
-#
-# Key on the REASON, never on `advanced` alone. `advanced: false` is ALSO the
-# ordinary phase-complete answer, where `reason` is `last_plan` and the phase is
-# now `ready_for_verification` — treating that as a failure would skip the final
-# plan's progress and metric recording on every phase. An unusable STATE.md is
-# reported as `{"error": ...}` at exit 0 with no `reason`, which is equally not an
-# advance. A normal advance carries neither field.
-#
-# And read the EXIT STATUS, not only the text. A crash, a missing binary or a
-# non-zero exit leaves ADVANCE_OUT empty, which matches no reason and no error —
-# it would fall through to the catch-all arm and record progress for an advance
-# that never happened. Silence is not an answer: normalize it into the error
-# shape so the STOP arm below owns it. Fail closed.
+# Key on the REASON, never on `advanced`: `advanced: false` is also the ordinary
+# `last_plan` answer, so branching on it would skip the final plan's recording on
+# every phase. An exit-0 `{"error": ...}`, and a NON-ANSWER (non-zero exit or an
+# empty capture, which matches no arm at all), are equally not advances. Fail closed.
 ADVANCE_OUT=$(gsd_run query state.advance-plan)
 ADVANCE_RC=$?
 if [ "${ADVANCE_RC}" -ne 0 ] || [ -z "${ADVANCE_OUT}" ]; then
@@ -788,16 +777,14 @@ if [ "${ADVANCE_RC}" -ne 0 ] || [ -z "${ADVANCE_OUT}" ]; then
 fi
 case "${ADVANCE_OUT}" in
   *'"reason": "position_diverged"'*)
-    echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
-    echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
-    echo "Reconcile it before continuing: 'gsd_run query phase-plan-index' shows the" >&2
-    echo "real plan set. Do NOT record progress or metrics against a frozen position," >&2
-    echo "and do NOT run the ROADMAP/requirements block below." >&2
+    echo "STOP: state.advance-plan refused — ## Current Position disagrees with the" >&2
+    echo "plans on disk (see the [gsd-tools] WARNING). 'gsd_run query phase-plan-index'" >&2
+    echo "shows the real set. Record nothing, and skip the ROADMAP/requirements block." >&2
     ;;
   *'"error":'*)
-    echo "STOP: state.advance-plan did not report an advance — treat the counter as NOT moved." >&2
+    echo "STOP: no advance reported — the counter did NOT move. Record nothing, and" >&2
+    echo "skip the ROADMAP/requirements block below." >&2
     printf '%s\n' "${ADVANCE_OUT}" >&2
-    echo "Do NOT run the ROADMAP/requirements block below." >&2
     ;;
   *)
     # A normal advance (no reason) or the last plan (reason: last_plan).
@@ -822,9 +809,9 @@ esac
 ```
 
 **If the block above printed `STOP:`, do not run the ROADMAP/requirements block that follows.** The
-plan counter did not move, so updating ROADMAP progress or marking requirements complete would record
-state against a position that is still wrong. Reconcile STATE.md first, then re-run this step. A `case`
-arm suppresses only its own block; it cannot stop a later fenced block, so this one is yours to honor.
+counter did not move, so recording progress or completed requirements would write state against a
+position that is still wrong. Reconcile STATE.md, then re-run. A `case` arm suppresses only its own
+block, never a later fenced one — this one is yours to honor.
 
 ```bash
 # Update ROADMAP.md progress for this phase (plan counts, status)

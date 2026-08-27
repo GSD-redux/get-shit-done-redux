@@ -443,24 +443,17 @@ if [ "$IS_WORKTREE" != "true" ]; then
   # Advance plan counter (handles last-plan edge case).
   #
   # #3830/#3862: advance-plan REFUSES to advance when `## Current Position`
-  # disagrees with the plans on disk. It reports the refusal on stdout at exit 0,
-  # so it has to be READ — running the steps below against a position that did not
-  # move is what makes the divergence invisible: progress is recalculated and a
-  # metric recorded for a plan that was never advanced past, and every later plan
-  # re-runs against the frozen counter.
+  # disagrees with the plans on disk, reporting that on stdout at exit 0. It has to
+  # be READ: running the steps below against a position that did not move is what
+  # makes the divergence invisible — progress and a metric are recorded for a plan
+  # never advanced past, and every later plan re-runs against the frozen counter.
   #
-  # Key on the REASON, never on `advanced` alone. `advanced: false` is ALSO the
-  # ordinary last-plan answer (`reason: last_plan`, phase now
-  # `ready_for_verification`) — the very edge case this step's own heading names —
-  # so branching on `advanced` would skip the final plan's progress and metric on
-  # every phase. And an unusable STATE.md is reported as `{"error": ...}` at exit 0
-  # with no `reason` at all, which is equally not an advance.
-  #
-  # And read the EXIT STATUS, not only the text. A crash, a missing binary or a
-  # non-zero exit leaves ADVANCE_OUT empty, which matches no reason and no error
-  # — it would fall through to the catch-all arm and record progress for an
-  # advance that never happened. Silence is not an answer: normalize it into the
-  # error shape so the STOP arm below owns it. Fail closed.
+  # Key on the REASON, never on `advanced`: `advanced: false` is also the ordinary
+  # last-plan answer (`reason: last_plan`) — the very edge case this step's own
+  # heading names — so branching on it would skip the final plan's recording on
+  # every phase. An exit-0 `{"error": ...}`, and a NON-ANSWER (non-zero exit or an
+  # empty capture, which matches no arm at all), are equally not advances. Fail
+  # closed by normalizing a non-answer into the error shape the STOP arm owns.
   ADVANCE_OUT=$(gsd_run query state.advance-plan)
   ADVANCE_RC=$?
   if [ "${ADVANCE_RC}" -ne 0 ] || [ -z "${ADVANCE_OUT}" ]; then
