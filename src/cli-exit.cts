@@ -224,7 +224,9 @@ class ExitError extends Error {
  * terminate). main may be sync or async. Every arm below except the new
  * string one is UNCHANGED from before ADR-3889 Phase 2:
  *   number return   -> process.exitCode = it (unchanged)
- *   string return   -> NEW: process.exitCode = projectOutcome(result, getContractVersion())
+ *   string return   -> NEW: process.exitCode = projectOutcome(result, getContractVersion()),
+ *                      UNLESS that projection is the HOOK_DENY exit code (see
+ *                      the refusal below — 2 may only be produced by terminateNow).
  *   thrown ExitError -> process.exitCode = err.code (+ stderr err.message if hasUserMessage && code!=0) (unchanged)
  *   other throw -> when json-error mode is active, emits structured { ok:false, reason, message }
  *                  to stderr; otherwise writes raw stack trace. exit code = 1 in either case. (unchanged)
@@ -234,7 +236,29 @@ function runMain(main: () => number | string | void | Promise<number | string | 
     .then(() => main())
     .then((result) => {
       if (typeof result === 'number') { process.exitCode = result; return; }
-      if (typeof result === 'string') { process.exitCode = projectOutcome(result, getContractVersion()); return; }
+      if (typeof result === 'string') {
+        const projected = projectOutcome(result, getContractVersion());
+        // ADR-3889 §3: exit code 2 (the Claude Code hook-protocol deny) may
+        // ONLY be produced by terminateNow, never by runMain. runMain is
+        // drain-then-exit; a deny drained this way can be truncated on
+        // Windows, which is exactly why terminateNow (write-then-terminate)
+        // exists. Gated on the PROJECTED code, not on the literal string
+        // `'HOOK_DENY'`, so a future registry rename that still resolves to
+        // this code cannot slip past the guard.
+        if (projected === HOOK_DENY_CODE) {
+          process.stderr.write(
+            `runMain: refusing to exit with code ${HOOK_DENY_CODE} — outcome ${JSON.stringify(result)} `
+            + `projects to the ${HOOK_DENY_NAME} exit code, which is reserved to terminateNow. `
+            + `A hook-protocol deny must be delivered write-then-terminate via terminateNow(${JSON.stringify(result)}, payload), `
+            + 'never drain-then-exit via runMain — a drained deny can be truncated on Windows. '
+            + 'This is a caller bug: runMain must not be given a main() that returns HOOK_DENY.\n',
+          );
+          process.exitCode = exitCodeFor('INTERNAL');
+          return;
+        }
+        process.exitCode = projected;
+        return;
+      }
     })
     .catch((err: unknown) => {
       if (err instanceof ExitError) {
@@ -280,52 +304,88 @@ function runMain(main: () => number | string | void | Promise<number | string | 
  *   model on exit 2, per hooks/gsd-write-guard.js's emitBlock).
  */
 function terminateNow(outcome: string, payload: unknown): never {
-  const version = getContractVersion();
-  const projected = projectOutcome(outcome, version);
-
-  if (projected === HOOK_DENY_CODE && outcome !== HOOK_DENY_NAME) {
-    throw new Error(
-      `terminateNow: exit code ${HOOK_DENY_CODE} is reserved to the ${HOOK_DENY_NAME} outcome; `
-      + `got outcome ${JSON.stringify(outcome)}`,
-    );
-  }
-
-  // m2 (round 5, hooks/gsd-write-guard.js:159-175): emission must itself be
-  // exception-safe. A failed write (EPIPE, a full pipe buffer, a throwing
-  // fs.writeSync in a test) must NOT change the exit code — if it propagated
-  // out of this function, a caller whose payload could not be delivered
-  // would fall into ITS OWN outer catch and fail OPEN, which is the exact
-  // outcome the fail-closed branches this function serves exist to prevent.
-  // The decision to terminate with `projected` stands regardless of whether
-  // the payload could be delivered.
+  // terminateNow is total by construction: its callers are enforcement hooks
+  // (P7/#3911, 19 of them) whose OWN outer catch may fail open (some end in
+  // `process.exit(0)`). If resolving the contract version, projecting the
+  // outcome, or the HOOK_DENY-collision guard below threw and that throw
+  // propagated out of this function, it would unwind straight into that
+  // caller's catch — turning a deny into a silent allow, exactly the defect
+  // ADR-3889 exists to close. So every one of those steps is wrapped here:
+  // on ANY failure this still terminates, deterministically, with INTERNAL
+  // (never by returning or re-throwing) — a malformed call is a programming
+  // error to be diagnosed on stderr, not a reason to hand control back.
+  let versionForDiagnostics = '(unresolved)';
   try {
-    // fs.writeSync, never process.stdout.write: pipe writes via
-    // process.stdout/stderr are async on Windows, and process.exit() below
-    // does not wait for them to flush — a truncated payload is a silent
-    // half-emission. Looped over a Buffer (not a bare string call) so a
-    // payload larger than the destination pipe's buffer — where a single
-    // write() syscall can legitimately return fewer bytes written than
-    // requested — still arrives whole rather than truncated.
-    const buf = Buffer.from(JSON.stringify(payload), 'utf8');
-    let offset = 0;
-    while (offset < buf.length) {
-      offset += fs.writeSync(1, buf, offset, buf.length - offset);
-    }
-    if (projected === HOOK_DENY_CODE) {
-      let stderrOffset = 0;
-      while (stderrOffset < buf.length) {
-        stderrOffset += fs.writeSync(2, buf, stderrOffset, buf.length - stderrOffset);
-      }
-    }
-  } catch {
-    // Emission failed; the exit code decision still stands (see above).
-  }
+    const version = getContractVersion();
+    versionForDiagnostics = version;
+    const projected = projectOutcome(outcome, version);
 
-  // n/no-process-exit is not registered for src/**/*.cts (see the ADR-3889
-  // reference note in the module header) and both compiled .cjs copies of
-  // this module are lint-ignored build/generated artifacts, so no disable
-  // directive is needed here for the one sanctioned process.exit call site.
-  process.exit(projected);
+    if (projected === HOOK_DENY_CODE && outcome !== HOOK_DENY_NAME) {
+      throw new Error(
+        `terminateNow: exit code ${HOOK_DENY_CODE} is reserved to the ${HOOK_DENY_NAME} outcome; `
+        + `got outcome ${JSON.stringify(outcome)}`,
+      );
+    }
+
+    // m2 (round 5, hooks/gsd-write-guard.js:159-175): emission must itself be
+    // exception-safe. A failed write (EPIPE, a full pipe buffer, a throwing
+    // fs.writeSync in a test) must NOT change the exit code — if it propagated
+    // out of this function, a caller whose payload could not be delivered
+    // would fall into ITS OWN outer catch and fail OPEN, which is the exact
+    // outcome the fail-closed branches this function serves exist to prevent.
+    // The decision to terminate with `projected` stands regardless of whether
+    // the payload could be delivered.
+    try {
+      // fs.writeSync, never process.stdout.write: pipe writes via
+      // process.stdout/stderr are async on Windows, and process.exit() below
+      // does not wait for them to flush — a truncated payload is a silent
+      // half-emission. Looped over a Buffer (not a bare string call) so a
+      // payload larger than the destination pipe's buffer — where a single
+      // write() syscall can legitimately return fewer bytes written than
+      // requested — still arrives whole rather than truncated.
+      const buf = Buffer.from(JSON.stringify(payload), 'utf8');
+      let offset = 0;
+      while (offset < buf.length) {
+        offset += fs.writeSync(1, buf, offset, buf.length - offset);
+      }
+      if (projected === HOOK_DENY_CODE) {
+        let stderrOffset = 0;
+        while (stderrOffset < buf.length) {
+          stderrOffset += fs.writeSync(2, buf, stderrOffset, buf.length - stderrOffset);
+        }
+      }
+    } catch {
+      // Emission failed; the exit code decision still stands (see above).
+    }
+
+    // n/no-process-exit is not registered for src/**/*.cts (see the ADR-3889
+    // reference note in the module header) and both compiled .cjs copies of
+    // this module are lint-ignored build/generated artifacts, so no disable
+    // directive is needed here for the one sanctioned process.exit call site.
+    process.exit(projected);
+  } catch (err) {
+    // Anything above threw: an unrecognized --exit-contract/GSD_EXIT_CONTRACT
+    // value, a non-string/empty/unregistered `outcome`, or the HOOK_DENY
+    // collision guard. Diagnose on stderr — swallowing this silently would
+    // make a typo'd outcome name or a bad contract-version env var
+    // undebuggable — then terminate unconditionally. The diagnostic write
+    // itself gets its own swallow-on-failure guard, because even a failed
+    // diagnostic must not stop the exit below from happening.
+    try {
+      const detail = err instanceof Error ? err.message : String(err);
+      const message = `terminateNow: programming error — outcome=${JSON.stringify(outcome)} `
+        + `version=${JSON.stringify(versionForDiagnostics)}: ${detail}\n`
+        + `This is a caller bug (unrecognized outcome/exit-contract, or the HOOK_DENY collision `
+        + `guard), not a declared outcome. Terminating with INTERNAL rather than propagating: an `
+        + `enforcement-hook caller's own outer catch may fail open (process.exit(0)), and unwinding `
+        + `into it here would silently convert a deny into an allow.\n`;
+      fs.writeSync(2, message);
+    } catch {
+      // Diagnostic emission itself failed; the exit below is unconditional
+      // regardless.
+    }
+    process.exit(exitCodeFor('INTERNAL'));
+  }
 }
 
 export = {

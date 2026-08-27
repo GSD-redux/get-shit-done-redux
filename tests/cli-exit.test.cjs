@@ -72,53 +72,41 @@ describe('ExitError', () => {
 });
 
 describe('runMain', () => {
-  test('main returns a number sets process.exitCode', async () => {
+  test('main returns a number sets process.exitCode', async (t) => {
     const saved = process.exitCode;
-    try {
-      runMain(() => 42);
-      await settle();
-      assert.equal(process.exitCode, 42);
-    } finally {
-      process.exitCode = saved || 0;
-    }
+    t.after(() => { process.exitCode = saved || 0; });
+    runMain(() => 42);
+    await settle();
+    assert.equal(process.exitCode, 42);
   });
 
-  test('main returns undefined leaves process.exitCode unchanged', async () => {
+  test('main returns undefined leaves process.exitCode unchanged', async (t) => {
     const saved = process.exitCode;
     // Set a known value before calling
     process.exitCode = 0;
-    try {
-      runMain(() => undefined);
-      await settle();
-      assert.equal(process.exitCode, 0);
-    } finally {
-      process.exitCode = saved || 0;
-    }
+    t.after(() => { process.exitCode = saved || 0; });
+    runMain(() => undefined);
+    await settle();
+    assert.equal(process.exitCode, 0);
   });
 
-  test('main throws ExitError sets process.exitCode to err.code', async () => {
+  test('main throws ExitError sets process.exitCode to err.code', async (t) => {
     const saved = process.exitCode;
-    try {
-      runMain(() => { throw new ExitError(2); });
-      await settle();
-      assert.equal(process.exitCode, 2);
-    } finally {
-      process.exitCode = saved || 0;
-    }
+    t.after(() => { process.exitCode = saved || 0; });
+    runMain(() => { throw new ExitError(2); });
+    await settle();
+    assert.equal(process.exitCode, 2);
   });
 
-  test('main rejects async ExitError(0) sets process.exitCode to 0', async () => {
+  test('main rejects async ExitError(0) sets process.exitCode to 0', async (t) => {
     const saved = process.exitCode;
-    try {
-      runMain(async () => { throw new ExitError(0); });
-      await settle();
-      assert.equal(process.exitCode, 0);
-    } finally {
-      process.exitCode = saved !== undefined ? saved : 0;
-    }
+    t.after(() => { process.exitCode = saved !== undefined ? saved : 0; });
+    runMain(async () => { throw new ExitError(0); });
+    await settle();
+    assert.equal(process.exitCode, 0);
   });
 
-  test('main throws generic Error sets process.exitCode to 1 and writes stderr', async () => {
+  test('main throws generic Error sets process.exitCode to 1 and writes stderr', async (t) => {
     const saved = process.exitCode;
     const stderrChunks = [];
     const origWrite = process.stderr.write.bind(process.stderr);
@@ -126,19 +114,18 @@ describe('runMain', () => {
       stderrChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
       return origWrite(chunk, ...args);
     };
-    try {
-      runMain(() => { throw new Error('kaboom'); });
-      await settle();
-      assert.equal(process.exitCode, 1);
-      const combined = stderrChunks.join('');
-      assert.ok(combined.includes('kaboom'), `expected "kaboom" in stderr: ${combined}`);
-    } finally {
+    t.after(() => {
       process.stderr.write = origWrite;
       process.exitCode = saved || 0;
-    }
+    });
+    runMain(() => { throw new Error('kaboom'); });
+    await settle();
+    assert.equal(process.exitCode, 1);
+    const combined = stderrChunks.join('');
+    assert.ok(combined.includes('kaboom'), `expected "kaboom" in stderr: ${combined}`);
   });
 
-  test('ExitError with hasUserMessage and non-zero code writes to stderr', async () => {
+  test('ExitError with hasUserMessage and non-zero code writes to stderr', async (t) => {
     const saved = process.exitCode;
     const stderrChunks = [];
     const origWrite = process.stderr.write.bind(process.stderr);
@@ -146,19 +133,18 @@ describe('runMain', () => {
       stderrChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
       return origWrite(chunk, ...args);
     };
-    try {
-      runMain(() => { throw new ExitError(1, 'user-visible error'); });
-      await settle();
-      assert.equal(process.exitCode, 1);
-      const combined = stderrChunks.join('');
-      assert.ok(combined.includes('user-visible error'), `expected message in stderr: ${combined}`);
-    } finally {
+    t.after(() => {
       process.stderr.write = origWrite;
       process.exitCode = saved || 0;
-    }
+    });
+    runMain(() => { throw new ExitError(1, 'user-visible error'); });
+    await settle();
+    assert.equal(process.exitCode, 1);
+    const combined = stderrChunks.join('');
+    assert.ok(combined.includes('user-visible error'), `expected message in stderr: ${combined}`);
   });
 
-  test('ExitError with hasUserMessage and code 0 does NOT write to stderr', async () => {
+  test('ExitError with hasUserMessage and code 0 does NOT write to stderr', async (t) => {
     const saved = process.exitCode;
     const stderrChunks = [];
     const origWrite = process.stderr.write.bind(process.stderr);
@@ -166,17 +152,16 @@ describe('runMain', () => {
       stderrChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
       return origWrite(chunk, ...args);
     };
-    try {
-      runMain(() => { throw new ExitError(0, 'silent success'); });
-      await settle();
-      assert.equal(process.exitCode, 0);
-      const combined = stderrChunks.join('');
-      assert.equal(combined.includes('silent success'), false,
-        `did not expect message in stderr: ${combined}`);
-    } finally {
+    t.after(() => {
       process.stderr.write = origWrite;
       process.exitCode = saved !== undefined ? saved : 0;
-    }
+    });
+    runMain(() => { throw new ExitError(0, 'silent success'); });
+    await settle();
+    assert.equal(process.exitCode, 0);
+    const combined = stderrChunks.join('');
+    assert.equal(combined.includes('silent success'), false,
+      `did not expect message in stderr: ${combined}`);
   });
 
   // #3906 (ADR-3889 Phase 2): runMain gained the ability to accept a declared
@@ -184,51 +169,46 @@ describe('runMain', () => {
   // sibling terminator (terminateNow) uses. Every arm above this one is
   // byte-for-byte unchanged — this is the only new arm.
   describe('#3906: runMain accepts a declared outcome string', () => {
-    test('a returned registered name projects through the current contract version', async () => {
+    test('a returned registered name projects through the current contract version', async (t) => {
       const saved = process.exitCode;
-      try {
-        resolveContractVersion({ argv: ['node', 'x'], env: {} }); // v1 (default)
-        runMain(() => 'USAGE');
-        await settle();
-        assert.equal(process.exitCode, 64);
-      } finally {
-        process.exitCode = saved || 0;
-      }
+      t.after(() => { process.exitCode = saved || 0; });
+      resolveContractVersion({ argv: ['node', 'x'], env: {} }); // v1 (default)
+      runMain(() => 'USAGE');
+      await settle();
+      assert.equal(process.exitCode, 64);
     });
 
-    test('a returned DEGRADED projects to 0 under v1 and 80 under v2', async () => {
+    test('a returned DEGRADED projects to 0 under v1 and 80 under v2', async (t) => {
       const saved = process.exitCode;
-      try {
-        resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v1'], env: {} });
-        runMain(() => 'DEGRADED');
-        await settle();
-        assert.equal(process.exitCode, 0);
-
-        resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
-        runMain(() => 'DEGRADED');
-        await settle();
-        assert.equal(process.exitCode, 80);
-      } finally {
+      t.after(() => {
         resolveContractVersion({ argv: ['node', 'x'], env: {} }); // restore default
         process.exitCode = saved || 0;
-      }
+      });
+      resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v1'], env: {} });
+      runMain(() => 'DEGRADED');
+      await settle();
+      assert.equal(process.exitCode, 0);
+
+      resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
+      runMain(() => 'DEGRADED');
+      await settle();
+      assert.equal(process.exitCode, 80);
     });
 
-    test('an unregistered outcome string rejects the same way projectOutcome does (surfaces as the generic-throw arm)', async () => {
+    test('an unregistered outcome string rejects the same way projectOutcome does (surfaces as the generic-throw arm)', async (t) => {
       const saved = process.exitCode;
       const origWrite = process.stderr.write.bind(process.stderr);
       process.stderr.write = () => true;
-      try {
-        runMain(() => 'NOT_A_REAL_OUTCOME');
-        await settle();
-        // The string arm's projectOutcome() call throws synchronously inside
-        // the .then() callback, which the SAME .catch() below it already
-        // handles as a generic (non-ExitError) throw -> exit code 1.
-        assert.equal(process.exitCode, 1);
-      } finally {
+      t.after(() => {
         process.stderr.write = origWrite;
         process.exitCode = saved || 0;
-      }
+      });
+      runMain(() => 'NOT_A_REAL_OUTCOME');
+      await settle();
+      // The string arm's projectOutcome() call throws synchronously inside
+      // the .then() callback, which the SAME .catch() below it already
+      // handles as a generic (non-ExitError) throw -> exit code 1.
+      assert.equal(process.exitCode, 1);
     });
   });
 });
@@ -908,8 +888,17 @@ describe('#3906: parity — runMain and terminateNow project identically (mandat
     }));
   }
 
+  // HOOK_DENY is EXCLUDED from the "both accept" set below on purpose: it is
+  // the one outcome runMain refuses (ADR-3889 §3 — code 2 is terminateNow-only).
+  // A cross-product that included it here would (as review found) run
+  // runMain('HOOK_DENY'), observe exit 2, and call that "parity" — which is
+  // exactly the false claim the restriction is meant to prevent. The
+  // dedicated divergence test below this loop asserts the real contract for
+  // HOOK_DENY instead: runMain refuses it, terminateNow alone produces 2.
+  const NAMES_ACCEPTED_BY_BOTH_TERMINATORS = REGISTERED_NAMES.filter((n) => n !== 'HOOK_DENY');
+
   for (const version of VERSIONS) {
-    for (const outcome of ['PASS', 'FAIL', ...REGISTERED_NAMES]) {
+    for (const outcome of ['PASS', 'FAIL', ...NAMES_ACCEPTED_BY_BOTH_TERMINATORS]) {
       test(`${outcome} under ${version}: runMain and terminateNow agree`, () => {
         const fromRunMain = runMainExit(outcome, version);
         const fromTerminateNow = terminateNowExit(outcome, version);
@@ -920,6 +909,37 @@ describe('#3906: parity — runMain and terminateNow project identically (mandat
         );
       });
     }
+  }
+
+  // The restriction itself, made executable: HOOK_DENY (exit code 2) is the
+  // ONE outcome the two terminators must NOT agree on. runMain must refuse to
+  // produce it (a diagnosable, non-2 exit, never a silent drain to 2), while
+  // terminateNow — the only sanctioned write-then-terminate path — still
+  // delivers it. Run under both contract versions: the refusal is gated on
+  // the PROJECTED code (version-invariant for HOOK_DENY per projectOutcome),
+  // not on version, so it must hold identically under v1 and v2.
+  for (const version of VERSIONS) {
+    test(`HOOK_DENY under ${version}: runMain refuses it (non-2, diagnostic naming HOOK_DENY and terminateNow); terminateNow still exits 2`, () => {
+      const fromRunMain = runMainExit('HOOK_DENY', version);
+      assert.notEqual(
+        fromRunMain.status, 2,
+        `runMain must NEVER produce exit code 2 — that is terminateNow-only; stderr: ${fromRunMain.stderr}`,
+      );
+      assert.ok(
+        fromRunMain.stderr.includes('HOOK_DENY'),
+        `expected the refusal diagnostic to name HOOK_DENY; got: ${fromRunMain.stderr}`,
+      );
+      assert.ok(
+        fromRunMain.stderr.includes('terminateNow'),
+        `expected the refusal diagnostic to name terminateNow; got: ${fromRunMain.stderr}`,
+      );
+
+      const fromTerminateNow = terminateNowExit('HOOK_DENY', version);
+      assert.equal(
+        fromTerminateNow.status, 2,
+        `terminateNow must still exit 2 for HOOK_DENY; stderr: ${fromTerminateNow.stderr}`,
+      );
+    });
   }
 
   // #3906 follow-up: a matrix where every row merely agrees between the two
@@ -1015,40 +1035,34 @@ describe('#3906: ambient GSD_EXIT_CONTRACT/--exit-contract wiring (acceptance cr
   // error, exit 9) rather than leaving it in the CHILD's process.argv. A
   // real CLI entrypoint is invoked as `node <file> --exit-contract=v2`, so
   // the flag path is proven with a real temp script file, not `-e`.
-  test('flag path: node <file> --exit-contract=v2 -> terminateNow DEGRADED exits 80', () => {
+  test('flag path: node <file> --exit-contract=v2 -> terminateNow DEGRADED exits 80', (t) => {
     const dir = createTempDir('gsd-3906-flag-');
-    try {
-      const scriptPath = path.join(dir, 'terminate-degraded.cjs');
-      fs.writeFileSync(scriptPath, [
-        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
-        `c.terminateNow('DEGRADED', {});`,
-        '',
-      ].join('\n'));
-      const env = { ...process.env };
-      delete env.GSD_EXIT_CONTRACT;
-      const r = toLegacyResult(runNode([scriptPath, '--exit-contract=v2'], { timeoutMs: PROBE_TIMEOUT_MS, env }));
-      assert.equal(r.status, 80, `stderr: ${r.stderr}`);
-    } finally {
-      cleanup(dir);
-    }
+    t.after(() => cleanup(dir));
+    const scriptPath = path.join(dir, 'terminate-degraded.cjs');
+    fs.writeFileSync(scriptPath, [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('DEGRADED', {});`,
+      '',
+    ].join('\n'));
+    const env = { ...process.env };
+    delete env.GSD_EXIT_CONTRACT;
+    const r = toLegacyResult(runNode([scriptPath, '--exit-contract=v2'], { timeoutMs: PROBE_TIMEOUT_MS, env }));
+    assert.equal(r.status, 80, `stderr: ${r.stderr}`);
   });
 
-  test('flag path: node <file> with no flag -> terminateNow DEGRADED exits 0', () => {
+  test('flag path: node <file> with no flag -> terminateNow DEGRADED exits 0', (t) => {
     const dir = createTempDir('gsd-3906-flag-');
-    try {
-      const scriptPath = path.join(dir, 'terminate-degraded.cjs');
-      fs.writeFileSync(scriptPath, [
-        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
-        `c.terminateNow('DEGRADED', {});`,
-        '',
-      ].join('\n'));
-      const env = { ...process.env };
-      delete env.GSD_EXIT_CONTRACT;
-      const r = toLegacyResult(runNode([scriptPath], { timeoutMs: PROBE_TIMEOUT_MS, env }));
-      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-    } finally {
-      cleanup(dir);
-    }
+    t.after(() => cleanup(dir));
+    const scriptPath = path.join(dir, 'terminate-degraded.cjs');
+    fs.writeFileSync(scriptPath, [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('DEGRADED', {});`,
+      '',
+    ].join('\n'));
+    const env = { ...process.env };
+    delete env.GSD_EXIT_CONTRACT;
+    const r = toLegacyResult(runNode([scriptPath], { timeoutMs: PROBE_TIMEOUT_MS, env }));
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
   });
 
   // setContractVersion itself is internal (not exported); resolveContractVersion
@@ -1068,12 +1082,30 @@ describe('#3906: ambient GSD_EXIT_CONTRACT/--exit-contract wiring (acceptance cr
     );
   });
 
-  test('GSD_EXIT_CONTRACT=v3 (invalid) still THROWS on the lazy ambient path, never silently v1', () => {
+  test('GSD_EXIT_CONTRACT=v3 (invalid) still THROWS on the lazy ambient path, never silently v1 (runMain: generic-throw arm, exit 1)', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.runMain(() => 'DEGRADED');`,
+      `setImmediate(() => {});`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v3' } }));
+    assert.equal(r.status, 1, `expected the generic-throw exit code 1; stderr: ${r.stderr}`);
+    assert.ok(
+      /unrecognized exit-contract version/.test(r.stderr),
+      `expected the resolveContractVersion rejection message on stderr; got: ${r.stderr.slice(0, 300)}`,
+    );
+  });
+
+  // #3906 follow-up (P7/#3911 hardening): terminateNow is TOTAL — unlike
+  // runMain above, an invalid ambient contract version must NOT propagate a
+  // throw at all (an enforcement-hook caller's own outer catch could turn
+  // that into a fail-open exit 0). It must terminate deterministically with
+  // INTERNAL (70) and diagnose on stderr instead.
+  test('terminateNow: GSD_EXIT_CONTRACT=v3 (invalid) exits 70 (INTERNAL), not silently v1 and not a propagated throw', () => {
     const r = toLegacyResult(runNode(['-e', [
       `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
       `c.terminateNow('DEGRADED', {});`,
     ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v3' } }));
-    assert.equal(r.status, 1, `expected the generic-throw exit code 1; stderr: ${r.stderr}`);
+    assert.equal(r.status, 70, `expected INTERNAL (70); stderr: ${r.stderr}`);
     assert.ok(
       /unrecognized exit-contract version/.test(r.stderr),
       `expected the resolveContractVersion rejection message on stderr; got: ${r.stderr.slice(0, 300)}`,
@@ -1167,6 +1199,104 @@ describe('#3906: terminateNow', () => {
     const parsed = JSON.parse(r.stdout);
     assert.equal(parsed.big.length, bigString.length, 'the payload must arrive byte-for-byte whole, not truncated');
     assert.equal(parsed.big, bigString);
+  });
+
+  // ── terminateNow is TOTAL: no input can make it return or throw ──────────
+  //
+  // P7 (#3911) wires 19 enforcement hooks onto terminateNow, and hooks are
+  // exactly the callers whose OWN outer catch may fail open
+  // (`process.exit(0)`). If any of these malformed-call paths propagated a
+  // throw instead of terminating, unwinding into that catch would silently
+  // convert a deny into an allow — the regression this block exists to pin.
+  describe('terminateNow is total: no input can make it return or throw', () => {
+    test('an unregistered outcome name exits 70 (INTERNAL), with a stderr diagnostic naming it, and nothing after the call runs', () => {
+      const r = spawnTerminateNow([
+        `const fs = require('node:fs');`,
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow('NOT_A_REGISTERED_OUTCOME', {});`,
+        `fs.writeSync(1, 'SHOULD_NEVER_APPEAR');`,
+      ]);
+      assert.equal(r.status, 70, `expected INTERNAL (70); stderr: ${r.stderr}`);
+      assert.ok(
+        r.stderr.includes('NOT_A_REGISTERED_OUTCOME'),
+        `expected the diagnostic to name the offending outcome; got: ${r.stderr}`,
+      );
+      assert.ok(!r.stdout.includes('SHOULD_NEVER_APPEAR'), `code after terminateNow must never run; got: ${r.stdout}`);
+    });
+
+    test('an empty-string outcome exits 70', () => {
+      const r = spawnTerminateNow([
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow('', {});`,
+      ]);
+      assert.equal(r.status, 70, `expected INTERNAL (70); stderr: ${r.stderr}`);
+    });
+
+    test('a null outcome exits 70', () => {
+      const r = spawnTerminateNow([
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow(null, {});`,
+      ]);
+      assert.equal(r.status, 70, `expected INTERNAL (70); stderr: ${r.stderr}`);
+    });
+
+    test('FAIL under an invalid ambient GSD_EXIT_CONTRACT=v3 exits 70, not a Node crash and not a silent v1', () => {
+      const r = toLegacyResult(runNode(['-e', [
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow('FAIL', {});`,
+      ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v3' } }));
+      assert.equal(r.status, 70, `expected INTERNAL (70), not a Node crash / silent v1; stderr: ${r.stderr}`);
+      assert.notEqual(r.status, 1, 'FAIL under a valid v1 resolution would exit 1 — 70 proves the invalid version was not silently accepted as v1');
+    });
+
+    // The regression that matters: a caller-side outer catch that fails open
+    // (process.exit(0)) must NEVER be reached. Written so it would FAIL
+    // against the previous implementation, where the HOOK_DENY collision
+    // guard's throw (and the other two throw sites) propagated out of
+    // terminateNow and into this exact catch, exiting 0.
+    test('the fail-open control: a try/catch wrapper around terminateNow that exits 0 on catch must still see exit 70, never 0', () => {
+      const r = spawnTerminateNow([
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `try {`,
+        `  c.terminateNow('BOGUS', {});`,
+        `} catch {`,
+        `  process.exit(0);`,
+        `}`,
+      ]);
+      assert.equal(
+        r.status, 70,
+        `the outer catch must NEVER be reached (which would exit 0); got ${r.status}, stderr: ${r.stderr}`,
+      );
+      assert.notEqual(r.status, 0, 'a fail-open exit 0 here would mean a deny silently became an allow');
+    });
+
+    test('existing valid-outcome behaviour is unchanged: HOOK_DENY still exits 2, UNAVAILABLE still exits 69', () => {
+      const deny = spawnTerminateNow([
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow('HOOK_DENY', { reason: 'still-blocked' });`,
+      ]);
+      assert.equal(deny.status, 2, `stderr: ${deny.stderr}`);
+
+      const unavailable = spawnTerminateNow([
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow('UNAVAILABLE', { reason: 'still-unavailable' });`,
+      ]);
+      assert.equal(unavailable.status, 69, `stderr: ${unavailable.stderr}`);
+    });
+
+    test('a throwing fs.writeSync for a VALID outcome still exits with the projected code, not 70', () => {
+      const r = spawnTerminateNow([
+        `const fs = require('node:fs');`,
+        `fs.writeSync = () => { throw new Error('injected write failure'); };`,
+        `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+        `c.terminateNow('FAIL', { reason: 'x' });`,
+      ]);
+      assert.equal(
+        r.status, 1,
+        `a failed payload write must still exit with the PROJECTED code (1 for FAIL), not fall into the ` +
+        `programming-error path (70); stderr: ${r.stderr}`,
+      );
+    });
   });
 });
 

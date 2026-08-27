@@ -53,22 +53,27 @@ function makeEntry(overrides) {
 }
 
 /**
- * #3906 (ADR-3889 Phase 2): the generator now dual-emits a primary
- * (gsd-core/bin/lib) and a secondary (scripts/lib) artifact. Every existing
- * call site below only overrides the PRIMARY path via `--out`; without a
- * matching `--scripts-out` override, a `--write` here would clobber the
- * real committed `scripts/lib/exit-code-registry.cjs` — dangerous since
- * test files in this repo run in parallel. Rather than touch every call
- * site, this single seam derives a co-located, per-call-unique secondary
- * path from whatever `--out` value the test already supplies, whenever the
- * caller has not already supplied its own `--scripts-out`. Calls with no
- * explicit `--out` (the "real committed pair" checks) are left untouched.
+ * #3906 (ADR-3889 Phase 2): the generator now emits THREE artifacts — a
+ * primary (gsd-core/bin/lib), a secondary (scripts/lib), and the ambient
+ * `.d.cts` type declaration (src/exit-code-registry.d.cts). Every existing
+ * call site below only overrides the PRIMARY path via `--out`; without
+ * matching `--scripts-out`/`--dts-out` overrides, a `--write` here would
+ * clobber the real committed `scripts/lib/exit-code-registry.cjs` and
+ * `src/exit-code-registry.d.cts` — dangerous since test files in this repo
+ * run in parallel. Rather than touch every call site, this single seam
+ * derives co-located, per-call-unique secondary/dts paths from whatever
+ * `--out` value the test already supplies, whenever the caller has not
+ * already supplied its own `--scripts-out`/`--dts-out`. Calls with no
+ * explicit `--out` (the "real committed set" checks) are left untouched.
  */
 function ensureScriptsOut(args) {
   const outIdx = args.indexOf('--out');
-  if (outIdx === -1 || args.includes('--scripts-out')) return args;
+  if (outIdx === -1) return args;
   const outValue = args[outIdx + 1];
-  return [...args, '--scripts-out', `${outValue}.secondary.cjs`];
+  const extra = [];
+  if (!args.includes('--scripts-out')) extra.push('--scripts-out', `${outValue}.secondary.cjs`);
+  if (!args.includes('--dts-out')) extra.push('--dts-out', `${outValue}.d.cts`);
+  return extra.length === 0 ? args : [...args, ...extra];
 }
 
 function runGen(args, opts = {}) {
@@ -385,7 +390,7 @@ describe('gen-exit-code-registry: CLI', () => {
     return p;
   }
 
-  test('--check is in sync against the real committed pair', () => {
+  test('--check is in sync against the real committed set (both .cjs artifacts and the .d.cts)', () => {
     const result = runGen(['--check']);
     assert.equal(result.exitCode, 0, result.stderr);
   });
@@ -420,6 +425,49 @@ describe('gen-exit-code-registry: CLI', () => {
     assert.equal(result.exitCode, 1);
     assert.equal(report.ok, false);
     assert.equal(report.reason, generator.REASON.DRIFTED);
+  });
+
+  // Review finding (#3906 follow-up): the ambient .d.cts was hand-maintained
+  // with no gate verifying it against serializeRegistry()'s actual shape.
+  // These pin the SAME write/check/drift contract already proven for the two
+  // .cjs artifacts above, but for the .d.cts specifically.
+  test('--write emits a matching .d.cts artifact', () => {
+    const decl = validDeclarationPath(tmpDir, 'dts-decl.json');
+    const out = path.join(tmpDir, 'dts-out.cjs');
+    const dtsOut = path.join(tmpDir, 'dts-out.d.cts');
+    const write = runGen(['--write', '--declaration', decl, '--out', out, '--dts-out', dtsOut]);
+    assert.equal(write.exitCode, 0, write.stderr);
+    assert.ok(fs.existsSync(dtsOut), 'expected the .d.cts artifact to be written');
+    const dtsContent = fs.readFileSync(dtsOut, 'utf8');
+    assert.ok(dtsContent.includes('export interface ExitCodeEntry'));
+    assert.ok(dtsContent.includes('export = exitCodeRegistry;'));
+
+    const check = runGen(['--check', '--declaration', decl, '--out', out, '--dts-out', dtsOut]);
+    assert.equal(check.exitCode, 0, check.stderr);
+  });
+
+  test('--check on a hand-edited .d.cts artifact -> DRIFTED', () => {
+    const decl = validDeclarationPath(tmpDir, 'dts-drift-decl.json');
+    const out = path.join(tmpDir, 'dts-drift-out.cjs');
+    const dtsOut = path.join(tmpDir, 'dts-drift-out.d.cts');
+    assert.equal(runGen(['--write', '--declaration', decl, '--out', out, '--dts-out', dtsOut]).exitCode, 0);
+    fs.appendFileSync(dtsOut, '\n// hand-edited, drifts from generated content\n');
+    const { result, report } = runGenJson(['--check', '--declaration', decl, '--out', out, '--dts-out', dtsOut]);
+    assert.equal(result.exitCode, 1);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.DRIFTED);
+    assert.equal(report.context.artifact, 'dts');
+  });
+
+  test('--check with the .d.cts artifact absent -> MISSING_ARTIFACT', () => {
+    const decl = validDeclarationPath(tmpDir, 'dts-missing-decl.json');
+    const out = path.join(tmpDir, 'dts-missing-out.cjs');
+    const dtsOut = path.join(tmpDir, 'dts-missing-out.d.cts');
+    const { result, report } = runGenJson(['--check', '--declaration', decl, '--out', out, '--dts-out', dtsOut]);
+    assert.equal(result.exitCode, 1);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.MISSING_ARTIFACT);
+    assert.equal(fs.existsSync(dtsOut), false);
   });
 
   test('--check with a stale artifact (declaration changed after write) -> DRIFTED', () => {
