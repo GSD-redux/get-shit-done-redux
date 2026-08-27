@@ -249,6 +249,119 @@ describe('assumption-delta CLI — STDIN exit codes (mirrors ui-safety-gate)', (
   });
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
+// ADR-3889 Phase 3 (#3907): NO_INPUT / UNAVAILABLE — empty/whitespace-only
+// stdin and a stdin read error must not be reported as the authoritative
+// "no signal" verdict (exit 1). Spawns the REAL module and asserts on the
+// child's exit status + parsed stdout, per RULESET.TESTS.
+// ──────────────────────────────────────────────────────────────────────────────
+describe('assumption-delta CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #3907)', () => {
+  const INJECT_STDIN_ERROR = path.join(__dirname, 'helpers', 'inject-stdin-error.cjs');
+  const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
+
+  function runCliJson(stdin, extraArgs = [], extraEnv = {}) {
+    const r = spawnSync(process.execPath, [MODULE_PATH, '--json', ...extraArgs], {
+      input: stdin,
+      encoding: 'utf-8',
+      timeout: 15000,
+      env: { ...process.env, ...extraEnv },
+    });
+    return { exitCode: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  }
+
+  // ── The controls (load-bearing): without these, "always return NO_INPUT"
+  // would satisfy the empty/whitespace-only assertions below. ──────────────
+  test('control: detected input still exits 0 with unchanged --json payload', () => {
+    const r = runCliJson('This phase adds a second platform alongside the existing one.');
+    assert.strictEqual(r.exitCode, 0);
+    const body = JSON.parse(r.stdout);
+    assert.strictEqual(body.detected, true);
+    assert.ok(!('skipped' in body));
+  });
+
+  test('control: genuine-negative (real input, no signal) still exits 1, not NO_INPUT', () => {
+    const r = runCliJson('Refactor the login function to be smaller.');
+    assert.strictEqual(r.exitCode, 1);
+    const body = JSON.parse(r.stdout);
+    assert.strictEqual(body.detected, false);
+    assert.deepStrictEqual(body.signals, []);
+    assert.ok(!('skipped' in body));
+  });
+
+  test('empty stdin exits NO_INPUT (registry integer, never hardcoded)', () => {
+    const r = runCliJson('');
+    assert.strictEqual(r.exitCode, exitCodeFor('NO_INPUT'));
+  });
+
+  test('whitespace-only stdin (spaces / newlines / tabs / CRLF) exits NO_INPUT', () => {
+    for (const ws of ['   ', '\n\n\n', '\t\t\t', '\r\n\r\n', '  \n\t\r\n  ']) {
+      const r = runCliJson(ws);
+      assert.strictEqual(r.exitCode, exitCodeFor('NO_INPUT'), `ws=${JSON.stringify(ws)}`);
+    }
+  });
+
+  test('"x" and " x " are REAL input — must NOT be NO_INPUT', () => {
+    const bare = runCliJson('x');
+    assert.notStrictEqual(bare.exitCode, exitCodeFor('NO_INPUT'));
+    assert.strictEqual(bare.exitCode, 1);
+
+    const padded = runCliJson(' x ');
+    assert.notStrictEqual(padded.exitCode, exitCodeFor('NO_INPUT'));
+    assert.strictEqual(padded.exitCode, 1);
+  });
+
+  test('a NUL byte is real input (not stripped by whitespace trimming)', () => {
+    const r = runCliJson('\0');
+    assert.notStrictEqual(r.exitCode, exitCodeFor('NO_INPUT'));
+    assert.strictEqual(r.exitCode, 1);
+  });
+
+  test('--json empty stdin: {"skipped":true,"reason":"no_input"} with NO detected key', () => {
+    const r = runCliJson('');
+    const body = JSON.parse(r.stdout);
+    assert.deepStrictEqual(body, { skipped: true, reason: 'no_input' });
+    assert.ok(!('detected' in body));
+  });
+
+  test('--terms foo with empty stdin is still NO_INPUT (flag does not bypass the input check)', () => {
+    const r = runCliJson('', ['--terms', 'foo']);
+    assert.strictEqual(r.exitCode, exitCodeFor('NO_INPUT'));
+  });
+
+  test('empty --terms value still restores curated defaults (unrelated to stdin gating)', () => {
+    const r = runCliJson('adds a second platform', ['--terms', '']);
+    assert.strictEqual(r.exitCode, 0, 'empty --terms must fall back to defaults → still detects');
+    const body = JSON.parse(r.stdout);
+    assert.strictEqual(body.detected, true);
+  });
+
+  test('a stdin read error exits UNAVAILABLE (injected via monkeypatched process.stdin, not chmod)', () => {
+    const r = spawnSync(process.execPath, ['-r', INJECT_STDIN_ERROR, MODULE_PATH, '--json'], {
+      encoding: 'utf-8',
+      timeout: 15000,
+    });
+    assert.strictEqual(r.status, exitCodeFor('UNAVAILABLE'));
+    const body = JSON.parse(r.stdout);
+    assert.deepStrictEqual(body, { skipped: true, reason: 'stdin_error' });
+    assert.ok(!('detected' in body));
+    assert.notStrictEqual(body.reason, 'no_input', 'stdin_error must be distinguishable from no_input');
+  });
+
+  test('NO_INPUT / UNAVAILABLE codes are identical under GSD_EXIT_CONTRACT=v1 and v2', () => {
+    for (const version of ['v1', 'v2']) {
+      const emptyResult = runCliJson('', [], { GSD_EXIT_CONTRACT: version });
+      assert.strictEqual(emptyResult.exitCode, exitCodeFor('NO_INPUT'), `NO_INPUT under ${version}`);
+
+      const errResult = spawnSync(process.execPath, ['-r', INJECT_STDIN_ERROR, MODULE_PATH, '--json'], {
+        encoding: 'utf-8',
+        timeout: 15000,
+        env: { ...process.env, GSD_EXIT_CONTRACT: version },
+      });
+      assert.strictEqual(errResult.status, exitCodeFor('UNAVAILABLE'), `UNAVAILABLE under ${version}`);
+    }
+  });
+});
+
 // ─── Hardening (Codex Step-4 review fixes) ────────────────────────────────────
 describe('assumption-delta hardening (Codex review)', () => {
   const { detectAssumptionDelta } = require(MODULE_PATH);
