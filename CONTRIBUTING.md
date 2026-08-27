@@ -1061,15 +1061,36 @@ what your PR changed against `next` and requires every emitted-artifact hash tha
 to be attributable to your diff. If it is not, the check fails and names the paths.
 
 Legitimate cases where emitted bytes move for a reason your diff cannot show directly —
-a converter change, for example — go through a **per-PR fragment** under
-`tests/emitted-drift-acks/` (#2914; name the path, say why); see `CONTEXT.md`'s
-`### Emitted Artifact Provenance` entry for the full model. Growth in a
+a converter change, for example — go through a **commit trailer on one of your own
+commits** (ADR-3942; name the key, say why):
+
+```
+Emitted-Drift-Ack-Hash: skills/gsd-add-tests/SKILL.md — the converter rewrote every skill header
+Emitted-Drift-Ack-Growth: explore.md — new dispatch section, reasoning ships with the block
+```
+
+See `CONTEXT.md`'s `### Emitted Artifact Provenance` entry for the full model. Growth in a
 `gsd-core/workflows/*.md` or `agents/gsd-*.md` file is reported with its exact byte delta
 and needs the same acknowledgment; the outer tier hard caps in
 `tests/workflow-size-budget.test.cjs` / `tests/agent-size-budget.test.cjs` are unaffected
-and still apply. The legacy single `tests/emitted-drift-ack.json` is still read and
-unioned in for any branch that still carries it, but new acknowledgments go in a NEW
-fragment, never that file.
+and still apply.
+
+**Why a trailer and not a file (ADR-3942).** An acknowledgment explains one PR's ripple.
+The moment that PR merges the ripple is in the base, so the acknowledgment can never clear
+anything again — its useful life is exactly your PR's open window. Storing it in the
+working tree meant storing PR-lifetime data in permanent shared state, and every
+consequence of that mismatch had to be built and then maintained: a guard to detect spent
+files on `next`, a scheduled bot to delete them, a hold so the bot did not conflict
+in-flight PRs, and a shared key namespace that walled off the next PR to touch the same
+path. A trailer has no file, so it has no merge-conflict surface, never becomes spent, and
+needs no garbage collector. The trailer is read from `git log $(git merge-base <base>
+HEAD)..HEAD` — your commits and no others — which is the same merge-base the differential
+check already uses to compute what your PR changed.
+
+This is **not** a verdict on `.changeset/` or `tests/qa/smell-acks/`, which use the
+fragment idiom correctly: a changeset and a smell acknowledgment stay meaningful after
+merge, so durable state is the right home for them. Only the emitted-drift ack was spent
+on arrival.
 
 You do not need to memorize any of this. **The failure output names its own remedy** — it
 tells you to create a new fragment under `tests/emitted-drift-acks/` (with a name nobody

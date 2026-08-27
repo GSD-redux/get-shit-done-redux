@@ -57,7 +57,16 @@ The two key spaces are convention-only. A hash ripple keys on the emitted path (
     Emitted-Drift-Ack-Hash: <emitted/path> — <reason>
     Emitted-Drift-Ack-Growth: <filename> — <reason>
 
-Read from `git log <base>..<head>` — the PR's own commits and no others.
+Read from `git log $(git merge-base <base> HEAD)..HEAD` — the PR's own commits and no others.
+
+> **Amendment (#3942 implementation, 2026-08-27).** This section originally said `git log
+> <base>..<head>`, leaving the range semantics unstated. **Two-dot would be a defect.**
+> `changedPaths` comes from `git diff base...HEAD` — *three*-dot, i.e. merge-base — so a two-dot
+> ack range would let the acknowledgment set and the change set disagree about which commits
+> belong to this PR, and a trailer could excuse a delta that is not in the diff. §2's claim that
+> spentness becomes *structural* also rests entirely on merge-base: it is what puts an
+> already-merged trailer out of range by construction. Stated, and pinned by a test that forks a
+> topic branch, places a trailer on each side, and asserts only the topic-side trailer is read.
 
 This preserves what ADR-2719 §3 actually cared about. Its stated design property is *"the acknowledgment file appears in the changed-files list **only when something rippled unexpectedly** … touching the acknowledgment *is* the alarm."* A trailer is still a conspicuous, reviewable, prose-carrying declaration that appears in the PR's diff — it is not the `UPDATE_GOLDEN=1` flag §3 rejected. What changes is that the declaration stops outliving the thing it declares.
 
@@ -81,7 +90,28 @@ There is in-repo precedent for the mechanism: `gsd-core/workflows/ship.md:312` a
 
 ### 5. The PR test lane must fetch the commit range
 
-`.github/workflows/test.yml:107-110` — the `test` job — has no `fetch-depth` key and therefore checks out at depth 1. A depth-1 checkout cannot see the PR's commit range, and the failure mode is a **vacuous pass**, not an error. `test.yml:882-885` already documents this exact hazard for the `guard-no-ack-on-next` job.
+The gate must be able to see the PR's commit range, and must fail closed when it cannot.
+
+> **Amendment 1 — the premise was wrong (#3942 implementation, 2026-08-27).** This section
+> originally asserted that "`.github/workflows/test.yml:107-110` — the `test` job — has no
+> `fetch-depth` key and therefore checks out at depth 1," and made `fetch-depth: 0` a required
+> change. **That is false, and no workflow change is needed.** Line 107 sits inside the
+> `lint-tests` job; the matrix `test` job — the one that actually runs
+> `tests/emitted-attribution.test.cjs` — begins at `test.yml:130` and already sets
+> `fetch-depth: 0` on *both* its Windows (v5.0.1) and Linux/macOS (v6.0.2) checkout steps. The
+> claim entered this ADR from a line citation that was not verified against the job boundaries
+> before it was written down. The requirement stands as a **property to preserve**, not a change
+> to make: if that `fetch-depth: 0` is ever removed, the reader must still fail closed.
+
+> **Amendment 2 — the failure mode was mischaracterized (#3942 implementation, 2026-08-27).** This section originally called the depth-1
+> failure mode a **vacuous pass**. That is true of the *fragment* guard and **false of the trailer
+> reader**, and the phrase was carried over uncritically. With fragments, depth-1 makes every
+> fragment read as brand-new — therefore live — so the guard passes: a false **green**. With
+> trailers, an uncomputable range yields *zero* acknowledgments, so a PR that needs one fails: a
+> false **red**. Provided the reader throws rather than returning an empty set, the depth-1 failure
+> is loud in both directions, which is a real improvement this ADR undersold. `fetch-depth: 0` is
+> still required; forgetting it is now merely obstructive instead of dangerous. The throw is pinned
+> by a test that builds a genuine shallow clone rather than simulating one.
 
 `fetch-depth: 0` is required on that job, and the gate must fail closed when the range is unavailable — never `return` on a missing base, per ADR-2719 §6 ("A baseline-unavailable path must never be a bare `return`. In `node:test` that is a **pass**").
 

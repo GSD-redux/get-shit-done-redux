@@ -45,45 +45,10 @@ const {
   extraEmitRootsFor,
   PKG_VERSION,
 } = require('./install-shared.cjs');
-const { mergeAckSources, MAX_ACK_FRAGMENTS } = require('./emitted-diff.cjs');
-
-/**
- * Fail loudly when a fragment listing exceeds `MAX_ACK_FRAGMENTS`, naming the
- * directory, the cap, and the actual count. Never truncate: a silently-truncated
- * listing would silently drop acknowledgments, which is exactly the class of silent
- * failure the ack seam exists to prevent (see `MAX_ACK_FRAGMENTS`'s doc comment in
- * `emitted-diff.cjs`).
- */
-function assertFragmentCountWithinCap(dirLabel, names) {
-  if (names.length > MAX_ACK_FRAGMENTS) {
-    throw new Error(
-      `emitted-attribution: ${dirLabel} contains ${names.length} ack fragments, `
-      + `exceeding the cap of ${MAX_ACK_FRAGMENTS}. Refusing to read only some of them — a `
-      + 'truncated read would silently drop acknowledgments. Prune spent fragments from '
-      + 'this directory.',
-    );
-  }
-  return names;
-}
+const { ACK_TRAILER_HASH, ACK_TRAILER_GROWTH, parseAckTrailers } = require('./emitted-diff.cjs');
+const { runGit, OUTCOME } = require('./process-seam.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
-/**
- * Repo-relative and POSIX-separated on every platform: this form is what `git show
- * <ref>:<path>` requires, and git speaks only forward slashes regardless of host OS.
- * `ACK_PATH` derives from it so the two can never name different files.
- *
- * LEGACY single-file path (#2778), still honored and unioned with `ACK_DIR_REPO_PATH`
- * below (#2914) — open PRs authored before the fragment split still carry this file.
- */
-const ACK_REPO_PATH = 'tests/emitted-drift-ack.json';
-const ACK_PATH = path.join(REPO_ROOT, ...ACK_REPO_PATH.split('/'));
-/**
- * Per-PR fragment directory (#2914). Every fragment is independently named, so two PRs
- * that each need an ack can never collide on this path the way they always did on the
- * single legacy file above.
- */
-const ACK_DIR_REPO_PATH = 'tests/emitted-drift-acks';
-const ACK_DIR = path.join(REPO_ROOT, ...ACK_DIR_REPO_PATH.split('/'));
 const FIXTURE_SUBDIR = 'tests/fixtures/golden-install-parity';
 
 /**
@@ -327,190 +292,6 @@ function resolveChangedPaths(base = 'origin/next') {
 /** Resolve `base` to a 40-hex sha, for the baseline cache-key discipline (ADR §5). */
 function resolveBaseSha(base = 'origin/next') {
   return git(['rev-parse', base]).trim();
-}
-
-/**
- * The acknowledgment document AS IT EXISTS AT `base` — the base side of the ack
- * lifecycle (#2789). An entry already present there is SPENT: its ripple is absorbed
- * into the base, so it may no longer clear a delta and is never reported stale.
- *
- * ── Why "inherit nothing" is NOT a safe default ──────────────────────────────
- * Absent at that ref is the healthy steady state and returns `null`. Every OTHER failure
- * THROWS, and the distinction is load-bearing in the direction that is easy to get
- * backwards. Returning `null` on a read error looks armed — nothing is inherited, so
- * every entry stays live — but a LIVE entry's defining power is that it CONSUMES a
- * delta. So `null` is armed on the staleness axis and DISARMED on the consumption axis,
- * which is the axis a gate over shipped artifacts actually cares about: a genuinely new,
- * unexplained ripple on a path carrying an already-merged ack would come back `acked`
- * instead of `unattributable`. That is silently the whole pre-#2789 behavior, including
- * the pre-clearing hazard this change exists to close.
- *
- * So this follows the same law as `resolveChangedPaths` above — a failed git read is an
- * ERROR, not an empty set — and matches the head-side `readAckFile`, which already
- * throws on a document that exists but will not parse. Being more forgiving about the
- * base copy of the same file would be strictly worse: it is the copy we cannot see in
- * the diff.
- *
- * `git show` alone cannot make the distinction — a bogus ref and an absent path produce
- * the same "does not exist in" message — so absence is established with `ls-tree`, which
- * exits 0 with empty output when the path is simply not there and non-zero on a real
- * fault.
- *
- * `repoPath` defaults to the legacy single file, but is generalized (#2914) so the same
- * read-at-ref logic serves any one fragment under `ACK_DIR_REPO_PATH` too — there is
- * exactly one implementation of "read this ack path at that ref", reused per source
- * rather than re-typed per fragment.
- */
-function readAckFileAtRef(base, { cwd = REPO_ROOT, run = git, repoPath = ACK_REPO_PATH } = {}) {
-  // `execFileSync`'s array form stops SHELL metacharacters but not git's own option
-  // parsing: a ref beginning with `-` is read as an option token, and `git show` honors
-  // diff options including `--output=<file>`, which writes. Today every caller passes a
-  // resolved 40-hex sha, but this function is exported and validated nothing itself —
-  // the guard belonged with the argument, not with the one caller that happens to be safe.
-  if (typeof base !== 'string' || base === '' || base.startsWith('-')) {
-    throw new Error(
-      `emitted-attribution: refusing to read the ack at ${JSON.stringify(base)} — a base ref `
-      + 'must be a non-empty string that does not begin with "-", which git would parse as an option.',
-    );
-  }
-
-  let listing;
-  try {
-    listing = run(['ls-tree', '--name-only', base, '--', repoPath], { cwd });
-  } catch (err) {
-    throw new Error(
-      `emitted-attribution: could not list the ack at "${base}": ${err.message}. This is a `
-      + 'hard error on purpose — treating an unreadable base as "nothing inherited" would '
-      + 'leave every ack able to consume a delta, which is the pre-#2789 gate.',
-    );
-  }
-  if (listing.trim() === '') return null; // genuinely absent at that ref — the steady state
-
-  let raw;
-  try {
-    raw = run(['show', `${base}:${repoPath}`], { cwd });
-  } catch (err) {
-    throw new Error(
-      `emitted-attribution: ${repoPath} exists at "${base}" but could not be read: ${err.message}`,
-    );
-  }
-  if (raw.trim() === '') {
-    throw new Error(`emitted-attribution: ${repoPath} is present at "${base}" but empty`);
-  }
-  try {
-    return JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `emitted-attribution: ${repoPath} at "${base}" is not valid JSON: ${err.message}`,
-    );
-  }
-}
-
-/**
- * Fragment filenames present under `ACK_DIR_REPO_PATH` AT `base`, sorted.
- *
- * Mirrors `readAckFileAtRef`'s absence handling: `ls-tree` on a directory that does not
- * exist at that ref exits 0 with empty output, which this reads as "no fragments there"
- * — the healthy steady state, not a fault. A genuine git failure (bad ref, corrupt
- * object) still throws, for the same reason `readAckFileAtRef` throws on one: silently
- * reading "could not list" as "nothing there" would leave every fragment ack able to
- * consume a delta it should not.
- */
-function listAckFragmentFilesAtRef(base, { cwd = REPO_ROOT, run = git } = {}) {
-  let out;
-  try {
-    out = run(['ls-tree', '--name-only', base, '--', `${ACK_DIR_REPO_PATH}/`], { cwd });
-  } catch (err) {
-    throw new Error(
-      `emitted-attribution: could not list ${ACK_DIR_REPO_PATH}/ at "${base}": ${err.message}.`,
-    );
-  }
-  const names = out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((p) => p.endsWith('.json'))
-    .map((p) => p.slice(p.lastIndexOf('/') + 1))
-    .sort();
-  return assertFragmentCountWithinCap(`${ACK_DIR_REPO_PATH}/ at "${base}"`, names);
-}
-
-/**
- * Fragment filenames present under `ACK_DIR` on THIS tree (the working copy), sorted.
- * Absent directory == zero fragments, the healthy steady state — not a fault.
- */
-function listAckFragmentFiles(dir = ACK_DIR) {
-  if (!fs.existsSync(dir)) return [];
-  const names = fs.readdirSync(dir)
-    .filter((name) => name.endsWith('.json'))
-    .sort();
-  return assertFragmentCountWithinCap(dir, names);
-}
-
-/**
- * Read + union every ack source on THIS tree (#2914): the legacy single file (if
- * present) plus every fragment under `ACK_DIR`. Reuses `readAckFile` per physical file
- * (same absent/empty/unparseable rules for a fragment as for the legacy file — one
- * definition, not a second one per source) and `mergeAckSources` (tests/helpers/
- * emitted-diff.cjs) for the union + duplicate-key detection.
- *
- * Returns `{ doc: null, errors: [] }` only when NEITHER the legacy file nor any
- * fragment exists — the healthy steady state matching `readAckFile`'s own `null`
- * contract, so callers can keep testing `ack === null` to decide whether the base side
- * needs consulting at all (avoiding the deadlock `readAckFileAtRef`'s doc comment
- * describes for a corrupt base).
- *
- * @returns {{ doc: {version: number, paths: object} | null, errors: string[] }}
- */
-function readAckSources({ legacyPath = ACK_PATH, fragmentsDir = ACK_DIR } = {}) {
-  const docs = [];
-  if (fs.existsSync(legacyPath)) {
-    docs.push({ source: ACK_REPO_PATH, doc: readAckFile(legacyPath) });
-  }
-  for (const name of listAckFragmentFiles(fragmentsDir)) {
-    docs.push({
-      source: `${ACK_DIR_REPO_PATH}/${name}`,
-      doc: readAckFile(path.join(fragmentsDir, name)),
-    });
-  }
-  if (docs.length === 0) return { doc: null, errors: [] };
-  const { merged, errors } = mergeAckSources(docs);
-  return { doc: merged, errors };
-}
-
-/**
- * Read + union every ack source AT `base` (#2914): the legacy single file plus every
- * fragment, as they existed at that ref. Mirrors `readAckSources` above, one ref-read
- * per physical source via `readAckFileAtRef`'s now-generalized `repoPath` option.
- *
- * Base-side merge/schema errors are DELIBERATELY DISCARDED, matching this module's
- * existing precedent for the base side (see `diffEmitted`'s caller below: "Base-side
- * SCHEMA errors are deliberately discarded... a document we cannot read simply inherits
- * nothing — which is the ARMED reading"). A cross-fragment collision found only at the
- * base is `next`'s own health, not this diff's to answer for; `mergeAckSources`'s
- * first-source-wins fallback for a duplicate key is still the STRICT reading here (an
- * entry can only be "spent" against the ONE reason kept, never either of two), so
- * discarding the error text costs no protection while avoiding a lint-clean PR being
- * blocked by a historical duplicate it did not introduce and cannot fix by itself.
- *
- * A genuine READ failure (corrupt JSON, unreadable object) on any single source still
- * throws, exactly as `readAckFileAtRef` already does — only the schema/collision
- * bookkeeping is discarded, never a fault.
- *
- * @returns {{ doc: {version: number, paths: object} | null }}
- */
-function readAckSourcesAtRef(base, { cwd = REPO_ROOT, run = git } = {}) {
-  const docs = [];
-  const legacyDoc = readAckFileAtRef(base, { cwd, run });
-  if (legacyDoc !== null) docs.push({ source: ACK_REPO_PATH, doc: legacyDoc });
-  for (const name of listAckFragmentFilesAtRef(base, { cwd, run })) {
-    const relPath = `${ACK_DIR_REPO_PATH}/${name}`;
-    const doc = readAckFileAtRef(base, { cwd, run, repoPath: relPath });
-    if (doc !== null) docs.push({ source: relPath, doc });
-  }
-  if (docs.length === 0) return { doc: null };
-  const { merged } = mergeAckSources(docs);
-  return { doc: merged };
 }
 
 /**
@@ -935,52 +716,106 @@ function currentSizes({ repoRoot = REPO_ROOT } = {}) {
 }
 
 /**
- * Read `tests/emitted-drift-ack.json`.
- * Absent is legal and means "no acks" — its PRESENCE is the alarm (ADR §3).
- * A present-but-unreadable or unparseable file THROWS: silently treating it as absent
- * would disarm the gate in the one case where someone is actively using it.
+ * Bounded git invocation for the #3942 commit-trailer ack reader, built on the
+ * never-throws process seam (`runGit`) rather than `git()` above: `readAckTrailers` must
+ * honor a PER-CALL `timeoutMs` (row 24's hostile-timeout row), and `git()` pins
+ * `GIT_TIMEOUT_MS` at import time with no per-call override. Throws on anything but a
+ * clean exit — same "a git failure is a hard error, never an empty result" law as
+ * `resolveChangedPaths` above.
  */
-function readAckFile(ackPath = ACK_PATH) {
-  if (!fs.existsSync(ackPath)) return null;
-  const raw = fs.readFileSync(ackPath, 'utf8');
-  if (raw.trim() === '') {
-    throw new Error(`emitted-attribution: ${path.basename(ackPath)} is present but empty`);
+function ackTrailerGit(args, { cwd = REPO_ROOT, timeoutMs = GIT_TIMEOUT_MS } = {}) {
+  const result = runGit([...safeDirArgs(cwd), ...args], { cwd, timeoutMs });
+  if (result.outcome === OUTCOME.EXITED && result.exitCode === 0) {
+    return result.stdout;
   }
-  try {
-    return JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`emitted-attribution: ${path.basename(ackPath)} is not valid JSON: ${err.message}`);
-  }
+  throw new Error(
+    `emitted-ack-trailer: \`git ${args.join(' ')}\` failed — outcome=${result.outcome} `
+    + `exitCode=${result.exitCode} stderr=${(result.stderr || '').trim()}`,
+  );
 }
 
+// Record/field/value separators for the `git log --format` trailer extraction below.
+// ASCII control characters (RS/US/GS) so they can never collide with real trailer
+// content, following the precedent at gsd-core/workflows/ship.md:312 (`%x1f`/`%x1e` for
+// a different `%(trailers:...)` extraction in this same repo).
+const ACK_TRAILER_RECORD_SEP = '\x1e'; // between commits
+const ACK_TRAILER_FIELD_SEP = '\x1f'; // between the hash-space list and growth-space list
+const ACK_TRAILER_VALUE_SEP = '\x1d'; // between multiple values of the SAME trailer key
+
 /**
- * STUB — #3942 commit-trailer reader (interface-only; see emitted-diff.cjs's stub
- * block for why this returns benign-empty rather than throwing).
+ * Read #3942 commit-trailer acknowledgments over `<mergeBase>..<headRef>`.
  *
- * Real implementation: resolve `git merge-base baseRef headRef`, throwing when the
- * range is uncomputable (row 15/22 of the design — a shallow clone must fail LOUD,
- * never return empty); read every commit's trailer block in that range (bounded git
- * subprocess, timeout surfaced not swallowed); and hand the per-trailer-name value
- * arrays to `parseAckTrailers` (emitted-diff.cjs).
+ * ── Why the merge-base is resolved here, not taken as `baseRef` verbatim ──────
+ * `changedPaths` (`resolveChangedPaths` above) is three-dot (merge-base) by construction,
+ * and 40-design.md's Correction 2 requires the trailer range to agree — otherwise a
+ * trailer could excuse a delta structurally outside the diff. Reading
+ * `<mergeBase>..<headRef>` (never `<baseRef>..<headRef>`) is what makes a trailer on the
+ * OTHER side of a fork correctly out of range (row 7/8 — structural spentness).
  *
- * @param {{baseRef?: string, headRef?: string, cwd?: string}} [_opts]
+ * ── Why an uncomputable range THROWS, never returns empty ─────────────────────
+ * A shallow clone (or any ref sharing no history with `headRef`) makes the merge-base
+ * uncomputable. Returning an empty result here would read as "no acks needed" — a false
+ * GREEN that silently disarms the gate. This is 40-design.md's Correction 1 (row 15/22):
+ * every failure path below throws, naming "range"/"merge-base"/"shallow".
+ *
+ * Trailer values are read with git's OWN trailer parser
+ * (`%(trailers:key=...,valueonly)`), never a regex over the message body, so a mid-body
+ * mention of the trailer syntax (row 32 — this PR's own docs teach the grammar) is
+ * correctly inert. `\r` is stripped from every value before parsing (row 27 — a CRLF
+ * commit message must parse identically to LF).
+ *
+ * @param {{baseRef: string, headRef?: string, cwd?: string, timeoutMs?: number}} opts
  * @returns {{hash: Map<string, {reason: string}>, growth: Map<string, {reason: string}>, errors: string[]}}
  */
-function readAckTrailers(_opts) {
-  return { hash: new Map(), growth: new Map(), errors: [] };
+function readAckTrailers({ baseRef, headRef = 'HEAD', cwd = REPO_ROOT, timeoutMs = GIT_TIMEOUT_MS } = {}) {
+  let mergeBaseOut;
+  try {
+    mergeBaseOut = ackTrailerGit(['merge-base', baseRef, headRef], { cwd, timeoutMs });
+  } catch (err) {
+    throw new Error(
+      `emitted-ack-trailer: could not compute a merge-base range for "${baseRef}..${headRef}" `
+      + '(a bad ref, a shallow clone with no common ancestor, or another git failure): '
+      + err.message,
+    );
+  }
+  const mergeBase = mergeBaseOut.trim();
+  if (!/^[0-9a-f]{40}$/.test(mergeBase)) {
+    throw new Error(
+      `emitted-ack-trailer: git merge-base for "${baseRef}..${headRef}" returned no usable `
+      + `commit (${JSON.stringify(mergeBase)}) — the range is structurally uncomputable `
+      + '(possibly a shallow clone with no common ancestor).',
+    );
+  }
+
+  const format =
+    `${ACK_TRAILER_RECORD_SEP}%(trailers:key=${ACK_TRAILER_HASH},valueonly,separator=${ACK_TRAILER_VALUE_SEP.codePointAt(0).toString(16).padStart(2, '0')})`
+    + `${ACK_TRAILER_FIELD_SEP}%(trailers:key=${ACK_TRAILER_GROWTH},valueonly,separator=${ACK_TRAILER_VALUE_SEP.codePointAt(0).toString(16).padStart(2, '0')})`;
+
+  let raw;
+  try {
+    raw = ackTrailerGit(['log', `${mergeBase}..${headRef}`, `--format=${format}`], { cwd, timeoutMs });
+  } catch (err) {
+    throw new Error(`emitted-ack-trailer: could not read commit trailers over the range: ${err.message}`);
+  }
+
+  const normalized = raw.replace(/\r/g, '');
+  const hashValues = [];
+  const growthValues = [];
+  // index 0 is the (empty) text before the FIRST record separator — every real record
+  // starts with one, by construction of the `--format` string above.
+  const records = normalized.split(ACK_TRAILER_RECORD_SEP).slice(1);
+  for (const record of records) {
+    const [hashField = '', growthFieldRaw = ''] = record.split(ACK_TRAILER_FIELD_SEP);
+    const growthField = growthFieldRaw.replace(/\n+$/, ''); // git's own between-commit newline
+    for (const v of hashField.split(ACK_TRAILER_VALUE_SEP)) if (v !== '') hashValues.push(v);
+    for (const v of growthField.split(ACK_TRAILER_VALUE_SEP)) if (v !== '') growthValues.push(v);
+  }
+
+  return parseAckTrailers({ hash: hashValues, growth: growthValues });
 }
 
 module.exports = {
   REPO_ROOT,
-  ACK_PATH,
-  ACK_REPO_PATH,
-  ACK_DIR,
-  ACK_DIR_REPO_PATH,
-  readAckFileAtRef,
-  listAckFragmentFiles,
-  listAckFragmentFilesAtRef,
-  readAckSources,
-  readAckSourcesAtRef,
   FIXTURE_SUBDIR,
   MANIFEST_FAMILIES,
   MINIMUM_MANIFEST_FAMILIES,
@@ -1002,7 +837,6 @@ module.exports = {
   measuredPackageVersion,
   currentManifests,
   currentSizes,
-  readAckFile,
   readAckTrailers,
   WORKTREE_TIMEOUT_MS,
   BUILD_LIB_TIMEOUT_MS,

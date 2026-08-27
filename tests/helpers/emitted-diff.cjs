@@ -7,9 +7,10 @@
  * Given the emitted manifests at `next` HEAD and at PR HEAD, plus the repo paths the
  * PR actually changed, decide which moved emitted paths are EXPLAINED by the diff and
  * which are not. Unattributable deltas are a hard failure that names them; the only
- * way through is a committed acknowledgment — a per-PR fragment under
- * `tests/emitted-drift-acks/` (#2914), or, for branches predating that split, the
- * legacy single `tests/emitted-drift-ack.json` — both are read and unioned (#2914).
+ * way through is a commit trailer on the PR's own commits (ADR-3942) —
+ * `Emitted-Drift-Ack-Hash:` / `Emitted-Drift-Ack-Growth:`, read over
+ * `<merge-base>..HEAD` by `readAckTrailers` (`tests/helpers/emitted-runtime.cjs`) and
+ * parsed by `parseAckTrailers` below.
  *
  * ── Why this module is pure ──────────────────────────────────────────────────
  * No fs, no git, no installer, no clock. The naive shape — one integration test that
@@ -32,56 +33,26 @@
 
 const { attributeEmittedPath } = require('./emitted-provenance.cjs');
 
-/** Ack schema version. Pinned from day one: contributors hand-write this file, so its
- *  shape is public the moment it ships (Hyrum). Loosening later is easy; tightening is not. */
-const ACK_VERSION = 1;
-
 /**
  * Key names that can never be a legitimate emitted path or bare workflow/agent filename,
  * and that also happen to be the JS-object footguns (`__proto__`, `constructor`,
- * `prototype`). Rejected LOUDLY by `parseAck` rather than silently dropped: a document
- * naming one of these is always an authoring mistake (never a real path), and dropping it
- * quietly would let the SAME document pass `scripts/lint-emitted-drift-ack.cjs`'s
- * duplicate-detection (which excludes these keys for a different reason — see
- * `declaredKeys`'s doc comment there) while erroring differently here — exactly the
- * generative-fix-divergence class this repo's parity test exists to catch (#2914 review).
+ * `prototype`). Rejected LOUDLY by `parseAckTrailers` rather than silently dropped: a
+ * trailer naming one of these is always an authoring mistake (never a real path or
+ * filename), and dropping it quietly would let the SAME reserved key satisfy a downstream
+ * lookup instead of failing the gate that names it.
  */
 const RESERVED_ACK_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 /**
- * The LEGACY acknowledgment file, named ONCE (#2778), still honored (#2914).
- *
- * This string was previously typed by hand in `formatReport`'s unattributable branch, in
- * `parseAck`'s default `source`, and again as `ACK_PATH` in emitted-runtime.cjs. Adding a
- * fourth copy for the growth branch is the *generative fix divergence* class this repo
- * records: parallel surfaces reading one shared value must not be able to drift. One
- * definition consumed by every branch is cheaper than a parity test over four literals.
- *
- * #2914 replaces this SINGLE SHARED FILE with per-PR fragments under `ACK_DIR` — a
- * single mutable document whose `paths` map every PR rewrites wholesale is a guaranteed
- * merge-conflict cell between any two PRs that both need an ack (5 of 6 conflicting PRs
- * in the open queue collided on this file and nothing else). The legacy path is still
- * read and unioned with the fragments directory so open PRs authored before the split
- * (#2818, #2812, #2728, #2566, #2531) are not broken by this change.
+ * The pre-ADR-3942 acknowledgment file/directory names, preserved as historical
+ * constants only — #2778's single file, then #2914's per-PR fragment directory. Neither
+ * is read anymore: ADR-3942 §1 moves the acknowledgment to a commit trailer, and §6
+ * retires both the fragment directory and its README as write targets. Kept here (and
+ * exported) only where a still-live caller names one of these paths for an unrelated
+ * reason (e.g. `NEW_FILE_CAP`'s doc comment below references `ACK_DIR` by name).
  */
 const ACK_FILE = 'tests/emitted-drift-ack.json';
-
-/**
- * The per-PR fragment directory (#2914) — the `.changeset/`-shaped fix to the same
- * shared-mutable-file problem `.changeset/` already solves: every fragment is a
- * separately-named file, so two PRs adding an ack can never conflict with each other,
- * and a fragment left behind on `next` after merge is inert rather than a shared cell.
- */
 const ACK_DIR = 'tests/emitted-drift-acks';
-
-/**
- * Distinguishes "caller omitted the base side" from "caller said there is none".
- *
- * A plain `null` default cannot tell those apart, and the difference is the whole point:
- * omission would silently mean "inherit nothing", which is precisely how a dropped
- * argument would restore #2768 with every unit test still green.
- */
-const BASE_ACK_OMITTED = Symbol('baseAck omitted');
 
 /**
  * Characters that render as nothing: soft hyphen, the zero-width family, word joiner,
@@ -99,18 +70,14 @@ const INVISIBLE = new RegExp(
 /**
  * The single definition of "the prose a reviewer actually reads" for an ack reason.
  *
- * It is exported for exactly one reason: `scripts/lint-emitted-drift-ack.cjs` carries
- * its own duplicate (`ackProse`) rather than requiring this file, because `scripts/`
- * ships in the published npm package and `tests/` does not — a `require('../tests/...')`
- * from a shipped script would work in this repo and break for every installed user
- * (#3078). That duplication is unavoidable, but leaving both copies unexported meant
- * nothing could ever compare them: the "parity test" this module's comments promised
- * was checking the script against itself. Exporting this lets a real test hold the
- * script's copy to this one.
+ * Used internally by `parseAckTrailers`'s own same-key dedup (a key declared twice
+ * within one trailer space collapses to one entry only when the reasons are identical
+ * after normalization) and exported so a real test can assert on that behavior directly
+ * rather than only through `parseAckTrailers`'s combined output.
  *
  * The invisible-stripping (`INVISIBLE`) and whitespace-collapse below are anti-gaming
- * defences, not incidental normalization — see the comments at the two call sites in
- * `diffEmitted`. Do not weaken either side of the duplicate without weakening both.
+ * defences, not incidental normalization — see `parseAckTrailers`'s dedup check, its
+ * one call site.
  */
 function normalizeAckReason(reason) {
   return reason.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
@@ -140,52 +107,33 @@ function normalizeAckReason(reason) {
 const NEW_FILE_CAP = 32768;
 
 /**
- * Upper bound on how many fragment files a `readdirSync` of `ACK_DIR` (or its
- * counterpart in `scripts/lint-emitted-drift-ack.cjs`) may return in one pass.
+ * Pre-ADR-3942 upper bound on how many fragment files a `readdirSync` of `ACK_DIR`
+ * could return in one pass, preserved as a historical constant only — ADR-3942 §1
+ * retires the fragment directory as a write target (the acknowledgment is now a commit
+ * trailer, bounded instead by `MAX_ACK_TRAILERS`, further down this file). Nothing reads
+ * `ACK_DIR` anymore, so nothing consults this bound either.
  *
- * 500 is ample headroom over any real repo's fragment count, which stays in the
- * single digits between releases (fragments are deleted once spent). Exceeding it
- * throws rather than silently truncating: a truncated listing would silently drop
+ * 500 was ample headroom over any real repo's fragment count, which stayed in the
+ * single digits between releases (fragments were deleted once spent). Exceeding it
+ * threw rather than silently truncating: a truncated listing would have silently dropped
  * acknowledgments from the merged set, which is exactly the class of silent failure
- * this whole ack seam exists to prevent — the fix for a directory this large is to
- * prune spent fragments, never to read only some of them.
- *
- * Duplicated (not imported) in `scripts/lint-emitted-drift-ack.cjs`, which cannot
- * require anything from `tests/` (it ships in the npm package; `tests/` does not).
- * The two are held to the same value by the schema-parity test in
- * `tests/emitted-attribution.test.cjs`.
+ * `MAX_ACK_TRAILERS` now guards in the trailer world.
  */
 const MAX_ACK_FRAGMENTS = 500;
 
 /**
- * Render the minimal valid acknowledgment document for a set of entries (#2778).
- *
- * Built with `JSON.stringify` from `ACK_VERSION` rather than typed out, for two reasons: the
- * printed document is guaranteed to be syntactically valid JSON, and it cannot fall out of
- * step with the version `parseAck` enforces. A hand-typed `"version": 1` sitting beside a live
- * `ACK_VERSION` is the drift this module warns about everywhere else.
- *
- * It teaches exactly ONE shape. `parseAck` is deliberately more liberal — it accepts a bare
- * string as the reason and tolerates a missing `version` or `paths`. Be liberal in what you
- * accept, conservative in what you send: advertising those tolerances would spread a quirk
- * into hand-written contributor files and make the canonical form look optional.
- *
- * It takes ALL the entries at once and renders ONE document, which is not a convenience:
- * a report can trip the hash branch and the size branch together (a feature PR that both
- * ripples an emitted path and grows a workflow). Printing a complete document per branch
- * made each look like "the file to create", so a contributor pasting the second over the
- * first would silently lose the first acknowledgment — an ack-lost failure with no signal.
- * One document, one file, one paste.
+ * Trailer key naming an emitted PATH whose HASH moved (grammar: 40-design.md).
+ * Relocated ahead of `REMEDIATION` (which follows immediately below and calls
+ * `renderAckTrailer` at module-eval time, so these three consts must already be
+ * initialized — a `const` declared later in the file is in the temporal dead zone
+ * during that call, unlike `renderAckTrailer` itself, which is a hoisted function
+ * declaration and may stay where it is, further down.
  */
-function ackDocument(entries) {
-  // Null-prototype: `key` comes from repo/emitted paths, so a file literally named
-  // `__proto__` would otherwise SET THE PROTOTYPE instead of a property, and
-  // `JSON.stringify` would then emit `"paths":{}` — a remediation document that silently
-  // teaches the contributor to acknowledge nothing.
-  const paths = Object.create(null);
-  for (const { key, reason } of entries) paths[key] = { reason };
-  return JSON.stringify({ version: ACK_VERSION, paths });
-}
+const ACK_TRAILER_HASH = 'Emitted-Drift-Ack-Hash';
+/** Trailer key naming a bare workflow/agent FILENAME that grew. */
+const ACK_TRAILER_GROWTH = 'Emitted-Drift-Ack-Growth';
+/** Key/reason delimiter: space, EM DASH (U+2014), space — split on the FIRST occurrence only. */
+const ACK_TRAILER_DELIM = ' — ';
 
 /**
  * Self-serve remediation, as data rather than prose scattered across branches (#2778).
@@ -203,16 +151,32 @@ function ackDocument(entries) {
  * help text must not be a breaking change.
  */
 const REMEDIATION = Object.freeze({
-  // Deliberately NOT a fixed filename (#2914): the remedy is a NEW fragment under
-  // `ACK_DIR`, and the whole point of a fragment directory is that its name is the
-  // contributor's to pick — a fixed suggestion here would tempt everyone back onto one
-  // shared filename, resurrecting the exact merge-conflict cell this design removes.
-  ackFile: `${ACK_DIR}/<a-name-nobody-else-will-use>.json`,
-  ackDir: ACK_DIR,
-  createIfAbsent:
-    `create a NEW file under ${ACK_DIR}/ — pick a name nobody else is using (include `
-    + 'this issue or PR number, e.g. `2914-fix.json`), and never reuse an existing '
-    + 'fragment\'s name',
+  /**
+   * #3942: the remedy is a COMMIT TRAILER on this PR, never a new file — the fragment
+   * directory (`ACK_DIR`) and the legacy single file are both retired as write targets.
+   *
+   * Split into two SPACE-SPECIFIC fields rather than one combined sentence: the two
+   * trailer names key on structurally distinct spaces (RULESET.EMITTED_ATTRIBUTION), and
+   * a report that trips only one of the two branches must teach only that one name.
+   * `formatReport` picks whichever of these apply to the report being rendered — never
+   * both unconditionally.
+   *
+   * Deliberately NAME the trailer WITHOUT a trailing colon (backtick-quoted bare name,
+   * not `` `Name:` ``) — the colon-suffixed form is the taught example line's own
+   * grammar (`renderAckTrailer`, printed once per space right below this text). Using
+   * the colon form here too would make a report that trips BOTH branches print each
+   * trailer name (with colon) TWICE — once in this prose, once in its taught line —
+   * which is the exact defect this split fixes; see "a ripple and a growth in one report
+   * each get their OWN trailer line" in tests/emitted-attribution.test.cjs.
+   */
+  addTrailerHash:
+    'Add a trailer to a commit in this PR (never a new file). Use the '
+    + `\`${ACK_TRAILER_HASH}\` trailer for an unattributable ripple (key = the emitted `
+    + 'path, always contains "/").',
+  addTrailerGrowth:
+    'Add a trailer to a commit in this PR (never a new file). Use the '
+    + `\`${ACK_TRAILER_GROWTH}\` trailer for growth (key = the bare filename as it `
+    + 'appears under gsd-core/workflows/ or agents/).',
   doNotRegenerate:
     'Do NOT regenerate anything to silence this — there is nothing left to regenerate.',
   /** The size ratchet keys on `entry.name` from readdirSync (emitted-runtime.cjs `currentSizes`). */
@@ -221,15 +185,20 @@ const REMEDIATION = Object.freeze({
   rippleKeyRule: 'Key on the EMITTED PATH exactly as printed above',
   rippleReason: '<why this ripple is deliberate>',
   growthReason: '<why this growth is deliberate>',
-  staleAckFix:
-    `Delete those entries from your fragment under ${ACK_DIR}/, or correct them to name `
-    + 'the ripple you actually made. If that leaves no entries, delete the file itself '
-    + '— an empty one signals nothing.',
-  spentAckNote:
-    'These are inert, NOT a failure: the base already carries them, so their ripple is '
-    + `absorbed and they can no longer clear anything. Delete them from your fragment `
-    + `under ${ACK_DIR}/ whenever convenient.`,
-  ackDocument,
+  staleAckFix: 'Remove the trailer, or correct it to name the ripple you actually made.',
+  /**
+   * The taught trailer syntax, rendered through `renderAckTrailer` — the exact function
+   * `parseAckTrailers` is the inverse of — so the printed example can never drift from
+   * what the reader actually accepts (round-trip discipline, mirrors the old
+   * `ackDocument`/`parseAck` pairing this replaces). A realistic path rather than an
+   * angle-bracket placeholder: `parseAckTrailers` rejects keys containing `<`/`>`
+   * specifically because this PR's own docs teaching the placeholder-shaped example
+   * would otherwise arm itself as a live (and then stale) ack — see 40-design.md's
+   * negative-space note.
+   */
+  ackTrailerExample: renderAckTrailer(
+    ACK_TRAILER_HASH, 'skills/gsd-add-tests/SKILL.md', 'converter rewrite, ADR-2719',
+  ),
 });
 
 /**
@@ -251,179 +220,59 @@ function sourceSatisfiedBy(source, changedSet) {
 }
 
 /**
- * Normalize + validate the acknowledgment document.
- *
- * Rejects a document that parses but is not a plain object. Treating `0` / `"s"` / `[]` /
- * `null` / `true` as "no acks" would SILENTLY DISARM the gate — the single worst failure
- * available here, because it looks identical to a healthy run.
- *
- * @returns {{ entries: Map<string, {reason: string, runtime?: string}>, errors: string[] }}
- */
-function parseAck(doc, { source = 'emitted-drift-ack.json' } = {}) {
-  const errors = [];
-  const entries = new Map();
-
-  if (doc === null || doc === undefined) return { entries, errors }; // absent == no acks (legal)
-
-  if (typeof doc !== 'object' || Array.isArray(doc)) {
-    errors.push(
-      `${source}: must be a JSON object, got ${Array.isArray(doc) ? 'array' : typeof doc}`,
-    );
-    return { entries, errors };
-  }
-
-  if (doc.version !== undefined && doc.version !== ACK_VERSION) {
-    errors.push(`${source}: unsupported version ${JSON.stringify(doc.version)} (expected ${ACK_VERSION})`);
-  }
-
-  const paths = doc.paths;
-  if (paths === undefined) return { entries, errors }; // `{}` or `{version:1}` == no acks
-  if (paths === null || typeof paths !== 'object' || Array.isArray(paths)) {
-    errors.push(`${source}: "paths" must be an object of <emitted path> -> { reason }`);
-    return { entries, errors };
-  }
-
-  for (const [rel, value] of Object.entries(paths)) {
-    if (RESERVED_ACK_KEYS.has(rel)) {
-      // Reject loudly rather than silently drop. This is the fix for #2914 review: a
-      // document naming `__proto__`/`constructor`/`prototype` used to be silently
-      // accepted here (a genuine own key when the document comes from `JSON.parse`,
-      // per the production path) while the lint filtered it out of duplicate detection
-      // — two surfaces disagreeing about the SAME key is exactly the drift the parity
-      // test below exists to catch.
-      errors.push(
-        `${source}: ack key "${rel}" is reserved and can never be a valid emitted path `
-        + 'or workflow/agent filename — remove it',
-      );
-      continue;
-    }
-    const reason = value && typeof value === 'object' ? value.reason : value;
-    if (typeof reason !== 'string' || reason.trim() === '') {
-      // "name them AND say why" is the contract (ADR-2719 §3). An ack with no reason
-      // is a silent regeneration wearing a declaration's clothes.
-      errors.push(`${source}: ack for "${rel}" has no non-empty "reason"`);
-      continue;
-    }
-    entries.set(rel, {
-      reason: reason.trim(),
-      runtime: value && typeof value === 'object' ? value.runtime : undefined,
-    });
-  }
-
-  return { entries, errors };
-}
-
-/**
- * Union multiple ack SOURCES into ONE document (#2914).
- *
- * `docs` is an ordered list of `{ source, doc }`, where `doc` is a parsed ack document
- * (or `null`) and `source` is a human label used only in error messages — a fragment's
- * repo-relative path, or the legacy file's path. Each source is parsed with the SAME
- * `parseAck` the single-document gate already uses, so the schema can never drift
- * between "one file" and "many files" — there is exactly one definition of what a valid
- * entry looks like, reused here rather than re-typed.
- *
- * ── The collision rule (#2914) ────────────────────────────────────────────────
- * Two sources declaring the SAME emitted/growth key is an ERROR, never a silent
- * last-wins merge. Two per-PR fragments are never supposed to name the same path — if
- * they do, at least one of them is wrong, or the world has already changed under one of
- * them since it was written — and silently letting the later source win would let a
- * fragment quietly retire an earlier one's acknowledgment with zero signal in the diff.
- * That is exactly the class of silent drift the acknowledgment seam (#2789 spent/live
- * lifecycle) exists to end: an ack that stops explaining anything must be conspicuous,
- * never invisible. Failing loudly, with both source names in the message, is the only
- * reading consistent with the rest of this module's "unknown fails toward the strict
- * side" law (see `readAckFileAtRef`'s doc comment for the base-side version of the same
- * principle).
- *
- * @param {Array<{source: string, doc: object|null}>} docs
- * @returns {{ merged: {version: number, paths: object}, errors: string[] }}
- */
-function mergeAckSources(docs) {
-  const errors = [];
-  // Null-prototype for the same reason `ackDocument` uses one above: an ordinary `{}`
-  // would turn an assignment keyed `__proto__` into setting the prototype rather than a
-  // property. `parseAck` now rejects `RESERVED_ACK_KEYS` outright (#2914 review) so
-  // `entries` below can never actually carry one — this is belt-and-suspenders against
-  // the day that stops being true, not the current enforcement point.
-  const paths = Object.create(null);
-  const owner = new Map(); // rel -> source that already claimed it, for the error message
-
-  for (const { source, doc } of docs) {
-    const { entries, errors: parseErrors } = parseAck(doc, { source });
-    errors.push(...parseErrors);
-    for (const [rel, entry] of entries) {
-      if (owner.has(rel)) {
-        errors.push(
-          `duplicate ack for "${rel}": declared in both ${owner.get(rel)} and ${source}. `
-          + 'Two ack sources may never name the same path — rename or merge the fragments.',
-        );
-        continue;
-      }
-      owner.set(rel, source);
-      paths[rel] = entry.runtime !== undefined
-        ? { reason: entry.reason, runtime: entry.runtime }
-        : { reason: entry.reason };
-    }
-  }
-
-  return { merged: { version: ACK_VERSION, paths }, errors };
-}
-
-/**
  * The conservation law.
  *
- * ── Ack lifecycle: an ack is scoped to the diff that introduced it (#2789) ───
+ * ── Ack lifecycle: scoped to the diff that introduced it, structurally (ADR-3942 §2) ──
  *
- * Every other input here is BASE-RELATIVE — `baseline` vs `current`, `changedPaths` from
- * `git diff base...HEAD`. `ack` was the one ABSOLUTE input, read only from the working
- * tree, and that mismatch was a real defect: `staleAcks` asks only "did a delta consume
- * you?", which cannot tell "you never explained anything" (an authoring mistake) from
- * "your ripple is now absorbed into the base" (the ack's SUCCESS condition). Merging an
- * ack therefore made it look like a mistake, reddening `next` and every PR branching off
- * it (#2768).
+ * Every input here is BASE-RELATIVE — `baseline` vs `current`, `changedPaths` from
+ * `git diff base...HEAD`, and now `ackHash`/`ackGrowth` too: they come from commit
+ * trailers read over `<merge-base>..HEAD` (`readAckTrailers`,
+ * `tests/helpers/emitted-runtime.cjs`), which is the PR's own commits and no others. A
+ * trailer on the base side of the fork is out of range by construction, so there is no
+ * base-side copy left to compare against and nothing can ever be "spent" — ADR-3942 §2
+ * retired the `baseAck`/`spentAcks` mechanism that used to compute that distinction
+ * (`readAckFileAtRef`, `readAckSourcesAtRef`, and their callers are deleted alongside
+ * it, per ADR-3942 §6).
  *
- * `baseAck` supplies the missing side. An entry already present at the base is SPENT: it
- * is not part of this diff, so it may no longer consume a delta and is never reported
- * stale. Making it inert is also what finally closes ADR-2719's own named hazard — a
- * leftover ack used to SILENTLY pre-clear the next ripple on its path; now that ripple
- * must be explained on its own terms. Spent entries are still reported (`spentAcks`) so
- * they can be tidied, but they gate nothing.
+ * ── Two independent key spaces, not one merged map ────────────────────────────
  *
- * `baseAck` is REQUIRED whenever `ack` is present — omitting it is an error, never a
- * silent "nothing inherited". Same discipline as `changedPaths` above: a caller that
- * cannot supply the base side must say `null` deliberately, so that dropping the
- * argument fails loudly instead of quietly restoring #2768.
+ * `ackHash` and `ackGrowth` are the two commit-trailer namespaces (40-design.md),
+ * already parsed into `Map<string, {reason}>` by `parseAckTrailers`. The hash pass
+ * consults `ackHash` ONLY and the growth pass consults `ackGrowth` ONLY: naming a
+ * growth-only bare filename in `Emitted-Drift-Ack-Hash` (or vice versa) must NOT excuse
+ * anything — that cross-space excusal, possible when both spaces shared one map, is the
+ * latent defect this split closes (rows 3/6). `staleAcks` is reported per space so the
+ * error can say which trailer declared the unconsumed key.
  *
  * @param {object}   opts
  * @param {object}   opts.baseline      { [runtime]: { [rel]: hash } } at `next` HEAD
  * @param {object}   opts.current       { [runtime]: { [rel]: hash } } at PR HEAD
  * @param {string[]} opts.changedPaths  repo paths the PR changed (git diff --name-only)
- * @param {object}   [opts.ack]         parsed emitted-drift-ack.json document (or null)
- * @param {object}   opts.baseAck       the same document AT THE BASE REF (or null when
- *                                      absent there). Required once `ack` is non-null.
+ * @param {Map<string,{reason:string}>} [opts.ackHash]   live `Emitted-Drift-Ack-Hash`
+ *   entries, keyed on the emitted path (always contains `/`). Defaults to an empty Map.
+ * @param {Map<string,{reason:string}>} [opts.ackGrowth] live `Emitted-Drift-Ack-Growth`
+ *   entries, keyed on the bare workflow/agent filename. Defaults to an empty Map.
  * @param {object}   [opts.sizeBaseline] { [name]: bytes } workflow/agent sizes at next
  * @param {object}   [opts.sizeCurrent]  { [name]: bytes } workflow/agent sizes at PR HEAD
- * @param {string[]} [opts.mergeAckErrors] errors already discovered while UNIONING
- *   `ack` from multiple physical sources (`mergeAckSources`, #2914) — e.g. two fragments
- *   naming the same path. This module never touches the filesystem, so it cannot
- *   discover a cross-file collision on its own; the shell layer that reads the legacy
- *   file plus every fragment computes this and folds it in verbatim so a duplicate
- *   fails the gate exactly like any other ack schema error, rather than silently
- *   resolving via last-wins.
+ * @param {string[]} [opts.mergeAckErrors] errors already discovered while reading the
+ *   ack source (`parseAckTrailers`'s per-value errors). This module never touches the
+ *   filesystem or git, so it cannot discover such a problem on its own; the caller folds
+ *   it in verbatim so it fails the gate exactly like any other ack schema error, rather
+ *   than silently resolving via last-wins.
  *
  * @returns {{
  *   moved: number, attributed: Array, unattributable: Array, acked: Array,
  *   removed: Array, grown: Array, shrunk: Array, newFileCapExceeded: Array,
- *   staleAcks: string[], spentAcks: string[], errors: string[], ok: boolean
+ *   staleAcks: Array<{key: string, space: 'hash'|'growth'}>,
+ *   errors: string[], ok: boolean
  * }}
  */
 function diffEmitted({
   baseline,
   current,
   changedPaths,
-  ack = null,
-  baseAck = BASE_ACK_OMITTED,
+  ackHash = new Map(),
+  ackGrowth = new Map(),
   sizeBaseline = null,
   sizeCurrent = null,
   mergeAckErrors = [],
@@ -451,84 +300,27 @@ function diffEmitted({
       // manifest came back malformed, so the crash replaced the one message that would
       // have explained the infrastructure problem (#2778).
       moved: 0, attributed: [], unattributable: [], acked: [], removed: [],
-      grown: [], shrunk: [], newFileCapExceeded: [], staleAcks: [], spentAcks: [],
+      grown: [], shrunk: [], newFileCapExceeded: [], staleAcks: [],
       errors, ok: false,
     };
   }
 
   const changedSet = new Set(changedPaths);
-  const { entries: declaredAcks, errors: ackErrors } = parseAck(ack);
-  errors.push(...ackErrors);
   // Folded in verbatim, not re-derived: see `mergeAckErrors`'s doc comment above.
   errors.push(...mergeAckErrors);
 
-  // Keyed on DECLARED ENTRIES, not on the document being non-null. `{}`, `{version:1}`
-  // and `{paths:{}}` all carry zero acks and `parseAck` calls them legal, so demanding a
-  // base side for them would fail a document the module elsewhere accepts. Protection is
-  // undiminished: an entry is the only thing that can be misclassified as spent or live,
-  // so the error still fires in exactly the situation where dropping `baseAck` would
-  // reintroduce #2768.
-  if (declaredAcks.size > 0 && baseAck === BASE_ACK_OMITTED) {
-    errors.push(
-      `${ACK_FILE}: baseAck was not supplied. The base side is not optional — without it `
-      + 'a merged ack is indistinguishable from one that never explained anything, which '
-      + 'is exactly the defect this parameter exists to close (#2789). Pass the document '
-      + 'read at the base ref, or an explicit null when it is absent there.',
-    );
-  }
-
-  // Base-side SCHEMA errors are deliberately discarded, not surfaced. The base's validity
-  // is not this diff's to answer for, and a document we cannot read simply inherits
-  // nothing — which is the ARMED reading, since every entry then stays live and gated.
-  const resolvedBaseAck = baseAck === BASE_ACK_OMITTED ? null : baseAck;
-  const { entries: baseAcks } = parseAck(resolvedBaseAck);
-
-  /**
-   * Spent == the base already carries this entry's REASON, compared on prose alone.
-   *
-   * Re-arming a spent ack is legitimate — it is how a contributor says "this is a NEW
-   * ripple, and here is why" — but it must cost an actual explanation, because the
-   * reason is the entire artifact a reviewer reads. So the comparison is deliberately
-   * insensitive to everything that is not prose:
-   *
-   *   - INTERNAL whitespace collapses. `parseAck` only trims the ends, so without this a
-   *     doubled space re-arms an ack whose justification still describes the PREVIOUS
-   *     ripple, and the ack file's diff shows a reviewer nothing new.
-   *   - `runtime` is NOT compared. Nothing else in this module reads it (lookups key on
-   *     `rel` alone), so including it would make an undocumented, schema-absent field the
-   *     one thing that re-arms an ack — `+ "runtime": "claude"` beside a byte-identical
-   *     reason, carrying no explanation at all.
-   *
-   * Both directions were live re-arm paths for a genuinely unattributable ripple.
-   */
-  // `\s` covers NBSP and the ideographic space but NOT the zero-width family, so without
-  // this a U+200B (or a soft hyphen) re-arms a spent ack while being literally invisible
-  // in the diff — the purest form of "no new explanation". Stripped before the whitespace
-  // collapse so a zero-width char cannot glue two words into a different-looking string.
-  // Zero-information re-arm defence. `\s` covers NBSP and the ideographic space but NOT
-  // the zero-width family, so without this a U+200B or a soft hyphen re-arms a spent ack
-  // while being literally INVISIBLE in the diff — the purest form of "no new
-  // explanation". Built from codepoints rather than literal characters, because a
-  // literal class would itself be unreviewable in this file.
-  const prose = normalizeAckReason;
-  const isSpent = (rel, entry) => {
-    const prior = baseAcks.get(rel);
-    return prior !== undefined && prose(prior.reason) === prose(entry.reason);
-  };
-
-  const ackEntries = new Map();
-  const spentAcks = [];
-  for (const [rel, entry] of declaredAcks) {
-    if (isSpent(rel, entry)) spentAcks.push(rel);
-    else ackEntries.set(rel, entry);
-  }
-  spentAcks.sort();
+  // Every entry a trailer-scoped range can produce is by construction this PR's own
+  // (ADR-3942 §2) — there is no base-side copy to partition against, so both Maps are
+  // "live" in full; nothing here is ever "spent".
+  const liveAckHash = ackHash;
+  const liveAckGrowth = ackGrowth;
 
   const attributed = [];
   const unattributable = [];
   const acked = [];
   const removed = [];
-  const usedAcks = new Set();
+  const usedAcksHash = new Set();
+  const usedAcksGrowth = new Set();
   let moved = 0;
 
   const runtimes = new Set([...Object.keys(baseline), ...Object.keys(current)]);
@@ -594,9 +386,11 @@ function diffEmitted({
 
       if (via !== null) {
         attributed.push({ ...record, via });
-      } else if (ackEntries.has(rel)) {
-        usedAcks.add(rel);
-        acked.push({ ...record, reason: ackEntries.get(rel).reason });
+      } else if (liveAckHash.has(rel)) {
+        // `liveAckHash` ONLY — a `liveAckGrowth` entry naming the same string by
+        // coincidence must NOT excuse a hash-space ripple (row 3).
+        usedAcksHash.add(rel);
+        acked.push({ ...record, reason: liveAckHash.get(rel).reason });
       } else {
         unattributable.push({
           ...record,
@@ -629,8 +423,9 @@ function diffEmitted({
       if (to > from) {
         // Growth needs the SAME acknowledgment. Anti-creep survives without pinning a
         // number: "verify-work.md grew 1,247 bytes" beats a number moving in a 93-line map.
-        const isAcked = ackEntries.has(name);
-        if (isAcked) usedAcks.add(name);
+        // `liveAckGrowth` ONLY (row 6) — the mirror of the hash pass above.
+        const isAcked = liveAckGrowth.has(name);
+        if (isAcked) usedAcksGrowth.add(name);
         grown.push({ name, from, to, delta: to - from, acked: isAcked });
       } else if (to < from) {
         // Shrinkage is not creep — reported, never gated.
@@ -644,7 +439,16 @@ function diffEmitted({
   // An ack that outlives the ripple it explained is future blindness: it would silently
   // pre-clear a NEW ripple on the same path. It must be deleted when the ripple is.
   // Computed here, once, after BOTH the hash pass and the size pass have consumed acks.
-  const staleAcks = [...ackEntries.keys()].filter((rel) => !usedAcks.has(rel)).sort();
+  //
+  // Reported PER SPACE — `{key, space}`, never a bare string — so the message can say
+  // WHICH trailer declared the unconsumed key (row 7). A string-prefix convention
+  // (`hash:<key>`) was considered and rejected: it would encode the namespace in a
+  // string the consumer must remember to strip, the same convention-not-code weakness
+  // #3942's design explicitly declines elsewhere (40-design.md "Rejected").
+  const staleAcks = [
+    ...[...liveAckHash.keys()].filter((k) => !usedAcksHash.has(k)).sort().map((key) => ({ key, space: 'hash' })),
+    ...[...liveAckGrowth.keys()].filter((k) => !usedAcksGrowth.has(k)).sort().map((key) => ({ key, space: 'growth' })),
+  ];
 
   const ok = errors.length === 0
     && unattributable.length === 0
@@ -662,7 +466,6 @@ function diffEmitted({
     shrunk,
     newFileCapExceeded,
     staleAcks,
-    spentAcks,
     errors,
     ok,
   };
@@ -731,34 +534,17 @@ function buildReport(result, { sampleLimit = 20 } = {}) {
     });
   }
 
-  // Modelled here, not only rendered, so it can be asserted on identity like every other
-  // block — this file's stated contract is that `formatReport` is a pure rendering of
-  // this IR, and a section that exists only in prose would have to be tested by raw text
-  // matching, which CONTRIBUTING.md prohibits.
-  //
-  // Gated on `!result.ok` to KEEP that contract true. Spent acks are the one block whose
-  // emit-condition could drift from the renderer's, since a passing run must render
-  // nothing at all; without this, a JSON reporter built on the IR would announce spent
-  // acks for a green run while the text reporter stayed silent.
-  if (!result.ok && result.spentAcks && result.spentAcks.length) {
-    blocks.push({
-      kind: 'spent-acks',
-      count: result.spentAcks.length,
-      items: result.spentAcks.slice(0, sampleLimit),
-      fix: REMEDIATION.spentAckNote,
-    });
-  }
-
   // ONE ack set for the whole report, not one per branch. A report can trip the hash
-  // branch and the size branch at once, and two complete documents each reading as "the
-  // file to create" invites pasting the second over the first — losing an acknowledgment
-  // with no signal. Capped at `sampleLimit` per branch so the document stays consistent
-  // with the lists above it rather than naming rows the report chose not to print.
+  // branch and the size branch at once (a feature PR that both ripples an emitted path
+  // and grows a workflow). Capped at `sampleLimit` per branch so the taught trailers stay
+  // consistent with the lists above them rather than naming rows the report chose not to
+  // print. `space` tags each entry with the trailer namespace it belongs to (#3942), so
+  // the renderer can pick `Emitted-Drift-Ack-Hash` vs `Emitted-Drift-Ack-Growth` per line.
   const ackable = [
     ...result.unattributable.slice(0, sampleLimit)
-      .map((u) => ({ key: u.rel, reason: REMEDIATION.rippleReason })),
+      .map((u) => ({ key: u.rel, reason: REMEDIATION.rippleReason, space: 'hash' })),
     ...unackedGrowth.slice(0, sampleLimit)
-      .map((g) => ({ key: g.name, reason: REMEDIATION.growthReason })),
+      .map((g) => ({ key: g.name, reason: REMEDIATION.growthReason, space: 'growth' })),
   ];
 
   return { blocks, ackable };
@@ -818,36 +604,45 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
   }
 
   if (result.staleAcks.length) {
+    // Each item names WHICH trailer declared it (#3942 row 7) — a hash-space entry
+    // renders as `Emitted-Drift-Ack-Hash: <key>`, a growth-space one as
+    // `Emitted-Drift-Ack-Growth: <key>`, via the SAME `renderAckTrailer` the taught
+    // example below uses, with a placeholder reason (the real reason is what made it
+    // stale in the first place — irrelevant to naming the fix).
+    const list = result.staleAcks.slice(0, sampleLimit)
+      .map(({ key, space }) => `  ${renderAckTrailer(
+        space === 'growth' ? ACK_TRAILER_GROWTH : ACK_TRAILER_HASH, key, '<its declared reason>',
+      )}`);
     parts.push(
       `${result.staleAcks.length} stale acknowledgment(s) — written or reworded in THIS diff, ` +
-      'but nothing here needed them, so they explain nothing:\n  ' +
-      result.staleAcks.slice(0, sampleLimit).join('\n  ') +
+      'but nothing here needed them, so they explain nothing:\n' +
+      list.join('\n') +
       `\n\n${REMEDIATION.staleAckFix}`,
     );
   }
 
-  // Informational, never gating, and rendered ONLY alongside a real failure. Spent
-  // entries are inert housekeeping, not a demand — surfacing them when a contributor is
-  // already in the file is free, but emitting them for an otherwise-clean run would make
-  // `formatReport` return prose for an `ok` result, which this module's callers read as
-  // "there is something wrong".
-  const spent = (result.spentAcks || []).slice(0, sampleLimit);
-  if (spent.length && !result.ok) {
-    parts.push(
-      `${result.spentAcks.length} spent acknowledgment(s):\n  ` + spent.join('\n  ') +
-      `\n\n${REMEDIATION.spentAckNote}`,
-    );
-  }
-
-  // The remedy, once, at the end — one file, one document, one paste.
+  // The remedy, once, at the end — one trailer per entry, never a file. The
+  // instructional prose is picked PER SPACE PRESENT, not unconditionally: a report that
+  // only trips the growth branch must not teach the hash trailer (and vice versa) — see
+  // "the renderer emits the trailer instructions..." below. `addTrailerHash`/
+  // `addTrailerGrowth` name their trailer WITHOUT a trailing colon specifically so this
+  // prose and the colon-suffixed taught line right below it never double-count the SAME
+  // trailer name in one message — see "a ripple and a growth in one report each get
+  // their OWN trailer line".
   const { ackable } = buildReport(result, { sampleLimit });
   if (ackable.length) {
+    const lines = ackable.map(({ key, reason, space }) => `  ${renderAckTrailer(
+      space === 'growth' ? ACK_TRAILER_GROWTH : ACK_TRAILER_HASH, key, reason,
+    )}`);
+    const spacesPresent = new Set(ackable.map((a) => a.space));
+    const instructions = [
+      spacesPresent.has('hash') ? REMEDIATION.addTrailerHash : null,
+      spacesPresent.has('growth') ? REMEDIATION.addTrailerGrowth : null,
+    ].filter(Boolean).join('\n');
     parts.push(
-      `To acknowledge, create ${REMEDIATION.ackFile}\n` +
-      `(${REMEDIATION.createIfAbsent})\n` +
-      'containing ONE document that names every path listed above and why:\n\n' +
-      `  ${REMEDIATION.ackDocument(ackable)}\n\n` +
-      REMEDIATION.doNotRegenerate,
+      `${instructions}\n\n` +
+      lines.join('\n') +
+      `\n\n${REMEDIATION.doNotRegenerate}`,
     );
   }
 
@@ -855,55 +650,142 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
 }
 
 /**
- * ── #3942 STUBS — commit-trailer acknowledgment (interface-only) ────────────
+ * ── #3942 commit-trailer acknowledgment grammar ──────────────────────────────
  *
- * `tests/emitted-ack-trailer.test.cjs` is written failing-first against these
- * names. Every one of them is a PLACEHOLDER: it returns a benign, empty-shaped
- * value and NEVER throws, on purpose — several matrix rows (cap overflow,
- * uncomputable range) assert a THROW from the real implementation, and a
- * stub that throws instead of returning would make those rows pass for the
- * wrong reason, destroying the red. The real grammar, cap enforcement, and
- * merge-base range semantics land in a later step (40-design.md).
+ * `readAckTrailers` (`tests/helpers/emitted-runtime.cjs`) reads the raw trailer values
+ * from git and hands them to `parseAckTrailers` below, whose two Maps are what
+ * `diffEmitted`'s `ackHash`/`ackGrowth` parameters now consume directly (40-design.md).
+ * `ACK_TRAILER_HASH`/`ACK_TRAILER_GROWTH`/`ACK_TRAILER_DELIM` are declared earlier in
+ * this file (immediately before `REMEDIATION`), which calls `renderAckTrailer` at
+ * module-eval time and therefore needs them initialized by then.
  */
 
-/** Trailer key naming an emitted PATH whose HASH moved (grammar: 40-design.md). */
-const ACK_TRAILER_HASH = 'Emitted-Drift-Ack-Hash';
-/** Trailer key naming a bare workflow/agent FILENAME that grew. */
-const ACK_TRAILER_GROWTH = 'Emitted-Drift-Ack-Growth';
-/** Key/reason delimiter: space, EM DASH (U+2014), space — split on the FIRST occurrence only. */
-const ACK_TRAILER_DELIM = ' — ';
 /** Upper bound on trailers read from one range. Real implementation throws above this. */
 const MAX_ACK_TRAILERS = 64;
 
 /**
- * STUB — parse trailer VALUES already extracted per trailer name (no git I/O).
- * Real implementation: split each value on the first `ACK_TRAILER_DELIM`, validate the
- * key (non-empty, no `<`/`>`/whitespace, not a `RESERVED_ACK_KEYS` member), require a
- * non-empty trimmed reason, dedupe identical (key, reason) pairs silently, hard-error on
- * a same-key conflicting reason, and enforce `MAX_ACK_TRAILERS` (throwing above it).
+ * Parse trailer VALUES already extracted per trailer name (no git I/O — the two
+ * independent namespaces, `hash` and `growth`, are each an array of the raw text after
+ * `<Trailer-Name>: `, one entry per trailer instance found in range).
  *
- * @param {{hash?: string[], growth?: string[]}} [_trailers]
+ * Grammar (40-design.md): `<key> — <reason>`, split on the FIRST ` — ` (space, EM DASH,
+ * space — `ACK_TRAILER_DELIM`) so a reason may itself contain further em dashes (row 29).
+ * Key and reason are trimmed. A missing delimiter, an empty key, or an empty reason is a
+ * per-value error naming the offending trailer — "name them and say why" (ADR-2719 §3).
+ * A key that is `RESERVED_ACK_KEYS` (`__proto__`/`constructor`/`prototype`), or that
+ * contains `<`, `>`, or whitespace (row 14 — a doc example like
+ * `<emitted/path> — <reason>` must never arm itself), is rejected loudly.
+ *
+ * Same key declared twice WITHIN one space: identical after `normalizeAckReason`
+ * (invisible-character-stripped, whitespace-collapsed) dedupes silently, keeping the
+ * FIRST declaration; a genuinely different reason is a hard "declared twice" error and
+ * the key is dropped from that space entirely — an ambiguous declaration must never
+ * silently pick a winner. The two spaces (`hash`/`growth`) are independent namespaces:
+ * the same key may legally appear in both (row 18).
+ *
+ * The cap (`MAX_ACK_TRAILERS`) is checked on the RAW input count BEFORE any parsing —
+ * throwing above it, never truncating, because a truncated read would silently drop
+ * acknowledgments — the same law the pre-#3942 fragment-directory cap (now the historical
+ * `MAX_ACK_FRAGMENTS`, above) enforced for `ACK_DIR`.
+ *
+ * @param {{hash?: string[], growth?: string[]}} [trailers]
  * @returns {{hash: Map<string, {reason: string}>, growth: Map<string, {reason: string}>, errors: string[]}}
  */
-function parseAckTrailers(_trailers) {
-  return { hash: new Map(), growth: new Map(), errors: [] };
+function parseAckTrailers({ hash = [], growth = [] } = {}) {
+  const totalCount = hash.length + growth.length;
+  if (totalCount > MAX_ACK_TRAILERS) {
+    throw new Error(
+      `emitted-drift ack: ${totalCount} commit trailers were found in range, exceeding the `
+      + `cap of ${MAX_ACK_TRAILERS} trailers. Refusing to read only some of them — a `
+      + 'truncated read would silently drop acknowledgments. Prune spent trailers (amend '
+      + 'or drop them) rather than letting the count grow unbounded.',
+    );
+  }
+
+  const errors = [];
+  const spaces = [
+    { name: ACK_TRAILER_HASH, values: hash, map: new Map() },
+    { name: ACK_TRAILER_GROWTH, values: growth, map: new Map() },
+  ];
+
+  for (const space of spaces) {
+    const conflicted = new Set(); // keys already reported ambiguous — never resurrected
+    for (const raw of space.values) {
+      const delimIndex = raw.indexOf(ACK_TRAILER_DELIM);
+      if (delimIndex === -1) {
+        errors.push(
+          `${space.name}: trailer value ${JSON.stringify(raw)} has no "${ACK_TRAILER_DELIM}" `
+          + 'delimiter — expected "<key> — <reason>"',
+        );
+        continue;
+      }
+      const key = raw.slice(0, delimIndex).trim();
+      const reason = raw.slice(delimIndex + ACK_TRAILER_DELIM.length).trim();
+
+      if (key === '') {
+        errors.push(`${space.name}: trailer value ${JSON.stringify(raw)} has an empty key`);
+        continue;
+      }
+      if (reason === '') {
+        errors.push(
+          `${space.name}: trailer value ${JSON.stringify(raw)} has an empty reason — `
+          + 'name it and say why (ADR-2719 §3)',
+        );
+        continue;
+      }
+      if (RESERVED_ACK_KEYS.has(key)) {
+        errors.push(
+          `${space.name}: trailer key "${key}" is reserved and can never be a valid `
+          + 'emitted path or workflow/agent filename — remove it',
+        );
+        continue;
+      }
+      if (/[<>\s]/.test(key)) {
+        errors.push(
+          `${space.name}: trailer key ${JSON.stringify(key)} is an invalid key — keys may `
+          + 'not contain "<", ">", or whitespace',
+        );
+        continue;
+      }
+
+      if (conflicted.has(key)) continue;
+
+      const existing = space.map.get(key);
+      if (existing === undefined) {
+        space.map.set(key, { reason });
+      } else if (normalizeAckReason(existing.reason) === normalizeAckReason(reason)) {
+        // Identical after normalization (invisible chars stripped, whitespace collapsed)
+        // — dedupe silently, keep the first declaration.
+      } else {
+        errors.push(
+          `${space.name}: trailer key "${key}" is declared twice with ambiguous, `
+          + 'conflicting reasons — an ambiguous declaration cannot silently pick a winner',
+        );
+        space.map.delete(key);
+        conflicted.add(key);
+      }
+    }
+  }
+
+  return { hash: spaces[0].map, growth: spaces[1].map, errors };
 }
 
 /**
- * STUB — render one trailer line (`<name>: <key> — <reason>`) for docs/round-trip use.
- * Real implementation returns `${trailerName}: ${key}${ACK_TRAILER_DELIM}${reason}`.
+ * Render one trailer LINE (`<name>: <key> — <reason>`) for docs and self-serve
+ * remediation text. Deliberately the exact grammar `parseAckTrailers` parses, so this
+ * round-trips through it (row 33/36) — a doc example built from this function can never
+ * drift from what the reader actually accepts.
  *
- * @param {string} _trailerName
- * @param {string} _key
- * @param {string} _reason
+ * @param {string} trailerName
+ * @param {string} key
+ * @param {string} reason
  * @returns {string}
  */
-function renderAckTrailer(_trailerName, _key, _reason) {
-  return '';
+function renderAckTrailer(trailerName, key, reason) {
+  return `${trailerName}: ${key}${ACK_TRAILER_DELIM}${reason}`;
 }
 
 module.exports = {
-  ACK_VERSION,
   ACK_FILE,
   ACK_DIR,
   NEW_FILE_CAP,
@@ -912,8 +794,6 @@ module.exports = {
   INVISIBLE,
   normalizeAckReason,
   sourceSatisfiedBy,
-  parseAck,
-  mergeAckSources,
   diffEmitted,
   buildReport,
   formatReport,

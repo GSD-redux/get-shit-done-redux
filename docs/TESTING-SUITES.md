@@ -137,32 +137,30 @@ The differential attribution check reports the file and the byte delta. To resol
 1. **Justify the growth in your PR** (a sentence in the description is enough) —
    the acknowledgment entry (below) is the review record that the larger size
    was a deliberate, seen decision, not silent drift.
-2. **Add an acknowledgment fragment** under `tests/emitted-drift-acks/` naming
-   the file and the reason, per `CONTRIBUTING.md`'s "Editing shipped content"
-   section and `CONTEXT.md`'s `### Emitted Artifact Provenance` entry. Name the
-   fragment for your issue or PR (something nobody else is using) — the failure
-   output prints a minimal valid document you can paste. This is deliberately a
-   per-PR fragment, not one shared file: two fragments can never *merge-conflict*
-   with each other, and a fragment appearing in your diff *is* the visible signal.
-   They do, however, share a path key space. If the failure instead names a path a
-   merged PR already acknowledged (a **spent** entry sitting in an existing
-   fragment), you have two routes and the error text names both: `git rm` that
-   fragment if every entry in it is spent — it gates nothing and only holds the
-   keys — or, if it is still live, reword/extend its `reason` in place to explain
-   the new ripple. Either way, do not add a duplicate entry for the same path; two
-   ack sources naming the same path is a hard, loudly-reported error.
-   The legacy single `tests/emitted-drift-ack.json` is still read and unioned
-   in for branches that carry it, but new acknowledgments never go there.
-3. **Your fragment is deleted once it has merged (#3078).** A fragment on `next`
-   is spent by definition — its prose is already at the base, so it can no longer
-   clear anything — while still owning its path keys, which walls off the next PR
-   that grows one of them. The `guard-no-ack-on-next` job reds `next` and prints
-   the exact `git rm` for every fully-spent fragment. A *partially* spent fragment
-   is deliberately left alone. Since #3875 you do not have to run that `git rm`:
-   the `ack-fragment-sweep` workflow (`.github/workflows/ack-fragment-sweep.yml`)
-   asks the guard for its own sweep list every six hours and opens a PR deleting
-   exactly what it named, holding back any fragment an open PR still touches
-   (#3842).
+2. **Add an acknowledgment trailer** to one of your own commits (ADR-3942),
+   naming the file and the reason, per `CONTRIBUTING.md`'s "Editing shipped
+   content" section and `CONTEXT.md`'s `### Emitted Artifact Provenance` entry:
+
+   ```
+   Emitted-Drift-Ack-Growth: explore.md — new dispatch section, reasoning ships with the block
+   ```
+
+   Growth keys on the **bare filename** as it appears under `gsd-core/workflows/`
+   or `agents/`; an unattributable **hash** ripple uses
+   `Emitted-Drift-Ack-Hash:` and keys on the emitted path (which always contains
+   a `/`). The two are separate namespaces — a growth trailer will not excuse a
+   hash ripple, and the failure output says which one applies. The trailer is the
+   review record that the larger size was a deliberate, seen decision.
+
+   If you need to change an acknowledgment, amend the commit carrying it. That is
+   deliberate: the trailer cannot drift out of sync with the diff it explains,
+   because changing either changes the sha and re-runs the gate.
+3. **There is nothing to clean up afterwards.** The trailer is read from
+   `git log $(git merge-base <base> HEAD)..HEAD` — your commits and no others —
+   so once your PR merges it is out of range by construction. It never becomes
+   "spent", it owns no shared key space, it cannot conflict with anyone else's,
+   and no sweeper has to delete it. That is the whole reason ADR-3942 moved the
+   acknowledgment off the working tree.
 4. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
    is incidental: for a workflow, move per-mode bodies to
    `workflows/<name>/modes/`, templates to `workflows/<name>/templates/`, and

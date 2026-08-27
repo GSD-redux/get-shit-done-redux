@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "plan-phase.md": "#3172: plan-phase.md now dispatches the deterministic `gsd_run check verify-failure-directions` probe beside the #2401 path probe and interpolates its result into the plan-checker prompt as {FAILING_DIRECTIONS} inside a new <failing_direction_probe> block, and the planner spawn prompt gains a <failing_direction_contract> block requiring a `<fails_when>` sibling for every runnable `<automated>` command. That contract block is the larger half of the growth and lives here rather than in the planner agent file ON PURPOSE: the planner is frozen under a 49152-LF-char cap, so a planner-side authoring rule is projected onto its spawn contract — the #3297 / #3645 precedent. 90877 -> 93073 bytes (+2196). Deliberate runtime-loaded workflow text for the new gate, not converter drift. Filed as its own fragment per #3078: the 3409 fragment that previously carried plan-phase.md's growth reason was spent and has been swept from next, so nothing else claims this key."
-  }
-}

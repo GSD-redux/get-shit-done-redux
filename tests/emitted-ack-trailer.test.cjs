@@ -43,6 +43,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const fc = require('fast-check');
 
+const { cleanup } = require('./helpers.cjs');
 const { gitOrThrow, GIT_FIXTURE_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
 const {
   ACK_TRAILER_HASH,
@@ -85,7 +86,7 @@ function commitMessage(dir, message, { branch } = {}) {
   try {
     gitOrThrow(['commit', '-q', '--allow-empty', '-F', msgFile], { cwd: dir, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
   } finally {
-    fs.rmSync(msgFile, { force: true });
+    cleanup(msgFile);
   }
 }
 
@@ -104,13 +105,7 @@ function trailerLine(name, key, reason) {
 }
 
 function withCleanup(t, dir) {
-  t.after(() => {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* best-effort cleanup; never mask the primary result */
-    }
-  });
+  t.after(() => cleanup(dir));
 }
 
 // ─── grammar and hostile keys (pure parser) — rows 8, 9-18, 28-30 ────────────
@@ -427,7 +422,7 @@ describe('real fixture reads via readAckTrailers', () => {
     try {
       gitOrThrow(['commit', '-q', '--allow-empty', '-F', msgFile], { cwd: dir, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
     } finally {
-      fs.rmSync(msgFile, { force: true });
+      cleanup(msgFile);
     }
     const r = readAckTrailers({ baseRef: baseSha, headRef: 'HEAD', cwd: dir });
     assert.equal(
@@ -451,7 +446,7 @@ describe('real fixture reads via readAckTrailers', () => {
     try {
       gitOrThrow(['merge', '--no-ff', '-q', '-F', mergeMsgFile, 'topic'], { cwd: dir, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
     } finally {
-      fs.rmSync(mergeMsgFile, { force: true });
+      cleanup(mergeMsgFile);
     }
 
     const r = readAckTrailers({ baseRef: forkSha, headRef: 'HEAD', cwd: dir });
@@ -530,13 +525,7 @@ describe('hostile IO: uncomputable range, subprocess failure, timeout', () => {
     commitMessage(origin, 'origin C\n\nthird commit\n');
 
     const clone = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-ack-trailer-22-clone-'));
-    t.after(() => {
-      try {
-        fs.rmSync(clone, { recursive: true, force: true });
-      } catch {
-        /* best-effort cleanup */
-      }
-    });
+    t.after(() => cleanup(clone));
     gitOrThrow(['clone', '-q', '--depth', '1', `file://${origin}`, clone], {
       cwd: origin,
       timeoutMs: GIT_FIXTURE_TIMEOUT_MS,
@@ -552,13 +541,7 @@ describe('hostile IO: uncomputable range, subprocess failure, timeout', () => {
 
   test('git failure surfaces, not swallowed — row 23', (t) => {
     const notARepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-ack-trailer-23-'));
-    t.after(() => {
-      try {
-        fs.rmSync(notARepo, { recursive: true, force: true });
-      } catch {
-        /* best-effort cleanup */
-      }
-    });
+    t.after(() => cleanup(notARepo));
     assert.throws(
       () => readAckTrailers({ baseRef: 'main', headRef: 'HEAD', cwd: notARepo }),
       /./,
