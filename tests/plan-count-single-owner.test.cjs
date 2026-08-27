@@ -380,6 +380,56 @@ describe('scope field — UNREADABLE / TRUNCATED / COMPLETE independence', () =>
 // the same fallback) — these tests pin the current behavior at both
 // altitudes (scanPhasePlans and getPhaseFileStats) so a future change to
 // either rule is caught rather than silently drifting.
+// ─── #3741: the loose fallback's PLAN token must be delimited ─────────────
+// The legacy fallback was a bare substring test, so any *.md basename
+// containing "PLAN" counted: REPLAN-INPUTS, PLANNING-INPUTS, hand-authored
+// PLANNING-NOTES — inflating planCount and STATE.md's derived total_plans.
+describe('#3741: the loose /PLAN/i fallback counts only a delimited PLAN token', () => {
+  test('REPLAN-INPUTS is not a plan — substring PLAN inside REPLAN must not count', (t) => {
+    const dir = createTempDir('gsd-3741-replan-');
+    t.after(() => cleanup(dir));
+    writeFile(dir, '01-01-PLAN.md', planBody());
+    writeFile(dir, '01-01-REPLAN-INPUTS.md', 'Not a plan. Planning inputs document.\n');
+    const scan = planScan(dir);
+    assert.strictEqual(scan.planCount, 1, '#3741: exactly the canonical plan counts');
+    assert.ok(!scan.planFiles.includes('01-01-REPLAN-INPUTS.md'));
+  });
+
+  test('PLANNING-* and *-NOTES documents are not plans', (t) => {
+    const dir = createTempDir('gsd-3741-notes-');
+    t.after(() => cleanup(dir));
+    writeFile(dir, '01-01-PLAN.md', planBody());
+    writeFile(dir, '01-PLANNING-INPUTS.md', 'inputs\n');
+    writeFile(dir, 'PLANNING-NOTES.md', 'notes\n');
+    writeFile(dir, 'REPLAN-NOTES.md', 'notes\n');
+    const scan = planScan(dir);
+    assert.strictEqual(scan.planCount, 1);
+    assert.ok(!scan.planFiles.includes('01-PLANNING-INPUTS.md'));
+    assert.ok(!scan.planFiles.includes('PLANNING-NOTES.md'));
+    assert.ok(!scan.planFiles.includes('REPLAN-NOTES.md'));
+  });
+
+  test('legacy PLAN-token+numeric names still count via the anchored fallback', (t) => {
+    const dir = createTempDir('gsd-3741-legacy-');
+    t.after(() => cleanup(dir));
+    writeFile(dir, '01-PLAN-02.md', planBody());
+    const scan = planScan(dir);
+    assert.strictEqual(scan.planCount, 1);
+    assert.ok(scan.planFiles.includes('01-PLAN-02.md'));
+  });
+
+  test('legacy PLAN-token + numeric + slug names still count (#3128 shape, #3741 review)', (t) => {
+    const dir = createTempDir('gsd-3741-slug-');
+    t.after(() => cleanup(dir));
+    // gsd-plan-phase writes this form; #3128 is the historical bug where
+    // dropping it made plan_count read 0. The anchor must keep it.
+    writeFile(dir, '3-PLAN-01-setup.md', planBody());
+    const scan = planScan(dir);
+    assert.strictEqual(scan.planCount, 1);
+    assert.ok(scan.planFiles.includes('3-PLAN-01-setup.md'));
+  });
+});
+
 describe('case sensitivity: plan.md/Plan.md counted, summary.md/Summary.md NOT (#3183 asymmetry)', () => {
   test('lowercase plan.md is counted as a plan (loose /PLAN/i fallback is case-insensitive)', (t) => {
     const dir = createTempDir('gsd-plan-scan-case-');
