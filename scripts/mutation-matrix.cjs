@@ -407,23 +407,21 @@ const COVERED = {
       'frontmatter.test.cjs',
     ],
     minScore: 65,
-    // Wall-time projection, re-derived after piece 1 (dropping frontmatter.test.cjs) using
-    // this file's own documented method. Mutant-count factor is unchanged: source grew 1.8x
-    // for #3881 (1030 -> ~1850 mutants; see the #3888-era note this superseded for that
-    // derivation). Per-run test-command cost is re-measured on the CURRENT 6-file derived
-    // set (frontmatter.property/.unit/-golden-parity/-roundtrip.property + unusable-input +
-    // feat-3881-yaml-parser-consequences — the shard minus frontmatter.test.cjs and minus
-    // frontmatter-cli.test.cjs, neither of which was ever in a measured baseline): 1520ms,
-    // vs the documented OLD 3-file baseline of 593ms — a 2.56x per-run cost increase (down
-    // from the pre-piece-1 8x, since the file responsible for 3132ms of the old 4669ms
-    // 7-file run is gone). Applying both factors the same way the prior note did: 586s
-    // (documented 3-file/1030-mutant CI baseline) * 1.8 (mutants) * 2.56 (test cost) ~=
-    // 2700s (~45 minutes). Set to 60 minutes for margin above that projection (the same
-    // ~1.3x margin ratio the prior 180-minute budget used over its own 140-minute
-    // projection), well under GitHub Actions' 360-minute job ceiling and a 3x cut from the
-    // previous 180. Scoped to this shard only via timeoutMinutes below — every other shard
-    // keeps the 15-minute default.
-    timeoutMinutes: 60,
+    // MEASUREMENT, not a projection. Under the tap runner with coverageAnalysis: 'perTest'
+    // (#3915), Stryker now re-runs only the test files that cover each mutated line instead
+    // of all six files for every one of ~1900 mutants. Measured result: the frontmatter shard
+    // completed in 713s (11m53s) — GitHub Actions run 33026833181, job wall time including
+    // checkout and `npm ci` — against 1751s (29m11s) on the command runner in run
+    // 33021042847. A 59% reduction.
+    // 20 minutes is 1.68x the measured 713s. The override is not simply deleted because the
+    // shared default is 15 minutes, which 11m53s would fit inside — but only at 79% of
+    // budget — and this module's mutant count grew 1.8x in a single change (#3881), so a
+    // shard sitting at 79% of the shared default is one growth spurt from a red lane. 20
+    // keeps a real margin while still cutting the previous 60-minute budget by 3x.
+    // Scoped to this shard only via timeoutMinutes below — every other shard keeps the
+    // 15-minute default emitted by buildResult(), well under GitHub Actions' 360-minute job
+    // ceiling.
+    timeoutMinutes: 20,
     // isolation: no knob left to tune (#3915). Per-file process isolation is now INHERENT
     // to @stryker-mutator/tap-runner — it drives Node's own `--test-reporter=tap` once per
     // covering test FILE, so every file already runs in its own process by construction.
