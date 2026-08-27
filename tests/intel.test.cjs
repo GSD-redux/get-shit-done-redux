@@ -477,6 +477,24 @@ describe('#3885 (ADR-3473 §8.5): intel query recursion bound + truncation signa
     writeIntelJson(planningDir, 'file-roles.json', { entries: { top: nest(depth) } });
   }
 
+  // Build the SAME shape as nest(depth) — {a:{a:{a:...{leaf:'needle-here'}}}}
+  // wrapped in {entries:{top:...}} — but as JSON TEXT via string .repeat(),
+  // with zero recursion in the test process. Required for pathological depths
+  // (thousands+): nest() + JSON.stringify() both recurse per level, so at
+  // depth 12000 THE TEST'S OWN FIXTURE BUILDER overflows the test process's
+  // stack before the CLI is ever spawned (V8's JSON.stringify recurses; its
+  // JSON.parse does not). Do not "simplify" this back to
+  // JSON.stringify(nest(n)) for large depths — that reintroduces a
+  // macOS-green / Linux-red test, since Linux's default container stack is
+  // smaller than macOS's.
+  function writeNestedFixtureText(depth) {
+    const intelPath = path.join(planningDir, 'intel');
+    fs.mkdirSync(intelPath, { recursive: true });
+    const json =
+      '{"entries":{"top":' + '{"a":'.repeat(depth) + '{"leaf":"needle-here"}' + '}'.repeat(depth) + '}}';
+    fs.writeFileSync(path.join(intelPath, 'file-roles.json'), json, 'utf8');
+  }
+
   // T2 — MUST STAY GREEN before and after the fix: the ceiling is inclusive.
   test('T2: matchAtDepth48IsFoundUntruncated', () => {
     writeNestedFixture(48);
@@ -502,7 +520,7 @@ describe('#3885 (ADR-3473 §8.5): intel query recursion bound + truncation signa
   // exit 0, bounded result, truncated:true, and the RangeError text must
   // never appear.
   test('T4: deeplyNestedIntelDoesNotOverflowTheStack', () => {
-    writeNestedFixture(12000);
+    writeNestedFixtureText(12000);
     const result = runGsdTools(['intel', 'query', 'needle-here'], tmpDir);
     assert.strictEqual(result.success, true, `must exit 0 (no stack overflow), got: ${result.error}`);
     assert.ok(
