@@ -2538,23 +2538,40 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
   // Scope every structural assertion to the FENCED BLOCK that holds the call, not
   // to the whole file. A whole-file search cannot tell a guard next to the call
   // from a `position_diverged` mentioned four hundred lines away in prose.
+  //
+  // EVERY such block, not the first. An earlier draft returned on the first match
+  // and adversarial review broke it in one move: a file whose first fence is fully
+  // compliant and whose second fence invokes the verb unguarded passed every
+  // assertion here, because the second fence was never looked at. One record per
+  // BLOCK, so a caller with two invocations is two subjects.
+  //
   // `\r?\n` deliberately: under Windows autocrlf these files arrive CRLF, a bare
   // `\n` here would match no fence at all, and a guard that finds no block to scan
-  // reports PASS by vacuity. The two sanity tests above are the backstop for
-  // exactly that failure; this is the fix for it.
-  const invocationBlock = (text) => {
+  // reports PASS by vacuity. The sanity tests below are the backstop for exactly
+  // that failure; this is the fix for it.
+  const invocationBlocks = (text) => {
+    const out = [];
     for (const m of text.matchAll(/^```bash\r?\n([\s\S]*?)^```/gm)) {
-      if (INVOKES.test(m[1])) return m[1];
+      if (INVOKES.test(m[1])) out.push(m[1]);
     }
-    return null;
+    return out;
   };
 
+  const countInvocations = (text) => (text.match(new RegExp(INVOKES.source, 'g')) || []).length;
+
+  // One entry per invocation-bearing BLOCK. `name` carries the block's ordinal so a
+  // failure names which of a file's fences is at fault.
   const callerFiles = () => {
     const hits = [];
     for (const root of SCAN_ROOTS) {
       for (const full of walk(root)) {
         const text = fs.readFileSync(full, 'utf-8');
-        if (INVOKES.test(text)) hits.push({ full, name: path.relative(ROOT, full), text });
+        if (!INVOKES.test(text)) continue;
+        const rel = path.relative(ROOT, full);
+        const blocks = invocationBlocks(text);
+        blocks.forEach((block, i) => {
+          hits.push({ full, text, block, name: blocks.length > 1 ? `${rel} [fence ${i + 1}]` : rel });
+        });
       }
     }
     return hits;
@@ -2566,15 +2583,41 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
       `expected >=2 markdown callers of state.advance-plan, found ${found.length}: ${found.map((f) => f.name).join(', ')}`);
   });
 
-  test('sanity: every caller exposes a fenced bash block to scan (else the rest is vacuous)', () => {
-    for (const { name, text } of callerFiles()) {
-      assert.ok(invocationBlock(text), `${name} invokes the verb outside any \`\`\`bash fence — the guards below cannot see it`);
+  test('sanity: every invocation in the file lands in a scanned fence (none escapes the guard)', () => {
+    // The accounting check. A guard that inspects fences is blind to an invocation
+    // outside every fence, and blind to a SECOND fence if it stops at the first —
+    // adversarial review broke the earlier draft exactly that way. Requiring the
+    // whole-file invocation count to equal the count inside the scanned blocks
+    // closes both at once, and cannot itself pass vacuously: zero blocks against a
+    // non-zero file count fails.
+    const seen = new Set();
+    for (const { full, text } of callerFiles()) {
+      if (seen.has(full)) continue;
+      seen.add(full);
+      const inFile = countInvocations(text);
+      const inBlocks = invocationBlocks(text).reduce((n, b) => n + countInvocations(b), 0);
+      assert.strictEqual(inBlocks, inFile,
+        `${path.relative(ROOT, full)} invokes state.advance-plan ${inFile} time(s) but only ${inBlocks} are inside a scanned \`\`\`bash fence — the rest are unguarded and invisible to every assertion below`);
+    }
+  });
+
+  test('each caller invokes the verb BARE, so its answer keeps the shape the arms match', () => {
+    // #3862 RV6.5 pass 4 (CLAIM A). The arms match on `"advanced": true` in the
+    // verb's own JSON. `--raw` and `--pick advanced` are legal on this verb and
+    // make a genuine advance print bare `true` at exit 0 — which matches no arm, so
+    // the callers would stop recording on EVERY advance, forever, silently. That is
+    // strictly worse than the bug being fixed. Nothing stops a later edit adding
+    // one for terseness, so pin the bare form here rather than teaching the arms
+    // three output shapes.
+    for (const { name, block } of callerFiles()) {
+      const line = block.split(/\r?\n/).find((l) => INVOKES.test(l)) || '';
+      assert.ok(!/--raw\b|--pick\b|--json-errors\b/.test(line),
+        `${name} invokes state.advance-plan with an output-shaping flag (${line.trim()}) — it changes the payload the arms match on`);
     }
   });
 
   test('each caller branches on position_diverged, never on `--pick advanced`', () => {
-    for (const { name, text } of callerFiles()) {
-      const block = invocationBlock(text);
+    for (const { name, block } of callerFiles()) {
       assert.ok(block.includes('position_diverged'),
         `${name}'s invocation block must read the refusal reason and name position_diverged as what it stops on`);
       assert.ok(/"error":/.test(block),
@@ -2595,8 +2638,7 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
     // pre-fix source — update-progress ran, no STOP printed), and equally any
     // refusal reason the verb grows later. Only two answers moved the phase
     // forward, so only those two may record.
-    for (const { name, text } of callerFiles()) {
-      const block = invocationBlock(text);
+    for (const { name, block } of callerFiles()) {
       assert.ok(/^\s*\*'"advanced": true'\*\|\*'"reason": "last_plan"'\*\)/m.test(block),
         `${name} must open its writing arm on the two advancing answers explicitly, not on a catch-all`);
       const invIdx = block.search(INVOKES);
@@ -2617,8 +2659,7 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
       for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) out.push(i);
       return out;
     };
-    for (const { name, text } of callerFiles()) {
-      const block = invocationBlock(text);
+    for (const { name, block } of callerFiles()) {
       const allowIdx = block.search(/^\s*\*'"advanced": true'\*/m);
       const allowEnd = block.indexOf(';;', allowIdx);
       const guardIdx = block.indexOf('position_diverged', allowEnd);
