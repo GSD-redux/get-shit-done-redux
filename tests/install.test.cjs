@@ -1317,7 +1317,7 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
       '.agent/ must not be created by a fresh install (new installs use .agents/)');
   });
 
-  test('global antigravity install still writes to ~/.gemini/antigravity (unchanged)', () => {
+  test('global antigravity install writes skills/agents to ~/.gemini/config, runtime files to the configHome (#3738)', () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-ag-global-'));
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
@@ -1332,13 +1332,28 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
         result.configDir.startsWith(homeDir),
         `global antigravity install must go under HOME, got: ${result.configDir}`,
       );
+      // #3738: Antigravity scans ~/.gemini/config for machine-local discovery,
+      // so skills and agents install under the global layout's home override…
+      const configRoot = path.join(homeDir, '.gemini', 'config');
       assert.ok(
-        fs.existsSync(path.join(result.configDir, 'skills')),
-        'global antigravity install must create skills/ under ~/.gemini/antigravity',
+        fs.existsSync(path.join(configRoot, 'skills', 'gsd-help', 'SKILL.md')),
+        'global antigravity install must create gsd-* skills under ~/.gemini/config/skills',
+      );
+      assert.ok(
+        fs.existsSync(path.join(configRoot, 'agents')),
+        'global antigravity install must create agents/ under ~/.gemini/config',
+      );
+      assert.ok(
+        !fs.existsSync(path.join(result.configDir, 'skills')),
+        'no skills/ may be created under the configHome (~/.gemini/antigravity) — AGY does not scan it (#3738)',
+      );
+      assert.ok(
+        !fs.existsSync(path.join(result.configDir, 'agents')),
+        'no agents/ may be created under the configHome (~/.gemini/antigravity) (#3738)',
       );
       assert.ok(
         !fs.existsSync(path.join(homeDir, '.agents')),
-        '.agents/ must NOT be created by a global install (global path is ~/.gemini/antigravity)',
+        '.agents/ must NOT be created by a global install (global skills path is ~/.gemini/config)',
       );
     } finally {
       if (savedHome === undefined) delete process.env.HOME;

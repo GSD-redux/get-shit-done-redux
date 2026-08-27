@@ -1009,8 +1009,10 @@ describe('skills wrapper threads install scope into converter isGlobal (regressi
       const lSkills = resolveRuntimeArtifactLayout(runtime, localDir, 'local').kinds.find(k => k.kind === 'skills');
       assert.ok(gSkills && lSkills, `${runtime}: must resolve a skills kind for both scopes`);
 
-      const gCombined = readAllSkillMd(path.join(globalDir, gSkills.destSubpath));
-      const lCombined = readAllSkillMd(path.join(localDir, lSkills.destSubpath));
+      // #3738: the global skills tree may live under the kind `home` override
+      // (antigravity → ~/.gemini/config), so honor it like the installer does.
+      const gCombined = readAllSkillMd(path.join(gSkills.home ?? globalDir, gSkills.destSubpath));
+      const lCombined = readAllSkillMd(path.join(lSkills.home ?? localDir, lSkills.destSubpath));
 
       // Precondition (non-vacuity guard): some core skill carries a ~/.claude
       // reference, so the GLOBAL install surfaces the global home marker. If this

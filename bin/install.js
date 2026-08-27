@@ -2331,7 +2331,8 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
 /**
  * Apply Antigravity-specific content conversion — path replacement + command name conversion.
  * Path mappings depend on install mode:
- *   Global: ~/.claude/ → ~/.gemini/antigravity/, ./.claude/ → ./.agents/
+ *   Global: ~/.claude/skills/ → ~/.gemini/config/skills/ (#3738),
+ *          ~/.claude/ → ~/.gemini/antigravity/, ./.claude/ → ./.agents/
  *   Local:  ~/.claude/ → .agents/, ./.claude/ → ./.agents/
  * Applied to ALL Antigravity content (skills, agents, engine files).
  * @param {string} content - Source content to convert
@@ -2340,6 +2341,14 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
 function convertClaudeToAntigravityContent(content, isGlobal = false) {
   let c = content;
   if (isGlobal) {
+    // #3738: global skills install under ~/.gemini/config/skills (the dir AGY
+    // scans for global discovery), so skills-path references must divert there
+    // — BEFORE the configHome rewrite below, which is correct for gsd-core
+    // runtime-file references (settings, workflows, VERSION) but wrong for the
+    // skills dir itself. Mirrors src/runtime-artifact-conversion.cts (ADR-1508
+    // keeps bin/install.js hand-authored; the two copies must stay in sync).
+    c = c.replace(/\$HOME\/\.claude\/skills\//g, '$HOME/.gemini/config/skills/');
+    c = c.replace(/~\/\.claude\/skills\//g, '~/.gemini/config/skills/');
     c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/antigravity/');
     c = c.replace(/~\/\.claude\//g, '~/.gemini/antigravity/');
     // Bare form (no trailing slash) — must come after slash form to avoid double-replace

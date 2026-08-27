@@ -175,8 +175,13 @@ describe('#1575 — golden-parity: surface path matches install path for descrip
       // Step 1: install path writes agents
       installRuntimeArtifacts(runtime, configDir, 'global', parity1575Profile, resolveAttribution1575);
 
-      // Step 2: snapshot agent files
-      const agentsDir = path.join(configDir, 'agents');
+      // Step 2: snapshot agent files at the installer's REAL destination —
+      // honor the kind `home` override (codex → ~/.agents, antigravity →
+      // ~/.gemini/config per #3738) exactly like assertDestWithinConfigHome's
+      // root selection, never assume configDir/agents.
+      const parityLayout = resolveRuntimeArtifactLayout(runtime, configDir, 'global');
+      const parityAgentsKind = parityLayout.kinds.find((k) => k.kind === 'agents');
+      const agentsDir = path.join(parityAgentsKind.home ?? configDir, parityAgentsKind.destSubpath);
       const installSnap = snapshotAgents(agentsDir);
       assert.ok(installSnap.size > 0, `${runtime}: install must produce at least one gsd-* agent`);
 
