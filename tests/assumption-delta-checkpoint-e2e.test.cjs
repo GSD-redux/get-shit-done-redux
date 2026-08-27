@@ -294,12 +294,18 @@ describe('query assumption-delta scan — unresolved phase reports skipped (#390
     assert.strictEqual(json.reason, 'phase_unresolved');
   });
 
-  test('BOUNDARY: a resolved but empty section reports skipped', () => {
+  test('BOUNDARY: a resolved but body-less section is EXAMINED, not skipped', () => {
     tmpDir = makeProject({ workflow: { assumption_delta: true } });
     writeRoadmap(tmpDir, '# Roadmap\n\n### Phase 01: Empty\n\n   \n\t\n\n### Phase 02: Next\n\nBody.\n');
     const { json } = scan(tmpDir, '01');
-    assert.strictEqual(json.skipped, true, 'a whitespace-only section carries no scope');
-    assert.strictEqual(json.reason, 'phase_unresolved');
+    // The resolver returns the heading line alone for a body-less section, so
+    // the phase WAS found and the detector did examine what the roadmap holds
+    // for it. `skipped` is reserved for the cases where the resolver returns
+    // null — an unknown phase number, or no ROADMAP.md at all. Pinning that
+    // line here keeps the distinction the issue actually asks for (found vs
+    // not found) from drifting into a vaguer "looks empty to me".
+    assert.strictEqual(json.skipped, undefined, 'a resolved section is not a skip');
+    assert.strictEqual(json.detected, false, 'the heading alone carries no cues — a real negative');
   });
 
   test('--terms does not rescue an unresolved phase', () => {

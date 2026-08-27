@@ -16,6 +16,7 @@
 
 const { describe, test, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fc = require('fast-check');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -490,5 +491,41 @@ describe('api-coverage.verify-pre — unestablished scope blocks (#3909)', () =>
     } finally {
       cleanup(noPhases);
     }
+  });
+});
+
+// ─── Property: the scope discriminator is emptiness, nothing else (#3909) ─────
+// The gate reports `scope_unavailable` exactly when the scope it read is
+// whitespace-only. This pins that predicate against arbitrary input — unicode
+// whitespace, CRLF, strings that merely look blank — so the discriminator can
+// never quietly become "no signals found" instead of "nothing examined".
+describe('api-coverage scope emptiness — properties (#3909)', () => {
+  let tmpDir;
+  afterEach(() => { if (tmpDir) { cleanup(tmpDir); tmpDir = null; } });
+
+  test('P1: the scope read back is whitespace-only iff the plan body was', () => {
+    fc.assert(
+      fc.property(fc.string(), (body) => {
+        tmpDir = makeProject({ api_coverage_gate: true });
+        try {
+          const phaseDir = makePhaseDir(tmpDir, '01-prop');
+          writePlan(phaseDir, '01-PLAN.md', body);
+          // No ROADMAP.md is written, so the roadmap fallback contributes
+          // nothing and the plan body is the entire scope.
+          const res = readPhaseScope(tmpDir, phaseDir, '01');
+          assert.strictEqual(res.readError, null, 'a written plan file must always be readable');
+          assert.strictEqual(
+            res.text.trim() === '',
+            body.trim() === '',
+            'the gate blocks on an unestablished scope, so its emptiness test must agree '
+              + 'with the emptiness of what the author actually wrote',
+          );
+        } finally {
+          cleanup(tmpDir);
+          tmpDir = null;
+        }
+      }),
+      { numRuns: 200, seed: 3909 },
+    );
   });
 });
