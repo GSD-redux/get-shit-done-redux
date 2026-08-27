@@ -338,6 +338,12 @@ export default tseslint.config(
       // src/pattern.cts — module resolution for a .cts source is relative to
       // src/, not the output dir). Same verbatim-third-party exemption.
       'src/vendor/**',
+      // #3904 (ADR-3889 Phase 0): tsc-generated runtime artifact — generated
+      // by scripts/gen-scripts-cli-exit.cjs from a fresh compile of
+      // src/cli-exit.cts, and byte-guarded by `npm run lint:generated-sync`
+      // (stricter than lint: it forbids ANY hand edit, not just bad ones).
+      // Lint the src/cli-exit.cts source, not this emitted copy.
+      'scripts/lib/cli-exit.cjs',
     ],
   },
 
