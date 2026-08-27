@@ -55,16 +55,19 @@ function makeEntry(overrides) {
 /**
  * #3906 (ADR-3889 Phase 2): the generator now emits THREE artifacts — a
  * primary (gsd-core/bin/lib), a secondary (scripts/lib), and the ambient
- * `.d.cts` type declaration (src/exit-code-registry.d.cts). Every existing
- * call site below only overrides the PRIMARY path via `--out`; without
- * matching `--scripts-out`/`--dts-out` overrides, a `--write` here would
- * clobber the real committed `scripts/lib/exit-code-registry.cjs` and
- * `src/exit-code-registry.d.cts` — dangerous since test files in this repo
- * run in parallel. Rather than touch every call site, this single seam
- * derives co-located, per-call-unique secondary/dts paths from whatever
+ * `.d.cts` type declaration (src/exit-code-registry.d.cts). #3908 (Phase 4)
+ * added a FOURTH: the shell-sourceable fragment (gsd-core/bin/shared/
+ * exit-codes.sh). Every existing call site below only overrides the PRIMARY
+ * path via `--out`; without matching `--scripts-out`/`--dts-out`/`--sh-out`
+ * overrides, a `--write` here would clobber the real committed
+ * `scripts/lib/exit-code-registry.cjs`, `src/exit-code-registry.d.cts`, and
+ * `gsd-core/bin/shared/exit-codes.sh` — dangerous since test files in this
+ * repo run in parallel. Rather than touch every call site, this single seam
+ * derives co-located, per-call-unique secondary/dts/sh paths from whatever
  * `--out` value the test already supplies, whenever the caller has not
- * already supplied its own `--scripts-out`/`--dts-out`. Calls with no
- * explicit `--out` (the "real committed set" checks) are left untouched.
+ * already supplied its own `--scripts-out`/`--dts-out`/`--sh-out`. Calls
+ * with no explicit `--out` (the "real committed set" checks) are left
+ * untouched.
  */
 function ensureScriptsOut(args) {
   const outIdx = args.indexOf('--out');
@@ -73,6 +76,7 @@ function ensureScriptsOut(args) {
   const extra = [];
   if (!args.includes('--scripts-out')) extra.push('--scripts-out', `${outValue}.secondary.cjs`);
   if (!args.includes('--dts-out')) extra.push('--dts-out', `${outValue}.d.cts`);
+  if (!args.includes('--sh-out')) extra.push('--sh-out', `${outValue}.sh`);
   return extra.length === 0 ? args : [...args, ...extra];
 }
 
