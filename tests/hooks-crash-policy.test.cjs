@@ -43,8 +43,9 @@ const path = require('node:path');
 const os = require('node:os');
 
 const { createTempDir, cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
-const { runHook: runHookSeam, OUTCOME } = require('./helpers/process-seam.cjs');
+const { runHook: runHookSeam, runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const { gitOrThrow, GIT_FIXTURE_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
+const { ensureBuiltHooks } = require('../scripts/run-tests.cjs');
 
 const HOOKS_DIR = path.join(__dirname, '..', 'hooks');
 
@@ -421,6 +422,87 @@ describe('hooks-crash-policy: C4 stdin never closes -> bounded termination, not 
       assert.equal(r.exitCode, 0, `expected the stdin-timeout's allow() fallback (exit 0); stdout=${r.stdout} stderr=${r.stderr}`);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// hooks/dist parity (#3911 review finding) — lint:hooks-runtime-build-seam
+// only checks that a hook requiring a compiled gsd-core/bin/lib/*.cjs module
+// also calls ensureRuntimeBuild(); it never compares hooks/dist/** against
+// hooks/**. Nothing else in the suite proves the three files P7 adds under
+// hooks/lib/ (cli-exit.js, exit-code-registry.js, hook-exit.js) actually
+// reach hooks/dist/lib/ — the exact shape of #770 (a new hook file silently
+// missing from a copy list). This is behavioral, not a source-grep: it
+// builds the real hooks/dist via the same ensureBuiltHooks() chokepoint
+// scripts/run-tests.cjs uses, byte-compares the shipped copies, and spawns a
+// child that actually requires and calls the SHIPPED copy from its dist
+// location (proving it can resolve its sibling registry there, not just
+// that the bytes exist).
+// ---------------------------------------------------------------------------
+
+describe('hooks-crash-policy: hooks/dist/lib parity (#3911 review finding)', () => {
+  const HOOKS_LIB_DIR = path.join(HOOKS_DIR, 'lib');
+  const DIST_LIB_DIR = path.join(HOOKS_DIR, 'dist', 'lib');
+  const SEAM_FILES = ['cli-exit.js', 'exit-code-registry.js', 'hook-exit.js'];
+
+  let buildFailure = null;
+
+  before(() => {
+    try {
+      // No overrides: this deliberately builds/verifies the REAL hooks/dist,
+      // the same gitignored-but-real artifact the installer ships from — a
+      // temp destination would not prove anything about what users get.
+      ensureBuiltHooks();
+    } catch (e) {
+      buildFailure = e;
+    }
+  });
+
+  for (const name of SEAM_FILES) {
+    test(`hooks/dist/lib/${name} exists and is byte-identical to hooks/lib/${name}`, (t) => {
+      if (buildFailure) {
+        t.skip(`ensureBuiltHooks() failed to populate hooks/dist: ${buildFailure.message}`);
+        return;
+      }
+      const srcPath = path.join(HOOKS_LIB_DIR, name);
+      const distPath = path.join(DIST_LIB_DIR, name);
+      if (!fs.existsSync(distPath)) {
+        t.skip(`${distPath} does not exist after ensureBuiltHooks() — build seam did not ship it`);
+        return;
+      }
+      const srcBytes = fs.readFileSync(srcPath);
+      const distBytes = fs.readFileSync(distPath);
+      assert.ok(
+        srcBytes.equals(distBytes),
+        `hooks/dist/lib/${name} is not byte-identical to hooks/lib/${name} — the build seam shipped a stale or divergent copy`
+      );
+    });
+  }
+
+  test('the shipped hooks/dist/lib/cli-exit.js is functional from its dist location (resolves its sibling registry)', (t) => {
+    if (buildFailure) {
+      t.skip(`ensureBuiltHooks() failed to populate hooks/dist: ${buildFailure.message}`);
+      return;
+    }
+    const distCliExitPath = path.join(DIST_LIB_DIR, 'cli-exit.js');
+    if (!fs.existsSync(distCliExitPath)) {
+      t.skip(`${distCliExitPath} does not exist after ensureBuiltHooks() — build seam did not ship it`);
+      return;
+    }
+    // Spawn a child that requires the SHIPPED copy from ITS OWN dist
+    // location and drives the one sanctioned process.exit() call site
+    // (terminateNow) with a HOOK_DENY outcome. A dist copy that exists but
+    // whose sibling require('./exit-code-registry.js') cannot resolve from
+    // hooks/dist/lib/ (e.g. only cli-exit.js shipped, not the whole
+    // directory) would throw here instead of exiting 2 — this is the case a
+    // byte-comparison alone cannot catch.
+    const script = [
+      `const { terminateNow } = require(${JSON.stringify(distCliExitPath)});`,
+      `terminateNow('HOOK_DENY', { x: 1 });`,
+    ].join('\n');
+    const r = runNode(['-e', script], { timeoutMs: 15000 });
+    assert.equal(r.outcome, OUTCOME.EXITED, `expected a clean exit; got ${r.outcome} stderr=${r.stderr}`);
+    assert.equal(r.exitCode, 2, `expected HOOK_DENY's registered exit code 2; stdout=${r.stdout} stderr=${r.stderr}`);
+  });
 });
 
 // ---------------------------------------------------------------------------

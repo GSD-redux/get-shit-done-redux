@@ -9,6 +9,21 @@
 # Enable with: "hooks": { "community": true } in .planning/config.json
 set -euo pipefail
 
+# Temp files created below for subprocess stderr capture (config read, command
+# extraction, classifier). A single EXIT trap replaces three hand-rolled
+# mktemp/rm-f pairs so an early or unexpected exit path can never leak one —
+# and a future fourth check does not need its own copy (#3911 review).
+# Idempotent and failure-proof by construction: unset vars expand to "" (a
+# no-op rm -f target), and `|| true` guarantees the trap itself never changes
+# the script's exit status.
+ENABLED_ERR=""
+CMD_ERR=""
+CLASSIFY_ERR=""
+cleanup_temp_files() {
+  rm -f "${ENABLED_ERR:-}" "${CMD_ERR:-}" "${CLASSIFY_ERR:-}" 2>/dev/null || true
+}
+trap cleanup_temp_files EXIT
+
 # Check opt-in config — exit silently if not enabled
 if [ -f .planning/config.json ]; then
   ENABLED_ERR=$(mktemp)
@@ -27,10 +42,8 @@ if [ -f .planning/config.json ]; then
     # error other than absence, etc.) — distinct from ".planning/config.json
     # exists and legitimately disables the hook". Say so and pass, per #3838.
     echo "gsd-validate-commit.sh: could not read .planning/config.json (opt-in check) — validator disabled for this call. $(cat "$ENABLED_ERR")" >&2
-    rm -f "$ENABLED_ERR"
     exit 0
   fi
-  rm -f "$ENABLED_ERR"
   if [ "$ENABLED" != "1" ]; then exit 0; fi
 else
   exit 0
@@ -58,10 +71,8 @@ if [ "$CMD_STATUS" != "0" ]; then
   # JSON, etc.) — distinct from "there is genuinely no command field". Say
   # so and pass, per #3838.
   echo "gsd-validate-commit.sh: could not extract tool_input.command from the hook payload — validator disabled for this call. $(cat "$CMD_ERR")" >&2
-  rm -f "$CMD_ERR"
   exit 0
 fi
-rm -f "$CMD_ERR"
 
 # Only check git commit commands.
 # Delegates to hooks/lib/git-cmd.js isGitSubcommand() — the canonical token-walk
@@ -90,10 +101,8 @@ if [ "$CLASSIFY_STATUS" != "0" ] && [ "$CLASSIFY_STATUS" != "1" ]; then
   # on stderr and pass (#3838): PreToolUse stderr does not disturb the JSON
   # protocol.
   echo "gsd-validate-commit.sh: could not classify the command via hooks/lib/git-cmd.js (exit $CLASSIFY_STATUS) — validator disabled for this call. If this persists, run \`npm run build:lib\`. $(cat "$CLASSIFY_ERR")" >&2
-  rm -f "$CLASSIFY_ERR"
   exit 0
 fi
-rm -f "$CLASSIFY_ERR"
 if [ "$CLASSIFY_STATUS" = "0" ]; then
   # Extract message from -m flag
   MSG=""
