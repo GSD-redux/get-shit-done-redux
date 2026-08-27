@@ -21,6 +21,9 @@ import { platformWriteSync, platformReadSync, platformEnsureDir } from './shell-
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import capabilityStateMod = require('./capability-state.cjs');
 const { isCapabilityActive } = capabilityStateMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import ioMod = require('./io.cjs');
+const { formatDiagnosticToken } = ioMod;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -104,14 +107,39 @@ interface IntelData {
 
 /**
  * Safely read and parse a JSON intel file.
- * Returns null if file doesn't exist or can't be parsed.
+ *
+ * Returns null for THREE distinct on-disk states, only one of which is a
+ * "quiet" case (#3885, ADR-3473 §8.5):
+ *   - ABSENT (ENOENT, via platformReadSync returning null): silent — not
+ *     every project has every intel file, and callers already loop over
+ *     the full INTEL_FILES set expecting misses. Never pushed to `errors`.
+ *   - UNREADABLE (EACCES/EIO/... — platformReadSync rethrows anything that
+ *     isn't ENOENT): surfaced, naming the file, when `errors` is supplied.
+ *   - MALFORMED (JSON.parse throws on a file that WAS read successfully):
+ *     also surfaced, naming the file — a corrupt intel file used to read
+ *     identically to "no matches", which is the same defect one layer down.
+ *
+ * `errors` is an optional accumulator so callers that want to thread the
+ * outcome into their own result shape can pass an array and read it back
+ * after the call; callers that omit it keep the prior fold-to-null shape.
  */
-function safeReadJson(filePath: string): IntelData | null {
+function safeReadJson(filePath: string, errors?: string[]): IntelData | null {
+  let raw: string | null;
   try {
-    const raw = platformReadSync(filePath);
-    if (raw === null) return null;
+    raw = platformReadSync(filePath);
+  } catch (err) {
+    if (errors) {
+      errors.push(`Could not read ${formatDiagnosticToken(filePath)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`);
+    }
+    return null;
+  }
+  if (raw === null) return null; // ENOENT — genuinely absent, not an error.
+  try {
     return JSON.parse(raw) as IntelData;
-  } catch {
+  } catch (err) {
+    if (errors) {
+      errors.push(`Could not parse ${formatDiagnosticToken(filePath)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`);
+    }
     return null;
   }
 }
@@ -225,6 +253,20 @@ interface IntelQueryResult {
    * miss is not a truncation) — always present as a boolean, never undefined.
    */
   truncated: boolean;
+  /**
+   * #3885 (ADR-3473 §8.5): one diagnostic string per intel file that was
+   * present on disk but could not be read (EACCES/EIO/...) or could not be
+   * parsed (malformed JSON) — each naming the file via formatDiagnosticToken.
+   * A file that is simply ABSENT (ENOENT) never contributes an entry here;
+   * that is the normal, expected case (not every project has every intel
+   * file). Always present as an array, never undefined — empty when every
+   * searched file was either absent or read cleanly, mirroring `truncated`'s
+   * always-present convention. Plural (unlike `context_read_error`'s
+   * singular nullable-string shape in roadmap.cts/init.cts) because a single
+   * query fans out across every file in INTEL_FILES and more than one can
+   * independently fail.
+   */
+  read_errors: string[];
 }
 
 /**
@@ -237,11 +279,12 @@ function intelQuery(term: string, planningDir: string): IntelQueryResult | Disab
   const matches: Array<{ source: string; entries: SearchMatch[] }> = [];
   let total = 0;
   let truncated = false;
+  const readErrors: string[] = [];
 
   // Search all JSON intel files
   for (const [_key, filename] of Object.entries(INTEL_FILES)) {
     const filePath = intelFilePath(planningDir, filename);
-    const data = safeReadJson(filePath);
+    const data = safeReadJson(filePath, readErrors);
     if (!data) continue;
 
     const { matches: found, truncated: fileTruncated } = searchJsonEntries(data, term);
@@ -252,13 +295,21 @@ function intelQuery(term: string, planningDir: string): IntelQueryResult | Disab
     }
   }
 
-  return { matches, term, total, truncated };
+  return { matches, term, total, truncated, read_errors: readErrors };
 }
 
 interface IntelStatusFileEntry {
   exists: boolean;
   updated_at: string | null;
   stale: boolean;
+  /**
+   * #3885 (ADR-3473 §8.5): non-null iff the file exists but could not be
+   * read or parsed — naming the file. `stale` still defaults to true in
+   * that case (an unknown-freshness file is conservatively treated as
+   * stale, unchanged from prior behaviour), but this field says WHY rather
+   * than leaving the reader to assume the file was simply never refreshed.
+   */
+  read_error: string | null;
 }
 
 interface IntelStatusResult {
@@ -283,7 +334,7 @@ function intelStatus(planningDir: string): IntelStatusResult | DisabledResponse 
     const exists = fs.existsSync(filePath);
 
     if (!exists) {
-      files[filename] = { exists: false, updated_at: null, stale: true };
+      files[filename] = { exists: false, updated_at: null, stale: true, read_error: null };
       overallStale = true;
       continue;
     }
@@ -291,7 +342,8 @@ function intelStatus(planningDir: string): IntelStatusResult | DisabledResponse 
     let updatedAt: string | null = null;
 
     // All intel files are JSON — read _meta.updated_at
-    const data = safeReadJson(filePath);
+    const readErrors: string[] = [];
+    const data = safeReadJson(filePath, readErrors);
     if (data && data._meta && data._meta.updated_at) {
       updatedAt = data._meta.updated_at;
     }
@@ -303,7 +355,7 @@ function intelStatus(planningDir: string): IntelStatusResult | DisabledResponse 
     }
 
     if (stale) overallStale = true;
-    files[filename] = { exists: true, updated_at: updatedAt, stale };
+    files[filename] = { exists: true, updated_at: updatedAt, stale, read_error: readErrors[0] ?? null };
   }
 
   return { files, overall_stale: overallStale };
@@ -318,14 +370,20 @@ interface IntelDiffResult {
 /**
  * Show changes since the last full refresh by comparing file hashes.
  */
-function intelDiff(planningDir: string): IntelDiffResult | { no_baseline: true } | DisabledResponse {
+function intelDiff(planningDir: string): IntelDiffResult | { no_baseline: true; read_error: string | null } | DisabledResponse {
   if (!isIntelCapabilityActive(planningDir)) return disabledResponse();
 
   const snapshotPath = intelFilePath(planningDir, '.last-refresh.json');
-  const snapshot = safeReadJson(snapshotPath);
+  const readErrors: string[] = [];
+  const snapshot = safeReadJson(snapshotPath, readErrors);
 
   if (!snapshot) {
-    return { no_baseline: true };
+    // #3885 (ADR-3473 §8.5): `no_baseline: true` stays true for BOTH a
+    // genuinely-never-snapshotted project (ENOENT, read_error stays null)
+    // AND a present-but-unreadable/malformed snapshot — collapsing those
+    // two into a bare `no_baseline: true` would manufacture "you've never
+    // run a refresh" out of a read failure. `read_error` names which one.
+    return { no_baseline: true, read_error: readErrors[0] ?? null };
   }
 
   const prevHashes = (snapshot.hashes as Record<string, string> | undefined) || {};
@@ -507,6 +565,12 @@ interface IntelApiSurfaceResult {
   written: string;
   symbolCount: number;
   stale: boolean;
+  /**
+   * #3885 (ADR-3473 §8.5): non-null iff api-map.json exists but could not
+   * be read or parsed — naming the file. Null when api-map.json is simply
+   * absent (the normal "not yet populated" case) or was read cleanly.
+   */
+  read_error: string | null;
 }
 
 /**
@@ -522,7 +586,9 @@ function intelApiSurface(planningDir: string): IntelApiSurfaceResult | DisabledR
   const apiMapPath = path.join(intelPath, INTEL_FILES.apis);
   const outputPath = path.join(intelPath, 'API-SURFACE.md');
 
-  const data = safeReadJson(apiMapPath);
+  const readErrors: string[] = [];
+  const data = safeReadJson(apiMapPath, readErrors);
+  const readError = readErrors[0] ?? null;
   const entries = (data && data.entries && typeof data.entries === 'object')
     ? Object.entries(data.entries)
     : [];
@@ -543,7 +609,13 @@ function intelApiSurface(planningDir: string): IntelApiSurfaceResult | DisabledR
   lines.push('');
 
   if (symbolCount === 0) {
-    lines.push('> **Incomplete:** api-map.json has no entries (intel extraction is regex/JS-only or not yet populated).');
+    if (readError) {
+      // #3885: a read/parse failure is NOT "not yet populated" — say so,
+      // rather than manufacturing the wrong reason for the empty surface.
+      lines.push(`> **Incomplete:** ${readError}`);
+    } else {
+      lines.push('> **Incomplete:** api-map.json has no entries (intel extraction is regex/JS-only or not yet populated).');
+    }
     lines.push('> Treat absence here as "unknown", not "does not exist".');
     lines.push('');
   } else {
@@ -567,7 +639,7 @@ function intelApiSurface(planningDir: string): IntelApiSurfaceResult | DisabledR
 
   platformWriteSync(outputPath, lines.join('\n'));
 
-  return { written: outputPath, symbolCount, stale };
+  return { written: outputPath, symbolCount, stale, read_error: readError };
 }
 
 interface IntelPatchMetaResult {

@@ -540,6 +540,119 @@ describe('#3885 (ADR-3473 §8.5): intel query recursion bound + truncation signa
   });
 });
 
+// ─── #3885 (ADR-3473 §8.5): safeReadJson no-silent-swallow ──────────────────
+//
+// `safeReadJson` folded THREE distinct on-disk states into one bare `null`:
+// absent (ENOENT), unreadable (EACCES/EIO/...), and malformed (JSON.parse
+// throws). An unreadable or malformed intel file read as "no matches" —
+// byte-indistinguishable from a project that simply lacks that intel file.
+// This closes the gap: absent stays silent (the common, expected case —
+// intelQuery already loops over every INTEL_FILES entry expecting misses),
+// while unreadable/malformed are surfaced via the always-present
+// `read_errors: string[]` field on IntelQueryResult, naming the file.
+describe('#3885 (ADR-3473 §8.5): safeReadJson distinguishes absent from unreadable/malformed', () => {
+  let tmpDir;
+  let planningDir;
+  let surfacedConfigDir;
+  let savedEnv;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    planningDir = path.join(tmpDir, '.planning');
+    enableIntel(planningDir);
+    surfacedConfigDir = makeSurfacedConfigDir();
+    savedEnv = saveSurfacedEnv();
+    delete process.env.GSD_RUNTIME;
+    process.env.CLAUDE_CONFIG_DIR = surfacedConfigDir;
+    delete process.env.GSD_WORKSTREAM;
+    delete process.env.GSD_PROJECT;
+  });
+
+  afterEach(() => {
+    savedEnv.restore();
+    cleanup(surfacedConfigDir);
+    cleanup(tmpDir);
+  });
+
+  // T7 — RED before the fix: an EACCES on a present intel file was swallowed
+  // by safeReadJson's bare `catch { return null; }`, so intelQuery reported
+  // total:0 with no way to distinguish "no matches" from "could not read
+  // the file at all". Monkeypatch fs.readFileSync rather than chmod 0o000 —
+  // root bypasses mode bits, so a chmod-based test would pass with zero
+  // coverage under root Docker/CI.
+  test('T7: unreadableIntelFileIsSurfacedNamingTheFile', () => {
+    writeIntelJson(planningDir, 'file-roles.json', {
+      entries: { 'src/foo.ts': { note: 'needle-here' } },
+    });
+    const targetPath = path.join(planningDir, 'intel', 'file-roles.json');
+    const originalReadFileSync = fs.readFileSync;
+    fs.readFileSync = function injectedEaccesFailure(p, ...args) {
+      if (p === targetPath) {
+        const err = new Error(`EACCES: permission denied, open '${targetPath}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReadFileSync.call(fs, p, ...args);
+    };
+    try {
+      const result = intelQuery('needle-here', planningDir);
+      assert.strictEqual(result.total, 0, 'an unreadable file cannot contribute a match');
+      assert.deepStrictEqual(result.matches, []);
+      assert.ok(Array.isArray(result.read_errors), 'read_errors must always be present as an array');
+      assert.strictEqual(result.read_errors.length, 1, 'exactly one file failed to read');
+      assert.ok(
+        result.read_errors[0].includes('file-roles.json'),
+        `read_errors must name the unreadable file, got: ${result.read_errors[0]}`,
+      );
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+  });
+
+  // T8 — RED before the fix: malformed JSON threw inside safeReadJson's
+  // try block and was swallowed by the same bare catch, reading identically
+  // to "no matches" — the same defect class as T7, one branch over.
+  test('T8: malformedIntelFileIsSurfacedNamingTheFile', () => {
+    const intelPath = path.join(planningDir, 'intel');
+    fs.mkdirSync(intelPath, { recursive: true });
+    fs.writeFileSync(path.join(intelPath, 'file-roles.json'), '{ this is not valid json', 'utf8');
+
+    const result = intelQuery('anything', planningDir);
+    assert.strictEqual(result.total, 0);
+    assert.deepStrictEqual(result.matches, []);
+    assert.strictEqual(result.read_errors.length, 1, 'exactly one file failed to parse');
+    assert.ok(
+      result.read_errors[0].includes('file-roles.json'),
+      `read_errors must name the malformed file, got: ${result.read_errors[0]}`,
+    );
+  });
+
+  // T9 — MUST STAY GREEN: an absent intel file is normal, not an error. Not
+  // every project has every intel file, and intelQuery loops over the full
+  // INTEL_FILES set expecting misses. This is the row that keeps the new
+  // flag honest — without it, the fix would over-fire on every project that
+  // simply lacks an intel file.
+  test('T9: absentIntelFileStaysSilentlyAbsent', () => {
+    const result = intelQuery('anything', planningDir);
+    assert.strictEqual(result.total, 0);
+    assert.deepStrictEqual(result.matches, []);
+    assert.deepStrictEqual(result.read_errors, [], 'a merely-absent intel file must never be reported as a read error');
+  });
+
+  // T10 — MUST STAY GREEN: a readable file with genuinely no matches reports
+  // no error at all. Stops the new flag from becoming noise on the
+  // overwhelmingly common "not found" case.
+  test('T10: readableFileWithGenuinelyNoMatchesReportsNoReadError', () => {
+    writeIntelJson(planningDir, 'file-roles.json', {
+      entries: { 'src/foo.ts': { type: 'typescript' } },
+    });
+    const result = intelQuery('zzz-nonexistent-term', planningDir);
+    assert.strictEqual(result.total, 0);
+    assert.strictEqual(result.truncated, false);
+    assert.deepStrictEqual(result.read_errors, []);
+  });
+});
+
 // ─── intelStatus ────────────────────────────────────────────────────────────
 
 describe('intelStatus', () => {
@@ -594,6 +707,92 @@ describe('intelStatus', () => {
     const result = intelStatus(planningDir);
     assert.strictEqual(result.files['file-roles.json'].stale, true);
     assert.strictEqual(result.overall_stale, true);
+  });
+});
+
+// ─── #3885 (ADR-3473 §8.5): intelStatus read_error field ────────────────────
+//
+// intelStatus threads safeReadJson's per-file outcome into `read_error` on
+// the per-file IntelStatusFileEntry. Before this change, safeReadJson's bare
+// catch made an unreadable or malformed file indistinguishable from a file
+// that was simply never populated — both showed no way to tell staleness-
+// by-neglect apart from staleness-by-read-failure. The fix adds the field to
+// every entry: present as a string naming the file when the read/parse
+// failed, null for the genuinely-quiet cases (absent, or readable-but-no-
+// error).
+describe('#3885 (ADR-3473 §8.5): intelStatus read_error field', () => {
+  let tmpDir;
+  let planningDir;
+  let surfacedConfigDir;
+  let savedEnv;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    planningDir = path.join(tmpDir, '.planning');
+    enableIntel(planningDir);
+    surfacedConfigDir = makeSurfacedConfigDir();
+    savedEnv = saveSurfacedEnv();
+    delete process.env.GSD_RUNTIME;
+    process.env.CLAUDE_CONFIG_DIR = surfacedConfigDir;
+    delete process.env.GSD_WORKSTREAM;
+    delete process.env.GSD_PROJECT;
+  });
+
+  afterEach(() => {
+    savedEnv.restore();
+    cleanup(surfacedConfigDir);
+    cleanup(tmpDir);
+  });
+
+  // Monkeypatch fs.readFileSync rather than chmod 0o000 — root bypasses mode
+  // bits, so a chmod-based test would pass with zero coverage under root
+  // Docker/CI.
+  test('unreadableFileReportsReadErrorNamingTheFile', () => {
+    writeIntelJson(planningDir, 'file-roles.json', { entries: {} });
+    const targetPath = path.join(planningDir, 'intel', 'file-roles.json');
+    const originalReadFileSync = fs.readFileSync;
+    fs.readFileSync = function injectedEaccesFailure(p, ...args) {
+      if (p === targetPath) {
+        const err = new Error(`EACCES: permission denied, open '${targetPath}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReadFileSync.call(fs, p, ...args);
+    };
+    try {
+      const result = intelStatus(planningDir);
+      assert.strictEqual(typeof result.files['file-roles.json'].read_error, 'string');
+      assert.ok(
+        result.files['file-roles.json'].read_error.includes('file-roles.json'),
+        `read_error must name the unreadable file, got: ${result.files['file-roles.json'].read_error}`,
+      );
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+  });
+
+  test('malformedJsonReportsReadErrorNamingTheFile', () => {
+    const intelPath = path.join(planningDir, 'intel');
+    fs.mkdirSync(intelPath, { recursive: true });
+    fs.writeFileSync(path.join(intelPath, 'file-roles.json'), '{ this is not valid json', 'utf8');
+
+    const result = intelStatus(planningDir);
+    assert.strictEqual(typeof result.files['file-roles.json'].read_error, 'string');
+    assert.ok(
+      result.files['file-roles.json'].read_error.includes('file-roles.json'),
+      `read_error must name the malformed file, got: ${result.files['file-roles.json'].read_error}`,
+    );
+  });
+
+  // MUST STAY GREEN: a merely-absent file is normal, not an error.
+  test('absentFileReportsReadErrorNullNoError', () => {
+    const result = intelStatus(planningDir);
+    assert.strictEqual(result.files['file-roles.json'].exists, false);
+    assert.strictEqual(
+      result.files['file-roles.json'].read_error,
+      null,
+      'a merely-absent file must never be reported as a read error',
+    );
   });
 });
 
@@ -656,6 +855,131 @@ describe('intelDiff', () => {
 
     const result = intelDiff(planningDir);
     assert.ok(result.changed.includes('file-roles.json'));
+  });
+});
+
+// ─── #3885 (ADR-3473 §8.5): intelDiff read_error / no_baseline false-verdict ─
+//
+// Before this change intelDiff reported `no_baseline: true` for BOTH a
+// genuinely-never-snapshotted project (ENOENT) AND a present-but-unreadable
+// or malformed snapshot (EACCES/EIO/corrupt JSON) — folding an ACTIVELY
+// FALSE verdict ("you never took a snapshot") over a read failure. This is
+// ADR-3473 §8.5's headline case: silently swallowing the read error doesn't
+// just hide information here, it manufactures a wrong answer. The fix adds
+// `read_error: string | null` beside `no_baseline: true` so a caller can
+// tell "no snapshot was ever taken" (read_error: null) from "a snapshot
+// exists and I could not read it" (read_error: <string naming the file>).
+describe('#3885 (ADR-3473 §8.5): intelDiff read_error / no_baseline false-verdict', () => {
+  let tmpDir;
+  let planningDir;
+  let surfacedConfigDir;
+  let savedEnv;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    planningDir = path.join(tmpDir, '.planning');
+    enableIntel(planningDir);
+    surfacedConfigDir = makeSurfacedConfigDir();
+    savedEnv = saveSurfacedEnv();
+    delete process.env.GSD_RUNTIME;
+    process.env.CLAUDE_CONFIG_DIR = surfacedConfigDir;
+    delete process.env.GSD_WORKSTREAM;
+    delete process.env.GSD_PROJECT;
+  });
+
+  afterEach(() => {
+    savedEnv.restore();
+    cleanup(surfacedConfigDir);
+    cleanup(tmpDir);
+  });
+
+  // Monkeypatch fs.readFileSync rather than chmod 0o000 — root bypasses mode
+  // bits, so a chmod-based test would pass with zero coverage under root
+  // Docker/CI.
+  test('unreadableSnapshotReportsReadErrorNamingTheFile', () => {
+    const intelPath = ensureIntelDir(planningDir);
+    const snapshotPath = path.join(intelPath, '.last-refresh.json');
+    fs.writeFileSync(
+      snapshotPath,
+      JSON.stringify({ hashes: {}, timestamp: new Date().toISOString(), version: 1 }),
+      'utf8',
+    );
+    const originalReadFileSync = fs.readFileSync;
+    fs.readFileSync = function injectedEaccesFailure(p, ...args) {
+      if (p === snapshotPath) {
+        const err = new Error(`EACCES: permission denied, open '${snapshotPath}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReadFileSync.call(fs, p, ...args);
+    };
+    try {
+      const result = intelDiff(planningDir);
+      assert.strictEqual(result.no_baseline, true);
+      assert.strictEqual(typeof result.read_error, 'string');
+      assert.ok(
+        result.read_error.includes('.last-refresh.json'),
+        `read_error must name the unreadable snapshot file, got: ${result.read_error}`,
+      );
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+  });
+
+  test('malformedSnapshotReportsReadErrorNamingTheFile', () => {
+    const intelPath = ensureIntelDir(planningDir);
+    fs.writeFileSync(path.join(intelPath, '.last-refresh.json'), '{ this is not valid json', 'utf8');
+
+    const result = intelDiff(planningDir);
+    assert.strictEqual(result.no_baseline, true);
+    assert.strictEqual(typeof result.read_error, 'string');
+    assert.ok(
+      result.read_error.includes('.last-refresh.json'),
+      `read_error must name the malformed snapshot file, got: ${result.read_error}`,
+    );
+  });
+
+  // MUST STAY GREEN: a project that never took a snapshot is normal, not an
+  // error.
+  test('absentSnapshotReportsReadErrorNullNoError', () => {
+    const result = intelDiff(planningDir);
+    assert.strictEqual(result.no_baseline, true);
+    assert.strictEqual(
+      result.read_error,
+      null,
+      'a project that never took a snapshot must never be reported as a read error',
+    );
+  });
+
+  // THE FALSE-VERDICT TEST: `no_baseline: true` ALONE is the defect this
+  // fix exists to close — it reads identically whether a snapshot was never
+  // taken or a snapshot exists but could not be read/parsed. A caller must
+  // be able to tell "no snapshot was ever taken" apart from "a snapshot
+  // exists and I could not read it" directly from the return value.
+  test('unreadableOrCorruptSnapshotIsDistinguishableFromNeverTookASnapshot_theFalseVerdictCase', () => {
+    const neverSnapshotted = intelDiff(planningDir);
+    assert.strictEqual(neverSnapshotted.no_baseline, true);
+    assert.strictEqual(neverSnapshotted.read_error, null);
+
+    const intelPath = ensureIntelDir(planningDir);
+    fs.writeFileSync(path.join(intelPath, '.last-refresh.json'), '{ not json at all', 'utf8');
+    const corruptSnapshot = intelDiff(planningDir);
+    assert.strictEqual(
+      corruptSnapshot.no_baseline,
+      true,
+      'a corrupt snapshot cannot be diffed against, so no_baseline correctly stays true',
+    );
+    assert.strictEqual(
+      typeof corruptSnapshot.read_error,
+      'string',
+      'a corrupt snapshot MUST set read_error — otherwise it is byte-indistinguishable from ' +
+      'never having snapshotted at all, which is the false verdict this fix exists to close',
+    );
+    assert.notStrictEqual(
+      corruptSnapshot.read_error,
+      neverSnapshotted.read_error,
+      'the never-snapshotted and corrupt-snapshot cases must differ in the return value',
+    );
   });
 });
 
@@ -1219,6 +1543,113 @@ describe('intelApiSurface', () => {
     assert.ok('written' in result, 'result must have written field');
     assert.ok('symbolCount' in result, 'result must have symbolCount field');
     assert.ok('stale' in result, 'result must have stale field');
+  });
+});
+
+// ─── #3885 (ADR-3473 §8.5): intelApiSurface read_error + Incomplete banner ──
+//
+// intelApiSurface's `symbolCount === 0` branch used to mean ONE thing:
+// "api-map.json is absent or not yet populated" — the banner text said so
+// unconditionally. An unreadable or malformed api-map.json also produced
+// symbolCount:0, so the banner LIED, attributing a read failure to "not yet
+// populated". The fix adds `read_error: string | null` to the return value
+// and swaps the banner text to the actual reason (`readError`) when one is
+// present.
+describe('#3885 (ADR-3473 §8.5): intelApiSurface read_error + Incomplete banner', () => {
+  let tmpDir;
+  let planningDir;
+  let surfacedConfigDir;
+  let savedEnv;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    planningDir = path.join(tmpDir, '.planning');
+    enableIntel(planningDir);
+    surfacedConfigDir = makeSurfacedConfigDir();
+    savedEnv = saveSurfacedEnv();
+    delete process.env.GSD_RUNTIME;
+    process.env.CLAUDE_CONFIG_DIR = surfacedConfigDir;
+    delete process.env.GSD_WORKSTREAM;
+    delete process.env.GSD_PROJECT;
+  });
+
+  afterEach(() => {
+    savedEnv.restore();
+    cleanup(surfacedConfigDir);
+    cleanup(tmpDir);
+  });
+
+  // Monkeypatch fs.readFileSync rather than chmod 0o000 — root bypasses mode
+  // bits, so a chmod-based test would pass with zero coverage under root
+  // Docker/CI.
+  test('unreadableApiMapReportsReadErrorAndTheBannerSaysSo', () => {
+    writeIntelJson(planningDir, 'api-map.json', { entries: {} });
+    const targetPath = path.join(planningDir, 'intel', 'api-map.json');
+    const originalReadFileSync = fs.readFileSync;
+    fs.readFileSync = function injectedEaccesFailure(p, ...args) {
+      if (p === targetPath) {
+        const err = new Error(`EACCES: permission denied, open '${targetPath}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return originalReadFileSync.call(fs, p, ...args);
+    };
+    try {
+      const result = intelApiSurface(planningDir);
+      assert.strictEqual(result.symbolCount, 0);
+      assert.strictEqual(typeof result.read_error, 'string');
+      assert.ok(
+        result.read_error.includes('api-map.json'),
+        `read_error must name the unreadable file, got: ${result.read_error}`,
+      );
+      const content = fs.readFileSync(result.written, 'utf8');
+      assert.ok(
+        content.includes(result.read_error),
+        'the Incomplete banner must state the actual read failure, not the generic "not yet populated" text',
+      );
+      assert.ok(
+        !content.includes('not yet populated'),
+        'a read failure must not be misreported as "not yet populated"',
+      );
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+  });
+
+  test('malformedApiMapReportsReadErrorAndTheBannerSaysSo', () => {
+    const intelPath = path.join(planningDir, 'intel');
+    fs.mkdirSync(intelPath, { recursive: true });
+    fs.writeFileSync(path.join(intelPath, 'api-map.json'), '{ this is not valid json', 'utf8');
+
+    const result = intelApiSurface(planningDir);
+    assert.strictEqual(result.symbolCount, 0);
+    assert.strictEqual(typeof result.read_error, 'string');
+    assert.ok(
+      result.read_error.includes('api-map.json'),
+      `read_error must name the malformed file, got: ${result.read_error}`,
+    );
+    const content = fs.readFileSync(result.written, 'utf8');
+    assert.ok(
+      content.includes(result.read_error),
+      'the Incomplete banner must state the actual parse failure, not the generic "not yet populated" text',
+    );
+  });
+
+  // MUST STAY GREEN: an absent api-map.json is normal, not an error — keeps
+  // the original "not yet populated" banner text.
+  test('absentApiMapReportsReadErrorNullNoError', () => {
+    const result = intelApiSurface(planningDir);
+    assert.strictEqual(result.symbolCount, 0);
+    assert.strictEqual(
+      result.read_error,
+      null,
+      'an absent api-map.json must never be reported as a read error',
+    );
+    const content = fs.readFileSync(result.written, 'utf8');
+    assert.ok(
+      content.includes('not yet populated'),
+      'absence keeps the original "not yet populated" banner text',
+    );
   });
 });
 
