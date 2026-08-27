@@ -1,6 +1,6 @@
 /**
  * UI Safety Gate — shell-free implementation (ADR-457 build-at-publish: the
- * hand-written bin/lib/ui-safety-gate.cjs collapsed to a TypeScript source of
+ * hand-written root copy of this file collapsed to a TypeScript source of
  * truth). Behaviour is preserved byte-for-behaviour from the prior hand-written
  * .cjs; only types are added.
  *
@@ -29,9 +29,9 @@
  *
  * Canonical location: gsd-core/bin/lib/ui-safety-gate.cjs (#448)
  * This path is deployed by the GSD installer to $RUNTIME_DIR/gsd-core/bin/lib/.
- * The root bin/lib/ui-safety-gate.cjs copy was removed in #3907 as dead code:
- * no installer reference, no workflow invocation, and no fallback chain in
- * shipped content ever pointed at it. Do not re-create it.
+ * The former root-level copy of this file (outside gsd-core/) was removed in
+ * #3907 as dead code: no installer reference, no workflow invocation, and no
+ * fallback chain in shipped content ever pointed at it. Do not re-create it.
  */
 
 export interface UiPresenceResult {

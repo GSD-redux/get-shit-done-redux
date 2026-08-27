@@ -51,9 +51,13 @@
  *   renderCoverageMatrix(rows) -> string
  *   DEFAULT_API_COVERAGE_TERMS
  *
- * CLI:
+ * CLI (ADR-3889 Phase 3, #3907):
  *   echo "$SCOPE" | node gsd-core/bin/lib/api-coverage.cjs [--json]
- *     exit 0 = integration detected, 1 = none, 2 = startup error
+ *     exit 0 = integration detected, 1 = none (real input, examined, no signal),
+ *     NO_INPUT (registry, src/cli-exit.cts) = stdin empty/whitespace-only,
+ *     UNAVAILABLE (registry) = stdin read failed
+ *     --json additionally prints the typed IR on stdout (unchanged for 0/1);
+ *     NO_INPUT/UNAVAILABLE print {skipped:true, reason:"no_input"|"stdin_error"}
  */
 
 import { stripFencedCode, scanInlineCodeSpans, extractFencedBlock } from './markdown-sectionizer.cjs';

@@ -6,7 +6,8 @@
  * rendered prose — per RULESET.TESTS (no raw text matching on outputs).
  *
  * The detector mirrors ui-safety-gate.cts: a pure function plus a STDIN-reading
- * CLI (exit 0 = signal detected, 1 = none, 2 = usage error).
+ * CLI (exit 0 = signal detected, 1 = none; NO_INPUT/UNAVAILABLE registry codes
+ * for empty/whitespace-only stdin and a stdin read error, per ADR-3889 Phase 3).
  */
 
 const { describe, test } = require('node:test');
@@ -258,15 +259,16 @@ describe('assumption-delta CLI — STDIN exit codes (mirrors ui-safety-gate)', (
 describe('assumption-delta CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #3907)', () => {
   const INJECT_STDIN_ERROR = path.join(__dirname, 'helpers', 'inject-stdin-error.cjs');
   const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
   function runCliJson(stdin, extraArgs = [], extraEnv = {}) {
-    const r = spawnSync(process.execPath, [MODULE_PATH, '--json', ...extraArgs], {
+    const r = runNode([MODULE_PATH, '--json', ...extraArgs], {
       input: stdin,
-      encoding: 'utf-8',
-      timeout: 15000,
+      timeoutMs: PROBE_TIMEOUT_MS,
       env: { ...process.env, ...extraEnv },
     });
-    return { exitCode: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
   }
 
   // ── The controls (load-bearing): without these, "always return NO_INPUT"
@@ -336,11 +338,8 @@ describe('assumption-delta CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #39
   });
 
   test('a stdin read error exits UNAVAILABLE (injected via monkeypatched process.stdin, not chmod)', () => {
-    const r = spawnSync(process.execPath, ['-r', INJECT_STDIN_ERROR, MODULE_PATH, '--json'], {
-      encoding: 'utf-8',
-      timeout: 15000,
-    });
-    assert.strictEqual(r.status, exitCodeFor('UNAVAILABLE'));
+    const r = runNode(['-r', INJECT_STDIN_ERROR, MODULE_PATH, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(r.exitCode, exitCodeFor('UNAVAILABLE'));
     const body = JSON.parse(r.stdout);
     assert.deepStrictEqual(body, { skipped: true, reason: 'stdin_error' });
     assert.ok(!('detected' in body));
@@ -352,12 +351,11 @@ describe('assumption-delta CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #39
       const emptyResult = runCliJson('', [], { GSD_EXIT_CONTRACT: version });
       assert.strictEqual(emptyResult.exitCode, exitCodeFor('NO_INPUT'), `NO_INPUT under ${version}`);
 
-      const errResult = spawnSync(process.execPath, ['-r', INJECT_STDIN_ERROR, MODULE_PATH, '--json'], {
-        encoding: 'utf-8',
-        timeout: 15000,
+      const errResult = runNode(['-r', INJECT_STDIN_ERROR, MODULE_PATH, '--json'], {
+        timeoutMs: PROBE_TIMEOUT_MS,
         env: { ...process.env, GSD_EXIT_CONTRACT: version },
       });
-      assert.strictEqual(errResult.status, exitCodeFor('UNAVAILABLE'), `UNAVAILABLE under ${version}`);
+      assert.strictEqual(errResult.exitCode, exitCodeFor('UNAVAILABLE'), `UNAVAILABLE under ${version}`);
     }
   });
 });

@@ -1015,15 +1015,16 @@ describe('api-coverage CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #3907)'
   const CLI = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'api-coverage.cjs');
   const INJECT_STDIN_ERROR = path.join(__dirname, 'helpers', 'inject-stdin-error.cjs');
   const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
   function runCliJson(stdin, extraArgs = [], extraEnv = {}) {
-    const r = spawnSync(process.execPath, [CLI, '--json', ...extraArgs], {
+    const r = runNode([CLI, '--json', ...extraArgs], {
       input: stdin,
-      encoding: 'utf-8',
-      timeout: 15000,
+      timeoutMs: PROBE_TIMEOUT_MS,
       env: { ...process.env, ...extraEnv },
     });
-    return { exitCode: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
   }
 
   // ── The controls (load-bearing): without these, "always return NO_INPUT"
@@ -1093,11 +1094,8 @@ describe('api-coverage CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #3907)'
   });
 
   test('a stdin read error exits UNAVAILABLE (injected via monkeypatched process.stdin, not chmod)', () => {
-    const r = spawnSync(process.execPath, ['-r', INJECT_STDIN_ERROR, CLI, '--json'], {
-      encoding: 'utf-8',
-      timeout: 15000,
-    });
-    assert.strictEqual(r.status, exitCodeFor('UNAVAILABLE'));
+    const r = runNode(['-r', INJECT_STDIN_ERROR, CLI, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(r.exitCode, exitCodeFor('UNAVAILABLE'));
     const body = JSON.parse(r.stdout);
     assert.deepStrictEqual(body, { skipped: true, reason: 'stdin_error' });
     assert.ok(!('detected' in body));
@@ -1109,12 +1107,11 @@ describe('api-coverage CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #3907)'
       const emptyResult = runCliJson('', [], { GSD_EXIT_CONTRACT: version });
       assert.strictEqual(emptyResult.exitCode, exitCodeFor('NO_INPUT'), `NO_INPUT under ${version}`);
 
-      const errResult = spawnSync(process.execPath, ['-r', INJECT_STDIN_ERROR, CLI, '--json'], {
-        encoding: 'utf-8',
-        timeout: 15000,
+      const errResult = runNode(['-r', INJECT_STDIN_ERROR, CLI, '--json'], {
+        timeoutMs: PROBE_TIMEOUT_MS,
         env: { ...process.env, GSD_EXIT_CONTRACT: version },
       });
-      assert.strictEqual(errResult.status, exitCodeFor('UNAVAILABLE'), `UNAVAILABLE under ${version}`);
+      assert.strictEqual(errResult.exitCode, exitCodeFor('UNAVAILABLE'), `UNAVAILABLE under ${version}`);
     }
   });
 });
