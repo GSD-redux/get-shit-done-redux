@@ -66,6 +66,109 @@ interface RouteInitCommandOptions {
   error: (message: string) => void;
 }
 
+type DebugSubcommand = 'debug' | 'list' | 'status' | 'continue';
+type RuntimeEvidenceOverride = 'adaptive' | 'off' | null;
+
+interface DebugInvocationProjection {
+  subcommand: DebugSubcommand;
+  slug: string | null;
+  description: string;
+  diagnose: boolean;
+  runtimeEvidenceOverride: RuntimeEvidenceOverride;
+}
+
+type DebugInvocationResult =
+  | { ok: true; data: DebugInvocationProjection }
+  | { ok: false; reason: string };
+
+const DEBUG_GLOBAL_FLAG_TOKENS = new Set([
+  '--diagnose',
+  '--runtime-probes',
+  '--no-runtime-probes',
+]);
+const DEBUG_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+const DEBUG_SLUG_MAX_LENGTH = 30;
+
+/**
+ * Project the complete `/gsd:debug` argv exactly once at the CLI seam.
+ * Recognized flags are whole-token, global, and removed before positional
+ * routing. Flag-shaped lookalikes remain description data.
+ */
+function projectDebugInvocation(tokens: string[]): DebugInvocationResult {
+  const diagnose = tokens.includes('--diagnose');
+  const runtimeProbes = tokens.includes('--runtime-probes');
+  const noRuntimeProbes = tokens.includes('--no-runtime-probes');
+
+  if (runtimeProbes && noRuntimeProbes) {
+    return { ok: false, reason: 'Cannot combine --runtime-probes with --no-runtime-probes.' };
+  }
+
+  const positionals = tokens.filter((token) => !DEBUG_GLOBAL_FLAG_TOKENS.has(token));
+  const first = positionals[0];
+  const hasRecognizedFlag = positionals.length !== tokens.length;
+  const runtimeEvidenceOverride: RuntimeEvidenceOverride = runtimeProbes
+    ? 'adaptive'
+    : noRuntimeProbes
+      ? 'off'
+      : null;
+
+  if (first === 'list') {
+    if (hasRecognizedFlag || positionals.length !== 1) {
+      return { ok: false, reason: 'The list subcommand accepts no flags or arguments.' };
+    }
+    return {
+      ok: true,
+      data: { subcommand: 'list', slug: null, description: '', diagnose: false, runtimeEvidenceOverride: null },
+    };
+  }
+
+  if (first === 'status') {
+    if (hasRecognizedFlag || positionals.length !== 2) {
+      return { ok: false, reason: 'The status subcommand requires exactly one slug and accepts no flags.' };
+    }
+    const slug = positionals[1];
+    if (slug.length > DEBUG_SLUG_MAX_LENGTH || !DEBUG_SLUG_RE.test(slug)) {
+      return { ok: false, reason: 'Invalid status slug; expected lowercase letters, digits, or hyphens (max 30).' };
+    }
+    return {
+      ok: true,
+      data: { subcommand: 'status', slug, description: '', diagnose: false, runtimeEvidenceOverride: null },
+    };
+  }
+
+  if (first === 'continue') {
+    if (diagnose) {
+      return { ok: false, reason: 'Cannot combine continue with --diagnose.' };
+    }
+    if (positionals.length !== 2) {
+      return { ok: false, reason: 'The continue subcommand requires exactly one slug.' };
+    }
+    const slug = positionals[1];
+    if (slug.length > DEBUG_SLUG_MAX_LENGTH || !DEBUG_SLUG_RE.test(slug)) {
+      return { ok: false, reason: 'Invalid continue slug; expected lowercase letters, digits, or hyphens (max 30).' };
+    }
+    return {
+      ok: true,
+      data: { subcommand: 'continue', slug, description: '', diagnose: false, runtimeEvidenceOverride },
+    };
+  }
+
+  if (diagnose && runtimeProbes) {
+    return { ok: false, reason: 'Cannot combine --diagnose with --runtime-probes.' };
+  }
+
+  return {
+    ok: true,
+    data: {
+      subcommand: 'debug',
+      slug: null,
+      description: positionals.join(' '),
+      diagnose,
+      runtimeEvidenceOverride,
+    },
+  };
+}
+
 // ─── Implementation ───────────────────────────────────────────────────────────
 
 function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptions): void {
@@ -218,39 +321,22 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
           },
           error,
         );
-        if (namedArgs['runtime-probes'] && namedArgs['no-runtime-probes']) {
-          error('Cannot combine --runtime-probes with --no-runtime-probes.');
+        const projection = projectDebugInvocation(args.slice(2));
+        if (!projection.ok) {
+          error(projection.reason);
           return;
         }
-        if (namedArgs['diagnose'] && namedArgs['runtime-probes']) {
-          error('Cannot combine --diagnose with --runtime-probes.');
-          return;
-        }
-
-        // Probe flags are global to /gsd:debug, so remove every recognized exact
-        // token before interpreting `continue <slug>`. `parseNamedArgs` uses the
-        // same whole-token equality rule; lookalikes such as
-        // `--runtime-probes=true` therefore remain ordinary positional text and
-        // cannot enable the feature or select a saved session.
-        const debugBooleanTokens = new Set([
-          '--diagnose',
-          '--runtime-probes',
-          '--no-runtime-probes',
-        ]);
-        const positional = args.slice(2).filter((token) => !debugBooleanTokens.has(token));
-        const slugCandidate = positional.length === 2 && positional[0] === 'continue'
-          ? positional[1]
-          : null;
-        const continueSlug = typeof slugCandidate === 'string'
-          && slugCandidate.length <= 30
-          && /^[a-z0-9][a-z0-9-]*$/.test(slugCandidate)
-          ? slugCandidate
-          : null;
+        const route = projection.data;
+        const continueSlug = route.subcommand === 'continue' ? route.slug : null;
 
         init.cmdInitDebug(cwd, raw, {
           diagnose: namedArgs['diagnose'],
           'runtime-probes': namedArgs['runtime-probes'],
           'no-runtime-probes': namedArgs['no-runtime-probes'],
+          subcommand: route.subcommand,
+          slug: route.slug,
+          description: route.description,
+          'runtime-evidence-override': route.runtimeEvidenceOverride,
         }, continueSlug);
       },
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
@@ -264,5 +350,6 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
 }
 
 export = {
+  projectDebugInvocation,
   routeInitCommand,
 };

@@ -364,6 +364,7 @@
       "context-utilization.cjs",
       "core-utils.cjs",
       "coverage.cjs",
+      "debug-session-policy.cjs",
       "decisions.cjs",
       "docs.cjs",
       "drift.cjs",

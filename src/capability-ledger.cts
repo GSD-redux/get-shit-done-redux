@@ -218,13 +218,57 @@ function sameRegularFileIdentity(
  * for ENOENT (genuinely missing); throws LedgerIOError for every other fail-closed condition.
  */
 function readSmallRegularFileBuffer(filePath: string, maxBytes: number): Buffer | null {
-  const result = readSmallRegularFileBufferWithIdentity(filePath, maxBytes);
-  return result?.buffer ?? null;
+  // O_RDONLY | O_NONBLOCK: never block on opening a FIFO/device — return the fd so fstat can reject it.
+  const openFlags = fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, openFlags);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null; // genuinely missing — not a corruption.
+    throw new LedgerIOError(`Cannot open ${filePath}: ${(err as Error).message}`, code);
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) {
+      // FIFO / device / directory / symlink-to-nonregular. Preserve EISDIR for a directory so callers
+      // that distinguish it (and existing tests) still see that code; other non-regular kinds get a
+      // synthetic ENXIO. Either way it is an unreadable, fail-closed condition (not content parsing).
+      const code = st.isDirectory() ? 'EISDIR' : 'ENXIO';
+      throw new LedgerIOError(
+        `Cannot read ${filePath}: not a regular file (unreadable; FIFO/device/directory) — refusing.`,
+        code,
+      );
+    }
+    if (st.size > maxBytes) {
+      throw new LedgerIOError(
+        `Cannot read ${filePath}: file size ${st.size} bytes exceeds the maximum of ${maxBytes} ` +
+        `bytes (refusing to read an oversized file). Inspect or move it aside.`,
+        'EFBIG',
+      );
+    }
+    if (st.size === 0) return Buffer.alloc(0);
+    const buf = Buffer.allocUnsafe(st.size);
+    let off = 0;
+    // Read EXACTLY st.size bytes from the fd (never a streaming/unbounded read).
+    while (off < st.size) {
+      const n = fs.readSync(fd, buf, off, st.size - off, off);
+      if (n <= 0) break; // EOF earlier than fstat reported (truncated under us) — return what we got.
+      off += n;
+    }
+    // Return EXACTLY the bytes we read (off may be < st.size on a truncated-under-us read).
+    return off === buf.length ? buf : buf.subarray(0, off);
+  } catch (err) {
+    if (err instanceof LedgerIOError) throw err;
+    throw new LedgerIOError(`Cannot read ${filePath}: ${(err as Error).message}`, (err as NodeJS.ErrnoException).code);
+  } finally {
+    try { fs.closeSync(fd); } catch { /* best-effort */ }
+  }
 }
 
 /**
  * Identity-bound variant for callers that validated a pathname before opening
- * it. The optional expected identity is compared with the descriptor's fstat,
+ * it. The required expected identity is compared with the descriptor's fstat,
  * not another path stat, closing rename/symlink substitution between validation
  * and open. The returned identity is the descriptor actually read and can be
  * matched against the caller's final pathname validation.
@@ -232,12 +276,12 @@ function readSmallRegularFileBuffer(filePath: string, maxBytes: number): Buffer 
 function readSmallRegularFileBufferWithIdentity(
   filePath: string,
   maxBytes: number,
-  expectedIdentity?: RegularFileIdentity,
+  expectedIdentity: RegularFileIdentity,
 ): IdentityBoundBufferRead | null {
   // O_NONBLOCK prevents a FIFO open from hanging. O_NOFOLLOW rejects a
   // substituted symlink where the platform exposes it; descriptor identity
   // binding remains the portable backstop.
-  const noFollow = expectedIdentity !== undefined && typeof fs.constants.O_NOFOLLOW === 'number'
+  const noFollow = typeof fs.constants.O_NOFOLLOW === 'number'
     ? fs.constants.O_NOFOLLOW
     : 0;
   const openFlags = fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | noFollow;
@@ -268,7 +312,7 @@ function readSmallRegularFileBufferWithIdentity(
       );
     }
     const openedIdentity = snapshotRegularFileIdentity(st);
-    if (expectedIdentity !== undefined && !sameRegularFileIdentity(openedIdentity, expectedIdentity)) {
+    if (!sameRegularFileIdentity(openedIdentity, expectedIdentity)) {
       throw new LedgerIOError(
         `Cannot read ${filePath}: file identity changed between validation and open — refusing substituted bytes.`,
         'ESTALE',

@@ -37,13 +37,21 @@ Valid GSD subagent types (use exact names — do not fall back to 'general-purpo
 <context>
 User's input: $ARGUMENTS
 
-Parse flags and subcommands from $ARGUMENTS BEFORE the active-session check:
+Before executing workflow Step 0, split the raw `$ARGUMENTS` value on ASCII
+whitespace only and materialize Step 0's fail-loud `DEBUG_ARGV_READY` and
+`DEBUG_ARGV` assignments. Each array element must be independently shell-quoted;
+never copy raw `$ARGUMENTS` or `{{GSD_ARGS}}` text into executable shell. Do not
+materialize prose-derived `SUBCMD`, `SLUG`, diagnose, or runtime-policy shell
+variables. The real `init.debug` argv projection is the single parser and
+returns the validated route used by the rest of the workflow.
+
+The projection applies these rules BEFORE the active-session check:
 
 1. Scan the complete argv for the exact whole-token flags `--diagnose`, `--runtime-probes`, and `--no-runtime-probes`. They are global and order-independent. Similar text such as `--runtime-probes=true`, prefixes, or substrings is user data, not a flag.
 2. Both probe flags are conflicting and must be rejected; stop when they occur together. Strip every recognized flag token before interpreting a subcommand, slug, or description.
 3. Parse the remaining tokens: leading `list` has no arguments; leading `status` or `continue` takes exactly one slug; otherwise use `debug` and join the remaining tokens as the issue description.
 4. `list` and `status` accept no recognized flags. `continue` rejects `--diagnose`. A new diagnosis rejects `--diagnose --runtime-probes`, while redundant `--diagnose --no-runtime-probes` is valid.
-5. Set `diagnose_only` from the stripped diagnose flag. Set the explicit runtime-evidence override to `adaptive` for `--runtime-probes`, `off` for `--no-runtime-probes`, or absent when neither appears. The no-flag effective default is `off`; a valid saved policy may still be retained by `continue`.
+5. It returns `diagnose`, `runtime_evidence_override`, `subcommand`, `slug`, and `description` alongside the effective policy. The no-flag effective default is `off`; a valid saved policy may still be retained by `continue`.
 
 Check for active sessions (used for non-list/status/continue flows):
 ```bash

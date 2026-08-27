@@ -106,6 +106,7 @@ build/
 /gsd-core/bin/lib/capability-consent.cjs
 /gsd-core/bin/lib/capability-lock.cjs
 /gsd-core/bin/lib/markdown-sectionizer.cjs
+/gsd-core/bin/lib/debug-session-policy.cjs
 # #3311: new module (milestone lock) — emitted artifact, never edited.
 /gsd-core/bin/lib/milestone-lock.cjs
 # #2657: these two (markdown-table.cjs, write-set.cjs) already had the

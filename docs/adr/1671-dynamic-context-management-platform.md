@@ -299,7 +299,7 @@ Pure Agent Skills (A alone) and pure MCP (D alone) were rejected as the foundati
      resumed session has already saved `policy: adaptive` but passes no flag. That is exactly the
      silent-exclusion failure admission gate (2) exists to prevent, arriving through a different
      door: not "a fact nobody computes", but "a fact computed for only one invocation shape". The
-     precedence is therefore folded into a single boolean in the FACT (`policy !== 'off'`, resolved
+     precedence and continuation cleanup routing are therefore folded into a single boolean in the FACT (`policy !== 'off' || valid continue route`, resolved
      by `cmdInitDebug`), following the `state:chunked-mode` discipline.
   2. **Gate (2) was satisfied ahead of the atom by a separate change.** #3149 gave `/gsd:debug` its
      own `cmdInitDebug` entry point specifically so a debug-scoped fact could exist at all — the same

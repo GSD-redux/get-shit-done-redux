@@ -41,7 +41,6 @@ import { resolveReportedRuntime } from './host-runtime-detection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- commands.cjs is an export= CommonJS module
 import commandsMod = require('./commands.cjs');
 import { validatePath, loadTrustedGlobalRoots } from './security.cjs';
-import { collectSection, stripFencedCode, tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { getGlobalSkillDir, getGlobalSkillDisplayPath, getGlobalSkillsBase, getGlobalConfigDir } from './runtime-homes.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
 import frontmatterMod = require('./frontmatter.cjs');
@@ -84,6 +83,9 @@ const {
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verify-command-grounding.cjs is an export= CommonJS module
 import verifyCommandGrounding = require('./verify-command-grounding.cjs');
 const { harvestPriorVerifyCommands } = verifyCommandGrounding;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- debug-session-policy.cjs is an export= CommonJS module
+import debugSessionPolicy = require('./debug-session-policy.cjs');
+const { parseSavedRuntimeEvidencePolicy } = debugSessionPolicy;
 
 const { output, error, ERROR_REASON } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
@@ -2900,51 +2902,6 @@ const DEBUG_SESSION_SLUG_MAX_LENGTH = 30;
 const DEBUG_SESSION_POLICY_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
- * Mask closed HTML comments without changing line boundaries. The canonical
- * Markdown Sectionizer owns heading/fence structure, but deliberately does not
- * strip comments; masking them first prevents a commented-out heading or policy
- * record from enabling source probes. Any malformed/unclosed comment leaves a
- * delimiter behind and therefore fails safe to no saved policy.
- */
-function maskDebugSessionComments(content: string): string | null {
-  const masked = content.replace(
-    /<!--(?:(?!<!--)[\s\S])*?-->/g,
-    (comment) => comment.replace(/[^\r\n]/g, ' '),
-  );
-  return masked.includes('<!--') || masked.includes('-->') ? null : masked;
-}
-
-/**
- * Read one valid schema-v1 policy from the exact `## Runtime Evidence`
- * section. Duplicate sections, duplicate keys, malformed records, fenced
- * examples and unsupported values are ambiguous and resolve to null. This is
- * intentionally read-only: invalid and legacy sessions remain byte-identical.
- */
-function parseSavedRuntimeEvidencePolicy(content: string): RuntimeEvidencePolicy | null {
-  const commentMasked = maskDebugSessionComments(content);
-  if (commentMasked === null || commentMasked.includes('\0')) return null;
-
-  const isRuntimeEvidenceHeading = (heading: { level: number; text: string }): boolean =>
-    heading.level === 2 && heading.text === 'Runtime Evidence';
-  const matchingHeadings = tokenizeHeadings(commentMasked).filter(isRuntimeEvidenceHeading);
-  if (matchingHeadings.length !== 1) return null;
-
-  const section = collectSection(commentMasked, isRuntimeEvidenceHeading, { levelBounded: true });
-  if (!section) return null;
-  const unfenced = stripFencedCode(section.body);
-  if (unfenced.unterminatedFence) return null;
-
-  const lines = unfenced.text.split(/\r?\n/);
-  const schemaRecords = lines.filter((line) => /^schema_version[ \t]*:/.test(line));
-  const policyRecords = lines.filter((line) => /^policy[ \t]*:/.test(line));
-  if (schemaRecords.length !== 1 || policyRecords.length !== 1) return null;
-  if (!/^schema_version:[ \t]*1[ \t]*$/.test(schemaRecords[0])) return null;
-
-  const policyMatch = /^policy:[ \t]*(adaptive|off)[ \t]*$/.exec(policyRecords[0]);
-  return policyMatch ? policyMatch[1] as RuntimeEvidencePolicy : null;
-}
-
-/**
  * Resolve a continuation's saved policy through the canonical planning path
  * and security seams. The slug is shape-checked before any path construction;
  * path containment, a non-symlink regular-file leaf, bounded fd-based reading,
@@ -3069,7 +3026,15 @@ function cmdInitDebug(
   const config = loadConfig(cwd);
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
   const runtimeEvidencePolicy = resolveRuntimeEvidencePolicy(cwd, options, continueSlug);
-  const runtimeEvidenceEligible = runtimeEvidencePolicy !== 'off';
+  // Adaptive sessions need activation routing. Every continuation also needs
+  // reconciliation routing because an explicit off override must still clean
+  // any session-owned probes, runs, or capture artifacts.
+  const runtimeEvidenceEligible = runtimeEvidencePolicy !== 'off' || continueSlug !== null;
+  const subcommand = options['subcommand'] === 'list'
+    || options['subcommand'] === 'status'
+    || options['subcommand'] === 'continue'
+    ? options['subcommand']
+    : 'debug';
 
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
@@ -3079,7 +3044,15 @@ function cmdInitDebug(
     debug_dir: toPosixPath(planningPaths(cwd).debug),
     debugger_model: resolveModelInternal(cwd, 'gsd-debugger'),
     tdd_mode: Boolean(wf['tdd_mode']),
+    subcommand,
+    slug: typeof options['slug'] === 'string' ? options['slug'] : null,
+    description: typeof options['description'] === 'string' ? options['description'] : '',
     diagnose: options['diagnose'] === true,
+    runtime_evidence_override:
+      options['runtime-evidence-override'] === 'adaptive'
+      || options['runtime-evidence-override'] === 'off'
+        ? options['runtime-evidence-override']
+        : null,
     runtime_evidence_policy: runtimeEvidencePolicy,
     runtime_evidence_eligible: runtimeEvidenceEligible,
   };
