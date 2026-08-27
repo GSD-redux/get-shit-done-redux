@@ -2419,8 +2419,19 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
                 .filter((t) => t.length > 0);
               termsOverride = list.length > 0 ? { pluralization: list } : undefined;
             }
+            // An unresolvable phase section is not a negative verdict. Feeding
+            // `''` to the detector reported "examined, found nothing" for a
+            // probe that never had input — no ROADMAP.md, or a phase number
+            // absent from it, both read as a confident `detected:false`
+            // (ADR-3889 failure class (c), #3909). Exit stays 0: this is an
+            // ADR-2980 degraded result carried in the payload, and ADR-3889 P8
+            // pins the gsd-tools exit projection at v1.
             const section = roadmap.getRoadmapPhaseWithFallback(cwd, phaseNum);
-            const result = detectAssumptionDelta(section ?? '', termsOverride);
+            if (typeof section !== 'string' || section.trim() === '') {
+              output({ skipped: true, reason: 'phase_unresolved' }, raw);
+              return;
+            }
+            const result = detectAssumptionDelta(section, termsOverride);
             output(result, raw);
             return;
           }

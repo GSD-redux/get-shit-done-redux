@@ -30,6 +30,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [State a failing direction](how-to/state-a-failing-direction.md) — say what output constitutes failure for an `<automated>` verify command, and migrate a phase planned before the rule
 - [Resolve a contract-drift finding](how-to/resolve-contract-drift-findings.md) — bring an agent's completion contract, read-tag gate, or deleted-file test reference back into agreement with the registry
 - [Resolve unreachable-guard findings](how-to/resolve-unreachable-guard-findings.md) — fix shell guards whose fallback arm cannot run, and tell "nothing to report" apart from "could not look"
+- [Resolve a skipped capability probe](how-to/resolve-a-skipped-capability-probe.md) — act on a coverage gate that held your phase for an unestablished scope, or a planning checkpoint that reported `skipped` instead of a verdict
 - [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) — tell this package's tool apart from the predecessor's colliding binary and from a gsd-core too old to identify itself
 - [Resolve an ESLint glob-coverage finding](how-to/resolve-eslint-coverage-findings.md) — bring a source file that matches no lint rule under coverage, or record a reasoned exemption
 - [Read the statusline freshness marker](how-to/read-the-statusline-freshness-marker.md) — turn on `state ~N commits back`, and tell "STATE.md is fresh" apart from "freshness could not be established"

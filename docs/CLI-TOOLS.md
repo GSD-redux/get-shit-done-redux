@@ -464,7 +464,7 @@ node gsd-tools.cjs capability set code-review --gate workflow.code_review=false
 node gsd-tools.cjs query teams-status [--active]
 ```
 
-Read-only detector for claude-code's experimental agent-teams feature (issue #1355). Resolves the runtime via the canonical `GSD_RUNTIME` → `config.runtime` → `'claude'` precedence, then checks `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`.
+Read-only detector for claude-code's experimental agent-teams feature (issue #1355). Resolves the runtime via the canonical `GSD_RUNTIME` → `config.runtime` → per-install runtime marker → `'claude'` precedence (#3897), then checks `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`.
 
 **Default (no flags):** prints a JSON object and exits 0:
 

@@ -376,7 +376,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `autonomous-ui-design-contract.md` | Autonomous-mode step 3a.5 — resolve whether a frontend phase needs a UI-SPEC.md and generate one through active `plan:pre` hooks; always non-blocking. |
 | `ios-scaffold.md` | iOS application scaffolding patterns. |
 | `ai-evals.md` | AI evaluation design reference for `/gsd-ai-integration-phase`. |
-| `api-coverage.md` | API-coverage gate reference (full-coverage-by-default) for the `ai-integration` capability's `verify:pre` blocking gate (#1562) — matrix format, trigger, tuning, detector CLI. |
+| `api-coverage.md` | API-coverage gate reference (full-coverage-by-default) for the `ai-integration` capability's `verify:pre` blocking gate (#1562) — matrix format, trigger, tuning, detector CLI, and the seal-time outcome table naming every pass/block arm including `scope_unavailable` (#3909). |
 | `ai-frameworks.md` | AI framework decision-matrix reference for `gsd-framework-selector`. |
 | `executor-examples.md` | Worked examples for the gsd-executor agent. |
 | `doc-conflict-engine.md` | Shared conflict-detection contract for ingest/import workflows. |

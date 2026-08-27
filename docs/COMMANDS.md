@@ -2014,10 +2014,10 @@ Only the targeted lines are removed. Line endings, BOM, key order, comments, bla
 
 ### `validate agents`
 
-Check that the GSD agents are installed for the active runtime — and, on Codex, that the installed `.toml` files satisfy the passive model posture.
+Check that the GSD agents are installed for the active runtime — and, on Codex, that the installed `.toml` files satisfy the passive model posture and the derived sandbox posture.
 
 **Prerequisites:** GSD installed for a runtime
-**Produces:** Installed / missing / incomplete agent lists, plus a `codex_posture` report
+**Produces:** Installed / missing / incomplete agent lists, plus `codex_posture` and `sandbox_posture` reports
 
 ```bash
 node gsd-tools.cjs validate agents
@@ -2032,6 +2032,17 @@ node gsd-tools.cjs validate agents
 | `unreadable` | The file could not be read. Other agents are still checked |
 
 Presence and posture are separate verdicts: a missing agent is reported in `missing`, not as a posture violation. See [ADR-2313](adr/2313-codex-passive-model-posture.md) for the posture itself, and [How to recover and troubleshoot](how-to/recover-and-troubleshoot.md#if-codex-agents-fail-to-spawn-with-a-400-about-an-unsupported-model) for the symptom-led walkthrough.
+
+**`sandbox_posture` (#3897, ADR-3473 §8.3)** is the sibling check for `sandbox_mode`: each installed Codex `.toml`'s `sandbox_mode` is compared against the value its role's own `tools:` frontmatter derives (`Write`/`Edit` declared → `workspace-write`, else `read-only`). Same shape and short-circuits as `codex_posture` — populated only on `codex`, `not_codex` elsewhere, read-only, and it never makes `validate agents` exit non-zero on its own; both posture checks are report-only fields for a human or caller to act on.
+
+| Field | Meaning |
+|---|---|
+| `ok` | `true` when no installed `.toml`'s `sandbox_mode` disagrees with its derived expectation |
+| `violations[]` | `{agent, file, expected, found}` for a drift, or `{agent, file, reason: "unreadable"}` when the file could not be read |
+| `checked[]` | Every `.toml` inspected |
+| `reason` | `not_codex` (active runtime isn't Codex) or `agents_dir_missing` — mirrors `codex_posture`'s short-circuit reasons |
+
+A custom or non-roster agent (no matching file under the bundled `agents/*.md` source) has nothing to derive an expectation from and is silently excluded from `violations` — this check only asserts against the shipped roster's own declared tool contract.
 
 ---
 
