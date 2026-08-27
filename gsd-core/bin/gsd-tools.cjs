@@ -255,7 +255,7 @@ try {
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 const io = require('./lib/io.cjs');
-const { error, ERROR_REASON, setJsonErrorMode, output } = io;
+const { error, ERROR_REASON, setJsonErrorMode, output, formatDiagnosticToken } = io;
 const projectRoot = require('./lib/project-root.cjs');
 // Resolve findProjectRoot lazily at call time rather than binding it at module
 // load. It is sourced from project-root.cjs; a call-time lookup is robust
@@ -4538,15 +4538,15 @@ async function main() {
     try {
       obj = JSON.parse(resolved);
     } catch {
-      error(`--pick ${pickField}: command output was not JSON`, ERROR_REASON.PICK_OUTPUT_NOT_JSON);
+      error(`--pick ${formatDiagnosticToken(pickField)}: command output was not JSON`, ERROR_REASON.PICK_OUTPUT_NOT_JSON);
       return;
     }
     const { found, value } = extractField(obj, pickField);
     if (!found) {
       const rootDescription = isPlainRecord(obj)
-        ? `available top-level keys: ${Object.keys(obj).join(', ') || '(none)'}`
+        ? `available top-level keys: ${Object.keys(obj).map(formatKeyForDiagnosticList).join(', ') || '(none)'}`
         : `the command's output is a JSON ${describeJsonRootType(obj)}, not an object with that field`;
-      error(`--pick ${pickField}: field not found; ${rootDescription}`, ERROR_REASON.PICK_FIELD_ABSENT);
+      error(`--pick ${formatDiagnosticToken(pickField)}: field not found; ${rootDescription}`, ERROR_REASON.PICK_FIELD_ABSENT);
       return;
     }
     // N1/N2: `null` and `''` are answers, not failures — an absent field
@@ -4630,6 +4630,18 @@ function describeJsonRootType(v) {
   if (Array.isArray(v)) return 'array';
   if (v === null) return 'null';
   return typeof v;
+}
+
+// A command's JSON output can be a USER-authored document (e.g. `frontmatter
+// get`), so its top-level keys are untrusted the same way an argv token is.
+// `formatDiagnosticToken` (io.cjs) is the shared escape (see its JSDoc for
+// why `error()` cannot do this itself); this thin wrapper reuses that exact
+// escaping but strips the surrounding quotes JSON.stringify adds, so a key
+// list reads as "a, b, c" rather than the noisier "\"a\", \"b\", \"c\"" while
+// a key containing \n/\r/\t/other C0 bytes still cannot forge a second
+// stderr "Error:" line or span more than one line.
+function formatKeyForDiagnosticList(key) {
+  return formatDiagnosticToken(key).slice(1, -1);
 }
 
 /**

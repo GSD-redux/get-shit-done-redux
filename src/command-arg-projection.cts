@@ -14,7 +14,7 @@
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import io = require('./io.cjs');
-const { ERROR_REASON } = io;
+const { ERROR_REASON, formatDiagnosticToken } = io;
 
 // Structurally identical to io.cts's own (unexported) ErrorReasonValue type —
 // both are computed from the SAME ERROR_REASON object, so the two never
@@ -145,7 +145,7 @@ export function parseNamedArgs(args: string[], spec: NamedArgSpec): NamedArgsRes
             ok: false,
             kind: 'InvalidArgs',
             arg: tok,
-            reason: `${tok} requires a value`,
+            reason: `${formatDiagnosticToken(tok)} requires a value`,
             exitReason: ERROR_REASON.USAGE,
           };
         }
@@ -158,15 +158,15 @@ export function parseNamedArgs(args: string[], spec: NamedArgSpec): NamedArgsRes
       }
       const reason =
         flagList.length > 0
-          ? `unknown flag ${tok}; accepted: ${flagList.join(', ')}`
-          : `unknown flag ${tok}; this command accepts no flags`;
+          ? `unknown flag ${formatDiagnosticToken(tok)}; accepted: ${flagList.join(', ')}`
+          : `unknown flag ${formatDiagnosticToken(tok)}; this command accepts no flags`;
       return { ok: false, kind: 'InvalidArgs', arg: tok, reason, exitReason: ERROR_REASON.USAGE };
     }
     return {
       ok: false,
       kind: 'InvalidArgs',
       arg: tok,
-      reason: `unexpected positional argument "${tok}"`,
+      reason: `unexpected positional argument ${formatDiagnosticToken(tok)}`,
       exitReason: ERROR_REASON.USAGE,
     };
   }

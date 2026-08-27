@@ -7,6 +7,8 @@ const {
   parseMultiwordArg,
 } = require('../gsd-core/bin/lib/command-arg-projection.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
+const { createTempProject, cleanup } = require('./helpers.cjs');
+const { runCli } = require('./helpers/cli-negative.cjs');
 
 // ---------------------------------------------------------------------------
 // parseNamedArgs — behavior-lock tests (green before AND after the #312 fix)
@@ -343,6 +345,75 @@ describe('parseNamedArgs — strict argv (#3358, ADR-3473 §8.4)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// formatDiagnosticToken (io.cjs) — untrusted-token diagnostic escaping.
+//
+// Adversarial review finding (isolated review, verified live): a token
+// embedded verbatim in a plain-text "Error: <message>" diagnostic can forge
+// a second stderr line beginning "Error:" by smuggling its own "\n". Repro
+// on this tree BEFORE the fix:
+//   $ node gsd-tools.cjs query state.planned-phase "foo\nError: forged second line"
+//   Error: unexpected positional argument "foo
+//   Error: forged second line"
+// These tests spawn the real CLI (the vulnerability is about the literal
+// bytes on stderr, not `parseNamedArgs`'s return value) through the exact
+// call shape the finding used: `query state.planned-phase <hostile token>`
+// hits the "unexpected positional argument" reason string, which embeds the
+// token directly. Asserts on the RAW stderr string (not trimmed) — a
+// trimmed assertion would hide a leading/trailing forged blank line.
+// ---------------------------------------------------------------------------
+
+describe('formatDiagnosticToken escapes untrusted tokens in plain-text diagnostics', () => {
+  const HOSTILE_TOKENS = [
+    ['embedded newline forging a second Error: line', 'foo\nError: forged second line'],
+    ['embedded double quote', 'foo"bar'],
+    ['embedded C0 control character', 'foo\x07bar'],
+  ];
+
+  for (const [label, token] of HOSTILE_TOKENS) {
+    test(`unexpected-positional diagnostic stays single-line for a token with ${label}`, () => {
+      const tmpDir = createTempProject();
+      try {
+        const result = runCli(['query', 'state.planned-phase', token], { cwd: tmpDir, jsonErrors: false });
+        assert.notStrictEqual(result.status, 0, 'a rejected positional must exit non-zero');
+        const rawStderr = result.stderr;
+        const nonEmptyLines = rawStderr.split('\n').filter((l) => l.length > 0);
+        assert.strictEqual(
+          nonEmptyLines.length, 1,
+          `expected exactly one non-empty stderr line, got raw stderr: ${JSON.stringify(rawStderr)}`,
+        );
+        assert.match(nonEmptyLines[0], /^Error: /);
+        const errorPrefixedLineCount = rawStderr.split('\n').filter((l) => l.startsWith('Error:')).length;
+        assert.strictEqual(errorPrefixedLineCount, 1, 'the hostile token must not forge a second "Error:" line');
+      } finally {
+        cleanup(tmpDir);
+      }
+    });
+  }
+
+  // Same repro shape, but through the "unknown flag" reason string (the
+  // second of the three sites the finding named) — a hostile token that
+  // itself starts with "--" so it is walked as a flag, not a positional.
+  test('unknown-flag diagnostic stays single-line for a hostile flag-shaped token', () => {
+    const tmpDir = createTempProject();
+    try {
+      const result = runCli(
+        ['query', 'state.planned-phase', '--bogus\nError: forged', 'x'],
+        { cwd: tmpDir, jsonErrors: false },
+      );
+      assert.notStrictEqual(result.status, 0);
+      const rawStderr = result.stderr;
+      const nonEmptyLines = rawStderr.split('\n').filter((l) => l.length > 0);
+      assert.strictEqual(
+        nonEmptyLines.length, 1,
+        `expected exactly one non-empty stderr line, got raw stderr: ${JSON.stringify(rawStderr)}`,
+      );
+      assert.match(nonEmptyLines[0], /^Error: unknown flag/);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-3431-debug-command-yaml.test.cjs — consolidation epic #1969 (B3 #1972)
