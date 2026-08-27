@@ -2005,6 +2005,8 @@ describe('#3514 F21b — non-https tarball spec fails with a named reason', () =
 
 describe('regressions — #3929 install-time cross-capability validation set', () => {
   let gsdHome = '';
+  let globalHome = '';
+  let priorGsdHome;
   const capDirs = [];
 
   /** A tier-`full` feature manifest, the tier a capability requiring `tdd` must declare. */
@@ -2012,16 +2014,16 @@ describe('regressions — #3929 install-time cross-capability validation set', (
     return featureCap(id, { tier: 'full', ...extra });
   }
 
-  /** Install `cap` into the target scope's overlay root as an already-present bundle. */
-  function seedInstalled(id, contents) {
-    const dir = path.join(gsdHome, '.gsd', 'capabilities', id);
+  /** Install `cap` into `scopeHome`'s overlay root as an already-present bundle. */
+  function seedInstalled(id, contents, scopeHome = gsdHome) {
+    const dir = path.join(scopeHome, '.gsd', 'capabilities', id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'capability.json'), contents, 'utf8');
     return dir;
   }
 
-  /** Write a target-scope ledger marking `ids` as COMMITTED installs. */
-  function seedLedger(ids) {
+  /** Write a `scopeHome` ledger marking `ids` as COMMITTED installs. */
+  function seedLedger(ids, scopeHome = gsdHome) {
     const entries = {};
     for (const id of ids) {
       entries[id] = {
@@ -2029,15 +2031,25 @@ describe('regressions — #3929 install-time cross-capability validation set', (
       };
     }
     fs.writeFileSync(
-      path.join(gsdHome, '.gsd-capabilities.json'),
+      path.join(scopeHome, '.gsd-capabilities.json'),
       JSON.stringify({ version: '1', updatedAt: '2026-01-01T00:00:00.000Z', entries }),
       'utf8',
     );
   }
 
-  beforeEach(() => { gsdHome = createTempDir('gsd-home-'); });
+  beforeEach(() => {
+    gsdHome = createTempDir('gsd-home-');
+    // The seed also walks the GLOBAL overlay root, resolved as `GSD_HOME` else the user's home —
+    // point it at an empty temp scope so these cases never read the developer's real installs.
+    globalHome = createTempDir('gsd-global-home-');
+    priorGsdHome = process.env.GSD_HOME;
+    process.env.GSD_HOME = globalHome;
+  });
   afterEach(() => {
+    if (priorGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = priorGsdHome;
     cleanup(gsdHome);
+    cleanup(globalHome);
     while (capDirs.length) cleanup(capDirs.pop());
   });
 
@@ -2111,6 +2123,24 @@ describe('regressions — #3929 install-time cross-capability validation set', (
     const dir = localCap(fullCap('unrelated-cap', { requires: ['tdd'] }));
     const result = await resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' });
     assert.strictEqual(result.id, 'unrelated-cap', 'a broken neighbour must not block an install');
+  });
+
+  test('a project-scope install resolves requires against a GLOBALLY installed capability', async () => {
+    // The loader composes global ∪ project, so a project-scope install must see the global scope too.
+    seedInstalled('global-dep-cap', JSON.stringify(fullCap('global-dep-cap')), globalHome);
+    seedLedger(['global-dep-cap'], globalHome);
+    const dir = localCap(fullCap('project-needs-global-cap', { requires: ['global-dep-cap'] }));
+    const result = await resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' });
+    assert.strictEqual(result.id, 'project-needs-global-cap');
+  });
+
+  test('an UNCOMMITTED global bundle does not satisfy a project-scope requires', async () => {
+    seedInstalled('global-uncommitted-cap', JSON.stringify(fullCap('global-uncommitted-cap')), globalHome);
+    const dir = localCap(fullCap('needs-global-uncommitted-cap', { requires: ['global-uncommitted-cap'] }));
+    await assert.rejects(
+      () => resolveCapabilitySource(dir, { gsdHome, hostVersion: '1.11.0' }),
+      /requires "global-uncommitted-cap" which does not exist/,
+    );
   });
 
   test('reinstalling over an existing bundle validates the CANDIDATE, not the installed copy', async () => {

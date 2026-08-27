@@ -800,9 +800,47 @@ function centralConfigKeys(): Set<string> {
 }
 
 /**
+ * Canonical identity of an overlay root, used to dedup the global and target roots when they are the
+ * same directory (a global-scope install, or a symlink alias). Falls back to the lexical resolve when
+ * the directory does not exist yet or cannot be realpath'd — the loader's `canonicalDir` discipline.
+ */
+function canonicalOverlayDir(dir: string): string {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return path.resolve(dir);
+  }
+}
+
+/**
+ * Overlay roots install-time validation reads, in the loader's precedence order: the GLOBAL root
+ * first, then the TARGET scope root. `loadRegistry` scans global before project and lets the FIRST
+ * accepted id win, so scanning in the same order gives install the same winner on a cross-scope id
+ * collision. The global home is resolved the way `overlayRoots` resolves it — `GSD_HOME`, else the
+ * user's home — with the target scope standing in for the loader's explicit `options.gsdHome`. For a
+ * global-scope install the two roots coincide and dedup to one entry.
+ *
+ * Each root carries its own scope home because the ledger that gates it is co-located there
+ * (`<scope>/.gsd-capabilities.json`), exactly as in the loader.
+ */
+function installValidationRoots(gsdHome: string): Array<{ home: string; dir: string }> {
+  const roots: Array<{ home: string; dir: string }> = [];
+  const seen = new Set<string>();
+  for (const home of [process.env['GSD_HOME'] || os.homedir(), gsdHome]) {
+    const dir = path.join(home, '.gsd', 'capabilities');
+    const key = canonicalOverlayDir(dir);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push({ home, dir });
+  }
+  return roots;
+}
+
+/**
  * The capability universe install-time cross-validation resolves references against: first-party
- * capabilities ∪ committed overlays already installed in the TARGET scope, EXCLUDING `excludeId`
- * (the incoming candidate REPLACES any same-id bundle already there, and the caller adds it).
+ * capabilities ∪ the committed overlays already installed in the scopes the loader composes,
+ * EXCLUDING `excludeId` (the incoming candidate REPLACES any same-id bundle already there, and the
+ * caller adds it).
  *
  * #3929: `stageValidated` used to seed the suite with `new Map([[id, cap]])`. Every invariant
  * `validateCrossCapability` resolves by map MEMBERSHIP — `requires` existence, `runtimeCompat`
@@ -819,10 +857,12 @@ function centralConfigKeys(): Set<string> {
  * (and does not throw) with it in. That keeps the returned base map CLEAN by construction, so any
  * error the candidate then produces is the candidate's own fault — a broken or conflicting
  * neighbour can never block an unrelated install.
+ *
+ * An id already in the map is SKIPPED rather than overwritten (`fpIds.has(id) || acceptedIds.has(id)`
+ * in the loader): first-party wins over every overlay, and the earlier scope wins over the later one.
  */
 function installValidationSet(
   gsdHome: string,
-  capabilitiesRoot: string,
   excludeId: string,
   centralKeys: Set<string>,
 ): Map<string, unknown> {
@@ -838,43 +878,45 @@ function installValidationSet(
     }
   } catch { /* registry unavailable — first-party ids simply do not resolve */ }
 
-  const committed = committedOverlayIds(gsdHome);
-  if (committed.size === 0) return capMap;
+  for (const root of installValidationRoots(gsdHome)) {
+    const committed = committedOverlayIds(root.home);
+    if (committed.size === 0) continue;
 
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(capabilitiesRoot, { withFileTypes: true });
-  } catch {
-    return capMap; // no overlay dir at this scope — normal on a first install.
-  }
-
-  // Sorted so acceptance (and therefore any resulting error text) is independent of readdir order.
-  const overlayIds = entries
-    .filter((ent) => ent.isDirectory())
-    .map((ent) => ent.name)
-    .filter((overlayId) => overlayId !== excludeId && committed.has(overlayId))
-    .sort();
-
-  for (const overlayId of overlayIds) {
-    let overlayCap: Record<string, unknown>;
+    let entries: fs.Dirent[];
     try {
-      overlayCap = readManifestBounded(
-        path.join(capabilitiesRoot, overlayId, 'capability.json'),
-        `capability.json not found for installed capability "${overlayId}"`,
-      );
+      entries = fs.readdirSync(root.dir, { withFileTypes: true });
     } catch {
-      continue; // unreadable / non-regular / oversized / malformed — skipped, never fatal.
+      continue; // no overlay dir at this scope — normal on a first install.
     }
-    if (capValidator.validateCapability(overlayCap, overlayId).length > 0) continue;
-    capMap.set(overlayId, overlayCap);
-    try {
-      const errs = [
-        ...capValidator.validateConsumesGlobal(capMap),
-        ...capValidator.validateCrossCapability(capMap, centralKeys),
-      ];
-      if (errs.length > 0) capMap.delete(overlayId);
-    } catch {
-      capMap.delete(overlayId); // a throwing validator is treated exactly like a failure.
+
+    // Sorted so acceptance (and therefore any resulting error text) is independent of readdir order.
+    const overlayIds = entries
+      .filter((ent) => ent.isDirectory())
+      .map((ent) => ent.name)
+      .filter((overlayId) => overlayId !== excludeId && committed.has(overlayId) && !capMap.has(overlayId))
+      .sort();
+
+    for (const overlayId of overlayIds) {
+      let overlayCap: Record<string, unknown>;
+      try {
+        overlayCap = readManifestBounded(
+          path.join(root.dir, overlayId, 'capability.json'),
+          `capability.json not found for installed capability "${overlayId}"`,
+        );
+      } catch {
+        continue; // unreadable / non-regular / oversized / malformed — skipped, never fatal.
+      }
+      if (capValidator.validateCapability(overlayCap, overlayId).length > 0) continue;
+      capMap.set(overlayId, overlayCap);
+      try {
+        const errs = [
+          ...capValidator.validateConsumesGlobal(capMap),
+          ...capValidator.validateCrossCapability(capMap, centralKeys),
+        ];
+        if (errs.length > 0) capMap.delete(overlayId);
+      } catch {
+        capMap.delete(overlayId); // a throwing validator is treated exactly like a failure.
+      }
     }
   }
 
@@ -977,14 +1019,14 @@ function stageValidated(opts: {
     }
 
     // Cross-capability validations (contract, consumes, cross-capability), seeded the way
-    // LOAD-time validation seeds them (#3929): first-party ∪ committed overlays already installed
-    // in the target scope ∪ the candidate, against the REAL central config-key set. The previous
+    // LOAD-time validation seeds them (#3929): first-party ∪ the committed overlays already installed
+    // in the scopes the loader composes ∪ the candidate, against the REAL central config-key set. The previous
     // singleton map made every membership-resolved invariant — `requires`, `runtimeCompat` ids,
     // cycles, tier-monotone, owner-uniqueness — either unsatisfiable or vacuous at install time.
     // The base map is clean by construction (see installValidationSet), so every error here is
     // attributable to the candidate.
     const centralKeys = centralConfigKeys();
-    const capMap = installValidationSet(gsdHome, capabilitiesRoot, id, centralKeys);
+    const capMap = installValidationSet(gsdHome, id, centralKeys);
     capMap.set(id, cap);
     const crossErrs = [
       ...capValidator.validateAgainstContract(cap, id),
