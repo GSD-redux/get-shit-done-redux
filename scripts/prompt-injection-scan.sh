@@ -6,11 +6,28 @@
 #   scripts/prompt-injection-scan.sh --file path/to/file   # Scan a single file
 #   scripts/prompt-injection-scan.sh --dir agents/          # Scan all files in a directory
 #
-# Exit codes:
-#   0 = clean
-#   1 = findings detected
-#   2 = usage error
+# Exit codes (ADR-3889, #3908 — registered in gsd-core/bin/shared/exit-codes.json):
+#   0                = clean
+#   1                = findings detected
+#   $EXIT_USAGE       (64) = usage error (bad argv, missing --file/--dir target)
+#   $EXIT_NO_INPUT    (66) = ran; scope established; zero files in scope (genuinely empty)
+#   $EXIT_UNAVAILABLE (69) = could not establish scope (bad ref, not a repo, unreadable dir)
 set -euo pipefail
+
+# ─── Exit-code registry (ADR-3889, #3908) ────────────────────────────────────
+# Resolved relative to THIS script's location, not the caller's cwd. Loud,
+# non-zero failure if the fragment is missing — never fall back to a guessed
+# literal integer, and never let a missing registry silently degrade to
+# exit 0.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXIT_CODES_SH="$SCRIPT_DIR/../gsd-core/bin/shared/exit-codes.sh"
+if [[ ! -f "$EXIT_CODES_SH" ]]; then
+  echo "prompt-injection-scan: FATAL: exit-code registry not found at $EXIT_CODES_SH" >&2
+  echo "  Regenerate with: node scripts/gen-exit-code-registry.cjs --write" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "$EXIT_CODES_SH"
 
 # ─── Patterns ────────────────────────────────────────────────────────────────
 # Each pattern is a POSIX extended regex. Keep alphabetized by category.
@@ -175,33 +192,54 @@ collect_files() {
   case "$mode" in
     --diff)
       local base="${1:-origin/main}"
-      # Get changed files in the diff, filter to scannable extensions
-      git diff --name-only --diff-filter=ACMR "$base"...HEAD 2>/dev/null \
-        | grep -E '\.(md|cjs|js|json|yml|yaml|sh)$' || true
+      # Run git separately from the filter pipe so its OWN exit status (not
+      # grep's) decides whether the diff could be established, and its
+      # diagnostic survives instead of being discarded by `2>/dev/null`.
+      # `|| true` on the filter below is CORRECT (not gratuitous): `grep -E`
+      # exits 1 when nothing matches the scannable extensions (e.g. a diff
+      # touching only non-scannable file types), which is a legitimate empty
+      # result, not a failure to run.
+      local raw status
+      raw=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD 2>&1)
+      status=$?
+      if (( status != 0 )); then
+        printf '%s\n' "$raw" >&2
+        exit "$EXIT_UNAVAILABLE"
+      fi
+      printf '%s\n' "$raw" | grep -E '\.(md|cjs|js|json|yml|yaml|sh)$' || true
       ;;
     --file)
       if [[ -f "$1" ]]; then
         echo "$1"
       else
         echo "Error: file not found: $1" >&2
-        exit 2
+        exit "$EXIT_USAGE"
       fi
       ;;
     --dir)
       local dir="$1"
       if [[ ! -d "$dir" ]]; then
         echo "Error: directory not found: $dir" >&2
-        exit 2
+        exit "$EXIT_USAGE"
       fi
-      find "$dir" -type f \( -name '*.md' -o -name '*.cjs' -o -name '*.js' -o -name '*.json' -o -name '*.yml' -o -name '*.yaml' -o -name '*.sh' \) \
-        ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/dist/*' 2>/dev/null || true
+      # Same treatment as --diff: a `find` that fails (e.g. permission
+      # denied) must not be reported as an empty directory.
+      local raw status
+      raw=$(find "$dir" -type f \( -name '*.md' -o -name '*.cjs' -o -name '*.js' -o -name '*.json' -o -name '*.yml' -o -name '*.yaml' -o -name '*.sh' \) \
+        ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/dist/*' 2>&1)
+      status=$?
+      if (( status != 0 )); then
+        printf '%s\n' "$raw" >&2
+        exit "$EXIT_UNAVAILABLE"
+      fi
+      printf '%s\n' "$raw"
       ;;
     --stdin)
       cat
       ;;
     *)
       echo "Usage: $0 --diff [base] | --file <path> | --dir <path> | --stdin" >&2
-      exit 2
+      exit "$EXIT_USAGE"
       ;;
   esac
 }
@@ -240,7 +278,7 @@ scan_file() {
 main() {
   if [[ $# -eq 0 ]]; then
     echo "Usage: $0 --diff [base] | --file <path> | --dir <path>" >&2
-    exit 2
+    exit "$EXIT_USAGE"
   fi
 
   local mode="$1"
@@ -250,8 +288,12 @@ main() {
   files=$(collect_files "$mode" "$@")
 
   if [[ -z "$files" ]]; then
+    # collect_files already exited (UNAVAILABLE/USAGE) for anything that
+    # could not establish scope. Reaching here with an empty result means
+    # scope WAS established and is genuinely empty — that is NO_INPUT, not a
+    # silent clean pass.
     echo "prompt-injection-scan: no files to scan"
-    exit 0
+    exit "$EXIT_NO_INPUT"
   fi
 
   local total=0
