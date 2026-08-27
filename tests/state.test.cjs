@@ -999,6 +999,114 @@ current_phase: 3
     assert.ok(content.includes('03-03'), 'the state update still took effect');
   });
 
+  // #3742 — comment survival must not depend on the document body: a
+  // column-0 comment died whenever the body had no **Current Phase:** line
+  // (the preservation restore re-added the key but nothing re-attached the
+  // comment channel), and an indented comment under progress: died always
+  // (the channel only ever knew top-level keys).
+  test('#3742: comments survive begin-phase with and without a body Current Phase line', () => {
+    const COL0 = '# PROVENANCE-COL0: hand-counted; do not resync';
+    const NESTED = '# PROVENANCE-NESTED: nested under progress';
+    for (const withBodyLine of [true, false]) {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'STATE.md'),
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          COL0,
+          'current_phase: 01',
+          'current_phase_name: probe-phase',
+          'status: executing',
+          'last_updated: "2026-08-10T00:00:00.000Z"',
+          'progress:',
+          '  ' + NESTED,
+          '  total_phases: 2',
+          '  completed_phases: 0',
+          '  total_plans: 1',
+          '  completed_plans: 0',
+          '---',
+          '',
+          '## Current Position',
+          '',
+          '**Status:** Executing',
+          ...(withBodyLine ? ['**Current Phase:** 01'] : []),
+          '',
+        ].join('\n'),
+      );
+
+      runGsdTools('state begin-phase --phase 01 --name probe-phase --plans 1', tmpDir);
+
+      const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.ok(
+        content.includes(COL0),
+        `#3742: column-0 comment must survive begin-phase (body Current Phase line: ${withBodyLine}); got:\n${content}`,
+      );
+      assert.ok(
+        content.includes(NESTED),
+        `#3742: indented comment under progress must survive begin-phase (body Current Phase line: ${withBodyLine}); got:\n${content}`,
+      );
+    }
+  });
+
+  test('#3742: comments survive state update (the issue\'s anomaly verb)', () => {
+    const COL0 = '# PROVENANCE-COL0: do not resync';
+    const NESTED = '# PROVENANCE-NESTED: nested under progress';
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        COL0,
+        'current_phase: 3',
+        'status: executing',
+        'progress:',
+        '  ' + NESTED,
+        '  total_phases: 9',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 03',
+        '**Status:** Executing',
+        '',
+      ].join('\n'),
+    );
+
+    runGsdTools('state update Status Paused', tmpDir);
+
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(content.includes(COL0), `#3742: column-0 comment must survive state update; got:\n${content}`);
+    assert.ok(content.includes(NESTED), `#3742: nested comment must survive state update; got:\n${content}`);
+  });
+
+  test('#3742: trailing comments do not duplicate across repeated writes', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 3',
+        'status: executing',
+        '# TRAILING: do not resync',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 03',
+        '**Status:** Executing',
+        '',
+      ].join('\n'),
+    );
+
+    for (let i = 0; i < 3; i++) {
+      runGsdTools('state update Status Paused', tmpDir);
+    }
+
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const count = (content.match(/# TRAILING: do not resync/g) || []).length;
+    assert.strictEqual(count, 1, `#3742: trailing comment must appear exactly once after repeated writes, got ${count}:\n${content}`);
+  });
+
   test('round-trip: write then read via state json', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
