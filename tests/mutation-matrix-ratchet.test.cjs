@@ -33,6 +33,14 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const MATRIX_SCRIPT = path.resolve(__dirname, '../scripts/mutation-matrix.cjs');
 const matrix = require(MATRIX_SCRIPT);
 
+// Deliberately RE-DERIVED here from matrix.COVERED, rather than calling the
+// exported matrix.allCoveredTests() — resolveMutationTestFiles(undefined)'s
+// production implementation itself calls allCoveredTests(), so comparing its
+// output against that same function would make the assertion a tautology
+// that passes no matter what either function does. This independent
+// derivation is what makes the comparison test the production code.
+const derived = [...new Set(Object.values(matrix.COVERED).flatMap((mod) => mod.tests))].sort();
+
 // ── (a) TARGET_MUTATION_SCORE ─────────────────────────────────────────────────
 describe('mutation-matrix ratchet: TARGET_MUTATION_SCORE export', () => {
   test('exports TARGET_MUTATION_SCORE', () => {
@@ -322,12 +330,6 @@ describe('resolveMutationTestFiles: fail-closed test-file-list resolver', () => 
     assert.strictEqual(typeof resolveMutationTestFiles, 'function');
   });
 
-  // Built from matrix.COVERED itself — never hardcoded — so this proves the
-  // undefined-input default is a DERIVATION, not a literal.
-  const derived = [...new Set(
-    Object.values(matrix.COVERED).flatMap((mod) => mod.tests)
-  )].sort();
-
   test('undefined → sorted, de-duplicated union of every COVERED[*].tests', () => {
     assert.deepStrictEqual(resolveMutationTestFiles(undefined), derived);
   });
@@ -423,6 +425,27 @@ describe('resolveMutationTestFiles: fail-closed test-file-list resolver', () => 
     );
   });
 
+  test('an entry naming an existing directory throws, indicating it is not a regular file', () => {
+    assert.throws(
+      () => resolveMutationTestFiles('tests'),
+      /not a regular file/
+    );
+  });
+
+  test('an entry escaping the repo root via ../../../etc/passwd throws, indicating the escape', () => {
+    assert.throws(
+      () => resolveMutationTestFiles('../../../etc/passwd'),
+      /escape the repo root/
+    );
+  });
+
+  test('an entry escaping via a valid-looking prefix (tests/../../outside-3915.cjs) throws for escaping the repo root', () => {
+    assert.throws(
+      () => resolveMutationTestFiles('tests/../../outside-3915.cjs'),
+      /escape the repo root/
+    );
+  });
+
   test('the full derived default, space-joined, round-trips through the resolver', () => {
     assert.deepStrictEqual(resolveMutationTestFiles(derived.join(' ')), derived);
   });
@@ -430,9 +453,6 @@ describe('resolveMutationTestFiles: fail-closed test-file-list resolver', () => 
 
 describe('resolveMutationTestFiles: round-trip property', () => {
   const { resolveMutationTestFiles } = matrix;
-  const derived = [...new Set(
-    Object.values(matrix.COVERED).flatMap((mod) => mod.tests)
-  )].sort();
 
   test('any non-empty subset of the derived default, space-joined, resolves back to that de-duplicated subset', () => {
     fc.assert(

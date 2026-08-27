@@ -151,8 +151,8 @@ describe('mutation.yml <-> stryker.config.mjs: injected env parity (#3915)', () 
     assert.ok(!Object.prototype.hasOwnProperty.call(runStrykerStep.env, 'MUTATION_TEST_CMD'));
   });
 
-  test('MUTATION_TEST_FILES value references matrix.tests (derived from mutation-matrix.cjs)', () => {
-    assert.ok(String(runStrykerStep.env.MUTATION_TEST_FILES).includes('matrix.tests'));
+  test('MUTATION_TEST_FILES value is exactly the ${{ matrix.tests }} expression (derived from mutation-matrix.cjs)', () => {
+    assert.strictEqual(String(runStrykerStep.env.MUTATION_TEST_FILES).trim(), '${{ matrix.tests }}');
   });
 
   test('MUTATION_BREAK still references matrix.minScore', () => {

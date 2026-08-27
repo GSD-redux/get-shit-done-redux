@@ -31,6 +31,7 @@
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
+const path = require('node:path');
 
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 
@@ -171,7 +172,7 @@ const TARGET_MUTATION_SCORE = 80;
 // named in extraTests, or named in excludeTests — so a file that newly starts
 // matching the naming rule (like #3888's four files would have, had they been
 // named `frontmatter*`) cannot silently fall through the cracks again.
-const TESTS_DIR = require('node:path').join(__dirname, '..', 'tests');
+const TESTS_DIR = path.join(__dirname, '..', 'tests');
 let _testRequireCache = null;
 
 /**
@@ -194,7 +195,7 @@ function scanTestRequires() {
     entries = [];
   }
   for (const file of entries) {
-    const text = fs.readFileSync(require('node:path').join(TESTS_DIR, file), 'utf8');
+    const text = fs.readFileSync(path.join(TESTS_DIR, file), 'utf8');
     let m;
     REQUIRE_RE.lastIndex = 0;
     while ((m = REQUIRE_RE.exec(text))) {
@@ -703,8 +704,7 @@ function buildResult(moduleNames) {
     // Per-shard CI job timeout in minutes. Defaults to 15 (the shared per-shard budget);
     // only a module that documents a measured need for more (see the frontmatter entry
     // above) sets a higher value. Threaded through mutation.yml's job-level
-    // `timeout-minutes: ${{ matrix.timeoutMinutes }}` the same way `isolation` is threaded
-    // through the test-runner env.
+    // `timeout-minutes: ${{ matrix.timeoutMinutes }}`.
     timeoutMinutes: COVERED[name].timeoutMinutes || 15,
   }));
 
@@ -814,9 +814,12 @@ function allCoveredTests() {
  *     passing the array itself, or any other non-string, is a wiring bug)
  *   - set but empty/whitespace-only → throws (CI shard wiring is broken:
  *     matrix.tests missing)
- *   - otherwise → trim, split on whitespace, de-duplicate, sort, and verify
- *     every entry exists on disk relative to the repo root — a missing file
- *     throws naming the missing path(s)
+ *   - otherwise → trim, split on whitespace, de-duplicate, sort, and, per
+ *     entry: (1) resolve it against the repo root and reject any entry whose
+ *     resolved path escapes the repo root (e.g. via `../` segments); (2)
+ *     reject any entry that does not exist on disk, or that exists but is
+ *     not a regular file (e.g. names a directory) — each failure throws
+ *     naming the offending entry(ies)
  *
  * This function is the single call site for reading MUTATION_TEST_FILES.
  * stryker.config.mjs imports and calls it, so a bad value must fail
@@ -852,12 +855,40 @@ function resolveMutationTestFiles(raw) {
     entries = [...new Set(raw.trim().split(/\s+/))].sort();
   }
 
-  const path = require('node:path');
   const repoRoot = path.join(__dirname, '..');
-  const missing = entries.filter((entry) => !fs.existsSync(path.join(repoRoot, entry)));
+
+  const escaped = [];
+  const missing = [];
+  const notFile = [];
+  for (const entry of entries) {
+    const resolved = path.resolve(repoRoot, entry);
+    const rel = path.relative(repoRoot, resolved);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      escaped.push(entry);
+      continue;
+    }
+    if (!fs.existsSync(resolved)) {
+      missing.push(entry);
+      continue;
+    }
+    if (!fs.statSync(resolved).isFile()) {
+      notFile.push(entry);
+    }
+  }
+
+  if (escaped.length > 0) {
+    throw new Error(
+      `MUTATION_TEST_FILES names ${escaped.length} entry(ies) that escape the repo root: ${escaped.join(', ')}`
+    );
+  }
   if (missing.length > 0) {
     throw new Error(
       `MUTATION_TEST_FILES names ${missing.length} file(s) that do not exist on disk: ${missing.join(', ')}`
+    );
+  }
+  if (notFile.length > 0) {
+    throw new Error(
+      `MUTATION_TEST_FILES names ${notFile.length} entry(ies) that are not a regular file: ${notFile.join(', ')}`
     );
   }
 
