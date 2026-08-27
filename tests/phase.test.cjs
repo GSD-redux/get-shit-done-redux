@@ -1105,6 +1105,131 @@ objective: Manual review needed
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3885 (ADR-3473 §8.5) / #3427 — phase-plan-index must NAME a dropped
+// depends_on token instead of manufacturing a wave-mismatch verdict from it.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Mechanism: resolveDependencyId (phase.cts) returns null for a depends_on
+// token that resolves via neither planMap nor canonicalToId;
+// computeDependencyLevels silently `continue`s past it, making the dependent
+// plan a DAG root. cmdPhasePlanIndex then compares that damaged wave against
+// the plan's declared `wave:` and emits a "declared wave: N but depends_on
+// DAG places it in wave M" warning — a verdict manufactured from the dropped
+// edge, not from an author error.
+//
+// VERBATIM CURRENT OUTPUT (measured on this tree, e20744eac, via the real CLI
+// `gsd-tools phase-plan-index 03` against a phase dir with 03-01 (wave: 1, no
+// deps) and 03-02 (wave: 2, depends_on: [nonexistent-token-3427])):
+//
+//   "warnings": [
+//     "Plan 03-02: declared wave: 2 but depends_on DAG places it in wave 1"
+//   ]
+//
+// Note: NO mention of "nonexistent-token-3427" anywhere in `warnings` — the
+// dropped token is invisible, and the manufactured wave-mismatch warning
+// fires in its place. That is exactly the #3427 defect this block pins.
+describe('#3885 (ADR-3473 §8.5): phase-plan-index names a dropped depends_on token instead of manufacturing a wave-mismatch verdict', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // T31 — RED today (consumer-output identity, §8.9): the emitted `warnings`
+  // must name the unresolved token together with its owning plan.
+  test('T31: planIndexJsonNamesTheDroppedToken_3427', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - nonexistent-token-3427\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.ok(
+      warnings.some((w) => w.includes('nonexistent-token-3427') && w.includes('03-02')),
+      `warnings must name plan 03-02 and its unresolved token "nonexistent-token-3427"; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T24 — RED today: the manufactured "declared wave:" verdict for 03-02 must
+  // be suppressed once its dropped edge is named (T31's warning stands in its
+  // place). Currently it fires (measured above):
+  // "Plan 03-02: declared wave: 2 but depends_on DAG places it in wave 1".
+  test('T24: droppedEdgeSuppressesTheManufacturedWaveVerdict_3427', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - nonexistent-token-3427\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.ok(
+      !warnings.some((w) => /declared wave:/.test(w) && w.includes('03-02')),
+      `the manufactured wave-mismatch warning for 03-02 must be suppressed once its dropped edge is named; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T25 — MUST STAY GREEN (N3): a fully-resolvable DAG with a genuinely wrong
+  // declared wave must still warn. Stops T24's fix from becoming a blanket
+  // suppression. Confirmed passing today (measured via the real CLI: Plan B
+  // fully resolves 03-01 and the DAG places it at wave 2, but it declares
+  // wave: 5, and the mismatch warning fires exactly as expected).
+  test('T25: genuineWaveMismatchStillWarns', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    // Plan B fully resolves its dependency (03-01) — no dropped edge — so its
+    // declared wave (5) is a genuine authoring mistake (correct DAG wave is 2).
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 5\nautonomous: true\ndepends_on:\n  - 03-01\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.ok(
+      warnings.some((w) => w.includes('declared wave: 5') && w.includes('wave 2') && w.includes('03-02')),
+      `a genuinely wrong declared wave (no dropped edge) must still warn; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T29 (N4, #3785) is already pinned by the existing test above in this file,
+  // '#3785: external cross-phase depends_on ref is preserved as-is in output'
+  // (an unresolved cross-phase depends_on token IS exactly the #3785
+  // scenario) — it already asserts the DISPLAY `depends_on` field passes an
+  // unresolved token through verbatim. No new test added here; this phase's
+  // fix must leave that test green (design N4: the display mapping stays
+  // unresolved-passthrough, never routed through resolveDependencyId).
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // phase-plan-index — canonical XML format (template-aligned)

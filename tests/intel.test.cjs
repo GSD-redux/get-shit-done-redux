@@ -425,6 +425,121 @@ describe('intelQuery', () => {
   });
 });
 
+// ─── #3885 (ADR-3473 §8.5): recursion bound + truncation signal ─────────────
+//
+// searchJsonEntries/matchesInValue lost the MAX_JSON_SEARCH_DEPTH=48 bound in
+// the ADR-0174 SDK retirement. A deeply nested .planning/intel/*.json document
+// overflows the call stack (uncaught RangeError, exit 1) instead of failing
+// gracefully. Restoring the bound verbatim would trade the crash for a SILENT
+// "no match" at depth 49+ — exactly the defect class this epic exists to close
+// one layer down (ADR-3473 Decision 4: a routine that discards an input says
+// so, naming the input). The required fix therefore pairs the bound with a
+// truncation signal.
+//
+// DESIGN DECISION (chosen by this test file — not yet implemented): a
+// top-level `truncated: boolean` field on the IntelQueryResult returned by
+// intelQuery. `truncated` is true iff ANY searched intel file's walk hit the
+// depth ceiling; false/absent otherwise. Chosen because it is the shape a
+// JSON consumer (or the CLI's raw stdout) can read directly without parsing
+// per-entry structure.
+describe('#3885 (ADR-3473 §8.5): intel query recursion bound + truncation signal', () => {
+  let tmpDir;
+  let planningDir;
+  let surfacedConfigDir;
+  let savedEnv;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    planningDir = path.join(tmpDir, '.planning');
+    enableIntel(planningDir);
+    surfacedConfigDir = makeSurfacedConfigDir();
+    savedEnv = saveSurfacedEnv();
+    delete process.env.GSD_RUNTIME;
+    process.env.CLAUDE_CONFIG_DIR = surfacedConfigDir;
+    delete process.env.GSD_WORKSTREAM;
+    delete process.env.GSD_PROJECT;
+  });
+
+  afterEach(() => {
+    savedEnv.restore();
+    cleanup(surfacedConfigDir);
+    cleanup(tmpDir);
+  });
+
+  // Build an object nested `n` levels deep: {a: {a: {a: ... {leaf: 'needle-here'}}}}.
+  function nest(n) {
+    let o = { leaf: 'needle-here' };
+    for (let i = 0; i < n; i++) o = { a: o };
+    return o;
+  }
+
+  function writeNestedFixture(depth) {
+    writeIntelJson(planningDir, 'file-roles.json', { entries: { top: nest(depth) } });
+  }
+
+  // T2 — MUST STAY GREEN before and after the fix: the ceiling is inclusive.
+  test('T2: matchAtDepth48IsFoundUntruncated', () => {
+    writeNestedFixture(48);
+    const result = intelQuery('needle-here', planningDir);
+    assert.strictEqual(result.total, 1, 'depth-48 match must still be found');
+    assert.notStrictEqual(result.truncated, true, 'depth-48 (at the ceiling) must not report truncation');
+  });
+
+  // T3 — RED today: measured on this tree (e20744eac), depth 49 currently
+  // returns total=1 (found), exit 0, with no `truncated` field at all.
+  // Required: NOT returned as a match, AND the result reports truncation —
+  // never a bare "no match".
+  test('T3: matchAtDepth49IsNotSilentlyAbsent', () => {
+    writeNestedFixture(49);
+    const result = intelQuery('needle-here', planningDir);
+    assert.strictEqual(result.total, 0, 'a match past the depth ceiling must not be reported as found');
+    assert.deepStrictEqual(result.matches, [], 'no per-file match entries past the ceiling');
+    assert.strictEqual(result.truncated, true, 'the result must say the search was truncated — never a bare "no match"');
+  });
+
+  // T4 — RED today: measured via the real CLI on this tree — depth 12000
+  // exits 1 with stderr "Error: Maximum call stack size exceeded". Required:
+  // exit 0, bounded result, truncated:true, and the RangeError text must
+  // never appear.
+  test('T4: deeplyNestedIntelDoesNotOverflowTheStack', () => {
+    writeNestedFixture(12000);
+    const result = runGsdTools(['intel', 'query', 'needle-here'], tmpDir);
+    assert.strictEqual(result.success, true, `must exit 0 (no stack overflow), got: ${result.error}`);
+    assert.ok(
+      !/Maximum call stack size exceeded/.test(result.error || ''),
+      `stderr must never contain the raw RangeError text, got: ${result.error}`,
+    );
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.truncated, true, 'a 12000-deep document must report truncation');
+  });
+
+  // T5 — MUST STAY GREEN (N1): a shallow miss is not truncated. Stops the
+  // flag becoming noise on every ordinary "not found" result.
+  test('T5: shallowMissReportsNoTruncation', () => {
+    writeIntelJson(planningDir, 'file-roles.json', {
+      entries: { 'src/foo.ts': { type: 'typescript' } },
+    });
+    const result = intelQuery('needle-here', planningDir);
+    assert.strictEqual(result.total, 0);
+    assert.notStrictEqual(result.truncated, true, 'a shallow miss must not report truncation');
+  });
+
+  // T6 — MUST STAY GREEN (N2): the bound is on DEPTH, not breadth. 10,000
+  // shallow siblings must not be mistaken for hitting the depth ceiling.
+  test('T6: wideShallowDocumentIsUnaffectedByTheDepthBound', () => {
+    const entries = {};
+    for (let i = 0; i < 10000; i++) {
+      entries[`sibling-${i}`] = { note: `filler ${i}` };
+    }
+    entries.target = { nested: { leaf: 'needle-here' } };
+    writeIntelJson(planningDir, 'file-roles.json', { entries });
+
+    const result = intelQuery('needle-here', planningDir);
+    assert.strictEqual(result.total, 1, '10,000-sibling breadth must not suppress a shallow match');
+    assert.notStrictEqual(result.truncated, true, 'breadth alone must never trigger the depth-truncation flag');
+  });
+});
+
 // ─── intelStatus ────────────────────────────────────────────────────────────
 
 describe('intelStatus', () => {
