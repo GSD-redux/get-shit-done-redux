@@ -192,7 +192,7 @@ Planning is driven by a slash command, not a `gsd` subcommand. In your AI assist
 /gsd-plan-phase
 ```
 
-When the planner runs, the `plan:pre` hook set is rendered into its prompt, so it receives the `hello-note` contribution and, following the fragment's instruction, records a one-line note in `HELLO.md`.
+When the planner runs — whether from `/gsd-plan-phase` or `/gsd-quick` — the `plan:pre` hook set is rendered into its prompt, so it receives the `hello-note` contribution and, following the fragment's instruction, records a one-line note in `HELLO.md`.
 
 You do not need to run a full planning session to confirm the wiring, though. The `loop render-hooks` command shows exactly what the loop would hand the planner — the same output you saw in Step 5:
 
