@@ -36,7 +36,7 @@ import coreUtilsMod = require('./core-utils.cjs');
 // drift and no parity test needed to police one.
 const {
   toPosixPath, generateSlugInternal, readSubdirectories, extractCanonicalPlanId,
-  findUnsummarizedPlans,
+  findUnsummarizedPlans, normalizeLineEndings,
 } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 import phaseIdMod = require('./phase-id.cjs');
@@ -2407,7 +2407,12 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       phaseFullDirBaseName,
     )) {
       const verificationFilePath = path.join(phaseFullDir, file);
-      const content = fs.readFileSync(verificationFilePath, 'utf-8');
+      // #3707-CR follow-up MINOR: normalize line endings at this read boundary
+      // (same fix as src/verification.cts's readVerificationStatus) so a
+      // lone-CR VERIFICATION.md's `---\r...\r---` frontmatter fence still
+      // matches extractFrontmatter's byte-0 check instead of silently
+      // dropping the human_needed/gaps_found advisory warning below.
+      const content = normalizeLineEndings(fs.readFileSync(verificationFilePath, 'utf-8'));
       // #1159 (Defect A): read ONLY the frontmatter `status` key to avoid false positives
       // from historical metadata in the file body (e.g. `previous_status: gaps_found`).
       // A full-text regex like /status: gaps_found/ matches the substring inside
