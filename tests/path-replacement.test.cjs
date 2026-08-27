@@ -827,3 +827,70 @@ describe('#3544: spawned installer — gsd-core/ spec tree @-refs resolve on til
     );
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────
+// #3719: applyAgentPathRewrites (the agents/ staging pipeline's pre-converter
+// path-rewrite step, install-profiles.cts:964) does the 4 base ~/.claude/ and
+// $HOME/.claude/ substitutions but NEVER calls restoreClaudeGlobalAtRefTilde
+// — the SAME restore #3133 wired into `_applyRuntimeRewrites`'s 'claude' case
+// and #3544 wired into the gsd-core/ spec-tree emit path. Consequence: every
+// `agents/gsd-*.md` `@`-include (mandatory-initial-read.md, the
+// untrusted-input boundary, the agent-skills bootstrap, etc.) ships as
+// `@$HOME/.claude/...` in a global Claude install, which Claude Code does not
+// expand — the include silently loads nothing. Unlike #3133/#3544, this is a
+// MISSING call, not a wrong regex; fixing it must not touch the ordinary
+// $HOME/.claude/ substitutions non-@-anchored text still needs (#1284).
+// ────────────────────────────────────────────────────────────────────────
+describe('#3719: applyAgentPathRewrites must restore @-anchored $HOME refs to tilde', () => {
+  const { applyAgentPathRewrites } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+  const globalHomePrefix = '$HOME/.claude/';
+
+  test('row 1 [RED] — an @-include through the agents path emits @~/… not @$HOME/…', () => {
+    const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, '@~/.claude/gsd-core/references/mandatory-initial-read.md\n');
+  });
+
+  test('row 2 [CONTROL] — a plain prose path through the agents path stays $HOME/…', () => {
+    const src = 'Run: node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" query state\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, 'Run: node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" query state\n');
+  });
+
+  test('row 7 [CONTROL] — a noPathRewrite runtime (copilot) is untouched', () => {
+    const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
+    const out = applyAgentPathRewrites(src, 'copilot', globalHomePrefix);
+    assert.strictEqual(out, src, 'noPathRewrite runtimes must be returned unchanged (no substitutions at all)');
+  });
+
+  // ── boundary rows ──
+  test('boundary — leading @~/.claude/x @-include', () => {
+    const src = '@~/.claude/x\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, '@~/.claude/x\n');
+  });
+
+  test('boundary — mid-sentence @~/.claude/x @-include', () => {
+    const src = 'See @~/.claude/x for details\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, 'See @~/.claude/x for details\n');
+  });
+
+  test('boundary — ~/.claude/x with NO @ prefix must stay on $HOME (not an @-include)', () => {
+    const src = 'See ~/.claude/x for details\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, 'See $HOME/.claude/x for details\n');
+  });
+
+  test('boundary — @~/.claude with no trailing slash (word-boundary variant)', () => {
+    const src = '@~/.claude\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, '@~/.claude\n');
+  });
+
+  test('boundary — @$HOME/.claude/x already present in source is restored, not double-rewritten', () => {
+    const src = '@$HOME/.claude/x\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, '@~/.claude/x\n');
+  });
+});

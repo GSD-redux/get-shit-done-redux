@@ -38,6 +38,7 @@ const {
   installerEnv,
   stripAnsi,
   runMinimalInstall,
+  walk,
 } = require('./helpers/install-shared.cjs');
 
 const {
@@ -7480,5 +7481,119 @@ describe('#2875: user-artifact-staging — call-site integration (C7 anti-inertn
     // The staging entry is consumed by the recovery step itself.
     const entries = fs.existsSync(stagingRoot) ? fs.readdirSync(stagingRoot) : [];
     assert.equal(entries.length, 0, 'the orphan is discarded once recovered — not left for a third run to find again');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3719: applyAgentPathRewrites (install-profiles.cts:964, the agents/
+// staging pipeline's pre-converter path-rewrite step) never calls
+// restoreClaudeGlobalAtRefTilde — the same restore #3133/#3544 wired into
+// the skill-staging and gsd-core/ spec-tree emit paths. A real global Claude
+// install therefore ships every `agents/gsd-*.md` `@`-include as
+// `@$HOME/.claude/...`, which Claude Code does not expand: the include
+// silently loads nothing (planner guidance, the untrusted-input boundary,
+// the agent-skills bootstrap, the mandatory initial read).
+//
+// Uses the real spawned installer (runMinimalInstall, `bin/install.js`
+// subprocess) so a green run here proves the fix reaches the actual emit
+// path, not just the pure function tested in tests/path-replacement.test.cjs.
+// ---------------------------------------------------------------------------
+describe('#3719: real global Claude install — agents/*.md @-refs must resolve on tilde', () => {
+  let claudeGlobal;
+  let projectLocal;
+
+  before(() => {
+    claudeGlobal = runMinimalInstall({ runtime: 'claude', scope: 'global' });
+    projectLocal = runMinimalInstall({ runtime: 'claude', scope: 'local' });
+  });
+
+  after(() => {
+    cleanup(claudeGlobal.root);
+    cleanup(projectLocal.root);
+  });
+
+  function collectAtHomeLines(rootDir) {
+    const failures = [];
+    for (const file of walk(rootDir)) {
+      if (!file.endsWith('.md')) continue;
+      const content = fs.readFileSync(file, 'utf8');
+      for (const line of splitLines(content)) {
+        if (/^@\$HOME\//.test(line)) failures.push({ file, line });
+      }
+    }
+    return failures;
+  }
+
+  test('row 3 [RED] — a real global Claude install emits ZERO @$HOME/ lines across agents/*.md', () => {
+    const agentsDir = path.join(claudeGlobal.configDir, 'agents');
+    assert.ok(fs.existsSync(agentsDir), `expected ${agentsDir} to exist`);
+    const failures = [];
+    for (const file of walk(agentsDir)) {
+      if (!file.endsWith('.md')) continue;
+      const content = fs.readFileSync(file, 'utf8');
+      for (const line of splitLines(content)) {
+        if (/^@\$HOME\//.test(line)) failures.push(`${path.relative(agentsDir, file)}: ${line}`);
+      }
+    }
+    assert.deepStrictEqual(failures, [], `agents/*.md files with a broken @$HOME/ include:\n${failures.join('\n')}`);
+  });
+
+  test('row 4 [RED, non-vacuity] — that same install DOES emit @~/ includes in agents/*.md', () => {
+    const agentsDir = path.join(claudeGlobal.configDir, 'agents');
+    const planner = fs.readFileSync(path.join(agentsDir, 'gsd-planner.md'), 'utf8');
+    const tildeLines = splitLines(planner).filter((l) => l.startsWith('@~/'));
+    assert.ok(
+      tildeLines.length > 0,
+      `expected at least one @~/ line in gsd-planner.md (proves the file is not empty/absent), got: ${JSON.stringify(splitLines(planner).filter((l) => l.startsWith('@')))}`,
+    );
+    assert.ok(
+      tildeLines.some((l) => l.includes('mandatory-initial-read.md')),
+      `expected the mandatory-initial-read.md @-include specifically to survive on tilde, got: ${JSON.stringify(tildeLines)}`,
+    );
+  });
+
+  test('row 5 [CONTROL] — skills and workflows emit paths still emit @~/ (no #3133/#3544 regression)', () => {
+    const gsdCoreDir = path.join(claudeGlobal.configDir, 'gsd-core');
+    assert.ok(fs.existsSync(gsdCoreDir), `expected ${gsdCoreDir} to exist`);
+    const failures = collectAtHomeLines(gsdCoreDir);
+    assert.deepStrictEqual(failures, [], `#3544 regression — @$HOME/ lines under gsd-core/:\n${failures.map(f => `${f.file}: ${f.line}`).join('\n')}`);
+    const skillsDir = path.join(claudeGlobal.configDir, 'skills');
+    assert.ok(fs.existsSync(skillsDir), `expected ${skillsDir} to exist`);
+    let sawTilde = false;
+    for (const file of walk(skillsDir)) {
+      if (!file.endsWith('.md')) continue;
+      if (splitLines(fs.readFileSync(file, 'utf8')).some((l) => l.startsWith('@~/'))) sawTilde = true;
+    }
+    assert.ok(sawTilde, 'expected at least one skills/ SKILL.md to still carry an @~/ include (#3133 not regressed)');
+  });
+
+  // THE KEY ROW: walk the ENTIRE emitted tree — not an enumerated list of known
+  // paths — so a new emit path added later is covered automatically by landing
+  // in the same tree. Reports every offending file so a future failure is
+  // diagnosable without re-deriving the failing path by hand.
+  test('row 6 [RED, PARITY] — no file anywhere in the emitted global Claude install tree contains @$HOME/', () => {
+    const failures = collectAtHomeLines(claudeGlobal.configDir);
+    assert.deepStrictEqual(
+      failures,
+      [],
+      `found @$HOME/ lines under the entire emitted tree (${claudeGlobal.configDir}):\n` +
+        failures.map((f) => `  ${path.relative(claudeGlobal.configDir, f.file)}: ${f.line}`).join('\n'),
+    );
+  });
+
+  test('row 8 [CONTROL] — a project-scoped (non-global) Claude install is unaffected', () => {
+    const agentsDir = path.join(projectLocal.configDir, 'agents');
+    assert.ok(fs.existsSync(agentsDir), `expected ${agentsDir} to exist`);
+    // Local install's pathPrefix is absolute (not $HOME-form) — restoreClaudeGlobalAtRefTilde
+    // is a documented no-op for it, and there must be no @$HOME/ or bare @~/.claude leak either.
+    const failures = [];
+    for (const file of walk(agentsDir)) {
+      if (!file.endsWith('.md')) continue;
+      const content = fs.readFileSync(file, 'utf8');
+      for (const line of splitLines(content)) {
+        if (/^@\$HOME\//.test(line) || /^@~\/\.claude\//.test(line)) failures.push(`${path.relative(agentsDir, file)}: ${line}`);
+      }
+    }
+    assert.deepStrictEqual(failures, [], `local install must not leak @$HOME/ or @~/.claude/:\n${failures.join('\n')}`);
   });
 });
