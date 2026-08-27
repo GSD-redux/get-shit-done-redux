@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "plan-review-convergence.md": {
+      "reason": "#3899: the REVIEWS.md lookup was one line of unquoted `$(ls ... 2>/dev/null)` that silently resolved to the empty string on a path with a space, and to a sibling phase's file on a path with a glob metacharacter. Replacing it costs four lines the single line did not carry: a quoted direct assignment, a `[ -r ]` fail-closed guard, and an error naming the expected location instead of blaming the review agent. The surrounding prose gained one sentence saying why the quoting is load-bearing, because this is the shape that regresses when someone 'simplifies' it back to an `ls`."
+    }
+  }
+}
