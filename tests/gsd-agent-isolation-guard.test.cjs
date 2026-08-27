@@ -1026,6 +1026,27 @@ describe('#3045 CORE REDESIGN — dispatch-isolation records as an unconditional
     assert.equal(result.output.trim(), 'harness-worktree', 'a string "false" must degrade to the default (worktrees on), never coerce');
     assert.equal(readSentinelRaw(dir).isolation, 'harness-worktree');
   });
+
+  test('#3737: end-to-end — an opted-out project records none and the guard ALLOWS the sequential dispatch', (t) => {
+    const dir = createTempProject('gsd-3737-optout-');
+    t.after(() => cleanup(dir));
+    writeUseWorktrees(dir, false);
+
+    // The workflow's resolve step: a plain query (no force) records the
+    // opt-out decision — the record the issue says must survive re-queries.
+    const result = runGsdTools(
+      ['query', 'dispatch-isolation', '--raw'],
+      dir,
+      { GSD_RUNTIME: 'claude', HOME: dir },
+    );
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.output.trim(), 'none');
+
+    // The guard fires on the sequential inline Agent() dispatch (no
+    // isolation kwarg) and must NOT deny it (#3737's user-visible symptom).
+    const r = runHook(agentPayload(), dir);
+    assert.equal(r.status, 0, `guard denied a sequential dispatch under the opt-out sentinel: stdout=${r.stdout} stderr=${r.stderr}`);
+  });
 });
 
 describe('#3045 MAJOR — --harness-flag can now accept a bare CLI-flag value (Cursor real registry value + generalized parsing)', () => {
