@@ -953,6 +953,23 @@ function readAckFile(ackPath = ACK_PATH) {
   }
 }
 
+/**
+ * STUB — #3942 commit-trailer reader (interface-only; see emitted-diff.cjs's stub
+ * block for why this returns benign-empty rather than throwing).
+ *
+ * Real implementation: resolve `git merge-base baseRef headRef`, throwing when the
+ * range is uncomputable (row 15/22 of the design — a shallow clone must fail LOUD,
+ * never return empty); read every commit's trailer block in that range (bounded git
+ * subprocess, timeout surfaced not swallowed); and hand the per-trailer-name value
+ * arrays to `parseAckTrailers` (emitted-diff.cjs).
+ *
+ * @param {{baseRef?: string, headRef?: string, cwd?: string}} [_opts]
+ * @returns {{hash: Map<string, {reason: string}>, growth: Map<string, {reason: string}>, errors: string[]}}
+ */
+function readAckTrailers(_opts) {
+  return { hash: new Map(), growth: new Map(), errors: [] };
+}
+
 module.exports = {
   REPO_ROOT,
   ACK_PATH,
@@ -986,6 +1003,7 @@ module.exports = {
   currentManifests,
   currentSizes,
   readAckFile,
+  readAckTrailers,
   WORKTREE_TIMEOUT_MS,
   BUILD_LIB_TIMEOUT_MS,
   BUILD_TIMEOUT_MS,

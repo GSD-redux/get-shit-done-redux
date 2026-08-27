@@ -854,6 +854,54 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
   return parts.join('\n\n');
 }
 
+/**
+ * ── #3942 STUBS — commit-trailer acknowledgment (interface-only) ────────────
+ *
+ * `tests/emitted-ack-trailer.test.cjs` is written failing-first against these
+ * names. Every one of them is a PLACEHOLDER: it returns a benign, empty-shaped
+ * value and NEVER throws, on purpose — several matrix rows (cap overflow,
+ * uncomputable range) assert a THROW from the real implementation, and a
+ * stub that throws instead of returning would make those rows pass for the
+ * wrong reason, destroying the red. The real grammar, cap enforcement, and
+ * merge-base range semantics land in a later step (40-design.md).
+ */
+
+/** Trailer key naming an emitted PATH whose HASH moved (grammar: 40-design.md). */
+const ACK_TRAILER_HASH = 'Emitted-Drift-Ack-Hash';
+/** Trailer key naming a bare workflow/agent FILENAME that grew. */
+const ACK_TRAILER_GROWTH = 'Emitted-Drift-Ack-Growth';
+/** Key/reason delimiter: space, EM DASH (U+2014), space — split on the FIRST occurrence only. */
+const ACK_TRAILER_DELIM = ' — ';
+/** Upper bound on trailers read from one range. Real implementation throws above this. */
+const MAX_ACK_TRAILERS = 64;
+
+/**
+ * STUB — parse trailer VALUES already extracted per trailer name (no git I/O).
+ * Real implementation: split each value on the first `ACK_TRAILER_DELIM`, validate the
+ * key (non-empty, no `<`/`>`/whitespace, not a `RESERVED_ACK_KEYS` member), require a
+ * non-empty trimmed reason, dedupe identical (key, reason) pairs silently, hard-error on
+ * a same-key conflicting reason, and enforce `MAX_ACK_TRAILERS` (throwing above it).
+ *
+ * @param {{hash?: string[], growth?: string[]}} [_trailers]
+ * @returns {{hash: Map<string, {reason: string}>, growth: Map<string, {reason: string}>, errors: string[]}}
+ */
+function parseAckTrailers(_trailers) {
+  return { hash: new Map(), growth: new Map(), errors: [] };
+}
+
+/**
+ * STUB — render one trailer line (`<name>: <key> — <reason>`) for docs/round-trip use.
+ * Real implementation returns `${trailerName}: ${key}${ACK_TRAILER_DELIM}${reason}`.
+ *
+ * @param {string} _trailerName
+ * @param {string} _key
+ * @param {string} _reason
+ * @returns {string}
+ */
+function renderAckTrailer(_trailerName, _key, _reason) {
+  return '';
+}
+
 module.exports = {
   ACK_VERSION,
   ACK_FILE,
@@ -869,4 +917,10 @@ module.exports = {
   diffEmitted,
   buildReport,
   formatReport,
+  ACK_TRAILER_HASH,
+  ACK_TRAILER_GROWTH,
+  ACK_TRAILER_DELIM,
+  MAX_ACK_TRAILERS,
+  parseAckTrailers,
+  renderAckTrailer,
 };
