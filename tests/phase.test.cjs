@@ -1413,26 +1413,48 @@ describe('#3897 rung 4 (ADR-3473 §8.9): shortFormToId, the bare plan-number dep
   // DIFFERENT phase must never satisfy a same-named short-form dependency in
   // this phase — resolution is scoped per phase-plan-index invocation, never
   // global across the project.
-  test('T49 shortFormDoesNotReachAcrossPhases: a same-named short form in a different phase must NOT resolve', () => {
-    // A decoy phase with its OWN plan '01' — must never be reachable from phase 27.
-    const decoyPhaseDir = path.join(tmpDir, '.planning', 'phases', '99-decoy');
+  //
+  // #3897 rung 4 (isolated correctness review, MINOR finding 5): the
+  // ORIGINAL version of this test gave the target phase its OWN plan '01'
+  // (27-01-real) alongside the decoy (99-01-decoy). That construction cannot
+  // actually falsify a globally-scoped map: sorted plan-file order always
+  // resolves '01' to whichever phase's own plan sorts first among ALL
+  // candidates, and phase 27 sorts before phase 99 either way — so a
+  // GLOBALLY-scoped shortFormToId would have produced the exact same
+  // wave01 < wave02 result this test asserted, passing for the wrong reason.
+  // Verified empirically (see the isolated review's probe): building
+  // shortFormToId from the phase-scoped rawPlans vs. from the UNION of both
+  // phases' rawPlans produces byte-identical `unresolved`/`level` results for
+  // the original fixture shape.
+  //
+  // Fixed per the reviewer's own working construction: the TARGET phase has
+  // NO plan of its own numbered '01' at all (only '27-05-followup'), and the
+  // decoy phase's plan IS numbered '01' (11-01-decoy). Correct (per-phase)
+  // behavior is that '01' does NOT resolve — the edge is dropped with the
+  // existing #3427 unresolved-token warning, and 27-05 collapses to wave 1.
+  // A globally-scoped map would instead let '01' resolve to 11-01-decoy, a
+  // node outside this phase's rawPlans — which computeDependencyLevels can
+  // never satisfy, so it manufactures a false depends_on CYCLE report
+  // instead of a clean wave assignment. This construction was confirmed,
+  // by direct unit probe against the real exported `buildShortFormToId` and
+  // `computeDependencyLevels`, to distinguish the correct from the buggy
+  // scoping — the ORIGINAL fixture shape above did not.
+  test('T49 shortFormDoesNotReachAcrossPhases: a phase with NO plan of its own numbered "01" must NOT resolve depends_on: ["01"] via a same-numbered plan in a different phase', () => {
+    // A decoy phase whose OWN plan is numbered '01' — the only '01' anywhere
+    // in the project is in THIS phase, not phase 27.
+    const decoyPhaseDir = path.join(tmpDir, '.planning', 'phases', '11-decoy');
     fs.mkdirSync(decoyPhaseDir, { recursive: true });
     fs.writeFileSync(
-      path.join(decoyPhaseDir, '99-01-decoy-PLAN.md'),
+      path.join(decoyPhaseDir, '11-01-decoy-PLAN.md'),
       '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Decoy plan in a different phase.</objective>\n',
     );
 
+    // Target phase has NO plan of its own numbered '01' — only '05'.
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '27-inphase-only');
     fs.mkdirSync(phaseDir, { recursive: true });
-    // This phase's OWN plan '01' also exists — the short form must resolve to
-    // THIS plan, never to the decoy in phase 99.
     fs.writeFileSync(
-      path.join(phaseDir, '27-01-real-PLAN.md'),
-      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Real in-phase plan A.</objective>\n',
-    );
-    fs.writeFileSync(
-      path.join(phaseDir, '27-02-followup-PLAN.md'),
-      "---\nwave: 2\nautonomous: true\ndepends_on:\n  - '01'\n---\n<objective>Plan B.</objective>\n",
+      path.join(phaseDir, '27-05-followup-PLAN.md'),
+      "---\nwave: 2\nautonomous: true\ndepends_on:\n  - '01'\n---\n<objective>Plan with a dangling short-form dependency.</objective>\n",
     );
 
     const result = runGsdTools('phase-plan-index 27', tmpDir);
@@ -1441,15 +1463,25 @@ describe('#3897 rung 4 (ADR-3473 §8.9): shortFormToId, the bare plan-number dep
 
     // The decoy phase's plan must never even appear in THIS phase's output.
     assert.ok(
-      !output.plans.some((p) => p.id.startsWith('99-')),
+      !output.plans.some((p) => p.id.startsWith('11-')),
       'a different phase\'s plan must never appear in this phase\'s plan-index output at all',
     );
-    const wave01 = Object.keys(output.waves).find((w) => output.waves[w].some((id) => id.startsWith('27-01')));
-    const wave02 = Object.keys(output.waves).find((w) => output.waves[w].some((id) => id.startsWith('27-02')));
-    assert.ok(wave01 !== undefined && wave02 !== undefined);
+
+    // Correct behavior: the token does not resolve in-phase, so the edge is
+    // DROPPED — the #3427 unresolved-token warning fires by name, and
+    // 27-05-followup collapses to wave 1 rather than being scheduled behind
+    // a cross-phase phantom edge (which, per the probe above, would instead
+    // surface as a manufactured depends_on cycle error, not a clean pass).
+    const warnings = output.warnings ?? [];
     assert.ok(
-      Number(wave01) < Number(wave02),
-      `the short form '01' must resolve to THIS phase's own 27-01-real, not the decoy in phase 99 (got wave01=${wave01}, wave02=${wave02})`,
+      warnings.some((w) => /does not resolve to any plan in this phase/.test(w) && w.includes('27-05')),
+      `expected an unresolved-token warning naming 27-05-followup's dangling '01' dependency; got: ${JSON.stringify(warnings)}`,
+    );
+    const wave05 = Object.keys(output.waves).find((w) => output.waves[w].some((id) => id.startsWith('27-05')));
+    assert.strictEqual(
+      wave05,
+      '1',
+      `27-05-followup must collapse to wave 1 (dropped edge, no valid in-phase '01') — the short form must NOT reach the decoy in phase 11; got wave ${wave05}`,
     );
   });
 });

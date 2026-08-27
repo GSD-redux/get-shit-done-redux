@@ -635,6 +635,49 @@ function resolveDependencyId(
   return shortFormToId?.get(lower) ?? null;
 }
 
+// #3897 rung 4 (ADR-3473 §8.9) — builds the third depends_on resolution tier:
+// a map from an in-phase BARE PLAN NUMBER (e.g. "01") to the plan id whose
+// canonical id ends with that number. Recovered from the retired SDK lineage
+// (sdk/src/query/phase.ts at 11918dcc3^) with ONE deliberate narrowing: the
+// lost implementation indexed ANY trailing dash-segment of a canonical id,
+// with no constraint that the segment be a plan NUMBER — so a phase
+// containing both `09-FIX-auth-PLAN.md` and `09-GAP-auth-PLAN.md` (canonical
+// id `09-FIX-auth`, trailing segment "auth") would silently bind
+// `depends_on: ["auth"]` to whichever sorted first, fabricating a
+// wave-affecting DAG edge with ZERO warning — a mis-resolved edge, which is
+// worse than a dropped one (found in isolated correctness review, #3897).
+// `docs/reference/plan-md.md` already documents this tier as resolving "the
+// bare plan number", so requiring `/^\d+$/` on the trailing segment is a
+// strict narrowing onto the tier's OWN documented contract, not a behavior
+// change for any legitimate input. Do NOT restore the unconstrained
+// lastDash-slice "to match the recovered original" — the original was wrong
+// here; this rung deliberately departs from it in this one respect, and only
+// this one. Everything else — the `lastDash` bound, first-write-wins,
+// lowercasing — is kept exactly as recovered:
+//   - first write wins, deterministic because rawPlans is passed in sorted
+//     plan-file order (D4/T44) and this loop iterates in that same order;
+//   - a canonical id with no dash (`lastDash === -1` or `lastDash === 0`,
+//     e.g. "24" or "-01") or a trailing dash (`lastDash === canonical.length
+//     - 1`, e.g. "09-") is never indexed (D5).
+// Exported so callers can build this map once and so tests assert against
+// this REAL implementation rather than a hand-rolled copy that could
+// silently disagree with it after a future change here (CLAUDE.md's
+// generative-fix-divergence rule).
+function buildShortFormToId(rawPlans: RawPlan[]): Map<string, string> {
+  const shortFormToId = new Map<string, string>();
+  for (const p of rawPlans) {
+    const canonical = extractCanonicalPlanId(p.id);
+    const lastDash = canonical.lastIndexOf('-');
+    if (lastDash > 0 && lastDash < canonical.length - 1) {
+      const shortForm = canonical.slice(lastDash + 1).toLowerCase();
+      if (/^\d+$/.test(shortForm) && !shortFormToId.has(shortForm)) {
+        shortFormToId.set(shortForm, p.id);
+      }
+    }
+  }
+  return shortFormToId;
+}
+
 // O(V + E). Assigns each in-phase plan its longest-path topological level over the
 // in-phase dependsOn DAG (Kahn's algorithm). Returns { level: Map<id,number>, visited: number,
 // order: string[] }. visited < rawPlans.length signals a dependency cycle. `order` (#2830) is
@@ -883,26 +926,14 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   const canonicalToId = new Map(
     rawPlans.map((p) => [extractCanonicalPlanId(p.id).toLowerCase(), p.id]),
   );
-  // #3897 rung 4 (ADR-3473 §8.9) — the third depends_on resolution tier,
-  // recovered verbatim from the retired SDK lineage (sdk/src/query/phase.ts
-  // at 11918dcc3^). Resolves a bare in-phase plan-number short form (e.g.
-  // "01") to its owning plan id. First write wins, deterministic because
-  // rawPlans is built from sorted plan files (D4/T44) — this loop iterates
-  // rawPlans in that same order. In-phase only by construction (T49): the map
-  // is built from THIS phase's rawPlans alone, so a short form colliding with
-  // a different phase's plan can never be a candidate. A canonical id with no
-  // dash (`lastDash > 0` excludes `lastDash === -1` and `lastDash === 0`) is
-  // never indexed (D5) — matching the lost implementation exactly, not an
-  // improvement over it (see 40-design.md, "Rejected" #4).
-  const shortFormToId = new Map<string, string>();
-  for (const p of rawPlans) {
-    const canonical = extractCanonicalPlanId(p.id);
-    const lastDash = canonical.lastIndexOf('-');
-    if (lastDash > 0 && lastDash < canonical.length - 1) {
-      const shortForm = canonical.slice(lastDash + 1).toLowerCase();
-      if (!shortFormToId.has(shortForm)) shortFormToId.set(shortForm, p.id);
-    }
-  }
+  // #3897 rung 4 (ADR-3473 §8.9) — the third depends_on resolution tier.
+  // Resolves a bare in-phase plan-number short form (e.g. "01") to its owning
+  // plan id. In-phase only by construction (T49): the map is built from THIS
+  // phase's rawPlans alone, so a short form colliding with a different
+  // phase's plan can never be a candidate. See {@link buildShortFormToId}'s
+  // own comment for the numeric-only narrowing this rung applies on top of
+  // the recovered SDK-lineage algorithm.
+  const shortFormToId = buildShortFormToId(rawPlans);
 
   const { level, visited, order, unresolved } = computeDependencyLevels(rawPlans, planMap, canonicalToId, shortFormToId);
 
@@ -3593,4 +3624,5 @@ export = {
   cmdPhaseUatPassed,
   cmdPhaseListPlans,
   computeDependencyLevels,
+  buildShortFormToId,
 };

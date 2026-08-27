@@ -73,11 +73,26 @@ function assertMarkerSeamExists(rs) {
   );
 }
 
-/** Run `fn` with `overrides` applied to process.env, restoring exactly what was there before. */
+/**
+ * Run `fn` with `overrides` applied to process.env, restoring exactly what
+ * was there before. An override value of `undefined` DELETES that key for
+ * the duration of `fn` (never `Object.assign`s it — assigning `undefined`
+ * onto `process.env` coerces to the literal string `"undefined"`, not a
+ * deletion) — #3897 rung 4 (isolated correctness review, NIT finding 8b):
+ * every `delete process.env.GSD_RUNTIME` in this file used to bypass this
+ * helper entirely and never restore the ambient value afterward, leaking a
+ * forced-unset GSD_RUNTIME into whatever test (in this file or a later one
+ * sharing the same process) ran next. Every test below now routes through
+ * this helper, `undefined`-keyed, so ambient env state is always restored.
+ */
 function withEnv(overrides, fn) {
   const saved = {};
   for (const key of Object.keys(overrides)) saved[key] = process.env[key];
-  Object.assign(process.env, overrides);
+  for (const key of Object.keys(overrides)) {
+    const value = overrides[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   try {
     return fn();
   } finally {
@@ -93,15 +108,16 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
     const rs = requireRuntimeSlash();
     assertMarkerSeamExists(rs);
     const proj = neutralProject(t);
-    delete process.env.GSD_RUNTIME;
     rs._setInstallRuntimeMarkerForTests('codex');
     t.after(() => rs._resetInstallRuntimeMarkerCacheForTests());
 
-    assert.equal(
-      rs.resolveRuntime(proj),
-      'codex',
-      'no env, no config.runtime, marker says codex (R3) — resolveRuntime must consult the marker instead of falling straight to claude',
-    );
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      assert.equal(
+        rs.resolveRuntime(proj),
+        'codex',
+        'no env, no config.runtime, marker says codex (R3) — resolveRuntime must consult the marker instead of falling straight to claude',
+      );
+    });
   });
 
   test('T1 envRuntimeOutranksConfigAndMarker', (t) => {
@@ -122,22 +138,24 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
     assertMarkerSeamExists(rs);
     const proj = neutralProject(t);
     fs.writeFileSync(path.join(proj, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
-    delete process.env.GSD_RUNTIME;
     rs._setInstallRuntimeMarkerForTests('codex');
     t.after(() => rs._resetInstallRuntimeMarkerCacheForTests());
 
-    assert.equal(rs.resolveRuntime(proj), 'cursor', 'config.runtime must outrank the install marker');
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      assert.equal(rs.resolveRuntime(proj), 'cursor', 'config.runtime must outrank the install marker');
+    });
   });
 
   test('T4 noSignalsFallsBackToClaude', (t) => {
     const rs = requireRuntimeSlash();
     assertMarkerSeamExists(rs);
     const proj = neutralProject(t);
-    delete process.env.GSD_RUNTIME;
     rs._setInstallRuntimeMarkerForTests(null);
     t.after(() => rs._resetInstallRuntimeMarkerCacheForTests());
 
-    assert.equal(rs.resolveRuntime(proj), 'claude', 'with no env, no config.runtime and no marker, the default is unchanged');
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      assert.equal(rs.resolveRuntime(proj), 'claude', 'with no env, no config.runtime and no marker, the default is unchanged');
+    });
   });
 
   test('T5 emptyMarkerFallsThrough', (t) => {
@@ -161,8 +179,9 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
     );
 
     const proj = neutralProject(t);
-    delete process.env.GSD_RUNTIME;
-    assert.equal(rs.resolveRuntime(proj), 'claude', 'an empty marker must fall through to claude');
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      assert.equal(rs.resolveRuntime(proj), 'claude', 'an empty marker must fall through to claude');
+    });
   });
 
   test('T6 unreadableMarkerNeverThrows', (t) => {
@@ -192,10 +211,11 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
     assert.equal(rs.readInstallRuntimeMarker(), null);
 
     const proj = neutralProject(t);
-    delete process.env.GSD_RUNTIME;
     let result;
-    assert.doesNotThrow(() => {
-      result = rs.resolveRuntime(proj);
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      assert.doesNotThrow(() => {
+        result = rs.resolveRuntime(proj);
+      });
     });
     assert.equal(result, 'claude', 'an unreadable marker must fall through to claude, never crash the caller');
   });
@@ -204,11 +224,10 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
     const rs = requireRuntimeSlash();
     assertMarkerSeamExists(rs);
     const proj = neutralProject(t);
-    delete process.env.GSD_RUNTIME;
     rs._setInstallRuntimeMarkerForTests('NotARealRuntime-V9');
     t.after(() => rs._resetInstallRuntimeMarkerCacheForTests());
 
-    const viaMarker = rs.resolveRuntime(proj);
+    const viaMarker = withEnv({ GSD_RUNTIME: undefined }, () => rs.resolveRuntime(proj));
     const viaEnv = withEnv({ GSD_RUNTIME: 'NotARealRuntime-V9' }, () => rs.resolveRuntime(neutralProject(t)));
 
     assert.equal(
@@ -241,11 +260,12 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
     });
 
     const proj = neutralProject(t);
-    delete process.env.GSD_RUNTIME;
     let result;
-    assert.doesNotThrow(() => {
-      result = rs.resolveRuntime(proj);
-    }, 'hostile marker content (newline, path traversal, control char) must never throw');
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      assert.doesNotThrow(() => {
+        result = rs.resolveRuntime(proj);
+      }, 'hostile marker content (newline, path traversal, control char) must never throw');
+    });
     assert.equal(typeof result, 'string');
 
     for (const seen of seenPaths) {
@@ -294,10 +314,11 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
     });
 
     const proj = neutralProject(t);
-    delete process.env.GSD_RUNTIME;
-    rs.resolveRuntime(proj);
-    rs.resolveRuntime(proj);
-    rs.resolveRuntime(proj);
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      rs.resolveRuntime(proj);
+      rs.resolveRuntime(proj);
+      rs.resolveRuntime(proj);
+    });
 
     assert.equal(reads, 1, 'the marker file must be read at most once per process — later calls must hit the cache');
   });
@@ -321,13 +342,14 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
     });
 
     const proj = neutralProject(t);
-    delete process.env.GSD_RUNTIME;
-    rs.resolveRuntime(proj);
-    assert.equal(reads, 1);
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      rs.resolveRuntime(proj);
+      assert.equal(reads, 1);
 
-    rs._resetInstallRuntimeMarkerCacheForTests();
-    rs.resolveRuntime(proj);
-    assert.equal(reads, 2, 'resetting the cache seam must force a fresh read on the next call');
+      rs._resetInstallRuntimeMarkerCacheForTests();
+      rs.resolveRuntime(proj);
+      assert.equal(reads, 2, 'resetting the cache seam must force a fresh read on the next call');
+    });
   });
 
   test('T12 hooksDelegateToTheSingleOwner', (t) => {
@@ -344,32 +366,33 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
 
     const proj = neutralProject(t);
     const configPath = path.join(proj, '.planning', 'config.json');
-    delete process.env.GSD_RUNTIME;
 
-    // Set the CANONICAL seam only — no disk write. A hook that still owns its
-    // own private reader/cache (today's state, #3566) will never observe this
-    // in-memory value; it will fall through to its own disk read or the
-    // ~/.gsd/defaults.json rung instead.
-    rs._setInstallRuntimeMarkerForTests('gemini');
-    const identity = guard.resolveRuntimeIdentity(proj, configPath, resolveRuntimeNameFromCandidates);
-    assert.equal(
-      identity.runtimeId,
-      'gemini',
-      'hooks/gsd-agent-isolation-guard.js must resolve the marker through the single canonical owner (runtime-slash.cts), not its own private reader/cache',
-    );
-    assert.equal(identity.confident, true);
+    withEnv({ GSD_RUNTIME: undefined }, () => {
+      // Set the CANONICAL seam only — no disk write. A hook that still owns
+      // its own private reader/cache (today's state, #3566) will never
+      // observe this in-memory value; it will fall through to its own disk
+      // read or the ~/.gsd/defaults.json rung instead.
+      rs._setInstallRuntimeMarkerForTests('gemini');
+      const identity = guard.resolveRuntimeIdentity(proj, configPath, resolveRuntimeNameFromCandidates);
+      assert.equal(
+        identity.runtimeId,
+        'gemini',
+        'hooks/gsd-agent-isolation-guard.js must resolve the marker through the single canonical owner (runtime-slash.cts), not its own private reader/cache',
+      );
+      assert.equal(identity.confident, true);
 
-    // Cursor hook's surface has no direct runtimeId getter — observe delegation
-    // through its isolation verdict instead. 'claude' is a known registry
-    // entry whose dispatch.isolation is 'harness-worktree'
-    // (capability-registry.cjs); a hook still reading its own (empty, dev-tree)
-    // disk marker would answer as if no marker existed at all.
-    rs._setInstallRuntimeMarkerForTests('claude');
-    const isolation = cursorHook.resolveFallbackIsolation(proj, configPath);
-    assert.equal(
-      isolation,
-      'harness-worktree',
-      'hooks/gsd-cursor-subagent-start.js must resolve the marker through the single canonical owner too',
-    );
+      // Cursor hook's surface has no direct runtimeId getter — observe
+      // delegation through its isolation verdict instead. 'claude' is a
+      // known registry entry whose dispatch.isolation is 'harness-worktree'
+      // (capability-registry.cjs); a hook still reading its own (empty,
+      // dev-tree) disk marker would answer as if no marker existed at all.
+      rs._setInstallRuntimeMarkerForTests('claude');
+      const isolation = cursorHook.resolveFallbackIsolation(proj, configPath);
+      assert.equal(
+        isolation,
+        'harness-worktree',
+        'hooks/gsd-cursor-subagent-start.js must resolve the marker through the single canonical owner too',
+      );
+    });
   });
 });

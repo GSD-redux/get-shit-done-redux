@@ -1433,6 +1433,83 @@ describe('checkCodexSandboxPosture (#3897 rung 3 — not yet implemented, RED un
     assert.equal(violation.expected, 'workspace-write', 'the violation must name the EXPECTED sandbox_mode');
     assert.equal(violation.found, 'read-only', 'the violation must name the FOUND (installed) sandbox_mode');
   });
+
+  // #3897 rung 4 (isolated correctness review, MINOR finding 2): `found` used
+  // to be read via a naive whole-file regex, unlike the block-aware scanner
+  // the sibling checkCodexModelPosture uses. Reviewer's fixture: no header
+  // sandbox_mode pin at all, but a `sandbox_mode = "..."`-shaped line INSIDE
+  // the developer_instructions block (prose a role's own prompt might
+  // legitimately discuss). The naive regex misread that prose as a live
+  // value and manufactured a FALSE violation.
+  test('a sandbox_mode-shaped line INSIDE developer_instructions is never read as a live value (no false violation)', (t) => {
+    const globalHome = createTempDir('gsd-sandbox-block-aware-');
+    t.after(() => cleanup(globalHome));
+    const agentsDir = path.join(globalHome, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+
+    // gsd-nyquist-auditor's real canonical tools: declares Write/Edit, so the
+    // derived expectation is workspace-write. Install a TOML that correctly
+    // has NO header sandbox_mode pin, but whose developer_instructions block
+    // contains a line that is shaped exactly like a live sandbox_mode pin.
+    fs.writeFileSync(
+      path.join(agentsDir, 'gsd-nyquist-auditor.toml'),
+      'name = "gsd-nyquist-auditor"\ndescription = "Fills Nyquist validation gaps"\n' +
+      "developer_instructions = '''\n" +
+      'When configuring the sandbox, use:\n' +
+      'sandbox_mode = "workspace-write"\n' +
+      "'''\n",
+    );
+    for (const agent of EXPECTED_AGENTS) {
+      if (agent === 'gsd-nyquist-auditor') continue;
+      fs.writeFileSync(path.join(agentsDir, `${agent}.toml`), `name = "${agent}"\n`);
+    }
+    process.env['CODEX_HOME'] = globalHome;
+
+    const result = agentInstallCheck.checkCodexSandboxPosture('codex');
+    const violation = result.violations.find((v) => v.agent === 'gsd-nyquist-auditor');
+    assert.equal(
+      violation,
+      undefined,
+      'a sandbox_mode-shaped line inside developer_instructions must never be read as the installed value — it must not manufacture a violation for an agent with no real header pin',
+    );
+  });
+
+  // #3897 rung 4 (isolated correctness review, MINOR finding 3):
+  // truncatePostureValue exists at agent-install-check.cts precisely for
+  // this, and the model-posture sibling applies it — the sandbox check did
+  // not, so an oversized (or secret-shaped) sandbox_mode value could reach
+  // `validate agents --raw` output at full length.
+  test('an oversized sandbox_mode value is truncated in the emitted violation (CLI JSON)', (t) => {
+    const globalHome = createTempDir('gsd-sandbox-truncate-');
+    t.after(() => cleanup(globalHome));
+    const agentsDir = path.join(globalHome, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+
+    const oversized = 'x'.repeat(300);
+    fs.writeFileSync(
+      path.join(agentsDir, 'gsd-executor.toml'),
+      `name = "gsd-executor"\ndescription = "Executes plans"\nsandbox_mode = "${oversized}"\n` +
+      "developer_instructions = '''\nExecute.\n'''\n",
+    );
+    for (const agent of EXPECTED_AGENTS) {
+      if (agent === 'gsd-executor') continue;
+      fs.writeFileSync(path.join(agentsDir, `${agent}.toml`), `name = "${agent}"\n`);
+    }
+    process.env['CODEX_HOME'] = globalHome;
+
+    const result = agentInstallCheck.checkCodexSandboxPosture('codex');
+    const violation = result.violations.find((v) => v.agent === 'gsd-executor');
+    assert.ok(violation, 'the violation must name the drifted agent');
+    assert.ok(
+      violation.found.length <= 65,
+      `violation.found must be truncated (<=64 chars + ellipsis), got length ${violation.found.length}`,
+    );
+    assert.ok(violation.found.endsWith('…'), 'a truncated value must end with the ellipsis marker');
+
+    // The full-length value must never reach the emitted JSON at all.
+    const serialized = JSON.stringify(result);
+    assert.ok(!serialized.includes(oversized), 'the untruncated 300-char value must never appear in the emitted CLI JSON');
+  });
 });
 
 // T29 (validate agents still fails when a file is missing, S9) is intentionally

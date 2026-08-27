@@ -170,6 +170,15 @@ export function findDeveloperInstructionsBlockRange(
 export interface HeaderScanResult {
   model: string | null;
   hasReasoningEffort: boolean;
+  /**
+   * #3897 rung 4 (isolated correctness review, MINOR finding 2): the
+   * installed `sandbox_mode` value, block-aware exactly like `model` above —
+   * a `sandbox_mode = "..."`-shaped line inside the `developer_instructions`
+   * block (prose discussing sandbox modes) must never be read as a live
+   * value, same reasoning as the `model` probe this scan already protects.
+   * `null` when no live `sandbox_mode` key is present.
+   */
+  sandboxMode: string | null;
 }
 
 interface HeaderLineInfo {
@@ -177,6 +186,7 @@ interface HeaderLineInfo {
   modelLineIndex: number | null;
   reasoningEffort: string | null;
   reasoningEffortLineIndex: number | null;
+  sandboxMode: string | null;
 }
 
 // Line-oriented scan of every line OUTSIDE the `developer_instructions` block
@@ -189,11 +199,15 @@ interface HeaderLineInfo {
 // lenient reader, boolean-only for reasoning effort) and parseCodexAgentToml
 // (the strict writer, which also needs the effort's value and both keys' line
 // indices so stripModel/stripReasoningEffort can remove exactly one line).
+// `sandbox_mode` (#3897 rung 4 MINOR finding 2) rides the same block-aware
+// pass as `model`/`model_reasoning_effort` — one scanner, never a second,
+// naive whole-file regex that could match prose inside the block.
 function scanHeaderLines(lines: string[], blockStart: number, blockEnd: number): HeaderLineInfo {
   let model: string | null = null;
   let modelLineIndex: number | null = null;
   let reasoningEffort: string | null = null;
   let reasoningEffortLineIndex: number | null = null;
+  let sandboxMode: string | null = null;
   for (let i = 0; i < lines.length; i++) {
     if (blockStart !== -1 && i >= blockStart && i <= blockEnd) continue;
     const trimmed = lines[i].trim();
@@ -208,9 +222,11 @@ function scanHeaderLines(lines: string[], blockStart: number, blockEnd: number):
     } else if (key === 'model_reasoning_effort') {
       reasoningEffort = unquoteTomlValue(rawValue);
       reasoningEffortLineIndex = i;
+    } else if (key === 'sandbox_mode') {
+      sandboxMode = unquoteTomlValue(rawValue);
     }
   }
-  return { model, modelLineIndex, reasoningEffort, reasoningEffortLineIndex };
+  return { model, modelLineIndex, reasoningEffort, reasoningEffortLineIndex, sandboxMode };
 }
 
 /**
@@ -222,8 +238,8 @@ function scanHeaderLines(lines: string[], blockStart: number, blockEnd: number):
 export function scanTomlLines(content: string): HeaderScanResult {
   const lines = content.split(/\r?\n/);
   const { start, end } = findDeveloperInstructionsBlockRange(lines);
-  const { model, reasoningEffort } = scanHeaderLines(lines, start, end);
-  return { model, hasReasoningEffort: reasoningEffort !== null };
+  const { model, reasoningEffort, sandboxMode } = scanHeaderLines(lines, start, end);
+  return { model, hasReasoningEffort: reasoningEffort !== null, sandboxMode };
 }
 
 // Splits `content` into `{lines, terminators}` where `terminators[i]` is the
@@ -430,8 +446,8 @@ export function stripReasoningEffort(doc: CodexAgentDoc): CodexAgentDoc {
 // no frontmatter-parsing need at all anymore.
 
 /**
- * The 16 roles HALT.md measured as widening under derivation (declare
- * Write/Edit, never in the pre-#3897 `CODEX_AGENT_SANDBOX` map, so the old
+ * The 17 roles measured as widening under derivation (declare Write/Edit,
+ * never in the pre-#3897 `CODEX_AGENT_SANDBOX` map, so the old
  * `|| 'read-only'` fallback silently under-granted them). Pinned to
  * `read-only` pending the open question of whether Codex enforces
  * `sandbox_mode` or treats it as advisory (HALT.md). This list is CLOSED and
@@ -441,6 +457,19 @@ export function stripReasoningEffort(doc: CodexAgentDoc): CodexAgentDoc {
  * `agents/` roster by a dedicated test (`tests/codex-config.test.cjs` T24/T25)
  * so a stale or orphaned entry fails loudly instead of being silently
  * honored forever.
+ *
+ * `gsd-nyquist-auditor` is the 17th entry, added by the list-form `tools:`
+ * parse fix (#3897 follow-up): its `tools:` frontmatter uses YAML block-list
+ * form (`tools:` + indented `- Item` lines) and declares both Write and
+ * Edit, but the original `extractToolsLine`/`extractFrontmatterField`
+ * readers only ever saw the first list item (`- Read`) and derived
+ * `read-only` by accident, not by design. {@link extractToolsValue} now
+ * parses the list correctly, so this role genuinely derives
+ * `workspace-write` from its tool contract — HALT.md's original 16-role
+ * count measured against the pre-fix (single-line) readers and undercounted
+ * this role. It is held here for the same reason as the other 16: pending
+ * Codex's `sandbox_mode` enforcement decision, not because the derivation is
+ * wrong.
  */
 export const CODEX_SANDBOX_HOLDS: Readonly<Record<string, string>> = Object.freeze({
   'gsd-ai-researcher': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
@@ -459,6 +488,7 @@ export const CODEX_SANDBOX_HOLDS: Readonly<Record<string, string>> = Object.free
   'gsd-pattern-mapper': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
   'gsd-ui-auditor': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
   'gsd-ui-researcher': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-nyquist-auditor': 'declares Write/Edit (YAML list-form tools:, surfaced by the list-form parse fix); pending Codex sandbox_mode enforcement decision',
 });
 
 // True iff a `tools:` frontmatter value declares Write or Edit as a whole
@@ -467,12 +497,141 @@ export const CODEX_SANDBOX_HOLDS: Readonly<Record<string, string>> = Object.free
 // ({@link _deriveCodexSandboxModeFromTools}) and the posture check
 // (`agent-install-check.cts`'s `checkCodexSandboxPosture`, via
 // {@link deriveCodexSandboxMode}).
+//
+// #3897 security review F5: a negation form — `All tools except Agent,
+// Write, Edit` — used to derive `workspace-write` because the plain
+// comma-tokenizer below saw the literal token `Write` and never noticed it
+// was named as an EXCLUSION, not a grant. That is fail-OPEN: the value's
+// stated meaning is "everything except these", so a `Write`/`Edit` name
+// after `except` means the role does NOT get them. No shipped roster agent
+// uses this form today, but a wrong answer here widens silently, so it is
+// handled: once the literal word `except` (case-insensitive) appears
+// anywhere in the value, this is a "<grant> except <exclusions>" statement
+// and only the tokens AFTER `except` decide the verdict — `Write`/`Edit`
+// declare broader iff `except` is ABSENT, or present but does not name them.
 function _codexToolsDeclareWriteOrEdit(toolsRaw: string): boolean {
-  const tokens = String(toolsRaw || '').split(',').map((t) => t.trim());
+  const raw = String(toolsRaw || '');
+  const exceptIndex = raw.search(/\bexcept\b/i);
+  if (exceptIndex !== -1) {
+    const exclusionsText = raw.slice(exceptIndex).replace(/^\S*\s*except\b/i, '');
+    const exclusions = exclusionsText.split(',').map((t) => t.trim()).filter(Boolean);
+    const excludesWriteOrEdit = exclusions.includes('Write') || exclusions.includes('Edit');
+    return !excludesWriteOrEdit;
+  }
+  const tokens = raw.split(',').map((t) => t.trim());
   return tokens.includes('Write') || tokens.includes('Edit');
 }
 
-// #3897 CAUSE A fix: a single-purpose `tools:`-line reader, NOT a general
+// #3897 security review F1/F3: control-character/whitespace class used by
+// {@link normalizeSandboxIdentity} to trim more than plain ASCII whitespace
+// from BOTH edges of a candidate identity before it is compared against the
+// hold set. A bare .trim() only strips the ASCII whitespace \s already
+// covers; the hold bypass this closes (a trailing space, \n/\r, or NBSP
+// after `gsd-doc-writer`) is exactly a value that survives .trim() untouched.
+// Spelled entirely as \u escapes (never a literal invisible codepoint in
+// the source), matching this module's own BOM_CHAR convention above: NBSP
+// (U+00A0), the zero-width space/non-joiner/joiner + LTR/RTL marks
+// (U+200B-U+200F), the BOM/ZWNBSP (U+FEFF), and the full C0 control range
+// + DEL (U+0000-U+001F, U+007F), alongside ASCII whitespace (\s).
+const SANDBOX_IDENTITY_EDGE_RE = new RegExp(
+  '^[\\s\\u0000-\\u001f\\u007f\\u00a0\\u200b-\\u200f\\ufeff]+' +
+    '|[\\s\\u0000-\\u001f\\u007f\\u00a0\\u200b-\\u200f\\ufeff]+$',
+  'g',
+);
+
+// Anything outside this set, AFTER normalization, is "suspicious" — see
+// {@link isSandboxHeld}'s docblock for why fail-closed (never enumerate
+// confusables) is the only tractable answer here.
+const SANDBOX_IDENTITY_SUSPICIOUS_RE = /[^a-z0-9._-]/;
+
+/**
+ * Canonicalizes a single candidate sandbox-hold identity (a source filename
+ * stem OR a frontmatter-derived `name:` value) into the same lowercase ASCII
+ * shape {@link CODEX_SANDBOX_HOLDS}'s keys are written in, so both candidate
+ * identities for one emitted artifact (see {@link isSandboxHeld}) can be
+ * compared against the hold set on equal footing.
+ *
+ * #3897 security review F1/F3 — pipeline, in this exact order:
+ *   1. basename it (strip through the LAST `/` or `\`) — a value carrying a
+ *      path separator (`../agents/x`, `./x`) is reduced to its final segment
+ *      before anything else runs, so a path-traversal-shaped candidate can
+ *      never dodge the hold lookup by hiding behind a directory prefix.
+ *   2. trim ASCII whitespace AND the NBSP/zero-width/control-char class
+ *      ({@link SANDBOX_IDENTITY_EDGE_RE}) from both ends.
+ *   3. strip trailing dots (`gsd-doc-writer.` collapses to the same key).
+ *   4. `String.prototype.normalize('NFKC')` — canonicalizes compatibility
+ *      variants (e.g. fullwidth `ｇ` U+FF47 folds to ASCII `g`) to their
+ *      standard form so a widened-by-Unicode-lookalike name collapses onto
+ *      the real held key instead of merely looking similar to it.
+ *   5. lowercase — ASCII recasing already matched the hold set before this
+ *      rung; this keeps that property after the above steps.
+ *
+ * Returns `null` (never throws) for a non-string input or when the fully
+ * normalized result is empty, so callers can treat `null` as "not a real
+ * identity, cannot be held, but see the `suspicious` companion signal".
+ */
+export function normalizeSandboxIdentity(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const lastSlash = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
+  let value = lastSlash === -1 ? raw : raw.slice(lastSlash + 1);
+  value = value.replace(SANDBOX_IDENTITY_EDGE_RE, '');
+  value = value.replace(/\.+$/, '');
+  value = value.normalize('NFKC');
+  value = value.toLowerCase();
+  return value === '' ? null : value;
+}
+
+/**
+ * `held` is true iff ANY candidate identity, once normalized, names a real
+ * {@link CODEX_SANDBOX_HOLDS} entry. `suspicious` is true iff any candidate,
+ * after normalization, still contains a character outside `[a-z0-9._-]`.
+ *
+ * #3897 security review F1 (the blocker): the sandbox decision must be safe
+ * for the ARTIFACT IT LANDS ON, not for whichever single identity happens to
+ * be handy at the call site. `bin/install.js`'s emit loop has TWO candidate
+ * identities for one `.toml` artifact — the source filename stem (what the
+ * hold lookup used to be keyed on) and the frontmatter `name:` value (what
+ * the OUTPUT PATH is actually keyed on) — and an attacker who controls
+ * frontmatter can make them disagree (rename the file, or plant a sibling
+ * file whose `name:` collides with a held role). Deciding over only one of
+ * the two and applying the result to whichever path the OTHER one names is
+ * exactly the regression this closes: this predicate takes every candidate
+ * that can influence either the derivation or the emitted path and takes the
+ * MOST RESTRICTIVE answer — `held` if any one of them is held.
+ *
+ * #3897 security review F3: `suspicious` is the fail-CLOSED half of this
+ * predicate, and it is deliberately not an attempt to enumerate Unicode
+ * confusables (Turkish dotted/dotless I, fullwidth forms, NFD combining
+ * marks, ...). Every one of the 35 shipped roster files is pure ASCII
+ * (`gsd-[a-z-]+`), so a non-ASCII-after-normalization identity cannot be a
+ * legitimate shipped role — flagging it `suspicious` (which
+ * {@link deriveCodexSandboxMode} turns into `read-only`) has zero false
+ * positives against real content, and refuses to widen on anything this
+ * module does not recognize instead of chasing an open-ended confusables
+ * list that will always be one codepoint behind the next lookalike.
+ */
+export function isSandboxHeld(
+  ...candidates: Array<string | string[] | null | undefined>
+): { held: boolean; suspicious: boolean } {
+  let held = false;
+  let suspicious = false;
+  for (const candidate of candidates) {
+    const values = Array.isArray(candidate) ? candidate : [candidate];
+    for (const value of values) {
+      const normalized = normalizeSandboxIdentity(value);
+      if (normalized === null) continue;
+      if (Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, normalized)) {
+        held = true;
+      }
+      if (SANDBOX_IDENTITY_SUSPICIOUS_RE.test(normalized)) {
+        suspicious = true;
+      }
+    }
+  }
+  return { held, suspicious };
+}
+
+// #3897 CAUSE A fix: a single-purpose `tools:`-VALUE reader, NOT a general
 // frontmatter parser (`extractFrontmatterAndBody`/`extractFrontmatterField`
 // were deliberately deleted from this module's ancestor — see the module
 // header's "document model, not policy" charter). This module is the one
@@ -485,16 +644,50 @@ function _codexToolsDeclareWriteOrEdit(toolsRaw: string): boolean {
 // from an installed tree, which is exactly what broke
 // `tests/agent-install-check.test.cjs` against a synthetic install dir.
 // Scoped to ONLY the `tools:` key: finds the leading `---`-delimited
-// frontmatter block and returns its `tools:` line's value (quotes stripped),
-// or `''` when there is no frontmatter block or no `tools:` key at all.
-export function extractToolsLine(agentContent: string): string {
+// frontmatter block and returns its `tools:` value (quotes stripped), or
+// `''` when there is no frontmatter block or no `tools:` key at all.
+//
+// #3897 rung 4/list-form fix: handles BOTH shapes a `tools:` key can take —
+// (a) inline: `tools: Read, Write, Edit` on the same line as the key, and
+// (b) YAML block-list form: `tools:` alone, followed by indented `- Item`
+// lines (`agents/gsd-nyquist-auditor.md`, `agents/gsd-security-auditor.md`
+// are the only two roster files using this shape today). The former
+// implementation was a single `/^tools:\s*(.+)$/m` regex — `\s*` swallows the
+// newline after a bare `tools:` key, so it silently matched into the FIRST
+// list item's own line and returned just `"- Read"`, reading a real
+// Write/Edit DECLARATION as an absence. List items are joined with `, ` so
+// the result feeds {@link _codexToolsDeclareWriteOrEdit}'s comma-tokenizer
+// unchanged. The list terminates at the first line that is not an indented
+// `- Item` (a new frontmatter key, `---`, a blank line, or EOF) — it never
+// grows into a general YAML parser (that boundary is deliberate, see above).
+//
+// #3897 security review F4: TOTAL for any input, not just a well-formed
+// string — a Buffer, `undefined`, or `null` returns `undefined` rather than
+// throwing on `.startsWith`, matching this module's "never throws" charter
+// (see {@link deriveCodexSandboxMode}'s own totality note).
+export function extractToolsValue(agentContent: unknown): string | undefined {
+  if (typeof agentContent !== 'string') return undefined;
   if (!agentContent.startsWith('---')) return '';
   const endIndex = agentContent.indexOf('---', 3);
   if (endIndex === -1) return '';
   const frontmatter = agentContent.substring(3, endIndex);
-  const match = frontmatter.match(/^tools:\s*(.+)$/m);
-  if (!match) return '';
-  return match[1].trim().replace(/^['"]|['"]$/g, '');
+  const lines = frontmatter.split(/\r?\n/);
+  const toolsLineIndex = lines.findIndex((line) => /^tools:/.test(line));
+  if (toolsLineIndex === -1) return '';
+  const inlineMatch = lines[toolsLineIndex].match(/^tools:[ \t]*(\S.*)$/);
+  if (inlineMatch) {
+    return inlineMatch[1].trim().replace(/^['"]|['"]$/g, '');
+  }
+  // Bare `tools:` key (nothing but optional trailing whitespace on its own
+  // line) — read the YAML block-list form that follows: indented `- Item`
+  // lines, one item per line, stopping at the first line that is not one.
+  const items: string[] = [];
+  for (let i = toolsLineIndex + 1; i < lines.length; i++) {
+    const itemMatch = lines[i].match(/^[ \t]+-[ \t]*(.+)$/);
+    if (!itemMatch) break;
+    items.push(itemMatch[1].trim().replace(/^['"]|['"]$/g, ''));
+  }
+  return items.join(', ');
 }
 
 /**
@@ -519,28 +712,33 @@ export function extractToolsLine(agentContent: string): string {
  * {@link validateCodexSandboxHolds} and `tests/codex-config.test.cjs`
  * T24/T25, which assert it against the real roster directly.
  *
- * `agentName` here MUST be an identity the content's own frontmatter cannot
- * change — i.e. the source `.md` FILENAME stem, never a frontmatter-derived
- * display name. Keying this off frontmatter `name:` lets an edited (or
- * merely recased) `name:` field silently escape a hold: `CODEX_SANDBOX_HOLDS`
- * is a SUBTRACTION from a derivation that defaults to `workspace-write`, so a
- * missed lookup fails OPEN, not closed. The lookup is case-normalized here as
- * a second line of defense; callers are still responsible for passing the
- * real filename stem, not the frontmatter field.
+ * `agentName` here MUST be every identity the content's own frontmatter
+ * could disagree with — i.e. the source `.md` FILENAME stem AND (when the
+ * caller has one) the frontmatter-derived `name:` display value, passed
+ * together as an array. Accepting only one of the two and applying the
+ * result to an ARTIFACT keyed on the other is the #3897 security review F1
+ * regression this function closes: `bin/install.js`'s emit loop decides
+ * `sandbox_mode` for the filename stem but writes the `.toml` at a path keyed
+ * on `name`, so a renamed file (stem drifts, `name:` stays pinned) or a
+ * sibling file whose `name:` collides with a held role could make the two
+ * identities disagree and land a held role's own artifact with
+ * `workspace-write`. See {@link isSandboxHeld} for the most-restrictive-wins
+ * rule across every candidate identity.
  *
  * `toolsRaw` is the already-resolved `tools:` frontmatter VALUE (e.g.
  * `"Read, Write, Edit"`), not the frontmatter block or the full agent
  * content — see {@link deriveCodexSandboxMode}'s doc for why.
  */
-function _deriveCodexSandboxModeFromTools(agentName: string, toolsRaw: string): string {
+function _deriveCodexSandboxModeFromTools(agentName: string | string[] | null | undefined, toolsRaw: string): string {
   const derivesBroader = _codexToolsDeclareWriteOrEdit(toolsRaw || '');
-  const holdKey = String(agentName == null ? '' : agentName).toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, holdKey)) {
-    // A held role always pins read-only, whether or not its supplied content
-    // still derives broader (see #3897 CAUSE C note above the docstring for
-    // this function's caller-facing counterpart): if it no longer derives
-    // broader, the pin is a no-op and there is nothing to fail about here —
-    // the staleness invariant lives at the roster level instead
+  const { held, suspicious } = isSandboxHeld(agentName);
+  if (held || suspicious) {
+    // A held (or unrecognizable/"suspicious", per F3) identity always pins
+    // read-only, whether or not its supplied content still derives broader
+    // (see #3897 CAUSE C note above the docstring for this function's
+    // caller-facing counterpart): if it no longer derives broader, the pin is
+    // a no-op and there is nothing to fail about here — the staleness
+    // invariant lives at the roster level instead
     // ({@link validateCodexSandboxHolds}).
     return 'read-only';
   }
@@ -553,22 +751,31 @@ function _deriveCodexSandboxModeFromTools(agentName: string, toolsRaw: string): 
  * VALUE, not raw agent content or a frontmatter slice — this module does no
  * frontmatter parsing at all (there is no third copy of that extraction
  * here; see the module-header note above `CODEX_SANDBOX_HOLDS`). Both
- * callers already have (or can trivially get) `tools:` in hand via whichever
- * extractor they already own — `bin/install.js`'s own
- * `extractFrontmatterField`, or this module's own {@link extractToolsLine}
- * for `agent-install-check.cts` (#3897 CAUSE A fix: NOT
- * `runtime-artifact-conversion.cts`'s general-purpose extractors — that
- * module's dependency chain does not resolve from an installed tree) — so
- * this stays a pure predicate over data the caller already holds, never a
+ * callers already have (or can trivially get) `tools:` in hand via this
+ * module's own {@link extractToolsValue} — the single shared extractor both
+ * `bin/install.js`'s `generateCodexAgentToml` and `agent-install-check.cts`'s
+ * `checkCodexSandboxPosture` route through (#3897 CAUSE A fix, and the
+ * #3897 list-form parse fix's Fix 3: `bin/install.js` used to read `tools:`
+ * via its own private `extractFrontmatterField`, a second single-line-only
+ * copy that disagreed with this module's reader on YAML block-list form —
+ * NOT `runtime-artifact-conversion.cts`'s general-purpose extractors either;
+ * that module's dependency chain does not resolve from an installed tree) —
+ * so this stays a pure predicate over data the caller already holds, never a
  * document reader.
  *
- * `agentName` is a HOLD-LOOKUP IDENTITY, not a display name: callers must
- * pass the agent's canonical source filename stem (e.g. `gsd-doc-writer` for
- * `agents/gsd-doc-writer.md`), never a value read from the content's own
- * frontmatter `name:` field (see the security note on
- * {@link _deriveCodexSandboxModeFromTools} above).
+ * `agentName` is one or more HOLD-LOOKUP IDENTITIES: pass the agent's
+ * canonical source filename stem (e.g. `gsd-doc-writer` for
+ * `agents/gsd-doc-writer.md`) as a plain string for the single-identity call
+ * sites this signature always supported, OR an array of every identity that
+ * can influence the emitted artifact (filename stem AND frontmatter `name:`)
+ * when the caller — like `bin/install.js`'s per-agent emit loop — has both
+ * (see the F1 security note on {@link _deriveCodexSandboxModeFromTools}
+ * above). TOTAL for any value here, including `undefined`, `null`, `[]`, and
+ * an array containing non-string members — none of those throw; they simply
+ * contribute nothing to the hold/suspicious check (see {@link isSandboxHeld}
+ * / {@link normalizeSandboxIdentity}).
  */
-export function deriveCodexSandboxMode(agentName: string, toolsRaw: string): string {
+export function deriveCodexSandboxMode(agentName: string | string[] | null | undefined, toolsRaw: string): string {
   return _deriveCodexSandboxModeFromTools(agentName, toolsRaw || '');
 }
 

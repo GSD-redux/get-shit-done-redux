@@ -34,10 +34,13 @@ import { isAnthropicFlavoredModel } from './model-catalog.cjs';
 // a dev-only repo script) does not resolve from an installed tree — any test
 // exercising a synthetic install dir blew up at module load. `codex-agent-toml.cjs`
 // is already imported here, is a genuine leaf (node builtins only, zero
-// side effects), and now exports `extractToolsLine` — a single-purpose
-// `tools:`-line reader, not a general frontmatter parser — for exactly this
-// caller, so no fourth copy of frontmatter parsing is added.
-import { stripBOM, scanTomlLines, deriveCodexSandboxMode, extractToolsLine } from './codex-agent-toml.cjs';
+// side effects), and now exports `extractToolsValue` — a single-purpose
+// `tools:`-VALUE reader (inline AND YAML block-list form, #3897 list-form
+// parse fix), not a general frontmatter parser — for exactly this caller,
+// shared with `bin/install.js`'s emitter so the two sandbox-feeding paths
+// can never silently disagree, and no fourth copy of frontmatter parsing is
+// added.
+import { stripBOM, scanTomlLines, deriveCodexSandboxMode, extractToolsValue } from './codex-agent-toml.cjs';
 
 interface AgentsInstalledResult {
   agents_installed: boolean;
@@ -481,8 +484,16 @@ function checkCodexSandboxPosture(runtime?: string, projectRoot?: string): Codex
       continue;
     }
 
-    const found = raw.match(/^sandbox_mode\s*=\s*"([^"]*)"$/m)?.[1];
-    if (found === undefined) {
+    // #3897 rung 4 (isolated correctness review, MINOR finding 2): route
+    // through the same block-aware `scanTomlLines` the sibling
+    // `checkCodexModelPosture` already uses, rather than a naive whole-file
+    // regex — a `sandbox_mode = "..."`-shaped line inside the
+    // `developer_instructions` block (prose) must never be read as a live
+    // value. A prior naive `raw.match(/^sandbox_mode.../m)` here produced a
+    // FALSE violation whenever an agent's own prompt prose happened to
+    // contain that shape.
+    const found = scanTomlLines(stripBOM(raw)).sandboxMode;
+    if (found === null) {
       // No sandbox_mode line at all (e.g. sandboxTier "none") is a deliberate,
       // documented state elsewhere — not this check's business.
       continue;
@@ -498,10 +509,24 @@ function checkCodexSandboxPosture(runtime?: string, projectRoot?: string): Codex
       continue;
     }
 
-    const toolsRaw = extractToolsLine(canonicalContent);
+    // `canonicalContent` is always a real string here (read via fs.readFileSync
+    // above), so extractToolsValue's `undefined` (non-string input) branch is
+    // unreachable on this path — the `?? ''` is a type-level formality, not a
+    // behavior change (F4, #3897 security review: extractToolsValue is TOTAL).
+    const toolsRaw = extractToolsValue(canonicalContent) ?? '';
     const expected = deriveCodexSandboxMode(agentName, toolsRaw);
     if (expected !== found) {
-      violations.push({ agent: agentName, file: filePath, expected, found });
+      // #3897 rung 4 (isolated correctness review, MINOR finding 3):
+      // truncatePostureValue matches the sibling checkCodexModelPosture's
+      // convention (see its own `value: truncatePostureValue(model)` above)
+      // so an oversized or secret-shaped `sandbox_mode` value can never
+      // reach `validate agents --raw` output at full length.
+      violations.push({
+        agent: agentName,
+        file: filePath,
+        expected: truncatePostureValue(expected),
+        found: truncatePostureValue(found),
+      });
     }
   }
 

@@ -9,7 +9,7 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { computeDependencyLevels } = require('../gsd-core/bin/lib/phase.cjs');
+const { computeDependencyLevels, buildShortFormToId } = require('../gsd-core/bin/lib/phase.cjs');
 const { extractCanonicalPlanId } = require('../gsd-core/bin/lib/core-utils.cjs');
 
 // Helper: build rawPlans + planMap + canonicalToId from a simple spec.
@@ -244,46 +244,31 @@ describe('computeDependencyLevels — unresolved dependency reporting (#3427, AD
 
 // ─────────────────────────────────────────────────────────────────────────────
 // #3897 rung 4 (ADR-3473 §8.9) — shortFormToId, the recovered third
-// depends_on resolution tier (D3, 40-design.md). The lost algorithm
-// (recovered from sdk/src/query/phase.ts at 11918dcc3^):
+// depends_on resolution tier (D3, 40-design.md), recovered from the retired
+// SDK lineage (sdk/src/query/phase.ts at 11918dcc3^) with one deliberate
+// narrowing (a trailing dash-segment must be a plan NUMBER — /^\d+$/ — see
+// {@link buildShortFormToId}'s own comment in phase.cts for why: an
+// unconstrained trailing segment let `depends_on: ["auth"]` silently
+// mis-resolve to whichever of two non-numeric-suffixed plans sorted first,
+// with zero warning — isolated correctness review, #3897).
 //
-//   const canonical = extractCanonicalPlanId(p.id);
-//   const lastDash = canonical.lastIndexOf('-');
-//   if (lastDash > 0 && lastDash < canonical.length - 1) {
-//     const shortForm = canonical.slice(lastDash + 1).toLowerCase();
-//     if (!shortFormToId.has(shortForm)) shortFormToId.set(shortForm, p.id); // first write wins
-//   }
-//
-// consumed as a THIRD tier, below planMap and canonicalToId. Passed here as
-// computeDependencyLevels's anticipated 4th argument — mirroring how
-// planMap/canonicalToId are already constructed by the CALLER and passed in,
-// never derived internally — so today's 3-arg computeDependencyLevels simply
-// never sees it (JS silently ignores an unused extra call argument), which is
-// exactly why every row below is RED until the tier lands.
+// #3897 rung 4 (isolated correctness review, NIT finding 7): this file used
+// to reimplement the algorithm in-test (`buildShortFormMap`) and assert
+// against that COPY — exactly the generative-fix-divergence shape CLAUDE.md
+// warns about: after the numeric-only fix above landed here, the in-test
+// copy would have silently kept the OLD (wrong) behavior forever, agreeing
+// with itself while disagreeing with the real implementation. Fixed by
+// importing and asserting against the REAL exported
+// {@link buildShortFormToId} from phase.cjs — the same function
+// `cmdPhasePlanIndex` actually calls — so this file can never again drift
+// from its own subject.
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Builds the shortFormToId map per the recovered algorithm above. Used only to
-// construct the ARGUMENT passed into the real computeDependencyLevels, the
-// same role planMap/canonicalToId already play in buildInputs — never a
-// stand-in for production logic itself.
-function buildShortFormMap(rawPlans) {
-  const shortFormToId = new Map();
-  for (const p of rawPlans) {
-    const canonical = extractCanonicalPlanId(p.id);
-    const lastDash = canonical.lastIndexOf('-');
-    if (lastDash > 0 && lastDash < canonical.length - 1) {
-      const shortForm = canonical.slice(lastDash + 1).toLowerCase();
-      if (!shortFormToId.has(shortForm)) shortFormToId.set(shortForm, p.id);
-    }
-  }
-  return shortFormToId;
-}
 
 function buildInputsWithShortForm(spec) {
   const rawPlans = spec.map((s) => ({ id: s.id, dependsOn: s.dependsOn ?? [] }));
   const planMap = new Map(rawPlans.map((p) => [p.id.toLowerCase(), p]));
   const canonicalToId = new Map(rawPlans.map((p) => [extractCanonicalPlanId(p.id).toLowerCase(), p.id]));
-  const shortFormToId = buildShortFormMap(rawPlans);
+  const shortFormToId = buildShortFormToId(rawPlans);
   return { rawPlans, planMap, canonicalToId, shortFormToId };
 }
 
@@ -356,6 +341,45 @@ describe('computeDependencyLevels — shortFormToId, the third depends_on tier (
     assert.strictEqual(result.visited, 2);
     assert.strictEqual(result.level.get('24'), 0);
     assert.strictEqual(result.level.get('B'), 1, 'the full-id dependency must resolve exactly as before, unaffected by the (absent) short-form entry');
+  });
+
+  // #3897 rung 4 (isolated correctness review, NIT finding 8a): the D5
+  // comment on buildShortFormToId names TWO excluded shapes — `lastDash ===
+  // 0` and a trailing dash — but only `lastDash === -1` (T45 above) was
+  // ever exercised. Both boundary rows below.
+  test('T46 lastDashAtIndexZeroIsNotShortFormIndexed: a canonical id starting with a dash (D5 boundary) is excluded', () => {
+    // extractCanonicalPlanId('-01') === '-01' (no phase-token pair found —
+    // splitting on '-' filters out the leading empty segment, leaving a
+    // single token '01' with nothing after it to pair with), so
+    // canonical.lastIndexOf('-') === 0 here — the D5 boundary this rung's
+    // `lastDash > 0` guard must exclude.
+    const { shortFormToId } = buildInputsWithShortForm([
+      { id: '-01', dependsOn: [] },
+    ]);
+    assert.strictEqual(
+      extractCanonicalPlanId('-01'),
+      '-01',
+      'sanity: extractCanonicalPlanId must leave this id unpaired, so lastDash === 0',
+    );
+    assert.strictEqual(shortFormToId.has('01'), false, 'a canonical id whose ONLY dash is at index 0 must never be added to the short-form index (D5)');
+    assert.strictEqual(shortFormToId.size, 0);
+  });
+
+  test('T47 trailingDashIsNotShortFormIndexed: a canonical id ending in a dash (D5 boundary) is excluded', () => {
+    // extractCanonicalPlanId('09-') === '09-' (the trailing empty segment is
+    // filtered out of `parts`, leaving no second token to pair with), so
+    // canonical.lastIndexOf('-') === canonical.length - 1 here — the other
+    // D5 boundary this rung's `lastDash < canonical.length - 1` guard must
+    // exclude.
+    const { shortFormToId } = buildInputsWithShortForm([
+      { id: '09-', dependsOn: [] },
+    ]);
+    assert.strictEqual(
+      extractCanonicalPlanId('09-'),
+      '09-',
+      'sanity: extractCanonicalPlanId must leave this id unpaired, so lastDash === canonical.length - 1',
+    );
+    assert.strictEqual(shortFormToId.size, 0, 'a canonical id ending in a dash must never be added to the short-form index (D5)');
   });
 
 });
