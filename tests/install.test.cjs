@@ -6473,6 +6473,10 @@ describe('install.js --skills-root', () => {
     // #2088 (ADR-1239 upgrade 3): Codex skills resolve to the canonical
     // $HOME/.agents/skills root (skills-kind home override), not $CODEX_HOME/skills.
     { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    // #3738: Antigravity global discovery scans ~/.gemini/config/ — skills resolve
+    // to the skills-kind home override, not the configHome (~/.gemini/antigravity)
+    // that still holds settings.json and the gsd-core runtime files.
+    { runtime: 'antigravity', expected: path.join(os.homedir(), '.gemini', 'config', 'skills') },
     { runtime: 'copilot', expected: path.join(os.homedir(), '.copilot', 'skills') },
     { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
     { runtime: 'trae', expected: path.join(os.homedir(), '.trae', 'skills') },
@@ -6515,6 +6519,8 @@ describe('#3024: gsd-tools query skills-root', () => {
   const CASES = [
     { runtime: 'claude', expected: path.join(os.homedir(), '.claude', 'skills') },
     { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    // #3738: the query surface must agree with install.js --skills-root above.
+    { runtime: 'antigravity', expected: path.join(os.homedir(), '.gemini', 'config', 'skills') },
     { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
   ];
 

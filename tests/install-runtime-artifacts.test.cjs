@@ -1108,6 +1108,45 @@ describe('convertClaudeToAntigravityContent bare path replacement (#2418)', () =
       const count = (result.match(/~\/.gemini\/antigravity\//g) || []).length;
       assert.strictEqual(count, 1, `Expected exactly 1 replacement, got ${count} in: ${result}`);
     });
+
+    // #3738: global skills install under ~/.gemini/config/skills (the dir AGY
+    // scans), while gsd-core runtime references stay under configHome. A skills
+    // path must therefore rewrite to the config root, not ~/.gemini/antigravity.
+    test('replaces ~/.claude/skills/ with ~/.gemini/config/skills (#3738)', () => {
+      const input = 'Skill dirs live at `~/.claude/skills/gsd-*/`.';
+      const result = convertClaudeToAntigravityContent(input, true);
+      assert.ok(
+        result.includes('~/.gemini/config/skills/gsd-*/'),
+        `Expected ~/.gemini/config/skills rewrite, got: ${result}`
+      );
+      assert.ok(
+        !result.includes('~/.gemini/antigravity/skills'),
+        `Skills must not point at the deprecated dir, got: ${result}`
+      );
+    });
+
+    test('replaces $HOME/.claude/skills/ with $HOME/.gemini/config/skills (#3738)', () => {
+      const input = 'ls $HOME/.claude/skills/';
+      const result = convertClaudeToAntigravityContent(input, true);
+      assert.ok(
+        result.includes('$HOME/.gemini/config/skills/'),
+        `Expected $HOME/.gemini/config/skills rewrite, got: ${result}`
+      );
+      assert.ok(!result.includes('$HOME/.claude/'), `Expected full replacement, got: ${result}`);
+    });
+
+    test('keeps gsd-core references under ~/.gemini/antigravity when a skills ref is present (#3738)', () => {
+      const input = 'Read ~/.claude/gsd-core/workflows/x.md then list ~/.claude/skills/.';
+      const result = convertClaudeToAntigravityContent(input, true);
+      assert.ok(
+        result.includes('~/.gemini/antigravity/gsd-core/workflows/x.md'),
+        `gsd-core ref must stay under configHome, got: ${result}`
+      );
+      assert.ok(
+        result.includes('~/.gemini/config/skills/'),
+        `skills ref must move to the config root, got: ${result}`
+      );
+    });
   });
 
   describe('local install', () => {
@@ -7604,5 +7643,56 @@ describe('#3719: real global Claude install — agents/*.md @-refs must resolve 
       }
     }
     assert.deepStrictEqual(failures, [], `local install must not leak @$HOME/ or @~/.claude/:\n${failures.join('\n')}`);
+  });
+});
+
+// ── #3738: antigravity global artifacts install under ~/.gemini/config ────────
+describe('#3738: antigravity global artifacts install under ~/.gemini/config', () => {
+  test('global skills and agents dest dirs resolve under <home>/.gemini/config, not configHome', (t) => {
+    const configDir = createTempDir('gsd-3738-antigravity-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const layout = resolveRuntimeArtifactLayout('antigravity', configDir, 'global');
+    const skillsKind = layout.kinds.find(k => k.kind === 'skills');
+    const agentsKind = layout.kinds.find(k => k.kind === 'agents');
+    assert.ok(skillsKind, 'antigravity must have a skills kind');
+    assert.ok(agentsKind, 'antigravity must have an agents kind');
+    const expectedHome = path.join(configDir, '.gemini', 'config');
+    assert.strictEqual(skillsKind.home, expectedHome, 'skills home override must be ~/.gemini/config');
+    assert.strictEqual(agentsKind.home, expectedHome, 'agents home override must be ~/.gemini/config');
+
+    installRuntimeArtifacts('antigravity', configDir, 'global', RESOLVED_CORE);
+
+    assert.ok(
+      fs.existsSync(path.join(expectedHome, 'skills', 'gsd-help', 'SKILL.md')),
+      'a gsd-* skill must exist under ~/.gemini/config/skills'
+    );
+    const agentsDir = path.join(expectedHome, 'agents');
+    assert.ok(fs.existsSync(agentsDir), '~/.gemini/config/agents must exist');
+    assert.ok(
+      fs.readdirSync(agentsDir).some(n => n.startsWith('gsd-')),
+      'at least one gsd-* agent must exist under ~/.gemini/config/agents'
+    );
+    assert.ok(
+      !fs.existsSync(path.join(configDir, 'skills')),
+      'no skills dir may be created under the configHome (~/.gemini/antigravity)'
+    );
+    assert.ok(
+      !fs.existsSync(path.join(configDir, 'agents')),
+      'no agents dir may be created under the configHome (~/.gemini/antigravity)'
+    );
+  });
+
+  test('local (workspace) layout is unchanged: .agents/skills and .agents/agents', (t) => {
+    const configDir = createTempDir('gsd-3738-antigravity-local-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const layout = resolveRuntimeArtifactLayout('antigravity', configDir, 'local');
+    for (const kind of layout.kinds) {
+      assert.strictEqual(kind.home, undefined, `local ${kind.kind} must not carry a home override`);
+    }
+
   });
 });
