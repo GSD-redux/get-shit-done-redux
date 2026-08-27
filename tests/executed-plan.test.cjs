@@ -1277,17 +1277,25 @@ describe('installRuntimeArtifacts — L2: plan is deterministic (property)', () 
     };
   }
 
-  test('plan is deterministic', () => {
+  test('plan is deterministic', (t) => {
     const runtimes = Object.keys(registry.runtimes);
     const RUNTIME_ARB = fc.constantFrom(...runtimes);
     const SCOPE_ARB = fc.constantFrom('global', 'local');
     let hits = 0;
+    // #3738: the per-run HOME sandbox must EXIST on disk — the #3712 guard's
+    // sandbox exemption fails closed when it cannot stat the effective home
+    // (identify() -> 'absent'), which is exactly what a never-created configDir
+    // gives it on the windows matrix where tmpdir sits under the real home.
+    const createdL2Dirs = [];
+    t.after(() => { for (const d of createdL2Dirs) cleanup(d); });
 
     fc.assert(
       fc.property(RUNTIME_ARB, SCOPE_ARB, (runtime, scope) => {
         // configDir is never created for real — both calls run against fresh,
         // independent fake adapters, so no real fs cleanup is needed here.
         const configDir = path.join(os.tmpdir(), `gsd-l2-${runtime}-${crypto.randomUUID()}`);
+        fs.mkdirSync(configDir, { recursive: true });
+        createdL2Dirs.push(configDir);
         // #3738: a home-override runtime (antigravity → <HOME>/.gemini/config)
         // resolves its dest from os.homedir(), NOT configDir — sandbox HOME to
         // configDir for the duration of both calls (mirroring L1 above) so the
