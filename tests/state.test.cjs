@@ -2516,18 +2516,45 @@ describe('#3830: state advance-plan checks its prose position against the plans 
 // "the sole in-repo caller" when there were two.
 describe('#3830/#3862: every markdown caller of state.advance-plan discriminates on the reason', () => {
   const ROOT = path.resolve(__dirname, '..');
-  const SCAN_DIRS = [path.join(ROOT, 'agents'), path.join(ROOT, 'gsd-core', 'workflows')];
+  const SCAN_ROOTS = [path.join(ROOT, 'agents'), path.join(ROOT, 'gsd-core', 'workflows')];
+
+  // RECURSIVE. gsd-core/workflows/ is a tree — execute-phase/steps/, autonomous/steps/
+  // and thirty-odd siblings — so a readdirSync of the top level alone is blind to
+  // most of the surface a future caller would land in.
+  const walk = (dir, out = []) => {
+    if (!fs.existsSync(dir)) return out;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) walk(full, out);
+      else if (ent.name.endsWith('.md')) out.push(full);
+    }
+    return out;
+  };
+
+  // The invocation, in any spelling: `gsd_run query state.advance-plan`, and the
+  // bare `node .../gsd-tools.cjs query state.advance-plan` form the helper wraps.
+  const INVOKES = /query\s+state\.advance-plan/;
+
+  // Scope every structural assertion to the FENCED BLOCK that holds the call, not
+  // to the whole file. A whole-file search cannot tell a guard next to the call
+  // from a `position_diverged` mentioned four hundred lines away in prose.
+  // `\r?\n` deliberately: under Windows autocrlf these files arrive CRLF, a bare
+  // `\n` here would match no fence at all, and a guard that finds no block to scan
+  // reports PASS by vacuity. The two sanity tests above are the backstop for
+  // exactly that failure; this is the fix for it.
+  const invocationBlock = (text) => {
+    for (const m of text.matchAll(/^```bash\r?\n([\s\S]*?)^```/gm)) {
+      if (INVOKES.test(m[1])) return m[1];
+    }
+    return null;
+  };
 
   const callerFiles = () => {
     const hits = [];
-    for (const dir of SCAN_DIRS) {
-      if (!fs.existsSync(dir)) continue;
-      for (const name of fs.readdirSync(dir)) {
-        if (!name.endsWith('.md')) continue;
-        const full = path.join(dir, name);
+    for (const root of SCAN_ROOTS) {
+      for (const full of walk(root)) {
         const text = fs.readFileSync(full, 'utf-8');
-        // An INVOCATION, not a mention: the verb actually being run.
-        if (/gsd_run query state\.advance-plan/.test(text)) hits.push({ full, name, text });
+        if (INVOKES.test(text)) hits.push({ full, name: path.relative(ROOT, full), text });
       }
     }
     return hits;
@@ -2539,38 +2566,72 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
       `expected >=2 markdown callers of state.advance-plan, found ${found.length}: ${found.map((f) => f.name).join(', ')}`);
   });
 
-  test('each caller branches on position_diverged, never on `--pick advanced`', () => {
+  test('sanity: every caller exposes a fenced bash block to scan (else the rest is vacuous)', () => {
     for (const { name, text } of callerFiles()) {
-      assert.ok(
-        text.includes('position_diverged'),
-        `${name} must read the refusal reason and name position_diverged as what it stops on`,
-      );
-      assert.ok(
-        /"error":/.test(text),
-        `${name} must also handle the exit-0 {"error": ...} shape — it is equally not an advance`,
-      );
-      // The regression this guard exists for: `advanced: false` is ALSO the
-      // ordinary last-plan answer, so branching on it skips the final plan's
-      // progress and metric write on every phase.
-      assert.ok(
-        !/--pick advanced/.test(text),
-        `${name} must NOT branch on --pick advanced — last_plan is also advanced:false`,
-      );
+      assert.ok(invocationBlock(text), `${name} invokes the verb outside any \`\`\`bash fence — the guards below cannot see it`);
     }
   });
 
-  test('each caller GUARDS its state-update block rather than only printing', () => {
-    // The other half of the same finding: a branch that prints a STOP line and
-    // then runs the very writes it was meant to prevent guards nothing. The
-    // update-progress call must sit inside the non-refusal arm, i.e. AFTER the
-    // position_diverged arm opens, never unconditionally ahead of it.
+  test('each caller branches on position_diverged, never on `--pick advanced`', () => {
     for (const { name, text } of callerFiles()) {
-      const guardIdx = text.indexOf('position_diverged');
-      const writeIdx = text.indexOf('state.update-progress');
-      assert.ok(writeIdx > guardIdx,
-        `${name} runs state.update-progress before/outside the divergence guard — it is unguarded`);
-      assert.ok(/state\.update-progress/.test(text.slice(guardIdx, guardIdx + 2400)),
-        `${name}'s guarded block must contain the update-progress call it protects`);
+      const block = invocationBlock(text);
+      assert.ok(block.includes('position_diverged'),
+        `${name}'s invocation block must read the refusal reason and name position_diverged as what it stops on`);
+      assert.ok(/"error":/.test(block),
+        `${name}'s invocation block must also handle the exit-0 {"error": ...} shape — it is equally not an advance`);
+      // The regression this guard exists for: `advanced: false` is ALSO the
+      // ordinary last-plan answer, so branching on it skips the final plan's
+      // progress and metric write on every phase.
+      assert.ok(!/--pick advanced/.test(block),
+        `${name} must NOT branch on --pick advanced — last_plan is also advanced:false`);
+    }
+  });
+
+  test('each caller treats a non-answer as a refusal (non-zero exit, or silence)', () => {
+    // #3862 RV6.5 pass 3 (MISSED): a crashed or missing gsd_run leaves the capture
+    // EMPTY, which matches no reason and no error — so it reached the catch-all arm
+    // and the writes proceeded. Verified against the pre-fix source: update-progress
+    // ran with no STOP printed. Silence is not permission.
+    for (const { name, text } of callerFiles()) {
+      const block = invocationBlock(text);
+      // Anchor at the INVOCATION, not at the first `case ` in the block: the
+      // explanatory comment above the call says "edge case", and slicing on that
+      // substring truncated this region before the capture it is meant to inspect.
+      const invIdx = block.search(INVOKES);
+      const preCase = block.slice(invIdx, block.indexOf('case "', invIdx));
+      assert.ok(/\$\?/.test(preCase),
+        `${name} must capture the exit status of the advance-plan call before dispatching on its text`);
+      assert.ok(/-z\s+"\$\{?ADVANCE_OUT/.test(preCase),
+        `${name} must treat an EMPTY capture as a non-advance — an empty string matches the catch-all arm`);
+    }
+  });
+
+  test('each caller CONTAINS its state writes in the non-refusal arm', () => {
+    // The other half of the same finding: a branch that prints a STOP line and then
+    // runs the very writes it was meant to prevent guards nothing. Prove containment
+    // structurally — EVERY write must fall between the catch-all arm and `esac` —
+    // rather than by a character-distance window past the first guard mention, and
+    // cover record-metric too, not update-progress alone.
+    const WRITES = ['state.update-progress', 'state.record-metric'];
+    for (const { name, text } of callerFiles()) {
+      const block = invocationBlock(text);
+      const invIdx = block.search(INVOKES);
+      const guardIdx = block.indexOf('position_diverged', block.indexOf('case "', invIdx));
+      const esacIdx = block.search(/^\s*esac\s*$/m);
+      // A bare `*)` on its own line is the catch-all; the reason arms all carry a
+      // pattern ahead of theirs (`*'"error":'*)`), so they do not match.
+      const catchAll = block.search(/^\s*\*\)\s*$/m);
+      assert.ok(guardIdx >= 0 && catchAll > guardIdx && esacIdx > catchAll,
+        `${name}: expected a case with the divergence arm before a bare \`*)\` catch-all before \`esac\``);
+      for (const write of WRITES) {
+        let idx = block.indexOf(write);
+        assert.ok(idx >= 0, `${name}'s invocation block must contain the ${write} call it protects`);
+        while (idx >= 0) {
+          assert.ok(idx > catchAll && idx < esacIdx,
+            `${name} runs ${write} at offset ${idx}, outside the catch-all arm (${catchAll}..${esacIdx}) — it is unguarded`);
+          idx = block.indexOf(write, idx + 1);
+        }
+      }
     }
   });
 });
