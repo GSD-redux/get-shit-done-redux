@@ -6608,6 +6608,17 @@ describe('#3740: acknowledge round-trips through the reader (parse → acknowled
     assert.equal(r.after.status, 'acknowledged');
   });
 
+  test('line-0 entry-line status (`- status: open`) is still rewritten in place', () => {
+    // The reader de-bullets line 0, so a status field on the entry line IS a
+    // real field there — and first-wins means the insert branch could never
+    // outrank it. The search must keep matching this shape (#3740 review).
+    const r = roundTrip('- status: open\n  reason: flaky');
+    assert.equal(r.ack.status, 'ok');
+    assert.equal(r.after.status, 'acknowledged');
+    const statusLines = r.content.split('\n').filter((l) => /status:\s*/.test(l));
+    assert.equal(statusLines.length, 1, `exactly one status line must remain, got ${JSON.stringify(statusLines)}`);
+  });
+
   test('control: marker-free status line is still rewritten in place, not duplicated', () => {
     const r = roundTrip('- alpha\n  status: open');
     assert.equal(r.ack.status, 'ok');
