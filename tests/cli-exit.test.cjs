@@ -435,11 +435,20 @@ describe('regressions', () => {
     });
 
     // ── Matrix row 11: the two copies are one artifact ───────────────────────
+    // Stack-trace bytes are NOT the contract here: on the json=false path, stderr
+    // is a raw stack trace, and the generated scripts/ copy carries an 11-line
+    // provenance banner that the built copy does not, so every frame line number
+    // is offset by exactly that banner length, and the two files necessarily sit
+    // at different absolute paths. The two copies share one compiled BODY —
+    // the banner is the only difference — so what actually must match is the
+    // VERDICT: same exit code, and (json mode) the same structured envelope, or
+    // (plain-text mode) the same unqualified error header line with no path or
+    // line number in it.
     test('the built copy and the scripts copy produce identical verdicts for every throw class', () => {
       const cases = [
-        { jsonMode: true, throwExpr: `new TypeError('same boom')` },
-        { jsonMode: false, throwExpr: `new TypeError('same boom')` },
-        { jsonMode: true, throwExpr: `new ExitError(3, 'same usage')` },
+        { jsonMode: true, throwExpr: `new TypeError('same boom')`, compare: 'json' },
+        { jsonMode: false, throwExpr: `new TypeError('same boom')`, compare: 'firstLine' },
+        { jsonMode: true, throwExpr: `new ExitError(3, 'same usage')`, compare: 'exact' },
       ];
       for (const c of cases) {
         const fromScripts = spawnScriptsRun(c);
@@ -448,13 +457,32 @@ describe('regressions', () => {
           fromScripts.status, fromBuilt.status,
           `exit status must match for ${c.throwExpr} (json=${c.jsonMode})`,
         );
-        // Normalize the module path that necessarily differs between the two
-        // copies, then require the remaining diagnostic bytes to be identical.
-        const norm = (s) => s.replace(/[^\s:]*cli-exit\.cjs/g, '<cli-exit>').trim();
-        assert.strictEqual(
-          norm(fromScripts.stderr), norm(fromBuilt.stderr),
-          `stderr must match for ${c.throwExpr} (json=${c.jsonMode})`,
-        );
+        const label = `${c.throwExpr} (json=${c.jsonMode})`;
+        if (c.compare === 'json') {
+          // Structured output: parse both and compare the resulting objects.
+          assert.deepStrictEqual(
+            parseEnvelope(fromScripts), parseEnvelope(fromBuilt),
+            `parsed envelopes must match for ${label}`,
+          );
+        } else if (c.compare === 'firstLine') {
+          // Plain-text stack trace: only the header line (e.g. "TypeError: same
+          // boom") is path/line-number-free and therefore comparable; the frame
+          // lines below it are expected to diverge per the banner offset above.
+          for (const r of [fromScripts, fromBuilt]) {
+            assert.throws(() => JSON.parse(r.stderr.trim()), `stderr for ${label} must NOT be JSON`);
+          }
+          const firstLine = (s) => s.trim().split('\n')[0];
+          assert.strictEqual(
+            firstLine(fromScripts.stderr), firstLine(fromBuilt.stderr),
+            `stderr first line must match for ${label}`,
+          );
+        } else {
+          // ExitError: plain prose with no stack trace, so it is byte-identical.
+          assert.strictEqual(
+            fromScripts.stderr.trim(), fromBuilt.stderr.trim(),
+            `stderr must match for ${label}`,
+          );
+        }
       }
     });
 
