@@ -507,10 +507,23 @@ function _codexToolsDeclareWriteOrEdit(toolsRaw) {
 // contract no longer derives broader than its pin is a STALE hold (S4) —
 // fail loudly naming the role rather than silently honoring it forever,
 // which is exactly the hand-maintained-subset-map defect this rung deletes.
+//
+// #3897 security review follow-up: `agentName` here MUST be an identity the
+// content's own frontmatter cannot change — i.e. the source `.md` FILENAME
+// stem (what `validateCodexSandboxHolds` already verifies exists), never a
+// frontmatter-derived display name. The old scheme keyed this off frontmatter
+// `name:`, which let an edited (or merely recased) `name:` field silently
+// escape a hold: `CODEX_SANDBOX_HOLDS` is a SUBTRACTION from a derivation
+// that defaults to `workspace-write`, so a missed lookup fails OPEN, not
+// closed. The lookup is case-normalized here as a second line of defense
+// against a differently-cased identity reaching this function; callers are
+// still responsible for passing the real filename stem, not the frontmatter
+// field.
 function _deriveCodexSandboxModeFromFrontmatter(agentName, frontmatterText) {
   const toolsRaw = extractFrontmatterField(frontmatterText, 'tools') || '';
   const derivesBroader = _codexToolsDeclareWriteOrEdit(toolsRaw);
-  if (Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, agentName)) {
+  const holdKey = String(agentName == null ? '' : agentName).toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, holdKey)) {
     if (!derivesBroader) {
       throw new Error(
         `CODEX_SANDBOX_HOLDS: stale hold for "${agentName}" — its current tools: frontmatter no longer ` +
@@ -528,6 +541,12 @@ function _deriveCodexSandboxModeFromFrontmatter(agentName, frontmatterText) {
 // hold raw agent markdown rather than an already-extracted frontmatter slice.
 // Parses via the SAME extractFrontmatterAndBody/extractFrontmatterField pair
 // generateCodexAgentToml uses — never a second, independent parser.
+//
+// `agentName` is a HOLD-LOOKUP IDENTITY, not a display name: callers must
+// pass the agent's canonical source filename stem (e.g. `gsd-doc-writer` for
+// `agents/gsd-doc-writer.md`), never a value read from the content's own
+// frontmatter `name:` field (see the security note on
+// `_deriveCodexSandboxModeFromFrontmatter` above).
 function deriveCodexSandboxMode(agentName, agentContent) {
   const { frontmatter } = extractFrontmatterAndBody(agentContent);
   return _deriveCodexSandboxModeFromFrontmatter(agentName, frontmatter || '');
@@ -7037,7 +7056,14 @@ function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-san
     // CLAUDE.md neutralization via neutralizeAgentReferences(..., 'AGENTS.md').
     content = convertClaudeToCodexMarkdown(content);
     const { frontmatter } = extractFrontmatterAndBody(content);
-    const name = extractFrontmatterField(frontmatter, 'name') || file.replace('.md', '');
+    // The bundled roster filename stem is the SANDBOX/hold identity — see the
+    // security note on `_deriveCodexSandboxModeFromFrontmatter` above. `name`
+    // (frontmatter-derived) is still used for the emitted TOML body below;
+    // it must never also be threaded into sandbox_mode derivation, or an
+    // edited/recased `name:` field silently escapes a CODEX_SANDBOX_HOLDS
+    // pin (#3897 security review).
+    const fileStem = file.replace(/\.md$/, '');
+    const name = extractFrontmatterField(frontmatter, 'name') || fileStem;
     const description = extractFrontmatterField(frontmatter, 'description') || '';
 
     agents.push({ name, description: toSingleLine(description) });
@@ -7059,7 +7085,12 @@ function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-san
     // #443 — pass unified effort config so model_reasoning_effort in the .toml
     // follows the same config-driven precedence as the Claude .md effort key.
     const effortCfg = readGsdEffectiveEffortConfig(targetDir);
-    const tomlContent = generateCodexAgentToml(name, content, modelOverrides, runtimeResolver, effortCfg, sandboxTier);
+    // Pass `fileStem` (never `name`) as the sandbox-identity argument: the
+    // derivation's identity contract is "filename stem, always" — never a
+    // value sourced from the content's own, attacker-editable frontmatter
+    // (#3897 security review). `name` (frontmatter-derived) still drives the
+    // emitted TOML body's `name = ...` / `.toml` filename below, unchanged.
+    const tomlContent = generateCodexAgentToml(fileStem, content, modelOverrides, runtimeResolver, effortCfg, sandboxTier);
     // Confine the per-agent write to the agents/ dir itself: a crafted agent
     // `name` containing path separators must not escape agents/ (which would let
     // it clobber config.toml or write elsewhere under the configHome).

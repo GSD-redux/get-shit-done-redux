@@ -1169,6 +1169,89 @@ description: Declares no tools frontmatter key at all
       'absence of a tools: contract must never be read as a grant of workspace-write',
     );
   });
+
+  // #3897 security review follow-up (post-merge blocker): `bin/install.js`'s
+  // Codex install loop used to key the CODEX_SANDBOX_HOLDS lookup off the
+  // agent's OWN frontmatter `name:` field (`extractFrontmatterField(frontmatter,
+  // 'name') || file.replace('.md', '')`) rather than its filename — so editing,
+  // or merely recasing, a held role's `name:` field (same file, same tool
+  // contract) silently derived `workspace-write` instead of the pinned
+  // `read-only`. Unlike the deleted CODEX_AGENT_SANDBOX map (an ALLOWLIST whose
+  // unmatched-key fallback was `read-only`, i.e. safe), CODEX_SANDBOX_HOLDS is a
+  // SUBTRACTION from a derivation that defaults to `workspace-write`, so the
+  // identical lookup-key mismatch now fails OPEN — a severity flip. The fix
+  // keys the hold off the canonical source FILENAME stem (what
+  // `validateCodexSandboxHolds` already verifies exists), threaded through
+  // `installCodexConfig`'s per-file loop independently of the frontmatter
+  // `name:` used for the TOML body, with a case-insensitive lookup as a second
+  // line of defense.
+  test('heldRoleCannotEscapeItsHoldByRenamingFrontmatter_3897: editing or recasing a held role\'s frontmatter name: must not change its sandbox_mode from read-only', () => {
+    const { installCodexConfig } = require('../bin/install.js');
+    const heldRole = 'gsd-doc-writer'; // one of the 16 CODEX_SANDBOX_HOLDS entries
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, heldRole),
+      `sanity: ${heldRole} must be a real CODEX_SANDBOX_HOLDS entry`,
+    );
+
+    const variants = [
+      { label: 'frontmatter name: edited to a different value', newName: 'gsd-doc-writer-x' },
+      { label: 'frontmatter name: merely recased', newName: 'GSD-Doc-Writer' },
+    ];
+
+    for (const { label, newName } of variants) {
+      const tmpAgentsSrc = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-codex-tamper-src-'));
+      const tmpDest = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-codex-tamper-dest-'));
+      try {
+        fs.cpSync(AGENTS_DIR, tmpAgentsSrc, { recursive: true });
+        const rolePath = path.join(tmpAgentsSrc, `${heldRole}.md`);
+        const original = fs.readFileSync(rolePath, 'utf8');
+        const tampered = original.replace(/^name:\s*.*$/m, `name: ${newName}`);
+        assert.notEqual(tampered, original, `sanity: the frontmatter name: line must actually change (${label})`);
+        fs.writeFileSync(rolePath, tampered);
+
+        // The FILE on disk is untouched (still `gsd-doc-writer.md`) — only its
+        // frontmatter content changed. validateCodexSandboxHolds only checks
+        // the file exists, so it does not (and should not) catch this by itself.
+        installCodexConfig(tmpDest, tmpAgentsSrc);
+
+        const emittedTomlPath = path.join(tmpDest, 'agents', `${newName}.toml`);
+        assert.ok(
+          fs.existsSync(emittedTomlPath),
+          `${label}: expected an emitted .toml at ${emittedTomlPath} (named after the tampered frontmatter name, per existing TOML-naming behavior — unrelated to this fix)`,
+        );
+        const toml = fs.readFileSync(emittedTomlPath, 'utf8');
+        const sandboxLine = toml.match(/^sandbox_mode = "([^"]{0,50})"$/m);
+        assert.ok(sandboxLine, `${label}: emitted .toml must contain a sandbox_mode line`);
+        assert.equal(
+          sandboxLine[1],
+          'read-only',
+          `${label}: a held role's sandbox_mode must stay read-only even when its frontmatter name: diverges ` +
+          `from its own filename — the hold is keyed off the file, not a self-declared field. Got: ${sandboxLine[1]}`,
+        );
+      } finally {
+        cleanup(tmpAgentsSrc);
+        cleanup(tmpDest);
+      }
+    }
+  });
+
+  test('N6 (post-fix regression check): all 35 roles remain byte-identical in emitted sandbox_mode after the filename-identity fix', () => {
+    const roles = Object.keys(EXPECTED_SANDBOX_BY_ROLE);
+    let checked = 0;
+    for (const role of roles) {
+      const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+      const toml = generateCodexAgentToml(role, content);
+      const match = toml.match(/^sandbox_mode = "([^"]+)"$/m);
+      assert.ok(match, `${role} must emit a sandbox_mode line`);
+      assert.equal(
+        match[1],
+        EXPECTED_SANDBOX_BY_ROLE[role],
+        `${role}: sandbox_mode must not drift as a side effect of the #3897 filename-identity fix`,
+      );
+      checked++;
+    }
+    assert.equal(checked, 35, 'N6: all 35 real roles must be checked and byte-identical');
+  });
 });
 
 // ─── #3241: shared isAnthropicFlavoredModel / CLAUDE_AGENT_ALIASES surface ─────
