@@ -455,7 +455,17 @@ if [ "$IS_WORKTREE" != "true" ]; then
   # so branching on `advanced` would skip the final plan's progress and metric on
   # every phase. And an unusable STATE.md is reported as `{"error": ...}` at exit 0
   # with no `reason` at all, which is equally not an advance.
+  #
+  # And read the EXIT STATUS, not only the text. A crash, a missing binary or a
+  # non-zero exit leaves ADVANCE_OUT empty, which matches no reason and no error
+  # — it would fall through to the catch-all arm and record progress for an
+  # advance that never happened. Silence is not an answer: normalize it into the
+  # error shape so the STOP arm below owns it. Fail closed.
   ADVANCE_OUT=$(gsd_run query state.advance-plan)
+  ADVANCE_RC=$?
+  if [ "${ADVANCE_RC}" -ne 0 ] || [ -z "${ADVANCE_OUT}" ]; then
+    ADVANCE_OUT='{"error": "state.advance-plan exited '"${ADVANCE_RC}"' with no usable answer"}'
+  fi
   case "${ADVANCE_OUT}" in
     *'"reason": "position_diverged"'*)
       echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
@@ -464,7 +474,7 @@ if [ "$IS_WORKTREE" != "true" ]; then
       echo "real plan set. Do NOT record progress or metrics against a frozen position." >&2
       ;;
     *'"error":'*)
-      echo "STOP: state.advance-plan could not read STATE.md — nothing was written." >&2
+      echo "STOP: state.advance-plan did not report an advance — treat the counter as NOT moved." >&2
       printf '%s\n' "${ADVANCE_OUT}" >&2
       ;;
     *)
