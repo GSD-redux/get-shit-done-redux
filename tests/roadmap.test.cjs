@@ -4146,3 +4146,166 @@ describe('bug #3641: bracket-convention windows are visible to validate (V005/V0
       'bracket convention is a superset — the legacy label stays recognized');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3885 (ADR-3473 §8.5) / item 5 — `countPhasePlansAndSummaries` swallows an
+// unreadable phase directory into "absent", indistinguishable from a phase
+// that genuinely has no CONTEXT.md.
+//
+// Mechanism (src/roadmap.cts, countPhasePlansAndSummaries):
+//   try { phaseFiles = fs.readdirSync(phaseDir); } catch { /* empty */ }
+// An EACCES/EIO collapses `phaseFiles` to `[]`, which makes
+// `findContextMdIn(scopedFiles)` return null — identical to a phase dir that
+// was successfully read and genuinely has no CONTEXT.md. `cmdRoadmapAnalyze`
+// (the only exported consumer) surfaces this as `has_context: false` on the
+// phase's entry in `phases[]`, with nothing distinguishing "could not read"
+// from "nothing there".
+//
+// DESIGN DECISION (chosen by this test file, not yet implemented): each
+// `AnalyzePhase` gains a `context_read_error: string | null` field — null on
+// success (including a genuinely missing/ENOENT directory), and a message
+// string naming the phase directory when the readdirSync call fails with any
+// non-ENOENT error (EACCES, EIO, ...). Mirrors the SCOPE.UNREADABLE
+// discriminator `src/core-utils.cts`'s `getPhaseFileStats` already uses to
+// keep "unreadable" separate from "absent" on the sibling phase-stats path.
+//
+// `countPhasePlansAndSummaries` itself is not exported from roadmap.cjs, so
+// these tests drive the ONLY exported consumer, `cmdRoadmapAnalyze`, in
+// process — injecting the fs failure by monkeypatching `fs.readdirSync`
+// (restored in `finally`) and capturing `output()`'s raw fd-1 write by
+// monkeypatching `fs.writeSync` (io.cjs writes via `fs.writeSync(1, ...)`,
+// bypassing console.log, so `captureConsole()` cannot see it). NEVER
+// `chmod 0o000` — root bypasses mode bits, so that trick passes with zero
+// coverage in root Docker/CI.
+describe('#3885 (ADR-3473 §8.5): countPhasePlansAndSummaries distinguishes unreadable from absent (roadmap.cts caller)', () => {
+  let tmpDir;
+  let roadmapLib;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapLib = require('../gsd-core/bin/lib/roadmap.cjs');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 3: API\n**Goal:** Build API\n',
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Runs `roadmapLib.cmdRoadmapAnalyze(cwd, false)` while capturing the raw
+  // fd-1 bytes `output()` writes via `fs.writeSync`, and returns the parsed
+  // JSON result. Restores `fs.writeSync` in `finally` even if analyze throws.
+  function runAnalyzeCapturingStdout(cwd) {
+    const chunks = [];
+    const origWriteSync = fs.writeSync;
+    fs.writeSync = function patchedWriteSync(fd, buffer, offset, length) {
+      if (fd !== 1) return origWriteSync.apply(fs, arguments);
+      const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+      const start = offset ?? 0;
+      const len = length ?? (buf.length - start);
+      chunks.push(Buffer.from(buf.subarray(start, start + len)));
+      return len;
+    };
+    try {
+      roadmapLib.cmdRoadmapAnalyze(cwd, false);
+    } finally {
+      fs.writeSync = origWriteSync;
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  }
+
+  // Monkeypatches `fs.readdirSync` so a call whose FIRST argument resolves to
+  // `targetPath` throws an error shaped like `code`; every other path is
+  // delegated to the real implementation. Returns a restorer — callers MUST
+  // invoke it in `finally`.
+  function injectReaddirFailure(targetPath, code) {
+    const resolved = path.resolve(targetPath);
+    const origReaddirSync = fs.readdirSync;
+    fs.readdirSync = function patchedReaddirSync(p, ...rest) {
+      if (path.resolve(String(p)) === resolved) {
+        const err = new Error(`${code}: simulated failure, scandir '${p}'`);
+        err.code = code;
+        throw err;
+      }
+      return origReaddirSync.call(fs, p, ...rest);
+    };
+    return () => { fs.readdirSync = origReaddirSync; };
+  }
+
+  function findPhase3(analyzeOutput) {
+    const phase = analyzeOutput.phases.find((p) => p.number === '3');
+    assert.ok(phase, `phase 3 must appear in analyze output; got: ${JSON.stringify(analyzeOutput.phases)}`);
+    return phase;
+  }
+
+  // T61 — MUST STAY GREEN: a readable phase directory with no CONTEXT.md
+  // reports has_context:false, and (using `?? null` so this passes both
+  // before and after the fix) no read-error signal.
+  test('T61: readableDirWithoutContextReportsFalse', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '---\nwave: 1\n---\n## Task 1\n');
+
+    const output = runAnalyzeCapturingStdout(tmpDir);
+    const phase = findPhase3(output);
+    assert.strictEqual(phase.has_context, false, 'no CONTEXT.md on disk — has_context must be false');
+    assert.strictEqual(phase.context_read_error ?? null, null, 'a readable, genuinely context-less dir must report no read error');
+  });
+
+  // T62 — RED today: measured on this tree, an EACCES on the phase
+  // directory's readdirSync collapses to has_context:false /
+  // disk_status:"empty" with nothing distinguishing it from a phase that was
+  // successfully read and genuinely has no CONTEXT.md. Required: the failure
+  // must be reported, naming the phase directory.
+  test('T62: unreadablePhaseDirIsNotReportedAsAbsent', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '---\nwave: 1\n---\n## Task 1\n');
+
+    const restore = injectReaddirFailure(phaseDir, 'EACCES');
+    let output;
+    try {
+      output = runAnalyzeCapturingStdout(tmpDir);
+    } finally {
+      restore();
+    }
+    const phase = findPhase3(output);
+    assert.strictEqual(
+      typeof (phase.context_read_error ?? null),
+      'string',
+      `an unreadable phase directory must be reported as an error, not silently absent; got context_read_error=${JSON.stringify(phase.context_read_error)}`,
+    );
+    assert.ok(
+      (phase.context_read_error || '').includes('03-api'),
+      `the reported error must name the discarded input (the phase directory); got: ${phase.context_read_error}`,
+    );
+  });
+
+  // T64 — MUST STAY GREEN: a genuinely missing directory (ENOENT) is absent,
+  // not an error — this is the row that keeps T62's fix from over-firing on
+  // every ordinary "no directory yet" phase. Injected the same way as T62/T63
+  // (readdirSync throws ENOENT for the exact phase-dir path) so the assertion
+  // exercises the discriminator itself, not merely "no error was ever
+  // thrown".
+  test('T64: missingDirIsGenuinelyAbsent', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '---\nwave: 1\n---\n## Task 1\n');
+
+    const restore = injectReaddirFailure(phaseDir, 'ENOENT');
+    let output;
+    try {
+      output = runAnalyzeCapturingStdout(tmpDir);
+    } finally {
+      restore();
+    }
+    const phase = findPhase3(output);
+    assert.strictEqual(
+      phase.context_read_error ?? null,
+      null,
+      `ENOENT must be treated as genuinely absent, not reported as an error; got: ${phase.context_read_error}`,
+    );
+  });
+});

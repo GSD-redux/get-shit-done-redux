@@ -3247,6 +3247,130 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3885 (ADR-3473 §8.5) / item 5 — cmdInitPlanPhase / cmdInitPhaseOp swallow an
+// unreadable phase directory into "none of the conditional fields resolved",
+// indistinguishable from a phase directory that genuinely has no
+// CONTEXT.md/RESEARCH.md/VERIFICATION.md/UAT.md/REVIEWS.md/PATTERNS.md.
+//
+// Mechanism (src/init.cts, both cmdInitPlanPhase and cmdInitPhaseOp):
+//   try { const files = fs.readdirSync(phaseDirFull); ... }
+//   catch { /* intentionally empty */ }
+// guarded by `if (phaseInfo?.['directory'])` — the directory was already
+// resolved to exist on disk, so a caught error here is never a genuine
+// "phase has no directory yet" absence.
+//
+// Both commands gain `context_read_error` on their result: absent (key
+// omitted, matching prior shape) when readdirSync succeeds or fails with
+// ENOENT (a genuine race — the directory vanished after resolution, and
+// stays a silent degrade like the prior behavior); a message naming the
+// phase directory on any other errno (EACCES/EIO/...).
+//
+// Neither command returns its result object (`output(result, raw)` writes
+// via `fs.writeSync(1, ...)` — see the cmdInitVerifyWork capture helper
+// above for why `process.stdout.write` cannot see it), and both are
+// exercised through the real CLI dispatcher elsewhere in this file via
+// `runGsdTools`, a real subprocess a parent-process fs monkeypatch cannot
+// reach — so these drive the exported functions directly, in-process,
+// mirroring the cmdInitVerifyWork capture pattern immediately above.
+// Injected via `t.mock.method(fs, 'readdirSync', ...)` (auto-restored) —
+// NEVER chmod 0o000, which root bypasses with zero coverage.
+describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absent phase directories', () => {
+  const initMod = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'init.cjs'));
+  let projectDir;
+
+  beforeEach(() => {
+    projectDir = createFixture();
+    seedPhase(projectDir, '03-api', {
+      '03-01-PLAN.md': '# Plan',
+    });
+    writePlanningDocs(projectDir);
+  });
+
+  afterEach(() => {
+    cleanup(projectDir);
+  });
+
+  function captureFd1(t, run) {
+    const chunks = [];
+    const origWriteSync = fs.writeSync.bind(fs);
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+      if (fd !== 1) return origWriteSync(fd, data, offset, length);
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      chunks.push(chunk);
+      return Buffer.byteLength(chunk, 'utf8');
+    });
+    run();
+    const captured = chunks.join('');
+    assert.ok(captured.length > 0, 'command produced no stdout output');
+    return JSON.parse(captured);
+  }
+
+  function injectReaddirFailure(t, targetPath, code) {
+    const resolved = path.resolve(targetPath);
+    const origReaddirSync = fs.readdirSync.bind(fs);
+    t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+      if (path.resolve(String(p)) === resolved) {
+        const err = new Error(`${code}: simulated failure, scandir '${p}'`);
+        err.code = code;
+        throw err;
+      }
+      return origReaddirSync(p, ...rest);
+    });
+  }
+
+  const phaseDirAbs = () => path.join(projectDir, '.planning', 'phases', '03-api');
+
+  describe('cmdInitPlanPhase', () => {
+    test('readablePhaseDirReportsNoReadError (MUST STAY GREEN)', (t) => {
+      const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
+      assert.strictEqual(output.context_read_error ?? null, null);
+    });
+
+    test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
+      injectReaddirFailure(t, phaseDirAbs(), 'EACCES');
+      const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
+      assert.strictEqual(typeof output.context_read_error, 'string',
+        `an unreadable phase directory must be reported, not silently absent; got: ${JSON.stringify(output.context_read_error)}`);
+      assert.ok(output.context_read_error.includes('03-api'),
+        `the reported error must name the discarded input (the phase directory); got: ${output.context_read_error}`);
+    });
+
+    test('raceConditionEnoentStaysAGenuineSilentDegrade (MUST STAY GREEN)', (t) => {
+      injectReaddirFailure(t, phaseDirAbs(), 'ENOENT');
+      const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
+      assert.strictEqual(output.context_read_error ?? null, null,
+        `ENOENT must stay a silent degrade (genuine race), not reported as an error; got: ${output.context_read_error}`);
+    });
+  });
+
+  describe('cmdInitPhaseOp', () => {
+    test('readablePhaseDirReportsNoReadError (MUST STAY GREEN)', (t) => {
+      const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
+      assert.strictEqual(output.context_read_error ?? null, null);
+    });
+
+    test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
+      injectReaddirFailure(t, phaseDirAbs(), 'EACCES');
+      const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
+      assert.strictEqual(typeof output.context_read_error, 'string',
+        `an unreadable phase directory must be reported, not silently absent; got: ${JSON.stringify(output.context_read_error)}`);
+      assert.ok(output.context_read_error.includes('03-api'),
+        `the reported error must name the discarded input (the phase directory); got: ${output.context_read_error}`);
+    });
+
+    test('raceConditionEnoentStaysAGenuineSilentDegrade (MUST STAY GREEN)', (t) => {
+      injectReaddirFailure(t, phaseDirAbs(), 'ENOENT');
+      const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
+      assert.strictEqual(output.context_read_error ?? null, null,
+        `ENOENT must stay a silent degrade (genuine race), not reported as an error; got: ${output.context_read_error}`);
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // roadmap analyze command
 // ─────────────────────────────────────────────────────────────────────────────
 

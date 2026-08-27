@@ -394,5 +394,6 @@
   "scripts/lib/alias-drift-families.cjs",
   "scripts/lib/allowlist-ratchet.cjs",
   "scripts/lib/cli-exit.cjs",
-  "scripts/lib/drift-scan.cjs"
+  "scripts/lib/drift-scan.cjs",
+  "scripts/lib/exit-code-registry.cjs"
 ]

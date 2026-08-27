@@ -2005,8 +2005,47 @@ Use `provider: "generic"` (or `"custom"`) for OpenRouter, LiteLLM, local gateway
 | `GSD_AUDIT_ARGS` | Set to `1` to include command args in audit/error events (omitted by default) |
 | `GSD_PROJECT` | Override project root for multi-project workspace support (v1.32) |
 | `GSD_SKIP_SCHEMA_CHECK` | Skip schema drift detection during execute-phase (v1.31) |
+| `GSD_EXIT_CONTRACT` | Select the exit-code projection: `v1` (default) or `v2`. See [Exit-code contract](#exit-code-contract-gsd_exit_contract) below. |
 | `GSD_ALLOW_SYMLINKED_DEST` | Set to `1` (or `true`) to permit install/update when `CLAUDE_CONFIG_DIR` (or any artifact-kind child like `skills/`, `hooks/`) is an **intentional, user-owned symlink** pointing outside the install root. v1.7.x write-confinement (ADR-1239 Phase B) refuses such layouts by default to prevent untrusted `destSubpath` traversal. Opt in only if you manage configHome via symlinked external dirs, multi-account config layouts (`~/.claude-personal`, `~/.claude-team`), or dotfiles-managed configHome (nix-darwin, etc.). Two refusals remain load-bearing even with opt-in: path-traversal in `destSubpath` (`../../etc`-style), and a symlink whose resolved target equals the install root itself (would let the prune pass wipe it). |
 | `WSL_DISTRO_NAME` | Detected by installer for WSL path handling |
+
+### Exit-code contract (`GSD_EXIT_CONTRACT`)
+
+Which integers GSD's commands exit with is **versioned**, so the meanings can be
+sharpened without breaking callers that already depend on today's numbers.
+
+| Version | Behavior |
+|---|---|
+| `v1` | **Default.** Today's exit codes, unchanged. |
+| `v2` | Codes come from the exit-code registry. |
+
+Select `v2` either way — the flag wins when both are given:
+
+```bash
+GSD_EXIT_CONTRACT=v2 gsd-tools <command>
+gsd-tools <command> --exit-contract=v2
+```
+
+An unrecognized value is **rejected**, not silently treated as `v1`. That is
+deliberate: a selector that quietly ignores what you asked for is the failure
+mode this contract exists to remove.
+
+**What actually differs today.** Only one outcome: a command that ran to
+completion and is reporting a condition **through its result payload** rather
+than as a process failure. Under `v1` that exits `0` — a long-standing
+contract across ~60 call sites, documented in
+[`json-errors.md`](json-errors.md), where a caller detects the condition by
+inspecting the payload rather than the exit code. Under `v2` it exits a
+registered non-zero code instead. Pass or fail, and every other registered
+outcome, are identical under both.
+
+Every registered code is non-zero, so a caller written `if ! cmd; then` behaves
+the same for success under either version and trips for everything else.
+Switching to `v2` can turn a false green red; it cannot turn a red green.
+
+`v2` is opt-in now and becomes the default at the next major version. Rationale
+and the full band allocation are in
+[ADR-3889](adr/3889-process-exit-contract.md).
 
 ---
 

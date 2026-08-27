@@ -16,6 +16,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SCRIPT_REL = path.join('scripts', 'check-glossary-refs.cjs');
@@ -34,7 +35,10 @@ function allRuntimesSentence(count, members) {
 /**
  * Build a throwaway repo containing exactly what the gate reads: CONTEXT.md,
  * bin/install.js, a real src/ file a clean fixture can legitimately reference,
- * and a copy of the gate + its cli-exit dependency. A unique mkdtemp per call
+ * and a copy of the gate together with its transitive relative-require graph
+ * (walked and copied by copyScriptWithDeps, not hand-listed — see that
+ * helper's docstring for why: a hand-copied dependency list silently goes
+ * stale the moment the script gains a new require). A unique mkdtemp per call
  * keeps parallel tests from colliding, and the dir is removed via `t.after()`
  * so a failing assertion cannot leak it.
  */
@@ -42,15 +46,10 @@ function makeRepo(t, { contextBody, runtimes = REAL_RUNTIMES }) {
   const root = createTempDir('gsd-glossary-refs-');
   t.after(() => cleanup(root));
 
-  fs.mkdirSync(path.join(root, 'scripts', 'lib'), { recursive: true });
   fs.mkdirSync(path.join(root, 'src'), { recursive: true });
   fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
 
-  fs.copyFileSync(path.join(REPO_ROOT, SCRIPT_REL), path.join(root, SCRIPT_REL));
-  fs.copyFileSync(
-    path.join(REPO_ROOT, 'scripts', 'lib', 'cli-exit.cjs'),
-    path.join(root, 'scripts', 'lib', 'cli-exit.cjs'),
-  );
+  copyScriptWithDeps(REPO_ROOT, root, SCRIPT_REL);
 
   fs.writeFileSync(path.join(root, 'CONTEXT.md'), contextBody);
   fs.writeFileSync(

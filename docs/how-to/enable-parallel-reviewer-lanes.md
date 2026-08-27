@@ -68,6 +68,14 @@ lane you selected must appear there. That list is the contract: lanes are joined
 is rendered, so a missing reviewer means that lane did not produce a review — never that
 aggregation ran early.
 
+**If every selected lane failed, `REVIEWS.md` is not written at all** (ADR-3473 §8.5, #3885) — the
+run reports the failure instead of synthesizing a review artifact from zero lane results. This is
+not specific to parallel dispatch (a sequential run where every lane fails behaves the same way),
+but concurrency gives you more ways to lose every lane in one pass. Each lane's raw output and any
+non-empty `.err` file are preserved beside the phase's artifacts before the run's own cleanup runs,
+so a missing `REVIEWS.md` is diagnosable, not silent — see the table below for what a *partial*
+failure (some, not all, lanes down) looks like instead.
+
 Section order in `REVIEWS.md`, and line order in the run's `gsd-review-lane-results.jsonl`, are
 unchanged from sequential dispatch. They follow reviewer-selection order, not completion order,
 so a diff of two runs shows no reordering churn.
