@@ -7512,13 +7512,22 @@ describe('#3719: real global Claude install — agents/*.md @-refs must resolve 
     cleanup(projectLocal.root);
   });
 
+  // A live `@`-include is BARE markdown. An occurrence inside an inline-code span is
+  // PROSE ABOUT one — `gsd-core/CHANGELOG.md` ships the #3133/#3544 entries, which
+  // quote `@$HOME/...` verbatim while describing the very defect this row guards.
+  //
+  // Dropping the line-start anchor (correct: it hid 48 mid-line refs) made those
+  // entries visible to this scan, so the row went red on a CORRECT tree. The fix is
+  // to strip inline-code spans, NOT to restore the anchor — restoring it would trade
+  // a false positive for the false negative that let this bug ship in the first place.
+  const INLINE_CODE_SPAN_RE = /`[^`]*`/g;
   function collectAtHomeLines(rootDir) {
     const failures = [];
     for (const file of walk(rootDir)) {
       if (!file.endsWith('.md')) continue;
       const content = fs.readFileSync(file, 'utf8');
       for (const line of splitLines(content)) {
-        if (/@\$HOME\//.test(line)) failures.push({ file, line });
+        if (/@\$HOME\//.test(line.replace(INLINE_CODE_SPAN_RE, ''))) failures.push({ file, line });
       }
     }
     return failures;
@@ -7532,7 +7541,7 @@ describe('#3719: real global Claude install — agents/*.md @-refs must resolve 
       if (!file.endsWith('.md')) continue;
       const content = fs.readFileSync(file, 'utf8');
       for (const line of splitLines(content)) {
-        if (/@\$HOME\//.test(line)) failures.push(`${path.relative(agentsDir, file)}: ${line}`);
+        if (/@\$HOME\//.test(line.replace(INLINE_CODE_SPAN_RE, ''))) failures.push(`${path.relative(agentsDir, file)}: ${line}`);
       }
     }
     assert.deepStrictEqual(failures, [], `agents/*.md files with a broken @$HOME/ include:\n${failures.join('\n')}`);
