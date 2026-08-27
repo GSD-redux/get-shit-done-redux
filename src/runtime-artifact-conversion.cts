@@ -2949,7 +2949,13 @@ function restoreClaudeGlobalAtRefTilde(content, pathPrefix) {
   if (typeof pathPrefix !== 'string' || !pathPrefix.startsWith('$HOME')) return content;
   const tildeEquivalent = '~' + pathPrefix.slice('$HOME'.length);
   const atRefRe = new RegExp(`(?<!["'])@${escapeRegExp(pathPrefix)}`, 'g');
-  return content.replace(atRefRe, `@${tildeEquivalent}`);
+  // Function replacement, not a string. A string replacement treats `$&` and the
+  // backtick-dollar form in the SUBSTITUTION as special patterns, so a --config-dir
+  // containing either corrupts output: `$HOME/.cl$&ude/` yielded
+  // `@~/.cl@$HOME/.cl$&ude/ude/x`, and the backtick form silently DROPPED text.
+  // Pre-existing, and #3719 adds a THIRD call site to this sink — which is how the
+  // previous two came to share the defect in the first place.
+  return content.replace(atRefRe, () => `@${tildeEquivalent}`);
 }
 
 /**
