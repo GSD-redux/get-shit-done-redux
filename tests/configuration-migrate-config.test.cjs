@@ -610,3 +610,58 @@ test('mergeDefaults clones defaults without JSON serialization fragility (#321)'
     });
   });
 }
+
+// ─── #3749: migrate-config must be project-aware under GSD_PROJECT ──────────
+describe('migrate-config — GSD_PROJECT scoping (#3749)', () => {
+  test('migrates the SCOPED config.json, never the root one', (t) => {
+    const tmpDir = createTempProject('gsd-3749-migrate-');
+    t.after(() => cleanup(tmpDir));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'second-product'), { recursive: true });
+    // Root carries the legacy key; the scoped config is canonical.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ depth: 'quick' }),
+    );
+    const scopedPath = path.join(tmpDir, '.planning', 'second-product', 'config.json');
+    fs.writeFileSync(scopedPath, JSON.stringify({ granularity: 'standard' }));
+
+    // Scoped config has no legacy keys → the honest outcome is a no-op that
+    // writes NOTHING (issue #3749 expectation: "reports that the scoped config
+    // has no legacy keys and writes nothing"). Either way the root file must
+    // not be touched.
+    const r = runMigrateConfig(tmpDir, [], { GSD_PROJECT: 'second-product' });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+    const root = JSON.parse(fs.readFileSync(path.join(tmpDir, '.planning', 'config.json'), 'utf8'));
+    assert.equal(root['depth'], 'quick', '#3749: the root project\'s config must be untouched');
+    assert.equal(root['granularity'], undefined, '#3749: no migration may be written into the root config');
+  });
+
+  test('a scoped config WITH legacy keys is the migration target', (t) => {
+    const tmpDir = createTempProject('gsd-3749-migrate2-');
+    t.after(() => cleanup(tmpDir));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'second-product'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ granularity: 'fine' }),
+    );
+    const scopedPath = path.join(tmpDir, '.planning', 'second-product', 'config.json');
+    fs.writeFileSync(scopedPath, JSON.stringify({ depth: 'quick' }));
+
+    const r = runMigrateConfig(tmpDir, [], { GSD_PROJECT: 'second-product' });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+
+    const scoped = JSON.parse(fs.readFileSync(scopedPath, 'utf8'));
+    assert.equal(scoped['granularity'], 'coarse', '#3749: the SCOPED config must be migrated');
+    assert.equal(scoped['depth'], undefined, 'legacy key removed from the scoped config');
+    const root = JSON.parse(fs.readFileSync(path.join(tmpDir, '.planning', 'config.json'), 'utf8'));
+    assert.equal(root['granularity'], 'fine', '#3749: root config must remain byte-equivalent');
+    if (parsed['wrote']) {
+      assert.ok(
+        String(parsed['wrote']).includes(path.join('.planning', 'second-product')),
+        `#3749: wrote must name the scoped file, got ${parsed['wrote']}`,
+      );
+    }
+  });
+});

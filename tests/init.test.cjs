@@ -4707,3 +4707,36 @@ describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
     assert.equal(out.next_phase, null, 'all-complete milestone: no frontier (completion flow owns the answer)');
   });
 });
+
+// ─── #3749: project_exists must follow project_path under GSD_PROJECT ───────
+describe('init.new-project — GSD_PROJECT scoping (#3749)', () => {
+  test('project_exists tracks the namespaced PROJECT.md, not the root one', (t) => {
+    const tmpDir = createTempProject('gsd-3749-init-');
+    t.after(() => cleanup(tmpDir));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'second-product'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'second-product', 'PROJECT.md'), '# Second Product\n');
+
+    const r1 = runGsdTools(['query', 'init.new-project'], tmpDir, { GSD_PROJECT: 'second-product' });
+    assert.ok(r1.success, r1.error);
+    const out1 = JSON.parse(r1.output);
+    assert.equal(out1['project_exists'], true,
+      `#3749: project_path (${out1['project_path']}) names an existing file — project_exists must be true`);
+    assert.ok(String(out1['project_path']).includes(path.join('.planning', 'second-product')));
+
+    // An unrelated root PROJECT.md must not change the verdict.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# unrelated\n');
+    const r2 = runGsdTools(['query', 'init.new-project'], tmpDir, { GSD_PROJECT: 'second-product' });
+    assert.ok(r2.success, r2.error);
+    assert.equal(JSON.parse(r2.output)['project_exists'], true,
+      '#3749: verdict must not flip when an unrelated root file appears');
+  });
+
+  test('without GSD_PROJECT the root PROJECT.md still answers project_exists', (t) => {
+    const tmpDir = createTempProject('gsd-3749-init2-');
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Root Project\n');
+    const r = runGsdTools(['query', 'init.new-project'], tmpDir);
+    assert.ok(r.success, r.error);
+    assert.equal(JSON.parse(r.output)['project_exists'], true, 'default (unscoped) behavior unchanged');
+  });
+});
