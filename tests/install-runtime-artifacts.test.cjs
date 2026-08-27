@@ -1137,6 +1137,19 @@ describe('convertClaudeToAntigravityContent bare path replacement (#2418)', () =
       assert.ok(!result.includes('$HOME/.claude/'), `Expected full replacement, got: ${result}`);
     });
 
+    test('replaces bare ~/.claude/skills (no trailing slash) with ~/.gemini/config/skills (#3738)', () => {
+      const input = 'ls ~/.claude/skills';
+      const result = convertClaudeToAntigravityContent(input, true);
+      assert.ok(
+        result.includes('~/.gemini/config/skills'),
+        `bare skills form must divert to the config root, got: ${result}`
+      );
+      assert.ok(
+        !result.includes('~/.gemini/antigravity/skills'),
+        `bare skills form must not fall through to the retired configHome path, got: ${result}`
+      );
+    });
+
     test('keeps gsd-core references under ~/.gemini/antigravity when a skills ref is present (#3738)', () => {
       const input = 'Read ~/.claude/gsd-core/workflows/x.md then list ~/.claude/skills/.';
       const result = convertClaudeToAntigravityContent(input, true);

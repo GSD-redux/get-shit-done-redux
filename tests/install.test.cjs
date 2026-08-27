@@ -1355,6 +1355,17 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
         !fs.existsSync(path.join(homeDir, '.agents')),
         '.agents/ must NOT be created by a global install (global skills path is ~/.gemini/config)',
       );
+      // #3738 review finding 1: the manifest must record the agents surface at
+      // its ACTUAL install root — writeManifest resolves the agents-kind home
+      // override, so drift detection sees the files AGY reads.
+      const manifestPath = path.join(result.configDir, 'gsd-file-manifest.json');
+      assert.ok(fs.existsSync(manifestPath), 'global install must write the manifest');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const agentKeys = Object.keys(manifest.files).filter((k) => k.startsWith('agents/'));
+      assert.ok(
+        agentKeys.length > 0,
+        `manifest must track agents/ at the home-override root, got keys: ${Object.keys(manifest.files).slice(0, 5).join(', ')}`,
+      );
     } finally {
       if (savedHome === undefined) delete process.env.HOME;
       else process.env.HOME = savedHome;

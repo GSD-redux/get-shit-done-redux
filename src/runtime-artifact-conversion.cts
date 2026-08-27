@@ -942,6 +942,11 @@ function convertClaudeToAntigravityContent(content, isGlobal = false) {
     // skills dir itself.
     c = c.replace(/\$HOME\/\.claude\/skills\//g, '$HOME/.gemini/config/skills/');
     c = c.replace(/~\/\.claude\/skills\//g, '~/.gemini/config/skills/');
+    // Bare skills form (no trailing slash) — must also precede the generic
+    // slash rule, which would otherwise divert it to the retired configHome
+    // path ($HOME/.gemini/antigravity/skills).
+    c = c.replace(/\$HOME\/\.claude\/skills\b/g, '$HOME/.gemini/config/skills');
+    c = c.replace(/~\/\.claude\/skills\b/g, '~/.gemini/config/skills');
     c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/antigravity/');
     c = c.replace(/~\/\.claude\//g, '~/.gemini/antigravity/');
     // Bare form (no trailing slash) — must come after slash form to avoid double-replace
