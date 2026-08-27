@@ -1079,6 +1079,34 @@ current_phase: 3
     assert.ok(content.includes(NESTED), `#3742: nested comment must survive state update; got:\n${content}`);
   });
 
+  test('#3742: trailing comments do not duplicate across repeated writes', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 3',
+        'status: executing',
+        '# TRAILING: do not resync',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 03',
+        '**Status:** Executing',
+        '',
+      ].join('\n'),
+    );
+
+    for (let i = 0; i < 3; i++) {
+      runGsdTools('state update Status Paused', tmpDir);
+    }
+
+    const content = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const count = (content.match(/# TRAILING: do not resync/g) || []).length;
+    assert.strictEqual(count, 1, `#3742: trailing comment must appear exactly once after repeated writes, got ${count}:\n${content}`);
+  });
+
   test('round-trip: write then read via state json', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
