@@ -29,6 +29,7 @@ const {
 } = require('./helpers.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { toPosixPath } = require('../gsd-core/bin/lib/shell-command-projection.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const REVIEW_MD_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'review.md');
@@ -725,9 +726,27 @@ function runWriteReviewsFlow(t, opts) {
   const tracePath = path.join(scriptDir, 'commit-trace.log');
   const reviewsMdPath = path.join(phaseDir, '03-REVIEWS.md');
 
+  // #3885 Windows fix: splice POSIX-form paths into the bash source text, not
+  // the OS-native ones `createTempDir()` returns. This is a fixture fix, not
+  // a product one — the real workflow never hits this seam with a backslash
+  // path in the first place: `{run_dir}` is created by `mktemp -d` running
+  // INSIDE the bash block itself (always POSIX-style, even under Git Bash on
+  // Windows), and `{phase_dir}` is the `phase_dir` field from
+  // `gsd_run query init.review`, which gsd-core/bin/lib/init.cjs already
+  // pipes through this exact same `toPosixPath()` before it is ever
+  // serialized (see the `phase_dir: ... toPosixPath(...)` call sites there).
+  // Splicing a native `C:\Users\...` string directly into unquoted bash
+  // source (e.g. the pre-existing, unquoted
+  // `--files {phase_dir}/{padded_phase}-REVIEWS.md` commit line) hits bash's
+  // own unquoted-backslash removal and silently drops every separator — a
+  // test-harness-only failure mode that following the fixture's own
+  // production analogue eliminates.
+  const runDirPosix = toPosixPath(runDir);
+  const phaseDirPosix = toPosixPath(phaseDir);
+
   const substitute = (block) => block
-    .split('{run_dir}').join(runDir)
-    .split('{phase_dir}').join(phaseDir)
+    .split('{run_dir}').join(runDirPosix)
+    .split('{phase_dir}').join(phaseDirPosix)
     .split('{padded_phase}').join('03')
     .split('{N}').join('3');
 
@@ -944,8 +963,12 @@ describe('#3885 failed preservation leaves run_dir intact (no silent swallow)', 
       true,
       'a failed mkdir -p on DIAG_DIR must skip rm -rf and leave run_dir intact — this is the #3885 regression guard',
     );
+    // The warning is emitted by the substituted bash script, which names
+    // $RUN_DIR in its POSIX-spliced form (see the #3885 comment in
+    // runWriteReviewsFlow) — compare against that same form rather than the
+    // OS-native `result.runDir`.
     assert.ok(
-      result.stderr.includes(result.runDir),
+      result.stderr.includes(toPosixPath(result.runDir)),
       `the failure warning must name the intact run_dir holding the un-preserved evidence; got stderr: ${result.stderr}`,
     );
     // The original per-lane evidence is still readable at its original
@@ -968,8 +991,13 @@ describe('#3352 preserved evidence is never swept into the commit (N6)', () => {
     });
     assert.equal(result.commitTrace.length, 1, 'exactly one commit call must run');
     const commitArgs = result.commitTrace[0];
+    // The commit fence splices `{phase_dir}` into unquoted bash source as a
+    // POSIX-form path (see the #3885 comment in runWriteReviewsFlow) — build
+    // the expected string the same way rather than via `path.join`, which on
+    // win32 would re-insert native backslashes the substituted script never
+    // produces.
     assert.ok(
-      commitArgs.includes(path.join(result.phaseDir, '03-REVIEWS.md')),
+      commitArgs.includes(`${toPosixPath(result.phaseDir)}/03-REVIEWS.md`),
       `commit must name the single REVIEWS.md file; got: ${commitArgs}`,
     );
     assert.ok(
