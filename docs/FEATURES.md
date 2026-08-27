@@ -3881,10 +3881,17 @@ by sorted plan-file order — deterministic, but arbitrary where the collision
 happens, matching the retired behavior exactly.
 
 **Known limits:**
-- The 16 held Codex roles are pinned at `read-only`, not widened — see
-  `.gsd/phase/feat-3897-adr3473-83-rungs/45-decision-rung3-sandbox.md` for
-  the decision and the measurement behind it. Widening them is a follow-up
-  once Codex's actual enforcement of `sandbox_mode` is confirmed.
+- The 16 held Codex roles are pinned at `read-only`, not widened. A faithful
+  derivation from the tool contract would widen them, because they declare
+  `Write` or `Edit`; the previous hand-maintained map never listed them and
+  they fell through a silent `|| 'read-only'` default instead. Deriving *and*
+  holding keeps emitted TOML byte-identical for all 35 roles today while the
+  derivation becomes the single owner of the rule. Widening them is a follow-up
+  once Codex's actual enforcement of `sandbox_mode` is confirmed — until then a
+  hold is reversible and a widened sandbox is not. The hold list is
+  self-invalidating: an entry naming a role that no longer derives broader, or
+  that has no file in the shipped roster, fails rather than rotting into the
+  subset map this change deletes.
 - The bare plan-number form is ambiguous by construction across two plans in
   the same phase that share a short form; first-write-wins is deterministic
   but not a conflict warning. Prefer the full or canonical id when a phase's
