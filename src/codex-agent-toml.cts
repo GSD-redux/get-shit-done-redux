@@ -472,14 +472,52 @@ function _codexToolsDeclareWriteOrEdit(toolsRaw: string): boolean {
   return tokens.includes('Write') || tokens.includes('Edit');
 }
 
+// #3897 CAUSE A fix: a single-purpose `tools:`-line reader, NOT a general
+// frontmatter parser (`extractFrontmatterAndBody`/`extractFrontmatterField`
+// were deliberately deleted from this module's ancestor — see the module
+// header's "document model, not policy" charter). This module is the one
+// genuinely side-effect-free leaf `agent-install-check.cts`'s
+// `checkCodexSandboxPosture` already imports from for
+// {@link deriveCodexSandboxMode}; giving it this reader too avoids importing
+// `runtime-artifact-conversion.cjs` there just to pull one frontmatter field
+// — that module's own dependency chain (`command-roster.cjs` →
+// `scripts/fix-slash-commands.cjs`, a dev-only repo script) does not resolve
+// from an installed tree, which is exactly what broke
+// `tests/agent-install-check.test.cjs` against a synthetic install dir.
+// Scoped to ONLY the `tools:` key: finds the leading `---`-delimited
+// frontmatter block and returns its `tools:` line's value (quotes stripped),
+// or `''` when there is no frontmatter block or no `tools:` key at all.
+export function extractToolsLine(agentContent: string): string {
+  if (!agentContent.startsWith('---')) return '';
+  const endIndex = agentContent.indexOf('---', 3);
+  if (endIndex === -1) return '';
+  const frontmatter = agentContent.substring(3, endIndex);
+  const match = frontmatter.match(/^tools:\s*(.+)$/m);
+  if (!match) return '';
+  return match[1].trim().replace(/^['"]|['"]$/g, '');
+}
+
 /**
  * The single owner of `sandbox_mode` derivation: `workspace-write` iff the
  * role's own frontmatter `tools:` declares Write/Edit, UNLESS the role is
- * held ({@link CODEX_SANDBOX_HOLDS}) at `read-only`. A held role whose live
- * tool contract no longer derives broader than its pin is a STALE hold
- * (S4) — fail loudly naming the role rather than silently honoring it
- * forever, which is exactly the hand-maintained-subset-map defect this rung
- * deletes.
+ * held ({@link CODEX_SANDBOX_HOLDS}) at `read-only`.
+ *
+ * #3897 CAUSE C fix: this function is TOTAL — it never throws, for any
+ * (identity, toolsValue) pair. It used to throw when a held role's CONTENT
+ * (whatever the caller handed it) did not derive broader than its pin, on
+ * the theory that a stale hold should "fail loudly at the point the
+ * derivation runs". That reasoning does not survive contact with this
+ * function's actual contract: it is a pure predicate over whatever content
+ * the caller supplies, and tests legitimately pass synthetic fixtures for
+ * held role names, so the throw fired on arbitrary input, not just the real
+ * roster. It is also redundant even for real input — if a held role's
+ * content does not derive broader, applying the hold pins `read-only` and
+ * derivation would return `read-only` anyway; the hold is a no-op, so there
+ * is nothing to fail about at derivation time. The STALENESS invariant (S4)
+ * is a property of the real `agents/` roster, not of an arbitrary call's
+ * input, so it belongs — and stays enforced — only at the roster level: see
+ * {@link validateCodexSandboxHolds} and `tests/codex-config.test.cjs`
+ * T24/T25, which assert it against the real roster directly.
  *
  * `agentName` here MUST be an identity the content's own frontmatter cannot
  * change — i.e. the source `.md` FILENAME stem, never a frontmatter-derived
@@ -498,14 +536,12 @@ function _deriveCodexSandboxModeFromTools(agentName: string, toolsRaw: string): 
   const derivesBroader = _codexToolsDeclareWriteOrEdit(toolsRaw || '');
   const holdKey = String(agentName == null ? '' : agentName).toLowerCase();
   if (Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, holdKey)) {
-    if (!derivesBroader) {
-      throw new Error(
-        `CODEX_SANDBOX_HOLDS: stale hold for "${agentName}" — its current tools: frontmatter no longer ` +
-        'declares Write/Edit, so the pin no longer holds anything broader than what derivation would ' +
-        'already produce. Remove this entry (ADR-3473 §8.3 / HALT.md: the hold list is self-invalidating ' +
-        'and must shrink to zero, never be silently honored once stale).'
-      );
-    }
+    // A held role always pins read-only, whether or not its supplied content
+    // still derives broader (see #3897 CAUSE C note above the docstring for
+    // this function's caller-facing counterpart): if it no longer derives
+    // broader, the pin is a no-op and there is nothing to fail about here —
+    // the staleness invariant lives at the roster level instead
+    // ({@link validateCodexSandboxHolds}).
     return 'read-only';
   }
   return derivesBroader ? 'workspace-write' : 'read-only';
@@ -519,9 +555,11 @@ function _deriveCodexSandboxModeFromTools(agentName: string, toolsRaw: string): 
  * here; see the module-header note above `CODEX_SANDBOX_HOLDS`). Both
  * callers already have (or can trivially get) `tools:` in hand via whichever
  * extractor they already own — `bin/install.js`'s own
- * `extractFrontmatterField`, or `runtime-artifact-conversion.cts`'s exported
- * `extractFrontmatterAndBody`/`extractFrontmatterField` for `src/` callers —
- * so this stays a pure predicate over data the caller already holds, never a
+ * `extractFrontmatterField`, or this module's own {@link extractToolsLine}
+ * for `agent-install-check.cts` (#3897 CAUSE A fix: NOT
+ * `runtime-artifact-conversion.cts`'s general-purpose extractors — that
+ * module's dependency chain does not resolve from an installed tree) — so
+ * this stays a pure predicate over data the caller already holds, never a
  * document reader.
  *
  * `agentName` is a HOLD-LOOKUP IDENTITY, not a display name: callers must

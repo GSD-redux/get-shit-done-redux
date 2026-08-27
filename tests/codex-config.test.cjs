@@ -497,9 +497,27 @@ tools: Read, Grep, Glob
     assert.ok(result.includes('description = "GSD agent gsd-unknown"'), 'falls back to synthetic description');
   });
 
-  test('defaults unknown agents to read-only', () => {
+  // #3897 CAUSE B fix: this used to assert the deleted name-based fallback
+  // (an unknown agent NAME defaulted to read-only regardless of its tool
+  // contract). Under derivation, identity no longer determines the sandbox —
+  // the tool contract does (S6: "a new writing role gets the contract, not
+  // the pin"). Split into the two rows the old single assertion conflated:
+  // absence of a `tools:` grant (N8) vs. an unknown role that legitimately
+  // declares a writing tool (S6).
+  test('unknown agent with no tools: frontmatter derives read-only (N8: absence is not a grant)', () => {
+    const noToolsAgent = `---
+name: gsd-unknown
+description: An unknown agent with no declared tools
+---
+
+<role>You are an unknown agent.</role>`;
+    const result = generateCodexAgentToml('gsd-unknown', noToolsAgent);
+    assert.ok(result.includes('sandbox_mode = "read-only"'), 'no tools: frontmatter -> read-only');
+  });
+
+  test('unknown agent declaring Write/Edit derives workspace-write (S6: the tool contract, not the pin, decides)', () => {
     const result = generateCodexAgentToml('gsd-unknown', sampleAgent);
-    assert.ok(result.includes('sandbox_mode = "read-only"'), 'defaults to read-only');
+    assert.ok(result.includes('sandbox_mode = "workspace-write"'), 'declares Write/Edit -> workspace-write');
   });
 
   // ─── #2256: model_overrides support ───────────────────────────────────────

@@ -26,25 +26,18 @@ import { isAnthropicFlavoredModel } from './model-catalog.cjs';
 // locally. Behavior is unchanged: scanTomlLines/stripBOM here are the exact
 // same lenient functions that used to live in this file — see
 // codex-agent-toml.cts's module header for the reader/writer reconciliation.
-import { stripBOM, scanTomlLines, deriveCodexSandboxMode } from './codex-agent-toml.cjs';
-// #3897 fixup: `deriveCodexSandboxMode` no longer parses frontmatter itself
-// (there is no third copy of that extraction — two already exist, here and
-// in `bin/install.js`). This module already has `extractFrontmatterAndBody`/
-// `extractFrontmatterField` available from `runtime-artifact-conversion.cts`
-// (exported there, used identically by `bin/install.js`'s own converters) —
-// reused here rather than adding a fourth copy.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-import runtimeArtifactConversion = require('./runtime-artifact-conversion.cjs');
-// Explicit signatures (that module is `@ts-nocheck`, so its own call-result
-// types are `any`) so callers below get a real, checked type rather than
-// tripping @typescript-eslint/no-unsafe-assignment at every destructure.
-const extractFrontmatterAndBody = runtimeArtifactConversion.extractFrontmatterAndBody as (
-  content: string,
-) => { frontmatter: string | null; body: string };
-const extractFrontmatterField = runtimeArtifactConversion.extractFrontmatterField as (
-  frontmatter: string,
-  fieldName: string,
-) => string | null;
+// #3897 CAUSE A fix: `deriveCodexSandboxMode` needs the resolved `tools:`
+// frontmatter VALUE, not raw content — this module used to reach that via
+// `runtime-artifact-conversion.cjs`'s general-purpose
+// `extractFrontmatterAndBody`/`extractFrontmatterField`, but that module's
+// dependency chain (`command-roster.cjs` -> `scripts/fix-slash-commands.cjs`,
+// a dev-only repo script) does not resolve from an installed tree — any test
+// exercising a synthetic install dir blew up at module load. `codex-agent-toml.cjs`
+// is already imported here, is a genuine leaf (node builtins only, zero
+// side effects), and now exports `extractToolsLine` — a single-purpose
+// `tools:`-line reader, not a general frontmatter parser — for exactly this
+// caller, so no fourth copy of frontmatter parsing is added.
+import { stripBOM, scanTomlLines, deriveCodexSandboxMode, extractToolsLine } from './codex-agent-toml.cjs';
 
 interface AgentsInstalledResult {
   agents_installed: boolean;
@@ -418,10 +411,13 @@ function _canonicalAgentSourceDir(): string {
  * this posture check, e.g. `gsd-tools validate agents`) — so the emitter and
  * this posture check can never silently diverge on the same tool-contract
  * predicate — the exact generative-fix-divergence shape this epic exists to
- * close. A stale/orphaned hold throws from inside that shared derivation,
- * which is deliberate: this check is a validator in the sense §8.3's
- * self-invalidation requirement names ("fail loudly at the point the emitter
- * or its validator runs").
+ * close. `deriveCodexSandboxMode` itself is total (never throws, #3897
+ * CAUSE C fix) — a held role whose supplied content no longer derives
+ * broader than its pin simply returns `read-only` rather than failing,
+ * because the pin is then a no-op. The staleness invariant (S4/S5) this
+ * check's imports still carry is enforced separately, at the real `agents/`
+ * roster level, by `validateCodexSandboxHolds` and
+ * `tests/codex-config.test.cjs` T24/T25 — not by this per-call derivation.
  *
  * Read-only: detects, never repairs — same posture as {@link checkCodexModelPosture}.
  *
@@ -502,8 +498,7 @@ function checkCodexSandboxPosture(runtime?: string, projectRoot?: string): Codex
       continue;
     }
 
-    const { frontmatter: canonicalFrontmatter } = extractFrontmatterAndBody(canonicalContent);
-    const toolsRaw = extractFrontmatterField(canonicalFrontmatter || '', 'tools') || '';
+    const toolsRaw = extractToolsLine(canonicalContent);
     const expected = deriveCodexSandboxMode(agentName, toolsRaw);
     if (expected !== found) {
       violations.push({ agent: agentName, file: filePath, expected, found });
