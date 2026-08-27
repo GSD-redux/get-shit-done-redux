@@ -56,6 +56,25 @@ function runGen(args, opts = {}) {
   return runNode([GEN_SCRIPT, ...args], { timeoutMs: PROBE_TIMEOUT_MS, ...opts });
 }
 
+/**
+ * Run the generator CLI with `--json` and parse its single stdout JSON
+ * report. Per CONTRIBUTING.md's "Prohibited: Raw Text Matching on Test
+ * Outputs", CLI-subprocess assertions in this suite key off this structured
+ * `{ok, reason, context, detail?}` report — never a regex against human-readable
+ * stdout/stderr prose.
+ * @returns {{result: object, report: {ok:boolean, reason:string, detail?:string}}}
+ */
+function runGenJson(args, opts = {}) {
+  const result = runGen(['--json', ...args], opts);
+  let report;
+  try {
+    report = JSON.parse(result.stdout);
+  } catch (err) {
+    throw new Error(`runGenJson: stdout did not parse as JSON: ${err.message}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  }
+  return { result, report };
+}
+
 // ── exitCodeFor / nameForExitCode ─────────────────────────────────────────────
 describe('exit-code-registry: exitCodeFor', () => {
   test('resolves each of the 5 registered names to its code', () => {
@@ -249,7 +268,7 @@ describe('gen-exit-code-registry: required string fields', () => {
 });
 
 describe('gen-exit-code-registry: cross-entry invariants', () => {
-  test('duplicate code -> DUPLICATE_CODE, message names the code and both names', () => {
+  test('duplicate code -> DUPLICATE_CODE, context carries the code and both names', () => {
     const entries = [
       makeEntry({ code: 64, name: 'FIRST_NAME' }),
       makeEntry({ code: 64, name: 'SECOND_NAME' }),
@@ -257,12 +276,10 @@ describe('gen-exit-code-registry: cross-entry invariants', () => {
     const result = generator.validateEntries(entries);
     assert.equal(result.ok, false);
     assert.equal(result.reason, generator.REASON.DUPLICATE_CODE);
-    assert.match(result.message, /64/);
-    assert.match(result.message, /FIRST_NAME/);
-    assert.match(result.message, /SECOND_NAME/);
+    assert.deepEqual(result.context, { code: 64, names: ['FIRST_NAME', 'SECOND_NAME'] });
   });
 
-  test('duplicate name -> DUPLICATE_NAME', () => {
+  test('duplicate name -> DUPLICATE_NAME, context carries the name and both codes', () => {
     const entries = [
       makeEntry({ code: 64, name: 'SAME_NAME' }),
       makeEntry({ code: 70, name: 'SAME_NAME' }),
@@ -270,6 +287,7 @@ describe('gen-exit-code-registry: cross-entry invariants', () => {
     const result = generator.validateEntries(entries);
     assert.equal(result.ok, false);
     assert.equal(result.reason, generator.REASON.DUPLICATE_NAME);
+    assert.deepEqual(result.context, { name: 'SAME_NAME', codes: [64, 70] });
   });
 
   test('same owner, different codes -> ACCEPTED', () => {
@@ -379,9 +397,10 @@ describe('gen-exit-code-registry: CLI', () => {
     const out = path.join(tmpDir, 'c-out.cjs');
     assert.equal(runGen(['--write', '--declaration', decl, '--out', out]).exitCode, 0);
     fs.appendFileSync(out, '\n// hand-edited, drifts from generated content\n');
-    const result = runGen(['--check', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--check', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.DRIFTED));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.DRIFTED);
   });
 
   test('--check with a stale artifact (declaration changed after write) -> DRIFTED', () => {
@@ -391,17 +410,19 @@ describe('gen-exit-code-registry: CLI', () => {
     const entries = JSON.parse(fs.readFileSync(decl, 'utf8'));
     entries.push({ code: 80, name: 'DOMAIN_X', meaning: 'm', owner: 'domain-x', authorizedBy: 'ADR-3889' });
     fs.writeFileSync(decl, JSON.stringify(entries, null, 2), 'utf8');
-    const result = runGen(['--check', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--check', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.DRIFTED));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.DRIFTED);
   });
 
   test('--check with the artifact absent -> MISSING_ARTIFACT', () => {
     const decl = validDeclarationPath(tmpDir, 'e-decl.json');
     const out = path.join(tmpDir, 'e-out-absent.cjs');
-    const result = runGen(['--check', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--check', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.MISSING_ARTIFACT));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.MISSING_ARTIFACT);
     assert.equal(fs.existsSync(out), false);
   });
 
@@ -410,9 +431,10 @@ describe('gen-exit-code-registry: CLI', () => {
     const out = path.join(tmpDir, 'f-out.cjs');
     assert.equal(runGen(['--write', '--declaration', decl, '--out', out]).exitCode, 0);
     const before = fs.readFileSync(out, 'utf8');
-    const result = runGen(['--bogus-flag', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--bogus-flag', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.USAGE));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.USAGE);
     const after = fs.readFileSync(out, 'utf8');
     assert.equal(after, before);
   });
@@ -420,44 +442,49 @@ describe('gen-exit-code-registry: CLI', () => {
   test('second positional argument -> USAGE', () => {
     const decl = validDeclarationPath(tmpDir, 'g-decl.json');
     const out = path.join(tmpDir, 'g-out.cjs');
-    const result = runGen(['--check', 'extra-positional', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--check', 'extra-positional', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.USAGE));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.USAGE);
   });
 
   test('missing declaration -> MISSING_DECLARATION, exit 1', () => {
     const decl = path.join(tmpDir, 'does-not-exist-h.json');
     const out = path.join(tmpDir, 'h-out.cjs');
-    const result = runGen(['--write', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--write', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.MISSING_DECLARATION));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.MISSING_DECLARATION);
   });
 
   test('malformed JSON declaration -> MALFORMED_DECLARATION, exit 1', () => {
     const decl = path.join(tmpDir, 'i-decl.json');
     fs.writeFileSync(decl, '{ not json', 'utf8');
     const out = path.join(tmpDir, 'i-out.cjs');
-    const result = runGen(['--write', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--write', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.MALFORMED_DECLARATION));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.MALFORMED_DECLARATION);
   });
 
   test('valid JSON, not an array -> NOT_AN_ARRAY, exit 1', () => {
     const decl = path.join(tmpDir, 'j-decl.json');
     fs.writeFileSync(decl, '{}', 'utf8');
     const out = path.join(tmpDir, 'j-out.cjs');
-    const result = runGen(['--write', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--write', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.NOT_AN_ARRAY));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.NOT_AN_ARRAY);
   });
 
   test('empty array declaration -> EMPTY_DECLARATION, exit 1', () => {
     const decl = path.join(tmpDir, 'k-decl.json');
     fs.writeFileSync(decl, '[]', 'utf8');
     const out = path.join(tmpDir, 'k-out.cjs');
-    const result = runGen(['--write', '--declaration', decl, '--out', out]);
+    const { result, report } = runGenJson(['--write', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, new RegExp(generator.REASON.EMPTY_DECLARATION));
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.EMPTY_DECLARATION);
   });
 });
 
@@ -504,11 +531,27 @@ describe('gen-exit-code-registry: CLI positive controls for the ten guard rows',
     test(`${label} -> ${expectedReasonKey}, exit 1`, () => {
       const decl = writeFixture(label.replace(/[^a-z0-9]+/gi, '-'), buildEntries());
       const out = path.join(tmpDir, `${label.replace(/[^a-z0-9]+/gi, '-')}-out.cjs`);
-      const result = runGen(['--write', '--declaration', decl, '--out', out]);
+      const { result, report } = runGenJson(['--write', '--declaration', decl, '--out', out]);
       assert.equal(result.exitCode, 1, `expected exit 1 for ${label}, got stderr: ${result.stderr}`);
-      assert.match(result.stderr, new RegExp(generator.REASON[expectedReasonKey]));
+      assert.equal(report.ok, false);
+      assert.equal(report.reason, generator.REASON[expectedReasonKey]);
     });
   }
+
+  test('duplicate-code fixture: --json payload carries a structured context, not just the reason', () => {
+    const decl = writeFixture('json-duplicate-code', [
+      { ...validBase(), code: 64, name: 'DUP_A' },
+      { ...validBase(), code: 64, name: 'DUP_B' },
+    ]);
+    const out = path.join(tmpDir, 'json-duplicate-code-out.cjs');
+    const { result, report } = runGenJson(['--write', '--declaration', decl, '--out', out]);
+    assert.equal(result.exitCode, 1, result.stderr);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, generator.REASON.DUPLICATE_CODE);
+    // A --json consumer must be able to learn WHICH code collided and WHICH
+    // names collided without parsing the `detail` prose string.
+    assert.deepEqual(report.context, { code: 64, names: ['DUP_A', 'DUP_B'] });
+  });
 });
 
 // ── fast-check properties ─────────────────────────────────────────────────────
@@ -536,6 +579,26 @@ describe('exit-code-registry: fast-check properties', () => {
       fc.property(fc.string(), (s) => {
         fc.pre(!REGISTERED_NAMES.has(s));
         assert.throws(() => registry.exitCodeFor(s));
+      }),
+      { seed: 2704, numRuns: 200 },
+    );
+  });
+
+  // Unlike the two round-trip properties above (which replay only the 5
+  // shipped constants), this one explores the full integer domain —
+  // negatives, every band boundary, and values far outside every band —
+  // rather than a closed set of examples.
+  test('nameForExitCode(c) either throws or returns a name that round-trips to c, for any integer c', () => {
+    fc.assert(
+      fc.property(fc.integer(), (c) => {
+        let name;
+        try {
+          name = registry.nameForExitCode(c);
+        } catch {
+          return; // throwing for an unregistered code is a legal outcome
+        }
+        assert.notEqual(name, undefined);
+        assert.equal(registry.exitCodeFor(name), c);
       }),
       { seed: 2704, numRuns: 200 },
     );

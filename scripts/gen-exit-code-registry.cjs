@@ -18,6 +18,7 @@
  *   node scripts/gen-exit-code-registry.cjs --write         # write the artifact
  *   node scripts/gen-exit-code-registry.cjs --check         # exit 1 if the committed artifact is stale
  *   node scripts/gen-exit-code-registry.cjs --declaration <path> --out <path>   # override for tests
+ *   node scripts/gen-exit-code-registry.cjs --json          # emit ONE JSON report on stdout instead of human prose
  */
 
 'use strict';
@@ -47,12 +48,13 @@ const REASON = Object.freeze({
 });
 
 const USAGE_MESSAGE = [
-  'Usage: node scripts/gen-exit-code-registry.cjs [--write|--check] [--declaration <path>] [--out <path>]',
+  'Usage: node scripts/gen-exit-code-registry.cjs [--write|--check] [--declaration <path>] [--out <path>] [--json]',
   '  (no flag)        same as --write',
   '  --write          write the generated registry artifact',
   '  --check          exit 1 if the committed artifact is stale',
   '  --declaration    override the declaration path (default: gsd-core/bin/shared/exit-codes.json)',
   '  --out            override the output artifact path (default: gsd-core/bin/lib/exit-code-registry.cjs)',
+  '  --json           emit ONE JSON report ({ok, reason, context, detail?}) on stdout instead of human-readable prose',
 ].join('\n');
 
 /** SCREAMING_SNAKE_CASE: starts with a letter, only uppercase letters/digits/underscores. */
@@ -78,12 +80,31 @@ function isAllocatableCode(code) {
 }
 
 /**
+ * Label the non-allocatable band a rejected code falls into, per the same
+ * range boundaries documented on isAllocatableCode/ADR-3889 §1. Only called
+ * for codes that already failed isAllocatableCode, so 2 and 64-125 never
+ * reach here.
+ * @returns {string}
+ */
+function bandFor(code) {
+  if (code === 0 || code === 1) return 'free';
+  if (code >= 3 && code <= 13) return 'node-reserved';
+  if (code >= 126) return 'shell-signal';
+  return 'outside-every-band'; // 14-63, 79
+}
+
+/**
  * Validate a single declaration entry's shape and band membership.
- * @returns {{ok:true}|{ok:false,reason:string,message:string}}
+ * @returns {{ok:true}|{ok:false,reason:string,message:string,context:object}}
  */
 function validateEntry(entry, index) {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-    return { ok: false, reason: REASON.INVALID_ENTRY, message: `entry[${index}] is not an object: ${JSON.stringify(entry)}` };
+    return {
+      ok: false,
+      reason: REASON.INVALID_ENTRY,
+      message: `entry[${index}] is not an object: ${JSON.stringify(entry)}`,
+      context: { field: 'entry', index },
+    };
   }
 
   const { code, name } = entry;
@@ -92,6 +113,7 @@ function validateEntry(entry, index) {
       ok: false,
       reason: REASON.INVALID_ENTRY,
       message: `entry[${index}].code must be a non-negative integer (no coercion), received ${JSON.stringify(code)}`,
+      context: { field: 'code', index, code },
     };
   }
 
@@ -100,6 +122,7 @@ function validateEntry(entry, index) {
       ok: false,
       reason: REASON.INVALID_ENTRY,
       message: `entry[${index}].name must be a non-empty SCREAMING_SNAKE_CASE string, received ${JSON.stringify(name)}`,
+      context: { field: 'name', index, code, name },
     };
   }
 
@@ -110,6 +133,7 @@ function validateEntry(entry, index) {
         ok: false,
         reason: REASON.INVALID_ENTRY,
         message: `entry[${index}] (${name}).${field} must be a non-empty string, received ${JSON.stringify(value)}`,
+        context: { field, index, code, name },
       };
     }
   }
@@ -120,6 +144,7 @@ function validateEntry(entry, index) {
       reason: REASON.RESERVED_CODE,
       message: `entry[${index}] (${name}) declares code ${code}, which is outside every allocatable band ` +
         `(2 hook-adapter only; 64-78 generic; 80-125 domain) — see ADR-3889 §1`,
+      context: { code, band: bandFor(code), index, name },
     };
   }
 
@@ -129,6 +154,7 @@ function validateEntry(entry, index) {
       reason: REASON.FORBIDDEN_OWNER,
       message: `entry[${index}] (${name}) declares code 2 with owner "${entry.owner}" — code 2 is reserved to ` +
         `the Claude Code hook protocol and may only be owned by "hook-adapter"`,
+      context: { code, owner: entry.owner, requiredOwner: 'hook-adapter', index, name },
     };
   }
 
@@ -139,7 +165,7 @@ function validateEntry(entry, index) {
  * Validate the whole declaration: every entry individually, then the
  * cross-entry invariants (one number one meaning; one owner emits a given
  * code — but the SAME owner may legitimately own several distinct codes).
- * @returns {{ok:true}|{ok:false,reason:string,message:string}}
+ * @returns {{ok:true}|{ok:false,reason:string,message:string,context:object}}
  */
 function validateEntries(entries) {
   for (let i = 0; i < entries.length; i++) {
@@ -156,6 +182,7 @@ function validateEntries(entries) {
         ok: false,
         reason: REASON.DUPLICATE_CODE,
         message: `code ${entry.code} is declared twice: "${other.name}" and "${entry.name}"`,
+        context: { code: entry.code, names: [other.name, entry.name] },
       };
     }
     byCode.set(entry.code, entry);
@@ -166,6 +193,7 @@ function validateEntries(entries) {
         ok: false,
         reason: REASON.DUPLICATE_NAME,
         message: `name "${entry.name}" is declared twice: code ${other.code} and code ${entry.code}`,
+        context: { name: entry.name, codes: [other.code, entry.code] },
       };
     }
     byName.set(entry.name, entry);
@@ -180,21 +208,36 @@ function validateEntries(entries) {
  */
 function loadDeclaration(declarationPath) {
   if (!fs.existsSync(declarationPath)) {
-    return { ok: false, reason: REASON.MISSING_DECLARATION, message: `declaration not found at ${declarationPath}` };
+    return {
+      ok: false,
+      reason: REASON.MISSING_DECLARATION,
+      message: `declaration not found at ${declarationPath}`,
+      context: { path: declarationPath },
+    };
   }
 
   let raw;
   try {
     raw = fs.readFileSync(declarationPath, 'utf8');
   } catch (err) {
-    return { ok: false, reason: REASON.MISSING_DECLARATION, message: `could not read ${declarationPath}: ${err.message}` };
+    return {
+      ok: false,
+      reason: REASON.MISSING_DECLARATION,
+      message: `could not read ${declarationPath}: ${err.message}`,
+      context: { path: declarationPath },
+    };
   }
 
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    return { ok: false, reason: REASON.MALFORMED_DECLARATION, message: `${declarationPath} is not valid JSON: ${err.message}` };
+    return {
+      ok: false,
+      reason: REASON.MALFORMED_DECLARATION,
+      message: `${declarationPath} is not valid JSON: ${err.message}`,
+      context: { path: declarationPath },
+    };
   }
 
   if (!Array.isArray(parsed)) {
@@ -202,11 +245,17 @@ function loadDeclaration(declarationPath) {
       ok: false,
       reason: REASON.NOT_AN_ARRAY,
       message: `${declarationPath} must be a JSON array, received ${parsed === null ? 'null' : typeof parsed}`,
+      context: { path: declarationPath },
     };
   }
 
   if (parsed.length === 0) {
-    return { ok: false, reason: REASON.EMPTY_DECLARATION, message: `${declarationPath} is an empty array — declare at least one exit code` };
+    return {
+      ok: false,
+      reason: REASON.EMPTY_DECLARATION,
+      message: `${declarationPath} is an empty array — declare at least one exit code`,
+      context: { path: declarationPath },
+    };
   }
 
   return { ok: true, entries: parsed };
@@ -311,55 +360,95 @@ function printFail(result) {
   console.error(`  ${result.message}`);
 }
 
-function doWrite(declarationPath, outPath) {
+/**
+ * Emit a failure outcome: structured JSON on stdout (and NO stderr prose)
+ * when `json` is set, otherwise the legacy human-readable stderr report.
+ * `context` carries the specifics (offending code/name/field/path) that the
+ * `detail` prose currently embeds, so a `--json` consumer never needs to
+ * parse prose to recover them — it defaults to `null` for reasons (USAGE,
+ * DRIFTED, MISSING_ARTIFACT) that carry no structured specifics.
+ * @param {{reason:string, message?:string, context?:object}} result
+ * @param {boolean} json
+ */
+function emitFail(result, json) {
+  if (json) {
+    process.stdout.write(JSON.stringify({ ok: false, reason: result.reason, context: result.context ?? null, detail: result.message }) + '\n');
+    return;
+  }
+  printFail(result);
+}
+
+/**
+ * Emit a success outcome: structured JSON on stdout when `json` is set,
+ * otherwise the legacy human-readable stdout line.
+ * @param {string} reason
+ * @param {string} humanMessage
+ * @param {boolean} json
+ */
+function emitOk(reason, humanMessage, json) {
+  if (json) {
+    process.stdout.write(JSON.stringify({ ok: true, reason }) + '\n');
+    return;
+  }
+  console.log(humanMessage);
+}
+
+function doWrite(declarationPath, outPath, json) {
   const result = buildRegistryContent(declarationPath);
   if (!result.ok) {
-    printFail(result);
+    emitFail(result, json);
     return 1;
   }
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, result.content, 'utf8');
-  console.log(`ok gen-exit-code-registry: wrote ${outPath}`);
+  emitOk(REASON.OK, `ok gen-exit-code-registry: wrote ${outPath}`, json);
   return 0;
 }
 
-function doCheck(declarationPath, outPath) {
+function doCheck(declarationPath, outPath, json) {
   const result = buildRegistryContent(declarationPath);
   if (!result.ok) {
-    printFail(result);
+    emitFail(result, json);
     return 1;
   }
 
   if (!fs.existsSync(outPath)) {
-    console.error(`FAIL gen-exit-code-registry: ${REASON.MISSING_ARTIFACT}`);
-    console.error(`  ${outPath} does not exist. Run:`);
-    console.error('  node scripts/gen-exit-code-registry.cjs --write');
+    emitFail(
+      {
+        reason: REASON.MISSING_ARTIFACT,
+        message: `${outPath} does not exist. Run:\n  node scripts/gen-exit-code-registry.cjs --write`,
+      },
+      json,
+    );
     return 1;
   }
 
   const committed = fs.readFileSync(outPath, 'utf8');
   if (committed !== result.content) {
-    console.error(`FAIL gen-exit-code-registry: ${REASON.DRIFTED}`);
-    console.error(
-      `  ${outPath} (${committed.length} bytes) != freshly generated content (${result.content.length} bytes)`,
+    emitFail(
+      {
+        reason: REASON.DRIFTED,
+        message:
+          `${outPath} (${committed.length} bytes) != freshly generated content (${result.content.length} bytes)\n\n`
+          + 'Regenerate with:\n  node scripts/gen-exit-code-registry.cjs --write',
+      },
+      json,
     );
-    console.error('');
-    console.error('Regenerate with:');
-    console.error('  node scripts/gen-exit-code-registry.cjs --write');
     return 1;
   }
 
-  console.log(`ok gen-exit-code-registry: ${outPath} matches ${declarationPath}`);
+  emitOk(REASON.OK, `ok gen-exit-code-registry: ${outPath} matches ${declarationPath}`, json);
   return 0;
 }
 
 /**
- * @returns {{mode:'write'|'check', declarationPath:?string, outPath:?string}}
+ * @returns {{mode:'write'|'check', declarationPath:?string, outPath:?string, json:boolean}}
  */
 function parseArgs(argv) {
   let mode = null;
   let declarationPath = null;
   let outPath = null;
+  let json = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -368,6 +457,8 @@ function parseArgs(argv) {
         throw new Error(`conflicting mode flags: --${mode} and ${arg}`);
       }
       mode = arg === '--write' ? 'write' : 'check';
+    } else if (arg === '--json') {
+      json = true;
     } else if (arg === '--declaration') {
       const value = argv[++i];
       if (value === undefined) throw new Error('--declaration requires a value');
@@ -385,24 +476,28 @@ function parseArgs(argv) {
     }
   }
 
-  return { mode: mode || 'write', declarationPath, outPath };
+  return { mode: mode || 'write', declarationPath, outPath, json };
 }
 
 function main() {
+  // --json must be honored even on a parse failure (e.g. an unrecognized
+  // flag alongside --json), so it is detected from the raw argv rather
+  // than from parseArgs's return value, which may never be produced.
+  const rawArgv = process.argv.slice(2);
+  const jsonRequested = rawArgv.includes('--json');
+
   let args;
   try {
-    args = parseArgs(process.argv.slice(2));
+    args = parseArgs(rawArgv);
   } catch (err) {
-    console.error(`FAIL gen-exit-code-registry: ${REASON.USAGE}`);
-    console.error(`  ${err.message}`);
-    console.error(USAGE_MESSAGE);
+    emitFail({ reason: REASON.USAGE, message: jsonRequested ? err.message : `${err.message}\n${USAGE_MESSAGE}` }, jsonRequested);
     return 1;
   }
 
   const declarationPath = args.declarationPath || DEFAULT_DECLARATION_PATH;
   const outPath = args.outPath || DEFAULT_OUTPUT_PATH;
 
-  return args.mode === 'check' ? doCheck(declarationPath, outPath) : doWrite(declarationPath, outPath);
+  return args.mode === 'check' ? doCheck(declarationPath, outPath, args.json) : doWrite(declarationPath, outPath, args.json);
 }
 
 if (require.main === module) process.exitCode = main();
@@ -413,6 +508,7 @@ module.exports = {
   DEFAULT_DECLARATION_PATH,
   DEFAULT_OUTPUT_PATH,
   isAllocatableCode,
+  bandFor,
   validateEntry,
   validateEntries,
   loadDeclaration,
