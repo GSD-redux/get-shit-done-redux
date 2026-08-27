@@ -3881,7 +3881,7 @@ by sorted plan-file order — deterministic, but arbitrary where the collision
 happens, matching the retired behavior exactly.
 
 **Known limits:**
-- The 16 held Codex roles are pinned at `read-only`, not widened. A faithful
+- The 17 held Codex roles are pinned at `read-only`, not widened. A faithful
   derivation from the tool contract would widen them, because they declare
   `Write` or `Edit`; the previous hand-maintained map never listed them and
   they fell through a silent `|| 'read-only'` default instead. Deriving *and*
