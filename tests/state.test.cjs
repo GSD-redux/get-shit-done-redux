@@ -2499,6 +2499,82 @@ describe('#3830: state advance-plan checks its prose position against the plans 
   });
 });
 
+// allow-test-rule: source-text-is-the-product (#3830)
+//
+// #3862 RV6.5 adversarial review: the two CLI regression tests above pin
+// `--pick reason`'s three outcomes, but they drive the BINARY — they would pass
+// unchanged against the pre-rework caller snippets, so nothing tested the
+// callers themselves. The deployed contract for a workflow/agent caller IS the
+// markdown text the runtime loads, so a source-text guard is the available
+// instrument, exactly as tests/no-bare-gsd-tools-command-position.test.cjs
+// argues for its own class.
+//
+// The caller set is DERIVED, not hardcoded: every agents/*.md and
+// gsd-core/workflows/*.md that actually invokes the verb is enumerated and each
+// must discriminate on the reason. A third caller added later is covered the
+// moment it lands — which matters, because this round's own review named
+// "the sole in-repo caller" when there were two.
+describe('#3830/#3862: every markdown caller of state.advance-plan discriminates on the reason', () => {
+  const ROOT = path.resolve(__dirname, '..');
+  const SCAN_DIRS = [path.join(ROOT, 'agents'), path.join(ROOT, 'gsd-core', 'workflows')];
+
+  const callerFiles = () => {
+    const hits = [];
+    for (const dir of SCAN_DIRS) {
+      if (!fs.existsSync(dir)) continue;
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.endsWith('.md')) continue;
+        const full = path.join(dir, name);
+        const text = fs.readFileSync(full, 'utf-8');
+        // An INVOCATION, not a mention: the verb actually being run.
+        if (/gsd_run query state\.advance-plan/.test(text)) hits.push({ full, name, text });
+      }
+    }
+    return hits;
+  };
+
+  test('sanity: at least two callers are found (else this guard is vacuous)', () => {
+    const found = callerFiles();
+    assert.ok(found.length >= 2,
+      `expected >=2 markdown callers of state.advance-plan, found ${found.length}: ${found.map((f) => f.name).join(', ')}`);
+  });
+
+  test('each caller branches on position_diverged, never on `--pick advanced`', () => {
+    for (const { name, text } of callerFiles()) {
+      assert.ok(
+        text.includes('position_diverged'),
+        `${name} must read the refusal reason and name position_diverged as what it stops on`,
+      );
+      assert.ok(
+        /"error":/.test(text),
+        `${name} must also handle the exit-0 {"error": ...} shape — it is equally not an advance`,
+      );
+      // The regression this guard exists for: `advanced: false` is ALSO the
+      // ordinary last-plan answer, so branching on it skips the final plan's
+      // progress and metric write on every phase.
+      assert.ok(
+        !/--pick advanced/.test(text),
+        `${name} must NOT branch on --pick advanced — last_plan is also advanced:false`,
+      );
+    }
+  });
+
+  test('each caller GUARDS its state-update block rather than only printing', () => {
+    // The other half of the same finding: a branch that prints a STOP line and
+    // then runs the very writes it was meant to prevent guards nothing. The
+    // update-progress call must sit inside the non-refusal arm, i.e. AFTER the
+    // position_diverged arm opens, never unconditionally ahead of it.
+    for (const { name, text } of callerFiles()) {
+      const guardIdx = text.indexOf('position_diverged');
+      const writeIdx = text.indexOf('state.update-progress');
+      assert.ok(writeIdx > guardIdx,
+        `${name} runs state.update-progress before/outside the divergence guard — it is unguarded`);
+      assert.ok(/state\.update-progress/.test(text.slice(guardIdx, guardIdx + 2400)),
+        `${name}'s guarded block must contain the update-progress call it protects`);
+    }
+  });
+});
+
 describe('#3830 facet 2: state advance-plan rejects options instead of discarding them', () => {
   let tmpDir;
   beforeEach(() => { tmpDir = createFixture(); });

@@ -772,33 +772,49 @@ After SUMMARY.md, update STATE.md using `gsd-tools query` state handlers (named 
 # Key on the REASON, never on `advanced` alone. `advanced: false` is ALSO the
 # ordinary phase-complete answer, where `reason` is `last_plan` and the phase is
 # now `ready_for_verification` — treating that as a failure would skip the final
-# plan's progress and metric recording on every phase. A normal advance carries
-# no `reason` at all, so only `position_diverged` stops the run.
-ADVANCE_REASON=$(gsd_run query state.advance-plan --pick reason)
-if [ "${ADVANCE_REASON}" = "position_diverged" ]; then
-  echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
-  echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
-  echo "Reconcile it before continuing: 'gsd_run query phase-plan-index' shows the" >&2
-  echo "real plan set. Do NOT record progress or metrics against a frozen position." >&2
-else
-  # Recalculate progress bar from disk state
-  gsd_run query state.update-progress
+# plan's progress and metric recording on every phase. An unusable STATE.md is
+# reported as `{"error": ...}` at exit 0 with no `reason`, which is equally not an
+# advance. A normal advance carries neither field.
+ADVANCE_OUT=$(gsd_run query state.advance-plan)
+case "${ADVANCE_OUT}" in
+  *'"reason": "position_diverged"'*)
+    echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
+    echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
+    echo "Reconcile it before continuing: 'gsd_run query phase-plan-index' shows the" >&2
+    echo "real plan set. Do NOT record progress or metrics against a frozen position," >&2
+    echo "and do NOT run the ROADMAP/requirements block below." >&2
+    ;;
+  *'"error":'*)
+    echo "STOP: state.advance-plan could not read STATE.md — nothing was written." >&2
+    printf '%s\n' "${ADVANCE_OUT}" >&2
+    echo "Do NOT run the ROADMAP/requirements block below." >&2
+    ;;
+  *)
+    # A normal advance (no reason) or the last plan (reason: last_plan).
+    # Recalculate progress bar from disk state
+    gsd_run query state.update-progress
 
-  # Record execution metrics (phase, plan, duration, tasks, files)
-  gsd_run query state.record-metric \
-    --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
-    --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
+    # Record execution metrics (phase, plan, duration, tasks, files)
+    gsd_run query state.record-metric \
+      --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
+      --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
 
-  # Add decisions (extract from SUMMARY.md key-decisions)
-  for decision in "${DECISIONS[@]}"; do
-    gsd_run query state.add-decision --summary "${decision}"
-  done
+    # Add decisions (extract from SUMMARY.md key-decisions)
+    for decision in "${DECISIONS[@]}"; do
+      gsd_run query state.add-decision --summary "${decision}"
+    done
 
-  # Update session info (stopped-at, resume-file; timestamp set automatically)
-  gsd_run query state.record-session \
-    --stopped-at "Completed ${PHASE}-${PLAN}-PLAN.md" --resume-file "None"
-fi
+    # Update session info (stopped-at, resume-file; timestamp set automatically)
+    gsd_run query state.record-session \
+      --stopped-at "Completed ${PHASE}-${PLAN}-PLAN.md" --resume-file "None"
+    ;;
+esac
 ```
+
+**If the block above printed `STOP:`, do not run the ROADMAP/requirements block that follows.** The
+plan counter did not move, so updating ROADMAP progress or marking requirements complete would record
+state against a position that is still wrong. Reconcile STATE.md first, then re-run this step. A `case`
+arm suppresses only its own block; it cannot stop a later fenced block, so this one is yours to honor.
 
 ```bash
 # Update ROADMAP.md progress for this phase (plan counts, status)

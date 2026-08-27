@@ -444,8 +444,8 @@ if [ "$IS_WORKTREE" != "true" ]; then
   #
   # #3830/#3862: advance-plan REFUSES to advance when `## Current Position`
   # disagrees with the plans on disk. It reports the refusal on stdout at exit 0,
-  # so it has to be READ — running the two steps below against a position that did
-  # not move is what makes the divergence invisible: progress is recalculated and a
+  # so it has to be READ — running the steps below against a position that did not
+  # move is what makes the divergence invisible: progress is recalculated and a
   # metric recorded for a plan that was never advanced past, and every later plan
   # re-runs against the frozen counter.
   #
@@ -453,25 +453,40 @@ if [ "$IS_WORKTREE" != "true" ]; then
   # ordinary last-plan answer (`reason: last_plan`, phase now
   # `ready_for_verification`) — the very edge case this step's own heading names —
   # so branching on `advanced` would skip the final plan's progress and metric on
-  # every phase. A normal advance carries no `reason`; only `position_diverged`
-  # stops the run.
-  ADVANCE_REASON=$(gsd_run query state.advance-plan --pick reason)
-  if [ "${ADVANCE_REASON}" = "position_diverged" ]; then
-    echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
-    echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
-    echo "Reconcile it before re-running this step: 'gsd_run query phase-plan-index'" >&2
-    echo "shows the real plan set. Do NOT record progress or metrics against it." >&2
-  else
-    # Recalculate progress bar from disk state
-    gsd_run query state.update-progress
+  # every phase. And an unusable STATE.md is reported as `{"error": ...}` at exit 0
+  # with no `reason` at all, which is equally not an advance.
+  ADVANCE_OUT=$(gsd_run query state.advance-plan)
+  case "${ADVANCE_OUT}" in
+    *'"reason": "position_diverged"'*)
+      echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
+      echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
+      echo "Reconcile it before re-running: 'gsd_run query phase-plan-index' shows the" >&2
+      echo "real plan set. Do NOT record progress or metrics against a frozen position." >&2
+      ;;
+    *'"error":'*)
+      echo "STOP: state.advance-plan could not read STATE.md — nothing was written." >&2
+      printf '%s\n' "${ADVANCE_OUT}" >&2
+      ;;
+    *)
+      # A normal advance (no reason) or the last plan (reason: last_plan). Both moved
+      # the phase forward and both owe the recording below.
 
-    # Record execution metrics
-    gsd_run query state.record-metric \
-      --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
-      --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
-  fi
+      # Recalculate progress bar from disk state
+      gsd_run query state.update-progress
+
+      # Record execution metrics
+      gsd_run query state.record-metric \
+        --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
+        --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
+      ;;
+  esac
 fi
 ```
+**If the block above printed `STOP:`, halt this workflow here.** The plan counter did not move, so
+every step after this one would record state against a position that is still wrong. Reconcile
+STATE.md first, then re-run this step. (The guard suppresses this step's own writes; it cannot stop
+the steps that follow, so that is your call to make, not the shell's.)
+
 </step>
 
 <step name="extract_decisions_and_issues">
