@@ -3,13 +3,15 @@
  *
  * Mutation testing configuration for gsd-core.
  *
- * Test runner: 'command' (built into @stryker-mutator/core)
- *   Runs: node --test over the lib test files via the repo's run-tests invocation.
+ * Test runner: 'tap' (@stryker-mutator/tap-runner)
+ *   Runs: node --test-reporter=tap over each per-shard test file (tap.testFiles,
+ *   resolved by scripts/mutation-matrix.cjs's resolveMutationTestFiles), one
+ *   process per covering test file per mutant.
  *
  * Mutate scope: bin/lib/**\/*.cjs, excluding generated files and test files.
  *
- * coverageAnalysis: 'off' — command runner does not support per-mutant coverage
- * thresholds: high=80, low=60, break=50
+ * coverageAnalysis: 'perTest' — the tap runner supports per-mutant coverage
+ * thresholds: high=80, low=60, break=per-shard MUTATION_BREAK (local fallback 60)
  * incremental: true — caches results; PR-scoped runs pass --mutate <changed-files>
  *
  * Reports:
@@ -25,12 +27,11 @@ import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);
 // resolveMutationBreak: fail-closed resolver for MUTATION_BREAK env var.
 // undefined → 60 (local backstop); set-but-empty or non-numeric → throws.
-// COVERED: the same derived-tests registry CI's per-shard MUTATION_TEST_CMD is built from
-// (mutation.yml's `matrix.tests`) — DEFAULT_TEST_CMD below derives from it too, rather than
-// hand-duplicating the union in a second literal (#3881 follow-up, mutation-matrix piece 2:
-// this exact split — six modules' tests missing from the old hand-written DEFAULT_TEST_CMD,
-// plus two entries belonging to no module — is what this derivation removes).
-const { resolveMutationBreak, COVERED } = _require('./scripts/mutation-matrix.cjs');
+// resolveMutationTestFiles: fail-closed resolver for MUTATION_TEST_FILES env var (#3915).
+// undefined → the derived union of every COVERED module's tests (local backstop);
+// set-but-empty, non-string, or naming a nonexistent file → throws. See that
+// function's doc-comment in scripts/mutation-matrix.cjs for the full contract.
+const { resolveMutationBreak, resolveMutationTestFiles } = _require('./scripts/mutation-matrix.cjs');
 
 // ADR-457: bin/lib/*.cjs are gitignored build artifacts (compiled from
 // src/*.cts by `npm run build:lib`, which the mutation CI job runs via `npm ci`
@@ -64,29 +65,28 @@ const UNMUTATED = [
   '!gsd-core/bin/lib/gsd2-import.cjs',
 ];
 
-// Full test command used by local runs and as the fallback when CI does not inject a
-// per-shard command via MUTATION_TEST_CMD. DERIVED — never hand-edit this list; it is the
-// sorted union of every COVERED module's `tests` array (itself derived by
-// scripts/mutation-matrix.cjs's computeModuleTests from direct `require()`s of each
-// module's built artifact — see that file's derivation-engine header). A previous
-// hand-maintained literal here drifted independently of COVERED's own hand-written `tests`
-// arrays: six modules' tests were missing from it, plus two entries (broken-windows.test.cjs,
-// complexity-trigger.test.cjs) belonging to no COVERED module at all. Deriving both from the
-// same COVERED object makes that class of drift structurally impossible.
-const DEFAULT_TEST_CMD = `node --test ${
-  [...new Set(Object.values(COVERED).flatMap((mod) => mod.tests))].sort().join(' ')
-}`;
-
 /** @type {import('@stryker-mutator/core').PartialStrykerOptions} */
 export default {
   // ── Test runner ──────────────────────────────────────────────────────────────
-  testRunner: 'command',
-  commandRunner: {
-    // Run property + unit tests over lib only (avoids the slow integration
-    // suite). NO build step here: Stryker mutates the already-built .cjs and the
-    // tests load it directly — adding a build would rebuild over the mutation.
-    // In CI each matrix shard injects MUTATION_TEST_CMD with only its own tests.
-    command: process.env.MUTATION_TEST_CMD || DEFAULT_TEST_CMD,
+  testRunner: 'tap',
+  tap: {
+    testFiles: resolveMutationTestFiles(process.env.MUTATION_TEST_FILES),
+    // forceBail is OFF (MEASURED, #3915): a structural AST audit of all 26 shard test
+    // files found 3 that spawn subprocesses — tests/config-schema.property.test.cjs
+    // (6 runGsdTools calls), tests/core-utils.test.cjs (1), and
+    // tests/feat-3881-yaml-parser-consequences.test.cjs (2 runGsdTools + 2 runNode).
+    // @stryker-mutator/tap-runner's docs warn that with forceBail on, a runner that
+    // spawns child processes can be terminated prematurely — bail fires on every KILLED
+    // mutant (i.e. most of them), so leaving it on would kill hundreds of processes
+    // mid-spawnSync per shard and orphan their children. The cost of leaving it off is
+    // only INTRA-file early exit: Stryker's separate `disableBail` (unset, default false)
+    // still skips the remaining FILES in tap.testFiles after a failure, so this is no
+    // worse than the command runner's behaviour was.
+    forceBail: false,
+    // No nodeArgs, and no top-level buildCommand (ADR-457): the plugin's default argv,
+    // ["--test-reporter=tap", "-r", "{{hookFile}}", "{{testFile}}"], contains no build
+    // step, and ADR-457 requires Stryker to test the ALREADY-BUILT gsd-core/bin/lib/*.cjs
+    // artifacts with no rebuild between mutation and test.
   },
 
   // ── Files to mutate ──────────────────────────────────────────────────────────
@@ -99,8 +99,18 @@ export default {
   ],
 
   // ── Coverage ─────────────────────────────────────────────────────────────────
-  // 'off' is required for the command test runner — it cannot instrument per-mutant.
-  coverageAnalysis: 'off',
+  // 'perTest' (#3915): 'off' was required only because the command runner could not
+  // instrument per-mutant coverage. @stryker-mutator/tap-runner is an official plugin
+  // that does support it, so Stryker now re-runs only the test files that cover each
+  // mutated line rather than the full per-shard test list for every mutant.
+  //
+  // Arithmetic note: 'perTest' makes Stryker able to report a mutant as NoCoverage, and
+  // NoCoverage counts in the SAME denominator as Survived for `mutationScore` — so this
+  // reclassification is score-neutral for both `thresholds.break` and
+  // scripts/check-mutation-score-ratchet.cjs. Never gate on
+  // `mutationScoreBasedOnCoveredCode`, which EXCLUDES NoCoverage and inflates sharply
+  // under this setting.
+  coverageAnalysis: 'perTest',
 
   // ── Thresholds ───────────────────────────────────────────────────────────────
   // ADR-456 / issue #1187: CI passes the per-module minScore (from
