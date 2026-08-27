@@ -450,12 +450,11 @@ describe('auto-update', () => {
 
     test('non-GSD repo bails at Gate 0 with zero node spawns (#3729)', (t) => {
       const tmpDir = createTempGitRepo({ config: undefined });
+      const sentinel = makeSentinelNodeBin(path.join(tmpDir, '.node-spawned'));
       t.after(() => {
         cleanupHookRepo(tmpDir);
-        fs.rmSync(t.sentinelBin, { recursive: true, force: true });
+        cleanup(sentinel.binDir);
       });
-      const sentinel = makeSentinelNodeBin(path.join(tmpDir, '.node-spawned'));
-      t.sentinelBin = sentinel.binDir;
       const r = runHook(
         tmpDir,
         { tool_name: 'Bash', tool_input: { command: 'git commit -m x' } },
@@ -476,12 +475,11 @@ describe('auto-update', () => {
       const tmpDir = createTempGitRepo({
         config: { graphify: { enabled: true, auto_update: true } },
       });
+      const sentinel = makeSentinelNodeBin(path.join(tmpDir, '.node-spawned'));
       t.after(() => {
         cleanupHookRepo(tmpDir);
-        fs.rmSync(t.sentinelBin, { recursive: true, force: true });
+        cleanup(sentinel.binDir);
       });
-      const sentinel = makeSentinelNodeBin(path.join(tmpDir, '.node-spawned'));
-      t.sentinelBin = sentinel.binDir;
       const r = runHook(
         tmpDir,
         { tool_name: 'Bash', tool_input: { command: 'git commit -m x' } },
