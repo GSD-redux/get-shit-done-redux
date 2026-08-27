@@ -103,9 +103,15 @@ const rule = {
   },
 
   create(context) {
-    // Only run on src/*.cts files
+    // Only run on src/**/*.cts files. `.*` (not `[^/]+`) so the gate matches
+    // subdirectories too — the registered glob (src/**/*.cts) already covers
+    // them (health-diagnostic-rules/, installer-migrations/, observability/,
+    // host-integration-adapters/, vendor/); a flat-only gate silently
+    // exempted 28 files that were supposed to be linted (#3951 B6(b)).
+    // Mirrors the correct form already used by
+    // require-subprocess-timeout.cjs's own src/**/*.cts gate.
     const filename = context.getFilename ? context.getFilename() : context.filename;
-    if (!/(?:^|\/)src\/[^/]+\.cts$/.test(filename.replace(/\\/g, '/'))) {
+    if (!/(?:^|\/)src\/.*\.cts$/.test(filename.replace(/\\/g, '/'))) {
       return {};
     }
 

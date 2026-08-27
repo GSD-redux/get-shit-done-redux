@@ -1744,6 +1744,54 @@ describe('no-adhoc-markdown-parsing rule', () => {
     assert.strictEqual(typeof noAdhocMarkdownParsing.create, 'function');
   });
 
+  // ── #3951 B6(b): filename-gate reach — src/**/*.cts, subdirectories included ──
+  // The gate used to be `/(?:^|\/)src\/[^/]+\.cts$/` (flat-only), which
+  // silently exempted 28 files in src/ subdirectories
+  // (health-diagnostic-rules/, installer-migrations/, observability/,
+  // host-integration-adapters/, vendor/) even though the eslint.config.mjs
+  // registration (src/**/*.cts) already covers them. These three rows pin
+  // that the gate and the registration agree — a subdirectory path is
+  // linted, a flat src/ path keeps working, and a path outside src/ stays
+  // exempt.
+
+  test('invalid: a table-regex fingerprint under a src/ SUBDIRECTORY is linted (gate reach)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'src/health-diagnostic-rules/some-check.cts',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: the same fingerprint under a FLAT src/*.cts path still is linted (regression, not exempt)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: the same fingerprint OUTSIDE src/ is NOT linted (gate and registration must agree)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
   // ── POSITIVE cases: flag fence-block-strip and section-collect ────────────
 
   test('invalid: fence-block-strip regex with triple-backtick and multiline body', () => {
