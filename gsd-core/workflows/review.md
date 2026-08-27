@@ -481,6 +481,61 @@ Display progress:
 </step>
 
 <step name="write_reviews">
+**#3352 (ADR-3473 §8.5): no artifact from failed inputs.** Before rendering anything, gate on
+whether any lane actually produced a result — "every lane failed" is exactly "the aggregate
+JSONL has zero lines" (§`invoke_reviewers`'s aggregation loop already builds this file as a
+byproduct; a lane that never started or was budget-skipped contributes no line either way).
+
+```bash
+RUN_DIR="{run_dir}"
+JSONL="$RUN_DIR/gsd-review-lane-results.jsonl"
+LANE_LINES=0
+[ -f "$JSONL" ] && LANE_LINES=$(wc -l < "$JSONL" | tr -d ' ')
+
+TOTAL_LANE_FAILURE="false"
+ALL_LANES_SKIPPED="false"
+if [ "${LANE_LINES:-0}" -eq 0 ]; then
+  # Zero lines means every dispatched lane left no result JSON — either every one
+  # was budget-skipped (N5: a skip is not a failure) or every one actually failed
+  # to run. Re-derive the dispatched-slug set the same way invoke_reviewers did
+  # (SELECTED_REVIEWERS is a shell block boundary — recompute, do not assume the
+  # earlier step's local DISPATCH_SLUGS variable survived into this block).
+  DISPATCH_SLUGS=""
+  for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+    case " $DISPATCH_SLUGS " in
+      *" $SLUG "*) continue ;;
+    esac
+    DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
+  done
+  # Distinguish by whether every dispatched slug's stub markdown says "skipped":
+  # a skip stub always does (see run_review_lane's budget branch, which writes
+  # this exact text before returning without ever invoking the lane); a real
+  # failure stub does not. If a slug has no stub at all, it is not a skip.
+  DISPATCHED_COUNT=0
+  SKIPPED_COUNT=0
+  for SLUG in $DISPATCH_SLUGS; do
+    DISPATCHED_COUNT=$((DISPATCHED_COUNT + 1))
+    STUB="$RUN_DIR/gsd-review-$SLUG.md"
+    if [ -f "$STUB" ] && grep -q "review skipped: prompt budget" "$STUB" 2>/dev/null; then
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    fi
+  done
+  if [ "$DISPATCHED_COUNT" -gt 0 ] && [ "$SKIPPED_COUNT" -eq "$DISPATCHED_COUNT" ]; then
+    ALL_LANES_SKIPPED="true"
+  else
+    TOTAL_LANE_FAILURE="true"
+  fi
+fi
+```
+
+- **If `ALL_LANES_SKIPPED=true`:** do NOT write `REVIEWS.md` and do NOT run the commit below —
+  there is nothing to review. Report to the user that every selected lane was budget-skipped
+  (not a failure) and stop; do not proceed to `present_results`' summary claiming a review ran.
+- **If `TOTAL_LANE_FAILURE=true`:** do NOT write `REVIEWS.md` and do NOT run the commit below.
+  Report the total lane failure to the user (name the lanes that were dispatched and point at
+  their `.err`/stub files preserved under `.review-diagnostics/` by `present_results`) and stop.
+- **Otherwise** (at least one lane produced a result — R1, unchanged): proceed exactly as below.
+
 Combine all review responses into `{phase_dir}/{padded_phase}-REVIEWS.md`:
 
 After all reviewers complete, collect trim metadata files written during the run. For each reviewer that was trimmed (i.e. a `.metadata.json` file exists and `hardFailed` or `omitted` is non-empty, or `projectMdShrunk` is true, or `planTruncationPct > 0`), include a `trimmed_reviewers` block in the frontmatter. Omit the key entirely if no reviewer was trimmed.
@@ -564,14 +619,28 @@ trimmed_reviewers:        # only present if at least one reviewer was trimmed
 {where reviewers disagreed — worth investigating}
 ```
 
-Commit:
+Commit (only reached when `TOTAL_LANE_FAILURE` and `ALL_LANES_SKIPPED` are both `false` — the
+gate above):
 ```bash
 gsd_run query commit "docs: cross-AI review for phase {N}" --files {phase_dir}/{padded_phase}-REVIEWS.md
 ```
 </step>
 
 <step name="present_results">
-Display summary:
+**If `write_reviews` set `TOTAL_LANE_FAILURE=true` or `ALL_LANES_SKIPPED=true`, skip the success
+summary below entirely** — no `REVIEWS.md` was written or committed, so there is nothing to
+present as complete. Report instead:
+
+```
+### GSD ► REVIEW FAILED
+
+Phase {N}: every selected reviewer lane {failed to produce a result|was budget-skipped} — no
+REVIEWS.md was written.
+
+Diagnostics preserved: {phase_dir}/.review-diagnostics/
+```
+
+Otherwise (at least one lane succeeded), display summary:
 
 ```
 ### GSD ► REVIEW COMPLETE
@@ -587,7 +656,35 @@ To incorporate feedback into planning:
   /gsd:plan-phase {N} --reviews
 ```
 
-Clean up — remove the run's temp directory now that REVIEWS.md is committed:
+**#3352 (ADR-3473 §8.5, R3): preserve per-lane evidence before destroying it.** Regardless of
+which branch above ran, the run's temp directory is the only record that a lane failed at all —
+copy it beside the phase's artifacts BEFORE cleanup. A lane that produced no output at all (L4)
+leaves nothing to preserve; that is a smaller diagnostics folder, not a fabricated one. This
+copy is deliberately NOT part of the commit above (N6) — that step names only
+`{padded_phase}-REVIEWS.md` explicitly, never a directory glob, so `.review-diagnostics/` is
+never swept into it.
+
+```bash
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
+
+RUN_DIR="{run_dir}"
+DIAG_DIR="{phase_dir}/.review-diagnostics"
+
+_DIAG_MD=( "$RUN_DIR"/gsd-review-*.md )
+_DIAG_ERR=()
+for f in "$RUN_DIR"/gsd-review-*.err; do
+  [ -s "$f" ] && _DIAG_ERR+=("$f")
+done
+
+if [ ${#_DIAG_MD[@]} -gt 0 ] || [ ${#_DIAG_ERR[@]} -gt 0 ]; then
+  mkdir -p "$DIAG_DIR"
+  [ ${#_DIAG_MD[@]} -gt 0 ] && cp "${_DIAG_MD[@]}" "$DIAG_DIR/"
+  [ ${#_DIAG_ERR[@]} -gt 0 ] && cp "${_DIAG_ERR[@]}" "$DIAG_DIR/"
+fi
+```
+
+Clean up — remove the run's temp directory now that evidence is preserved (and, on success,
+REVIEWS.md is committed):
 
 ```bash
 rm -rf "{run_dir}"

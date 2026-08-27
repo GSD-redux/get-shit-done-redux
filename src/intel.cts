@@ -34,6 +34,17 @@ const INTEL_FILES: Record<string, string> = {
   stack: 'stack.json',
 };
 
+/**
+ * ADR-3473 §8.5 / #3885: recursion bound for the intel JSON search walk.
+ * Restored from the retired SDK lineage (`sdk/src/query/intel.ts` at `11918dcc3^`),
+ * lost in the ADR-0174 consolidation. Unlike the original, hitting the ceiling is
+ * NOT reported as a silent "no match" — the walk that stops early sets a
+ * `truncated` flag threaded back up to `intelQuery`'s result (Decision 4: a
+ * routine that discards an input says so). The bound is on DEPTH only; breadth
+ * (sibling count at any given depth) is unaffected.
+ */
+const MAX_JSON_SEARCH_DEPTH = 48;
+
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
 /**
@@ -124,18 +135,34 @@ interface SearchMatch {
   value: unknown;
 }
 
+interface SearchWalkResult {
+  matches: SearchMatch[];
+  truncated: boolean;
+}
+
+/**
+ * Mutable walk state shared across one searchJsonEntries invocation's
+ * recursive matchesInValue calls. Set to true the moment ANY branch of the
+ * walk actually hits MAX_JSON_SEARCH_DEPTH and stops recursing further —
+ * never inferred from an empty result (a shallow miss must not set this).
+ */
+interface SearchWalkState {
+  truncated: boolean;
+}
+
 /**
  * Search for a term (case-insensitive) in a JSON object's keys and string values.
- * Returns an array of matching entries.
+ * Returns matching entries plus whether the walk hit MAX_JSON_SEARCH_DEPTH.
  */
-function searchJsonEntries(data: IntelData, term: string): SearchMatch[] {
-  if (!data || typeof data !== 'object') return [];
+function searchJsonEntries(data: IntelData, term: string): SearchWalkResult {
+  if (!data || typeof data !== 'object') return { matches: [], truncated: false };
 
   const entries = data.entries || data;
-  if (!entries || typeof entries !== 'object') return [];
+  if (!entries || typeof entries !== 'object') return { matches: [], truncated: false };
 
   const lowerTerm = term.toLowerCase();
   const matches: SearchMatch[] = [];
+  const state: SearchWalkState = { truncated: false };
 
   for (const [key, value] of Object.entries(entries)) {
     if (key === '_meta') continue;
@@ -146,27 +173,42 @@ function searchJsonEntries(data: IntelData, term: string): SearchMatch[] {
       continue;
     }
 
-    // Check string value match (recursive for objects)
-    if (matchesInValue(value, lowerTerm)) {
+    // Check string value match (recursive for objects/arrays, bounded by depth)
+    if (matchesInValue(value, lowerTerm, 0, state)) {
       matches.push({ key, value });
     }
   }
 
-  return matches;
+  return { matches, truncated: state.truncated };
 }
 
 /**
  * Recursively check if a term appears in any string value.
+ *
+ * `depth` counts container unwraps already performed (starts at 0 for the
+ * entry's own value). Strings never fail the ceiling check themselves — only
+ * a container (object/array) refuses to recurse one level deeper once
+ * `depth > MAX_JSON_SEARCH_DEPTH`, at which point `state.truncated` is set so
+ * the caller can report "I stopped looking" rather than a bare "no match".
+ * The bound is on nesting depth only, never on sibling breadth.
  */
-function matchesInValue(value: unknown, lowerTerm: string): boolean {
+function matchesInValue(value: unknown, lowerTerm: string, depth: number, state: SearchWalkState): boolean {
   if (typeof value === 'string') {
     return value.toLowerCase().includes(lowerTerm);
   }
   if (Array.isArray(value)) {
-    return value.some(v => matchesInValue(v, lowerTerm));
+    if (depth > MAX_JSON_SEARCH_DEPTH) {
+      state.truncated = true;
+      return false;
+    }
+    return value.some(v => matchesInValue(v, lowerTerm, depth + 1, state));
   }
   if (value && typeof value === 'object') {
-    return Object.values(value).some(v => matchesInValue(v, lowerTerm));
+    if (depth > MAX_JSON_SEARCH_DEPTH) {
+      state.truncated = true;
+      return false;
+    }
+    return Object.values(value).some(v => matchesInValue(v, lowerTerm, depth + 1, state));
   }
   return false;
 }
@@ -177,6 +219,12 @@ interface IntelQueryResult {
   matches: Array<{ source: string; entries: SearchMatch[] }>;
   term: string;
   total: number;
+  /**
+   * True iff ANY searched intel file's walk hit MAX_JSON_SEARCH_DEPTH and
+   * stopped early. Never true merely because nothing was found (a shallow
+   * miss is not a truncation) — always present as a boolean, never undefined.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -188,6 +236,7 @@ function intelQuery(term: string, planningDir: string): IntelQueryResult | Disab
 
   const matches: Array<{ source: string; entries: SearchMatch[] }> = [];
   let total = 0;
+  let truncated = false;
 
   // Search all JSON intel files
   for (const [_key, filename] of Object.entries(INTEL_FILES)) {
@@ -195,14 +244,15 @@ function intelQuery(term: string, planningDir: string): IntelQueryResult | Disab
     const data = safeReadJson(filePath);
     if (!data) continue;
 
-    const found = searchJsonEntries(data, term);
+    const { matches: found, truncated: fileTruncated } = searchJsonEntries(data, term);
+    if (fileTruncated) truncated = true;
     if (found.length > 0) {
       matches.push({ source: filename, entries: found });
       total += found.length;
     }
   }
 
-  return { matches, term, total };
+  return { matches, term, total, truncated };
 }
 
 interface IntelStatusFileEntry {

@@ -67,6 +67,14 @@ interface GapResult {
   table: string;
   summary: string;
   counts: GapCounts;
+  /**
+   * #3885 (ADR-3473 §8.5): null when the phase directory is genuinely absent
+   * (guarded by `fs.existsSync` before the read, so readdirSync is never even
+   * attempted) or was read successfully. A message naming the phase directory
+   * when it EXISTS but `readdirSync` failed (EACCES/EIO/...) — never
+   * collapsed to the same `[]` an absent directory produces.
+   */
+  phase_dir_read_error: string | null;
 }
 
 interface RunGapAnalysisOptions {
@@ -338,6 +346,7 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
       table: '',
       summary: 'workflow.post_planning_gaps disabled — skipping post-planning gap analysis',
       counts: { total: 0, covered: 0, uncovered: 0 },
+      phase_dir_read_error: null,
     };
   }
 
@@ -364,9 +373,16 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
   // Read the phase directory once; reuse the listing for both context detection
   // and plan-file enumeration (avoids redundant readdirSync calls).
   let phaseDirFiles: string[] = [];
+  // #3885 (ADR-3473 §8.5): the existsSync guard above already means a catch
+  // here is NEVER "genuinely absent" (ENOENT) — this directory exists, so any
+  // failure to list it is a real read error (EACCES/EIO/...) and must be
+  // named, not folded into the same `[]` an absent directory produces.
+  let phaseDirReadError: string | null = null;
   try {
     if (fs.existsSync(absPhaseDir)) phaseDirFiles = fs.readdirSync(absPhaseDir);
-  } catch { /* unreadable */ }
+  } catch (err) {
+    phaseDirReadError = `Could not read phase directory "${absPhaseDir}": ${(err as Error)?.message ?? String(err)}`;
+  }
 
   // #3511-class: scope the raw listing to this phase dir before the
   // phase-numbered -CONTEXT.md predicate. `phaseDirFiles` itself stays raw —
@@ -433,6 +449,7 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
         table: formatGapTable(rows) + '\n' + coverageSummary + '\n\n' + mismatchMsg,
         summary: coverageSummary + '; extracted 0 of N — possible format mismatch',
         counts: { total: rows.length, covered, uncovered },
+        phase_dir_read_error: phaseDirReadError,
       };
     }
     return {
@@ -441,6 +458,7 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
       table: mismatchMsg,
       summary: 'extracted 0 of N — possible format mismatch',
       counts: { total: 0, covered: 0, uncovered: 0 },
+      phase_dir_read_error: phaseDirReadError,
     };
   }
 
@@ -458,6 +476,7 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
       table: '## Post-Planning Gap Analysis\n\nNo requirements or decisions to check.\n',
       summary: 'no requirements or decisions to check',
       counts: { total: 0, covered: 0, uncovered: 0 },
+      phase_dir_read_error: phaseDirReadError,
     };
   }
 
@@ -478,6 +497,7 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
     table: formatGapTable(rows) + '\n' + summary + '\n',
     summary,
     counts: { total: rows.length, covered, uncovered },
+    phase_dir_read_error: phaseDirReadError,
   };
 }
 

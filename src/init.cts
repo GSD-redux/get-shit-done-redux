@@ -1214,8 +1214,21 @@ function cmdInitPlanPhase(
       if (patternsFile) {
         result['patterns_path'] = toPosixPath(path.join(phaseDirFull, patternsFile));
       }
-    } catch {
-      /* intentionally empty */
+    } catch (err) {
+      // #3885 (ADR-3473 §8.5): this branch means `phaseInfo['directory']` was
+      // set (the phase was already resolved to an on-disk directory) yet
+      // `readdirSync` still failed — ENOENT here would be a genuine race
+      // (the directory vanished between resolution and this read) and stays
+      // a silent degrade like the prior behavior; any other errno
+      // (EACCES/EIO/...) is an unreadable-not-absent directory and must be
+      // named, or every conditional field this block sets (context_path,
+      // research_path, verification_path, uat_path, reviews_path,
+      // patterns_path) silently reads as "none of these exist".
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT') {
+        result['context_read_error'] =
+          `Could not read phase directory "${phaseDirFull}": ${(err as Error)?.message ?? String(err)}`;
+      }
     }
   }
 
@@ -2091,8 +2104,18 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
       if (reviewsFile) {
         result['reviews_path'] = toPosixPath(path.join(phaseDirFull, reviewsFile));
       }
-    } catch {
-      /* intentionally empty */
+    } catch (err) {
+      // #3885 (ADR-3473 §8.5): see the parallel site in cmdInitPlanPhase —
+      // ENOENT here is a genuine race (directory vanished after resolution)
+      // and stays a silent degrade; any other errno (EACCES/EIO/...) means
+      // the directory exists but could not be read, and must be named rather
+      // than silently reported the same as "none of context_path/
+      // research_path/verification_path/uat_path/reviews_path exist".
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT') {
+        result['context_read_error'] =
+          `Could not read phase directory "${phaseDirFull}": ${(err as Error)?.message ?? String(err)}`;
+      }
     }
   }
 

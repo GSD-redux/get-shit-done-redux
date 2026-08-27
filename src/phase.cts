@@ -634,17 +634,26 @@ function computeDependencyLevels(
   rawPlans: RawPlan[],
   planMap: Map<string, RawPlan>,
   canonicalToId: Map<string, string>,
-): { level: Map<string, number>; visited: number; order: string[] } {
+): { level: Map<string, number>; visited: number; order: string[]; unresolved: Array<{ plan: string; token: string }> } {
   const level = new Map<string, number>();
   const inDeg = new Map<string, number>();
   const adj = new Map<string, string[]>();
+  // #3427 / ADR-3473 §8.5: a depends_on token that resolves via neither
+  // planMap nor canonicalToId is a dropped edge. Naming it here (rather than
+  // silently `continue`-ing past it) lets cmdPhasePlanIndex surface the
+  // token's own warning instead of manufacturing a wave-mismatch verdict from
+  // the resulting damaged graph (#3427).
+  const unresolved: Array<{ plan: string; token: string }> = [];
 
   for (const p of rawPlans) {
     if (!inDeg.has(p.id)) inDeg.set(p.id, 0);
     if (!adj.has(p.id)) adj.set(p.id, []);
     for (const dep of p.dependsOn) {
       const resolvedDep = resolveDependencyId(dep, planMap, canonicalToId);
-      if (!resolvedDep) continue;
+      if (!resolvedDep) {
+        unresolved.push({ plan: p.id, token: String(dep) });
+        continue;
+      }
       if (!adj.has(resolvedDep)) adj.set(resolvedDep, []);
       (adj.get(resolvedDep) as string[]).push(p.id);
       inDeg.set(p.id, (inDeg.get(p.id) ?? 0) + 1);
@@ -679,7 +688,7 @@ function computeDependencyLevels(
     }
   }
 
-  return { level, visited, order: queue };
+  return { level, visited, order: queue, unresolved };
 }
 
 function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
@@ -858,7 +867,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     rawPlans.map((p) => [extractCanonicalPlanId(p.id).toLowerCase(), p.id]),
   );
 
-  const { level, visited, order } = computeDependencyLevels(rawPlans, planMap, canonicalToId);
+  const { level, visited, order, unresolved } = computeDependencyLevels(rawPlans, planMap, canonicalToId);
 
   if (visited < rawPlans.length) {
     const cycleNodes = rawPlans.filter((p) => !level.has(p.id)).map((p) => p.id);
@@ -894,6 +903,20 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   let hasCheckpoints = false;
   const warnings: string[] = [];
 
+  // #3427 / ADR-3473 §8.5: name every dropped depends_on edge (plan AND
+  // token) rather than letting it silently collapse the plan to a DAG root.
+  // A plan with at least one unresolved token gets ITS OWN warning here and
+  // the wave-mismatch verdict below is suppressed for that plan ONLY — a
+  // plan with no dropped edges and a genuinely wrong `wave:` still warns
+  // (N3, D6, T25).
+  const plansWithUnresolvedTokens = new Set<string>();
+  for (const { plan, token } of unresolved) {
+    plansWithUnresolvedTokens.add(plan);
+    warnings.push(
+      `Plan ${plan}: depends_on token "${token}" does not resolve to any plan in this phase — edge dropped, wave placement for this plan may be unreliable`,
+    );
+  }
+
   for (const rawPlan of rawPlans) {
     if (!rawPlan.autonomous) {
       hasCheckpoints = true;
@@ -911,7 +934,17 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
 
     const computedWave = (level.get(rawPlan.id) ?? 0) + levelOffset;
     const effectiveWave = computedWave;
-    if (rawPlan.declaredWave !== null && rawPlan.declaredWave !== computedWave) {
+    // #3427 (D5/N3): suppress the wave-mismatch verdict for a plan that has
+    // at least one unresolved depends_on token — its own dropped-edge
+    // warning above already explains the degraded wave placement, so the
+    // mismatch here would blame the author for a DAG the tool itself
+    // couldn't build. A plan with NO unresolved tokens still gets a genuine
+    // mismatch reported (N3, T25) — the suppression is per-plan, never blanket.
+    if (
+      rawPlan.declaredWave !== null &&
+      rawPlan.declaredWave !== computedWave &&
+      !plansWithUnresolvedTokens.has(rawPlan.id)
+    ) {
       warnings.push(
         `Plan ${rawPlan.id}: declared wave: ${rawPlan.declaredWave} but depends_on DAG places it in wave ${computedWave}`,
       );
