@@ -428,6 +428,75 @@ describe('auto-update', () => {
       );
       assert.strictEqual(r.status, 0, 'must not break commits when graphify missing');
     });
+
+    // #3729 — a sentinel `node` shim records every spawn. In a non-GSD repo the
+    // hook must bail at Gate 0 ([ -f .planning/config.json ]) without spawning
+    // node at all: pre-fix, the Gate 1 payload parse spawned node first, which
+    // on Windows allocates a console window per Bash tool call.
+    function makeSentinelNodeBin(markerPath) {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3729-node-'));
+      const shim = path.join(binDir, 'node');
+      fs.writeFileSync(
+        shim,
+        [
+          '#!/usr/bin/env bash',
+          `printf 'x' >> ${JSON.stringify(markerPath)}`,
+          'exit 1',
+        ].join('\n') + '\n',
+        { mode: 0o755 },
+      );
+      return { binDir, markerPath };
+    }
+
+    test('non-GSD repo bails at Gate 0 with zero node spawns (#3729)', (t) => {
+      const tmpDir = createTempGitRepo({ config: undefined });
+      t.after(() => {
+        cleanupHookRepo(tmpDir);
+        fs.rmSync(t.sentinelBin, { recursive: true, force: true });
+      });
+      const sentinel = makeSentinelNodeBin(path.join(tmpDir, '.node-spawned'));
+      t.sentinelBin = sentinel.binDir;
+      const r = runHook(
+        tmpDir,
+        { tool_name: 'Bash', tool_input: { command: 'git commit -m x' } },
+        { pathPrepend: sentinel.binDir },
+      );
+      assert.strictEqual(r.status, 0, 'hook must exit 0 in a non-GSD repo');
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.planning/graphs/.last-build-status.json')),
+        'no status file should be created in a non-GSD repo',
+      );
+      assert.ok(
+        !fs.existsSync(sentinel.markerPath),
+        'hook must not spawn node before the Gate 0 .planning/config.json bail (#3729)',
+      );
+    });
+
+    test('CI set bails before the node parse in a GSD project (#3729)', (t) => {
+      const tmpDir = createTempGitRepo({
+        config: { graphify: { enabled: true, auto_update: true } },
+      });
+      t.after(() => {
+        cleanupHookRepo(tmpDir);
+        fs.rmSync(t.sentinelBin, { recursive: true, force: true });
+      });
+      const sentinel = makeSentinelNodeBin(path.join(tmpDir, '.node-spawned'));
+      t.sentinelBin = sentinel.binDir;
+      const r = runHook(
+        tmpDir,
+        { tool_name: 'Bash', tool_input: { command: 'git commit -m x' } },
+        { env: { CI: 'true' }, pathPrepend: sentinel.binDir },
+      );
+      assert.strictEqual(r.status, 0);
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.planning/graphs/.last-build-status.json')),
+        'CI must suppress dispatch',
+      );
+      assert.ok(
+        !fs.existsSync(sentinel.markerPath),
+        'CI gate must run before the Gate 1 node parse (#3729)',
+      );
+    });
   });
 
   describe('hook — dispatch path (all gates pass)',
