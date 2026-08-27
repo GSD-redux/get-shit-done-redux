@@ -41,11 +41,17 @@ const {
   CODEX_MODEL_EFFORT,
   MODEL_ALIAS_MAP,
   PROVIDER_PRESETS,
+  AGENT_TO_PHASE_TYPE,
+  AGENT_DEFAULT_TIERS,
+  RUNTIME_PROFILE_MAP,
+  EFFORT_RENDERING,
+  EFFORT_ARGV,
   isAnthropicFlavoredModel,
   getAgentToModelMapForProfile,
   formatAgentToModelMapAsTable,
   renderEffortArgv,
   renderEffortForRuntime,
+  clampEffortForHost,
   nextTier,
   mergeEffortTierDefaults,
 } = catalog;
@@ -377,5 +383,129 @@ describe('model-catalog: mergeEffortTierDefaults (#3531)', () => {
     const original = { ...manifest };
     mergeEffortTierDefaults(manifest, { sonnet: 'opus' }, isValid);
     assert.deepEqual(manifest, original);
+  });
+
+  // #3915 — a plain object literal's `__proto__: value` key is a prototype
+  // setter, not an own-enumerable property, so `Object.entries()` never
+  // yields it and the house-pollution guard's `tier === '__proto__'` branch
+  // is unreachable via a normal test fixture. `Object.fromEntries` uses
+  // CreateDataPropertyOrThrow internally and DOES create a genuine own
+  // property literally named "__proto__", which `Object.entries()` then
+  // yields — the only way to actually drive `tier` to that value and
+  // exercise the guard's first disjunct. A permissive `isValid` (accepts
+  // any value) is required here specifically so a disabled guard would let
+  // the object-valued override reach `merged['__proto__'] = value`, which
+  // (unlike a string value) really does repoint the prototype.
+  test('__proto__ pollution guard fires even for a genuine own-enumerable "__proto__" key', () => {
+    const permissive = () => true;
+    const overrideProto = Object.fromEntries([['__proto__', { polluted: true }]]);
+    const merged = mergeEffortTierDefaults({}, overrideProto, permissive);
+    assert.strictEqual(Object.getPrototypeOf(merged), Object.prototype);
+    assert.strictEqual(merged.polluted, undefined);
+  });
+});
+
+// #3915 — mutation-score restoration (Stryker survivors in model-catalog.cjs).
+// Each test below targets specific surviving mutants identified from the
+// mutation report; see the PR/issue for the full mutant-to-test mapping.
+describe('model-catalog: module load shape (#3915)', () => {
+  test('the compiled module is flagged __esModule (defineProperty descriptor, not a loose object literal)', () => {
+    assert.strictEqual(catalog.__esModule, true);
+  });
+});
+
+describe('model-catalog: AGENT_TO_PHASE_TYPE / AGENT_DEFAULT_TIERS (#3915)', () => {
+  test('AGENT_TO_PHASE_TYPE maps a known agent to its exact catalog phaseType', () => {
+    assert.equal(AGENT_TO_PHASE_TYPE['gsd-planner'], 'planning');
+    assert.equal(AGENT_TO_PHASE_TYPE['gsd-verifier'], 'verification');
+  });
+
+  test('AGENT_DEFAULT_TIERS maps a known agent to its exact catalog routingTier', () => {
+    assert.equal(AGENT_DEFAULT_TIERS['gsd-planner'], 'heavy');
+    assert.equal(AGENT_DEFAULT_TIERS['gsd-codebase-mapper'], 'light');
+  });
+});
+
+describe('model-catalog: RUNTIME_PROFILE_MAP filtering (#3915)', () => {
+  // The catalog's runtimeTierDefaults has runtimes whose opus/sonnet/haiku
+  // entries are ALL null (e.g. 'cline') as a deliberate "no defaults yet"
+  // sentinel, and runtimes fully populated (e.g. 'claude'). This pair is
+  // the exact boundary the filter's `Object.keys(filtered).length > 0`
+  // check exists for.
+  test('a runtime whose tier entries are all null is dropped entirely', () => {
+    assert.equal('cline' in RUNTIME_PROFILE_MAP, false);
+    assert.equal('kimi' in RUNTIME_PROFILE_MAP, false);
+  });
+
+  test('a fully-populated runtime keeps every tier entry, unmodified', () => {
+    assert.deepStrictEqual(RUNTIME_PROFILE_MAP.claude, {
+      opus: { model: 'claude-opus-4-8' },
+      sonnet: { model: 'claude-sonnet-5' },
+      haiku: { model: 'claude-haiku-4-5' },
+    });
+  });
+});
+
+describe('model-catalog: EFFORT_RENDERING / EFFORT_ARGV supported sets (#3915)', () => {
+  test('EFFORT_RENDERING.claude.supported is exactly low/medium/high/xhigh/max', () => {
+    assert.deepStrictEqual(EFFORT_RENDERING.claude.supported, new Set(['low', 'medium', 'high', 'xhigh', 'max']));
+  });
+
+  test('EFFORT_RENDERING.codex.supported is exactly low/medium/high/xhigh/max', () => {
+    assert.deepStrictEqual(EFFORT_RENDERING.codex.supported, new Set(['low', 'medium', 'high', 'xhigh', 'max']));
+  });
+
+  test("EFFORT_RENDERING.codex.clamp maps 'minimal' to 'low' and leaves other levels unchanged", () => {
+    assert.equal(EFFORT_RENDERING.codex.clamp('minimal'), 'low');
+    assert.equal(EFFORT_RENDERING.codex.clamp('high'), 'high');
+  });
+
+  test('EFFORT_ARGV.claude.supported is exactly low/medium/high/xhigh/max', () => {
+    assert.deepStrictEqual(EFFORT_ARGV.claude.supported, new Set(['low', 'medium', 'high', 'xhigh', 'max']));
+  });
+
+  test('EFFORT_ARGV.opencode.supported additionally includes minimal', () => {
+    assert.deepStrictEqual(EFFORT_ARGV.opencode.supported, new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']));
+  });
+
+  test('EFFORT_ARGV.codex.supported is exactly low/medium/high/xhigh/max', () => {
+    assert.deepStrictEqual(EFFORT_ARGV.codex.supported, new Set(['low', 'medium', 'high', 'xhigh', 'max']));
+  });
+});
+
+describe('model-catalog: formatAgentToModelMapAsTable — exact column widths (#3915)', () => {
+  // Existing coverage only used `.includes()` on longer-than-header
+  // agent/model names, which never exercises `Math.max('Agent'.length, ...)`
+  // vs `Math.min` (padEnd never truncates, so a too-small width is
+  // invisible to a substring check). Short entries plus a full-string
+  // comparison make the width computation and the +2/-2 separator padding
+  // observable.
+  test('short agent/model names still pad to the header width, and the separator is exactly width+2 wide', () => {
+    const out = formatAgentToModelMapAsTable({ ab: 'xy' });
+    const expected = ` Agent │ Model\n${'─'.repeat(7)}┼${'─'.repeat(7)}\n ab    │ xy   \n`;
+    assert.equal(out, expected);
+  });
+});
+
+describe('model-catalog: clampEffortForHost (#3915)', () => {
+  test('non-string host, unknown host, non-string effort, and empty effort all return null; valid input clamps', () => {
+    assert.equal(clampEffortForHost(123, 'high'), null);
+    assert.equal(clampEffortForHost('totally-bogus-host', 'high'), null);
+    assert.equal(clampEffortForHost('claude', 123), null);
+    assert.equal(clampEffortForHost('claude', ''), null);
+    assert.equal(clampEffortForHost('claude', 'minimal'), 'low');
+    assert.equal(clampEffortForHost('claude', 'high'), 'high');
+  });
+
+  // The own-property guard must reject a host BEFORE any property lookup
+  // that could be coerced into a real key. `typeof host !== 'string'` short-
+  // circuits the `||` for a non-string host, so `EFFORT_ARGV[host]` is never
+  // reached even when the host's `toString()` would resolve to a real key —
+  // proving the type check (not just the hasOwnProperty check) is load-
+  // bearing, and that neither the `||` nor either disjunct can be disabled.
+  test('a non-string host is rejected even when it stringifies to a known key', () => {
+    const spoofedHost = { toString: () => 'claude' };
+    assert.equal(clampEffortForHost(spoofedHost, 'high'), null);
+    assert.equal(clampEffortForHost('claude', 'high'), 'high');
   });
 });

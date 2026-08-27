@@ -1317,7 +1317,7 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
       '.agent/ must not be created by a fresh install (new installs use .agents/)');
   });
 
-  test('global antigravity install still writes to ~/.gemini/antigravity (unchanged)', () => {
+  test('global antigravity install writes skills/agents to ~/.gemini/config, runtime files to the configHome (#3738)', () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-ag-global-'));
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
@@ -1332,13 +1332,39 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
         result.configDir.startsWith(homeDir),
         `global antigravity install must go under HOME, got: ${result.configDir}`,
       );
+      // #3738: Antigravity scans ~/.gemini/config for machine-local discovery,
+      // so skills and agents install under the global layout's home override…
+      const configRoot = path.join(homeDir, '.gemini', 'config');
       assert.ok(
-        fs.existsSync(path.join(result.configDir, 'skills')),
-        'global antigravity install must create skills/ under ~/.gemini/antigravity',
+        fs.existsSync(path.join(configRoot, 'skills', 'gsd-help', 'SKILL.md')),
+        'global antigravity install must create gsd-* skills under ~/.gemini/config/skills',
+      );
+      assert.ok(
+        fs.existsSync(path.join(configRoot, 'agents')),
+        'global antigravity install must create agents/ under ~/.gemini/config',
+      );
+      assert.ok(
+        !fs.existsSync(path.join(result.configDir, 'skills')),
+        'no skills/ may be created under the configHome (~/.gemini/antigravity) — AGY does not scan it (#3738)',
+      );
+      assert.ok(
+        !fs.existsSync(path.join(result.configDir, 'agents')),
+        'no agents/ may be created under the configHome (~/.gemini/antigravity) (#3738)',
       );
       assert.ok(
         !fs.existsSync(path.join(homeDir, '.agents')),
-        '.agents/ must NOT be created by a global install (global path is ~/.gemini/antigravity)',
+        '.agents/ must NOT be created by a global install (global skills path is ~/.gemini/config)',
+      );
+      // #3738 review finding 1: the manifest must record the agents surface at
+      // its ACTUAL install root — writeManifest resolves the agents-kind home
+      // override, so drift detection sees the files AGY reads.
+      const manifestPath = path.join(result.configDir, 'gsd-file-manifest.json');
+      assert.ok(fs.existsSync(manifestPath), 'global install must write the manifest');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const agentKeys = Object.keys(manifest.files).filter((k) => k.startsWith('agents/'));
+      assert.ok(
+        agentKeys.length > 0,
+        `manifest must track agents/ at the home-override root, got keys: ${Object.keys(manifest.files).slice(0, 5).join(', ')}`,
       );
     } finally {
       if (savedHome === undefined) delete process.env.HOME;
@@ -6473,6 +6499,10 @@ describe('install.js --skills-root', () => {
     // #2088 (ADR-1239 upgrade 3): Codex skills resolve to the canonical
     // $HOME/.agents/skills root (skills-kind home override), not $CODEX_HOME/skills.
     { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    // #3738: Antigravity global discovery scans ~/.gemini/config/ — skills resolve
+    // to the skills-kind home override, not the configHome (~/.gemini/antigravity)
+    // that still holds settings.json and the gsd-core runtime files.
+    { runtime: 'antigravity', expected: path.join(os.homedir(), '.gemini', 'config', 'skills') },
     { runtime: 'copilot', expected: path.join(os.homedir(), '.copilot', 'skills') },
     { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
     { runtime: 'trae', expected: path.join(os.homedir(), '.trae', 'skills') },
@@ -6515,6 +6545,8 @@ describe('#3024: gsd-tools query skills-root', () => {
   const CASES = [
     { runtime: 'claude', expected: path.join(os.homedir(), '.claude', 'skills') },
     { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    // #3738: the query surface must agree with install.js --skills-root above.
+    { runtime: 'antigravity', expected: path.join(os.homedir(), '.gemini', 'config', 'skills') },
     { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
   ];
 

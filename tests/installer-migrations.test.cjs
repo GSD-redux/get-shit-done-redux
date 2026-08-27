@@ -1694,6 +1694,14 @@ test('shipped installer-migration checksums are locked to a committed baseline (
     // itself retired via the new remove-empty-dir action.
     '2026-08-07-pi-retire-reserved-hooks-dir':
       'sha256:34264415b00e15e5a1691eae3db9bd24dca11e5c04d78358420a7a8adf115f9e',
+    // Migration 010 (NEW, added here per this test's own sanctioned "adding a new
+    // migration" case): retire Antigravity's configHome skills/agents surfaces
+    // (#3738). Antigravity scans ~/.gemini/config for global discovery, so
+    // pre-#3738 artifacts sat in a dir the runtime never read; since #3738 both
+    // kinds install under the .gemini/config home override and this migration
+    // converges upgraded installs. Global scope only — local .agents is live.
+    '2026-08-26-antigravity-retire-confighome-artifacts':
+      'sha256:52764c43418accdc26c89482b1a46bf9ebcde1c1d9a80e302971a7b068a3be3c',
   };
 
   const { DEFAULT_MIGRATIONS_DIR, migrationChecksum: computeChecksum } = require('../gsd-core/bin/lib/installer-migrations.cjs');

@@ -209,6 +209,9 @@ export default tseslint.config(
       // 009 also imports node builtins (fs, path) like 007, so tsc emits the
       // same `__importDefault` helper. ADR-457: the linted source is the .cts.
       'gsd-core/bin/lib/installer-migrations/009-pi-retire-reserved-hooks-dir.cjs',
+      // 010 also imports node builtins (fs, path) like 007/009, so tsc emits
+      // the same `__importDefault` helper. ADR-457: the linted source is the .cts.
+      'gsd-core/bin/lib/installer-migrations/010-antigravity-retire-confighome-artifacts.cjs',
       'gsd-core/bin/lib/observability/logger.cjs',
       'gsd-core/bin/lib/active-workstream-store.cjs',
       'gsd-core/bin/lib/adr-parser.cjs',
@@ -338,6 +341,12 @@ export default tseslint.config(
       // src/pattern.cts — module resolution for a .cts source is relative to
       // src/, not the output dir). Same verbatim-third-party exemption.
       'src/vendor/**',
+      // #3904 (ADR-3889 Phase 0): tsc-generated runtime artifact — generated
+      // by scripts/gen-scripts-cli-exit.cjs from a fresh compile of
+      // src/cli-exit.cts, and byte-guarded by `npm run lint:generated-sync`
+      // (stricter than lint: it forbids ANY hand edit, not just bad ones).
+      // Lint the src/cli-exit.cts source, not this emitted copy.
+      'scripts/lib/cli-exit.cjs',
     ],
   },
 

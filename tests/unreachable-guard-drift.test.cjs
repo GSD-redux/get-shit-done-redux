@@ -43,8 +43,6 @@ const {
   dedupeViolationsForBaseline,
   writeBaseline,
   toPosixRel,
-  PICK_RE,
-  ECHO_FALLBACK_RE,
   CAT_LS_COMMAND_RE,
   HEREDOC_AFTER_COMMAND_RE,
   isNoopFallback,
@@ -83,109 +81,56 @@ function markerComment(reason) {
   return `# gsd-scan-ignore: ${reason}`;
 }
 
-// ─── Detector A — PICK_RE / ECHO_FALLBACK_RE ──────────────────────────────
+// ─── Detector A — RETIRED, #3884 ───────────────────────────────────────────
+//
+// ADR-3473 §8.4 made `--pick` exit non-zero on an absent field (issue
+// #3884), which made Detector A's own premise false — the `|| echo D` arm it
+// forbade is now the CORRECT idiom, not an unreachable one. Detector A (its
+// regexes, its branch in the scan, and its `kind: 'A'` finding shape) was
+// removed from scripts/lint-unreachable-guard-drift.cjs; this describe block
+// now pins the negative claim instead of the old positive one — the exact
+// shapes that used to be flagged (canonical, no-stderr-redirect,
+// empty-string-fallback, fenced, duplicated, CRLF) must produce ZERO
+// violations, proving the retirement did not leave a partial/half-removed
+// detector behind.
 
-describe('Detector A — --pick + || echo fallback', () => {
-  test('A1: canonical shape with 2>/dev/null is flagged, found names --pick', () => {
-    const line = pickEchoLine({ stderr: true, fallback: '"d"' });
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.strictEqual(violations.length, 1);
-    assert.strictEqual(violations[0].kind, 'A');
-    assert.strictEqual(violations[0].found, '--pick');
-    assert.strictEqual(violations[0].text, line.trim());
+describe('Detector A (--pick + || echo) — retired, #3884', () => {
+  test('detectorAShapeIsNoLongerAFinding: the canonical shape, with/without a stderr redirect, and an empty-string fallback are all unreported', () => {
+    for (const opts of [{ stderr: true, fallback: '"d"' }, { stderr: false, fallback: '"d"' }, { fallback: '""' }]) {
+      const line = pickEchoLine(opts);
+      const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
+      assert.deepStrictEqual(violations, [], `expected no violations for ${JSON.stringify(opts)}`);
+    }
   });
 
-  test('A2: without a stderr redirect is still flagged', () => {
-    const line = pickEchoLine({ stderr: false, fallback: '"d"' });
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.strictEqual(violations.length, 1);
-    assert.strictEqual(violations[0].kind, 'A');
+  test('detectorAShapeIsNoLongerAFinding: fenced, duplicated, and CRLF variants of the shape are also unreported', () => {
+    const line = pickEchoLine();
+    const fenced = ['```bash', line, '```'].join('\n');
+    const duplicated = [line, line].join('\n');
+    const crlf = `${line}\r\n`;
+    assert.deepStrictEqual(findUnreachableGuardDrift(fenced, FAKE_FILE).violations, []);
+    assert.deepStrictEqual(findUnreachableGuardDrift(duplicated, FAKE_FILE).violations, []);
+    assert.deepStrictEqual(findUnreachableGuardDrift(crlf, FAKE_FILE).violations, []);
   });
 
-  test('A3: an empty-string default is still flagged (unreachable AND a no-op)', () => {
-    const line = pickEchoLine({ fallback: '""' });
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.strictEqual(violations.length, 1);
-  });
-
-  test('A4: a --pick-less config-get fallback is NOT detected', () => {
-    const line = ['X=$(gsd_run query config-get k 2>/dev/null ', '|', '|', ' echo "false")'].join('');
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.deepStrictEqual(violations, []);
-  });
-
-  test('A5: a pick with no fallback is NOT detected', () => {
-    const line = 'X=$(gsd_run query phases.list --pick summaries_total)';
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.deepStrictEqual(violations, []);
-  });
-
-  test('A6: a git fallback is NOT detected', () => {
-    const line = ['X=$(git rev-list --count HEAD ', '|', '|', ' echo 0)'].join('');
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.deepStrictEqual(violations, []);
-  });
-
-  test('A7: a grep fallback is NOT detected', () => {
-    const line = ["Y=$(grep -cE '^' file.md ", '|', '|', ' echo "0")'].join('');
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.deepStrictEqual(violations, []);
-  });
-
-  test('A8: the and-or ternary idiom is NOT detected', () => {
-    const line = ['$([ -n "$X" ] && echo "a" ', '|', '|', ' echo "")'].join('');
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.deepStrictEqual(violations, []);
-  });
-
-  test('A9 (known limit): a cross-line split is NOT detected', () => {
-    const text = [
+  test('detectorAShapeIsNoLongerAFinding: no other --pick + || echo variant (git/grep/config-get/ternary/cross-line/printf fallback) is reported either', () => {
+    const variants = [
+      ['X=$(gsd_run query config-get k 2>/dev/null ', '|', '|', ' echo "false")'].join(''),
+      'X=$(gsd_run query phases.list --pick summaries_total)',
+      ['X=$(git rev-list --count HEAD ', '|', '|', ' echo 0)'].join(''),
+      ["Y=$(grep -cE '^' file.md ", '|', '|', ' echo "0")'].join(''),
+      ['$([ -n "$X" ] && echo "a" ', '|', '|', ' echo "")'].join(''),
+      ["X=$(gsd_run query phases.list --pick f ", '|', '|', " printf 'd')"].join(''),
+    ];
+    for (const line of variants) {
+      const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
+      assert.deepStrictEqual(violations, [], `expected no violations for ${JSON.stringify(line)}`);
+    }
+    const crossLine = [
       'X=$(gsd_run query phases.list --pick summaries_total 2>/dev/null)',
       ['Y=$(echo "$X" ', '|', '|', ' echo "0")'].join(''),
     ].join('\n');
-    const { violations } = findUnreachableGuardDrift(text, FAKE_FILE);
-    assert.deepStrictEqual(violations, []);
-  });
-
-  test('A10 (known limit): a printf fallback is NOT detected', () => {
-    const line = ["X=$(gsd_run query phases.list --pick f ", '|', '|', " printf 'd')"].join('');
-    const { violations } = findUnreachableGuardDrift(line, FAKE_FILE);
-    assert.deepStrictEqual(violations, []);
-  });
-
-  test('A11: a fenced block is not an exemption — the same line inside ```bash still flags', () => {
-    const line = pickEchoLine();
-    const text = ['```bash', line, '```'].join('\n');
-    const { violations } = findUnreachableGuardDrift(text, FAKE_FILE);
-    assert.strictEqual(violations.length, 1);
-    assert.strictEqual(violations[0].line, 2);
-  });
-
-  test('A12: reports each violating line separately, with correct line numbers', () => {
-    const l1 = pickEchoLine({ pick: 'a' });
-    const l2 = pickEchoLine({ pick: 'b' });
-    const text = ['no-op', l1, 'middle', l2].join('\n');
-    const { violations } = findUnreachableGuardDrift(text, FAKE_FILE);
-    assert.strictEqual(violations.length, 2);
-    assert.strictEqual(violations[0].line, 2);
-    assert.strictEqual(violations[1].line, 4);
-  });
-
-  test('A13: byte-identical duplicates count as 2 occurrences', () => {
-    const line = pickEchoLine();
-    const text = [line, line].join('\n');
-    const { violations } = findUnreachableGuardDrift(text, FAKE_FILE);
-    assert.strictEqual(violations.length, 2);
-    assert.strictEqual(violations[0].text, violations[1].text);
-  });
-
-  test('A15: CRLF line endings yield the identical verdict to LF', () => {
-    const line = pickEchoLine();
-    const lf = findUnreachableGuardDrift(line, FAKE_FILE);
-    const crlf = findUnreachableGuardDrift(`${line}\r\n`, FAKE_FILE);
-    assert.strictEqual(lf.violations.length, 1);
-    assert.strictEqual(crlf.violations.length, 1);
-    assert.strictEqual(crlf.violations[0].text, lf.violations[0].text);
+    assert.deepStrictEqual(findUnreachableGuardDrift(crossLine, FAKE_FILE).violations, []);
   });
 });
 
@@ -360,7 +305,7 @@ describe('Detector B — cat <glob> (B-i), ls <glob> || <real fallback> (B-ii), 
 
 describe('Escape marker — # gsd-scan-ignore:', () => {
   test('M1: a marker naming an issue exempts the line', () => {
-    const line = `${pickEchoLine()}   ${markerComment('#3409')}`;
+    const line = `${catLine('dir/*.md')}   ${markerComment('#3409')}`;
     const { violations, malformed } = findUnreachableGuardDrift(line, FAKE_FILE);
     assert.deepStrictEqual(violations, []);
     assert.deepStrictEqual(malformed, []);
@@ -374,7 +319,7 @@ describe('Escape marker — # gsd-scan-ignore:', () => {
   });
 
   test('M3: a free-text reason reports a malformed declaration, not a plain violation', () => {
-    const line = `${pickEchoLine()}   ${markerComment('because I said so')}`;
+    const line = `${catLine('dir/*.md')}   ${markerComment('because I said so')}`;
     const { violations, malformed } = findUnreachableGuardDrift(line, FAKE_FILE);
     assert.deepStrictEqual(violations, []);
     assert.strictEqual(malformed.length, 1);
@@ -382,7 +327,7 @@ describe('Escape marker — # gsd-scan-ignore:', () => {
   });
 
   test('M4: an empty reason is not an audit trail — malformed', () => {
-    const line = `${pickEchoLine()}   # gsd-scan-ignore:`;
+    const line = `${catLine('dir/*.md')}   # gsd-scan-ignore:`;
     const { violations, malformed } = findUnreachableGuardDrift(line, FAKE_FILE);
     assert.deepStrictEqual(violations, []);
     assert.strictEqual(malformed.length, 1);
@@ -390,14 +335,14 @@ describe('Escape marker — # gsd-scan-ignore:', () => {
   });
 
   test('M5: a whitespace-only reason is rejected — malformed', () => {
-    const line = `${pickEchoLine()}   # gsd-scan-ignore:    `;
+    const line = `${catLine('dir/*.md')}   # gsd-scan-ignore:    `;
     const { violations, malformed } = findUnreachableGuardDrift(line, FAKE_FILE);
     assert.deepStrictEqual(violations, []);
     assert.strictEqual(malformed.length, 1);
   });
 
   test('M6: the marker binds only to its own line — a marker above a violation does not exempt it', () => {
-    const text = [markerComment('#3409'), pickEchoLine()].join('\n');
+    const text = [markerComment('#3409'), catLine('dir/*.md')].join('\n');
     const { violations, malformed } = findUnreachableGuardDrift(text, FAKE_FILE);
     assert.strictEqual(violations.length, 1, 'the violation on line 2 must still fire');
     assert.deepStrictEqual(malformed, []);
@@ -437,7 +382,7 @@ describe('Escape marker — # gsd-scan-ignore:', () => {
     const isolatedScript = buildIsolatedGuard(root);
     const wfDir = path.join(root, 'gsd-core', 'workflows');
     fs.mkdirSync(wfDir, { recursive: true });
-    fs.writeFileSync(path.join(wfDir, 'fake.md'), `${pickEchoLine()}   ${markerComment(reason)}\n`);
+    fs.writeFileSync(path.join(wfDir, 'fake.md'), `${catLine('dir/*.md')}   ${markerComment(reason)}\n`);
     const baselinePath = path.join(root, BASELINE_REL_PATH);
     fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
     fs.writeFileSync(baselinePath, JSON.stringify({ entries: [] }), 'utf8');
@@ -662,19 +607,14 @@ describe('Cross-platform & encoding', () => {
     const posixRel = 'gsd-core/workflows/fake.md';
     assert.strictEqual(toPosixRel(winRel), posixRel);
     assert.strictEqual(toPosixRel(posixRel), posixRel);
-    const { violations } = findUnreachableGuardDrift(pickEchoLine(), winRel);
+    const { violations } = findUnreachableGuardDrift(catLine('dir/*.md'), winRel);
     assert.strictEqual(violations[0].file, posixRel);
     assert.ok(!violations[0].file.includes('\\'));
   });
 
-  test('P2: CRLF input yields the same violations as LF (Detector A)', () => {
-    const line = pickEchoLine();
-    const lf = findUnreachableGuardDrift(line, FAKE_FILE).violations;
-    const crlf = findUnreachableGuardDrift(line.replace(/\n/g, '\r\n') + '\r\n', FAKE_FILE).violations;
-    assert.strictEqual(lf.length, 1);
-    assert.strictEqual(crlf.length, 1);
-    assert.strictEqual(lf[0].text, crlf[0].text);
-  });
+  // P2 (formerly "CRLF input yields the same violations as LF (Detector A)")
+  // was retired alongside Detector A itself, #3884 — its claim is now fully
+  // subsumed by P3 below, the only detector left whose CRLF parity matters.
 
   test('P3: CRLF does not defeat the glob detector (Detector B)', () => {
     const line = catLine('dir/*.md');
@@ -686,7 +626,7 @@ describe('Cross-platform & encoding', () => {
   });
 
   test('P4: the baseline key is CR-free under CRLF — matches an LF-recorded baseline entry', () => {
-    const line = pickEchoLine();
+    const line = catLine('dir/*.md');
     const baseline = [{ file: FAKE_FILE, text: line.trim(), count: 1 }];
     const crlfViolations = findUnreachableGuardDrift(`${line}\r\n`, FAKE_FILE).violations;
     assert.ok(!crlfViolations[0].text.includes('\r'), 'the baseline-key text must carry no trailing \\r');
@@ -716,7 +656,7 @@ describe('Hostile input', () => {
     const wfDir = path.join(root, 'gsd-core', 'workflows');
     fs.mkdirSync(wfDir, { recursive: true });
     const esc = String.fromCharCode(0x1b);
-    const line = pickEchoLine() + `  # ${esc}[31mred${esc}[0m`;
+    const line = catLine('dir/*.md') + `  # ${esc}[31mred${esc}[0m`;
     fs.writeFileSync(path.join(wfDir, 'fake.md'), `${line}\n`);
     writeBaselineFakeEmpty(root);
 
@@ -816,8 +756,8 @@ describe('Hostile input', () => {
 describe('Property tests', () => {
   // DOCUMENT-SHAPED, not writer-seeded (CONTRIBUTING.md's Fixture provenance
   // #2371): tokens are drawn from a shell-ish alphabet independent of
-  // PICK_RE/ECHO_FALLBACK_RE's own literals, not generated from the
-  // detector's regex source.
+  // CAT_LS_COMMAND_RE's own literals, not generated from the detector's
+  // regex source.
   const wordArb = fc.constantFrom(
     'gsd_run', 'query', 'phases.list', 'config-get', 'k', 'v', 'f', '2>/dev/null',
     'echo', 'printf', '"0"', '"d"', '$(', ')', 'X=', '&&', ';', 'if', 'then', 'fi',
@@ -825,17 +765,17 @@ describe('Property tests', () => {
   );
   const lineArb = fc.array(wordArb, { minLength: 1, maxLength: 12 }).map((ws) => ws.join(' '));
 
-  test('F1: detector A never fires on a document-shaped line lacking --pick or lacking || echo', () => {
+  // Retired-detector regression net (#3884): unlike the pre-retirement F1,
+  // this deliberately does NOT filter out the `--pick` + `|| echo` combined
+  // shape — it fuzzes lines that DO carry both tokens (via injectPipe) and
+  // asserts a `kind: 'A'` violation is unconditionally impossible now that
+  // Detector A no longer exists, closing off the possibility of a partial
+  // removal (e.g. a stray branch reachable only through some input shape
+  // this suite's hand-written fixtures do not happen to hit).
+  test('F1: no document-shaped line — including one deliberately carrying both --pick and || echo — ever produces a kind:\'A\' violation', () => {
     fc.assert(
       fc.property(lineArb, fc.boolean(), (line, injectPipe) => {
-        // Build a line that deliberately lacks at least one of the two
-        // required tokens, without deriving the construction from
-        // PICK_RE/ECHO_FALLBACK_RE themselves.
-        const hasPick = line.includes('--pick');
         const rawFallback = injectPipe ? `${line} ${'|'}${'|'} echo done` : line;
-        const hasEcho = /\|\|\s*echo\b/.test(rawFallback);
-        fc.pre(!(hasPick && hasEcho));
-
         const { violations } = findUnreachableGuardDrift(rawFallback, FAKE_FILE);
         const aViolations = violations.filter((v) => v.kind === 'A');
         assert.deepStrictEqual(aViolations, []);
@@ -949,13 +889,13 @@ describe('Integration — CLI end-to-end', () => {
     assert.deepStrictEqual(malformed, []);
   });
 
-  test('C2: a fresh violation exits non-zero and the message names the remedy', (t) => {
+  test('detectorBStillReportsGlobShapes (formerly C2): a reintroduced Detector-B shape still exits non-zero and names the remedy — proves the guard can FAIL, not just pass, after Detector A\'s retirement', (t) => {
     const root = createTempDir('gsd-3409-c2-');
     t.after(() => cleanup(root));
     const isolatedScript = buildIsolatedGuard(root);
     const wfDir = path.join(root, 'gsd-core', 'workflows');
     fs.mkdirSync(wfDir, { recursive: true });
-    fs.writeFileSync(path.join(wfDir, 'fake.md'), `${pickEchoLine()}\n`);
+    fs.writeFileSync(path.join(wfDir, 'fake.md'), `${catLine('dir/*.md')}\n`);
     const baselinePath = path.join(root, BASELINE_REL_PATH);
     fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
     fs.writeFileSync(baselinePath, JSON.stringify({ entries: [] }), 'utf8');
@@ -967,7 +907,8 @@ describe('Integration — CLI end-to-end', () => {
     assert.strictEqual(report.reason, REASON.FAIL_FRESH_VIOLATION);
     assert.strictEqual(report.violations.length, 1);
     assert.strictEqual(report.violations[0].file, FAKE_FILE);
-    assert.strictEqual(report.violations[0].kind, 'A');
+    assert.strictEqual(report.violations[0].kind, 'B');
+    assert.strictEqual(report.violations[0].found, 'cat');
   });
 
   test('C3: --update regenerates a baseline that then passes', (t) => {
@@ -994,7 +935,7 @@ describe('Integration — CLI end-to-end', () => {
     const wfDir = path.join(root, 'gsd-core', 'workflows');
     fs.mkdirSync(wfDir, { recursive: true });
     fs.writeFileSync(path.join(wfDir, 'a.md'), `${catLine('dir/*.md')}\n`);
-    fs.writeFileSync(path.join(wfDir, 'b.md'), `${pickEchoLine()}\n`);
+    fs.writeFileSync(path.join(wfDir, 'b.md'), 'ls -d other/*.md 2>/dev/null || echo "none"\n');
 
     runNode([isolatedScript, '--update'], { timeoutMs: PROBE_TIMEOUT_MS });
     const firstBaseline = fs.readFileSync(path.join(root, BASELINE_REL_PATH), 'utf8');
@@ -1036,20 +977,12 @@ describe('dedupeViolationsForBaseline', () => {
   });
 });
 
-// ─── Regex-level sanity (documents the two regexes' shapes directly) ─────
+// ─── Regex-level sanity (documents Detector B's surviving regexes' shapes) ─
+//
+// PICK_RE / ECHO_FALLBACK_RE were retired with Detector A (#3884) and are no
+// longer exported — there is nothing left to assert on directly.
 
 describe('Regex shape sanity', () => {
-  test('PICK_RE matches only the literal --pick token', () => {
-    assert.ok(PICK_RE.test('--pick foo'));
-    assert.ok(!PICK_RE.test('--picky foo'));
-  });
-
-  test('ECHO_FALLBACK_RE matches || echo with optional interior whitespace', () => {
-    assert.ok(ECHO_FALLBACK_RE.test(['a ', '|', '|', ' echo b'].join('')));
-    assert.ok(ECHO_FALLBACK_RE.test(['a ', '|', '|', '   echo b'].join('')));
-    assert.ok(!ECHO_FALLBACK_RE.test(['a ', '|', '|', ' printf b'].join('')));
-  });
-
   test('CAT_LS_COMMAND_RE requires cat/ls immediately at a command-position anchor', () => {
     assert.ok(CAT_LS_COMMAND_RE.test('cat x'));
     assert.ok(CAT_LS_COMMAND_RE.test('$(cat x)'));

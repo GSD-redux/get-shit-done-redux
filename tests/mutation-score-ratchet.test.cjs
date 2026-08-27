@@ -81,6 +81,62 @@ describe('extractAchievedScore: Stryker json-reporter document', () => {
   test('throws when the report has no scoreable mutants (empty files map — a wiring bug, never a 0% score)', () => {
     assert.throws(() => extractAchievedScore({ schemaVersion: '1.0', thresholds: {}, files: {} }), /no scoreable mutants/);
   });
+
+  // #3915: coverageAnalysis flips 'off' -> 'perTest' for the tap-runner swap, which is
+  // what makes NoCoverage a status Stryker can now actually emit for these shards (the
+  // command runner's 'off' analysis never produced it). extractAchievedScore must already
+  // treat NoCoverage exactly like Survived in the denominator, or every shard's floor
+  // silently becomes easier to clear the moment mutants start reporting NoCoverage instead
+  // of Survived.
+  function buildCountReport({ Killed = 0, Survived = 0, NoCoverage = 0 } = {}) {
+    const mutants = [];
+    let id = 0;
+    const push = (status, n) => {
+      for (let i = 0; i < n; i += 1) {
+        mutants.push({
+          id: String(id++),
+          mutatorName: 'a',
+          status,
+          location: { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } },
+        });
+      }
+    };
+    push('Killed', Killed);
+    push('Survived', Survived);
+    push('NoCoverage', NoCoverage);
+    return {
+      schemaVersion: '1.0',
+      thresholds: { high: 80, low: 60 },
+      files: { 'foo.js': { language: 'javascript', source: 'x', mutants } },
+    };
+  }
+
+  test('8 Killed + 2 Survived → 80', () => {
+    assert.strictEqual(extractAchievedScore(buildCountReport({ Killed: 8, Survived: 2 })), 80);
+  });
+
+  // NoCoverage counts in the mutation-score denominator exactly as Survived does, which is
+  // what makes the #3915 coverageAnalysis 'off'->'perTest' switch score-neutral; Stryker's
+  // own break threshold reads this same field (mutation-test-report-helper.js).
+  test('8 Killed + 2 NoCoverage → 80, NOT 100', () => {
+    assert.strictEqual(extractAchievedScore(buildCountReport({ Killed: 8, NoCoverage: 2 })), 80);
+  });
+
+  // Non-vacuity guard (Goodhart guard): proves the previous test is not a tautology by
+  // showing mutationScore and mutationScoreBasedOnCoveredCode genuinely diverge on the same
+  // report. This fails the moment someone "improves" extractAchievedScore to read the
+  // better-sounding covered-code field, which would make every floor trivially satisfiable.
+  test('non-vacuity: mutationScoreBasedOnCoveredCode (100) diverges from extractAchievedScore (80) on the same report', () => {
+    const { calculateMutationTestMetrics } = require('mutation-testing-metrics');
+    const report = buildCountReport({ Killed: 8, NoCoverage: 2 });
+    const metrics = calculateMutationTestMetrics(report);
+    assert.strictEqual(metrics.systemUnderTestMetrics.metrics.mutationScoreBasedOnCoveredCode, 100);
+    assert.strictEqual(extractAchievedScore(report), 80);
+  });
+
+  test('0 Killed + 10 NoCoverage → 0 (a wholly-uncovered shard scores zero, not 100)', () => {
+    assert.strictEqual(extractAchievedScore(buildCountReport({ NoCoverage: 10 })), 0);
+  });
 });
 
 // ── CLI end-to-end: fail on a planted over-floor score, pass when the floor is raised ───

@@ -97,7 +97,7 @@ const capabilities = {
     "role": "runtime",
     "version": "1.11.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -128,7 +128,8 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeCommandToAntigravitySkill"
+            "converter": "convertClaudeCommandToAntigravitySkill",
+            "home": ".gemini/config"
           },
           {
             "kind": "agents",
@@ -136,7 +137,8 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeAgentToAntigravityAgent"
+            "converter": "convertClaudeAgentToAntigravityAgent",
+            "home": ".gemini/config"
           }
         ],
         "local": [
@@ -5247,7 +5249,7 @@ const runtimes = {
     "role": "runtime",
     "version": "1.11.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -5278,7 +5280,8 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeCommandToAntigravitySkill"
+            "converter": "convertClaudeCommandToAntigravitySkill",
+            "home": ".gemini/config"
           },
           {
             "kind": "agents",
@@ -5286,7 +5289,8 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeAgentToAntigravityAgent"
+            "converter": "convertClaudeAgentToAntigravityAgent",
+            "home": ".gemini/config"
           }
         ],
         "local": [

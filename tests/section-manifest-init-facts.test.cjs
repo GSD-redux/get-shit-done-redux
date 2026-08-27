@@ -290,11 +290,21 @@ describe('flag value shapes drive section_manifest by truthiness, not semantic v
     assert.equal(occurrences.length, 1, 'must be a single membership, not one entry per duplicate token');
   });
 
-  test('flag-shaped value (--prd --weird) does not crash and deterministically excludes prd-express-gate (row D6)', () => {
+  test('flag-shaped value (--prd --reviews) does not crash and deterministically excludes prd-express-gate (row D6)', () => {
     // parseNamedArgs treats a token starting with "--" as the NEXT flag, never
     // as this flag's value — so --prd here resolves to null (absent), not the
-    // literal string "--weird".
-    const result = runGsdTools(['init', 'plan-phase', '1', '--prd', '--weird'], tmpDir);
+    // literal string "--reviews".
+    //
+    // Corrected after the first full verification run: the original choice of
+    // `--weird` here predates ADR-3473 §8.4's strict unrecognized-flag
+    // rejection (this file is from #2994/epic #1671, before #3358's strict
+    // parseNamedArgs) and is itself an unrecognized flag for `plan-phase` —
+    // it now correctly fails with exit 1 / "unknown flag --weird" instead of
+    // proving the "flag-shaped value" point this test exists for. Swapped for
+    // `--reviews`, a real declared plan-phase boolean flag, matching the same
+    // substitution already used by the sibling row
+    // tests/init.test.cjs:emptyPrdValueIsFalsyAndTreatedAsAbsent (row B5).
+    const result = runGsdTools(['init', 'plan-phase', '1', '--prd', '--reviews'], tmpDir);
     assert.ok(result.success, `a flag-shaped value must not crash the command: ${result.error}`);
     const output = JSON.parse(result.output);
     assert.ok(output.section_manifest.excluded.includes('prd-express-gate'), '--prd immediately followed by another --flag token must resolve to absent, per parseNamedArgs');
