@@ -216,6 +216,11 @@ const ERROR_REASON = Object.freeze({
   COMMIT_DOCS_GUARD_HOOKS_PATH_SET: 'commit_docs_guard_hooks_path_set',
   // security-scan
   SECURITY_SCAN_FAILED: 'security_scan_failed',
+  // --pick (#3365 / #3358, ADR-3473 §8.4): an absent field or non-JSON
+  // command output is a failure, never a demotion to an empty answer at
+  // exit 0. See .gsd/phase/feat-3884-failure-is-a-value/40-design.md.
+  PICK_FIELD_ABSENT: 'pick_field_absent',
+  PICK_OUTPUT_NOT_JSON: 'pick_output_not_json',
   // generic
   USAGE: 'usage',
   UNKNOWN: 'unknown',
@@ -240,6 +245,35 @@ type ErrorReasonValue = typeof ERROR_REASON[keyof typeof ERROR_REASON];
  * human-readable text. Ignored entirely in plain-text mode — the human
  * message is the only thing an operator sees there.
  */
+/**
+ * Render an UNTRUSTED string for embedding inside a human-readable,
+ * plain-text diagnostic (the `'Error: ' + message` line `error()` writes in
+ * non-JSON mode).
+ *
+ * WHY THIS EXISTS AND WHY `error()` DOES NOT DO IT ITSELF: `error()`
+ * deliberately writes its `message` argument verbatim — several callers in
+ * this repo intentionally emit multi-line diagnostics (e.g. the phase-gate
+ * messages), and `error()` has no way to distinguish a legitimate multi-line
+ * message from a hostile one, so it must not mangle newlines generically.
+ * That means any UNTRUSTED substring a caller interpolates into `message`
+ * (an argv token, a JSON key/value read back from a command's own output,
+ * etc.) can smuggle its own `\n` and forge a second `Error: ` line on
+ * stderr — a caller that parses stderr line-by-line would then see a second,
+ * attacker-authored error. Every call site that interpolates untrusted data
+ * into a diagnostic MUST pass that substring through this function first;
+ * `error()` itself stays a dumb, faithful writer.
+ *
+ * `JSON.stringify` is the primitive: it wraps the value in quotes and
+ * escapes control characters (`\n`, `\r`, `\t`, and the rest of the C0
+ * range, plus the quote character itself), so the result can never span
+ * more than one line or introduce an unescaped `"`. Callers embedding the
+ * result MUST NOT add their own surrounding quotes — that would
+ * double-quote it.
+ */
+function formatDiagnosticToken(value: string): string {
+  return JSON.stringify(value);
+}
+
 function error(message: string, reason: ErrorReasonValue = ERROR_REASON.UNKNOWN, extra?: Record<string, unknown>): never {
   if (getJsonErrorMode()) {
     const payload = JSON.stringify({ ok: false, reason, message, ...(extra || {}) }) + '\n';
@@ -260,4 +294,5 @@ export = {
   setJsonErrorMode,
   getJsonErrorMode,
   error,
+  formatDiagnosticToken,
 };

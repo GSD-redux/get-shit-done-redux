@@ -193,6 +193,13 @@ text (unstable).
 | `usage` | Version flag (`--version`, `-v`) which gsd-tools never accepts |
 | `usage` | Top-level no-args invocation (usage text) |
 
+### `--pick <field>` errors (ADR-3473 §8.4, #3884)
+
+| Code | When emitted |
+|------|-------------|
+| `pick_field_absent` | `--pick <field>` names a field that does not exist in the command's JSON output (missing key, out-of-range index, a partially-missing dotted path, or a non-object JSON root) — see [CLI-TOOLS.md's `--pick` contract](CLI-TOOLS.md#--pick-field-contract) |
+| `pick_output_not_json` | `--pick <field>` is combined with a command whose output is not JSON (including `--raw` output) |
+
 ### Config errors (`config-get`, `config-set`, `config-ensure-section`)
 
 | Code | When emitted |

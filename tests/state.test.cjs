@@ -8566,7 +8566,14 @@ describe('regressions: table-format STATE.md (#1162)', () => {
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '1-01-PLAN.md'), '# Plan 1');
 
-    const result = runGsdTools(['state', 'planned-phase', '1', '--plan-count', '1'], tmpDir);
+    // #3884 (ADR-3473 §8.4): `--plan-count` was never a declared flag (the
+    // real flag is `--plans`) and the bare '1' was never read as a phase
+    // positional either — both were silently dropped by the pre-#3884
+    // permissive parser. The command "worked" only because
+    // cmdStatePlannedPhase falls back to STATE.md's own current phase (1
+    // here) when no --phase is given, so the assertion below never actually
+    // exercised phase/plan-count plumbing. Corrected to the real flags.
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '1', '--plans', '1'], tmpDir);
 
     assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -8707,7 +8714,9 @@ describe('regressions: table-format STATE.md (#1162) — updateCurrentPositionFi
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '2-01-PLAN.md'), '# Plan\n');
 
-    const result = runGsdTools(['state', 'planned-phase', '2', '--plan-count', '1'], tmpDir);
+    // #3884: `--plan-count` / bare positional never worked — see the (a)
+    // Finding-2a-sibling note on the earlier occurrence of this pattern.
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '2', '--plans', '1'], tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const written = fs.readFileSync(statePath, 'utf-8');
@@ -8733,7 +8742,9 @@ describe('regressions: table-format STATE.md (#1162) — updateCurrentPositionFi
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '2-01-PLAN.md'), '# Plan\n');
 
-    const result = runGsdTools(['state', 'planned-phase', '2', '--plan-count', '1'], tmpDir);
+    // #3884: `--plan-count` / bare positional never worked — see the note on
+    // the first occurrence of this pattern above.
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '2', '--plans', '1'], tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const written = fs.readFileSync(statePath, 'utf-8');
@@ -8754,7 +8765,9 @@ describe('regressions: table-format STATE.md (#1162) — updateCurrentPositionFi
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '2-01-PLAN.md'), '# Plan\n');
 
-    const result = runGsdTools(['state', 'planned-phase', '2', '--plan-count', '1'], tmpDir);
+    // #3884: `--plan-count` / bare positional never worked — see the note on
+    // the first occurrence of this pattern above.
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '2', '--plans', '1'], tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const written = fs.readFileSync(statePath, 'utf-8');
@@ -18889,5 +18902,124 @@ describe('ADR-3473 §8.7 (#3872): reconcileReportedFields / the transaction diff
       }),
       { seed: 20260825, numRuns: 200 },
     );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// Consumer-output identity (ADR-3180 Decision 4(b)) — #3358 / #3884
+//
+// For #3358 the consumer is `state planned-phase`'s EFFECT on STATE.md, not
+// `parseNamedArgs`'s return value — a unit assertion on the parser alone
+// would have passed throughout this defect's entire life. These rows spawn
+// the real CLI against a temp project and assert on STATE.md's bytes.
+// ────────────────────────────────────────────────────────────────────────
+describe('state — consumer-output identity (ADR-3180 Decision 4(b), #3358)', () => {
+  function stateMdWithPopulatedPhaseTwo() {
+    return [
+      '---',
+      "gsd_state_version: '1.0'",
+      'status: planning',
+      'progress:',
+      '  total_phases: 5',
+      '  completed_phases: 1',
+      '  total_plans: 10',
+      '  completed_plans: 4',
+      '  percent: 40',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 2 of 5 (Widget Support)',
+      'Plan: 1 of 3 in current phase',
+      'Status: Ready to execute',
+      'Last activity: 2026-08-20 — Phase 2 planning complete',
+      '',
+      'Progress: [####------] 40%',
+      '',
+    ].join('\n');
+  }
+
+  // #3358: a stray positional (`3`) past `state planned-phase`'s declared
+  // boundary is silently dropped by the CURRENT permissive parseNamedArgs —
+  // every flag resolves to `null` — and the command still RUNS, overwriting
+  // the previously-current phase block.
+  //
+  // Measured on this tree, 2026-08-26, against exactly this fixture:
+  //   $ gsd-tools query state.planned-phase 3 --cwd <tmp>
+  //   {"updated":["Current Position","Current Phase Name"],"phase":null,"plan_count":null}
+  //   exit 0
+  // STATE.md's `## Current Position` block changed from:
+  //   Phase: 2 of 5 (Widget Support)
+  // to:
+  //   Phase: null — READY TO EXECUTE
+  // (and frontmatter gained `current_phase_name: READY TO EXECUTE`, an
+  // outright corruption of the curated phase name).
+  test('positionalPlannedPhaseLeavesStateMdUntouched_3358', () => {
+    const tmpDir = createTempProject();
+    try {
+      const statePath = writeState(tmpDir, stateMdWithPopulatedPhaseTwo());
+      const before = fs.readFileSync(statePath);
+
+      const result = runGsdTools('query state.planned-phase 3', tmpDir);
+
+      assert.notStrictEqual(result.exitCode, 0, 'a positional argument past the boundary must exit non-zero');
+      const after = fs.readFileSync(statePath);
+      assert.ok(before.equals(after), 'STATE.md must be byte-identical to before the rejected call');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  // Control: the flag form of the exact same intent must keep succeeding and
+  // keep updating STATE.md — proves C1 above is not passing merely because
+  // `state planned-phase` is broken outright.
+  test('flagFormPlannedPhaseStillUpdatesStateMd', () => {
+    const tmpDir = createTempProject();
+    try {
+      const statePath = writeState(tmpDir, stateMdWithPopulatedPhaseTwo());
+
+      const result = runGsdTools('query state.planned-phase --phase 3 --name X --plans 2', tmpDir);
+
+      assert.strictEqual(result.success, true, result.error);
+      const after = fs.readFileSync(statePath, 'utf-8');
+      assert.match(after, /Phase: 3 \(X\) — READY TO EXECUTE/);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  // #3358, second call site: an extra positional token on `add-decision`
+  // must not be silently absorbed into a successful write.
+  test('positionalOnAddDecisionAppendsNothing', () => {
+    const tmpDir = createTempProject();
+    try {
+      const statePath = writeState(tmpDir, [
+        '---',
+        "gsd_state_version: '1.0'",
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Accumulated Context',
+        '',
+        '### Decisions',
+        '',
+        '- none yet',
+        '',
+      ].join('\n'));
+      const before = fs.readFileSync(statePath, 'utf-8');
+
+      const result = runGsdTools(['query', 'state.add-decision', 'stray-token', '--summary', 'x'], tmpDir);
+
+      assert.notStrictEqual(result.exitCode, 0, 'an extra positional argument must exit non-zero');
+      const after = fs.readFileSync(statePath, 'utf-8');
+      assert.ok(!after.includes('- [Phase'), 'no decision row should have been appended');
+      assert.strictEqual(after, before, 'STATE.md must be unchanged when the call is rejected');
+    } finally {
+      cleanup(tmpDir);
+    }
   });
 });

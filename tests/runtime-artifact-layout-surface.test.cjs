@@ -1180,13 +1180,14 @@ describe('skills-kind destination parity: installer vs surface-apply (#2911)', (
 
   test('registry home-override discrimination report (#2911)', () => {
     const overrides = runtimesWithHomeOverride();
-    // Stated per the brief: at time of writing only codex/global has a `home`
-    // override, so this parity test discriminates on exactly one runtime/scope
-    // pair. This assertion documents that fact and fails loudly if the set
-    // ever changes shape unexpectedly empty (a discrimination-less parity
-    // test would be silently vacuous).
+    // Stated per the brief: at time of writing only codex/global had a `home`
+    // override; #3738 added antigravity/global (skills AND agents →
+    // ~/.gemini/config, the dir AGY scans). This parity test discriminates on
+    // exactly these runtime/scope pairs. This assertion documents that fact and
+    // fails loudly if the set ever changes shape unexpectedly empty (a
+    // discrimination-less parity test would be silently vacuous).
     assert.ok(overrides.length > 0, 'expected at least one runtime/scope with a home override (codex/global)');
-    assert.deepStrictEqual(overrides, ['codex/global'], `home-override set changed — update this test's documentation. Found: ${overrides.join(', ')}`);
+    assert.deepStrictEqual(overrides, ['antigravity/global', 'codex/global'], `home-override set changed — update this test's documentation. Found: ${overrides.join(', ')}`);
   });
 
   for (const scope of ['global', 'local']) {

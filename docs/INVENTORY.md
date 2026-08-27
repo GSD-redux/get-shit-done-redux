@@ -455,6 +455,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `installer-migrations/007-retire-config-root-commonjs-marker.cjs` | Installer migration: retires the config-root `{"type":"commonjs"}` marker that pre-#2544 installs wrote over `<configRoot>/package.json` |
 | `installer-migrations/008-cursor-retire-commands-surface.cjs` | Installer migration: retires Cursor's duplicate `commands/` surface now that skills are the sole workflow surface (#2644) |
 | `installer-migrations/009-pi-retire-reserved-hooks-dir.cjs` | Installer migration: retires pi's legacy `hooks/` directory after GSD's shared hook bundle moved to `gsd-hooks/` (#3023) |
+| `installer-migrations/010-antigravity-retire-confighome-artifacts.cjs` | Installer migration: retires Antigravity's configHome `skills/`/`agents/` surfaces after the global layout moved to the `~/.gemini/config` home override (#3738) |
 | `active-workstream-store.cjs` | Workstream source precedence and selection (CLI `--ws` > `GSD_WORKSTREAM` env > stored pointer); name validation and environment propagation |
 | `adapter-declarative.cjs` | Declarative host-integration adapter — projects workflow artifacts through the install engine for hosts that declare a descriptor-driven surface (#1680) |
 | `adapter-imperative.cjs` | Imperative host-integration adapter — binds the composed capability registry in-process for hosts that drive emission themselves (#1680) |
@@ -495,7 +496,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `codex-agent-toml.cjs` | Typed IR (genuine leaf) for `~/.codex/agents/<agent>.toml` — `parseCodexAgentToml`/`renderCodexAgentToml` round-trip byte-identically; `stripModel`/`stripReasoningEffort` remove exactly one targeted line; `scanTomlLines`/`stripBOM`/`findDeveloperInstructionsBlockRange`/`unquoteTomlValue` are the lenient reader primitives moved here from `agent-install-check.cjs` (#3242 Phase 2); consumed by the Codex `.toml` sync (`commands.cjs cmdEffortSyncCodex`, ADR-2313 D7, #3243) |
 | `command-aliases.cjs` | Alias/subcommand metadata for manifest-backed family routers |
 | `commonjs-marker.cjs` | Ownership-guarded `{"type":"commonjs"}` marker used to pin GSD's staged `.js` scripts to CommonJS; exports `classifyMarker` (absent/gsd-owned/foreign, fail-closed), `ensureCommonJsMarker`, and `removeCommonJsMarker` so install and uninstall share one predicate and never touch a user-authored `package.json` (#2544) |
-| `command-arg-projection.cjs` | Typed flag and positional argument projection helpers shared across command-family routers |
+| `command-arg-projection.cjs` | Strict, `Result`-returning flag and positional argument projection helpers shared across command-family routers — `parseNamedArgs` rejects unrecognized flags and stray positionals instead of silently dropping them (ADR-3473 §8.4, #3884). Generated from `src/command-arg-projection.cts` |
 | `command-roster.cjs` | Read-only discovery of canonical `commands/gsd/*.md` command stems for runtime artifact conversion and namespace rewrites |
 | `command-routing-hub.cjs` | Pure-result dispatch hub that centralizes mode decision (SDK vs CJS), error taxonomy, and no-throw contract for all command-family routers (#3788) |
 | `commands.cjs` | Misc CLI commands (slug, timestamp, todos, scaffolding, stats) |
@@ -521,6 +522,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `eval-command-router.cjs` | Routes the `eval.score` verb (compiled from `src/eval-command-router.cts`, gitignored) — thin dispatcher into the eval scoring module (#1579) |
 | `eval.cjs` | Deterministic eval scoring (compiled from `src/eval.cts`, gitignored) — `computeEvalScore` (coverage*0.6 + infra*0.4, bands 80/60/40) + `cmdEvalScore` CLI domain guard; moves the gsd-eval-auditor's weighted arithmetic out of the prompt into code (#10 / #1579) |
 | `estimate-cli.cjs` | I/O seam over `phase-estimation.cjs` — the `estimate-check` and `estimate-calibration` query verbs; reads the `workflow.smart_zone_tokens` budget and `.planning/estimation-calibration.json`, both degrading to defaults rather than failing planning (#2630) |
+| `exit-code-registry.cjs` | Generated exit-code allocator — one number, one meaning table of registered process exit codes (band rules: `2` hook-adapter only, `64`-`78` generic, `80`-`125` domain); emitted by `scripts/gen-exit-code-registry.cjs --write` (ADR-3889 §1/§2); exports `EXIT_CODES` and the pure, total `exitCodeFor`/`nameForExitCode` |
 | `observability/event.cjs` | DispatchEvent shape factory for every Hub dispatch — traceId/parentTraceId/command/result/timestamp record consumed by DispatchLogger (#177, ADR-0174 P1.3/P1.4) |
 | `external-descriptor-trust.cjs` | Defense-in-depth path-containment check for third-party plugin descriptors (#1681) |
 | `external-job.cjs` | Produces scheduler manifests for asynchronous external jobs; SLURM is the first backend (#1164) |

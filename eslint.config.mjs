@@ -209,6 +209,9 @@ export default tseslint.config(
       // 009 also imports node builtins (fs, path) like 007, so tsc emits the
       // same `__importDefault` helper. ADR-457: the linted source is the .cts.
       'gsd-core/bin/lib/installer-migrations/009-pi-retire-reserved-hooks-dir.cjs',
+      // 010 also imports node builtins (fs, path) like 007/009, so tsc emits
+      // the same `__importDefault` helper. ADR-457: the linted source is the .cts.
+      'gsd-core/bin/lib/installer-migrations/010-antigravity-retire-confighome-artifacts.cjs',
       'gsd-core/bin/lib/observability/logger.cjs',
       'gsd-core/bin/lib/active-workstream-store.cjs',
       'gsd-core/bin/lib/adr-parser.cjs',
