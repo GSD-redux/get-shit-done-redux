@@ -771,9 +771,22 @@ function runWriteReviewsFlow(t, opts) {
 
   fs.writeFileSync(path.join(scriptDir, 'flow.sh'), script, { mode: 0o755 });
 
+  // cwd is deliberately scriptDir, NOT runDir: every path this flow touches
+  // ($RUN_DIR, $DIAG_DIR, {phase_dir}) is already absolute in the extracted
+  // bash text, so the child's cwd is not load-bearing for anything the
+  // blocks do — but on Windows a process cannot delete a directory that is
+  // its OWN current working directory (unlike POSIX, where rm -rf on your
+  // cwd succeeds). Setting cwd to runDir here was a harness artifact with no
+  // production analogue (review.md never `cd`s into $RUN_DIR — see
+  // gsd-core/workflows/review.md's use of $RUN_DIR, always by absolute
+  // path), and it silently defeated `rm -rf "$RUN_DIR"` under Git-Bash on
+  // windows-latest: the directory's *contents* were removed but the
+  // still-open-as-cwd directory entry itself survived, so
+  // `fs.existsSync(runDir)` kept reporting true. This was the actual defect
+  // behind the two Windows-only failures — not a path-separator mismatch.
   const result = runHook(path.join(scriptDir, 'flow.sh'), [], {
     interpreter: 'bash',
-    cwd: runDir,
+    cwd: scriptDir,
     timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
   });
 
