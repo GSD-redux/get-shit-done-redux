@@ -938,11 +938,18 @@ describe('#3778 — plan:pre contribution set feeding the quick.md planner dispa
     }
   });
 
-  test('the registry, as a whole, carries at least one non-planner-into contribution (D-07 exclusion is meaningful)', () => {
+  test('the registry, as a whole, carries at least one non-planner-into contribution (D-07 filters against a real value)', () => {
     // Built from the real registry's own capabilities export, with no dependency
-    // on which capabilities happen to be locally installed — D-07's "into ==
-    // planner" filter in quick.md only means something if a non-planner
-    // contribution actually exists SOMEWHERE in the registry to be excluded.
+    // on which capabilities happen to be locally installed.
+    //
+    // Scope, stated precisely: this proves `into` takes non-planner values
+    // SOMEWHERE in the registry, so D-07's "into == planner" filter discriminates
+    // rather than being a no-op predicate. It does NOT prove the filter excludes
+    // anything at plan:pre — today every plan:pre contribution is into: "planner",
+    // so the filter is a forward-looking safeguard there, not an active exclusion.
+    // Asserting plan:pre is all-planner would be brittle: it would fail the day a
+    // legitimate non-planner plan:pre contribution lands, which is precisely when
+    // the safeguard starts doing work.
     const allContributions = Object.values(realRegistry.byLoopPoint).flatMap((point) => point.contributions);
     const nonPlannerContributions = allContributions.filter((c) => c.into !== 'planner');
     assert.ok(
