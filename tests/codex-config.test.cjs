@@ -68,6 +68,13 @@ const {
   install,
   GSD_CODEX_MARKER,
   CODEX_AGENT_SANDBOX,
+  // #3897 rung 3 (ADR-3473 §8.3, option 2 — HALT.md): anticipated new export
+  // holding the 16 explicit read-only pins for roles whose tool contract would
+  // otherwise derive workspace-write. Does not exist on the current tree —
+  // destructuring a non-existent key is `undefined`, not a throw, so requiring
+  // this module still succeeds; every test below that touches it fails on its
+  // own `typeof` guard instead.
+  CODEX_SANDBOX_HOLDS,
   parseTomlToObject,
   validateCodexConfigSchema,
 } = require('../bin/install.js');
@@ -916,6 +923,227 @@ description: Maps the codebase
     const parsed = parseTomlToObject(toml);
     assert.strictEqual(parsed.service_tier, 'flex', 'service_tier must parse to "flex"');
     assert.strictEqual(parsed.model_verbosity, 'low', 'model_verbosity must parse to "low"');
+  });
+});
+
+// ─── #3897 rung 3 (ADR-3473 §8.3, HALT.md option 2): sandbox_mode derives from
+// the tool contract, with 16 widening roles held at read-only ────────────────
+//
+// Spec: .gsd/phase/feat-3897-adr3473-83-rungs/{40-design,50-test-matrix}.md,
+// rows S1-S9 / T20-T30. Measured against `next` @ ad6abc896 (HALT.md):
+// deriving `workspace-write` iff an agent's frontmatter `tools:` declares
+// `Write` or `Edit` reproduces all 11 CODEX_AGENT_SANDBOX map entries exactly,
+// and would additionally widen 16 fallback roles that the map never covered.
+// `CODEX_SANDBOX_HOLDS` (destructured above; `undefined` on the current tree)
+// is this rung's anticipated pin list for those 16 — every row below that
+// depends on it fails on its own `typeof` guard until it lands.
+//
+// Deriving-from-real-content is deliberate for T20/T21/T26/T27/T30: a
+// synthetic `tools:` fixture cannot prove the CURRENT tree's byte output is
+// preserved, only that the derivation LOGIC agrees with a made-up example.
+
+describe('#3897 rung 3: sandbox_mode derivation and the hold list', () => {
+  const AGENTS_DIR = path.join(__dirname, '..', 'agents');
+
+  function realAgentToolsRaw(agentName) {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, `${agentName}.md`), 'utf8');
+    const match = content.match(/^tools:\s*(.*)$/m);
+    return match ? match[1].trim() : '';
+  }
+
+  function declaresWriteOrEdit(toolsRaw) {
+    const tokens = toolsRaw.split(',').map((t) => t.trim());
+    return tokens.includes('Write') || tokens.includes('Edit');
+  }
+
+  // T20 (LOAD-BEARING, N6): frozen fixture of TODAY's real, per-role emitted
+  // sandbox_mode for all 35 roles in agents/ — captured from the CURRENT build
+  // by running the REAL generateCodexAgentToml against the REAL agent .md
+  // content (never a synthetic fixture) and committed here. This is the
+  // safety net for the refactor: it is true today (nothing has changed yet)
+  // and MUST remain true, per role, after sandbox_mode moves from the map to a
+  // derivation — an aggregate "35 roles emitted" count would pass even if one
+  // role silently widened; asserting per role (one test per role, mirroring
+  // codex-agent-toml.test.cjs's A14 round-trip pattern) does not let that hide.
+  const EXPECTED_SANDBOX_BY_ROLE = {
+    'gsd-advisor-researcher': 'read-only',
+    'gsd-ai-researcher': 'read-only',
+    'gsd-assumptions-analyzer': 'read-only',
+    'gsd-code-fixer': 'read-only',
+    'gsd-code-reviewer': 'read-only',
+    'gsd-codebase-mapper': 'workspace-write',
+    'gsd-debug-session-manager': 'read-only',
+    'gsd-debugger': 'workspace-write',
+    'gsd-doc-classifier': 'read-only',
+    'gsd-doc-synthesizer': 'read-only',
+    'gsd-doc-verifier': 'read-only',
+    'gsd-doc-writer': 'read-only',
+    'gsd-dom-verifier': 'read-only',
+    'gsd-domain-researcher': 'read-only',
+    'gsd-eval-auditor': 'read-only',
+    'gsd-eval-planner': 'read-only',
+    'gsd-executor': 'workspace-write',
+    'gsd-framework-selector': 'read-only',
+    'gsd-integration-checker': 'read-only',
+    'gsd-intel-updater': 'read-only',
+    'gsd-mempalace-curator': 'read-only',
+    'gsd-nyquist-auditor': 'read-only',
+    'gsd-pattern-mapper': 'read-only',
+    'gsd-phase-researcher': 'workspace-write',
+    'gsd-plan-checker': 'read-only',
+    'gsd-planner': 'workspace-write',
+    'gsd-project-researcher': 'workspace-write',
+    'gsd-research-synthesizer': 'workspace-write',
+    'gsd-roadmapper': 'workspace-write',
+    'gsd-security-auditor': 'read-only',
+    'gsd-ui-auditor': 'read-only',
+    'gsd-ui-checker': 'read-only',
+    'gsd-ui-researcher': 'read-only',
+    'gsd-user-profiler': 'read-only',
+    'gsd-verifier': 'workspace-write',
+  };
+
+  // The 16 roles HALT.md measured as widening: declare Write/Edit, not in the
+  // (pre-deletion) CODEX_AGENT_SANDBOX map, so today's `|| 'read-only'`
+  // fallback under-grants them. Computed here from the REAL agents/*.md tools
+  // frontmatter and the REAL current map — never hand-copied from HALT.md's
+  // prose — so this list cannot silently drift from what agents/ actually
+  // declares (T30: "derived, not a second hardcoded copy").
+  const measuredWideningRoles = Object.keys(EXPECTED_SANDBOX_BY_ROLE).filter((role) => {
+    const declaresWrite = declaresWriteOrEdit(realAgentToolsRaw(role));
+    const inOldMap = Object.prototype.hasOwnProperty.call(CODEX_AGENT_SANDBOX, role);
+    return declaresWrite && !inOldMap;
+  });
+
+  for (const role of Object.keys(EXPECTED_SANDBOX_BY_ROLE)) {
+    test(`T20 everyRoleEmitsTheSameSandboxAsBefore: ${role} emits sandbox_mode="${EXPECTED_SANDBOX_BY_ROLE[role]}" byte-identically`, () => {
+      const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+      const toml = generateCodexAgentToml(role, content);
+      const match = toml.match(/^sandbox_mode = "([^"]+)"$/m);
+      assert.ok(match, `${role}'s emitted TOML must contain a sandbox_mode line`);
+      assert.equal(
+        match[1],
+        EXPECTED_SANDBOX_BY_ROLE[role],
+        `${role} must emit the SAME sandbox_mode after the derivation refactor lands — a per-role regression, not an aggregate count`,
+      );
+    });
+  }
+
+  test('T30 holdListMatchesTheMeasuredWideningSet: CODEX_SANDBOX_HOLDS is exactly the 16 measured widening roles, derived not hardcoded twice', () => {
+    assert.equal(
+      typeof CODEX_SANDBOX_HOLDS,
+      'object',
+      'install.js must export CODEX_SANDBOX_HOLDS — the hold list does not exist yet',
+    );
+    assert.notEqual(CODEX_SANDBOX_HOLDS, null);
+    assert.deepEqual(
+      Object.keys(CODEX_SANDBOX_HOLDS).sort(),
+      measuredWideningRoles.sort(),
+      'CODEX_SANDBOX_HOLDS must equal exactly the set of roles that declare Write/Edit but were never in the old map — no more, no fewer',
+    );
+    assert.equal(measuredWideningRoles.length, 16, 'sanity: HALT.md measured exactly 16 widening roles against the current agents/ tree');
+  });
+
+  test('T21 mappedRolesDeriveToTheirFormerValue: every former CODEX_AGENT_SANDBOX entry (11) derives to the identical value from its real tool contract', () => {
+    for (const [role, formerValue] of Object.entries(CODEX_AGENT_SANDBOX)) {
+      const derivesWorkspaceWrite = declaresWriteOrEdit(realAgentToolsRaw(role));
+      const derived = derivesWorkspaceWrite ? 'workspace-write' : 'read-only';
+      assert.equal(
+        derived,
+        formerValue,
+        `${role}: the tool-contract derivation must reproduce the former map value exactly (HALT.md: zero disagreements across all 11)`,
+      );
+    }
+    assert.equal(Object.keys(CODEX_AGENT_SANDBOX).length, 11);
+  });
+
+  test('T22 nonWritingFallbackRoleDerivesReadOnly: a fallback role declaring neither Write nor Edit derives read-only (S2)', () => {
+    const role = 'gsd-user-profiler'; // tools: Read (no Write/Edit), never in the map
+    assert.equal(Object.prototype.hasOwnProperty.call(CODEX_AGENT_SANDBOX, role), false);
+    assert.equal(declaresWriteOrEdit(realAgentToolsRaw(role)), false);
+    const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+    const toml = generateCodexAgentToml(role, content);
+    assert.ok(toml.includes('sandbox_mode = "read-only"'));
+  });
+
+  test('T23 heldRoleStaysReadOnlyWithARecordedReason: one of the 16 held roles stays read-only via an explicit, reasoned hold (S3)', () => {
+    assert.equal(typeof CODEX_SANDBOX_HOLDS, 'object', 'CODEX_SANDBOX_HOLDS does not exist yet');
+    const role = 'gsd-doc-writer'; // declares Write+Edit; one of HALT.md's 16
+    assert.ok(declaresWriteOrEdit(realAgentToolsRaw(role)), 'sanity: this role must actually declare a writing tool');
+    assert.ok(Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, role), `${role} must be an explicit hold entry`);
+    const entry = CODEX_SANDBOX_HOLDS[role];
+    const reason = typeof entry === 'string' ? entry : entry && entry.reason;
+    assert.equal(typeof reason, 'string', `the hold for ${role} must carry a recorded reason string, not a bare boolean pin`);
+    assert.ok(reason.length > 0);
+    const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+    const toml = generateCodexAgentToml(role, content);
+    assert.ok(toml.includes('sandbox_mode = "read-only"'), 'byte-identical output despite the hold, per N6');
+  });
+
+  test('T24 staleHoldFailsRatherThanBeingHonored: a hold whose role no longer derives broader must FAIL, naming the role (S4)', () => {
+    assert.equal(
+      typeof CODEX_SANDBOX_HOLDS,
+      'object',
+      'CODEX_SANDBOX_HOLDS does not exist yet, so there is nothing to validate for staleness',
+    );
+    // Every REAL hold entry, right now, must still derive workspace-write from
+    // the tool contract. A hold for a role whose tools no longer declare
+    // Write/Edit is exactly the staleness this row exists to catch; without
+    // this assertion the hold list is honored unconditionally forever, which
+    // is the hand-maintained-subset-map defect this rung deletes, rebuilt one
+    // list later (the ledger claim HALT.md makes).
+    for (const role of Object.keys(CODEX_SANDBOX_HOLDS)) {
+      assert.ok(
+        declaresWriteOrEdit(realAgentToolsRaw(role)),
+        `stale hold: ${role} is pinned to read-only but its CURRENT tool contract no longer declares Write/Edit — this hold must fail validation, not be silently honored`,
+      );
+    }
+  });
+
+  test('T25 holdForUnknownRoleFails: a hold naming a role that no longer exists in agents/ must FAIL (S5)', () => {
+    assert.equal(
+      typeof CODEX_SANDBOX_HOLDS,
+      'object',
+      'CODEX_SANDBOX_HOLDS does not exist yet, so there is nothing to validate for an unknown role',
+    );
+    for (const role of Object.keys(CODEX_SANDBOX_HOLDS)) {
+      assert.ok(
+        fs.existsSync(path.join(AGENTS_DIR, `${role}.md`)),
+        `stale hold: ${role} is pinned but no longer exists in agents/ — this hold must fail validation`,
+      );
+    }
+  });
+
+  test('T26 newWritingRoleGetsTheContractNotThePin: a brand-new agent declaring Write, with no hold, derives workspace-write (S6) — RED today, falls back to read-only', () => {
+    const newAgentContent = `---
+name: gsd-totally-new-agent
+description: A brand-new writing agent that has never been in the map or a hold
+tools: Read, Write, Bash
+---
+
+<role>You are a brand-new agent.</role>`;
+    // Today: CODEX_AGENT_SANDBOX['gsd-totally-new-agent'] is undefined, so the
+    // `|| 'read-only'` fallback silently under-grants it — the exact defect
+    // §8.3 exists to fix (24 of 35 roles fell through this fallback).
+    const toml = generateCodexAgentToml('gsd-totally-new-agent', newAgentContent);
+    assert.ok(
+      toml.includes('sandbox_mode = "workspace-write"'),
+      'a new agent declaring Write, absent from both the map and any hold, must derive workspace-write from its own tool contract — not silently fall back to read-only',
+    );
+  });
+
+  test('T27 absentToolContractIsNotAGrant: an agent with no tools: frontmatter at all derives read-only (N8/S7)', () => {
+    const noToolsContent = `---
+name: gsd-no-contract-agent
+description: Declares no tools frontmatter key at all
+---
+
+<role>You have no declared tools.</role>`;
+    const toml = generateCodexAgentToml('gsd-no-contract-agent', noToolsContent);
+    assert.ok(
+      toml.includes('sandbox_mode = "read-only"'),
+      'absence of a tools: contract must never be read as a grant of workspace-write',
+    );
   });
 });
 

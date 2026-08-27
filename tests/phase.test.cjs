@@ -1344,6 +1344,117 @@ describe('#3885 (ADR-3473 §8.5): phase-plan-index names a dropped depends_on to
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3897 rung 4 (ADR-3473 §8.9) — shortFormToId, the recovered third
+// depends_on resolution tier (D3). Today `resolveDependencyId`
+// (gsd-core/bin/lib/phase.cjs) has exactly two tiers — planMap (full id) and
+// canonicalToId (canonical prefix, e.g. `24-01`) — so a bare plan-number
+// short form (`depends_on: ["01"]`) resolves via NEITHER and is silently
+// dropped: the dependent plan collapses to a DAG root (wave 1) instead of its
+// declared wave.
+//
+// T43 is the CONSUMER-OUTPUT identity row (ADR-3180 Decision 4(b)): it
+// asserts on `phase-plan-index`'s emitted `waves` map through the REAL CLI,
+// never on `resolveDependencyId`/`computeDependencyLevels` in isolation — a
+// unit assertion on the resolver alone would have passed throughout this
+// defect's entire life, since nothing forces a unit test to reflect what the
+// consumer (execute-phase.md, partial-wave.md) actually reads.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#3897 rung 4 (ADR-3473 §8.9): shortFormToId, the bare plan-number depends_on tier', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // T43 — RED today: the CONSUMER-OUTPUT identity row. 26-02 depends on the
+  // bare short form '01'; today that edge is dropped, so 26-02 collapses into
+  // wave 1 alongside 26-01 instead of its own, later wave.
+  test('T43 shortFormDependencyProducesRealWaves_3427: a bare plan-number depends_on produces REAL waves, not one collapsed wave 1', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '26-shortform');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '26-01-auth-hardening-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    // Bare plan-number short form — NOT a full id, NOT a canonical prefix.
+    fs.writeFileSync(
+      path.join(phaseDir, '26-02-followup-PLAN.md'),
+      "---\nwave: 2\nautonomous: true\ndepends_on:\n  - '01'\n---\n<objective>Plan B.</objective>\n",
+    );
+
+    const result = runGsdTools('phase-plan-index 26', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const waves = output.waves;
+
+    const wave01 = Object.keys(waves).find((w) => waves[w].some((id) => id.startsWith('26-01')));
+    const wave02 = Object.keys(waves).find((w) => waves[w].some((id) => id.startsWith('26-02')));
+    assert.ok(wave01 !== undefined, '26-01-auth-hardening should appear in waves');
+    assert.ok(wave02 !== undefined, '26-02-followup should appear in waves');
+    assert.ok(
+      Number(wave01) < Number(wave02),
+      `the bare short form '01' must resolve to 26-01-auth-hardening and place 26-02-followup in a LATER wave — today the edge is dropped and both plans collapse into the same wave (got wave01=${wave01}, wave02=${wave02})`,
+    );
+    // Today's defect also manufactures a wave-mismatch warning from the
+    // dropped edge (declared wave: 2 but DAG places it in wave 1) — once the
+    // short form resolves, that warning must be gone too.
+    const warnings = output.warnings ?? [];
+    assert.ok(
+      !warnings.some((w) => /declared wave:/.test(w) && w.includes('26-02')),
+      `no manufactured wave-mismatch warning should remain once the short form resolves; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T49 — the short form must resolve IN-PHASE ONLY. A plan '01' living in a
+  // DIFFERENT phase must never satisfy a same-named short-form dependency in
+  // this phase — resolution is scoped per phase-plan-index invocation, never
+  // global across the project.
+  test('T49 shortFormDoesNotReachAcrossPhases: a same-named short form in a different phase must NOT resolve', () => {
+    // A decoy phase with its OWN plan '01' — must never be reachable from phase 27.
+    const decoyPhaseDir = path.join(tmpDir, '.planning', 'phases', '99-decoy');
+    fs.mkdirSync(decoyPhaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(decoyPhaseDir, '99-01-decoy-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Decoy plan in a different phase.</objective>\n',
+    );
+
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '27-inphase-only');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    // This phase's OWN plan '01' also exists — the short form must resolve to
+    // THIS plan, never to the decoy in phase 99.
+    fs.writeFileSync(
+      path.join(phaseDir, '27-01-real-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Real in-phase plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '27-02-followup-PLAN.md'),
+      "---\nwave: 2\nautonomous: true\ndepends_on:\n  - '01'\n---\n<objective>Plan B.</objective>\n",
+    );
+
+    const result = runGsdTools('phase-plan-index 27', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    // The decoy phase's plan must never even appear in THIS phase's output.
+    assert.ok(
+      !output.plans.some((p) => p.id.startsWith('99-')),
+      'a different phase\'s plan must never appear in this phase\'s plan-index output at all',
+    );
+    const wave01 = Object.keys(output.waves).find((w) => output.waves[w].some((id) => id.startsWith('27-01')));
+    const wave02 = Object.keys(output.waves).find((w) => output.waves[w].some((id) => id.startsWith('27-02')));
+    assert.ok(wave01 !== undefined && wave02 !== undefined);
+    assert.ok(
+      Number(wave01) < Number(wave02),
+      `the short form '01' must resolve to THIS phase's own 27-01-real, not the decoy in phase 99 (got wave01=${wave01}, wave02=${wave02})`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // phase-plan-index — canonical XML format (template-aligned)
 // ─────────────────────────────────────────────────────────────────────────────
 

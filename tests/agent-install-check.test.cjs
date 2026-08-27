@@ -1377,3 +1377,66 @@ describe('checkAgentsInstalled — unchanged by the manifest-reader substitution
     assert.notStrictEqual(agentInstallCheck.getAgentsDir('codex', projectRoot), localAgentsDir);
   });
 });
+
+// ─── 4. Sandbox-mode drift (#3897 rung 3, ADR-3473 §8.3 criterion 3) ──────────
+//
+// Spec: .gsd/phase/feat-3897-adr3473-83-rungs/{40-design,50-test-matrix}.md, S8/T28.
+//
+// `checkAgentsInstalled` above (and `checkCodexModelPosture`, the established
+// sibling pattern for a codex-only posture check — #3242, "A new sibling
+// export... presence is checkAgentsInstalled's job; this function's job starts
+// only once the runtime is confirmed codex and only inspects posture") checks
+// FILE PRESENCE and MANIFEST COMPLETENESS only. Neither inspects whether an
+// installed .toml's `sandbox_mode` line agrees with what that role's tool
+// contract says it should be — a TOML that disagrees passes `validate agents`
+// today. `checkCodexSandboxPosture` is this test's anticipated name for the new
+// sibling check (mirroring `checkCodexModelPosture`'s exact shape); the exact
+// export name is the implementer's call, but the export MUST exist for this
+// row's acceptance criterion (§8.3 criterion 3) to be met.
+//
+// RED today: the export does not exist at all.
+describe('checkCodexSandboxPosture (#3897 rung 3 — not yet implemented, RED until it lands)', () => {
+  test('T28 validateAgentsFailsOnSandboxDrift_3897: a TOML whose sandbox_mode disagrees with the derived expectation must fail, naming role/expected/found', (t) => {
+    const globalHome = createTempDir('gsd-sandbox-drift-');
+    t.after(() => cleanup(globalHome));
+    const agentsDir = path.join(globalHome, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+
+    // gsd-executor declares tools: Read, Write, Edit (agents/gsd-executor.md) —
+    // it MUST derive workspace-write. Install a drifted TOML claiming
+    // read-only instead, matching the shape generateCodexAgentToml emits.
+    fs.writeFileSync(
+      path.join(agentsDir, 'gsd-executor.toml'),
+      'name = "gsd-executor"\ndescription = "Executes plans"\nsandbox_mode = "read-only"\n' +
+      "developer_instructions = '''\nExecute.\n'''\n",
+    );
+    for (const agent of EXPECTED_AGENTS) {
+      if (agent === 'gsd-executor') continue;
+      fs.writeFileSync(path.join(agentsDir, `${agent}.toml`), `name = "${agent}"\n`);
+    }
+    process.env['CODEX_HOME'] = globalHome;
+
+    assert.equal(
+      typeof agentInstallCheck.checkCodexSandboxPosture,
+      'function',
+      'agent-install-check.cjs must export a sandbox-posture check (#3897 rung 3, ADR-3473 §8.3 criterion 3) — it does not exist yet, so a drifted sandbox_mode currently passes validate agents silently',
+    );
+
+    const result = agentInstallCheck.checkCodexSandboxPosture('codex');
+    assert.equal(
+      result.ok,
+      false,
+      'a TOML whose sandbox_mode disagrees with the expected derived value must fail the check',
+    );
+    const violation = result.violations.find((v) => v.agent === 'gsd-executor');
+    assert.ok(violation, 'the violation must name the drifted agent');
+    assert.equal(violation.expected, 'workspace-write', 'the violation must name the EXPECTED sandbox_mode');
+    assert.equal(violation.found, 'read-only', 'the violation must name the FOUND (installed) sandbox_mode');
+  });
+});
+
+// T29 (validate agents still fails when a file is missing, S9) is intentionally
+// NOT duplicated here — it is already covered by the existing "missing dir"
+// coverage documented in this file's own header comment ("missing dir →
+// agents_installed:false, missing_agents = all expected") and exercised above.
+// It must stay green; nothing in this rung touches that path.

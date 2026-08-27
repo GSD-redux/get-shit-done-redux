@@ -10,6 +10,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const { computeDependencyLevels } = require('../gsd-core/bin/lib/phase.cjs');
+const { extractCanonicalPlanId } = require('../gsd-core/bin/lib/core-utils.cjs');
 
 // Helper: build rawPlans + planMap + canonicalToId from a simple spec.
 // spec is an array of { id, dependsOn } objects.
@@ -237,6 +238,124 @@ describe('computeDependencyLevels — unresolved dependency reporting (#3427, AD
       assert.strictEqual(unresolved.length, 2, '2 unresolved tokens');
       assert.deepStrictEqual(unresolved.map((u) => u.token).sort(), ['ghost-1', 'ghost-2']);
     }
+  });
+
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3897 rung 4 (ADR-3473 §8.9) — shortFormToId, the recovered third
+// depends_on resolution tier (D3, 40-design.md). The lost algorithm
+// (recovered from sdk/src/query/phase.ts at 11918dcc3^):
+//
+//   const canonical = extractCanonicalPlanId(p.id);
+//   const lastDash = canonical.lastIndexOf('-');
+//   if (lastDash > 0 && lastDash < canonical.length - 1) {
+//     const shortForm = canonical.slice(lastDash + 1).toLowerCase();
+//     if (!shortFormToId.has(shortForm)) shortFormToId.set(shortForm, p.id); // first write wins
+//   }
+//
+// consumed as a THIRD tier, below planMap and canonicalToId. Passed here as
+// computeDependencyLevels's anticipated 4th argument — mirroring how
+// planMap/canonicalToId are already constructed by the CALLER and passed in,
+// never derived internally — so today's 3-arg computeDependencyLevels simply
+// never sees it (JS silently ignores an unused extra call argument), which is
+// exactly why every row below is RED until the tier lands.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Builds the shortFormToId map per the recovered algorithm above. Used only to
+// construct the ARGUMENT passed into the real computeDependencyLevels, the
+// same role planMap/canonicalToId already play in buildInputs — never a
+// stand-in for production logic itself.
+function buildShortFormMap(rawPlans) {
+  const shortFormToId = new Map();
+  for (const p of rawPlans) {
+    const canonical = extractCanonicalPlanId(p.id);
+    const lastDash = canonical.lastIndexOf('-');
+    if (lastDash > 0 && lastDash < canonical.length - 1) {
+      const shortForm = canonical.slice(lastDash + 1).toLowerCase();
+      if (!shortFormToId.has(shortForm)) shortFormToId.set(shortForm, p.id);
+    }
+  }
+  return shortFormToId;
+}
+
+function buildInputsWithShortForm(spec) {
+  const rawPlans = spec.map((s) => ({ id: s.id, dependsOn: s.dependsOn ?? [] }));
+  const planMap = new Map(rawPlans.map((p) => [p.id.toLowerCase(), p]));
+  const canonicalToId = new Map(rawPlans.map((p) => [extractCanonicalPlanId(p.id).toLowerCase(), p.id]));
+  const shortFormToId = buildShortFormMap(rawPlans);
+  return { rawPlans, planMap, canonicalToId, shortFormToId };
+}
+
+describe('computeDependencyLevels — shortFormToId, the third depends_on tier (#3897 rung 4)', () => {
+
+  // T42 — RED today: a bare plan-number short form is dropped by both
+  // existing tiers (planMap wants the full id, canonicalToId wants the
+  // canonical prefix `24-01`), so 24-02 never resolves its dependency on
+  // 24-01-auth-hardening and stays at level 0 instead of level 1.
+  test('T42 shortFormPlanNumberResolves_3427: depends_on: ["01"] resolves to the in-phase sibling plan (D3)', () => {
+    const { rawPlans, planMap, canonicalToId, shortFormToId } = buildInputsWithShortForm([
+      { id: '24-01-auth-hardening', dependsOn: [] },
+      { id: '24-02-token-rotation', dependsOn: ['01'] },
+    ]);
+    assert.deepStrictEqual([...shortFormToId.entries()], [['01', '24-01-auth-hardening'], ['02', '24-02-token-rotation']]);
+
+    const result = computeDependencyLevels(rawPlans, planMap, canonicalToId, shortFormToId);
+    assert.strictEqual((result.unresolved ?? []).length, 0, 'the bare short form must resolve — no dropped edge');
+    assert.strictEqual(result.level.get('24-01-auth-hardening'), 0);
+    assert.strictEqual(
+      result.level.get('24-02-token-rotation'),
+      1,
+      'the short-form dependency on "01" must place 24-02-token-rotation one level after 24-01-auth-hardening — today the edge is dropped and both sit at level 0',
+    );
+  });
+
+  // T44 (D4, boundary): two plans whose canonical id happens to share the
+  // same trailing short form. First write (array/insertion order, which in
+  // production is sorted-plan-file order) wins deterministically — the
+  // retired SDK's own rule, preserved rather than improved (L2: "01" is
+  // ambiguous by construction whenever it happens).
+  test('T44 duplicateShortFormIsFirstWriteWinsDeterministically: the FIRST plan to claim a short form wins it, repeatably', () => {
+    const spec = [
+      { id: '24-01-auth-hardening', dependsOn: [] }, // canonical '24-01' -> shortForm '01', inserted FIRST
+      { id: '9-01-legacy-carryover', dependsOn: [] }, // canonical '9-01' -> shortForm '01' too, inserted SECOND
+      { id: 'consumer', dependsOn: ['01'] },
+    ];
+    // Run it twice — determinism means the SAME plan wins both times, not
+    // just A time.
+    for (let run = 0; run < 2; run++) {
+      const { rawPlans, planMap, canonicalToId, shortFormToId } = buildInputsWithShortForm(spec);
+      assert.strictEqual(
+        shortFormToId.get('01'),
+        '24-01-auth-hardening',
+        `run ${run}: the FIRST plan to declare short form "01" must win it, every time`,
+      );
+      const result = computeDependencyLevels(rawPlans, planMap, canonicalToId, shortFormToId);
+      assert.strictEqual((result.unresolved ?? []).length, 0);
+      assert.strictEqual(
+        result.level.get('consumer'),
+        result.level.get('24-01-auth-hardening') + 1,
+        `run ${run}: "consumer" must resolve to the FIRST-written short-form owner (24-01-auth-hardening), not the second (9-01-legacy-carryover)`,
+      );
+    }
+  });
+
+  // T45 (D5, boundary): a canonical id with no dash at all (e.g. a bare
+  // phase-number-only plan id) must never be added to the short-form index —
+  // `lastDash > 0` excludes it — and its own full-id dependency resolution
+  // must be completely unaffected by the third tier's presence.
+  test('T45 canonicalIdWithoutDashIsNotShortFormIndexed: a no-dash canonical id is excluded from the short-form tier and resolves unaffected (D5)', () => {
+    const { rawPlans, planMap, canonicalToId, shortFormToId } = buildInputsWithShortForm([
+      { id: '24', dependsOn: [] }, // extractCanonicalPlanId('24') === '24' — no dash
+      { id: 'B', dependsOn: ['24'] },
+    ]);
+    assert.strictEqual(shortFormToId.has('24'), false, 'a canonical id with no dash must never be added to the short-form index');
+    assert.strictEqual(shortFormToId.size, 0);
+
+    const result = computeDependencyLevels(rawPlans, planMap, canonicalToId, shortFormToId);
+    assert.strictEqual(result.visited, 2);
+    assert.strictEqual(result.level.get('24'), 0);
+    assert.strictEqual(result.level.get('B'), 1, 'the full-id dependency must resolve exactly as before, unaffected by the (absent) short-form entry');
   });
 
 });
