@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 import ioMod = require('./io.cjs');
-const { output, error, ERROR_REASON } = ioMod;
+const { output, error, ERROR_REASON, formatDiagnosticToken } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateContract = require('./state-contract.cjs');
 const { publishStateContract } = stateContract;
@@ -913,7 +913,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   for (const { plan, token } of unresolved) {
     plansWithUnresolvedTokens.add(plan);
     warnings.push(
-      `Plan ${plan}: depends_on token "${token}" does not resolve to any plan in this phase — edge dropped, wave placement for this plan may be unreliable`,
+      `Plan ${plan}: depends_on token ${formatDiagnosticToken(token)} does not resolve to any plan in this phase — edge dropped, wave placement for this plan may be unreliable`,
     );
   }
 

@@ -637,7 +637,9 @@ present as complete. Report instead:
 Phase {N}: every selected reviewer lane {failed to produce a result|was budget-skipped} — no
 REVIEWS.md was written.
 
-Diagnostics preserved: {phase_dir}/.review-diagnostics/
+{If the preserve+cleanup block below reports success: "Diagnostics preserved:
+{phase_dir}/.review-diagnostics/". If it reports failure: relay its own warning verbatim —
+it names the intact run directory holding the un-preserved evidence instead.}
 ```
 
 Otherwise (at least one lane succeeded), display summary:
@@ -659,10 +661,17 @@ To incorporate feedback into planning:
 **#3352 (ADR-3473 §8.5, R3): preserve per-lane evidence before destroying it.** Regardless of
 which branch above ran, the run's temp directory is the only record that a lane failed at all —
 copy it beside the phase's artifacts BEFORE cleanup. A lane that produced no output at all (L4)
-leaves nothing to preserve; that is a smaller diagnostics folder, not a fabricated one. This
-copy is deliberately NOT part of the commit above (N6) — that step names only
-`{padded_phase}-REVIEWS.md` explicitly, never a directory glob, so `.review-diagnostics/` is
-never swept into it.
+leaves nothing to preserve; that is a smaller diagnostics folder, not a fabricated one, and is
+NOT a preservation failure. This copy is deliberately NOT part of the commit above (N6) — that
+step names only `{padded_phase}-REVIEWS.md` explicitly, never a directory glob, so
+`.review-diagnostics/` is never swept into it.
+
+Preservation and cleanup MUST run in the same fenced block below (a shell variable cannot
+survive across separate fences — each is its own process). `mkdir -p` and every `cp` are
+exit-status checked; `rm -rf "$RUN_DIR"` runs ONLY if nothing was preserved (nothing to
+preserve is not a failure) or everything that needed preserving was copied successfully. If
+preservation fails partway, `$RUN_DIR` is left intact and a message names it as the location of
+the un-preserved evidence — a leftover temp directory is far cheaper than destroyed evidence:
 
 ```bash
 shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
@@ -676,18 +685,25 @@ for f in "$RUN_DIR"/gsd-review-*.err; do
   [ -s "$f" ] && _DIAG_ERR+=("$f")
 done
 
+_PRESERVE_OK=true
 if [ ${#_DIAG_MD[@]} -gt 0 ] || [ ${#_DIAG_ERR[@]} -gt 0 ]; then
-  mkdir -p "$DIAG_DIR"
-  [ ${#_DIAG_MD[@]} -gt 0 ] && cp "${_DIAG_MD[@]}" "$DIAG_DIR/"
-  [ ${#_DIAG_ERR[@]} -gt 0 ] && cp "${_DIAG_ERR[@]}" "$DIAG_DIR/"
+  if mkdir -p "$DIAG_DIR"; then
+    if [ ${#_DIAG_MD[@]} -gt 0 ] && ! cp "${_DIAG_MD[@]}" "$DIAG_DIR/"; then
+      _PRESERVE_OK=false
+    fi
+    if [ ${#_DIAG_ERR[@]} -gt 0 ] && ! cp "${_DIAG_ERR[@]}" "$DIAG_DIR/"; then
+      _PRESERVE_OK=false
+    fi
+  else
+    _PRESERVE_OK=false
+  fi
 fi
-```
 
-Clean up — remove the run's temp directory now that evidence is preserved (and, on success,
-REVIEWS.md is committed):
-
-```bash
-rm -rf "{run_dir}"
+if [ "$_PRESERVE_OK" = "true" ]; then
+  rm -rf "$RUN_DIR"
+else
+  echo "WARNING: evidence preservation to $DIAG_DIR failed — leaving the un-preserved run directory intact at: $RUN_DIR" >&2
+fi
 ```
 </step>
 

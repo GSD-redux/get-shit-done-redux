@@ -13,7 +13,7 @@ import { escapeRegex } from './pattern.cjs';
 import { splitLines, detectEol, joinLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output, error } = ioMod;
+const { output, error, formatDiagnosticToken } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
@@ -138,7 +138,7 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code !== 'ENOENT') {
-      contextReadError = `Could not read phase directory "${phaseDir}": ${(err as Error)?.message ?? String(err)}`;
+      contextReadError = `Could not read phase directory ${formatDiagnosticToken(phaseDir)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`;
     }
   }
   // #3511: scope the raw listing to this phase dir before the

@@ -661,29 +661,33 @@ function extractWriteReviewsCommitBash() {
   );
 }
 
-function extractPresentResultsPreserveBash() {
+// #3885: preserve-evidence and cleanup are ONE fenced block (a shell variable
+// cannot survive across separate fences), gated on `_PRESERVE_OK` so a failed
+// `mkdir -p`/`cp` skips the `rm -rf` and leaves `{run_dir}` intact instead of
+// destroying the only copy of the evidence it exists to protect.
+function extractPresentResultsPreserveAndCleanupBash() {
   return extractBashFenceContaining(
     extractStepBody('present_results'),
-    ['DIAG_DIR', 'nullglob'],
-    'present_results #3352 preserve-evidence block',
-  );
-}
-
-function extractPresentResultsCleanupBash() {
-  return extractBashFenceContaining(
-    extractStepBody('present_results'),
-    ['rm -rf', '{run_dir}'],
-    'present_results cleanup block',
+    ['DIAG_DIR', 'nullglob', 'rm -rf', '{run_dir}', '_PRESERVE_OK'],
+    'present_results #3352/#3885 preserve+cleanup block',
   );
 }
 
 /**
  * Runs the real extracted write_reviews gate+commit blocks and the real
- * present_results preserve+cleanup blocks, in the documented order, against
+ * present_results preserve+cleanup block, in the documented order, against
  * a fixture run dir. `opts.jsonlLines` seeds the aggregate JSONL (omit/empty
  * for "every lane failed"); `opts.lanes` seeds per-slug `gsd-review-<slug>.md`
  * / `.md`'s sibling `.err`. See the seam-choice comment above this describe
  * block for what is real bash vs. harness glue.
+ *
+ * `opts.blockDiagDirWithFile`: #3885 root-safe failure injection. Root
+ * bypasses `chmod 0o000` entirely (a Docker/CI default), so permission bits
+ * cannot induce a `mkdir -p`/`cp` failure deterministically. A filesystem
+ * TYPE conflict is root-safe instead: pre-creating a plain FILE at the exact
+ * path `mkdir -p` needs to create as a DIRECTORY makes `mkdir -p` fail with
+ * "not a directory" for every caller, root included, because it is not a
+ * permissions check at all.
  */
 function runWriteReviewsFlow(t, opts) {
   const scriptDir = createTempDir('gsd-3352-script-');
@@ -694,6 +698,10 @@ function runWriteReviewsFlow(t, opts) {
     cleanup(runDir);
     cleanup(phaseDir);
   });
+
+  if (opts.blockDiagDirWithFile) {
+    fs.writeFileSync(path.join(phaseDir, '.review-diagnostics'), 'blocking file, not a directory\n');
+  }
 
   if (opts.jsonlLines && opts.jsonlLines.length > 0) {
     fs.writeFileSync(
@@ -712,8 +720,7 @@ function runWriteReviewsFlow(t, opts) {
 
   const gateBlock = extractWriteReviewsGateBash();
   const commitBlock = extractWriteReviewsCommitBash();
-  const preserveBlock = extractPresentResultsPreserveBash();
-  const cleanupBlock = extractPresentResultsCleanupBash();
+  const preserveAndCleanupBlock = extractPresentResultsPreserveAndCleanupBash();
 
   const tracePath = path.join(scriptDir, 'commit-trace.log');
   const reviewsMdPath = path.join(phaseDir, '03-REVIEWS.md');
@@ -740,8 +747,7 @@ function runWriteReviewsFlow(t, opts) {
     `  touch '${reviewsMdPath}'`,
     substitute(commitBlock),
     'fi',
-    substitute(preserveBlock),
-    substitute(cleanupBlock),
+    substitute(preserveAndCleanupBlock),
   ].join('\n');
 
   fs.writeFileSync(path.join(scriptDir, 'flow.sh'), script, { mode: 0o755 });
@@ -894,6 +900,60 @@ describe('#3352 per-lane evidence survives cleanup (R3)', () => {
 
     const geminiErr = path.join(result.diagDir, 'gsd-review-gemini.err');
     assert.equal(fs.existsSync(geminiErr), false, 'an empty .err must not be copied as if it were real evidence');
+  });
+});
+
+describe('#3885 nothing to preserve still cleans up (must stay green)', () => {
+  test('nothingToPreserveStillCleansUp_3885', (t) => {
+    // No .md/.err fixtures written at all: `_DIAG_MD`/`_DIAG_ERR` are both
+    // empty, so this is the "nothing to preserve" branch, not a failure —
+    // `_PRESERVE_OK` starts (and stays) `true`, so cleanup proceeds exactly
+    // as if preservation had succeeded.
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini,claude',
+      jsonlLines: [],
+      lanes: {},
+    });
+
+    assert.equal(result.runDirExists, false, 'nothing to preserve is not a failure — run dir must still be removed');
+    assert.equal(result.diagDirExists, false, 'no diagnostics directory should be created when there is nothing to copy');
+  });
+});
+
+describe('#3885 failed preservation leaves run_dir intact (no silent swallow)', () => {
+  test('failedPreservationLeavesRunDirIntact_3885', (t) => {
+    // Root-safe failure injection: pre-create a plain FILE at the exact path
+    // `mkdir -p "$DIAG_DIR"` needs to create as a directory. This is a
+    // filesystem TYPE conflict, not a permission check, so it fails `mkdir -p`
+    // even when the test runs as root in Docker/CI (where `chmod 0o000`
+    // would be silently bypassed and this test would pass with zero real
+    // coverage — see #3885's brief).
+    const result = runWriteReviewsFlow(t, {
+      selected: 'codex,gemini,claude',
+      jsonlLines: [],
+      blockDiagDirWithFile: true,
+      lanes: {
+        codex: { md: LANE_FAILURE_MD('codex'), err: 'stack trace: codex crashed\n' },
+        gemini: { md: LANE_FAILURE_MD('gemini'), err: 'stack trace: gemini crashed\n' },
+        claude: { md: LANE_FAILURE_MD('claude'), err: 'stack trace: claude crashed\n' },
+      },
+    });
+
+    assert.equal(
+      result.runDirExists,
+      true,
+      'a failed mkdir -p on DIAG_DIR must skip rm -rf and leave run_dir intact — this is the #3885 regression guard',
+    );
+    assert.ok(
+      result.stderr.includes(result.runDir),
+      `the failure warning must name the intact run_dir holding the un-preserved evidence; got stderr: ${result.stderr}`,
+    );
+    // The original per-lane evidence is still readable at its original
+    // location, uncorrupted, because it was never moved or destroyed.
+    assert.equal(
+      fs.readFileSync(path.join(result.runDir, 'gsd-review-codex.md'), 'utf-8'),
+      LANE_FAILURE_MD('codex'),
+    );
   });
 });
 

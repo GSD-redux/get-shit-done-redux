@@ -81,7 +81,7 @@ const {
 import verifyCommandGrounding = require('./verify-command-grounding.cjs');
 const { harvestPriorVerifyCommands } = verifyCommandGrounding;
 
-const { output, error, ERROR_REASON } = io;
+const { output, error, ERROR_REASON, formatDiagnosticToken } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
 const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
@@ -1227,7 +1227,7 @@ function cmdInitPlanPhase(
       const code = (err as NodeJS.ErrnoException)?.code;
       if (code !== 'ENOENT') {
         result['context_read_error'] =
-          `Could not read phase directory "${phaseDirFull}": ${(err as Error)?.message ?? String(err)}`;
+          `Could not read phase directory ${formatDiagnosticToken(phaseDirFull)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`;
       }
     }
   }
@@ -2114,7 +2114,7 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
       const code = (err as NodeJS.ErrnoException)?.code;
       if (code !== 'ENOENT') {
         result['context_read_error'] =
-          `Could not read phase directory "${phaseDirFull}": ${(err as Error)?.message ?? String(err)}`;
+          `Could not read phase directory ${formatDiagnosticToken(phaseDirFull)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`;
       }
     }
   }

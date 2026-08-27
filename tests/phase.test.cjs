@@ -1229,6 +1229,118 @@ describe('#3885 (ADR-3473 §8.5): phase-plan-index names a dropped depends_on to
   // unresolved token through verbatim. No new test added here; this phase's
   // fix must leave that test green (design N4: the display mapping stays
   // unresolved-passthrough, never routed through resolveDependencyId).
+
+  // #3885 follow-up: the unresolved-depends_on warning embeds the token
+  // VERBATIM before this fix — an attacker-authored (YAML-frontmatter)
+  // token containing a newline can forge a second, fabricated warning line
+  // once a consumer prints `warnings[]` one-per-line. `formatDiagnosticToken`
+  // (src/io.cts, introduced for the same class in #3884) must be used to
+  // escape the token so the warning stays on ONE line and the token is still
+  // named (escaped), never dropped — a fix that deleted the token would also
+  // pass a naive "one line" check, so each case below also asserts the
+  // (escaped) token text is present.
+  test('unresolved depends_on token containing a newline cannot forge a second warning line', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - "evil\\nPlan 03-01: FORGED WARNING"\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.strictEqual(warnings.length, 1, `expected exactly one warning; got: ${JSON.stringify(warnings)}`);
+    const [warning] = warnings;
+    // Raw string (not trimmed): the embedded newline must be ESCAPED
+    // (literal backslash-n), not a real line break — a real line break here
+    // would let the attacker-authored suffix render as a forged second entry.
+    assert.strictEqual(
+      warning.split('\n').length,
+      1,
+      `warning must occupy a single line; got raw string: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(!/^Plan 03-01: FORGED WARNING/m.test(warning), 'forged second line must not appear as its own line');
+    // The token must still be NAMED — escaped, not dropped.
+    assert.ok(
+      warning.includes('evil\\nPlan 03-01: FORGED WARNING'),
+      `escaped token must still be named in the warning; got: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(warning.includes('03-02'), 'warning must name the owning plan');
+  });
+
+  test('unresolved depends_on token containing a double quote cannot break out of its quoting', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - "evil\\"quote"\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.strictEqual(warnings.length, 1, `expected exactly one warning; got: ${JSON.stringify(warnings)}`);
+    const [warning] = warnings;
+    assert.strictEqual(
+      warning.split('\n').length,
+      1,
+      `warning must occupy a single line; got raw string: ${JSON.stringify(warning)}`,
+    );
+    // The embedded quote must be ESCAPED, not left free to close the
+    // surrounding quoting early.
+    assert.ok(
+      warning.includes('evil\\"quote'),
+      `escaped token must still be named in the warning; got: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(warning.includes('03-02'), 'warning must name the owning plan');
+  });
+
+  test('unresolved depends_on token containing a C0 control char is escaped, not passed through raw', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - "evil\\x07bell"\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.strictEqual(warnings.length, 1, `expected exactly one warning; got: ${JSON.stringify(warnings)}`);
+    const [warning] = warnings;
+    assert.strictEqual(
+      warning.split('\n').length,
+      1,
+      `warning must occupy a single line; got raw string: ${JSON.stringify(warning)}`,
+    );
+    // No raw C0 control byte may survive into the warning string.
+    // eslint-disable-next-line no-control-regex
+    assert.ok(!/[\x00-\x1f]/.test(warning), `no raw control character may survive; got: ${JSON.stringify(warning)}`);
+    assert.ok(
+      warning.includes('evil\\u0007bell'),
+      `escaped token must still be named in the warning; got: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(warning.includes('03-02'), 'warning must name the owning plan');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

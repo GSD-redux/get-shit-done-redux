@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import io = require('./io.cjs');
-const { output, error } = io;
+const { output, error, formatDiagnosticToken } = io;
 import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -381,7 +381,7 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
   try {
     if (fs.existsSync(absPhaseDir)) phaseDirFiles = fs.readdirSync(absPhaseDir);
   } catch (err) {
-    phaseDirReadError = `Could not read phase directory "${absPhaseDir}": ${(err as Error)?.message ?? String(err)}`;
+    phaseDirReadError = `Could not read phase directory ${formatDiagnosticToken(absPhaseDir)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`;
   }
 
   // #3511-class: scope the raw listing to this phase dir before the
