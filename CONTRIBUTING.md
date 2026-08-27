@@ -1099,11 +1099,14 @@ appears under `gsd-core/workflows/` or `agents/` (`explore.md`). The two spaces 
 structurally distinct — a `Growth` trailer never excuses a `Hash` ripple, even when the key
 text happens to match.
 
-**Two sources may never declare the same key.** If more than one commit in your range
-carries a trailer for the same key, that is a hard, loudly-reported error, not a silent
-last-wins. There is no "which one owns the key" question to resolve, because there is no
-shared file for two sources to own: to change an acknowledgment, amend the commit that
-carries it, and there is only ever one live copy of any given trailer at a time.
+**Declaring the same key twice is fine if you say the same thing twice.** Identical
+declarations — same key, same reason — are de-duplicated silently, because a trailer
+legitimately survives a rebase and reappears on every rebased commit; failing there would
+red a branch for doing nothing wrong. Two declarations of the same key with *different*
+reasons are a hard, loudly-reported error: that is a genuine ambiguity about which
+explanation holds, and only you can say which. There is no "which source owns the key"
+question underneath it, because there is no shared file for two sources to own — to change
+an acknowledgment, amend the commit carrying it.
 
 `npm run regen:derived` still exists for the artifacts that ARE committed and derived —
 `sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
