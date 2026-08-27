@@ -1505,6 +1505,33 @@ function cmdApiCoverageVerifyPre(projectDir: string, args: string[], raw: boolea
     );
     return;
   }
+  // An EMPTY scope is not a negative verdict. This gate's neighbouring arms
+  // already fail closed (unresolvable phase → block; unreadable plan → block),
+  // but a phase with no plan body AND no roadmap section fell through to
+  // detection over zero bytes and CERTIFIED "no external-API integration" —
+  // clearing a blocking seal gate on a probe that examined nothing
+  // (ADR-3889 failure class (c), #3909). The discriminator is BYTES EXAMINED,
+  // never SIGNALS FOUND: a phase with real plans and no API vocabulary still
+  // reaches the pass below unchanged.
+  if (scope.text.trim() === '') {
+    output(
+      {
+        block: true,
+        passed: false,
+        coverage_present: false,
+        detected: false,
+        scope_unavailable: true,
+        message:
+          'api-coverage: the phase scope is empty — no plan body and no roadmap section were ' +
+          'found, so nothing was examined. Refusing to certify no external-API integration ' +
+          'from an unestablished scope. Add the phase plan, or add a COVERAGE.md declaration.',
+      },
+      raw,
+      undefined,
+    );
+    return;
+  }
+
   const detection = detectApiIntegration(scope.text);
   if (detection.detected) {
     // Surface only verb/noun (typed, bounded) — NOT raw prose snippets — so the

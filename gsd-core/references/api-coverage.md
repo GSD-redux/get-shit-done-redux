@@ -53,7 +53,26 @@ compound modifiers ("Resolver-only API"), and first-party-qualified services
    `capabilities/ai-integration/fragments/api-coverage-plan-pre.md`.
 2. **Seal time (`verify:pre`).** The blocking `api-coverage.verify-pre` gate
    runs `check api-coverage.verify-pre <phase-dir>` and blocks unless a valid
-   matrix exists (or no integration is detected).
+   matrix exists (or no integration is detected in a scope it could actually
+   read).
+
+### Seal-time outcomes
+
+| Condition | Verdict |
+|---|---|
+| Valid `COVERAGE.md` matrix | pass |
+| `No external API integration: <reason>` declaration | pass (the reasoned human overrule) |
+| Malformed / partial matrix | **block** |
+| No matrix, integration signal found | **block** |
+| No matrix, no signal, scope was read | pass |
+| No matrix, **scope could not be established** | **block** — `scope_unavailable: true` (#3909) |
+| Phase token unresolvable | **block** |
+| Plan file exists but unreadable | **block** |
+| No `.planning/phases` tree at all | pass — not a GSD project layout |
+
+The last four are the fail-closed arms: the gate refuses to certify "no
+external-API integration" from scope it did not read. A phase with real plans
+and no API vocabulary is the fifth row, and is unaffected.
 
 ## The coverage matrix format
 
