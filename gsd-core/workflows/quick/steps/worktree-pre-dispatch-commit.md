@@ -10,7 +10,7 @@ QUICK_PLAN_PARENT=""
 QUICK_PLAN_COMMIT=""
 if [ "${USE_WORKTREES}" != "false" ]; then
   QUICK_PLAN_PARENT=$(git rev-parse HEAD)
-  COMMIT_DOCS=$(gsd_run query config-get commit_docs 2>/dev/null || echo "true")
+  COMMIT_DOCS=$(gsd_run query config-get commit_docs --raw 2>/dev/null || echo "true")
   if [ "$COMMIT_DOCS" != "false" ]; then
     git add "${QUICK_DIR}/${quick_id}-PLAN.md"
     # No-op skip if nothing actually staged (idempotent re-runs).
@@ -19,7 +19,7 @@ if [ "${USE_WORKTREES}" != "false" ]; then
     else
       # Run hooks normally (#2924). If a project opts out via
       # workflow.worktree_skip_hooks=true, honor that opt-in only.
-      SKIP_HOOKS=$(gsd_run query config-get workflow.worktree_skip_hooks 2>/dev/null || echo "false")
+      SKIP_HOOKS=$(gsd_run query config-get workflow.worktree_skip_hooks --raw 2>/dev/null || echo "false")
       if [ "$SKIP_HOOKS" = "true" ]; then
         git commit --no-verify -m "docs(${quick_id}): pre-dispatch plan for ${DESCRIPTION}" -- "${QUICK_DIR}/${quick_id}-PLAN.md" \
           || { echo "ERROR: pre-dispatch PLAN.md commit failed (--no-verify path). Aborting before executor dispatch." >&2; exit 1; }

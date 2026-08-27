@@ -29,10 +29,6 @@ const SCAN_ROOTS = [
   'skills',
 ];
 
-// allow-test-rule: source-text-is-the-product (#3763)
-// The scanned files are shipped workflow/agent/command text — the bytes ARE
-// what the runtime loads, so a structural scan over them tests the deployed
-// contract (same shape as tests/commit-files-pathspec.test.cjs's guard).
 function walk(dir, out) {
   let entries;
   try {
@@ -69,7 +65,11 @@ test('#3763: every config-get command substitution in shipped content passes --r
       const subs = line.match(SUBSTITUTION_RE) || [];
       for (const sub of subs) {
         scannedSubstitutions++;
-        if (sub.includes('--raw')) continue;
+        // --raw must sit in the config-get command itself, before any `||`
+        // fallback — an `echo "" --raw` fallback arg would otherwise
+        // false-pass the check while config-get still lacks the flag.
+        const cmd = sub.slice(0, sub.indexOf('||') >= 0 ? sub.indexOf('||') : sub.length);
+        if (cmd.includes('--raw')) continue;
         // Exempt shapes: a JSON-consuming variable name, or an explicit
         // JSON-array default — the caller wants JSON.stringify output.
         const varMatch = /^\s*[A-Za-z_][A-Za-z0-9_]*=/.exec(line);

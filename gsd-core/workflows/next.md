@@ -294,7 +294,7 @@ If `PLAN_STRATEGY` is `converge`, fail fast unless the convergence feature gate 
 
 ```bash
 if [ "$PLAN_STRATEGY" = "converge" ]; then
-  CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence 2>/dev/null || echo "false")
+  CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence --raw 2>/dev/null || echo "false")
   if [ "$CONVERGENCE_ENABLED" != "true" ]; then
     printf '%s\n' \
       '/gsd:progress --next --converge is disabled (workflow.plan_review_convergence=false).' \
