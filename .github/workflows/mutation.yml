@@ -108,7 +108,11 @@ jobs:
     # GitHub-hosted runners only. Speed comes from running shards in PARALLEL
     # (one job per changed module), not from larger/3rd-party runners.
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # per-shard; lower than the old 30-min serial budget
+    # Per-shard; lower than the old 30-min serial budget. Matrix-driven so only shards that
+    # document a measured need (mutation-matrix.cjs COVERED[<module>].timeoutMinutes, e.g.
+    # frontmatter's 180) get more; every other shard keeps the 15-minute default emitted by
+    # buildResult() in scripts/mutation-matrix.cjs.
+    timeout-minutes: ${{ matrix.timeoutMinutes }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
@@ -143,7 +147,7 @@ jobs:
         # repo's no-defer rule.
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
-          MUTATION_TEST_CMD: node --test ${{ matrix.tests }}
+          MUTATION_TEST_CMD: node --test --test-isolation=${{ matrix.isolation }} ${{ matrix.tests }}
           MUTATION_BREAK: ${{ matrix.minScore }}
           MODULE_NAME: ${{ matrix.name }}
           MUTATE_GLOB: ${{ matrix.mutate }}
@@ -154,6 +158,21 @@ jobs:
           echo "Tests:    ${MODULE_TESTS}"
           echo "MinScore: ${MUTATION_BREAK}"
           npx stryker run --incremental --mutate "${MUTATE_GLOB}"
+
+      - name: Check score ratchet — ${{ matrix.name }}
+        # #3881 follow-up, mutation-matrix piece 3: only runs when the shard above actually
+        # passed (a failed shard is a floor problem — Stryker's own MUTATION_BREAK exit code
+        # already reports that; this step is strictly about a floor that should be RAISED).
+        # Reads the 'json' reporter's reports/mutation/mutation.json (stryker.config.mjs)
+        # and fails, with the exact remedy, when the achieved score clears the module's
+        # declared floor by more than scripts/check-mutation-score-ratchet.cjs's documented
+        # slack — the "ratchet up" half of the piece-3 requirement. The "never lower without
+        # a reasoned marker" half is enforced separately, at review time, by
+        # tests/mutation-matrix-ratchet.test.cjs's RATCHET_BASELINE equality check.
+        if: success()
+        env:
+          MODULE_NAME: ${{ matrix.name }}
+        run: node scripts/check-mutation-score-ratchet.cjs --module "${MODULE_NAME}"
 
       - name: Upload mutation report — ${{ matrix.name }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

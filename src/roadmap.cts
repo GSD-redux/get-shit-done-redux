@@ -19,7 +19,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
+const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
@@ -534,18 +534,17 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
 
   // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
-  // #3185 exemption (documented reason, not a file allowlist — ADR-3180
-  // Decision 4a): this is a heading->directory LOOKUP INDEX, not a milestone
-  // enumeration. It must see the PHYSICAL set so a heading already scoped by
-  // extractCurrentMilestoneScoped above can find its directory; filtering it
-  // through listMilestonePhaseDirs would scope the same set twice.
-  const _phaseDirNames = (() => {
-    try {
-      return fs.readdirSync(phasesDir, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name);
-    } catch { return []; }
-  })();
+  // #3185 exemption reason (ADR-3180 Decision 4a): this is a heading->directory
+  // LOOKUP INDEX, not a milestone enumeration. It must see the PHYSICAL set so
+  // a heading already scoped by extractCurrentMilestoneScoped above can find
+  // its directory; filtering it through listMilestonePhaseDirs would scope
+  // the same set twice. #3882 (ADR-3473 §8.2): routed through the named
+  // "physical set, sentinels included" axis instead of a hand-rolled
+  // readdirSync — every heading matched below already excludes sentinel
+  // phase numbers via isSentinelPhaseId before it ever consults this list
+  // (collectAnalyzePhases), so a sentinel directory's presence here is
+  // output-invariant; this only removes the re-derivation, not the reason.
+  const _phaseDirNames = listAllPhaseDirs(phasesDir, { includeSentinels: true }).value;
 
   // Scan the scoped milestone window for phase-detail headings and enrich each
   // with its on-disk status. Extracted into `collectAnalyzePhases` (#3165) so

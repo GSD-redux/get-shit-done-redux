@@ -18,6 +18,9 @@ import { platformReadSync } from './shell-command-projection.cjs';
 import { collectSection } from './markdown-sectionizer.cjs';
 import { splitLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import coreUtils = require('./core-utils.cjs');
+const { normalizeLineEndings } = coreUtils;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir, quickDirFrom } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -449,8 +452,16 @@ function scanDebugSessions(planDir: string): ScanOutcome<DebugSessionItem> {
       continue;
     }
 
-    const content = platformReadSync(safeFilePath);
-    if (content === null) continue;
+    // #3078-CR MEDIUM 2 (security review follow-up): normalize a lone-CR
+    // document at this read boundary, same seam as `src/uat.cts`'s
+    // `readNormalizedDocument` — `platformReadSync` performs no line-ending
+    // normalization itself, and extractFrontmatter/status-derivation below
+    // degrade a lone-CR file's frontmatter to `unknown`, which every scan
+    // in this module treats as "not open" (fail-open, the permissive
+    // direction) rather than a real parse gap.
+    const rawContent = platformReadSync(safeFilePath);
+    if (rawContent === null) continue;
+    const content = normalizeLineEndings(rawContent);
 
     const fm = extractFrontmatter(content, safeFilePath);
     const status = ((fm.status as string) || 'unknown').toLowerCase();
@@ -570,10 +581,14 @@ function scanQuickTasks(planDir: string): ScanOutcome<QuickTaskItem> {
       } catch {
         continue;
       }
-      const content = platformReadSync(safeSum);
-      if (content === null) {
+      // #3078-CR MEDIUM 2: same normalize-at-read-boundary fix as the other
+      // scans in this module — see the comment above `scanDebugSessions`'s
+      // read.
+      const rawContent = platformReadSync(safeSum);
+      if (rawContent === null) {
         status = 'unreadable';
       } else {
+        const content = normalizeLineEndings(rawContent);
         fm = extractFrontmatter(content, safeSum);
         status = ((fm.status as string) || 'unknown').toLowerCase();
       }
@@ -648,8 +663,16 @@ function scanThreads(planDir: string): ScanOutcome<ThreadItem> {
       continue;
     }
 
-    const content = platformReadSync(safeFilePath);
-    if (content === null) continue;
+    // #3078-CR MEDIUM 2 (security review follow-up): normalize a lone-CR
+    // document at this read boundary, same seam as `src/uat.cts`'s
+    // `readNormalizedDocument` — `platformReadSync` performs no line-ending
+    // normalization itself, and extractFrontmatter/status-derivation below
+    // degrade a lone-CR file's frontmatter to `unknown`, which every scan
+    // in this module treats as "not open" (fail-open, the permissive
+    // direction) rather than a real parse gap.
+    const rawContent = platformReadSync(safeFilePath);
+    if (rawContent === null) continue;
+    const content = normalizeLineEndings(rawContent);
 
     const fm = extractFrontmatter(content, safeFilePath);
     const status = deriveThreadStatus(fm, content);
@@ -723,8 +746,16 @@ function scanTodos(planDir: string): ScanOutcome<TodoItem> {
       continue;
     }
 
-    const content = platformReadSync(safeFilePath);
-    if (content === null) continue;
+    // #3078-CR MEDIUM 2 (security review follow-up): normalize a lone-CR
+    // document at this read boundary, same seam as `src/uat.cts`'s
+    // `readNormalizedDocument` — `platformReadSync` performs no line-ending
+    // normalization itself, and extractFrontmatter/status-derivation below
+    // degrade a lone-CR file's frontmatter to `unknown`, which every scan
+    // in this module treats as "not open" (fail-open, the permissive
+    // direction) rather than a real parse gap.
+    const rawContent = platformReadSync(safeFilePath);
+    if (rawContent === null) continue;
+    const content = normalizeLineEndings(rawContent);
 
     const fm = extractFrontmatter(content, safeFilePath);
 
@@ -796,8 +827,16 @@ function scanSeeds(planDir: string): ScanOutcome<SeedItem> {
       continue;
     }
 
-    const content = platformReadSync(safeFilePath);
-    if (content === null) continue;
+    // #3078-CR MEDIUM 2 (security review follow-up): normalize a lone-CR
+    // document at this read boundary, same seam as `src/uat.cts`'s
+    // `readNormalizedDocument` — `platformReadSync` performs no line-ending
+    // normalization itself, and extractFrontmatter/status-derivation below
+    // degrade a lone-CR file's frontmatter to `unknown`, which every scan
+    // in this module treats as "not open" (fail-open, the permissive
+    // direction) rather than a real parse gap.
+    const rawContent = platformReadSync(safeFilePath);
+    if (rawContent === null) continue;
+    const content = normalizeLineEndings(rawContent);
 
     const fm = extractFrontmatter(content, safeFilePath);
     const status = ((fm.status as string) || 'dormant').toLowerCase();
@@ -970,8 +1009,16 @@ function scanUatGaps(planDir: string, cwd: string): ScanOutcome<UatGapItem> {
         continue;
       }
 
-      const content = platformReadSync(safeFilePath);
-      if (content === null) continue;
+      // #3078-CR MEDIUM 2 (security review follow-up): normalize a lone-CR
+      // document at this read boundary, same seam as `src/uat.cts`'s
+      // `readNormalizedDocument` — `platformReadSync` performs no line-ending
+      // normalization itself, and extractFrontmatter/status-derivation below
+      // degrade a lone-CR file's frontmatter to `unknown`, which every scan
+      // in this module treats as "not open" (fail-open, the permissive
+      // direction) rather than a real parse gap.
+      const rawContent = platformReadSync(safeFilePath);
+      if (rawContent === null) continue;
+      const content = normalizeLineEndings(rawContent);
 
       const fm = extractFrontmatter(content, safeFilePath);
       const status = ((fm.status as string) || 'unknown').toLowerCase();
@@ -1045,8 +1092,16 @@ function scanVerificationGaps(planDir: string, cwd: string): ScanOutcome<Verific
         continue;
       }
 
-      const content = platformReadSync(safeFilePath);
-      if (content === null) continue;
+      // #3078-CR MEDIUM 2 (security review follow-up): normalize a lone-CR
+      // document at this read boundary, same seam as `src/uat.cts`'s
+      // `readNormalizedDocument` — `platformReadSync` performs no line-ending
+      // normalization itself, and extractFrontmatter/status-derivation below
+      // degrade a lone-CR file's frontmatter to `unknown`, which every scan
+      // in this module treats as "not open" (fail-open, the permissive
+      // direction) rather than a real parse gap.
+      const rawContent = platformReadSync(safeFilePath);
+      if (rawContent === null) continue;
+      const content = normalizeLineEndings(rawContent);
 
       const fm = extractFrontmatter(content, safeFilePath);
       const status = ((fm.status as string) || 'unknown').toLowerCase();
@@ -1106,8 +1161,16 @@ function scanContextQuestions(planDir: string, cwd: string): ScanOutcome<Context
         continue;
       }
 
-      const content = platformReadSync(safeFilePath);
-      if (content === null) continue;
+      // #3078-CR MEDIUM 2 (security review follow-up): normalize a lone-CR
+      // document at this read boundary, same seam as `src/uat.cts`'s
+      // `readNormalizedDocument` — `platformReadSync` performs no line-ending
+      // normalization itself, and extractFrontmatter/status-derivation below
+      // degrade a lone-CR file's frontmatter to `unknown`, which every scan
+      // in this module treats as "not open" (fail-open, the permissive
+      // direction) rather than a real parse gap.
+      const rawContent = platformReadSync(safeFilePath);
+      if (rawContent === null) continue;
+      const content = normalizeLineEndings(rawContent);
 
       const fm = extractFrontmatter(content, safeFilePath);
       const questions = deriveOpenQuestions(content, fm);
@@ -1194,8 +1257,14 @@ function scanDeferredItems(planDir: string, cwd: string): ScanOutcome<DeferredIt
       continue;
     }
 
-    const content = platformReadSync(safeFilePath);
-    if (content === null) continue;
+    // #3078-CR MEDIUM 2: normalize at this read boundary too —
+    // `parseDeferredItemsWithStatus` performs no normalization of its own
+    // (unlike `src/uat.cts`'s callers, which route through
+    // `readNormalizedDocument`), so a lone-CR `deferred-items.md` was read as
+    // one unbroken line and every entry in it silently vanished.
+    const rawContent = platformReadSync(safeFilePath);
+    if (rawContent === null) continue;
+    const content = normalizeLineEndings(rawContent);
 
     for (const item of uat.parseDeferredItemsWithStatus(content)) {
       const rawStatus = (item.status || '').toLowerCase();
@@ -1541,6 +1610,21 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
   const planDir = planningDir(cwd);
   const markerBase = { milestone: milestone as string, at };
 
+  // #3078-CR MEDIUM 2: every `fs.readFileSync` in this function (below, and
+  // in the flat-category branch further down) is DELIBERATELY left raw,
+  // unlike `auditOpenArtifacts`'s scan reads (which now route through
+  // `normalizeLineEndings`). This function splices frontmatter into the
+  // EXISTING content and writes the result back via `platformWriteSync` /
+  // `uat.acknowledgeDeferredItem` — both `spliceFrontmatter` and
+  // `acknowledgeDeferredItem` locate and rewrite a specific byte span
+  // (frontmatter block / matched deferred-item text) in the file exactly as
+  // it exists on disk. Normalizing first would rewrite the file's line
+  // endings as a side effect of an unrelated acknowledge operation, and a
+  // splice computed against normalized text can land at the wrong offset
+  // when written back over the RAW (un-normalized) original. The snapshot
+  // VALUE computed below IS normalized (on a separate in-memory copy, never
+  // the spliced one) so it agrees with the scanner's frame — see the comment
+  // at `normalizedContent` further down.
   // ── The four phase-scoped categories: --phase --file [--archived-milestone] ──
   const PHASE_SCOPED = new Set(['uat_gaps', 'verification_gaps', 'context_questions', 'deferred_items']);
   if (PHASE_SCOPED.has(category as string)) {
@@ -1576,6 +1660,15 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
 
     const content = fs.readFileSync(safeFilePath, 'utf-8');
     const fm = extractFrontmatter(content, safeFilePath);
+    // Mixed-frame fix (security review, 4th instance on this branch): the
+    // splice above and below stays keyed to RAW `content` (raw byte offsets
+    // must not shift), but `scanUatGaps`/`scanContextQuestions` now derive
+    // their comparison values from `normalizeLineEndings`d content. Deriving
+    // the snapshot here from raw `content` would make a lone-CR file's
+    // stored value permanently disagree with what the scanner recomputes —
+    // `audit acknowledge` would be a silent no-op for lone-CR artifacts. Feed
+    // the derive functions a normalized COPY; never splice from it.
+    const normalizedContent = normalizeLineEndings(content);
     let snapshotKey: string;
     let currentValue: string;
     if (category === 'uat_gaps') {
@@ -1583,7 +1676,7 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
       // pending scenarios added under the same status — snapshot the
       // composite `deriveUatGapSnapshotValue` instead (see its doc comment).
       snapshotKey = 'gap_snapshot';
-      currentValue = deriveUatGapSnapshotValue(((fm.status as string) || 'unknown').toLowerCase(), content);
+      currentValue = deriveUatGapSnapshotValue(((fm.status as string) || 'unknown').toLowerCase(), normalizedContent);
     } else if (category === 'verification_gaps') {
       snapshotKey = 'status';
       currentValue = ((fm.status as string) || 'unknown').toLowerCase();
@@ -1592,7 +1685,7 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
       // question set, not just its count (see `deriveOpenQuestionsDigest`'s
       // doc comment).
       snapshotKey = 'questions_digest';
-      currentValue = deriveOpenQuestionsDigest(deriveOpenQuestions(content, fm));
+      currentValue = deriveOpenQuestionsDigest(deriveOpenQuestions(normalizedContent, fm));
     }
     fm.audit_acknowledged = { ...markerBase, [snapshotKey]: currentValue };
     const newContent = spliceFrontmatter(content, fm);

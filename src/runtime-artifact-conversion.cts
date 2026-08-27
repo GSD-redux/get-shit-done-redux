@@ -1845,7 +1845,7 @@ function neutralizeAgentReferences(content, instructionFile) {
  */
 function frontmatterScalar(key: string, value: string): string {
   return frontmatterModule.agentScalarNeedsDoubleQuoting(value)
-    ? `${key} "${frontmatterModule.escapeDoubleQuoted(value)}"`
+    ? `${key} "${frontmatterModule.escapeDoubleQuotedScalar(value)}"`
     : `${key} ${value}`;
 }
 

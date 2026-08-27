@@ -106,8 +106,171 @@ function readStdinSync() {
 /** Long-run target for all modules (ADR-456). */
 const TARGET_MUTATION_SCORE = 80;
 
+// ── Derived test-list engine (#3881 follow-up, "one YAML parser" mutation-matrix
+//    piece 2) ─────────────────────────────────────────────────────────────────
+//
+// PROBLEM THIS REPLACES: `tests: [...]` used to be a hand-maintained array per
+// module, and `stryker.config.mjs`'s DEFAULT_TEST_CMD hand-duplicated the union
+// of every such array in a second literal. The two drifted independently — PR
+// #3888 shipped four new frontmatter test files that were never added to either
+// list, so their mutants had zero constraining coverage and the shard's score
+// silently fell (see the frontmatter entry's own PR #3888 note below, kept for
+// history). A hand list can be forgotten; a derivation cannot forget a file that
+// exists on disk.
+//
+// SIGNAL: a test file that directly `require()`s a covered module's built
+// artifact (`gsd-core/bin/lib/<name>.cjs`) is declaring, by that require, that
+// it constrains that module. That signal alone is far too broad to feed a
+// per-mutant re-run budget: measured directly (no filter) against this tree,
+// config-schema alone picks up 22 files most of this repo's spawn-heavy
+// integration suites require incidentally for fixture setup — including a file
+// literally named `graphify-auto-update.slow.test.cjs`. Stryker's command
+// runner re-runs the WHOLE test command once per mutant, so an incidental
+// integration require would multiply that module's shard cost by 10-20x for
+// zero mutation-killing benefit (those suites do not assert on config-schema's
+// internals; they merely load it as a dependency of something else under test).
+//
+// NARROWING RULE: a file is auto-derived into a module's shard only when BOTH
+// hold:
+//   1. it directly requires that module's `gsd-core/bin/lib/<name>.cjs`, and
+//   2. its own filename starts with the module's name followed by `.` or `-`
+//      (i.e. `<name>.test.cjs`, `<name>.unit.test.cjs`, `<name>.property.test.cjs`,
+//      `<name>-anything.test.cjs`) — the file DECLARES itself, by its own name,
+//      to be that module's dedicated test surface. This is the exact naming
+//      shape every entry in this registry already used before this change
+//      (`*.property.test.cjs` / `*.unit.test.cjs`, or `<name>.test.cjs`), now
+//      made load-bearing instead of merely conventional.
+// Measured effect of narrowing config-schema this way: 22 candidates -> 1
+// (config-schema.property.test.cjs, the file already in the shard) — the
+// naming filter is what keeps the derivation from silently tripling that
+// shard's cost, per the piece-2 "watch the cost consequence" requirement.
+//
+// ESCAPE HATCHES (both REQUIRED to be explicit, reasoned per-module entries —
+// never a silent list):
+//   - `extraTests`: files that constrain this module (genuinely, by writing
+//     assertions against its behaviour) but do not match the naming rule
+//     above — either because the module was extracted from another file's
+//     tests (context-composer) or because the file's own name follows a
+//     different, still-legible convention (feat-3881-yaml-parser-consequences.test.cjs).
+//   - `excludeTests`: files that DO match the naming + require signal above
+//     (so the derivation would otherwise auto-include them) but are
+//     deliberately withheld from the per-mutant shard for a measured,
+//     documented reason (almost always: they are integration-shaped and
+//     spawn a subprocess per case, so Stryker's per-mutant re-run of the
+//     whole file cannot finish inside the shard's timeout — the exact #2790
+//     planning-inspect.test.cjs precedent this file already documented before
+//     this change; the derivation engine now enforces that precedent by
+//     construction instead of leaving it to reviewer memory).
+// `computeModuleTests` combines all three into the final `tests` array; the
+// guard `scripts/lint-mutation-test-derivation-drift.cjs` independently
+// verifies every SIGNAL-matching file (require + naming rule, unfiltered by
+// this module's own excludeTests) has an explicit disposition — auto-derived,
+// named in extraTests, or named in excludeTests — so a file that newly starts
+// matching the naming rule (like #3888's four files would have, had they been
+// named `frontmatter*`) cannot silently fall through the cracks again.
+const TESTS_DIR = require('node:path').join(__dirname, '..', 'tests');
+let _testRequireCache = null;
+
+/**
+ * Scan every `tests/*.test.cjs` file once and cache, per covered module name,
+ * which files directly `require('gsd-core/bin/lib/<name>.cjs')` (or a relative
+ * equivalent — `../gsd-core/bin/lib/<name>` etc. — the require path always
+ * ends in the literal segment matched below). Pure w.r.t. process lifetime;
+ * the tests/ directory does not change while this process runs.
+ *
+ * @returns {Map<string, Set<string>>} module name -> Set of basenames (e.g. 'frontmatter.test.cjs')
+ */
+function scanTestRequires() {
+  if (_testRequireCache) return _testRequireCache;
+  const REQUIRE_RE = /require\(\s*['"](?:[./]*)?gsd-core\/bin\/lib\/([a-zA-Z0-9_-]+)(?:\.cjs)?['"]\s*\)/g;
+  const cache = new Map();
+  let entries;
+  try {
+    entries = fs.readdirSync(TESTS_DIR).filter((f) => f.endsWith('.test.cjs'));
+  } catch {
+    entries = [];
+  }
+  for (const file of entries) {
+    const text = fs.readFileSync(require('node:path').join(TESTS_DIR, file), 'utf8');
+    let m;
+    REQUIRE_RE.lastIndex = 0;
+    while ((m = REQUIRE_RE.exec(text))) {
+      const mod = m[1];
+      if (!cache.has(mod)) cache.set(mod, new Set());
+      cache.get(mod).add(file);
+    }
+  }
+  _testRequireCache = cache;
+  return cache;
+}
+
+/**
+ * Every test file that directly requires `<moduleName>`'s built artifact —
+ * the FULL, unfiltered signal set (used by the derivation-drift guard, which
+ * must see every candidate regardless of naming, so it can demand an explicit
+ * disposition for each one).
+ *
+ * @param {string} moduleName
+ * @returns {string[]} sorted basenames
+ */
+function findRequiringTestFiles(moduleName) {
+  const set = scanTestRequires().get(moduleName);
+  return set ? [...set].sort() : [];
+}
+
+/** True when `file`'s own name declares it a dedicated test surface for `moduleName`
+ * (`<moduleName>.test.cjs`, or starts with `<moduleName>.` / `<moduleName>-`). */
+function matchesModuleNamingRule(moduleName, file) {
+  return file === `${moduleName}.test.cjs`
+    || file.startsWith(`${moduleName}.`)
+    || file.startsWith(`${moduleName}-`);
+}
+
+/**
+ * Auto-derived candidates for `moduleName`: requires the module's artifact AND
+ * matches the naming rule. Does NOT apply that module's own `excludeTests` —
+ * callers combine that separately (`computeModuleTests` for the real shard,
+ * the guard for candidate enumeration).
+ */
+function deriveNamedTests(moduleName) {
+  return findRequiringTestFiles(moduleName).filter((f) => matchesModuleNamingRule(moduleName, f));
+}
+
+/**
+ * Final `tests` array for a COVERED entry: auto-derived (require + naming
+ * rule) UNION `extraTests` MINUS `excludeTests`, sorted, each prefixed
+ * `tests/`. Throws if `excludeTests` names a file that isn't actually a
+ * derived candidate (an exclusion of nothing is a stale/typo'd entry, not a
+ * real decision) or if `extraTests` names a file already auto-derived (that
+ * would silently mask which mechanism is responsible for its presence).
+ */
+function computeModuleTests(moduleName, entry) {
+  const derived = new Set(deriveNamedTests(moduleName));
+  const extra = entry.extraTests || [];
+  const exclude = entry.excludeTests || [];
+  for (const f of extra) {
+    if (derived.has(f)) {
+      throw new Error(`mutation-matrix: COVERED['${moduleName}'].extraTests names '${f}', which is already auto-derived — remove it from extraTests (it is redundant and hides which mechanism includes it)`);
+    }
+  }
+  for (const f of exclude) {
+    if (!derived.has(f)) {
+      throw new Error(`mutation-matrix: COVERED['${moduleName}'].excludeTests names '${f}', which is not an auto-derived candidate for this module — remove the stale exclusion`);
+    }
+  }
+  const excludeSet = new Set(exclude);
+  const final = new Set();
+  for (const f of derived) if (!excludeSet.has(f)) final.add(f);
+  for (const f of extra) final.add(f);
+  return [...final].sort().map((f) => `tests/${f}`);
+}
+
 // ── Single source of truth: covered modules ───────────────────────────────────
-// Each entry: { cjs: '<built artifact>', tests: ['tests/...', ...], minScore: N }
+// Each entry: { cjs: '<built artifact>', extraTests: [...], excludeTests: [...], minScore: N }
+// `tests` is no longer hand-written — computeModuleTests() derives it below
+// from direct `require()`s of the module's artifact (see the derivation-engine
+// header above). extraTests/excludeTests are the two REQUIRED, reasoned escape
+// hatches; leave both `[]` (omit the key) when a module needs neither.
 //
 // minScore is the CI break threshold for this module's shard.
 // Floors are measured scores minus 1–2 pts for run-to-run variance.
@@ -132,6 +295,15 @@ const TARGET_MUTATION_SCORE = 80;
 //     RATCHET_BASELINE — which lives in tests/mutation-matrix-ratchet.test.cjs, not here — is
 //     updated in the same diff as that procedure requires.
 //
+// PR #3888 (#3881 follow-up): the frontmatter shard's new tests were never registered here
+//   (only the pre-existing frontmatter.property/unit + unusable-input ran), so Stryker's
+//   mutants in the new vendored-parser adapter code had nothing constraining them. Score fell
+//   to 55.8% against the 65 floor (748 killed / 593 survived / 17 timeout) and the shard also
+//   blew the 15-minute cap. Fixed by registering the branch's four new/changed frontmatter
+//   test files in the tests array above (see that entry's inline comment for which files and
+//   why) and giving the shard a measured 180-minute budget via timeoutMinutes. minScore left
+//   at 65 pending a fresh CI measurement with the corrected test list.
+//
 // LESSON: floors MUST be calibrated from CI mutation runs (CI runs with
 // timeout≈0, deterministic). Local runs count timeouts as kills and
 // inflate scores significantly (prompt-budget: 99.6% local vs 68.3% CI;
@@ -140,80 +312,147 @@ const TARGET_MUTATION_SCORE = 80;
 const COVERED = {
   'context-utilization': {
     cjs: 'gsd-core/bin/lib/context-utilization.cjs',
-    tests: [
-      'tests/context-utilization.property.test.cjs',
-    ],
+    // Derived: context-utilization.property.test.cjs (pre-existing) +
+    // context-utilization.test.cjs (piece-2 derivation find: it directly requires and
+    // matches the naming rule, but was never hand-added to the old literal list —
+    // exactly the #3888 drift class this derivation exists to stop. Measured cost:
+    // +50ms over the property-only baseline (58ms -> 108ms, in-process, 0 subprocess
+    // spawns) — negligible for a shard whose floor is already at TARGET.
     // After mutation-killer assertions added in #1187: measured 92.31% (2026-06-14).
     // 3 survivors are __esModule boilerplate (genuinely equivalent CJS interop mutants).
-    // minScore raised to TARGET (80) — module now meets ADR-456 goal.
-    minScore: 80,
+    // minScore raised to TARGET (80) — module now meets ADR-456 goal. Not yet
+    // re-measured against the wider (derived) test list; the added file only adds
+    // assertions, never removes any, so the floor cannot have fallen.
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): measured 92.31% (unchanged from
+    // the #1187 measurement above — same test list, re-confirmed by the mutation
+    // ratchet's own audit). Floor = floor(92.31) - 1 = 91.
+    minScore: 91,
   },
   // context-composer: extracted from prompt-budget by #2929. Needs its own entry because
   // mutation coverage does not migrate with relocated code — scoring only prompt-budget.cjs
-  // would leave the extracted ladder unmeasured.
+  // would leave the extracted ladder unmeasured. Its own filename never matches the
+  // "context-composer*" naming rule for prompt-budget-parity.test.cjs / prompt-budget.unit.test.cjs
+  // — both genuinely constrain context-composer.cjs (the ladder was relocated INTO it), so
+  // both are declared via extraTests rather than silently missing from the derivation.
   'context-composer': {
     cjs: 'gsd-core/bin/lib/context-composer.cjs',
-    tests: [
-      'tests/prompt-budget-parity.test.cjs',
-      'tests/prompt-budget.unit.test.cjs',
-      'tests/context-composer.test.cjs',
-      'tests/context-composer.property.test.cjs',
+    extraTests: [
+      'prompt-budget-parity.test.cjs',
+      'prompt-budget.unit.test.cjs',
     ],
-    minScore: 66,
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): measured 79.92%. Floor =
+    // floor(79.92) - 1 = 78.
+    minScore: 78,
   },
   'prompt-budget': {
     cjs: 'gsd-core/bin/lib/prompt-budget.cjs',
-    tests: [
-      'tests/prompt-budget.property.test.cjs',
-      'tests/prompt-budget.unit.test.cjs',
-    ],
+    // Derived: property + unit (pre-existing) plus two piece-2 derivation finds that
+    // directly require prompt-budget.cjs and match the naming rule but were never in the
+    // old hand list — prompt-budget-parity.test.cjs and prompt-budget.test.cjs. Measured
+    // cost: 475ms (2-file) -> 527ms (4-file), in-process, 0 subprocess spawns; +52ms is
+    // negligible next to this module's own mutant count.
     // CI 68.33% timeout-free (164 killed / 1 timeout / 240 total) 2026-06-14;
-    // local was 99.6% — timeout inflation. Floor = 68 - 2 margin.
-    minScore: 66,
+    // local was 99.6% — timeout inflation. Floor = 68 - 2 margin. Not yet re-measured
+    // against the wider (derived) test list; both added files only add assertions, never
+    // remove any, so the floor cannot have fallen.
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): re-measured against the wider
+    // (derived) test list at 88.95%. Floor = floor(88.95) - 1 = 87.
+    minScore: 87,
   },
   frontmatter: {
     cjs: 'gsd-core/bin/lib/frontmatter.cjs',
-    tests: [
-      'tests/frontmatter.property.test.cjs',
-      'tests/frontmatter.unit.test.cjs',
-      // #1882 added the unterminated-fence detection to frontmatter.cjs, and the tests that
-      // constrain it live here. Without this entry the mutants in that branch are covered by
-      // no test in the shard, so the module's score drops even though the behaviour is tested.
-      'tests/unusable-input.test.cjs',
+    // extraTests: files that genuinely constrain frontmatter.cjs but do not match the
+    // "frontmatter*" naming rule, so the derivation cannot find them on its own —
+    // each earns its slot on evidence, not blanket inclusion (verified no two duplicate
+    // the same constraining assertion):
+    //   - unusable-input.test.cjs: #1882 added the unterminated-fence detection to
+    //     frontmatter.cjs, and the tests that constrain it live here. Without this entry
+    //     the mutants in that branch are covered by no test in the shard.
+    //   - feat-3881-yaml-parser-consequences.test.cjs: consequence/boundary matrix for the
+    //     #3881 parser swap (state-transition interop, unusable-input counters, and — as of
+    //     the piece-1 mutation-matrix fix below — the relocated anchor-alias-bomb + B1/B2
+    //     block-scalar assertions). Nothing else in the shard drives
+    //     extractFrontmatter/reconstructFrontmatter through those seams.
+    extraTests: [
+      'unusable-input.test.cjs',
+      'feat-3881-yaml-parser-consequences.test.cjs',
+    ],
+    // excludeTests: files the derivation WOULD auto-include (require frontmatter.cjs
+    // directly AND match the "frontmatter*" naming rule) but are deliberately withheld:
+    //   - frontmatter-cli.test.cjs: 778-line CLI-integration file, 39 subprocess-spawn
+    //     references (spawnSync/execFileSync/runGsdTools) — the same #2790
+    //     planning-inspect.test.cjs shape (a `node --test <file>` invocation Stryker's
+    //     command runner re-runs whole, once per mutant, at whatever its slowest spawn
+    //     case costs). Never measured in a shard; excluded up front on the same evidence
+    //     class rather than discovered by a timeout.
+    //   - frontmatter.test.cjs: mutation-matrix piece 1 (#3881 follow-up). This
+    //     2932-line integration file cost 3132ms of the shard's ~4800ms per-run
+    //     (measured via node:test's run() API — node --test is hard-blocked locally,
+    //     this is the sanctioned substitute), which at ~1850 mutants (source grew 1.8x
+    //     for #3881) projected to ~96 of the shard's 140-minute total. Its two
+    //     genuinely-unique assertion classes — anchor-alias-bomb refusal (billion-laughs
+    //     -style anchor/alias expansion must be rejected, not expanded) and the B1/B2
+    //     block-scalar assertions (parsing commands/gsd/add-tests.md must not invent a
+    //     phantom "Example" key) — were relocated verbatim into
+    //     feat-3881-yaml-parser-consequences.test.cjs (already in this shard via
+    //     extraTests above) rather than deleted, so the mutants they kill stay killed.
+    //     frontmatter.test.cjs itself is UNCHANGED and keeps running in the normal
+    //     (non-mutation) suite — only the mutation shard drops it.
+    excludeTests: [
+      'frontmatter-cli.test.cjs',
+      'frontmatter.test.cjs',
     ],
     minScore: 65,
+    // Wall-time projection, re-derived after piece 1 (dropping frontmatter.test.cjs) using
+    // this file's own documented method. Mutant-count factor is unchanged: source grew 1.8x
+    // for #3881 (1030 -> ~1850 mutants; see the #3888-era note this superseded for that
+    // derivation). Per-run test-command cost is re-measured on the CURRENT 6-file derived
+    // set (frontmatter.property/.unit/-golden-parity/-roundtrip.property + unusable-input +
+    // feat-3881-yaml-parser-consequences — the shard minus frontmatter.test.cjs and minus
+    // frontmatter-cli.test.cjs, neither of which was ever in a measured baseline): 1520ms,
+    // vs the documented OLD 3-file baseline of 593ms — a 2.56x per-run cost increase (down
+    // from the pre-piece-1 8x, since the file responsible for 3132ms of the old 4669ms
+    // 7-file run is gone). Applying both factors the same way the prior note did: 586s
+    // (documented 3-file/1030-mutant CI baseline) * 1.8 (mutants) * 2.56 (test cost) ~=
+    // 2700s (~45 minutes). Set to 60 minutes for margin above that projection (the same
+    // ~1.3x margin ratio the prior 180-minute budget used over its own 140-minute
+    // projection), well under GitHub Actions' 360-minute job ceiling and a 3x cut from the
+    // previous 180. Scoped to this shard only via timeoutMinutes below — every other shard
+    // keeps the 15-minute default.
+    timeoutMinutes: 60,
+    // isolation: intentionally NOT set (defaults to 'process' below) — unchanged from the
+    // prior audit: 'none' showed no reliable win once the test set grew past 3 files
+    // (overlapping distributions), and dropping frontmatter.test.cjs only shrinks the set
+    // further, so there is no new basis to revisit that call.
   },
+  // adr-parser / config-schema / active-workstream-store / core-utils: derivation reproduces
+  // their prior hand lists exactly (every constraining file's own name already matched the
+  // "<module>*" rule) — no extraTests/excludeTests needed. Note config-schema in particular:
+  // an UNFILTERED require-scan finds 22 files that require config-schema.cjs, but only
+  // config-schema.property.test.cjs matches the naming rule — the naming filter is what
+  // keeps this shard from silently ballooning to include spawn-heavy integration suites
+  // (e.g. graphify-auto-update.slow.test.cjs) that merely load config-schema as a fixture
+  // dependency of something else under test.
   'adr-parser': {
     cjs: 'gsd-core/bin/lib/adr-parser.cjs',
-    tests: [
-      'tests/adr-parser.property.test.cjs',
-      'tests/adr-parser.test.cjs',
-      'tests/adr-parser.unit.test.cjs',
-    ],
     minScore: 68,
   },
   'config-schema': {
     cjs: 'gsd-core/bin/lib/config-schema.cjs',
-    tests: [
-      'tests/config-schema.property.test.cjs',
-    ],
     // CI 54.55% timeout-free (18 killed / 0 timeout / 33 total) 2026-06-14;
     // local was 69.7% — timeout inflation. Floor = 54 - 2 margin.
-    minScore: 52,
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): measured 75.51%. Floor =
+    // floor(75.51) - 1 = 74.
+    minScore: 74,
   },
   'active-workstream-store': {
     cjs: 'gsd-core/bin/lib/active-workstream-store.cjs',
-    tests: [
-      'tests/active-workstream-store.test.cjs',
-      'tests/active-workstream-store.unit.test.cjs',
-    ],
-    minScore: 80,
+    // CI run 33012034388 (2026-08-25, #3881 ratchet): measured 87.42%. Floor =
+    // floor(87.42) - 1 = 86.
+    minScore: 86,
   },
   'core-utils': {
     cjs: 'gsd-core/bin/lib/core-utils.cjs',
-    tests: [
-      'tests/core-utils.test.cjs',
-    ],
     minScore: 75,  // measured 77.52% (2026-06-14, issue #1187); floor = 77 - 2
   },
   // planning-inspect / plan-document / planning-command-router: net-new modules
@@ -256,25 +495,29 @@ const COVERED = {
   // mutant, so 640 mutants x 20s could not finish inside the 15-minute shard
   // cap. The integration suite is unaffected by this change: it keeps running
   // in full in the normal (non-mutation) test job.
+  // planning-inspect's own name matches "planning-inspect.unit.test.cjs" via the naming
+  // rule, so that file is auto-derived. planning-inspect.test.cjs (the excluded integration
+  // file the comment above names) ALSO matches the naming rule and directly requires the
+  // module, so it must be an explicit excludeTests entry now — the derivation would
+  // otherwise auto-include it and reproduce the exact 15-minute-cap cancellation the
+  // comment above documents.
   'planning-inspect': {
     cjs: 'gsd-core/bin/lib/planning-inspect.cjs',
-    tests: [
-      'tests/planning-inspect.unit.test.cjs',
-    ],
+    excludeTests: ['planning-inspect.test.cjs'],
     minScore: 56,
   },
+  // plan-document / planning-command-router: their own names never appear in any test
+  // filename (the shared dedicated unit file is named after planning-inspect, the module
+  // #2790 extracted them alongside), so the naming-rule derivation finds nothing — same
+  // cross-cutting shape as context-composer above. Declared via extraTests.
   'plan-document': {
     cjs: 'gsd-core/bin/lib/plan-document.cjs',
-    tests: [
-      'tests/planning-inspect.unit.test.cjs',
-    ],
+    extraTests: ['planning-inspect.unit.test.cjs'],
     minScore: 75,
   },
   'planning-command-router': {
     cjs: 'gsd-core/bin/lib/planning-command-router.cjs',
-    tests: [
-      'tests/planning-inspect.unit.test.cjs',
-    ],
+    extraTests: ['planning-inspect.unit.test.cjs'],
     minScore: 94,
   },
   // model-catalog: net-new registration by #3007. The module was entirely
@@ -303,9 +546,13 @@ const COVERED = {
   // unit-file design above worked: the #2790 precedent's 15-minute shard-cap
   // cancellations do not apply here, and for comparison the `frontmatter`
   // shard in the same run took 9m46s.
+  // model-catalog: derivation finds two files never in the old hand list —
+  // model-catalog-runtime-defaults.test.cjs and model-catalog-valid-tiers.test.cjs — both
+  // directly require model-catalog.cjs and match the "model-catalog*" naming rule. Measured
+  // cost: 50ms (1-file) -> 196ms (3-file), in-process, 0 subprocess spawns; still far under
+  // the 57s the shard already measured for the single-file set.
   'model-catalog': {
     cjs: 'gsd-core/bin/lib/model-catalog.cjs',
-    tests: ['tests/model-catalog.unit.test.cjs'],
     minScore: 58,
   },
   // state-contract: net-new module from #3227. Without this entry the
@@ -336,12 +583,22 @@ const COVERED = {
   // timeouts as kills and inflate scores badly (this file already records
   // prompt-budget 99.6% local vs 68.33% CI, and config-schema 69.7% local vs
   // 54.55% CI).
+  // state-contract.test.cjs matches the naming rule and directly requires state-contract.cjs
+  // but is the same spawn-heavy integration shape as planning-inspect.test.cjs (446 lines,
+  // 16 subprocess-spawn references) — excluded explicitly rather than left to fall through.
   'state-contract': {
     cjs: 'gsd-core/bin/lib/state-contract.cjs',
-    tests: ['tests/state-contract.unit.test.cjs'],
+    excludeTests: ['state-contract.test.cjs'],
     minScore: 65,
   },
 };
+
+// Compute the final, derived `tests` array for every COVERED entry. Done once, after the
+// full COVERED literal above is built, so every entry's extraTests/excludeTests declarations
+// are visible to computeModuleTests regardless of source order.
+for (const [moduleName, entry] of Object.entries(COVERED)) {
+  entry.tests = computeModuleTests(moduleName, entry);
+}
 
 // ── Files that, when changed, invalidate ALL modules ─────────────────────────
 // Changes to the Stryker config, this script itself, or any covered test file
@@ -439,6 +696,15 @@ function buildResult(moduleNames) {
     mutate: COVERED[name].cjs,
     tests: COVERED[name].tests.join(' '),
     minScore: COVERED[name].minScore,
+    // node:test's default per-file process isolation; only modules that document a
+    // measured, audited need for 'none' opt out.
+    isolation: COVERED[name].isolation || 'process',
+    // Per-shard CI job timeout in minutes. Defaults to 15 (the shared per-shard budget);
+    // only a module that documents a measured need for more (see the frontmatter entry
+    // above) sets a higher value. Threaded through mutation.yml's job-level
+    // `timeout-minutes: ${{ matrix.timeoutMinutes }}` the same way `isolation` is threaded
+    // through the test-runner env.
+    timeoutMinutes: COVERED[name].timeoutMinutes || 15,
   }));
 
   return {
@@ -458,6 +724,8 @@ function printHuman(result, changedFiles) {
     console.log(`    mutate:   ${shard.mutate}`);
     console.log(`    tests:    ${shard.tests}`);
     console.log(`    minScore: ${shard.minScore}`);
+    console.log(`    isolation:${shard.isolation}`);
+    console.log(`    timeoutMinutes:${shard.timeoutMinutes}`);
   }
 }
 
@@ -520,6 +788,17 @@ function resolveMutationBreak(raw) {
 
 // Export internals for programmatic use (tests/mutation-matrix-ratchet.test.cjs).
 // The require.main guard prevents main() from running when this file is require()d.
-module.exports = { COVERED, TARGET_MUTATION_SCORE, resolveMutationBreak, readStdinSync };
+module.exports = {
+  COVERED,
+  TARGET_MUTATION_SCORE,
+  resolveMutationBreak,
+  readStdinSync,
+  // Derivation-engine internals — exported for tests/mutation-test-derivation-drift.test.cjs
+  // and scripts/lint-mutation-test-derivation-drift.cjs.
+  findRequiringTestFiles,
+  matchesModuleNamingRule,
+  deriveNamedTests,
+  computeModuleTests,
+};
 
 if (require.main === module) runMain(main);
