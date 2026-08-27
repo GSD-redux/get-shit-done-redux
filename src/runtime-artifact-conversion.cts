@@ -2949,7 +2949,13 @@ function restoreClaudeGlobalAtRefTilde(content, pathPrefix) {
   if (typeof pathPrefix !== 'string' || !pathPrefix.startsWith('$HOME')) return content;
   const tildeEquivalent = '~' + pathPrefix.slice('$HOME'.length);
   const atRefRe = new RegExp(`(?<!["'])@${escapeRegExp(pathPrefix)}`, 'g');
-  return content.replace(atRefRe, `@${tildeEquivalent}`);
+  // Function replacement, not a string. A string replacement treats `$&` and the
+  // backtick-dollar form in the SUBSTITUTION as special patterns, so a --config-dir
+  // containing either corrupts output: `$HOME/.cl$&ude/` yielded
+  // `@~/.cl@$HOME/.cl$&ude/ude/x`, and the backtick form silently DROPPED text.
+  // Pre-existing, and #3719 adds a THIRD call site to this sink — which is how the
+  // previous two came to share the defect in the first place.
+  return content.replace(atRefRe, () => `@${tildeEquivalent}`);
 }
 
 /**
@@ -3410,8 +3416,34 @@ function applyAgentPathRewrites(content: string, runtime: string, pathPrefix: st
   const normalizedPathPrefix = pathPrefix.replace(/\/$/, '');
   content = content.replace(/~\/\.claude\//g, pathPrefix);
   content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
-  content = content.replace(/~\/\.claude\b/g, normalizedPathPrefix);
-  content = content.replace(/\$HOME\/\.claude\b/g, normalizedPathPrefix);
+  // #3719 review (MAJOR): a bare `\b` is satisfied by ANY non-word character,
+  // including '-' — for a --config-dir whose name EXTENDS '.claude' (e.g.
+  // '.claude-work'), this re-matched the '.claude' PREFIX of the emitted
+  // '.claude-work' path and corrupted it to '.claude-work-work'. Guard with
+  // the SAME negative-lookahead convention already used at
+  // copyWithPathReplacement's call site (bin/install.js:7729-7730).
+  content = content.replace(/~\/\.claude(?![\w-])/g, normalizedPathPrefix);
+  content = content.replace(/\$HOME\/\.claude(?![\w-])/g, normalizedPathPrefix);
+  // #3719: the THIRD emit path that needed this restore. #3133 added it to the
+  // skill/command pipeline (`_applyRuntimeRewrites` case 'claude') and #3544 to
+  // bin/install.js's spec-tree copy; the agents pipeline never got it, so every
+  // `@~/.claude/...` include in a global Claude install shipped as `@$HOME/...`
+  // and resolved to NOTHING (27 of 34 emitted agents, 103 lines).
+  //
+  // Guarded on `claude` for the same reason the sibling call site lives inside
+  // `case 'claude'`: the helper self-guards only on the `$HOME` PREFIX, and every
+  // runtime's global prefix is a `$HOME` form (`$HOME/.cursor/`, ...), so an
+  // unguarded call would rewrite `@`-refs for runtimes whose resolver has no
+  // documented `~` expansion at all.
+  //
+  // Passed the NORMALIZED prefix, not `pathPrefix`. The two word-boundary
+  // replaces above emit the trailing-slash-free form, and the helper's regex is
+  // anchored to the exact prefix string it is handed — so `restore(pathPrefix)`
+  // fixes `@$HOME/.claude/x` and leaves a bare `@$HOME/.claude` broken. The
+  // normalized form is a PREFIX of both, so one call covers both.
+  if (runtime === 'claude') {
+    content = restoreClaudeGlobalAtRefTilde(content, normalizedPathPrefix);
+  }
   return content;
 }
 

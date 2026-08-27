@@ -41,6 +41,56 @@ import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import shellCommandProjection = require('./shell-command-projection.cjs');
 
+// ─── Line-ending normalization ─────────────────────────────────────────────────
+
+/**
+ * Normalize every line ending in `content` to a bare `\n`, ONCE — the shared
+ * seam every document-READ boundary in this codebase should route through
+ * (#3707-CR follow-up MAJOR).
+ *
+ * CommonMark treats a lone CR (no paired LF) as a line ending — such a
+ * document RENDERS as separate lines to a human reader — but a parser that
+ * splits/tokenizes/scans on `\n` alone treats a lone-CR-separated document as
+ * ONE unbroken line, hiding every row boundary in it. `src/uat.cts` originally
+ * carried this exact fix as a PRIVATE, unexported function applied inside two
+ * of its own parse functions (`parseUatItemsWithStats`, `parseCurrentTest`) —
+ * which is why two OTHER read sites in the same module (`cmdAuditUat`'s
+ * VERIFICATION and deferred-items.md ingresses) were missed: normalizing
+ * per-parser means every new parser must remember to call it. Promoted here,
+ * to the shared leaf module every document consumer can reach without a new
+ * dependency edge, so normalization can be applied at the READ boundary
+ * instead — every current and future parser fed from a boundary that calls
+ * this gets normalized text by construction.
+ *
+ * `/\r\n?/g` is deliberately ONE alternation, not two separate replaces: a
+ * two-pass `replace(/\r\n/g,'\n').replace(/\r/g,'\n')` is equivalent here
+ * because the first pass already consumes every CRLF pair before the second
+ * pass ever runs, but a single regex avoids relying on pass ORDER and matches
+ * greedily left-to-right in one scan, so a CRLF is always consumed as ONE
+ * unit (never left as a stray trailing `\r` after the `\n` half is matched
+ * first) and a lone CR — including one immediately followed by nothing, i.e.
+ * at EOF, or by another lone CR — is still replaced.
+ *
+ * This is deliberately NOT a length-preserving transform (CRLF, two UTF-16
+ * units, becomes LF, one), so any offsets a caller computes must be compared
+ * only against THIS normalized string, never against the original raw text.
+ *
+ * U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR (#3078-CR) are
+ * DELIBERATELY NOT folded here, unlike `\r`/`\r\n`. Folding is unnecessary:
+ * `String.prototype.split('\n')` never treats U+2028/U+2029 as a delimiter,
+ * so an exotic separator can never manufacture a fake line start for a
+ * consumer that scans lines produced by `split('\n')`, rather than anchoring
+ * a multiline (`/m`) regex directly over unsplit text. Only the latter
+ * pattern is vulnerable to the ECMA-262 LineTerminator set including these
+ * two code points. This module performs no line-anchored matching of its
+ * own; a caller that scans lines should split first and match per-line
+ * rather than anchor `/m` over unsplit text — this comment makes no claim
+ * about whether any particular caller currently does so.
+ */
+function normalizeLineEndings(content: string): string {
+  return content.replace(/\r\n?/g, '\n');
+}
+
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
 /**
@@ -459,6 +509,7 @@ function findOrphanSummaries(planFiles: string[], summaryFiles: string[]): strin
 
 export = {
   toPosixPath,
+  normalizeLineEndings,
   detectSubRepos,
   extractOneLinerFromBody,
   pathExistsInternal,
