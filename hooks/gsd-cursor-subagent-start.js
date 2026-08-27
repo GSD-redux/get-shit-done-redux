@@ -56,6 +56,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { allow } = require('./lib/hook-exit.js');
 
 // Workspace resolution is shared across the Cursor hooks (#2587) — see
 // hooks/lib/cursor-workspace.js. Staged next to these scripts by
@@ -568,7 +569,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
 function main() {
   let raw = '';
   const stdinTimeout = setTimeout(() => {
-    process.exit(0);
+    allow(undefined);
   }, 10000);
 
   process.stdin.setEncoding('utf8');

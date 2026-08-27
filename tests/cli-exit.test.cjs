@@ -1196,6 +1196,84 @@ describe('#3906: terminateNow', () => {
     assert.equal(r.stderr, '', `expected empty stderr for a non-deny outcome; got: ${r.stderr}`);
   });
 
+  test('#3911: terminateNow(PASS, undefined) exits 0 with empty stdout', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('PASS', undefined);`,
+    ]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.stdout, '', `expected empty stdout, got: ${r.stdout}`);
+    assert.equal(r.stderr, '', `expected empty stderr, got: ${r.stderr}`);
+  });
+
+  test('#3911: terminateNow(HOOK_DENY, undefined) exits 2 with EMPTY stdout and EMPTY stderr', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', undefined);`,
+    ]);
+    assert.equal(r.status, 2, `stderr: ${r.stderr}`);
+    assert.equal(r.stdout, '', `expected empty stdout, got: ${r.stdout}`);
+    assert.equal(r.stderr, '', `expected empty stderr, got: ${r.stderr}`);
+  });
+
+  // The defect this whole file is regressing (#3911): `deny(undefined,
+  // 'some reason')` used to exit 2 with EMPTY stderr because the fd1 write of
+  // `undefined` threw (JSON.stringify(undefined) -> undefined,
+  // Buffer.from(undefined,'utf8') throws) and the SHARED try/catch aborted
+  // before the fd2 write of `stderrPayload` ever ran.
+  test('#3911: terminateNow(HOOK_DENY, undefined, "reason text") exits 2 with EMPTY stdout and stderr EXACTLY "reason text"', () => {
+    const r = spawnTerminateNow([
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', undefined, 'reason text');`,
+    ]);
+    assert.equal(r.status, 2, `stderr: ${r.stderr}`);
+    assert.equal(r.stdout, '', `expected empty stdout, got: ${r.stdout}`);
+    assert.equal(r.stderr, 'reason text', `expected exactly "reason text" on stderr, got: ${r.stderr}`);
+  });
+
+  // ── #3911 regression: the two stream emissions are INDEPENDENT ───────────
+  // These two tests are the direct regression coverage for the defect: a
+  // shared try/catch around both writes meant a failure serializing/writing
+  // fd 1 aborted before fd 2 (or vice versa) ever ran. Both must FAIL against
+  // the pre-fix single-try-block implementation.
+  test('#3911 regression: fd 1 write throws but fd 2 STILL receives its payload, exit code unchanged', () => {
+    const r = spawnTerminateNow([
+      `const fs = require('node:fs');`,
+      `const origWriteSync = fs.writeSync;`,
+      `fs.writeSync = (fd, ...rest) => {`,
+      `  if (fd === 1) throw new Error('injected fd1 failure');`,
+      `  return origWriteSync(fd, ...rest);`,
+      `};`,
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', { reason: 'fd1-throws' });`,
+    ]);
+    assert.equal(r.status, 2, `exit code must be unchanged by the fd1 failure; stderr: ${r.stderr}`);
+    assert.equal(r.stdout, '', 'fd1 write failed, so stdout must be empty (not a partial payload)');
+    assert.deepEqual(
+      JSON.parse(r.stderr), { reason: 'fd1-throws' },
+      `fd2 must still receive its payload despite the fd1 failure; got: ${r.stderr}`,
+    );
+  });
+
+  test('#3911 regression: fd 2 write throws but fd 1 STILL receives its payload, exit code unchanged', () => {
+    const r = spawnTerminateNow([
+      `const fs = require('node:fs');`,
+      `const origWriteSync = fs.writeSync;`,
+      `fs.writeSync = (fd, ...rest) => {`,
+      `  if (fd === 2) throw new Error('injected fd2 failure');`,
+      `  return origWriteSync(fd, ...rest);`,
+      `};`,
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.terminateNow('HOOK_DENY', { reason: 'fd2-throws' });`,
+    ]);
+    assert.equal(r.status, 2, `exit code must be unchanged by the fd2 failure; stderr: ${r.stderr}`);
+    assert.deepEqual(
+      JSON.parse(r.stdout), { reason: 'fd2-throws' },
+      `fd1 must still receive its payload despite the fd2 failure; got: ${r.stdout}`,
+    );
+    assert.equal(r.stderr, '', 'fd2 write failed, so stderr must be empty (not a partial payload)');
+  });
+
   // Cross-platform IO-failure injection: a monkeypatched THROWING fs.writeSync,
   // restored implicitly by process exit — never chmod (CONTRIBUTING.md /
   // CLAUDE.md: mode-bit tricks are bypassed by root/CI and leak resources).

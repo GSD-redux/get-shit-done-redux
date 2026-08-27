@@ -384,6 +384,7 @@
   "hooks/gsd-cursor-subagent-start.js",
   "hooks/gsd-cursor-subagent-stop.js",
   "hooks/lib/cursor-workspace.js",
+  "hooks/lib/hook-exit.js",
   "hooks/lib/isolation-deny-reason.js",
   "hooks/lib/isolation-sentinel.js",
   "hooks/package.json",

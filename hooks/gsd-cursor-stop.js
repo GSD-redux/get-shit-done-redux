@@ -21,6 +21,7 @@
 'use strict';
 
 const fs = require('fs');
+const { allow } = require('./lib/hook-exit.js');
 
 // Workspace resolution is shared across the Cursor hooks (#2587) — see
 // hooks/lib/cursor-workspace.js. Staged next to these scripts by
@@ -29,7 +30,7 @@ const { resolveStatePath } = require('./lib/cursor-workspace.js');
 
 let raw = '';
 const stdinTimeout = setTimeout(() => {
-  process.exit(0);
+  allow(undefined);
 }, 10000);
 
 process.stdin.setEncoding('utf8');

@@ -20,8 +20,10 @@
 
 'use strict';
 
+const { allow } = require('./lib/hook-exit.js');
+
 const stdinTimeout = setTimeout(() => {
-  process.exit(0);
+  allow(undefined);
 }, 10000);
 
 process.stdin.setEncoding('utf8');
