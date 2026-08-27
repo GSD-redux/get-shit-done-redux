@@ -14,6 +14,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
 
 const MODULE_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'assumption-delta.cjs');
 
@@ -175,7 +176,10 @@ describe('detectAssumptionDelta — pure detector (#1561)', () => {
 });
 
 describe('assumption-delta CLI — STDIN exit codes (mirrors ui-safety-gate)', () => {
-  // Exit code contract: 0 = signal detected, 1 = none, 2 = usage/startup error.
+  // Exit code contract: 0 = signal detected, 1 = genuine negative (real input,
+  // no signal). Empty/whitespace-only stdin and a stdin read error are NOT
+  // "1" — nothing was examined, so they resolve NO_INPUT / UNAVAILABLE via
+  // the exit-code registry (see the ADR-3889 Phase 3 describe block below).
   function runCli(stdin) {
     const res = spawnSync(process.execPath, [MODULE_PATH], {
       input: stdin,
@@ -195,9 +199,13 @@ describe('assumption-delta CLI — STDIN exit codes (mirrors ui-safety-gate)', (
     assert.strictEqual(r.status, 1);
   });
 
-  test('exit 1 on empty stdin (no signal)', () => {
+  // Empty stdin is NOT a "no signal" verdict — nothing was examined, so it
+  // must be distinct from the genuine-negative case directly above (real
+  // input, no cue found). Per ADR-3889 Phase 3 (#3907), it resolves the
+  // registry's NO_INPUT code, never a hardcoded exit status.
+  test('exit NO_INPUT on empty stdin (nothing examined, not a genuine negative)', () => {
     const r = runCli('');
-    assert.strictEqual(r.status, 1);
+    assert.strictEqual(r.status, exitCodeFor('NO_INPUT'));
   });
 
   test('--json emits typed IR with detected field on stdout (exit 0)', () => {
@@ -258,7 +266,6 @@ describe('assumption-delta CLI — STDIN exit codes (mirrors ui-safety-gate)', (
 // ──────────────────────────────────────────────────────────────────────────────
 describe('assumption-delta CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #3907)', () => {
   const INJECT_STDIN_ERROR = path.join(__dirname, 'helpers', 'inject-stdin-error.cjs');
-  const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
   const { runNode } = require('./helpers/process-seam.cjs');
   const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
