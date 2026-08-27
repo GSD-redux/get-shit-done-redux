@@ -341,14 +341,12 @@ Run this pass whenever the source-grounding pass ran — it is the second axis o
 
 **Coverage, never silence.** If STATE.md or CONTEXT.md is absent, that axis is skipped and the skip is recorded in the same "Verification coverage" block. A clean pass must never mean "nothing was compared."
 
-After agent returns, verify REVIEWS.md exists. Assign the path directly and quote it, and fail
-closed when it is unreadable: an unquoted `${phase_dir}` inside `$(ls …)` word-splits on a space
-and glob-expands a metacharacter into a sibling phase's file, and the discarded stderr hid both
-(#3899).
+After agent returns, verify REVIEWS.md exists. Assign the path directly and quote it — an unquoted
+`${phase_dir}` inside `$(ls …)` word-splits and glob-expands, and a discarded stderr hides it (#3899):
 ```bash
 REVIEWS_FILE="${phase_dir}/${padded_phase}-REVIEWS.md"
-if [ ! -r "${REVIEWS_FILE}" ]; then
-  echo "BLOCKED: expected reviews file is not readable: '${REVIEWS_FILE}'. Confirm the phase directory resolved correctly before concluding the review agent produced nothing." >&2
+if [ ! -f "${REVIEWS_FILE}" ] || [ ! -r "${REVIEWS_FILE}" ]; then
+  echo "BLOCKED: expected reviews file is not a readable file: '${REVIEWS_FILE}'. Confirm the phase directory resolved correctly before concluding the review agent produced nothing." >&2
   exit 1
 fi
 ```

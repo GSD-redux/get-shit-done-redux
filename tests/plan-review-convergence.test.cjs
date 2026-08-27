@@ -2206,24 +2206,33 @@ describe('#2398 — reviewer-instances cross-reference', () => {
 // block EXECUTES the fragment against real fixtures instead of reading it.
 
 /**
- * The REVIEWS.md resolution fragment, extracted from the workflow by content — the
- * bash fence that ASSIGNS `REVIEWS_FILE` — so re-ordering the document cannot
- * silently point the harness at a fence that merely reads the variable.
+ * The REVIEWS.md resolution fragment, extracted from the workflow and RUN.
+ *
+ * Anchored to the post-review verification step, not searched document-wide: filtering
+ * the whole file for "a bash fence that assigns REVIEWS_FILE" would keep passing if the
+ * real fence stopped assigning it and some unrelated fence started — the harness would
+ * then execute the wrong block and report green. The span runs from the step's opening
+ * sentence to the next `###` heading, which is the same boundary the #1956 fact-drift
+ * suite anchors on above (`AFTER_AGENT_LINE`).
  */
 function extractReviewsFileResolution3899() {
   // allow-test-rule: source-text-is-the-product (#3899)
   // The workflow markdown IS the runtime instruction; this fence is the shell an
   // orchestrator runs. It is extracted to be executed below, not string-matched.
-  const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
-  const blocks = workflow
-    .split(/```/)
-    .filter((f) => /^bash\r?\n/.test(f) && /^REVIEWS_FILE=/m.test(f));
+  const workflow = readFileNormalized(WORKFLOW_PATH);
+  const start = workflow.search(/^After agent returns, verify REVIEWS\.md exists/m);
+  assert.ok(start >= 0, 'workflow must retain the "After agent returns…" verification step');
+  const rest = workflow.slice(start);
+  const nextHeading = rest.search(/^### /m);
+  const span = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+
+  const blocks = span.split('```').filter((f) => /^bash\n/.test(f) && /^REVIEWS_FILE=/m.test(f));
   assert.equal(
     blocks.length,
     1,
-    `expected exactly one bash fence assigning REVIEWS_FILE, found ${blocks.length}`,
+    `expected exactly one bash fence assigning REVIEWS_FILE in the verification step, found ${blocks.length}`,
   );
-  return blocks[0].replace(/^bash\r?\n/, '');
+  return blocks[0].replace(/^bash\n/, '');
 }
 
 /** Run the extracted fragment with `phase_dir` / `padded_phase` bound, and echo what it resolved. */
@@ -2326,16 +2335,36 @@ describe('#3899 REVIEWS.md path resolution is path-safe and fails closed', () =>
     });
   });
 
-  test('the resolution keeps no silent-empty path — no ls, no discarded stderr', () => {
+  test('a directory standing in for the reviews file exits non-zero', posixOnly, () => {
+    withPhaseDir3899('My Projects', { reviews: null }, (phaseDir, reviewsFile) => {
+      // `[ -r ]` alone is true for a readable DIRECTORY, so the gate would pass and hand
+      // a directory to the consumers that read the file.
+      fs.mkdirSync(reviewsFile);
+      const r = runReviewsFileResolution3899(phaseDir);
+      assert.equal(r.outcome, OUTCOME.EXITED);
+      assert.notEqual(r.exitCode, 0, 'a directory is not a reviews file — it must fail closed');
+      assert.ok(r.stderr.includes(reviewsFile), `the error must name the path, got: ${r.stderr}`);
+    });
+  });
+
+  test('the resolution keeps no silent-empty path — no subshell, no discarded stderr', () => {
     const fragment = extractReviewsFileResolution3899();
-    const assignment = fragment.split(/\r?\n/).find((line) => /^REVIEWS_FILE=/.test(line));
+    const lines = fragment.split('\n');
+    const assignment = lines.find((line) => /^REVIEWS_FILE=/.test(line));
     assert.ok(assignment, 'no REVIEWS_FILE assignment in the extracted fence');
+    // Both subshell spellings: `$(ls …)` is what shipped, and a backtick rewrite would
+    // reintroduce the identical word-splitting through a form `$(`-only matching misses.
     assert.ok(
-      !/\$\(/.test(assignment),
+      !/\$\(|`/.test(assignment),
       `the assignment must not run a subshell, got: ${assignment}`,
     );
-    assert.ok(
-      !/2>\s*\/dev\/null/.test(fragment),
+    // Scoped to the lines that touch REVIEWS_FILE rather than the whole fence: an unrelated
+    // future redirect elsewhere in the block is not this bug, and banning it globally would
+    // red the suite for a change that cannot reintroduce the defect.
+    const discarded = lines.filter((l) => /REVIEWS_FILE/.test(l) && /2>\s*\/dev\/null/.test(l));
+    assert.deepEqual(
+      discarded,
+      [],
       'the existence check must not discard stderr — that is what hid the path error',
     );
   });
