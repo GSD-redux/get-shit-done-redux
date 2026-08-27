@@ -168,7 +168,9 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'phase.test.cjs': ['docs/adr/3524-...md', 'docs/adr/3524-cjs-sdk-hard-seam.md'],
   'pr-branch-planning-filter.test.cjs': ['docs/readme.md'],
   'precommit-alias-drift-hook.test.cjs': ['docs/adr/0174-...md', 'docs/adr/0174-retire-gsd-sdk-package-boundary.md'],
-  'removed-but-needed-lint.test.cjs': ['docs/getting-started.md', 'docs/gsd-new-workspace.md', 'docs/setup.md'],
+  'removed-but-needed-lint.test.cjs': [
+    'docs/README.md', 'docs/getting-started.md', 'docs/gsd-new-workspace.md', 'docs/setup.md', 'docs/some-doc.md',
+  ],
   'repo-invariants.test.cjs': ['docs/FEATURES.md', 'docs/workflows/README'],
   'require-issue-link-policy.test.cjs': ['docs/-prefixed', 'docs/CONFIGURATION.md', 'docs/a.md', 'docs/b.md', 'docs/guide.md'],
   'reviewer-manifest-body.test.cjs': ['docs/how-to/ship-a-reviewer-lane.md'],

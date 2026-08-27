@@ -1,4 +1,4 @@
-// docs-guard-exempt: docs/getting-started.md and docs/setup.md are synthetic { file, content } corpus fixtures fed to a lint checker, not real repo docs.
+// docs-guard-exempt: docs/getting-started.md, docs/setup.md, docs/README.md, and docs/some-doc.md are synthetic { file, content } corpus fixtures fed to a lint checker, not real repo docs.
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 
@@ -22,6 +22,8 @@ const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-removed-but-needed.cjs');
 const {
   referencesBasename,
+  referencesPath,
+  buildSurvivingBasenames,
   referencesNpmLockfileDependency,
   findSurvivingReferences,
   classifyTestReference,
@@ -62,6 +64,84 @@ describe('removed-but-needed lint: referencesNpmLockfileDependency (pure)', () =
 
   test('an unrelated workflow step is not flagged', () => {
     assert.equal(referencesNpmLockfileDependency('      run: npm run build'), false);
+  });
+});
+
+// ─── #3907: basename-collision refinement — match by full path, not bare
+// basename, when the deleted file's basename also belongs to a surviving
+// file. The original defect shape: #3907 deleted `bin/lib/ui-safety-gate.cjs`
+// while the SEPARATE, still-live `gsd-core/bin/lib/ui-safety-gate.cjs`
+// survived — every reference to the survivor (including the survivor
+// referencing itself) was misattributed to the deletion.
+
+describe('removed-but-needed lint: referencesPath (pure, #3907)', () => {
+  test('an exact full-path reference is found', () => {
+    assert.equal(referencesPath('see bin/lib/ui-safety-gate.cjs for the old copy', 'bin/lib/ui-safety-gate.cjs'), true);
+  });
+
+  test('a longer path that has the target as a SUFFIX is NOT a false match', () => {
+    assert.equal(
+      referencesPath('canonical: gsd-core/bin/lib/ui-safety-gate.cjs', 'bin/lib/ui-safety-gate.cjs'),
+      false,
+    );
+  });
+
+  test('no reference at all is not found', () => {
+    assert.equal(referencesPath('nothing to see here', 'bin/lib/ui-safety-gate.cjs'), false);
+  });
+});
+
+describe('removed-but-needed lint: buildSurvivingBasenames (pure, #3907)', () => {
+  test('collects basenames from repo-relative paths', () => {
+    const set = buildSurvivingBasenames(['gsd-core/bin/lib/ui-safety-gate.cjs', 'docs/README.md']);
+    assert.equal(set.has('ui-safety-gate.cjs'), true);
+    assert.equal(set.has('README.md'), true);
+    assert.equal(set.has('nope.md'), false);
+  });
+});
+
+describe('removed-but-needed lint: findSurvivingReferences basename-collision refinement (#3907)', () => {
+  test('PROBE 1 — unique basename, surviving reference STILL FAILS (refinement did not neuter the guard)', () => {
+    const violations = findSurvivingReferences(
+      ['bin/lib/unique-only.cjs'],
+      [{ file: 'gsd-core/some-consumer.cjs', content: "require('./unique-only.cjs')" }],
+      buildSurvivingBasenames(['gsd-core/some-consumer.cjs']),
+    );
+    assert.equal(violations.length, 1);
+    assert.match(violations[0].reason, /basename 'unique-only\.cjs' still referenced/);
+  });
+
+  test('PROBE 2 — colliding basename, FULL-PATH reference to the deleted file STILL FAILS', () => {
+    const survivingBasenames = buildSurvivingBasenames(['gsd-core/bin/lib/ui-safety-gate.cjs']);
+    const violations = findSurvivingReferences(
+      ['bin/lib/ui-safety-gate.cjs'],
+      [{ file: 'docs/some-doc.md', content: 'see bin/lib/ui-safety-gate.cjs for the old copy' }],
+      survivingBasenames,
+    );
+    assert.equal(violations.length, 1);
+    assert.match(violations[0].reason, /full path 'bin\/lib\/ui-safety-gate\.cjs' still referenced/);
+  });
+
+  test('PROBE 3 — colliding basename, bare-basename reference only PASSES (the actual #3907 shape)', () => {
+    const survivingBasenames = buildSurvivingBasenames(['gsd-core/bin/lib/ui-safety-gate.cjs']);
+    const violations = findSurvivingReferences(
+      ['bin/lib/ui-safety-gate.cjs'],
+      [
+        { file: 'gsd-core/bin/lib/check-command-router.cjs', content: "require('./ui-safety-gate.cjs')" },
+        { file: 'gsd-core/bin/lib/ui-safety-gate.cjs', content: '// canonical gsd-core/bin/lib/ui-safety-gate.cjs' },
+      ],
+      survivingBasenames,
+    );
+    assert.deepEqual(violations, []);
+  });
+
+  test('no collision (default empty set): behaviour is unchanged from the original basename rule', () => {
+    const violations = findSurvivingReferences(
+      ['bin/lib/ui-safety-gate.cjs'],
+      [{ file: 'gsd-core/bin/lib/check-command-router.cjs', content: "require('./ui-safety-gate.cjs')" }],
+    );
+    assert.equal(violations.length, 1);
+    assert.match(violations[0].reason, /basename 'ui-safety-gate\.cjs' still referenced/);
   });
 });
 
@@ -228,6 +308,58 @@ describe('removed-but-needed lint: main() end-to-end wiring', () => {
     );
     assert.equal(result.exitCode, 0, `expected graceful skip (exit 0), got ${result.exitCode}: ${result.stderr}`);
     assert.match(result.stdout, /skipping/);
+  });
+});
+
+describe('removed-but-needed lint: main() end-to-end, basename-collision refinement (#3907)', () => {
+  test('exit 0 reproducing the real #3907 shape: deleted root copy, surviving gsd-core twin referencing itself', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-removed-but-needed-e2e-collision-clean-'));
+    t.after(() => cleanup(tmpDir));
+    buildTempRepo(
+      tmpDir,
+      [
+        { file: 'bin/lib/ui-safety-gate.cjs', content: '// root copy\n' },
+        {
+          file: 'gsd-core/bin/lib/ui-safety-gate.cjs',
+          content: '// canonical gsd-core/bin/lib/ui-safety-gate.cjs\nmodule.exports = {};\n',
+        },
+        {
+          file: 'gsd-core/bin/lib/check-command-router.cjs',
+          content: "require('./ui-safety-gate.cjs');\n",
+        },
+      ],
+      [{ file: 'bin/lib/ui-safety-gate.cjs', content: null }],
+    );
+    const scriptCopy = copyScriptInto(tmpDir);
+    const result = runNode(
+      [scriptCopy],
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
+    );
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
+  });
+
+  test('exit 1 when, despite the basename collision, something still references the deleted file by its FULL PATH', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-removed-but-needed-e2e-collision-full-path-'));
+    t.after(() => cleanup(tmpDir));
+    buildTempRepo(
+      tmpDir,
+      [
+        { file: 'bin/lib/ui-safety-gate.cjs', content: '// root copy\n' },
+        {
+          file: 'gsd-core/bin/lib/ui-safety-gate.cjs',
+          content: '// canonical gsd-core/bin/lib/ui-safety-gate.cjs\nmodule.exports = {};\n',
+        },
+        { file: 'docs/setup.md', content: 'run: node bin/lib/ui-safety-gate.cjs to check\n' },
+      ],
+      [{ file: 'bin/lib/ui-safety-gate.cjs', content: null }],
+    );
+    const scriptCopy = copyScriptInto(tmpDir);
+    const result = runNode(
+      [scriptCopy],
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
+    );
+    assert.equal(result.exitCode, 1, `expected exit 1, got ${result.exitCode}: ${result.stderr}`);
+    assert.match(result.stderr, /full path 'bin\/lib\/ui-safety-gate\.cjs' still referenced/);
   });
 });
 

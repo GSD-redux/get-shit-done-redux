@@ -1003,3 +1003,115 @@ describe('api-coverage CLI — STDIN + exit codes', () => {
     assert.strictEqual(r.exitCode, 1);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ADR-3889 Phase 3 (#3907): NO_INPUT / UNAVAILABLE — empty/whitespace-only
+// stdin and a stdin read error must not be reported as the authoritative
+// "no integration" verdict (exit 1). Spawns the REAL module (not the pure
+// detector) and asserts on the child's exit status + parsed stdout, per
+// RULESET.TESTS.
+// ──────────────────────────────────────────────────────────────────────────────
+describe('api-coverage CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #3907)', () => {
+  const CLI = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'api-coverage.cjs');
+  const INJECT_STDIN_ERROR = path.join(__dirname, 'helpers', 'inject-stdin-error.cjs');
+  const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+  function runCliJson(stdin, extraArgs = [], extraEnv = {}) {
+    const r = runNode([CLI, '--json', ...extraArgs], {
+      input: stdin,
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { ...process.env, ...extraEnv },
+    });
+    return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+  }
+
+  // ── The controls (load-bearing): without these, "always return NO_INPUT"
+  // would satisfy the empty/whitespace-only assertions below. ──────────────
+  test('control: detected input still exits 0 with unchanged --json payload', () => {
+    const r = runCliJson('Integrate the Stripe API for payments');
+    assert.strictEqual(r.exitCode, 0);
+    const body = JSON.parse(r.stdout);
+    assert.strictEqual(body.detected, true);
+    assert.ok(!('skipped' in body), 'a detected result must not carry a skipped key');
+  });
+
+  test('control: genuine-negative (real input, no signal) still exits 1, not NO_INPUT', () => {
+    const r = runCliJson('Refactor the login helper');
+    assert.strictEqual(r.exitCode, 1);
+    const body = JSON.parse(r.stdout);
+    assert.strictEqual(body.detected, false);
+    assert.deepStrictEqual(body.signals, []);
+    assert.ok(!('skipped' in body), 'a genuine no-signal result must not carry a skipped key');
+  });
+
+  test('empty stdin exits NO_INPUT (registry integer, never hardcoded)', () => {
+    const r = runCliJson('');
+    assert.strictEqual(r.exitCode, exitCodeFor('NO_INPUT'));
+  });
+
+  test('whitespace-only stdin (spaces / newlines / tabs / CRLF) exits NO_INPUT', () => {
+    for (const ws of ['   ', '\n\n\n', '\t\t\t', '\r\n\r\n', '  \n\t\r\n  ']) {
+      const r = runCliJson(ws);
+      assert.strictEqual(r.exitCode, exitCodeFor('NO_INPUT'), `ws=${JSON.stringify(ws)}`);
+    }
+  });
+
+  test('"x" and " x " are REAL input — must NOT be NO_INPUT', () => {
+    const bare = runCliJson('x');
+    assert.notStrictEqual(bare.exitCode, exitCodeFor('NO_INPUT'));
+    assert.strictEqual(bare.exitCode, 1);
+
+    const padded = runCliJson(' x ');
+    assert.notStrictEqual(padded.exitCode, exitCodeFor('NO_INPUT'));
+    assert.strictEqual(padded.exitCode, 1);
+  });
+
+  test('a NUL byte is real input (not stripped by whitespace trimming)', () => {
+    const r = runCliJson('\0');
+    assert.notStrictEqual(r.exitCode, exitCodeFor('NO_INPUT'));
+    assert.strictEqual(r.exitCode, 1);
+  });
+
+  test('--json empty stdin: {"skipped":true,"reason":"no_input"} with NO detected key', () => {
+    const r = runCliJson('');
+    const body = JSON.parse(r.stdout);
+    assert.deepStrictEqual(body, { skipped: true, reason: 'no_input' });
+    assert.ok(!('detected' in body), 'skipped payload must not carry a detected key');
+  });
+
+  test('--verbs foo with empty stdin is still NO_INPUT (flag does not bypass the input check)', () => {
+    const r = runCliJson('', ['--verbs', 'foo']);
+    assert.strictEqual(r.exitCode, exitCodeFor('NO_INPUT'));
+  });
+
+  test('empty --verbs/--nouns value still restores curated defaults (unrelated to stdin gating)', () => {
+    const r = runCliJson('Integrate the Stripe API for payments', ['--verbs', '', '--nouns', '']);
+    assert.strictEqual(r.exitCode, 0, 'empty flag values must fall back to defaults → still detects');
+    const body = JSON.parse(r.stdout);
+    assert.strictEqual(body.detected, true);
+  });
+
+  test('a stdin read error exits UNAVAILABLE (injected via monkeypatched process.stdin, not chmod)', () => {
+    const r = runNode(['-r', INJECT_STDIN_ERROR, CLI, '--json'], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(r.exitCode, exitCodeFor('UNAVAILABLE'));
+    const body = JSON.parse(r.stdout);
+    assert.deepStrictEqual(body, { skipped: true, reason: 'stdin_error' });
+    assert.ok(!('detected' in body));
+    assert.notStrictEqual(body.reason, 'no_input', 'stdin_error must be distinguishable from no_input');
+  });
+
+  test('NO_INPUT / UNAVAILABLE codes are identical under GSD_EXIT_CONTRACT=v1 and v2', () => {
+    for (const version of ['v1', 'v2']) {
+      const emptyResult = runCliJson('', [], { GSD_EXIT_CONTRACT: version });
+      assert.strictEqual(emptyResult.exitCode, exitCodeFor('NO_INPUT'), `NO_INPUT under ${version}`);
+
+      const errResult = runNode(['-r', INJECT_STDIN_ERROR, CLI, '--json'], {
+        timeoutMs: PROBE_TIMEOUT_MS,
+        env: { ...process.env, GSD_EXIT_CONTRACT: version },
+      });
+      assert.strictEqual(errResult.exitCode, exitCodeFor('UNAVAILABLE'), `UNAVAILABLE under ${version}`);
+    }
+  });
+});
