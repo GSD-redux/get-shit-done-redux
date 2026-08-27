@@ -1313,7 +1313,7 @@ function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, un
 
     commit_docs: config.commit_docs,
 
-    project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
+    project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     has_codebase_map: hasCodebaseMap,
     planning_exists: pathExistsInternal(cwd, '.planning'),
 
@@ -1386,7 +1386,7 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
         )
       : null,
 
-    project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
+    project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
 
@@ -1514,7 +1514,7 @@ function cmdInitQuick(
 function cmdInitIngestDocs(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
   const result: Record<string, unknown> = {
-    project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
+    project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     planning_exists: fs.existsSync(planningRoot(cwd)),
     ...getInitGitState(cwd),
     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase. The
@@ -1565,7 +1565,7 @@ function cmdInitResume(cwd: string, raw: boolean): void {
   const result: Record<string, unknown> = {
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
-    project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
+    project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     planning_exists: fs.existsSync(planningRoot(cwd)),
 
     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
@@ -2295,7 +2295,7 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
     archived_milestones: archivedMilestones,
     archive_count: archivedMilestones.length,
 
-    project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
+    project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
     archive_exists: fs.existsSync(path.join(planningRoot(cwd), 'archive')),
@@ -2711,7 +2711,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     waiting_signal: waitingSignal,
     all_complete:
       completedCount === nonBacklogPhases.length && nonBacklogPhases.length > 0,
-    project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
+    project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     roadmap_exists: true,
     state_exists: true,
     manager_flags: managerFlags,
@@ -3231,7 +3231,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     has_work_in_progress: !!currentPhase,
     phase_mvp_mode: phaseMvpMode,
 
-    project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
+    project_exists: pathExistsInternal(cwd, toPosixPath(path.relative(cwd, path.join(planningDir(cwd), 'PROJECT.md')))),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.

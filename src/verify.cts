@@ -55,7 +55,7 @@ type HealthDiagnostic = healthDiagnosticMod.Diagnostic;
 import planningSnapshotMod = require('./planning-snapshot.cjs');
 const { buildPlanningSnapshot } = planningSnapshotMod;
 
-const { planningDir, planningRoot } = planningWorkspace;
+const { planningDir } = planningWorkspace;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
 const { readStateHeadFreshness } = stateMod;
 
@@ -1604,8 +1604,10 @@ function cmdValidateHealth(
     return;
   }
 
-  // rootBase always resolves to .planning/ (shared root — PROJECT.md, config.json live here)
-  const rootBase = planningRoot(cwd);
+  // rootBase resolves to the PROJECT-scoped planning root (`.planning[/<project>]`
+  // — PROJECT.md, config.json live here; #3749). Workstream-free by construction:
+  // planningDir(cwd, null) honors GSD_PROJECT and suppresses GSD_WORKSTREAM.
+  const rootBase = planningDir(cwd, null);
   const _slashRuntime = resolveRuntime(cwd);
   const slash = (name: string) => formatGsdSlash(name, _slashRuntime) as string;
 
