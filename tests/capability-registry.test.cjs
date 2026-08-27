@@ -913,6 +913,45 @@ describe('ADR-857 phase 6 planning feature capabilities', () => {
   });
 });
 
+describe('#3778 — plan:pre contribution set feeding the quick.md planner dispatch', () => {
+  const realRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
+
+  test('at least one plan:pre contribution is registered', () => {
+    const planPreContributions = realRegistry.byLoopPoint['plan:pre'].contributions;
+    assert.ok(
+      planPreContributions.length > 0,
+      'the real registry must declare at least one plan:pre contribution for quick.md to dispatch',
+    );
+  });
+
+  test('every plan:pre contribution has a non-empty into target and a non-empty fragment.inline', () => {
+    const planPreContributions = realRegistry.byLoopPoint['plan:pre'].contributions;
+    for (const contribution of planPreContributions) {
+      assert.ok(
+        typeof contribution.into === 'string' && contribution.into.length > 0,
+        `contribution from ${contribution.capId} must declare a non-empty into target`,
+      );
+      assert.ok(
+        typeof contribution.fragment?.inline === 'string' && contribution.fragment.inline.length > 0,
+        `contribution from ${contribution.capId} must declare a non-empty fragment.inline`,
+      );
+    }
+  });
+
+  test('the registry, as a whole, carries at least one non-planner-into contribution (D-07 exclusion is meaningful)', () => {
+    // Built from the real registry's own capabilities export, with no dependency
+    // on which capabilities happen to be locally installed — D-07's "into ==
+    // planner" filter in quick.md only means something if a non-planner
+    // contribution actually exists SOMEWHERE in the registry to be excluded.
+    const allContributions = Object.values(realRegistry.byLoopPoint).flatMap((point) => point.contributions);
+    const nonPlannerContributions = allContributions.filter((c) => c.into !== 'planner');
+    assert.ok(
+      nonPlannerContributions.length > 0,
+      'registry must carry at least one non-planner-into contribution for the planner filter to be meaningful',
+    );
+  });
+});
+
 // ─── 6. Fix regression guards ────────────────────────────────────────────────
 
 describe('Fix #1: consumes-satisfiability is point-order-aware', () => {

@@ -438,6 +438,31 @@ describe('module exports', () => {
   });
 });
 
+// ─── #3778 — quick.md must never become a 6th loop-host file ──────────────────
+
+describe('quick.md is not a loop-host file (D-09 regression pin, #3778)', () => {
+  test('STEP_WORKFLOWS still names exactly the 5 canonical loop-host files, quick.md absent', () => {
+    const names = STEP_WORKFLOWS.map((w) => w.file);
+    assert.strictEqual(STEP_WORKFLOWS.length, 5, 'STEP_WORKFLOWS must stay at exactly 5 entries');
+    assert.ok(!names.includes('quick.md'), 'quick.md must never be added to STEP_WORKFLOWS');
+  });
+
+  test('parseLoopHostBlock throws on real quick.md content — it carries no <!-- gsd:loop-host --> marker', () => {
+    const quickPath = path.join(ROOT, 'gsd-core', 'workflows', 'quick.md');
+    const content = fs.readFileSync(quickPath, 'utf8');
+    assert.throws(
+      () => parseLoopHostBlock(content, 'quick.md'),
+      /missing <!-- gsd:loop-host \.\.\. --> block/,
+      'quick.md dispatching plan:pre must not gain a loop-host marker block',
+    );
+  });
+
+  test('buildContract() still yields exactly 5 entries with quick.md unmodified on disk', () => {
+    const contract = buildContract(); // reads real gsd-core/workflows/
+    assert.strictEqual(contract.length, 5, 'buildContract() must still produce exactly 5 step entries');
+  });
+});
+
 // ─── 8. Regression: FIX 1 — per-step point ownership ────────────────────────
 
 describe('assertPointsCoverage per-step ownership (FIX 1)', () => {

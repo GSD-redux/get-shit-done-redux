@@ -73,4 +73,70 @@ describe('quick workflow: plan:pre capability dispatch (#3778)', () => {
     const dispatchSlice = content.slice(callSiteIdx, spawnIdx);
     assert.doesNotMatch(dispatchSlice, /capId\s*={2,3}/, 'dispatch text must not narrow on a specific capId');
   });
+
+  test('the dispatch paragraph states injection is in array order (D-06)', () => {
+    const content = readFileNormalized(QUICK_PATH);
+    const callSiteIdx = content.indexOf('loop render-hooks plan:pre');
+    const spawnIdx = content.indexOf('subagent_type="gsd-planner"');
+    const dispatchSlice = content.slice(callSiteIdx, spawnIdx);
+    assert.match(dispatchSlice, /array order/, 'dispatch paragraph should state injection is in array order');
+  });
+
+  /**
+   * Extract the single brace-delimited injection instruction inside
+   * <planning_context> (open brace through its matching close). The literal
+   * `{For each active entry` prefix is used as the search anchor rather than
+   * a bare `content.indexOf('{', ...)` scan — `${AGENT_SKILLS_PLANNER}` and
+   * every `${VALIDATE_MODE ? ... : ...}` ternary in the surrounding prompt
+   * string also contain brace pairs, so a naive first-`{` search would match
+   * inside one of those instead.
+   */
+  function extractInjectionBlock() {
+    const content = readFileNormalized(QUICK_PATH);
+    const start = content.indexOf('{For each active entry');
+    assert.notEqual(start, -1, 'quick.md should contain the plan:pre injection instruction');
+    const end = content.indexOf('}', start);
+    assert.notEqual(end, -1, 'injection instruction should have a matching close brace');
+    return { content, start, end: end + 1, block: content.slice(start, end + 1) };
+  }
+
+  test('the injection block names the planner role — non-planner contributions excluded (D-07)', () => {
+    const { block } = extractInjectionBlock();
+    assert.match(block, /into\s*={2,3}\s*"planner"/, 'injection block must name the planner role discriminator');
+  });
+
+  test('the omit-when-empty (silent no-op) guarantee sits inside the injection block itself (D-02, prose-contract)', () => {
+    // Prose-contract assertion: no behavioral seam exists to observe prompt
+    // byte-identity when no contributions are active, because the prompt is
+    // assembled by an agent reading Markdown, not by code. This asserts the
+    // omit-when-empty clause is present INSIDE the same brace-delimited
+    // injection instruction, not merely somewhere in the surrounding region.
+    const { block } = extractInjectionBlock();
+    assert.match(
+      block,
+      /no active planner contributions exist.*omit this block entirely/i,
+      'injection block must state the silent no-op guarantee for the empty case',
+    );
+  });
+
+  test('exactly one gsd-planner spawn in quick.md (D-03: standard, --full, --validate share it)', () => {
+    const content = readFileNormalized(QUICK_PATH);
+    const matches = content.match(/subagent_type="gsd-planner"/g) || [];
+    assert.strictEqual(matches.length, 1, 'quick.md must contain exactly one gsd-planner spawn');
+  });
+
+  test('render call, agent-skills placeholder, injection block, and spawn are in the required order (D-08)', () => {
+    const { content, start: injectionIdx } = extractInjectionBlock();
+    const renderCallIdx = content.indexOf('loop render-hooks plan:pre');
+    const agentSkillsIdx = content.indexOf('${AGENT_SKILLS_PLANNER}');
+    const spawnIdx = content.indexOf('subagent_type="gsd-planner"');
+
+    assert.ok(renderCallIdx !== -1 && agentSkillsIdx !== -1 && spawnIdx !== -1, 'all four anchors must exist');
+    assert.ok(renderCallIdx < agentSkillsIdx, 'the render call must precede the agent-skills placeholder');
+    assert.ok(
+      agentSkillsIdx < injectionIdx,
+      'the agent-skills placeholder must remain BEFORE the contribution injection block (D-08)',
+    );
+    assert.ok(injectionIdx < spawnIdx, 'the injection block must precede the planner spawn');
+  });
 });
