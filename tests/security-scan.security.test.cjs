@@ -644,63 +644,51 @@ describe('scanner exit-code contract', { skip: IS_WINDOWS }, () => {
 
   // ── Controls ───────────────────────────────────────────────────────────
   describe('controls: clean scan / findings scan / mixed diff still work', () => {
-    test('secret-scan: clean scan with a real file still exits 0', () => {
+    test('secret-scan: clean scan with a real file still exits 0', (t) => {
       const repo = createTempGitProject('gsd-scan-clean-secret-');
-      try {
-        gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        fs.writeFileSync(path.join(repo, 'code.txt'), 'clean text content\n');
-        gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        gitOrThrow(['commit', '-m', 'add clean file'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        const result = runScanner(SCRIPTS.secret, ['--diff', 'base-branch'], { cwd: repo });
-        assert.equal(result.exitCode, 0, result.stdout + result.stderr);
-      } finally {
-        cleanup(repo);
-      }
+      t.after(() => cleanup(repo));
+      gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      fs.writeFileSync(path.join(repo, 'code.txt'), 'clean text content\n');
+      gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      gitOrThrow(['commit', '-m', 'add clean file'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      const result = runScanner(SCRIPTS.secret, ['--diff', 'base-branch'], { cwd: repo });
+      assert.equal(result.exitCode, 0, result.stdout + result.stderr);
     });
 
-    test('secret-scan: a diff WITH a real secret still reports findings (exit 1)', () => {
+    test('secret-scan: a diff WITH a real secret still reports findings (exit 1)', (t) => {
       const repo = createTempGitProject('gsd-scan-findings-secret-');
-      try {
-        gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        const key = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
-        fs.writeFileSync(path.join(repo, 'secret.txt'), `aws_key = "${key}"\n`);
-        gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        gitOrThrow(['commit', '-m', 'add secret'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        const result = runScanner(SCRIPTS.secret, ['--diff', 'base-branch'], { cwd: repo });
-        assert.equal(result.exitCode, 1, result.stdout + result.stderr);
-        assert.ok(result.stdout.includes('FAIL'));
-      } finally {
-        cleanup(repo);
-      }
+      t.after(() => cleanup(repo));
+      gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      const key = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+      fs.writeFileSync(path.join(repo, 'secret.txt'), `aws_key = "${key}"\n`);
+      gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      gitOrThrow(['commit', '-m', 'add secret'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      const result = runScanner(SCRIPTS.secret, ['--diff', 'base-branch'], { cwd: repo });
+      assert.equal(result.exitCode, 1, result.stdout + result.stderr);
+      assert.ok(result.stdout.includes('FAIL'));
     });
 
-    test('prompt-injection-scan: mixed images+code diff scans the code file (exit 0, clean)', () => {
+    test('prompt-injection-scan: mixed images+code diff scans the code file (exit 0, clean)', (t) => {
       const repo = createTempGitProject('gsd-scan-mixed-');
-      try {
-        gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        fs.writeFileSync(path.join(repo, 'pic.png'), 'fake png bytes');
-        fs.writeFileSync(path.join(repo, 'clean.md'), '# Clean docs\n');
-        gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        gitOrThrow(['commit', '-m', 'mixed'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
-        const result = runScanner(SCRIPTS.injection, ['--diff', 'base-branch'], { cwd: repo });
-        assert.equal(result.exitCode, 0, result.stdout + result.stderr);
-      } finally {
-        cleanup(repo);
-      }
+      t.after(() => cleanup(repo));
+      gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      fs.writeFileSync(path.join(repo, 'pic.png'), 'fake png bytes');
+      fs.writeFileSync(path.join(repo, 'clean.md'), '# Clean docs\n');
+      gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      gitOrThrow(['commit', '-m', 'mixed'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      const result = runScanner(SCRIPTS.injection, ['--diff', 'base-branch'], { cwd: repo });
+      assert.equal(result.exitCode, 0, result.stdout + result.stderr);
     });
 
-    test('--file / --dir / --stdin controls still scan and pass on clean content', () => {
+    test('--file / --dir / --stdin controls still scan and pass on clean content', (t) => {
       const repo = createTempGitProject('gsd-scan-modes-');
-      try {
-        const cleanFile = path.join(repo, 'clean.md');
-        fs.writeFileSync(cleanFile, '# Clean docs\n');
-        assert.equal(runScanner(SCRIPTS.injection, ['--file', cleanFile]).exitCode, 0);
-        assert.equal(runScanner(SCRIPTS.injection, ['--dir', repo]).exitCode, 0);
-        const stdinResult = runScanner(SCRIPTS.injection, ['--stdin'], { input: '# clean\n' });
-        assert.equal(stdinResult.exitCode, 0);
-      } finally {
-        cleanup(repo);
-      }
+      t.after(() => cleanup(repo));
+      const cleanFile = path.join(repo, 'clean.md');
+      fs.writeFileSync(cleanFile, '# Clean docs\n');
+      assert.equal(runScanner(SCRIPTS.injection, ['--file', cleanFile]).exitCode, 0);
+      assert.equal(runScanner(SCRIPTS.injection, ['--dir', repo]).exitCode, 0);
+      const stdinResult = runScanner(SCRIPTS.injection, ['--stdin'], { input: '# clean\n' });
+      assert.equal(stdinResult.exitCode, 0);
     });
   });
 
@@ -747,15 +735,12 @@ describe('scanner exit-code contract', { skip: IS_WINDOWS }, () => {
     }
 
     for (const [name, scriptPath] of SCANNERS) {
-      test(name, () => {
+      test(name, (t) => {
         const { root, dest } = isolatedCopyWithNoRegistry(scriptPath);
-        try {
-          const result = runScanner(dest, ['--diff', 'origin/next']);
-          assert.ok(Number.isInteger(result.exitCode), `expected a numeric exit code, got ${result.exitCode}`);
-          assert.notEqual(result.exitCode, 0, 'a missing exit-code registry must never silently exit 0');
-        } finally {
-          cleanup(root);
-        }
+        t.after(() => cleanup(root));
+        const result = runScanner(dest, ['--diff', 'origin/next']);
+        assert.ok(Number.isInteger(result.exitCode), `expected a numeric exit code, got ${result.exitCode}`);
+        assert.notEqual(result.exitCode, 0, 'a missing exit-code registry must never silently exit 0');
       });
     }
   });

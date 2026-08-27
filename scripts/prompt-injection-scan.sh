@@ -193,19 +193,30 @@ collect_files() {
     --diff)
       local base="${1:-origin/main}"
       # Run git separately from the filter pipe so its OWN exit status (not
-      # grep's) decides whether the diff could be established, and its
-      # diagnostic survives instead of being discarded by `2>/dev/null`.
+      # grep's) decides whether the diff could be established. stdout and
+      # stderr are captured SEPARATELY (never merged with `2>&1`) so that a
+      # warning git writes to stderr on an otherwise successful diff can
+      # never be mistaken for a filename in the file list. On failure the
+      # captured stderr is emitted as the diagnostic; on success it is
+      # forwarded as a warning, never folded into the file list.
       # `|| true` on the filter below is CORRECT (not gratuitous): `grep -E`
       # exits 1 when nothing matches the scannable extensions (e.g. a diff
       # touching only non-scannable file types), which is a legitimate empty
       # result, not a failure to run.
-      local raw status
-      raw=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD 2>&1)
+      local raw status err_file
+      err_file=$(mktemp)
+      raw=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD 2>"$err_file")
       status=$?
       if (( status != 0 )); then
-        printf '%s\n' "$raw" >&2
+        cat "$err_file" >&2
+        rm -f "$err_file"
         exit "$EXIT_UNAVAILABLE"
       fi
+      if [[ -s "$err_file" ]]; then
+        echo "Warning: git diff emitted stderr output:" >&2
+        cat "$err_file" >&2
+      fi
+      rm -f "$err_file"
       printf '%s\n' "$raw" | grep -E '\.(md|cjs|js|json|yml|yaml|sh)$' || true
       ;;
     --file)
@@ -223,15 +234,23 @@ collect_files() {
         exit "$EXIT_USAGE"
       fi
       # Same treatment as --diff: a `find` that fails (e.g. permission
-      # denied) must not be reported as an empty directory.
-      local raw status
+      # denied) must not be reported as an empty directory, and stdout/stderr
+      # are captured separately so a stderr warning never enters the file list.
+      local raw status err_file
+      err_file=$(mktemp)
       raw=$(find "$dir" -type f \( -name '*.md' -o -name '*.cjs' -o -name '*.js' -o -name '*.json' -o -name '*.yml' -o -name '*.yaml' -o -name '*.sh' \) \
-        ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/dist/*' 2>&1)
+        ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/dist/*' 2>"$err_file")
       status=$?
       if (( status != 0 )); then
-        printf '%s\n' "$raw" >&2
+        cat "$err_file" >&2
+        rm -f "$err_file"
         exit "$EXIT_UNAVAILABLE"
       fi
+      if [[ -s "$err_file" ]]; then
+        echo "Warning: find emitted stderr output:" >&2
+        cat "$err_file" >&2
+      fi
+      rm -f "$err_file"
       printf '%s\n' "$raw"
       ;;
     --stdin)
