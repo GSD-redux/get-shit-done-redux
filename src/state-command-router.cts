@@ -18,7 +18,7 @@ import { STATE_SUBCOMMANDS } from './command-aliases.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import cjsCommandRouterAdapter = require('./cjs-command-router-adapter.cjs');
 const { routeHubCommandFamily } = cjsCommandRouterAdapter;
-import { parseNamedArgs } from './command-arg-projection.cjs';
+import { parseNamedArgsOrExit } from './command-arg-projection.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -91,8 +91,19 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
     handlers: {
       load: () => state.cmdStateLoad(cwd, raw),
       json: () => state.cmdStateJson(cwd, raw),
-      get: () => state.cmdStateGet(cwd, args[2], raw),
-      update: () => state.cmdStateUpdate(cwd, args[2], args[3]),
+      // ADR-3473 §8.4 / #3358 gap: these two read args[2]/args[3] positionally
+      // without ever calling parseNamedArgsOrExit, so an unrecognized flag or
+      // stray positional was silently dropped instead of rejected. No flags
+      // are declared — none are documented for these subcommands
+      // (docs/CLI-TOOLS.md:86,89) and no shipped workflow passes any.
+      get: () => {
+        parseNamedArgsOrExit(args, { positionals: 3 }, error);
+        state.cmdStateGet(cwd, args[2], raw);
+      },
+      update: () => {
+        parseNamedArgsOrExit(args, { positionals: 4 }, error);
+        state.cmdStateUpdate(cwd, args[2], args[3]);
+      },
       patch: () => {
         const patches: Record<string, string> = {};
         if (args.length === 3 && typeof args[2] === 'string' && args[2].trim().startsWith('{')) {
@@ -126,7 +137,7 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
       },
       'advance-plan': () => state.cmdStateAdvancePlan(cwd, raw),
       'record-metric': () => {
-        const a = parseNamedArgs(args, ['phase', 'plan', 'duration', 'tasks', 'files']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['phase', 'plan', 'duration', 'tasks', 'files'], positionals: 2 }, error);
         state.cmdStateRecordMetric(cwd, {
           phase: strArg(a, 'phase'),
           plan: strArg(a, 'plan'),
@@ -137,7 +148,7 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
       },
       'update-progress': () => state.cmdStateUpdateProgress(cwd, raw),
       'add-decision': () => {
-        const a = parseNamedArgs(args, ['phase', 'summary', 'summary-file', 'rationale', 'rationale-file']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['phase', 'summary', 'summary-file', 'rationale', 'rationale-file'], positionals: 2 }, error);
         state.cmdStateAddDecision(cwd, {
           phase: strArg(a, 'phase'),
           summary: strArg(a, 'summary'),
@@ -147,11 +158,11 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
         }, raw);
       },
       'add-blocker': () => {
-        const a = parseNamedArgs(args, ['text', 'text-file']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['text', 'text-file'], positionals: 2 }, error);
         state.cmdStateAddBlocker(cwd, { text: strArg(a, 'text'), text_file: strArg(a, 'text-file') }, raw);
       },
       'add-roadmap-evolution': () => {
-        const a = parseNamedArgs(args, ['phase', 'action', 'after', 'note', 'note-file'], ['urgent']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['phase', 'action', 'after', 'note', 'note-file'], booleanFlags: ['urgent'], positionals: 2 }, error);
         state.cmdStateAddRoadmapEvolution(cwd, {
           phase: strArg(a, 'phase'),
           action: strArg(a, 'action'),
@@ -161,25 +172,25 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
           urgent: a['urgent'] === true,
         }, raw);
       },
-      'resolve-blocker': () => state.cmdStateResolveBlocker(cwd, strArg(parseNamedArgs(args, ['text']), 'text'), raw),
+      'resolve-blocker': () => state.cmdStateResolveBlocker(cwd, strArg(parseNamedArgsOrExit(args, { valueFlags: ['text'], positionals: 2 }, error), 'text'), raw),
       'record-session': () => {
-        const a = parseNamedArgs(args, ['stopped-at', 'resume-file']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['stopped-at', 'resume-file'], positionals: 2 }, error);
         // Pass resume_file as-is (undefined when --resume-file was not provided) so
         // cmdStateRecordSession can distinguish "caller explicitly passed a value" from
         // "option was not supplied" and apply the template-default-only replacement guard.
         state.cmdStateRecordSession(cwd, { stopped_at: strArg(a, 'stopped-at'), resume_file: strArg(a, 'resume-file') }, raw);
       },
       'begin-phase': () => {
-        const a = parseNamedArgs(args, ['phase', 'name', 'plans']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['phase', 'name', 'plans'], positionals: 2 }, error);
         state.cmdStateBeginPhase(cwd, strArg(a, 'phase'), strArg(a, 'name'), parsePlans(strArg(a, 'plans')), raw);
       },
       'signal-waiting': () => {
-        const a = parseNamedArgs(args, ['type', 'question', 'options', 'phase']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['type', 'question', 'options', 'phase'], positionals: 2 }, error);
         state.cmdSignalWaiting(cwd, strArg(a, 'type'), strArg(a, 'question'), strArg(a, 'options'), strArg(a, 'phase'), raw);
       },
       'signal-resume': () => state.cmdSignalResume(cwd, raw),
       'planned-phase': () => {
-        const a = parseNamedArgs(args, ['phase', 'name', 'plans']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['phase', 'name', 'plans'], positionals: 2 }, error);
         // #3395: --name was parsed here but never forwarded (the StateModule
         // signature had no channel for it), so the argument was silently
         // dropped. It now persists into the Current Position `Phase:` line and
@@ -190,28 +201,44 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
         // #3696: --strict makes the verdict gateable by exit status. The
         // default stays exit 0 — the exit code is Tier-2 observable output
         // reaching unenumerable downstream consumers (ADR-3180 Decision 3).
-        const a = parseNamedArgs(args, [], ['strict']);
+        const a = parseNamedArgsOrExit(args, { booleanFlags: ['strict'], positionals: 2 }, error);
         state.cmdStateValidate(cwd, raw, { strict: a['strict'] === true });
       },
       sync: () => {
-        const a = parseNamedArgs(args, [], ['verify']);
+        const a = parseNamedArgsOrExit(args, { booleanFlags: ['verify'], positionals: 2 }, error);
         state.cmdStateSync(cwd, { verify: a['verify'] }, raw);
       },
       prune: () => {
-        const a = parseNamedArgs(args, ['keep-recent'], ['dry-run']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['keep-recent'], booleanFlags: ['dry-run'], positionals: 2 }, error);
         state.cmdStatePrune(cwd, { keepRecent: strArg(a, 'keep-recent') || '3', dryRun: a['dry-run'] === true }, raw);
       },
       rebuild: () => {
-        const a = parseNamedArgs(args, [], ['dry-run', 'verbose']);
+        const a = parseNamedArgsOrExit(args, { booleanFlags: ['dry-run', 'verbose'], positionals: 2 }, error);
         state.cmdStateRebuild(cwd, { dryRun: a['dry-run'] === true, verbose: a['verbose'] === true }, raw);
       },
-      // complete-phase: CJS-only — no SDK counterpart.
+      // complete-phase: CJS-only — no SDK counterpart. Supports two shapes:
+      // the documented `--phase N` flag (docs/COMMANDS.md:2207) and an
+      // undocumented-but-preserved bare positional `state complete-phase N`
+      // (N3). A single static `positionals` count cannot represent both: if
+      // args[2] is the flag `--phase`, the boundary must be 2 so the generic
+      // flag/value walk (which starts at the boundary) recognizes `--phase`
+      // and consumes its value; only when args[2] is itself a bare, non-flag
+      // token does the boundary widen to 3 to accept it as the positional
+      // phase. Getting this wrong either breaks the documented flag form
+      // (boundary 3 treats `--phase`'s value as an unexpected trailing
+      // positional) or silently re-admits unknown flags (a static boundary
+      // of 3 with an empty args[2] never validates anything past it).
       'complete-phase': () => {
-        const a = parseNamedArgs(args, ['phase']);
+        const bareTrailingPositional = args[2] !== undefined && !args[2].startsWith('--');
+        const a = parseNamedArgsOrExit(
+          args,
+          { valueFlags: ['phase'], positionals: bareTrailingPositional ? 3 : 2 },
+          error,
+        );
         state.cmdStateCompletePhase(cwd, raw, strArg(a, 'phase') || args[2]);
       },
       'milestone-switch': () => {
-        const a = parseNamedArgs(args, ['milestone', 'name']);
+        const a = parseNamedArgsOrExit(args, { valueFlags: ['milestone', 'name'], positionals: 2 }, error);
         state.cmdStateMilestoneSwitch(cwd, strArg(a, 'milestone'), strArg(a, 'name'), raw);
       },
     },

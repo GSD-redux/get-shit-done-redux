@@ -1689,7 +1689,12 @@ describe('verify key-links command', () => {
     writePlanWithKeyLinks(tmpDir, [
       '- from: "src/a.js"',
       '  to: "src/b.js"',
-      '  pattern: "exports\\.targetFunc"',
+      // ADR-3473 §8.1 (#3881): a bare `\.` inside a YAML double-quoted scalar is not a
+      // recognized escape sequence — `\\.` (a real backslash escaping itself, then a literal
+      // dot) is the valid spelling for the same intended pattern string `exports\.targetFunc`.
+      // The old hand-rolled parseMustHavesBlock never validated YAML escape rules and
+      // silently accepted the invalid form; the vendored js-yaml parser correctly refuses it.
+      '  pattern: "exports\\\\.targetFunc"',
     ]);
     // pattern NOT in source, but found in target
     fs.writeFileSync(path.join(tmpDir, 'src', 'a.js'), 'const x = 1;\n');

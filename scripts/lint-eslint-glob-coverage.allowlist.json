@@ -8,6 +8,10 @@
     "reason": "Vendored third-party type declaration (#3477): a .d.cts carries no executable code, so no ESLint rule is meaningful; the vendored .cjs it describes is globally ignored as verbatim upstream output. Freshness is enforced by scripts/lint-vendored-deps.cjs, not by lint rules."
   },
   {
+    "path": "src/vendor/js-yaml.d.cts",
+    "reason": "Vendored third-party type declaration (ADR-3473 §8.1, #3881): a .d.cts carries no executable code, so no ESLint rule is meaningful; the vendored js-yaml .cjs it describes is globally ignored as verbatim upstream output (gsd-core/bin/lib/vendor/**). Freshness is enforced by scripts/lint-vendored-deps.cjs, not by lint rules — same precedent as src/vendor/re2js.d.cts above."
+  },
+  {
     "path": "tests/fixtures/brand-typing/bad-calibrated-as-sample-basis.cts",
     "reason": "Deliberate MUST-NOT-COMPILE type-error fixture (#3059): type-aware linting would fail by design; it exists to prove the compiler rejects it."
   },

@@ -21,6 +21,9 @@ import { platformWriteSync, platformReadSync, platformEnsureDir } from './shell-
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import capabilityStateMod = require('./capability-state.cjs');
 const { isCapabilityActive } = capabilityStateMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import ioMod = require('./io.cjs');
+const { formatDiagnosticToken } = ioMod;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -33,6 +36,17 @@ const INTEL_FILES: Record<string, string> = {
   arch: 'arch-decisions.json',
   stack: 'stack.json',
 };
+
+/**
+ * ADR-3473 §8.5 / #3885: recursion bound for the intel JSON search walk.
+ * Restored from the retired SDK lineage (`sdk/src/query/intel.ts` at `11918dcc3^`),
+ * lost in the ADR-0174 consolidation. Unlike the original, hitting the ceiling is
+ * NOT reported as a silent "no match" — the walk that stops early sets a
+ * `truncated` flag threaded back up to `intelQuery`'s result (Decision 4: a
+ * routine that discards an input says so). The bound is on DEPTH only; breadth
+ * (sibling count at any given depth) is unaffected.
+ */
+const MAX_JSON_SEARCH_DEPTH = 48;
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
@@ -93,14 +107,39 @@ interface IntelData {
 
 /**
  * Safely read and parse a JSON intel file.
- * Returns null if file doesn't exist or can't be parsed.
+ *
+ * Returns null for THREE distinct on-disk states, only one of which is a
+ * "quiet" case (#3885, ADR-3473 §8.5):
+ *   - ABSENT (ENOENT, via platformReadSync returning null): silent — not
+ *     every project has every intel file, and callers already loop over
+ *     the full INTEL_FILES set expecting misses. Never pushed to `errors`.
+ *   - UNREADABLE (EACCES/EIO/... — platformReadSync rethrows anything that
+ *     isn't ENOENT): surfaced, naming the file, when `errors` is supplied.
+ *   - MALFORMED (JSON.parse throws on a file that WAS read successfully):
+ *     also surfaced, naming the file — a corrupt intel file used to read
+ *     identically to "no matches", which is the same defect one layer down.
+ *
+ * `errors` is an optional accumulator so callers that want to thread the
+ * outcome into their own result shape can pass an array and read it back
+ * after the call; callers that omit it keep the prior fold-to-null shape.
  */
-function safeReadJson(filePath: string): IntelData | null {
+function safeReadJson(filePath: string, errors?: string[]): IntelData | null {
+  let raw: string | null;
   try {
-    const raw = platformReadSync(filePath);
-    if (raw === null) return null;
+    raw = platformReadSync(filePath);
+  } catch (err) {
+    if (errors) {
+      errors.push(`Could not read ${formatDiagnosticToken(filePath)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`);
+    }
+    return null;
+  }
+  if (raw === null) return null; // ENOENT — genuinely absent, not an error.
+  try {
     return JSON.parse(raw) as IntelData;
-  } catch {
+  } catch (err) {
+    if (errors) {
+      errors.push(`Could not parse ${formatDiagnosticToken(filePath)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`);
+    }
     return null;
   }
 }
@@ -124,18 +163,34 @@ interface SearchMatch {
   value: unknown;
 }
 
+interface SearchWalkResult {
+  matches: SearchMatch[];
+  truncated: boolean;
+}
+
+/**
+ * Mutable walk state shared across one searchJsonEntries invocation's
+ * recursive matchesInValue calls. Set to true the moment ANY branch of the
+ * walk actually hits MAX_JSON_SEARCH_DEPTH and stops recursing further —
+ * never inferred from an empty result (a shallow miss must not set this).
+ */
+interface SearchWalkState {
+  truncated: boolean;
+}
+
 /**
  * Search for a term (case-insensitive) in a JSON object's keys and string values.
- * Returns an array of matching entries.
+ * Returns matching entries plus whether the walk hit MAX_JSON_SEARCH_DEPTH.
  */
-function searchJsonEntries(data: IntelData, term: string): SearchMatch[] {
-  if (!data || typeof data !== 'object') return [];
+function searchJsonEntries(data: IntelData, term: string): SearchWalkResult {
+  if (!data || typeof data !== 'object') return { matches: [], truncated: false };
 
   const entries = data.entries || data;
-  if (!entries || typeof entries !== 'object') return [];
+  if (!entries || typeof entries !== 'object') return { matches: [], truncated: false };
 
   const lowerTerm = term.toLowerCase();
   const matches: SearchMatch[] = [];
+  const state: SearchWalkState = { truncated: false };
 
   for (const [key, value] of Object.entries(entries)) {
     if (key === '_meta') continue;
@@ -146,27 +201,42 @@ function searchJsonEntries(data: IntelData, term: string): SearchMatch[] {
       continue;
     }
 
-    // Check string value match (recursive for objects)
-    if (matchesInValue(value, lowerTerm)) {
+    // Check string value match (recursive for objects/arrays, bounded by depth)
+    if (matchesInValue(value, lowerTerm, 0, state)) {
       matches.push({ key, value });
     }
   }
 
-  return matches;
+  return { matches, truncated: state.truncated };
 }
 
 /**
  * Recursively check if a term appears in any string value.
+ *
+ * `depth` counts container unwraps already performed (starts at 0 for the
+ * entry's own value). Strings never fail the ceiling check themselves — only
+ * a container (object/array) refuses to recurse one level deeper once
+ * `depth > MAX_JSON_SEARCH_DEPTH`, at which point `state.truncated` is set so
+ * the caller can report "I stopped looking" rather than a bare "no match".
+ * The bound is on nesting depth only, never on sibling breadth.
  */
-function matchesInValue(value: unknown, lowerTerm: string): boolean {
+function matchesInValue(value: unknown, lowerTerm: string, depth: number, state: SearchWalkState): boolean {
   if (typeof value === 'string') {
     return value.toLowerCase().includes(lowerTerm);
   }
   if (Array.isArray(value)) {
-    return value.some(v => matchesInValue(v, lowerTerm));
+    if (depth > MAX_JSON_SEARCH_DEPTH) {
+      state.truncated = true;
+      return false;
+    }
+    return value.some(v => matchesInValue(v, lowerTerm, depth + 1, state));
   }
   if (value && typeof value === 'object') {
-    return Object.values(value).some(v => matchesInValue(v, lowerTerm));
+    if (depth > MAX_JSON_SEARCH_DEPTH) {
+      state.truncated = true;
+      return false;
+    }
+    return Object.values(value).some(v => matchesInValue(v, lowerTerm, depth + 1, state));
   }
   return false;
 }
@@ -177,6 +247,26 @@ interface IntelQueryResult {
   matches: Array<{ source: string; entries: SearchMatch[] }>;
   term: string;
   total: number;
+  /**
+   * True iff ANY searched intel file's walk hit MAX_JSON_SEARCH_DEPTH and
+   * stopped early. Never true merely because nothing was found (a shallow
+   * miss is not a truncation) — always present as a boolean, never undefined.
+   */
+  truncated: boolean;
+  /**
+   * #3885 (ADR-3473 §8.5): one diagnostic string per intel file that was
+   * present on disk but could not be read (EACCES/EIO/...) or could not be
+   * parsed (malformed JSON) — each naming the file via formatDiagnosticToken.
+   * A file that is simply ABSENT (ENOENT) never contributes an entry here;
+   * that is the normal, expected case (not every project has every intel
+   * file). Always present as an array, never undefined — empty when every
+   * searched file was either absent or read cleanly, mirroring `truncated`'s
+   * always-present convention. Plural (unlike `context_read_error`'s
+   * singular nullable-string shape in roadmap.cts/init.cts) because a single
+   * query fans out across every file in INTEL_FILES and more than one can
+   * independently fail.
+   */
+  read_errors: string[];
 }
 
 /**
@@ -188,27 +278,38 @@ function intelQuery(term: string, planningDir: string): IntelQueryResult | Disab
 
   const matches: Array<{ source: string; entries: SearchMatch[] }> = [];
   let total = 0;
+  let truncated = false;
+  const readErrors: string[] = [];
 
   // Search all JSON intel files
   for (const [_key, filename] of Object.entries(INTEL_FILES)) {
     const filePath = intelFilePath(planningDir, filename);
-    const data = safeReadJson(filePath);
+    const data = safeReadJson(filePath, readErrors);
     if (!data) continue;
 
-    const found = searchJsonEntries(data, term);
+    const { matches: found, truncated: fileTruncated } = searchJsonEntries(data, term);
+    if (fileTruncated) truncated = true;
     if (found.length > 0) {
       matches.push({ source: filename, entries: found });
       total += found.length;
     }
   }
 
-  return { matches, term, total };
+  return { matches, term, total, truncated, read_errors: readErrors };
 }
 
 interface IntelStatusFileEntry {
   exists: boolean;
   updated_at: string | null;
   stale: boolean;
+  /**
+   * #3885 (ADR-3473 §8.5): non-null iff the file exists but could not be
+   * read or parsed — naming the file. `stale` still defaults to true in
+   * that case (an unknown-freshness file is conservatively treated as
+   * stale, unchanged from prior behaviour), but this field says WHY rather
+   * than leaving the reader to assume the file was simply never refreshed.
+   */
+  read_error: string | null;
 }
 
 interface IntelStatusResult {
@@ -233,7 +334,7 @@ function intelStatus(planningDir: string): IntelStatusResult | DisabledResponse 
     const exists = fs.existsSync(filePath);
 
     if (!exists) {
-      files[filename] = { exists: false, updated_at: null, stale: true };
+      files[filename] = { exists: false, updated_at: null, stale: true, read_error: null };
       overallStale = true;
       continue;
     }
@@ -241,7 +342,8 @@ function intelStatus(planningDir: string): IntelStatusResult | DisabledResponse 
     let updatedAt: string | null = null;
 
     // All intel files are JSON — read _meta.updated_at
-    const data = safeReadJson(filePath);
+    const readErrors: string[] = [];
+    const data = safeReadJson(filePath, readErrors);
     if (data && data._meta && data._meta.updated_at) {
       updatedAt = data._meta.updated_at;
     }
@@ -253,7 +355,7 @@ function intelStatus(planningDir: string): IntelStatusResult | DisabledResponse 
     }
 
     if (stale) overallStale = true;
-    files[filename] = { exists: true, updated_at: updatedAt, stale };
+    files[filename] = { exists: true, updated_at: updatedAt, stale, read_error: readErrors[0] ?? null };
   }
 
   return { files, overall_stale: overallStale };
@@ -268,14 +370,20 @@ interface IntelDiffResult {
 /**
  * Show changes since the last full refresh by comparing file hashes.
  */
-function intelDiff(planningDir: string): IntelDiffResult | { no_baseline: true } | DisabledResponse {
+function intelDiff(planningDir: string): IntelDiffResult | { no_baseline: true; read_error: string | null } | DisabledResponse {
   if (!isIntelCapabilityActive(planningDir)) return disabledResponse();
 
   const snapshotPath = intelFilePath(planningDir, '.last-refresh.json');
-  const snapshot = safeReadJson(snapshotPath);
+  const readErrors: string[] = [];
+  const snapshot = safeReadJson(snapshotPath, readErrors);
 
   if (!snapshot) {
-    return { no_baseline: true };
+    // #3885 (ADR-3473 §8.5): `no_baseline: true` stays true for BOTH a
+    // genuinely-never-snapshotted project (ENOENT, read_error stays null)
+    // AND a present-but-unreadable/malformed snapshot — collapsing those
+    // two into a bare `no_baseline: true` would manufacture "you've never
+    // run a refresh" out of a read failure. `read_error` names which one.
+    return { no_baseline: true, read_error: readErrors[0] ?? null };
   }
 
   const prevHashes = (snapshot.hashes as Record<string, string> | undefined) || {};
@@ -457,6 +565,12 @@ interface IntelApiSurfaceResult {
   written: string;
   symbolCount: number;
   stale: boolean;
+  /**
+   * #3885 (ADR-3473 §8.5): non-null iff api-map.json exists but could not
+   * be read or parsed — naming the file. Null when api-map.json is simply
+   * absent (the normal "not yet populated" case) or was read cleanly.
+   */
+  read_error: string | null;
 }
 
 /**
@@ -472,7 +586,9 @@ function intelApiSurface(planningDir: string): IntelApiSurfaceResult | DisabledR
   const apiMapPath = path.join(intelPath, INTEL_FILES.apis);
   const outputPath = path.join(intelPath, 'API-SURFACE.md');
 
-  const data = safeReadJson(apiMapPath);
+  const readErrors: string[] = [];
+  const data = safeReadJson(apiMapPath, readErrors);
+  const readError = readErrors[0] ?? null;
   const entries = (data && data.entries && typeof data.entries === 'object')
     ? Object.entries(data.entries)
     : [];
@@ -493,7 +609,13 @@ function intelApiSurface(planningDir: string): IntelApiSurfaceResult | DisabledR
   lines.push('');
 
   if (symbolCount === 0) {
-    lines.push('> **Incomplete:** api-map.json has no entries (intel extraction is regex/JS-only or not yet populated).');
+    if (readError) {
+      // #3885: a read/parse failure is NOT "not yet populated" — say so,
+      // rather than manufacturing the wrong reason for the empty surface.
+      lines.push(`> **Incomplete:** ${readError}`);
+    } else {
+      lines.push('> **Incomplete:** api-map.json has no entries (intel extraction is regex/JS-only or not yet populated).');
+    }
     lines.push('> Treat absence here as "unknown", not "does not exist".');
     lines.push('');
   } else {
@@ -517,7 +639,7 @@ function intelApiSurface(planningDir: string): IntelApiSurfaceResult | DisabledR
 
   platformWriteSync(outputPath, lines.join('\n'));
 
-  return { written: outputPath, symbolCount, stale };
+  return { written: outputPath, symbolCount, stale, read_error: readError };
 }
 
 interface IntelPatchMetaResult {

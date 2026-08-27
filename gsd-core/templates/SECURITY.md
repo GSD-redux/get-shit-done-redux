@@ -1,11 +1,11 @@
 ---
-phase: {N}
-slug: {phase-slug}
+phase: "{N}"
+slug: "{phase-slug}"
 status: draft
 # threats_open = count of OPEN threats at or above workflow.security_block_on severity (the blocking gate)
 threats_open: 0
 asvs_level: 1
-created: {date}
+created: "{date}"
 ---
 
 # Phase {N} — Security

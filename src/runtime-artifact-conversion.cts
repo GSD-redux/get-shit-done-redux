@@ -925,7 +925,8 @@ function buildKimiAgentArtifacts({
 /**
  * Apply Antigravity-specific content conversion — path replacement + command name conversion.
  * Path mappings depend on install mode:
- *   Global: ~/.claude/ → ~/.gemini/antigravity/, ./.claude/ → ./.agents/
+ *   Global: ~/.claude/skills/ → ~/.gemini/config/skills/ (#3738),
+ *          ~/.claude/ → ~/.gemini/antigravity/, ./.claude/ → ./.agents/
  *   Local:  ~/.claude/ → .agents/, ./.claude/ → ./.agents/
  * Applied to ALL Antigravity content (skills, agents, engine files).
  * @param {string} content - Source content to convert
@@ -934,6 +935,18 @@ function buildKimiAgentArtifacts({
 function convertClaudeToAntigravityContent(content, isGlobal = false) {
   let c = content;
   if (isGlobal) {
+    // #3738: global skills install under ~/.gemini/config/skills (the dir AGY
+    // scans for global discovery), so skills-path references must divert there
+    // — BEFORE the configHome rewrite below, which is correct for gsd-core
+    // runtime-file references (settings, workflows, VERSION) but wrong for the
+    // skills dir itself.
+    c = c.replace(/\$HOME\/\.claude\/skills\//g, '$HOME/.gemini/config/skills/');
+    c = c.replace(/~\/\.claude\/skills\//g, '~/.gemini/config/skills/');
+    // Bare skills form (no trailing slash) — must also precede the generic
+    // slash rule, which would otherwise divert it to the retired configHome
+    // path ($HOME/.gemini/antigravity/skills).
+    c = c.replace(/\$HOME\/\.claude\/skills\b/g, '$HOME/.gemini/config/skills');
+    c = c.replace(/~\/\.claude\/skills\b/g, '~/.gemini/config/skills');
     c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/antigravity/');
     c = c.replace(/~\/\.claude\//g, '~/.gemini/antigravity/');
     // Bare form (no trailing slash) — must come after slash form to avoid double-replace
@@ -1845,7 +1858,7 @@ function neutralizeAgentReferences(content, instructionFile) {
  */
 function frontmatterScalar(key: string, value: string): string {
   return frontmatterModule.agentScalarNeedsDoubleQuoting(value)
-    ? `${key} "${frontmatterModule.escapeDoubleQuoted(value)}"`
+    ? `${key} "${frontmatterModule.escapeDoubleQuotedScalar(value)}"`
     : `${key} ${value}`;
 }
 
@@ -2949,7 +2962,13 @@ function restoreClaudeGlobalAtRefTilde(content, pathPrefix) {
   if (typeof pathPrefix !== 'string' || !pathPrefix.startsWith('$HOME')) return content;
   const tildeEquivalent = '~' + pathPrefix.slice('$HOME'.length);
   const atRefRe = new RegExp(`(?<!["'])@${escapeRegExp(pathPrefix)}`, 'g');
-  return content.replace(atRefRe, `@${tildeEquivalent}`);
+  // Function replacement, not a string. A string replacement treats `$&` and the
+  // backtick-dollar form in the SUBSTITUTION as special patterns, so a --config-dir
+  // containing either corrupts output: `$HOME/.cl$&ude/` yielded
+  // `@~/.cl@$HOME/.cl$&ude/ude/x`, and the backtick form silently DROPPED text.
+  // Pre-existing, and #3719 adds a THIRD call site to this sink — which is how the
+  // previous two came to share the defect in the first place.
+  return content.replace(atRefRe, () => `@${tildeEquivalent}`);
 }
 
 /**
@@ -3410,8 +3429,34 @@ function applyAgentPathRewrites(content: string, runtime: string, pathPrefix: st
   const normalizedPathPrefix = pathPrefix.replace(/\/$/, '');
   content = content.replace(/~\/\.claude\//g, pathPrefix);
   content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
-  content = content.replace(/~\/\.claude\b/g, normalizedPathPrefix);
-  content = content.replace(/\$HOME\/\.claude\b/g, normalizedPathPrefix);
+  // #3719 review (MAJOR): a bare `\b` is satisfied by ANY non-word character,
+  // including '-' — for a --config-dir whose name EXTENDS '.claude' (e.g.
+  // '.claude-work'), this re-matched the '.claude' PREFIX of the emitted
+  // '.claude-work' path and corrupted it to '.claude-work-work'. Guard with
+  // the SAME negative-lookahead convention already used at
+  // copyWithPathReplacement's call site (bin/install.js:7729-7730).
+  content = content.replace(/~\/\.claude(?![\w-])/g, normalizedPathPrefix);
+  content = content.replace(/\$HOME\/\.claude(?![\w-])/g, normalizedPathPrefix);
+  // #3719: the THIRD emit path that needed this restore. #3133 added it to the
+  // skill/command pipeline (`_applyRuntimeRewrites` case 'claude') and #3544 to
+  // bin/install.js's spec-tree copy; the agents pipeline never got it, so every
+  // `@~/.claude/...` include in a global Claude install shipped as `@$HOME/...`
+  // and resolved to NOTHING (27 of 34 emitted agents, 103 lines).
+  //
+  // Guarded on `claude` for the same reason the sibling call site lives inside
+  // `case 'claude'`: the helper self-guards only on the `$HOME` PREFIX, and every
+  // runtime's global prefix is a `$HOME` form (`$HOME/.cursor/`, ...), so an
+  // unguarded call would rewrite `@`-refs for runtimes whose resolver has no
+  // documented `~` expansion at all.
+  //
+  // Passed the NORMALIZED prefix, not `pathPrefix`. The two word-boundary
+  // replaces above emit the trailing-slash-free form, and the helper's regex is
+  // anchored to the exact prefix string it is handed — so `restore(pathPrefix)`
+  // fixes `@$HOME/.claude/x` and leaves a bare `@$HOME/.claude` broken. The
+  // normalized form is a PREFIX of both, so one call covers both.
+  if (runtime === 'claude') {
+    content = restoreClaudeGlobalAtRefTilde(content, normalizedPathPrefix);
+  }
   return content;
 }
 

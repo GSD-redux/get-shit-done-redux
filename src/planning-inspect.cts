@@ -59,7 +59,7 @@ import gapCheckerMod = require('./gap-checker.cjs');
 const { parseRequirements } = gapCheckerMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import uatMod = require('./uat.cjs');
-const { parseUatItems, selectPhaseUatFiles } = uatMod;
+const { parseUatItemsWithStats, selectPhaseUatFiles } = uatMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLifecycleMod = require('./phase-lifecycle.cjs');
 const { clampPercent } = phaseLifecycleMod;
@@ -89,6 +89,9 @@ const { collectSection, iterateBullets } = markdownSectionizer;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import markdownTable = require('./markdown-table.cjs');
 const { parseMarkdownTable, matchTableSchema } = markdownTable;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import coreUtilsMod = require('./core-utils.cjs');
+const { normalizeLineEndings } = coreUtilsMod;
 
 /**
  * The wire schema version. A consumer MUST reject any value other than this
@@ -263,7 +266,16 @@ function readDocument(filePath: string, root: string): { text: string | null; ex
   }
 
   try {
-    return { text: fs.readFileSync(filePath, 'utf-8'), exists: true, readable: true };
+    // #3707-CR follow-up MAJOR: normalize line endings HERE, at this module's
+    // one shared document-read seam, so a lone-CR document (CommonMark line
+    // ending; a document using it renders as separate lines to a human
+    // reader) is normalized by construction for every current and future
+    // caller of `readDocument` (`buildRequirements`, `buildUatRows`, the
+    // ROADMAP.md read above) — not only the ones a parser author remembered
+    // to fix individually. Mirrors `src/uat.cts`'s `readNormalizedDocument`,
+    // the equivalent boundary for `cmdAuditUat`; both now delegate to the
+    // same `normalizeLineEndings` in `core-utils.cts`.
+    return { text: normalizeLineEndings(fs.readFileSync(filePath, 'utf-8')), exists: true, readable: true };
   } catch {
     return { text: null, exists: true, readable: false };
   }
@@ -803,12 +815,19 @@ function buildPlanRows(phaseDir: string, diagnostics: Diagnostic[], planningRoot
 
 // ─── UAT ──────────────────────────────────────────────────────────────────────
 
+// `scope` and `foldScope` are, by decision, identical at every return site in
+// this function as of #3078 round-8 — they are not accidentally in sync. The
+// two-field shape is kept anyway because it lets `scope` (the row's own
+// honest answer) and `foldScope` (what the caller folds into the milestone)
+// diverge again later without a signature change, should some future gap
+// class need to be reported on the row but exempted from the fold, or vice
+// versa. If you find yourself "simplifying" this to one field, don't.
 function buildUatRows(
   phasesDir: string,
   phaseDirName: string,
   diagnostics: Diagnostic[],
   planningRoot: string,
-): { items: unknown[]; scope: Scope } {
+): { items: unknown[]; scope: Scope; foldScope: Scope } {
   const phaseDir = path.join(phasesDir, phaseDirName);
   // GAP 1 (#2790 follow-up security review): same rationale as
   // `buildPlanRows` above — `readdirSync` below FOLLOWS a directory symlink,
@@ -823,7 +842,7 @@ function buildUatRows(
       subject: phaseDirName,
       detail: 'Phase directory could not be listed; UAT presence is unknown.',
     });
-    return { items: [], scope: SCOPE.UNREADABLE };
+    return { items: [], scope: SCOPE.UNREADABLE, foldScope: SCOPE.UNREADABLE };
   }
   let entries: string[];
   try {
@@ -834,7 +853,7 @@ function buildUatRows(
       subject: phaseDirName,
       detail: 'Phase directory could not be listed; UAT presence is unknown.',
     });
-    return { items: [], scope: SCOPE.UNREADABLE };
+    return { items: [], scope: SCOPE.UNREADABLE, foldScope: SCOPE.UNREADABLE };
   }
 
   const uatFiles = selectPhaseUatFiles(entries, phaseDirName);
@@ -844,11 +863,12 @@ function buildUatRows(
       subject: phaseDirName,
       detail: 'No UAT document for this phase. This does not affect phase acceptance.',
     });
-    return { items: [], scope: SCOPE.COMPLETE };
+    return { items: [], scope: SCOPE.COMPLETE, foldScope: SCOPE.COMPLETE };
   }
 
   const items: unknown[] = [];
   let scope: Scope = SCOPE.COMPLETE;
+  let foldScope: Scope = SCOPE.COMPLETE;
   for (const file of uatFiles) {
     const doc = readDocument(path.join(phaseDir, file), planningRoot);
     if (doc.text === null) {
@@ -858,11 +878,60 @@ function buildUatRows(
         detail: 'UAT document exists but could not be read.',
       });
       scope = SCOPE.TRUNCATED;
+      foldScope = SCOPE.TRUNCATED;
       continue;
     }
-    items.push(...parseUatItems(doc.text));
+    // #3707-class false-clean, second surface (security review finding 1):
+    // `parseUatItemsWithStats`'s `headingsSeen` counts `### N.` test blocks
+    // that yielded ZERO items (a row missing its `result:` line, or otherwise
+    // unrecognised) — the audit-uat side (`cmdAuditUat`, above) already flags
+    // this as `parse_gap`. Reading the file successfully is not the same as
+    // deriving every row from it, so the gap is ALWAYS REPORTED.
+    //
+    // #3078 round-8 HIGH — NO FRONTMATTER KILL SWITCH. There is deliberately
+    // no `status !== 'complete'` term here. `cmdAuditUat` dropped its own such
+    // guard (see the long rationale at src/uat.cts, above `headingsSeen > 0`):
+    // a terminal status is an ASSERTION BY THE AUTHOR, and an assertion must
+    // not be able to switch off the detector that would contradict it. A guard
+    // here let one word of frontmatter turn a fence-straddled `result: blocked`
+    // into an affirmative `scope: "complete"` with ZERO diagnostics. The
+    // condition is `headingsSeen > 0` alone, matching src/uat.cts's own check
+    // line for line. Do not re-add a status term to "align the surfaces" — the
+    // surfaces are aligned precisely BY its absence.
+    //
+    // #3078 round-8 — REPORTING THE GAP AND WITHHOLDING THE PERCENTAGE ARE TWO
+    // DIFFERENT DECISIONS, so they get two different fields. `scope` is what
+    // this phase's own `uat.scope` reports: it stays honest and goes TRUNCATED
+    // for every gap, because a document that did not yield all its rows must
+    // never carry an affirmative `"complete"`. `foldScope` is what is handed to
+    // `worstScope` in the caller, and it is the one with teeth — a non-COMPLETE
+    // fold raises `phase_scope_degraded` AND, via `phaseScope`/`makeFraction`,
+    // withholds BOTH progress percentages for the WHOLE milestone.
+    //
+    // The two now agree: EVERY gap class degrades both, including the
+    // fence-suppression shortfall. `shortfallBlocks` is not exempted here
+    // because it is a single tally incremented at ONE site in the scan and
+    // spans BOTH a harmless closed-fence documentation sample AND a genuinely
+    // fence-straddled `result: blocked` row — exempting the tally cannot
+    // exempt only the harmless case, it also publishes a milestone percentage
+    // over a real unread outstanding row. `SCOPE.TRUNCATED` means the scan
+    // could not SEE part of the evidence (src/planning-scope.cts), which is
+    // exactly the fence-straddled case. The accepted over-report itself is
+    // unchanged and still documented at src/uat.cts; what changed is only
+    // that it no longer buys an exemption from the fold.
+    const { items: fileItems, headingsSeen } = parseUatItemsWithStats(doc.text);
+    items.push(...fileItems);
+    if (headingsSeen > 0) {
+      diagnostics.push({
+        code: INSPECT_DIAGNOSTIC.UAT_UNREADABLE,
+        subject: `${phaseDirName}/${file}`,
+        detail: `UAT document has ${headingsSeen} test block(s) with no parseable result; unresolved is not a complete answer.`,
+      });
+      scope = SCOPE.TRUNCATED;
+      foldScope = SCOPE.TRUNCATED;
+    }
   }
-  return { items, scope };
+  return { items, scope, foldScope };
 }
 
 // ─── Progress ─────────────────────────────────────────────────────────────────
@@ -1171,7 +1240,16 @@ function buildPlanningInspect(cwd: string): Record<string, unknown> {
     const phaseId = token ? token[1] : null;
     const { goal, dependencies } = buildPhaseGoalAndDependencies(cwd, roadmapDoc, phaseId, phase.dir, diagnostics);
 
-    const folded = worstScope(phase.scope, plans.scope, uat.scope, goal.scope, dependencies.scope);
+    // `uat.foldScope`, NOT `uat.scope` (#3078 round-8). The two currently
+    // agree at every call site — see `buildUatRows` for why the field is
+    // still kept separate — so folding either one here produces the same
+    // result today. `foldScope` is used because it is the field with teeth:
+    // it is what `worstScope` folds into the phase's overall scope, and a
+    // non-COMPLETE result here raises `phase_scope_degraded` and, via
+    // `makeFraction`, withholds the milestone's percentages. A phase whose
+    // UAT document could not be fully read must not contribute an
+    // affirmative completion to the milestone.
+    const folded = worstScope(phase.scope, plans.scope, uat.foldScope, goal.scope, dependencies.scope);
     if (folded !== SCOPE.COMPLETE) {
       diagnostics.push({
         code: INSPECT_DIAGNOSTIC.PHASE_SCOPE_DEGRADED,

@@ -13,7 +13,7 @@ acknowledging is the right answer. For *why* the invariant exists, see
 
 ```
 unreachable-guard-drift: NEW unreachable shell-guard shape(s) found in the prompt layer.
-  gsd-core/workflows/ship.md:312  --pick  STATUS=$(gsd_run query verification.status "$D" --pick status 2>/dev/null || echo "")
+  gsd-core/workflows/ship.md:312  cat  cat .planning/phases/*-*/*-SUMMARY.md
 ```
 
 Each line is `file:line`, the token that matched, and the offending source line.
@@ -37,58 +37,65 @@ outcomes and only one of them is good news.
 |---|---|---|
 | `ok_no_violations` | 0 | Clean. Every scanned file passed. |
 | `ok_baseline_updated` | 0 | You ran `--update`; the baseline was rewritten. |
-| `fail_fresh_violation` | 1 | A new instance of one of the two shapes. **Fix it** — see below. |
+| `fail_fresh_violation` | 1 | A new instance of Shape B (Shape A was retired upstream, #3884 — see below). **Fix it** — see below. |
 | `fail_stale_entry` | 1 | A baseline entry matched fewer occurrences than it acknowledges. Either a site was migrated (good — re-record) or only *some* copies were (finish the job). |
 | `fail_malformed_marker` | 1 | A `# gsd-scan-ignore:` whose reason names no issue or URL. Not a violation — a broken exemption. |
 | `fail_baseline_load` | 1 | The baseline file is missing, empty, not JSON, or structurally wrong. The guard **could not look**; this is not a clean run. |
 
-## Shape A — `--pick` with an `|| echo` fallback
+## Shape A — `--pick` with an `|| echo` fallback (resolved upstream, #3884)
+
+**This shape is no longer a finding.** As of #3884 (ADR-3473 §8.4), `--pick
+<field>` exits **non-zero** — not `0` — when the field is absent, so the
+guard no longer flags a line carrying both `--pick` and `|| echo`; see the
+[`--pick <field>` contract](../CLI-TOOLS.md#--pick-field-contract) for the
+full three-outcome table. The example below is kept for historical context
+(this page previously taught the workaround for the defect), and because the
+shape it shows is now the **correct, idiomatic** way to write this:
 
 ```bash
-# BROKEN — the fallback can never fire
+# Previously BROKEN (pre-#3884): the fallback could never fire, because an
+# absent field printed '' at exit 0. As of #3884 this now works as written —
+# `|| echo "false"` fires exactly when `active` cannot be resolved.
 AUTO_MODE=$(gsd_run query check auto-mode --pick active 2>/dev/null || echo "false")
 ```
 
-`--pick` renders a missing or absent field as the **empty string and exits 0**.
-`gsd_run` passes that exit code straight through, so `||` only ever fires on a
-typo in the verb name — never on the field absence you wrote it for.
-
-Test it yourself before assuming a field exists:
+You can confirm the new behavior directly:
 
 ```bash
 node gsd-core/bin/gsd-tools.cjs query phases.list --pick a_field_that_does_not_exist; echo "exit=$?"
 ```
 
-That prints nothing and exits `0`.
+That now prints nothing on stdout, a diagnostic on stderr, and exits `1`
+(`pick_field_absent`) — not `0`.
 
-**Fix — test the value, not the exit code:**
+**The two-line workaround this page used to prescribe is no longer
+required, but remains harmless:**
 
 ```bash
 AUTO_MODE=$(gsd_run query check auto-mode --pick active 2>/dev/null)
 AUTO_MODE="${AUTO_MODE:-false}"
 ```
 
-`${VAR:-default}` is exactly the empty-or-unset test, and unlike
-`[ -z "$VAR" ] && VAR=default` it cannot abort a `set -e` shell when the value
-is non-empty.
+It still works exactly as before — `--pick` still prints `''` at exit `0`
+when the field is present but `null` or empty (that is an answer, not a
+failure; see the contract's negative space), so `${VAR:-default}` still
+resolves those cases the same way it always did. It is simply no longer the
+*only* reachable way to supply a default: the single-line `|| echo` idiom at
+the top of this section now works too.
 
-**When the safe direction is "do nothing", compare against the literal instead**
-and add no default at all:
+**A count that returns zero is still not the same as a count that could not
+be resolved** — this half of the contract is unchanged by #3884 and remains
+the reason a `:-0` default on an absent field would be a bug:
 
 ```bash
 PRIOR_SUMMARIES=$(gsd_run query phases.list --type summaries --pick count 2>/dev/null)
 if [ "$PRIOR_SUMMARIES" = "0" ]; then WALKING_SKELETON=true; fi
 ```
 
-Here a `:-0` default would be a bug: it turns "the query could not answer" into
-"there are zero summaries" and fires the gate unconditionally. Only a literal
-`0` should act; anything else correctly does nothing.
-
-**If the field does not exist at all, repoint the query — do not paper over it.**
-The Walking Skeleton gate read `--pick summaries_total`, a field `phases.list`
-has never produced under any flag combination, so the gate had never fired on
-any project. The fix was to ask the owner that *does* answer it
-(`--type summaries --pick count`), not to default the empty away.
+`phases.list --type summaries --pick count` always returns a real integer
+(never absent), so this comparison is safe as written; a query that *can*
+return an absent field must still not paper over that with a `:-0` default —
+repoint the query to one that actually answers, the same guidance as before.
 
 ## Shape B — a glob whose command succeeds on zero matches
 
@@ -183,6 +190,7 @@ the file most likely to grow the next copy.
 
 ## Related
 
-- [ADR-3409](../adr/3409-unreachable-shell-guard-arms.md) — the invariant, the measurements behind both detectors, and the alternatives rejected
+- [ADR-3409](../adr/3409-unreachable-shell-guard-arms.md) — the invariant, the measurements behind both detectors (one since retired), and the alternatives rejected
 - [ADR-3180](../adr/3180-planning-semantic-model-single-owner.md) — the ratchet and whole-repo-discovery mechanism this guard reuses
+- [CLI-TOOLS.md's `--pick <field>` contract](../CLI-TOOLS.md#--pick-field-contract) — the #3884 fix that resolved Shape A upstream and retired its detector
 - [Resolve edge-coverage findings](resolve-edge-coverage-findings.md) · [Resolve prohibition findings](resolve-prohibition-findings.md) — sibling "the loop surfaced something, here is what to do with it" pages

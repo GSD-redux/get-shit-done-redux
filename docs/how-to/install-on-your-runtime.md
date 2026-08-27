@@ -439,7 +439,7 @@ Skills land in `~/.augment/skills/` and slash command definitions land in `~/.au
 npx @opengsd/gsd-core@latest --antigravity --global
 ```
 
-The installer auto-detects the Antigravity config directory (`~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, or `~/.gemini/antigravity-cli`). Uses Gemini-compatible settings policy.
+The installer auto-detects the Antigravity config directory (`~/.gemini/antigravity`, `~/.gemini/antigravity-ide`, or `~/.gemini/antigravity-cli`). Uses Gemini-compatible settings policy. Global skills and agents install under `~/.gemini/config/skills/` and `~/.gemini/config/agents/` — the directories Antigravity scans for machine-local discovery (#3738); the config directory above holds settings and GSD's runtime files.
 
 **Override the install directory:**
 

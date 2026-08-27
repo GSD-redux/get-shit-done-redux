@@ -25,8 +25,20 @@ SCOPE="$(cat "${PHASE_DIR}"/*-PLAN.md 2>/dev/null) $(gsd_run query roadmap.get-p
 API_COVERAGE_JSON=$(printf '%s' "$SCOPE" | node gsd-core/bin/lib/api-coverage.cjs --json 2>/dev/null || echo '{"detected":false,"signals":[]}')
 ```
 
-Read `API_COVERAGE_JSON.detected`. Act on it only — do **not** pattern-match the
-prose yourself.
+The detector's exit code and `--json` payload now distinguish a real negative
+from an unexamined input (ADR-3889 Phase 3, #3907): empty/whitespace-only
+`$SCOPE` or a stdin read failure emit `{"skipped":true,"reason":"no_input"|
+"stdin_error"}` — no `detected` key at all. **Check for `skipped` before
+reading `detected`**: a `skipped` payload is not a confirmed "no API
+integration" verdict, it means the detector never examined real input. Do not
+treat it as `detected:false`. Read `API_COVERAGE_JSON.detected` only when
+`skipped` is absent — act on it only, do **not** pattern-match the prose
+yourself.
+
+**If `skipped` is `true`:** the detector could not establish a scope (empty
+`$SCOPE`) or failed to run (stdin read error). Skip the checkpoint for this
+run rather than asserting a verdict about input that was never examined; do
+not raise it with the user.
 
 **If `detected` is `false`:** this phase does not integrate an external API. Skip
 the checkpoint entirely and continue planning. Do not raise it with the user.

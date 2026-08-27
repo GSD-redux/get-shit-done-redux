@@ -45,6 +45,7 @@ const DOCS_GUARD_EXEMPT_BASELINE = [
   'commands.test.cjs',
   'commit-docs-bypass.test.cjs',
   'complexity-trigger.test.cjs',
+  'concurrency-safety.test.cjs',
   'cursor-imperative-reference.test.cjs',
   'declarative-reference-antigravity.test.cjs',
   'declarative-reference-zcode.test.cjs',
@@ -125,6 +126,10 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
     'docs/40-design.md', 'docs/CONFIGURATION.md', 'docs/readme.md', 'docs/tracked-var-mentioning',
   ],
   'complexity-trigger.test.cjs': ['docs/readme.md'],
+  // #3884: cites docs/CLI-TOOLS.md:736 in an explanatory comment describing
+  // the real `frontmatter get <file> [--field key]` CLI shape; the file
+  // never reads that (or any) docs/ file.
+  'concurrency-safety.test.cjs': ['docs/CLI-TOOLS.md'],
   'cursor-imperative-reference.test.cjs': ['docs/sdk/typescript'],
   'declarative-reference-antigravity.test.cjs': ['docs/cli/features'],
   'declarative-reference-zcode.test.cjs': ['docs/reference/host-integration-capability-matrix.md'],
@@ -151,7 +156,11 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
     'docs/agents', 'docs/agents/triage-labels.md',
   ],
   'manifest-version-sync.test.cjs': [],
-  'milestone-archive.test.cjs': ['docs/TESTING-SUITES.md'],
+  // #3884: re-confirmed — the added docs/CLI-TOOLS.md:458 reference is the
+  // same class as the existing docs/TESTING-SUITES.md one (a placement-note
+  // / explanatory comment citing documented CLI behavior for context, never
+  // a read target); the exemption's premise still holds for both.
+  'milestone-archive.test.cjs': ['docs/CLI-TOOLS.md', 'docs/TESTING-SUITES.md'],
   'model-resolver.test.cjs': ['docs/TESTING-SUITES.md'],
   'new-project-mvp-prompt.test.cjs': ['docs/CONFIGURATION.md'],
   'onboard-command.test.cjs': ['docs/adr/0001-runtime.md'],
@@ -159,7 +168,9 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'phase.test.cjs': ['docs/adr/3524-...md', 'docs/adr/3524-cjs-sdk-hard-seam.md'],
   'pr-branch-planning-filter.test.cjs': ['docs/readme.md'],
   'precommit-alias-drift-hook.test.cjs': ['docs/adr/0174-...md', 'docs/adr/0174-retire-gsd-sdk-package-boundary.md'],
-  'removed-but-needed-lint.test.cjs': ['docs/getting-started.md', 'docs/gsd-new-workspace.md', 'docs/setup.md'],
+  'removed-but-needed-lint.test.cjs': [
+    'docs/README.md', 'docs/getting-started.md', 'docs/gsd-new-workspace.md', 'docs/setup.md', 'docs/some-doc.md',
+  ],
   'repo-invariants.test.cjs': ['docs/FEATURES.md', 'docs/workflows/README'],
   'require-issue-link-policy.test.cjs': ['docs/-prefixed', 'docs/CONFIGURATION.md', 'docs/a.md', 'docs/b.md', 'docs/guide.md'],
   'reviewer-manifest-body.test.cjs': ['docs/how-to/ship-a-reviewer-lane.md'],
