@@ -1254,7 +1254,7 @@ describe('#3897 rung 3: sandbox_mode derivation and the hold list', () => {
     }
   });
 
-  test('T26 newWritingRoleGetsTheContractNotThePin: a brand-new agent declaring Write, with no hold, derives workspace-write (S6) — RED today, falls back to read-only', () => {
+  test('T26 newWritingRoleGetsTheContractNotThePin: a brand-new agent declaring Write, with no hold, derives workspace-write (S6) — RED today, falls back to read-only (#2540)', () => {
     const newAgentContent = `---
 name: gsd-totally-new-agent
 description: A brand-new writing agent that has never been in the map or a hold

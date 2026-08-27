@@ -104,7 +104,7 @@ function withEnv(overrides, fn) {
 }
 
 describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 rung 2)', () => {
-  test('T3 installMarkerResolvesWhenEnvAndConfigAbsent_3897', (t) => {
+  test('T3 installMarkerResolvesWhenEnvAndConfigAbsent_3897 (#3364)', (t) => {
     const rs = requireRuntimeSlash();
     assertMarkerSeamExists(rs);
     const proj = neutralProject(t);

@@ -632,7 +632,7 @@ Use `date` from init:
 | ${quick_id} | ${DESCRIPTION} | ${date} | ${commit_hash} | [${quick_id}-${slug}](./quick/${quick_id}-${slug}/) |
 ```
 
-For a schema-safe append outside this workflow (e.g. from fast.md), `gsd_run quick-tasks-append --task <text>` performs the equivalent write via the shared, schema-backed `appendQuickTaskRow` helper (#2133, ADR-2143 §3/§7).
+For a schema-safe append outside this workflow (e.g. from fast.md, which has neither a quick id nor a task directory), `gsd_run quick-tasks-append --task <text>` performs an equivalent-shape write via the shared, schema-backed `appendQuickTaskRow` helper (#2133, ADR-2143 §3/§7) — the `#` cell is a positional ordinal and `Directory` reads `—`, since no id/directory was supplied. A caller that DOES have a real `${quick_id}` and task directory can pass `--quick-id <id> --slug <slug>` (or `--directory <link>` directly) to get the byte-identical row this step renders above (#3356).
 
 **7d. Update "Last activity" line:**
 

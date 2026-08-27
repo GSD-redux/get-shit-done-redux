@@ -1177,10 +1177,30 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // disables the boundary walk (as with `init quick`) so extraction
           // (used for the --task form) and the `|| args[1]` fallback (used for
           // the positional form) both keep working unchanged.
-          const qtaTask = parseNamedArgsOrExit(qtaArgs, { valueFlags: ['task'], positionals: 'rest' }, error).task || args[1];
+          // #3356 defect 1: `--quick-id` / `--slug` / `--directory` are
+          // OPTIONAL widenings. A caller with no quick id or task directory
+          // (fast.md, the original #2133 caller) omits them and keeps the
+          // exact prior ordinal-`#`/`'—'`-Directory row. A caller that DOES
+          // have a real quick id + task dir (i.e. can match `workflows/
+          // quick.md`'s own Step 7c row for the same inputs) supplies them
+          // and gets the byte-equivalent canonical row `quick.md:632`
+          // documents — closing the false-equivalence gap `quick.md:627`
+          // claims. `--directory` wins outright when given explicitly;
+          // otherwise a supplied `--quick-id` + `--slug` pair derives the
+          // canonical permalink the same way `workflows/quick.md` renders it.
+          const qtaParsed = parseNamedArgsOrExit(
+            qtaArgs,
+            { valueFlags: ['task', 'quick-id', 'slug', 'directory'], positionals: 'rest' },
+            error,
+          );
+          const qtaTask = qtaParsed.task || args[1];
           if (!qtaTask) {
             error('quick-tasks-append requires --task <description> (or a positional description)', ERROR_REASON.USAGE);
           }
+          const qtaQuickId = qtaParsed['quick-id'] || undefined;
+          const qtaSlug = qtaParsed['slug'] || undefined;
+          const qtaDirectory = qtaParsed['directory']
+            || (qtaQuickId && qtaSlug ? `[${qtaQuickId}-${qtaSlug}](./quick/${qtaQuickId}-${qtaSlug}/)` : undefined);
 
           const statePath = path.join(cwd, '.planning', 'STATE.md');
           if (!fs.existsSync(statePath)) {
@@ -1206,8 +1226,21 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           // still releases the lock before the throw propagates; the transform
           // throws before returning new content, so nothing is ever written).
           let mutation;
+          // #3356 defect 2: this write touches only the Quick Tasks body
+          // table — a single appended row — so it must not trigger the
+          // default full re-derive of the disk-derived `progress.*`
+          // frontmatter block. `{ resync: false }` mirrors every other
+          // body-only STATE.md writer's convention (src/state.cts's own
+          // docstring on `readModifyWriteStateMd` prescribes it); this route
+          // was the lone outlier still passing no options at all.
           state.readModifyWriteStateMd(statePath, (content) => {
-            const result = appendQuickTaskRow(content, { description: qtaTask, date, commit });
+            const result = appendQuickTaskRow(content, {
+              description: qtaTask,
+              date,
+              commit,
+              quickId: qtaQuickId,
+              directory: qtaDirectory,
+            });
             if (!result.ok) {
               // Mirrors fast.md's old "skip with a brief log" behaviour (#2133): this
               // is an expected, recoverable condition (no table / unrecognized
@@ -1218,7 +1251,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             }
             mutation = result.value;
             return result.value.content;
-          }, cwd);
+          }, cwd, { resync: false });
 
           output({ ok: true, row: mutation.row, variant: mutation.variant }, raw, mutation.row);
   }
