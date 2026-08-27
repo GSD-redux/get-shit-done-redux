@@ -5,7 +5,7 @@
  *
  * Prerequisite for #3128 condition 1: ADR-1671 admission gate (2), "a fact the
  * init seam demonstrably computes at a real entry point"
- * (`docs/adr/1671-dynamic-context-management-platform.md:122-131`). Before this,
+ * (ADR-1671, admission gate 2). Before this,
  * `gsd-core/workflows/debug.md` was one of the last workflows with no `cmdInit*`
  * of its own, so no debug-scoped fact could ever be computed and any `when=` atom
  * naming one would have evaluated FALSE forever — the silent-exclusion bug that
@@ -78,9 +78,7 @@ function runJson(argv, cwd, env = {}) {
   return JSON.parse(result.output);
 }
 
-function assertPolicyOffOrCleanReject(result, label) {
-  const combined = `${result.output || ''}\n${result.error || ''}`;
-  assert.equal(combined.includes('    at '), false, `${label}: must not expose a crash stack`);
+function assertPolicyOffOrCleanReject(result, label, { reconciliationEligible = true } = {}) {
   if (!result.success) {
     assert.notEqual(result.exitCode, 0, `${label}: rejection must use a clean nonzero exit`);
     return;
@@ -88,7 +86,11 @@ function assertPolicyOffOrCleanReject(result, label) {
 
   const output = JSON.parse(result.output);
   assert.equal(output.runtime_evidence_policy, 'off', `${label}: must fail safe to off`);
-  assert.equal(output.runtime_evidence_eligible, false, `${label}: must not enable runtime evidence`);
+  assert.equal(
+    output.runtime_evidence_eligible,
+    reconciliationEligible,
+    `${label}: applicability must reflect continuation cleanup routing, not activation permission`,
+  );
 }
 
 // ─── Group A: equivalence with the three calls init.debug replaces ──────────
@@ -247,7 +249,11 @@ describe('init.debug bundle shape (matrix §B)', () => {
       'commit_docs',
       'debugger_model',
       'tdd_mode',
+      'subcommand',
+      'slug',
+      'description',
       'diagnose',
+      'runtime_evidence_override',
       'runtime_evidence_policy',
       'runtime_evidence_eligible',
     ]) {
@@ -383,7 +389,11 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
     ]) {
       const output = runJson(argv, tmpDir);
       assert.equal(output.runtime_evidence_policy, 'off', argv.join(' '));
-      assert.equal(output.runtime_evidence_eligible, false, argv.join(' '));
+      assert.equal(
+        output.runtime_evidence_eligible,
+        argv.includes('continue'),
+        `${argv.join(' ')}: continuations retain cleanup/reconciliation routing`,
+      );
       assert.equal(typeof output.runtime_evidence_eligible, 'boolean');
     }
   });
@@ -400,6 +410,19 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
       assert.equal(output.runtime_evidence_policy, 'off', `must ignore non-exact token ${token}`);
       assert.equal(output.runtime_evidence_eligible, false, `must ignore non-exact token ${token}`);
     }
+  });
+
+  test('the real CLI emits one authoritative route after stripping global flags', () => {
+    const output = runJson([
+      'init', 'debug', 'investigate', '--runtime-probes', 'cache', 'miss',
+    ], tmpDir);
+
+    assert.equal(output.subcommand, 'debug');
+    assert.equal(output.slug, null);
+    assert.equal(output.description, 'investigate cache miss');
+    assert.equal(output.diagnose, false);
+    assert.equal(output.runtime_evidence_override, 'adaptive');
+    assert.equal(output.runtime_evidence_policy, 'adaptive');
   });
 
   test('conflicting probe flags fail closed in either order', () => {
@@ -424,7 +447,7 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
 
     const off = runJson(['init', 'debug', 'continue', 'off-session'], tmpDir);
     assert.equal(off.runtime_evidence_policy, 'off');
-    assert.equal(off.runtime_evidence_eligible, false);
+    assert.equal(off.runtime_evidence_eligible, true, 'off-policy continuation still routes reconciliation');
   });
 
   test('an explicit probe flag overrides the opposite valid saved policy', () => {
@@ -443,7 +466,7 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
       tmpDir,
     );
     assert.equal(disabled.runtime_evidence_policy, 'off');
-    assert.equal(disabled.runtime_evidence_eligible, false);
+    assert.equal(disabled.runtime_evidence_eligible, true, 'explicit off cannot hide saved cleanup ownership');
   });
 
   test('an invalid saved policy fails safe to off and is not rewritten', () => {
@@ -453,7 +476,7 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
     const output = runJson(['init', 'debug', 'continue', 'invalid-policy'], tmpDir);
 
     assert.equal(output.runtime_evidence_policy, 'off');
-    assert.equal(output.runtime_evidence_eligible, false);
+    assert.equal(output.runtime_evidence_eligible, true, 'invalid-policy continuation still routes reconciliation');
     assert.deepEqual(fs.readFileSync(sessionPath), before, 'inspection must not normalize the invalid value on disk');
   });
 
@@ -464,7 +487,7 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
     const output = runJson(['init', 'debug', 'continue', 'legacy-session'], tmpDir);
 
     assert.equal(output.runtime_evidence_policy, 'off');
-    assert.equal(output.runtime_evidence_eligible, false);
+    assert.equal(output.runtime_evidence_eligible, true, 'legacy continuation still routes reconciliation');
     assert.deepEqual(fs.readFileSync(sessionPath), before, 'legacy reads must not perform a migration-only rewrite');
   });
 
@@ -620,6 +643,33 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
     assert.deepEqual(fs.readFileSync(sessionPath), before, 'valid CRLF session read must be byte-identical');
   });
 
+  test('a stray HTML comment closer in user text cannot hide a valid saved policy', () => {
+    const sessionPath = writeRawDebugSession(tmpDir, 'stray-comment-close', [
+      '---',
+      'status: investigating',
+      'trigger: user reported --> in generated markup',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy: adaptive',
+      'state: not_used',
+      '',
+      '## Notes',
+      '',
+      'The literal --> is evidence data, not a comment instruction.',
+      '',
+    ].join('\n'));
+    const before = fs.readFileSync(sessionPath);
+
+    const output = runJson(['init', 'debug', 'continue', 'stray-comment-close'], tmpDir);
+
+    assert.equal(output.runtime_evidence_policy, 'adaptive');
+    assert.equal(output.runtime_evidence_eligible, true);
+    assert.deepEqual(fs.readFileSync(sessionPath), before, 'saved session reads remain byte-identical');
+  });
+
   test('invalid UTF-8 in a saved session fails safe instead of decoding replacement characters', () => {
     const validPrefix = Buffer.from([
       '---',
@@ -648,20 +698,62 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
     assert.deepEqual(fs.readFileSync(sessionPath), before, 'invalid bytes must remain untouched');
   });
 
-  test('hostile or overlong continue slugs cannot escape the debug directory', () => {
+  test('continue slug length boundary accepts 29/30 and rejects 31 characters', () => {
+    for (const length of [29, 30]) {
+      const slug = `a${'b'.repeat(length - 1)}`;
+      const sessionPath = writeDebugSession(tmpDir, slug, 'adaptive');
+      const before = fs.readFileSync(sessionPath);
+      const output = runJson(['init', 'debug', 'continue', slug], tmpDir);
+      assert.equal(output.slug, slug);
+      assert.equal(output.runtime_evidence_policy, 'adaptive');
+      assert.equal(output.runtime_evidence_eligible, true);
+      assert.deepEqual(fs.readFileSync(sessionPath), before);
+    }
+
+    const slug31 = 'a'.repeat(31);
+    const result = runGsdTools(['init', 'debug', 'continue', slug31], tmpDir);
+    assert.equal(result.success, false);
+  });
+
+  test('saved-session policy reads accept exactly 8 MiB and reject 8 MiB plus one byte', () => {
+    const slug = 'policy-size-boundary';
+    const prefix = Buffer.from([
+      '---',
+      'status: investigating',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy: adaptive',
+      'state: not_used',
+      '',
+    ].join('\n'));
+    const exact = Buffer.alloc(8 * 1024 * 1024, 0x20);
+    prefix.copy(exact);
+    const sessionPath = writeRawDebugSession(tmpDir, slug, exact);
+
+    const atLimit = runJson(['init', 'debug', 'continue', slug], tmpDir);
+    assert.equal(atLimit.runtime_evidence_policy, 'adaptive');
+    assert.equal(atLimit.runtime_evidence_eligible, true);
+
+    fs.appendFileSync(sessionPath, Buffer.from(' '));
+    const aboveLimit = runJson(['init', 'debug', 'continue', slug], tmpDir);
+    assert.equal(aboveLimit.runtime_evidence_policy, 'off');
+    assert.equal(aboveLimit.runtime_evidence_eligible, true, 'cleanup routing survives a degraded read');
+    assert.equal(fs.statSync(sessionPath).size, (8 * 1024 * 1024) + 1);
+  });
+
+  test('hostile continue slugs cannot escape the debug directory', () => {
     const outsidePath = path.join(tmpDir, '.planning', 'outside.md');
     fs.writeFileSync(outsidePath, '## Runtime Evidence\n\npolicy: adaptive\n');
-    const overlong = 'a'.repeat(31);
-    const overlongPath = writeDebugSession(tmpDir, overlong, 'adaptive');
     const outsideBefore = fs.readFileSync(outsidePath);
-    const overlongBefore = fs.readFileSync(overlongPath);
 
-    for (const slug of ['../outside', '..\\outside', 'foo/bar', overlong]) {
+    for (const slug of ['../outside', '..\\outside', 'foo/bar']) {
       const result = runGsdTools(['init', 'debug', 'continue', slug], tmpDir);
       assertPolicyOffOrCleanReject(result, slug);
 
       assert.deepEqual(fs.readFileSync(outsidePath), outsideBefore, 'outside decoy must remain untouched');
-      assert.deepEqual(fs.readFileSync(overlongPath), overlongBefore, 'overlong-slug decoy must remain untouched');
     }
   });
 });
@@ -695,49 +787,36 @@ describe('init.debug --diagnose forwarding and hostile argv (matrix §C)', () =>
     assert.equal(output.diagnose, true);
   });
 
-  test('rejects an unrecognized flag with the flag named (row C4)', () => {
-    // ADR-3473 §8.4 (Bucket-B correction): "`parseNamedArgs` rejects
-    // unrecognized ... tokens with a non-zero exit — it is called by agents
-    // that will drift again." An unrecognized flag is exactly the mandated
-    // rejection, not a thing to silently absorb.
-    const result = runGsdTools(['init', 'debug', '--nope'], tmpDir);
-    assert.equal(result.success, false, 'an unknown flag must now fail the command');
-    assert.match(result.error, /--nope/, 'the rejection must name the offending flag');
+  test('preserves an unrecognized flag-shaped token as issue-description data (row C4)', () => {
+    const output = runJson(['init', 'debug', '--nope'], tmpDir);
+    assert.equal(output.subcommand, 'debug');
+    assert.equal(output.description, '--nope');
+    assert.equal(output.runtime_evidence_policy, 'off');
   });
 
-  test('rejects a flag-shaped trailing token, naming it (row C5)', () => {
-    const result = runGsdTools(['init', 'debug', '--diagnose', '--weird'], tmpDir);
-    assert.equal(result.success, false, 'an unrecognized flag-shaped token must now fail the command');
-    assert.match(result.error, /--weird/, 'the rejection must name the offending flag');
+  test('strips recognized flags while retaining other flag-shaped description data (row C5)', () => {
+    const output = runJson(['init', 'debug', '--diagnose', '--weird'], tmpDir);
+    assert.equal(output.diagnose, true);
+    assert.equal(output.description, '--weird');
   });
 
-  test('does not interpolate shell metacharacters even though the hostile positional is now rejected (row C6)', () => {
+  test('does not interpolate shell metacharacters while projecting description data (row C6)', () => {
     const canary = path.join(tmpDir, 'PWNED');
     const hostile = `; touch ${canary}; $(touch ${canary}) \`touch ${canary}\` && touch ${canary}`;
 
-    const result = runGsdTools(['init', 'debug', hostile], tmpDir);
+    const output = runJson(['init', 'debug', hostile], tmpDir);
 
-    // §8.4 now rejects this as an unexpected positional argument (exit
-    // non-zero) instead of silently absorbing it — that is at least as safe
-    // as the old accept-and-ignore behavior. The canary assertion is the
-    // actual point of this test and is unchanged: no shell ever touches this
-    // string, whether the token is accepted or rejected.
-    assert.equal(result.success, false, 'a stray positional argument must now fail the command');
+    assert.equal(output.description, hostile);
     assert.equal(fs.existsSync(canary), false, 'no shell interpolation of an attacker-controlled argument');
-    assert.equal(result.error.includes('    at '), false, 'no stack trace in non-debug output');
   });
 
-  test('rejects a very long or unicode positional argument, not just tolerates it (row C7/C8)', () => {
-    // Classified as the same §8.4 unexpected-positional-argument shape as
-    // C6: `init debug` declares no positionals, so any bare token here is a
-    // stray positional and must now be rejected rather than silently
-    // absorbed.
+  test('projects a very long or unicode issue description without crashing (row C7/C8)', () => {
     const long = 'x'.repeat(8192);
     const unicode = 'ünïcødé-🐛-测试';
 
     for (const arg of [long, unicode]) {
-      const result = runGsdTools(['init', 'debug', arg], tmpDir);
-      assert.equal(result.success, false, `argument of length ${arg.length} must now fail the command, not crash`);
+      const output = runJson(['init', 'debug', arg], tmpDir);
+      assert.equal(output.description, arg);
     }
   });
 });

@@ -1,5 +1,7 @@
-// The command, workflow, agent, template, reference, and routing sources are
-// the deployed runtime contract. Testing their text tests shipped behavior.
+// Prompt markdown, templates, references, and ADRs are deployed runtime
+// products. Executable CLI/parser/manifest behavior is covered separately in
+// init-debug.test.cjs, init-debug-workflow-contract.test.cjs,
+// command-arg-projection.test.cjs, and section-manifest-init-facts.test.cjs.
 'use strict';
 
 const { describe, test } = require('node:test');
@@ -18,10 +20,6 @@ const FILES = Object.freeze({
   template: path.join(ROOT, 'gsd-core/templates/DEBUG.md'),
   debugPrompt: path.join(ROOT, 'gsd-core/templates/debug-subagent-prompt.md'),
   diagnoseIssues: path.join(ROOT, 'gsd-core/workflows/diagnose-issues.md'),
-  init: path.join(ROOT, 'src/init.cts'),
-  router: path.join(ROOT, 'src/init-command-router.cts'),
-  manifest: path.join(ROOT, 'src/section-manifest.cts'),
-  fragments: path.join(ROOT, 'src/workflow-fragments.cts'),
   fullHelp: path.join(ROOT, 'gsd-core/workflows/help/modes/full.md'),
   adr1671: path.join(ROOT, 'docs/adr/1671-dynamic-context-management-platform.md'),
   packageJson: path.join(ROOT, 'package.json'),
@@ -129,54 +127,6 @@ describe('adaptive runtime evidence command and applicability contract (#3128)',
     ], 'invalid debug argument combinations');
   });
 
-  test('the debug router forwards both probe flags and the continue slug to init.debug', () => {
-    const router = flat(read(FILES.router));
-    const debugRoute = router.match(/debug:\s*\(\)\s*=>\s*\{[\s\S]{0,1600}?cmdInitDebug\([^;]+;/);
-
-    assert.ok(debugRoute, 'init-command-router must contain a bounded debug route');
-    assertIncludesAll(
-      debugRoute[0],
-      ["'runtime-probes'", "'no-runtime-probes'", 'cmdInitDebug'],
-      'init.debug flag forwarding',
-    );
-    assert.match(
-      debugRoute[0],
-      /(?:slug|continue)/i,
-      'continue slug must reach cmdInitDebug so saved policy can be resolved',
-    );
-  });
-
-  test('the closed when vocabulary gains one resolved state atom, not a raw flag atom', () => {
-    const fragments = read(FILES.fragments);
-    const manifest = read(FILES.manifest);
-    const init = read(FILES.init);
-
-    assert.ok(
-      fragments.includes("'state:runtime-evidence-eligible'"),
-      'WHEN_VOCABULARY must admit state:runtime-evidence-eligible',
-    );
-    assert.ok(
-      !fragments.includes("'flag:--runtime-probes'"),
-      'saved adaptive sessions cannot be gated by a raw invocation flag',
-    );
-    assert.match(manifest, /readonly runtimeEvidenceEligible\?: boolean/);
-    assert.match(
-      manifest,
-      /'state:runtime-evidence-eligible':\s*\(facts[^)]*\)\s*=>\s*facts\.runtimeEvidenceEligible\s*===\s*true/,
-      'the predicate consumes only the resolved boolean fact',
-    );
-    assertIncludesAll(
-      init,
-      ['runtime_evidence_policy', 'runtime_evidence_eligible'],
-      'init.debug resolved policy fields',
-    );
-    assert.match(
-      init,
-      /runtime_evidence_eligible['"]?\]?\s*=|runtime_evidence_eligible\s*:/,
-      'init.debug must emit the eligibility fact',
-    );
-  });
-
   test('ADR-1671 flips its existing atom reservation to the shipped 30-entry vocabulary', () => {
     const adr = flat(read(FILES.adr1671));
 
@@ -236,46 +186,6 @@ describe('adaptive runtime evidence command and applicability contract (#3128)',
 });
 
 describe('policy persistence and immutable session goal (#3128)', () => {
-  test('missing, legacy, and invalid policy all resolve fail-safe to off', () => {
-    const workflow = flat(read(FILES.workflow));
-    const reference = flat(read(FILES.reference));
-    const combined = `${workflow} ${reference}`;
-
-    assertMatchesAll(combined, [
-      /(?:absent|missing|legacy).{0,260}(?:Runtime Evidence|saved policy|policy).{0,260}\boff\b|(?:Runtime Evidence|saved policy|policy).{0,260}(?:absent|missing|legacy).{0,260}\boff\b/i,
-      /invalid.{0,220}(?:saved )?policy.{0,300}(?:preserve|remain|leave).{0,220}(?:disk|inspection|stored)/i,
-      /invalid.{0,220}(?:saved )?policy.{0,320}(?:effective|dispatch|resolve|fall back).{0,180}\boff\b/i,
-    ], 'legacy and invalid policy handling');
-    assert.doesNotMatch(
-      combined,
-      /(?:legacy|invalid|absent|missing).{0,260}(?:policy|Runtime Evidence).{0,260}(?:default|dispatch|resolve|fall back).{0,180}\badaptive\b/i,
-      'ADR-3128 supersedes the prototype adaptive legacy default',
-    );
-  });
-
-  test('policy precedence is explicit override, valid saved value, then off', () => {
-    const combined = flat(`${read(FILES.workflow)}\n${read(FILES.reference)}\n${read(FILES.init)}`);
-
-    assert.match(
-      combined,
-      /explicit.{0,160}(?:override|flag).{0,220}(?:valid )?saved.{0,180}policy.{0,220}(?:default|off)|explicit.{0,160}(?:override|flag).{0,220}(?:→|>).{0,100}(?:valid )?saved.{0,180}(?:→|>).{0,100}off/i,
-      'effective policy precedence must be stated and implemented once',
-    );
-    assertMatchesAll(combined, [
-      /--runtime-probes.{0,220}\badaptive\b|\badaptive\b.{0,220}--runtime-probes/i,
-      /--no-runtime-probes.{0,220}\boff\b|\boff\b.{0,220}--no-runtime-probes/i,
-    ], 'explicit policy overrides');
-  });
-
-  test('an override mutates only policy and off still reconciles owned state', () => {
-    const combined = flat(`${read(FILES.workflow)}\n${read(FILES.reference)}`);
-
-    assertMatchesAll(combined, [
-      /override.{0,260}(?:changes|updates|mutates).{0,100}(?:only )?`?policy`?.{0,320}(?:never|does not|must not).{0,240}(?:state|mode|probe|artifact|active_run|cleanup)/i,
-      /(?:switch|override|policy).{0,180}\boff\b.{0,360}(?:reconcile|cleanup).{0,260}(?:non-clean|existing|owned|planned|active|cleanup_failed)/i,
-    ], 'policy override persistence');
-  });
-
   test('the session schema persists an immutable goal with a legacy find-and-fix default', () => {
     const template = flat(read(FILES.template));
 
@@ -448,8 +358,8 @@ describe('Runtime Evidence schema v1 and write-ahead runs (#3128)', () => {
   });
 
   test('completed digests use exact phases, verdicts, and stable citations', () => {
-    const combined = `${read(FILES.reference)}\n${read(FILES.template)}`;
-    const digestSchema = contextAround(flat(combined), 'event_refs:', 1400, 'completed run digest');
+    const reference = read(FILES.reference);
+    const digestSchema = contextAround(flat(reference), 'event_refs:', 1400, 'completed run digest');
 
     assertIncludesAll(digestSchema, [
       'run_id:',
@@ -458,7 +368,7 @@ describe('Runtime Evidence schema v1 and write-ahead runs (#3128)', () => {
       'event_refs:',
       'verdicts:',
     ], 'completed digest literal fields');
-    assertIncludesAll(combined, [
+    assertIncludesAll(reference, [
       'baseline',
       'post_fix',
       'uninstrumented_verify',
@@ -473,7 +383,7 @@ describe('Runtime Evidence schema v1 and write-ahead runs (#3128)', () => {
       'completed digests carry a verdict for each hypothesis',
     );
     assert.match(
-      combined,
+      reference,
       /(?:<run-id>|run-1):(?:<probe-id>|p1):(?:<ordinal>|1)/,
       'event citations must use run-id:probe-id:ordinal',
     );
@@ -759,11 +669,11 @@ describe('runtime lifecycle, checkpoints, and terminal gates (#3128)', () => {
   });
 
   test('resume reconciles active runs, probes, and artifacts before investigation', () => {
-    const combined = flat(`${read(FILES.debugger)}\n${read(FILES.reference)}`);
+    const debuggerAgent = flat(read(FILES.debugger));
 
     assert.match(
-      combined,
-      /(?:resume|startup|direct invocation).{0,420}(?:first|before any|before other).{0,220}(?:reconcile|inspect).{0,260}(?:active_run|probe ledger|artifact ledger|Runtime Evidence)/i,
+      debuggerAgent,
+      /(?:startup|resume|direct invocation).{0,420}(?:inspect|reconcile).{0,260}(?:active_run|probe\/artifact ledgers|probe ledger|artifact ledger|Runtime Evidence).{0,260}(?:first|before any|before other)/i,
       'interrupted ownership is reconciled before new work',
     );
   });
@@ -787,7 +697,12 @@ describe('runtime lifecycle, checkpoints, and terminal gates (#3128)', () => {
 
     assert.match(debugPrompt, /runtime_checkpoints_supported:\s*\{(?:true_or_false|runtime_checkpoints_supported)\}/);
     assert.match(diagnoseIssues, /runtime_checkpoints_supported:\s*false/i);
-    assertMatchesAll(`${reference} ${debuggerAgent}`, [
+    assert.match(
+      debuggerAgent,
+      /runtime_checkpoints_supported.{0,180}(?:literal boolean|literal).{0,120}true/i,
+      'debugger must fail closed unless caller capability is literal true',
+    );
+    assertMatchesAll(reference, [
       /runtime_checkpoints_supported.{0,180}(?:absent|invalid|missing).{0,160}false|(?:absent|invalid|missing).{0,160}runtime_checkpoints_supported.{0,180}false/i,
       /runtime_checkpoints_supported.{0,120}false.{0,480}(?:cannot|must not|never).{0,240}(?:structured capture|capture artifact|manual reproduction|runtime-reproduce)/i,
       /(?:agent-runnable|ordinary existing test|passive evidence).{0,360}(?:exhausted|insufficient).{0,260}inconclusive/i,
@@ -795,10 +710,9 @@ describe('runtime lifecycle, checkpoints, and terminal gates (#3128)', () => {
   });
 
   test('debugger and manager both gate every terminal or durable transition', () => {
-    const rawDebuggerAgent = read(FILES.debugger);
-    const rawManager = read(FILES.manager);
-    const debuggerAgent = flat(rawDebuggerAgent);
-    const manager = flat(rawManager);
+    const debuggerAgent = flat(read(FILES.debugger));
+    const manager = flat(read(FILES.manager));
+    const reference = flat(read(FILES.reference));
     const nonCleanGate = /(?:non-clean runtime evidence|runtime evidence.{0,300}(?:must (?:be|remain).{0,100}(?:absent|not_used|clean)|absent.{0,120}not_used.{0,120}clean|cleanup_pending|cleanup_failed|planned|active))/;
     const transitions = [
       ['diagnosis completion', /diagnosis completion/],
@@ -811,46 +725,30 @@ describe('runtime lifecycle, checkpoints, and terminal gates (#3128)', () => {
       ['terminal return', /terminal returns?/],
     ];
 
-    for (const [surface, body, rawBody, gateAnchor] of [
-      ['debugger', debuggerAgent, rawDebuggerAgent, '**Terminal defense gate:**'],
-      ['manager', manager, rawManager, '**Runtime-evidence defense gate'],
-    ]) {
-      for (const [transition, pattern] of transitions) {
-        assertBoundedRelationship(
-          body,
-          nonCleanGate,
-          pattern,
-          `${surface} non-clean gate for ${transition}`,
-          1200,
-        );
-      }
-      const gateStart = rawBody.indexOf(gateAnchor);
-      assert.notEqual(gateStart, -1, `${surface} must define its terminal defense gate`);
-      const gateEnd = rawBody.indexOf('\n\n', gateStart);
-      const terminalPredicate = flat(rawBody.slice(
-        gateStart,
-        gateEnd === -1 ? rawBody.length : gateEnd,
-      ));
-      assert.match(
-        terminalPredicate,
-        /not_used.{0,320}(?:empty|no).{0,180}(?:probe|artifact).{0,240}clean.{0,360}(?:every|all).{0,160}(?:probe|artifact).{0,180}removed.{0,360}(?:zero|0).{0,120}(?:count|remaining).{0,220}(?:null|no).{0,100}failure/i,
-        `${surface} terminal predicate must reject contradictory not_used/clean ledgers`,
-      );
-      assert.match(
-        terminalPredicate,
-        /(?:malformed|contradictory).{0,220}(?:non-terminal|cleanup|fail closed)/i,
-        `${surface} malformed runtime state must fail closed`,
+    for (const [transition, pattern] of transitions) {
+      assertBoundedRelationship(
+        reference,
+        nonCleanGate,
+        pattern,
+        `deep protocol non-clean gate for ${transition}`,
+        1600,
       );
     }
+
+    assertMatchesAll(reference, [
+      /not_used.{0,320}(?:empty|no).{0,180}(?:probe|artifact).{0,240}clean.{0,360}(?:every|all).{0,160}(?:probe|artifact).{0,180}removed.{0,360}(?:zero|0).{0,120}(?:count|remaining).{0,220}(?:null|no).{0,100}failure/i,
+      /(?:malformed|contradictory).{0,220}(?:non-terminal|cleanup|fail closed)/i,
+      /active_run.{0,180}(?:null|absent|cleared).{0,420}(?:terminal|commit|archive)|(?:terminal|commit|archive).{0,420}active_run.{0,180}(?:null|absent|cleared)/i,
+    ], 'deep terminal predicate');
+
     assertMatchesAll(debuggerAgent, [
-      /(?:terminal|completion|return).{0,420}(?:active_run).{0,160}(?:null|absent|cleared)|active_run.{0,160}(?:null|absent|cleared).{0,420}(?:terminal|completion|return)/i,
+      /debugger-runtime-evidence\.md.{0,320}(?:terminal|predicate)/i,
       /(?:debugger owns|direct invocation).{0,360}(?:reconcile|cleanup)/i,
-    ], 'direct debugger terminal gate');
-    assert.match(
-      manager,
-      /active_run.{0,180}(?:null|absent|cleared).{0,420}(?:terminal|commit|archive|summary)|(?:terminal|commit|archive|summary).{0,420}active_run.{0,180}(?:null|absent|cleared)/i,
-      'session-manager terminal gate also requires no active run',
-    );
+    ], 'debugger delegates to the deep terminal gate');
+    assertMatchesAll(manager, [
+      /debugger-runtime-evidence\.md.{0,320}(?:terminal|predicate)/i,
+      /(?:do not|never).{0,320}(?:verify|abandon|archive).{0,320}(?:stage|commit).{0,320}(?:knowledge|summarize)/i,
+    ], 'manager defense-in-depth terminal gate');
 
     const workflow = flat(read(FILES.workflow));
     assert.ok(
@@ -864,10 +762,10 @@ describe('runtime lifecycle, checkpoints, and terminal gates (#3128)', () => {
   });
 
   test('final uninstrumented reproduction precedes fix guardrail and human verification', () => {
-    const combined = flat(`${read(FILES.debugger)}\n${read(FILES.reference)}`);
+    const reference = flat(read(FILES.reference));
 
     assert.match(
-      combined,
+      reference,
       /uninstrumented_verify.{0,700}(?:five-signal|fix acceptance|fix-acceptance|guardrail).{0,520}human verification/i,
       'final acceptance ordering must be explicit',
     );

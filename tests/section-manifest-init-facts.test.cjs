@@ -406,7 +406,7 @@ describe('init.debug projects state:runtime-evidence-eligible into section_manif
     assert.deepEqual(output.section_manifest.read, []);
   });
 
-  test('an explicit --no-runtime-probes override excludes a saved adaptive session', () => {
+  test('an explicit --no-runtime-probes continuation still includes reconciliation routing', () => {
     writeSavedAdaptive('saved-adaptive');
 
     const output = runInitJson(
@@ -416,8 +416,8 @@ describe('init.debug projects state:runtime-evidence-eligible into section_manif
     );
 
     assert.equal(output.runtime_evidence_policy, 'off');
-    assert.equal(output.runtime_evidence_eligible, false);
-    assert.deepEqual(output.section_manifest.included, []);
-    assert.deepEqual(output.section_manifest.excluded, ['runtime-evidence-protocol']);
+    assert.equal(output.runtime_evidence_eligible, true);
+    assert.deepEqual(output.section_manifest.included, ['runtime-evidence-protocol']);
+    assert.deepEqual(output.section_manifest.excluded, []);
   });
 });
