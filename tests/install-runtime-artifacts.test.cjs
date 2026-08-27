@@ -1001,6 +1001,10 @@ describe('skills wrapper threads install scope into converter isGlobal (regressi
       const globalDir = createTempDir(`gsd-ial-g-${runtime}-`);
       const localDir = createTempDir(`gsd-ial-l-${runtime}-`);
       t.after(() => { cleanup(globalDir); cleanup(localDir); });
+      // #3738: antigravity's global skills kind resolves its `home` override
+      // from os.homedir(); sandbox HOME (with the #3712 marker) so the global
+      // install writes inside globalDir instead of the runner's real home.
+      sandboxHome(t, globalDir);
 
       installRuntimeArtifacts(runtime, globalDir, 'global', RESOLVED_CORE);
       installRuntimeArtifacts(runtime, localDir, 'local', RESOLVED_CORE);

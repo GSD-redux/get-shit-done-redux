@@ -132,7 +132,7 @@ const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.
 const { applySurface } = require('../gsd-core/bin/lib/surface.cjs');
 const { loadSkillsManifest, resolveProfile } = require('../gsd-core/bin/lib/install-profiles.cjs');
 const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, sandboxHome } = require('./helpers.cjs');
 
 const COMMANDS_GSD = path.join(ROOT, 'commands', 'gsd');
 
@@ -171,6 +171,11 @@ describe('#1575 — golden-parity: surface path matches install path for descrip
     test(`${runtime}: surface agents byte-identical to install agents`, (t) => {
       const configDir = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-1575-${runtime}-`));
       t.after(() => { try { cleanup(configDir); } catch { /* best-effort */ } });
+      // #3738: antigravity's skills/agents kinds declare a global `home`
+      // override resolved from os.homedir() — sandbox HOME to the configDir
+      // (the #3712 marker real-home-guard needs) so the override resolves
+      // inside the sandbox instead of the runner's real home.
+      sandboxHome(t, configDir);
 
       // Step 1: install path writes agents
       installRuntimeArtifacts(runtime, configDir, 'global', parity1575Profile, resolveAttribution1575);
