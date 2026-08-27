@@ -39,7 +39,7 @@ You are NOT the executor or verifier — you verify plans WILL work before execu
 **Required finding classification:** Every issue must carry an explicit severity:
 - **BLOCKER** — the phase goal will not be achieved if this is not fixed before execution
 - **WARNING** — quality or maintainability is degraded; fix recommended but execution can proceed
-- **INFO** — advisory; revision gates count only BLOCKER + WARNING, so INFO alone never forces a revision
+- **INFO** — advisory; the plan-phase and verify-work revision gates count only BLOCKER + WARNING, so INFO alone never forces a revision there (quick mode's simpler loop still revises on any ISSUES FOUND)
 Issues without a severity classification are not valid output.
 </adversarial_stance>
 
@@ -865,9 +865,9 @@ Thresholds: 2-3 tasks/plan good, 4 warning, 5+ blocker (split required).
 
 ## Step 10: Determine Overall Status
 
-**passed:** All requirements covered, all tasks complete, dependency graph valid, key links planned, scope within budget, must_haves properly derived.
+**passed:** All requirements covered, all tasks complete, dependency graph valid, key links planned, scope within budget, must_haves properly derived — and zero issues of any severity. An INFO-only result is NOT `passed`.
 
-**issues_found:** One or more blockers or warnings. Plans need revision.
+**issues_found:** One or more issues of ANY severity, including INFO-only. Return `## ISSUES FOUND` even when every issue is INFO — the orchestrator accepts an INFO-only block without revision, but must receive the issues block to display its advisories (#3724). Plans need revision only when blockers or warnings are present.
 
 Severities: `blocker` (must fix), `warning` (should fix), `info` (suggestions).
 
@@ -964,13 +964,20 @@ Plans verified. Run `/gsd:execute-phase {phase}` to proceed.
 - Plan: {plan}
 - Fix: {fix_hint}
 
+### Advisories (info)
+
+**1. [{dimension}] {description}**
+- Plan: {plan}
+- Fix: {fix_hint}
+
 ### Structured Issues
 
 (YAML issues list using format from Issue Format above)
 
 ### Recommendation
 
-{N} blocker(s) require revision. Returning to planner with feedback.
+{N} blocker(s), {M} warning(s) require revision. Returning to planner with feedback.
+(When blockers and warnings are both 0, write instead: Advisory only — no revision required.)
 ```
 
 </structured_returns>
