@@ -238,7 +238,7 @@ function runMain(main: () => number | string | void | Promise<number | string | 
       if (typeof result === 'number') { process.exitCode = result; return; }
       if (typeof result === 'string') {
         const projected = projectOutcome(result, getContractVersion());
-        // ADR-3889 §3: exit code 2 (the Claude Code hook-protocol deny) may
+        // ADR-3889 §3: exit code 2 (the hook-protocol deny) may
         // ONLY be produced by terminateNow, never by runMain. runMain is
         // drain-then-exit; a deny drained this way can be truncated on
         // Windows, which is exactly why terminateNow (write-then-terminate)
@@ -302,6 +302,27 @@ function runMain(main: () => number | string | void | Promise<number | string | 
  * @param payload - JSON-serializable value written to fd 1 (and, on a deny,
  *   fd 2 too — Kimi's native hook bus feeds stderr, not stdout, back to the
  *   model on exit 2, per hooks/gsd-write-guard.js's emitBlock).
+ *
+ * PAYLOAD-SIZE CONSTRAINT FOR CALLERS (measured for #3906, relevant to P7/
+ * #3911 wiring 19 enforcement hooks onto this function): the write-until-
+ * drained loop above delivers a payload whole regardless of size — verified
+ * up to 1MB (Node's own `spawnSync` default `maxBuffer`) with no truncation
+ * and no stall, both with a concurrently-draining async reader (~30ms for a
+ * 256KB payload) and with the default (internally-drained) pipe stdio a
+ * spawnSync-based test harness gets for free. Node's `spawnSync` does NOT
+ * suffer the classic "child blocks writing past the pipe buffer because
+ * nothing on the parent side is reading yet" deadlock some other languages'
+ * synchronous-subprocess primitives have; it drains stdout/stderr
+ * concurrently at the libuv layer while the child runs. The constraint that
+ * DOES bite on Linux is unrelated to pipe buffering: `execve(2)` enforces
+ * `MAX_ARG_STRLEN` (128KiB per single argv/envp string; see `man execve`
+ * NOTES) — so a CALLER that embeds a large literal payload directly into a
+ * spawned command line (e.g. `node -e "...<huge string>..."`) can fail to
+ * even start the child on Linux (macOS has no equivalent per-string cap),
+ * with no relation to this function's own behavior. See
+ * tests/cli-exit.test.cjs's "a large payload (bigger than a pipe buffer)
+ * arrives whole" test, which hit exactly this constructing its own fixture
+ * before being rewritten to build the payload inside the child instead.
  */
 function terminateNow(outcome: string, payload: unknown): never {
   // terminateNow is total by construction: its callers are enforcement hooks

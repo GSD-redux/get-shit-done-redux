@@ -34,6 +34,9 @@ const { flatten, findDefaultValueChanges, evaluateDefaultFlipDoc, MANIFEST_PATH 
 const { cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
+
+const LINT_SCRIPT_REL = path.join('scripts', 'lint-default-flip-documentation.cjs');
 
 describe('default-flip-documentation lint: flatten (pure)', () => {
   test('flattens a nested object into dot-path leaves', () => {
@@ -121,13 +124,7 @@ describe('default-flip-documentation lint: main() end-to-end wiring', () => {
     git(tmpDir, 'add', '-A');
     git(tmpDir, 'commit', '-q', '-m', 'pr');
 
-    const scriptsDir = path.join(tmpDir, 'scripts');
-    const libDir = path.join(scriptsDir, 'lib');
-    fs.mkdirSync(libDir, { recursive: true });
-    const scriptCopy = path.join(scriptsDir, 'lint-default-flip-documentation.cjs');
-    fs.copyFileSync(LINT_SCRIPT, scriptCopy);
-    fs.copyFileSync(path.join(ROOT, 'scripts', 'lib', 'cli-exit.cjs'), path.join(libDir, 'cli-exit.cjs'));
-    return scriptCopy;
+    return copyScriptWithDeps(ROOT, tmpDir, LINT_SCRIPT_REL);
   }
 
   function runWithPrBody(tmpDir, scriptCopy, prBody) {

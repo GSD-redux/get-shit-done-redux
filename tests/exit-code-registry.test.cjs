@@ -475,7 +475,12 @@ describe('gen-exit-code-registry: CLI', () => {
     const out = path.join(tmpDir, 'd-out.cjs');
     assert.equal(runGen(['--write', '--declaration', decl, '--out', out]).exitCode, 0);
     const entries = JSON.parse(fs.readFileSync(decl, 'utf8'));
-    entries.push({ code: 80, name: 'DOMAIN_X', meaning: 'm', owner: 'domain-x', authorizedBy: 'ADR-3889' });
+    // 81, not 80: the real declaration already allocates 80 to DEGRADED, and
+    // this fixture copies the REAL declaration (validDeclarationPath) — an
+    // appended entry must pick a code neither of the two committed entries
+    // already own, or the generator correctly reports fail_duplicate_code
+    // instead of the DRIFTED this test means to exercise.
+    entries.push({ code: 81, name: 'DOMAIN_X', meaning: 'm', owner: 'domain-x', authorizedBy: 'ADR-3889' });
     fs.writeFileSync(decl, JSON.stringify(entries, null, 2), 'utf8');
     const { result, report } = runGenJson(['--check', '--declaration', decl, '--out', out]);
     assert.equal(result.exitCode, 1);

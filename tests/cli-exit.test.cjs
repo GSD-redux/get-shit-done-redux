@@ -1190,15 +1190,44 @@ describe('#3906: terminateNow', () => {
     // Linux, 16 pages, is the largest common default), so a single
     // fs.writeSync call is very likely to under-write without the
     // write-until-drained loop.
-    const bigString = 'x'.repeat(256 * 1024);
-    const r = spawnTerminateNow([
+    //
+    // The payload is built INSIDE the child from PROBE_BIG_PAYLOAD_SIZE
+    // (an env var carrying a small integer), never embedded as a literal
+    // in the `-e` script text handed to spawnSync. Embedding the 256KB
+    // string directly in that argv element (the previous form of this
+    // test) is what actually failed on the remote Linux matrix: Linux's
+    // execve(2) enforces MAX_ARG_STRLEN, a 128KiB-per-argv/envp-string cap
+    // (32 pages; see `man execve` NOTES), independent of any OS pipe
+    // buffer. A single argv element over that cap makes spawnSync fail at
+    // the exec() level with ENAMETOOLONG/E2BIG — no process ever starts,
+    // which reads back as `status: null, stdout: ''`, exactly the recorded
+    // failure signature. macOS enforces no such per-string cap (only a much
+    // larger whole-argv+env budget), which is why 25 macOS attempts at
+    // reproducing this via the old form never turned up the mechanism.
+    // Measured on this machine (see the phase report for the full probe
+    // transcript): an async `child_process.spawn` with a concurrently
+    // draining reader delivers a 256KB terminateNow payload whole, byte for
+    // byte, in ~30ms; `spawnSync` with the DEFAULT (non-draining-by-JS,
+    // internally-drained-by-libuv) pipe stdio used by this suite's `runNode`
+    // never hangs at any size up to 64MB either — it either succeeds
+    // (payload under the ~1MB default `maxBuffer`) or is classified
+    // `BUFFER_OVERFLOW` (over it), never a stall. terminateNow's
+    // write-until-drained loop itself was never the defect; the previous
+    // form of this test just could not reach the child at all on Linux.
+    const size = 256 * 1024;
+    const r = toLegacyResult(runNode(['-e', [
       `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
-      `c.terminateNow('PASS', { big: ${JSON.stringify(bigString)} });`,
-    ]);
-    assert.equal(r.status, 0);
+      `const n = parseInt(process.env.PROBE_BIG_PAYLOAD_SIZE, 10);`,
+      `const big = 'x'.repeat(n);`,
+      `c.terminateNow('PASS', { big });`,
+    ].join('\n')], {
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { ...process.env, PROBE_BIG_PAYLOAD_SIZE: String(size) },
+    }));
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     const parsed = JSON.parse(r.stdout);
-    assert.equal(parsed.big.length, bigString.length, 'the payload must arrive byte-for-byte whole, not truncated');
-    assert.equal(parsed.big, bigString);
+    assert.equal(parsed.big.length, size, 'the payload must arrive byte-for-byte whole, not truncated');
+    assert.equal(parsed.big, 'x'.repeat(size));
   });
 
   // ── terminateNow is TOTAL: no input can make it return or throw ──────────

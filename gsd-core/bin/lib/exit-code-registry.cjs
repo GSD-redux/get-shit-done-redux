@@ -15,7 +15,7 @@ const EXIT_CODES = Object.freeze([
   Object.freeze({
     code: 2,
     name: "HOOK_DENY",
-    meaning: "Claude Code hook protocol — deny the tool call",
+    meaning: "Hook protocol deny — the harness blocks the tool call",
     owner: "hook-adapter",
     authorizedBy: "ADR-3889",
   }),
