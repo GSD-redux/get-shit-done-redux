@@ -241,7 +241,11 @@ const TABLE = [
     assertDeny: (r) => {
       const out = JSON.parse(r.stdout);
       assert.equal(out.decision, 'block');
-      assert.equal(out.reason_code, 'CONFIG_UNREADABLE');
+      // REASON_CODE.CONFIG_UNREADABLE (hooks/lib/isolation-deny-reason.js) has
+      // always been the lowercase string 'config_unreadable' — untouched by
+      // the #3911 crash-policy migration. The uppercase literal here was
+      // simply wrong.
+      assert.equal(out.reason_code, 'config_unreadable');
       assert.match(r.stderr, /could not read or resolve/);
       assert.equal(r.stderr, out.reason);
     },
