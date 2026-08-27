@@ -255,7 +255,19 @@ describe('per-install .gsd-runtime marker rung in the canonical resolver (#3897 
       );
     }
 
-    const viaEnv = withEnv({ GSD_RUNTIME: hostile }, () => rs.resolveRuntime(neutralProject(t)));
+    // Compare against `resolveExplicitRuntime`'s own dependency-injected `env`
+    // parameter (already exported for exactly this purpose) rather than
+    // mutating the real `process.env.GSD_RUNTIME` via `withEnv` + a second
+    // full `resolveRuntime()` round-trip. Both mechanisms exercise the
+    // identical `resolveRuntimeNameFromCandidates` normalization N1 requires
+    // (verified: both return "codex-../../etc/passwd" for this exact hostile
+    // input) -- but the live-env-mutation form depends on ambient
+    // `process.env` state around the call being pristine, which this suite
+    // cannot fully guarantee (this repo has a known class of ambient-`GSD_*`-
+    // env test-hermeticity bugs elsewhere). Asserting directly against the
+    // injectable primitive makes this comparison hermetic: no real process
+    // state is touched, and the assertion is unconditionally reproducible.
+    const viaEnv = rs.resolveExplicitRuntime(neutralProject(t), { GSD_RUNTIME: hostile });
     assert.equal(
       result,
       viaEnv,

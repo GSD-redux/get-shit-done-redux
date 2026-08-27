@@ -13,6 +13,17 @@
  * it imports `stripBOM`/`scanTomlLines` from here and its regression suite
  * (`tests/agent-install-check.test.cjs`) is the proof.
  *
+ * #3897 rung 3 amendment: `deriveCodexSandboxMode`/`CODEX_SANDBOX_HOLDS`/
+ * `validateCodexSandboxHolds` also live here now (moved from `bin/install.js`).
+ * That IS a policy (which `sandbox_mode` a role's tool contract derives), a
+ * narrow exception to this module's "document model, not policy" charter above
+ * — made because `bin/install.js` cannot be the shared owner: requiring it for
+ * its side effect on `require()` (the CLI banner print) corrupts every
+ * stdout-JSON caller (`agent-install-check.cts`'s `checkCodexSandboxPosture`).
+ * This module was already the single fs/path-free-parsing home both callers
+ * shared; `fs`/`path` are imported below ONLY for `validateCodexSandboxHolds`'s
+ * roster check — still node builtins only, no third-party or bin/lib dependency.
+ *
  * ── The reconciliation (40-design.md) ──────────────────────────────────────
  *
  * Phase 2's reader and this phase's writer disagree on how to handle an
@@ -30,6 +41,9 @@
  * One block-range detector, two call sites, two policies — never two detectors
  * that could silently drift from each other.
  */
+
+import fs from 'node:fs';
+import path from 'node:path';
 
 /** Frozen reason enum for a failed {@link parseCodexAgentToml}. */
 export const PARSE_REASON = Object.freeze({
@@ -388,4 +402,164 @@ export function stripModel(doc: CodexAgentDoc): CodexAgentDoc {
 export function stripReasoningEffort(doc: CodexAgentDoc): CodexAgentDoc {
   if (doc.reasoningEffortLineIndex === null) return doc;
   return removeLine(doc, doc.reasoningEffortLineIndex, 'reasoningEffort');
+}
+
+// ── Codex sandbox_mode derivation (#3897 rung 3, ADR-3473 §8.3) ────────────
+//
+// Moved here from `bin/install.js` (fix for the CAUSE A regression this rung
+// introduced): `agent-install-check.cts`'s `checkCodexSandboxPosture` used to
+// lazily `require(bin/install.js)` to reach this derivation — but requiring
+// `bin/install.js` runs its whole top-level script, including the ASCII
+// banner print to stdout, which corrupted every stdout-JSON caller downstream
+// of `checkCodexSandboxPosture` (`gsd-tools validate agents`). This module is
+// a genuine leaf with no top-level side effects, so both `bin/install.js` and
+// `agent-install-check.cts` import the derivation from here instead — ONE
+// owner, no second predicate (routing `src/` through `bin/install.js` was
+// backwards layering to begin with).
+//
+// This module does NOT parse frontmatter (there is no third copy of that
+// extraction here — two already exist, `bin/install.js` and
+// `runtime-artifact-conversion.cts`). `deriveCodexSandboxMode` below takes
+// the already-resolved `tools:` value as a plain string parameter: every
+// caller already has it (or the raw frontmatter to pull it from) in hand
+// before calling in, so this module stays a pure predicate over data
+// supplied by the caller — never a document reader itself. This also means
+// the module never needs the full YAML-backed `frontmatter.cts` engine
+// (vendored js-yaml + anchor/alias refusal + comment-channel plumbing, built
+// for a much broader contract than a single `tools:` line lookup) — it has
+// no frontmatter-parsing need at all anymore.
+
+/**
+ * The 16 roles HALT.md measured as widening under derivation (declare
+ * Write/Edit, never in the pre-#3897 `CODEX_AGENT_SANDBOX` map, so the old
+ * `|| 'read-only'` fallback silently under-granted them). Pinned to
+ * `read-only` pending the open question of whether Codex enforces
+ * `sandbox_mode` or treats it as advisory (HALT.md). This list is CLOSED and
+ * SHRINK-ONLY: a new writing role never lands here (S6, T26); it is validated
+ * against the live tool contract every time it is consulted
+ * ({@link _deriveCodexSandboxModeFromTools}) and against the real
+ * `agents/` roster by a dedicated test (`tests/codex-config.test.cjs` T24/T25)
+ * so a stale or orphaned entry fails loudly instead of being silently
+ * honored forever.
+ */
+export const CODEX_SANDBOX_HOLDS: Readonly<Record<string, string>> = Object.freeze({
+  'gsd-ai-researcher': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-code-fixer': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-code-reviewer': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-debug-session-manager': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-doc-classifier': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-doc-synthesizer': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-doc-verifier': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-doc-writer': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-dom-verifier': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-domain-researcher': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-eval-auditor': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-eval-planner': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-intel-updater': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-pattern-mapper': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-ui-auditor': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-ui-researcher': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+});
+
+// True iff a `tools:` frontmatter value declares Write or Edit as a whole
+// token (never a substring match, so a hypothetical "Edith"-named tool could
+// never collide). Single predicate owner for both the emitter
+// ({@link _deriveCodexSandboxModeFromTools}) and the posture check
+// (`agent-install-check.cts`'s `checkCodexSandboxPosture`, via
+// {@link deriveCodexSandboxMode}).
+function _codexToolsDeclareWriteOrEdit(toolsRaw: string): boolean {
+  const tokens = String(toolsRaw || '').split(',').map((t) => t.trim());
+  return tokens.includes('Write') || tokens.includes('Edit');
+}
+
+/**
+ * The single owner of `sandbox_mode` derivation: `workspace-write` iff the
+ * role's own frontmatter `tools:` declares Write/Edit, UNLESS the role is
+ * held ({@link CODEX_SANDBOX_HOLDS}) at `read-only`. A held role whose live
+ * tool contract no longer derives broader than its pin is a STALE hold
+ * (S4) — fail loudly naming the role rather than silently honoring it
+ * forever, which is exactly the hand-maintained-subset-map defect this rung
+ * deletes.
+ *
+ * `agentName` here MUST be an identity the content's own frontmatter cannot
+ * change — i.e. the source `.md` FILENAME stem, never a frontmatter-derived
+ * display name. Keying this off frontmatter `name:` lets an edited (or
+ * merely recased) `name:` field silently escape a hold: `CODEX_SANDBOX_HOLDS`
+ * is a SUBTRACTION from a derivation that defaults to `workspace-write`, so a
+ * missed lookup fails OPEN, not closed. The lookup is case-normalized here as
+ * a second line of defense; callers are still responsible for passing the
+ * real filename stem, not the frontmatter field.
+ *
+ * `toolsRaw` is the already-resolved `tools:` frontmatter VALUE (e.g.
+ * `"Read, Write, Edit"`), not the frontmatter block or the full agent
+ * content — see {@link deriveCodexSandboxMode}'s doc for why.
+ */
+function _deriveCodexSandboxModeFromTools(agentName: string, toolsRaw: string): string {
+  const derivesBroader = _codexToolsDeclareWriteOrEdit(toolsRaw || '');
+  const holdKey = String(agentName == null ? '' : agentName).toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, holdKey)) {
+    if (!derivesBroader) {
+      throw new Error(
+        `CODEX_SANDBOX_HOLDS: stale hold for "${agentName}" — its current tools: frontmatter no longer ` +
+        'declares Write/Edit, so the pin no longer holds anything broader than what derivation would ' +
+        'already produce. Remove this entry (ADR-3473 §8.3 / HALT.md: the hold list is self-invalidating ' +
+        'and must shrink to zero, never be silently honored once stale).'
+      );
+    }
+    return 'read-only';
+  }
+  return derivesBroader ? 'workspace-write' : 'read-only';
+}
+
+/**
+ * Exported form for external callers (`checkCodexSandboxPosture`,
+ * `generateCodexAgentToml`). Takes the already-resolved `tools:` frontmatter
+ * VALUE, not raw agent content or a frontmatter slice — this module does no
+ * frontmatter parsing at all (there is no third copy of that extraction
+ * here; see the module-header note above `CODEX_SANDBOX_HOLDS`). Both
+ * callers already have (or can trivially get) `tools:` in hand via whichever
+ * extractor they already own — `bin/install.js`'s own
+ * `extractFrontmatterField`, or `runtime-artifact-conversion.cts`'s exported
+ * `extractFrontmatterAndBody`/`extractFrontmatterField` for `src/` callers —
+ * so this stays a pure predicate over data the caller already holds, never a
+ * document reader.
+ *
+ * `agentName` is a HOLD-LOOKUP IDENTITY, not a display name: callers must
+ * pass the agent's canonical source filename stem (e.g. `gsd-doc-writer` for
+ * `agents/gsd-doc-writer.md`), never a value read from the content's own
+ * frontmatter `name:` field (see the security note on
+ * {@link _deriveCodexSandboxModeFromTools} above).
+ */
+export function deriveCodexSandboxMode(agentName: string, toolsRaw: string): string {
+  return _deriveCodexSandboxModeFromTools(agentName, toolsRaw || '');
+}
+
+/**
+ * (S5) Every {@link CODEX_SANDBOX_HOLDS} key must still name a real
+ * `<agentsSrcDir>/<role>.md`. A hold for a role that no longer exists is
+ * stale and must fail loudly, not be silently ignored — else the hold list
+ * only ever grows/rots instead of shrinking to zero.
+ *
+ * NOT called from the install runtime path ({@link deriveCodexSandboxMode} /
+ * `bin/install.js`'s `installCodexConfig`): the shrink-to-zero invariant it
+ * checks is a REPO invariant about the canonical roster in `agents/`, not a
+ * property of whatever directory an install happens to read from — a
+ * partial/synthetic install source (a test fixture, a `--config-dir`
+ * subset) legitimately contains only a few agents, and a hold whose role is
+ * simply absent from THAT source dir must be inert, not fatal. The invariant
+ * is enforced instead as a test over the real `agents/` roster
+ * (`tests/codex-config.test.cjs` T24/T25). This function is kept, exported,
+ * for any caller that specifically wants to validate the CANONICAL roster
+ * (pass `agents/` itself, never an arbitrary install source).
+ */
+export function validateCodexSandboxHolds(agentsSrcDir: string): void {
+  for (const role of Object.keys(CODEX_SANDBOX_HOLDS)) {
+    const agentFile = path.join(agentsSrcDir, `${role}.md`);
+    if (!fs.existsSync(agentFile)) {
+      throw new Error(
+        `CODEX_SANDBOX_HOLDS: stale hold for "${role}" — no ${agentFile} exists. The hold list is ` +
+        'closed and shrink-only (ADR-3473 §8.3 / HALT.md); remove this entry.'
+      );
+    }
+  }
 }

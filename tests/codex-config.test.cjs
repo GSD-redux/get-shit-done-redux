@@ -81,6 +81,13 @@ const {
 
 const { resolveNodeRunner } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
+// #3897 fixup: deriveCodexSandboxMode's 2nd param is now the already-resolved
+// `tools:` frontmatter VALUE, not raw agent content (codex-agent-toml.cjs no
+// longer parses frontmatter at all — no third copy of that extraction).
+const {
+  extractFrontmatterAndBody,
+  extractFrontmatterField,
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 
 function runCodexInstall(codexHome, cwd = path.join(__dirname, '..')) {
   const previousCodeHome = process.env.CODEX_HOME;
@@ -1439,7 +1446,9 @@ describe('CODEX_AGENT_SANDBOX (deleted map, derivation regression baseline)', ()
 
   function realDerivedSandboxMode(role) {
     const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
-    return deriveCodexSandboxMode(role, content);
+    const { frontmatter } = extractFrontmatterAndBody(content);
+    const toolsRaw = extractFrontmatterField(frontmatter || '', 'tools') || '';
+    return deriveCodexSandboxMode(role, toolsRaw);
   }
 
   test('has all 11 baseline agents', () => {
