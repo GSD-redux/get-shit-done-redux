@@ -2549,15 +2549,21 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
   // `\n` here would match no fence at all, and a guard that finds no block to scan
   // reports PASS by vacuity. The sanity tests below are the backstop for exactly
   // that failure; this is the fix for it.
+  // Each hit carries the fence's END offset as well as its body, because the halt
+  // instruction this guard also checks lives in the prose AFTER the fence, not in it.
   const invocationBlocks = (text) => {
     const out = [];
     for (const m of text.matchAll(/^```bash\r?\n([\s\S]*?)^```/gm)) {
-      if (INVOKES.test(m[1])) out.push(m[1]);
+      if (INVOKES.test(m[1])) out.push({ block: m[1], end: m.index + m[0].length });
     }
     return out;
   };
 
   const countInvocations = (text) => (text.match(new RegExp(INVOKES.source, 'g')) || []).length;
+
+  // The window the halt instruction must appear in. Generous enough not to be a
+  // formatting trap, tight enough that prose three sections away cannot satisfy it.
+  const HALT_WINDOW = 900;
 
   // One entry per invocation-bearing BLOCK. `name` carries the block's ordinal so a
   // failure names which of a file's fences is at fault.
@@ -2569,8 +2575,12 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
         if (!INVOKES.test(text)) continue;
         const rel = path.relative(ROOT, full);
         const blocks = invocationBlocks(text);
-        blocks.forEach((block, i) => {
-          hits.push({ full, text, block, name: blocks.length > 1 ? `${rel} [fence ${i + 1}]` : rel });
+        blocks.forEach(({ block, end }, i) => {
+          hits.push({
+            full, text, block,
+            after: text.slice(end, end + HALT_WINDOW),
+            name: blocks.length > 1 ? `${rel} [fence ${i + 1}]` : rel,
+          });
         });
       }
     }
@@ -2595,7 +2605,7 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
       if (seen.has(full)) continue;
       seen.add(full);
       const inFile = countInvocations(text);
-      const inBlocks = invocationBlocks(text).reduce((n, b) => n + countInvocations(b), 0);
+      const inBlocks = invocationBlocks(text).reduce((n, b) => n + countInvocations(b.block), 0);
       assert.strictEqual(inBlocks, inFile,
         `${path.relative(ROOT, full)} invokes state.advance-plan ${inFile} time(s) but only ${inBlocks} are inside a scanned \`\`\`bash fence — the rest are unguarded and invisible to every assertion below`);
     }
@@ -2681,6 +2691,42 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
         assert.ok(!catchAllBody.includes(write),
           `${name}'s catch-all arm runs ${write} — an unrecognized answer must never record state`);
       }
+    }
+  });
+
+  test('each caller carries the HALT instruction the shell cannot enforce for it', () => {
+    // #3862 RV9 claim audit. The comment drafted for that round claimed every
+    // behavioural fix fails a named test on reversion; the auditor removed both
+    // callers' halt paragraphs, kept the case guards, and every test here stayed
+    // green. It was right — nothing pinned them.
+    //
+    // These paragraphs are behaviour, not commentary. A `case` arm suppresses only
+    // its own block: it cannot stop the FENCED BLOCK THAT FOLLOWS, and in both
+    // callers something follows that writes state (execute-plan's later steps,
+    // gsd-executor's ROADMAP/requirements block). The arm handles the writes it
+    // owns; the prose is the only thing that stops the rest. Delete it and the
+    // guard silently covers half of what it is documented to cover.
+    //
+    // Pinned as three agreeing parts rather than as a quoted sentence, so rewording
+    // is free and deleting is not.
+    for (const { name, block, after } of callerFiles()) {
+      // 1. The block emits a marker at all — otherwise the prose points at nothing.
+      const marker = block.match(/echo "(STOP:)/);
+      assert.ok(marker,
+        `${name}'s refusal arms must print a STOP: marker for the halt instruction below to key on`);
+
+      // 2. The prose after the fence refers to that same marker. This is what ties
+      //    the instruction to THIS block rather than to generic advice elsewhere.
+      assert.ok(after.includes('`STOP:`'),
+        `${name} must follow its invocation fence with an instruction naming the \`STOP:\` marker the block prints; found none within ${HALT_WINDOW} chars`);
+
+      // 3. It actually instructs a stop, and says WHY the shell did not do it —
+      //    the clause a later editor prunes as verbose, which is precisely the one
+      //    that makes the paragraph load-bearing rather than decorative.
+      assert.ok(/\b(halt|do not run|do not proceed|do not continue)\b/i.test(after),
+        `${name}'s halt instruction must tell the agent to stop, not merely describe the refusal`);
+      assert.ok(/cannot stop|suppresses only|never a later|not the shell/i.test(after),
+        `${name}'s halt instruction must say why the shell cannot enforce it — a \`case\` arm cannot stop a later fenced block, and that is the reason this prose exists`);
     }
   });
 });
