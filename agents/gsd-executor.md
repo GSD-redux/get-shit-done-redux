@@ -766,28 +766,17 @@ After SUMMARY.md, update STATE.md using `gsd-tools query` state handlers (named 
 # advance-plan REFUSES to advance when `## Current Position` disagrees with the
 # plans on disk, and reports that on stdout at exit 0 (#3830/#3862).
 #
-# Key on the REASON, never on `advanced`: `advanced: false` is also the ordinary
-# `last_plan` answer, so branching on it would skip the final plan's recording on
-# every phase. An exit-0 `{"error": ...}`, and a NON-ANSWER (non-zero exit or an
-# empty capture, which matches no arm at all), are equally not advances. Fail closed.
+# The arms are an ALLOW-LIST, deliberately. Only two answers moved the phase
+# forward and owe the recording below: a real advance, and the ordinary last plan
+# (`advanced: false` WITH `reason: last_plan` — branching on `advanced` alone would
+# skip the final plan's recording on every phase). Everything else stops: a
+# divergence refusal, an exit-0 `{"error": ...}`, a reason added to the verb later,
+# and a NON-ANSWER — a crash or missing binary leaves the capture empty, matching
+# nothing. A deny-list would write on every shape it had not been taught about.
 ADVANCE_OUT=$(gsd_run query state.advance-plan)
 ADVANCE_RC=$?
-if [ "${ADVANCE_RC}" -ne 0 ] || [ -z "${ADVANCE_OUT}" ]; then
-  ADVANCE_OUT='{"error": "state.advance-plan exited '"${ADVANCE_RC}"' with no usable answer"}'
-fi
 case "${ADVANCE_OUT}" in
-  *'"reason": "position_diverged"'*)
-    echo "STOP: state.advance-plan refused — ## Current Position disagrees with the" >&2
-    echo "plans on disk (see the [gsd-tools] WARNING). 'gsd_run query phase-plan-index'" >&2
-    echo "shows the real set. Record nothing, and skip the ROADMAP/requirements block." >&2
-    ;;
-  *'"error":'*)
-    echo "STOP: no advance reported — the counter did NOT move. Record nothing, and" >&2
-    echo "skip the ROADMAP/requirements block below." >&2
-    printf '%s\n' "${ADVANCE_OUT}" >&2
-    ;;
-  *)
-    # A normal advance (no reason) or the last plan (reason: last_plan).
+  *'"advanced": true'*|*'"reason": "last_plan"'*)
     # Recalculate progress bar from disk state
     gsd_run query state.update-progress
 
@@ -804,6 +793,16 @@ case "${ADVANCE_OUT}" in
     # Update session info (stopped-at, resume-file; timestamp set automatically)
     gsd_run query state.record-session \
       --stopped-at "Completed ${PHASE}-${PLAN}-PLAN.md" --resume-file "None"
+    ;;
+  *'"reason": "position_diverged"'*)
+    echo "STOP: state.advance-plan refused — ## Current Position disagrees with the" >&2
+    echo "plans on disk (see the [gsd-tools] WARNING). 'gsd_run query phase-plan-index'" >&2
+    echo "shows the real set. Record nothing, and skip the ROADMAP/requirements block." >&2
+    ;;
+  *)
+    echo "STOP: no advance reported (exit ${ADVANCE_RC}) — the counter did NOT move." >&2
+    echo "Record nothing, and skip the ROADMAP/requirements block below." >&2
+    printf '%s\n' "${ADVANCE_OUT}" >&2
     ;;
 esac
 ```

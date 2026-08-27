@@ -2587,50 +2587,58 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
     }
   });
 
-  test('each caller treats a non-answer as a refusal (non-zero exit, or silence)', () => {
-    // #3862 RV6.5 pass 3 (MISSED): a crashed or missing gsd_run leaves the capture
-    // EMPTY, which matches no reason and no error — so it reached the catch-all arm
-    // and the writes proceeded. Verified against the pre-fix source: update-progress
-    // ran with no STOP printed. Silence is not permission.
+  test('each caller ALLOW-LISTS the two answers that advanced, rather than deny-listing', () => {
+    // #3862 RV6.5 pass 3 (MISSED) and its follow-through. The first shape here was
+    // a deny-list — stop on position_diverged, stop on {"error": ...}, and let the
+    // catch-all write. That writes on every shape it has not been taught about: a
+    // crashed or missing gsd_run leaving the capture EMPTY (verified against the
+    // pre-fix source — update-progress ran, no STOP printed), and equally any
+    // refusal reason the verb grows later. Only two answers moved the phase
+    // forward, so only those two may record.
     for (const { name, text } of callerFiles()) {
       const block = invocationBlock(text);
-      // Anchor at the INVOCATION, not at the first `case ` in the block: the
-      // explanatory comment above the call says "edge case", and slicing on that
-      // substring truncated this region before the capture it is meant to inspect.
+      assert.ok(/^\s*\*'"advanced": true'\*\|\*'"reason": "last_plan"'\*\)/m.test(block),
+        `${name} must open its writing arm on the two advancing answers explicitly, not on a catch-all`);
       const invIdx = block.search(INVOKES);
       const preCase = block.slice(invIdx, block.indexOf('case "', invIdx));
       assert.ok(/\$\?/.test(preCase),
-        `${name} must capture the exit status of the advance-plan call before dispatching on its text`);
-      assert.ok(/-z\s+"\$\{?ADVANCE_OUT/.test(preCase),
-        `${name} must treat an EMPTY capture as a non-advance — an empty string matches the catch-all arm`);
+        `${name} must capture the exit status so the refusal it reports can name it`);
     }
   });
 
-  test('each caller CONTAINS its state writes in the non-refusal arm', () => {
-    // The other half of the same finding: a branch that prints a STOP line and then
-    // runs the very writes it was meant to prevent guards nothing. Prove containment
-    // structurally — EVERY write must fall between the catch-all arm and `esac` —
-    // rather than by a character-distance window past the first guard mention, and
-    // cover record-metric too, not update-progress alone.
+  test('each caller CONTAINS its state writes in the advancing arm, and never in the catch-all', () => {
+    // Containment proved structurally — every write between the allow arm and its
+    // `;;`, and NONE between the bare `*)` catch-all and `esac` — rather than by a
+    // character-distance window past the first guard mention. Both writes are
+    // covered, not update-progress alone.
     const WRITES = ['state.update-progress', 'state.record-metric'];
+    const allOccurrences = (hay, needle) => {
+      const out = [];
+      for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) out.push(i);
+      return out;
+    };
     for (const { name, text } of callerFiles()) {
       const block = invocationBlock(text);
-      const invIdx = block.search(INVOKES);
-      const guardIdx = block.indexOf('position_diverged', block.indexOf('case "', invIdx));
-      const esacIdx = block.search(/^\s*esac\s*$/m);
-      // A bare `*)` on its own line is the catch-all; the reason arms all carry a
-      // pattern ahead of theirs (`*'"error":'*)`), so they do not match.
+      const allowIdx = block.search(/^\s*\*'"advanced": true'\*/m);
+      const allowEnd = block.indexOf(';;', allowIdx);
+      const guardIdx = block.indexOf('position_diverged', allowEnd);
       const catchAll = block.search(/^\s*\*\)\s*$/m);
-      assert.ok(guardIdx >= 0 && catchAll > guardIdx && esacIdx > catchAll,
-        `${name}: expected a case with the divergence arm before a bare \`*)\` catch-all before \`esac\``);
+      const esacIdx = block.search(/^\s*esac\s*$/m);
+      assert.ok(allowIdx >= 0 && allowEnd > allowIdx && guardIdx > allowEnd
+                && catchAll > guardIdx && esacIdx > catchAll,
+        `${name}: expected the allow arm, then the divergence arm, then a bare \`*)\` catch-all, then \`esac\``);
       for (const write of WRITES) {
-        let idx = block.indexOf(write);
-        assert.ok(idx >= 0, `${name}'s invocation block must contain the ${write} call it protects`);
-        while (idx >= 0) {
-          assert.ok(idx > catchAll && idx < esacIdx,
-            `${name} runs ${write} at offset ${idx}, outside the catch-all arm (${catchAll}..${esacIdx}) — it is unguarded`);
-          idx = block.indexOf(write, idx + 1);
+        const at = allOccurrences(block, write);
+        assert.ok(at.length > 0, `${name}'s invocation block must contain the ${write} call it protects`);
+        for (const idx of at) {
+          assert.ok(idx > allowIdx && idx < allowEnd,
+            `${name} runs ${write} at offset ${idx}, outside the advancing arm (${allowIdx}..${allowEnd}) — it is unguarded`);
         }
+      }
+      const catchAllBody = block.slice(catchAll, esacIdx);
+      for (const write of WRITES) {
+        assert.ok(!catchAllBody.includes(write),
+          `${name}'s catch-all arm runs ${write} — an unrecognized answer must never record state`);
       }
     }
   });

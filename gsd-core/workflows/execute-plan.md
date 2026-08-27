@@ -448,32 +448,18 @@ if [ "$IS_WORKTREE" != "true" ]; then
   # makes the divergence invisible — progress and a metric are recorded for a plan
   # never advanced past, and every later plan re-runs against the frozen counter.
   #
-  # Key on the REASON, never on `advanced`: `advanced: false` is also the ordinary
-  # last-plan answer (`reason: last_plan`) — the very edge case this step's own
-  # heading names — so branching on it would skip the final plan's recording on
-  # every phase. An exit-0 `{"error": ...}`, and a NON-ANSWER (non-zero exit or an
-  # empty capture, which matches no arm at all), are equally not advances. Fail
-  # closed by normalizing a non-answer into the error shape the STOP arm owns.
+  # The arms are an ALLOW-LIST, deliberately. Only two answers moved the phase
+  # forward and owe the recording below: a real advance, and the ordinary last plan
+  # (`advanced: false` WITH `reason: last_plan` — the very edge case this step's own
+  # heading names, so branching on `advanced` alone would skip the final plan's
+  # recording on every phase). Everything else stops: a divergence refusal, an
+  # exit-0 `{"error": ...}`, a reason added to the verb later, and a NON-ANSWER — a
+  # crash or a missing binary leaves the capture empty, matching nothing. A
+  # deny-list would write on every shape it had not been taught about.
   ADVANCE_OUT=$(gsd_run query state.advance-plan)
   ADVANCE_RC=$?
-  if [ "${ADVANCE_RC}" -ne 0 ] || [ -z "${ADVANCE_OUT}" ]; then
-    ADVANCE_OUT='{"error": "state.advance-plan exited '"${ADVANCE_RC}"' with no usable answer"}'
-  fi
   case "${ADVANCE_OUT}" in
-    *'"reason": "position_diverged"'*)
-      echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
-      echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
-      echo "Reconcile it before re-running: 'gsd_run query phase-plan-index' shows the" >&2
-      echo "real plan set. Do NOT record progress or metrics against a frozen position." >&2
-      ;;
-    *'"error":'*)
-      echo "STOP: state.advance-plan did not report an advance — treat the counter as NOT moved." >&2
-      printf '%s\n' "${ADVANCE_OUT}" >&2
-      ;;
-    *)
-      # A normal advance (no reason) or the last plan (reason: last_plan). Both moved
-      # the phase forward and both owe the recording below.
-
+    *'"advanced": true'*|*'"reason": "last_plan"'*)
       # Recalculate progress bar from disk state
       gsd_run query state.update-progress
 
@@ -481,6 +467,17 @@ if [ "$IS_WORKTREE" != "true" ]; then
       gsd_run query state.record-metric \
         --phase "${PHASE}" --plan "${PLAN}" --duration "${DURATION}" \
         --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
+      ;;
+    *'"reason": "position_diverged"'*)
+      echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
+      echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
+      echo "Reconcile it before re-running: 'gsd_run query phase-plan-index' shows the" >&2
+      echo "real plan set. Do NOT record progress or metrics against a frozen position." >&2
+      ;;
+    *)
+      echo "STOP: no advance reported (exit ${ADVANCE_RC}) — the counter did NOT move." >&2
+      echo "Do NOT record progress or metrics against a position that did not change." >&2
+      printf '%s\n' "${ADVANCE_OUT}" >&2
       ;;
   esac
 fi
