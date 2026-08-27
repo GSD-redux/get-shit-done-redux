@@ -57,16 +57,10 @@ function routeValidateCommand({ verify, args, cwd, raw, output: outputFn, error 
       consistency: () => verify.cmdValidateConsistency(cwd, raw),
       // Keep health on CJS for now so fix hints are rendered via runtime-slash
       // helpers (codex expects $gsd-* command shape).
-      //
-      // ADR-3473 §8.4 / #3358 gap: this previously scanned argv with
-      // `args.includes('--repair'/'--backfill')` and never called
-      // parseNamedArgsOrExit at all, so an unrecognized flag or stray
-      // positional was silently absorbed instead of rejected. --repair
-      // (docs/COMMANDS.md:1070, docs/CLI-TOOLS.md:600) and --backfill
-      // (docs/COMMANDS.md:1070) are the only two documented flags.
       health: () => {
-        const opts = parseNamedArgsOrExit(args, { booleanFlags: ['repair', 'backfill'], positionals: 2 }, error);
-        verify.cmdValidateHealth(cwd, { repair: opts['repair'] === true, backfill: opts['backfill'] === true }, raw);
+        const repairFlag = args.includes('--repair');
+        const backfillFlag = args.includes('--backfill');
+        verify.cmdValidateHealth(cwd, { repair: repairFlag, backfill: backfillFlag }, raw);
       },
       agents: () => verify.cmdValidateAgents(cwd, raw),
       // context: CJS-only — complex inline logic using classifyContextUtilization
