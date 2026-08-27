@@ -453,6 +453,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `installer-migrations/007-retire-config-root-commonjs-marker.cjs` | Installer migration: retires the config-root `{"type":"commonjs"}` marker that pre-#2544 installs wrote over `<configRoot>/package.json` |
 | `installer-migrations/008-cursor-retire-commands-surface.cjs` | Installer migration: retires Cursor's duplicate `commands/` surface now that skills are the sole workflow surface (#2644) |
 | `installer-migrations/009-pi-retire-reserved-hooks-dir.cjs` | Installer migration: retires pi's legacy `hooks/` directory after GSD's shared hook bundle moved to `gsd-hooks/` (#3023) |
+| `installer-migrations/010-antigravity-retire-confighome-artifacts.cjs` | Installer migration: retires Antigravity's configHome `skills/`/`agents/` surfaces after the global layout moved to the `~/.gemini/config` home override (#3738) |
 | `active-workstream-store.cjs` | Workstream source precedence and selection (CLI `--ws` > `GSD_WORKSTREAM` env > stored pointer); name validation and environment propagation |
 | `adapter-declarative.cjs` | Declarative host-integration adapter — projects workflow artifacts through the install engine for hosts that declare a descriptor-driven surface (#1680) |
 | `adapter-imperative.cjs` | Imperative host-integration adapter — binds the composed capability registry in-process for hosts that drive emission themselves (#1680) |
