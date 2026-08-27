@@ -1854,14 +1854,25 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   // test would leave the more expensive of the two failures uncovered.
   //
   // Deliberately narrow. Divergence is claimed ONLY from a completed scan that
-  // found at least one plan. An absent provider (existing callers and test
+  // found at least one plan file. An absent provider (existing callers and test
   // stubs), a scan that could not complete (`ok:false`), and a phase with no
   // plan files on disk yet are all "no evidence" — NOT "diverged". Blocking on
   // those would strand projects this check knows nothing about, and the
   // no-plans-yet case is the ordinary state of a phase between `begin-phase`
   // and its first written plan.
+  //
+  // "At least one plan FILE", not "at least one LIVE plan": the presence test
+  // reads BOTH counts. Guarding on `planCount` alone made a phase whose plans are
+  // every one of them `status: superseded` indistinguishable from a phase with no
+  // plans written yet — live count 0 in both — so the gate abstained and the stale
+  // prose was incremented exactly as #3830 reports. Driven: eight superseded plans
+  // with prose `Plan: 2 of 7` returned `{"advanced": true, "current_plan": 3}`,
+  // where the identical non-superseded fixture refuses. `planCountAll` separates
+  // them, and the comparison below is unchanged — it already accepts a prose total
+  // matching EITHER count, so an all-superseded phase whose prose tracks the full
+  // set still agrees and still advances.
   const planSet = deps.planSetProvider ? deps.planSetProvider() : null;
-  if (planSet !== null && planSet.ok && planSet.planCount > 0) {
+  if (planSet !== null && planSet.ok && (planSet.planCount > 0 || planSet.planCountAll > 0)) {
     // The prose total is accepted if it matches EITHER disk count. The two
     // commands that write it disagree about supersession — execute-phase's
     // init scan supplies the live count, plan-review-convergence supplies

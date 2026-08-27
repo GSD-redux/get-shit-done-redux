@@ -1566,6 +1566,29 @@ describe('#3830: advancePlan cross-checks prose plan position against the plan s
     assert.strictEqual(result.data && result.data.reason, 'position_diverged');
   });
 
+  test('a phase whose plans are ALL superseded is EVIDENCE, not absence (#3862 review)', () => {
+    // The presence test guarded on the LIVE count alone, which made this state
+    // indistinguishable from "no plans written yet" — both report planCount 0 — so
+    // the gate abstained and the stale prose was incremented, the very defect #3830
+    // reports. Driven against the real binary before the fix: eight superseded
+    // plans with prose `Plan: 2 of 7` returned `{"advanced": true, "current_plan": 3}`,
+    // where the identical non-superseded fixture refused.
+    const deps = diskSays(0, { planCountAll: 12 });
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.reason, 'position_diverged',
+      'prose total 8 matches neither 0 live nor 12 including superseded');
+    assert.strictEqual(result.data && result.data.advanced, false);
+  });
+
+  test('all-superseded whose prose total matches plan_count_all still advances', () => {
+    // The other half: widening the presence test must not turn the accepted
+    // two-writer split into drift just because the live count is zero.
+    const deps = diskSays(0, { planCountAll: 8 });
+    const result = transitionCore(COMPOUND_STALE, { kind: 'advancePlan' }, deps);
+    assert.strictEqual(result.data && result.data.advanced, true, 'prose total 8 == plan_count_all 8');
+    assert.strictEqual(result.data && result.data.reason, undefined);
+  });
+
   test('the unparseable-prose error still wins over the disk check', () => {
     // No position to compare, so there is nothing for the cross-check to say.
     const result = transitionCore('# Project State\n\nNo plan fields here.\n', { kind: 'advancePlan' }, diskSays(12));
