@@ -431,6 +431,13 @@ function collectNormalizedEmittedFiles(configDir, root, opts, callerName) {
       throw new Error(`${callerName}: opts.extraEmitRoots entries must be non-empty absolute paths`);
     }
     if (path.resolve(extraRoot) === path.resolve(configDir)) continue;
+    // An absent extra root is a legitimate shape, not an error: the baseline
+    // side measures a BASE tree whose installer may predate the home override
+    // (the artifacts then live under configDir, which IS walked). Only a
+    // root that exists but cannot be read is a failure — walk() surfaces that.
+    let stat;
+    try { stat = fs.statSync(extraRoot); } catch { continue; }
+    if (!stat.isDirectory()) continue;
     for (const full of walk(extraRoot)) allFiles.push({ full, relRoot: extraRoot });
   }
   const unsorted = {};
