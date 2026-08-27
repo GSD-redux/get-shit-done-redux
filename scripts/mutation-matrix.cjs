@@ -537,13 +537,9 @@ const COVERED = {
   // per mutant). tests/model-catalog.unit.test.cjs is spawn-free, in-process,
   // and runs in well under a second.
   //
-  // Measured CI score (GitHub Actions run 32605073352, job 97108869486):
+  // Prior context (#3007, GitHub Actions run 32605073352, job 97108869486):
   //   model-catalog 59.62% → floor 58  (248 killed, 168 survived, 0 timeouts,
-  //     0 errors; below TARGET_MUTATION_SCORE (80) — ratchet candidate like
-  //     planning-inspect (56): comfortably clears its own floor but has real
-  //     room to grow. Raise as its tests improve, never lower it.)
-  // Floor follows this file's documented rule, minScore = floor(measured) - 1,
-  // matching the sibling precedent exactly (57.03 → 56, 76.58 → 75, 95.65 → 94).
+  //     0 errors). SUPERSEDED by the 2026-08-27 measurement below.
   //
   // The shard completed in 57 seconds — concrete evidence the spawn-free
   // unit-file design above worked: the #2790 precedent's 15-minute shard-cap
@@ -554,9 +550,31 @@ const COVERED = {
   // directly require model-catalog.cjs and match the "model-catalog*" naming rule. Measured
   // cost: 50ms (1-file) -> 196ms (3-file), in-process, 0 subprocess spawns; still far under
   // the 57s the shard already measured for the single-file set.
+  //
+  // CI run 33029755081 (2026-08-27, #3915): measured 75.26% (295 killed / 49 survived /
+  //   48 no-coverage / 24 runtime-error, totalValid 392). Floor = floor(75.26) - 1 = 74,
+  //   following this file's documented convention.
+  //
+  //   Why it moved so far: under #3915's tap-runner swap this shard first came back at
+  //   57.91% against the old floor of 58. Diagnosis from the mutation report's own JSON:
+  //   all 24 of its RuntimeError mutants are in the module's load-time catalog bootstrap,
+  //   so mutating them makes model-catalog.cjs throw at `require`. Under `node --test`
+  //   that is a failed test file and the mutant counts as Killed; under the tap runner
+  //   the process dies before emitting TAP, which Stryker classifies RuntimeError and
+  //   EXCLUDES from the denominator. Adding those 24 back as killed reproduces
+  //   248/416 = 59.62 exactly — the pre-swap #3007 number — so detection never
+  //   regressed, only its classification changed.
+  //
+  //   The floor was NOT lowered to absorb that. 11 new behavioural tests in
+  //   tests/model-catalog.unit.test.cjs killed 68 previously-surviving mutants (227 ->
+  //   295 killed), taking the module from 57.91 to 75.26 — now within striking distance
+  //   of TARGET_MUTATION_SCORE (80) instead of the 59.62 it sat at before this change.
+  //
+  //   The floor MUST come from a CI shard, never a local run — same rule as every other
+  //   entry in this file.
   'model-catalog': {
     cjs: 'gsd-core/bin/lib/model-catalog.cjs',
-    minScore: 58,
+    minScore: 74,
   },
   // state-contract: net-new module from #3227. Without this entry the
   // Stryker gate reports has_work: "false" and SKIPS it entirely — the

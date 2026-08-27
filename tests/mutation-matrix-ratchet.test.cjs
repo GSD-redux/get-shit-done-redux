@@ -213,7 +213,10 @@ const RATCHET_BASELINE = {
   'planning-inspect':        56,  // CI run 32392791843: 57.03% (unit shard); ratchet candidate vs TARGET 80
   'plan-document':           75,  // CI run 32392791843: 76.58% (unit shard)
   'planning-command-router': 94,  // CI run 32392791843: 95.65% (unit shard); already exceeds TARGET 80
-  'model-catalog':           58,  // #3007: measured 59.62% in CI (248 killed / 168 survived); floor(59.62)-1
+  'model-catalog':           74,  // CI run 33029755081 (2026-08-27, #3915): measured 75.26%;
+                                   // floor(75.26)-1. Supersedes the #3007 59.62% measurement
+                                   // (248 killed / 168 survived) — see scripts/mutation-matrix.cjs
+                                   // for the RuntimeError classification-change diagnosis.
   'state-contract':          65,  // #3227: CI run 32769289750, job 97565813640,
                                    // `Stryker (state-contract)`: measured 66.25%; floor(66.25)-1.
                                    // Below TARGET_MUTATION_SCORE (80) — ratchet candidate like
