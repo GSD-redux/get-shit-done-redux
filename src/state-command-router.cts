@@ -91,8 +91,19 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
     handlers: {
       load: () => state.cmdStateLoad(cwd, raw),
       json: () => state.cmdStateJson(cwd, raw),
-      get: () => state.cmdStateGet(cwd, args[2], raw),
-      update: () => state.cmdStateUpdate(cwd, args[2], args[3]),
+      // ADR-3473 §8.4 / #3358 gap: these two read args[2]/args[3] positionally
+      // without ever calling parseNamedArgsOrExit, so an unrecognized flag or
+      // stray positional was silently dropped instead of rejected. No flags
+      // are declared — none are documented for these subcommands
+      // (docs/CLI-TOOLS.md:86,89) and no shipped workflow passes any.
+      get: () => {
+        parseNamedArgsOrExit(args, { positionals: 3 }, error);
+        state.cmdStateGet(cwd, args[2], raw);
+      },
+      update: () => {
+        parseNamedArgsOrExit(args, { positionals: 4 }, error);
+        state.cmdStateUpdate(cwd, args[2], args[3]);
+      },
       patch: () => {
         const patches: Record<string, string> = {};
         if (args.length === 3 && typeof args[2] === 'string' && args[2].trim().startsWith('{')) {
@@ -205,10 +216,25 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
         const a = parseNamedArgsOrExit(args, { booleanFlags: ['dry-run', 'verbose'], positionals: 2 }, error);
         state.cmdStateRebuild(cwd, { dryRun: a['dry-run'] === true, verbose: a['verbose'] === true }, raw);
       },
-      // complete-phase: CJS-only — no SDK counterpart. Reads an optional
-      // positional phase (args[2]) itself, so its boundary is 3, not 2 (N3).
+      // complete-phase: CJS-only — no SDK counterpart. Supports two shapes:
+      // the documented `--phase N` flag (docs/COMMANDS.md:2207) and an
+      // undocumented-but-preserved bare positional `state complete-phase N`
+      // (N3). A single static `positionals` count cannot represent both: if
+      // args[2] is the flag `--phase`, the boundary must be 2 so the generic
+      // flag/value walk (which starts at the boundary) recognizes `--phase`
+      // and consumes its value; only when args[2] is itself a bare, non-flag
+      // token does the boundary widen to 3 to accept it as the positional
+      // phase. Getting this wrong either breaks the documented flag form
+      // (boundary 3 treats `--phase`'s value as an unexpected trailing
+      // positional) or silently re-admits unknown flags (a static boundary
+      // of 3 with an empty args[2] never validates anything past it).
       'complete-phase': () => {
-        const a = parseNamedArgsOrExit(args, { valueFlags: ['phase'], positionals: 3 }, error);
+        const bareTrailingPositional = args[2] !== undefined && !args[2].startsWith('--');
+        const a = parseNamedArgsOrExit(
+          args,
+          { valueFlags: ['phase'], positionals: bareTrailingPositional ? 3 : 2 },
+          error,
+        );
         state.cmdStateCompletePhase(cwd, raw, strArg(a, 'phase') || args[2]);
       },
       'milestone-switch': () => {

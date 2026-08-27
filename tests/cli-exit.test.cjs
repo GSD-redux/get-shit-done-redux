@@ -577,7 +577,13 @@ describe('regressions', () => {
       assert.strictEqual(seen.getter, 'function');
       assert.strictEqual(seen.failFast, 'sdk_fail_fast', 'the literal must survive moving to cli-exit');
       assert.strictEqual(seen.frozen, true);
-      assert.strictEqual(seen.reasonCount, 23, 'ERROR_REASON must keep all 23 members');
+      // #3884 (ADR-3473 §8.4) legitimately added two new codes —
+      // PICK_FIELD_ABSENT and PICK_OUTPUT_NOT_JSON — for the `--pick`
+      // absence contract (see .gsd/phase/feat-3884-failure-is-a-value/40-design.md
+      // rows B6/B11). 23 -> 25 is an intentional, documented growth of the
+      // enum, not drift; bump the golden count rather than treat this as a
+      // Hyrum violation.
+      assert.strictEqual(seen.reasonCount, 25, 'ERROR_REASON must keep all 25 members (23 + #3884 PICK_FIELD_ABSENT/PICK_OUTPUT_NOT_JSON)');
       assert.ok(
         seen.keys.includes('SDK_FAIL_FAST'),
         `ERROR_REASON must still include SDK_FAIL_FAST, got: ${JSON.stringify(seen.keys)}`,

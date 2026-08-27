@@ -667,12 +667,20 @@ describe('#1778: thread workflow uses the 1.6 named-flag frontmatter.set form', 
       'named-flag form must write status: resolved into the file',
     );
 
-    // Pre-1.6 positional form — must fail with the documented message and NOT mutate.
+    // Pre-1.6 positional form — must fail and NOT mutate.
+    //
+    // #3884 (ADR-3473 §8.4): the strict parser now rejects the stray
+    // positional tokens ("status", "resolved") BEFORE cmdFrontmatterSet's own
+    // "file, field, and value required" guard ever runs, so the error text
+    // changed. The behavioral contract this test guards — fails, and does
+    // NOT mutate the file — is unchanged and, if anything, strengthened (the
+    // rejection now happens earlier, at argv-parsing time, not deep inside
+    // the command).
     const badFile = writeTempFile('---\nstatus: open\nupdated: "2025-01-01"\n---\n\n# thread body\n');
     const bad = runGsdTools(['frontmatter', 'set', badFile, 'status', 'resolved']);
     assert.ok(!bad.success, 'positional form must fail (it is the bug being guarded against)');
     assert.ok(
-      (bad.error + bad.output).includes('file, field, and value required'),
+      (bad.error + bad.output).includes('unexpected positional argument'),
       `positional form must error with the documented message; got:\n${bad.error}${bad.output}`,
     );
     assert.strictEqual(

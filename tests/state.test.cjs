@@ -8566,7 +8566,14 @@ describe('regressions: table-format STATE.md (#1162)', () => {
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '1-01-PLAN.md'), '# Plan 1');
 
-    const result = runGsdTools(['state', 'planned-phase', '1', '--plan-count', '1'], tmpDir);
+    // #3884 (ADR-3473 §8.4): `--plan-count` was never a declared flag (the
+    // real flag is `--plans`) and the bare '1' was never read as a phase
+    // positional either — both were silently dropped by the pre-#3884
+    // permissive parser. The command "worked" only because
+    // cmdStatePlannedPhase falls back to STATE.md's own current phase (1
+    // here) when no --phase is given, so the assertion below never actually
+    // exercised phase/plan-count plumbing. Corrected to the real flags.
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '1', '--plans', '1'], tmpDir);
 
     assert.ok(result.success, `Command failed: ${result.error}`);
 
@@ -8707,7 +8714,9 @@ describe('regressions: table-format STATE.md (#1162) — updateCurrentPositionFi
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '2-01-PLAN.md'), '# Plan\n');
 
-    const result = runGsdTools(['state', 'planned-phase', '2', '--plan-count', '1'], tmpDir);
+    // #3884: `--plan-count` / bare positional never worked — see the (a)
+    // Finding-2a-sibling note on the earlier occurrence of this pattern.
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '2', '--plans', '1'], tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const written = fs.readFileSync(statePath, 'utf-8');
@@ -8733,7 +8742,9 @@ describe('regressions: table-format STATE.md (#1162) — updateCurrentPositionFi
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '2-01-PLAN.md'), '# Plan\n');
 
-    const result = runGsdTools(['state', 'planned-phase', '2', '--plan-count', '1'], tmpDir);
+    // #3884: `--plan-count` / bare positional never worked — see the note on
+    // the first occurrence of this pattern above.
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '2', '--plans', '1'], tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const written = fs.readFileSync(statePath, 'utf-8');
@@ -8754,7 +8765,9 @@ describe('regressions: table-format STATE.md (#1162) — updateCurrentPositionFi
     fs.mkdirSync(phaseDir, { recursive: true });
     fs.writeFileSync(path.join(phaseDir, '2-01-PLAN.md'), '# Plan\n');
 
-    const result = runGsdTools(['state', 'planned-phase', '2', '--plan-count', '1'], tmpDir);
+    // #3884: `--plan-count` / bare positional never worked — see the note on
+    // the first occurrence of this pattern above.
+    const result = runGsdTools(['state', 'planned-phase', '--phase', '2', '--plans', '1'], tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const written = fs.readFileSync(statePath, 'utf-8');

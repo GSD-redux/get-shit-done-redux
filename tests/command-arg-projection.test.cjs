@@ -173,14 +173,23 @@ describe('parseNamedArgs — strict argv (#3358, ADR-3473 §8.4)', () => {
     assert.deepStrictEqual(result, { ok: true, data: { phase: '3', name: null, plans: null } });
   });
 
-  test('valueFlagWithoutValueIsInvalidArgs', () => {
+  // Corrected after the first full verification run: ADR-3473 §8.4 mandates
+  // rejecting *unrecognized* and *positional* tokens — it says nothing about
+  // a value flag whose value is missing or flag-shaped. Treating that as an
+  // error was an over-implementation (not the ADR's rule) and it broke the
+  // long-standing, deliberately-recorded `null` contract exercised by
+  // tests/init.test.cjs emptyPrdValueIsFalsyAndTreatedAsAbsent (row B5) and
+  // tests/section-manifest-init-facts.test.cjs "flag-shaped value (--prd
+  // --weird)". A value flag whose next token is absent or flag-shaped
+  // resolves to `null` and is NOT an error; the cursor advances by 1 so the
+  // following flag token is validated on its own merits on the next
+  // iteration.
+  test('valueFlagFollowedByAnotherFlagResolvesToNullNotAnError', () => {
     const result = parseNamedArgs(
       ['state', 'planned-phase', '--phase', '--name', 'x'],
       { valueFlags: ['phase', 'name'], positionals: 2 },
     );
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.kind, 'InvalidArgs');
-    assert.strictEqual(result.arg, '--phase');
+    assert.deepStrictEqual(result, { ok: true, data: { phase: null, name: 'x' } });
   });
 
   test('unknownFlagIsRejectedAndListsAcceptedFlags', () => {

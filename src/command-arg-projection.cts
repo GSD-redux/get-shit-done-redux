@@ -31,6 +31,32 @@ export interface NamedArgSpec {
   valueFlags?: string[];
   booleanFlags?: string[];
   /**
+   * Optional-value flags (added for `--wave`, ADR-3473 Bucket-A correction —
+   * `--wave` was misclassified as Bucket C and is in fact a documented,
+   * shipped, user-facing form: commands/gsd/execute-phase.md:4,48 and
+   * gsd-core/workflows/execute-phase.md:84 extract the value from
+   * `$ARGUMENTS` and forward it to the workflow, not to this CLI seam).
+   * #2932 (commands/gsd/execute-phase.md:53) records the flag's semantics as
+   * token-PRESENCE: `--wave N` is active only if the literal `--wave` token
+   * is present. This CLI layer therefore only needs to know the flag was
+   * *seen* — the value belongs to the workflow, not to `data`.
+   *
+   * EXTRACTION: resolves to `true`/`false` exactly like a `booleanFlags`
+   * entry — presence only. The #2932 guarantee that `parseNamedArgs`
+   * materializes `false` and never leaks `undefined` for an absent flag
+   * holds for this kind too.
+   * VALIDATION: when the token is `--<name>` for an optional-value flag, the
+   * cursor advances by 2 if a next token exists and is NOT flag-shaped
+   * (consuming the value so it isn't reported as a stray positional),
+   * otherwise by 1.
+   * The value is intentionally NOT surfaced in `data` — callers that need it
+   * read raw argv themselves (see `execute-phase`'s `args[2]` positional and
+   * the shell-side `WAVE_PARAM` reconstruction cited above). This is a
+   * single-purpose escape hatch for `--wave`-shaped flags only; it is not a
+   * general "value flags are actually optional" mode.
+   */
+  optionalValueFlags?: string[];
+  /**
    * Count of leading argv slots the CALLER owns and reads itself (args[0] =
    * family, args[1] = subcommand, plus any documented positional).
    * Validation begins at this index. 'rest' means the caller consumes all
@@ -93,9 +119,11 @@ function isFlagToken(tok: string): boolean {
  * token past the caller's declared positional boundary.
  *
  * Extraction (unchanged semantics, #312): first occurrence wins; a value
- * flag whose next token is absent or starts with `--` yields `null`; boolean
- * flags are presence tests. Kept as a single first-index Map so the flag
- * loops don't each re-scan argv — O(argv + flags) instead of O(flags * argv).
+ * flag whose next token is absent or starts with `--` yields `null` (this is
+ * NOT a validation error — see the value-flag branch below); boolean flags
+ * and optional-value flags (`optionalValueFlags`, #2932's `--wave` shape) are
+ * presence tests. Kept as a single first-index Map so the flag loops don't
+ * each re-scan argv — O(argv + flags) instead of O(flags * argv).
  *
  * Validation (skipped entirely when `positionals === 'rest'`): a single
  * left-to-right cursor walk from `spec.positionals`, per the design doc's
@@ -105,6 +133,7 @@ export function parseNamedArgs(args: string[], spec: NamedArgSpec): NamedArgsRes
   assertValidSpec(spec);
   const valueFlags = spec.valueFlags ?? [];
   const booleanFlags = spec.booleanFlags ?? [];
+  const optionalValueFlags = spec.optionalValueFlags ?? [];
 
   const firstIndex = new Map<string, number>();
   for (let i = 0; i < args.length; i++) {
@@ -121,6 +150,12 @@ export function parseNamedArgs(args: string[], spec: NamedArgSpec): NamedArgsRes
   for (const flag of booleanFlags) {
     data[flag] = firstIndex.has(`--${flag}`);
   }
+  // Optional-value flags (#2932: `--wave`-shaped) — presence-only, exactly
+  // like booleanFlags. The value (if any) is deliberately not surfaced here;
+  // see the NamedArgSpec.optionalValueFlags JSDoc.
+  for (const flag of optionalValueFlags) {
+    data[flag] = firstIndex.has(`--${flag}`);
+  }
 
   if (spec.positionals === 'rest') {
     return { ok: true, data };
@@ -128,9 +163,11 @@ export function parseNamedArgs(args: string[], spec: NamedArgSpec): NamedArgsRes
 
   const valueFlagSet = new Set(valueFlags);
   const booleanFlagSet = new Set(booleanFlags);
+  const optionalValueFlagSet = new Set(optionalValueFlags);
   const flagList = [
     ...valueFlags.map((f) => `--${f} <value>`),
     ...booleanFlags.map((f) => `--${f}`),
+    ...optionalValueFlags.map((f) => `--${f} [value]`),
   ];
 
   let i = spec.positionals;
@@ -139,21 +176,23 @@ export function parseNamedArgs(args: string[], spec: NamedArgSpec): NamedArgsRes
     if (isFlagToken(tok)) {
       const name = tok.slice(2);
       if (valueFlagSet.has(name)) {
+        // A value flag whose next token is absent or flag-shaped resolves to
+        // `null` in `data` (see the extraction loop above) — this is NOT an
+        // error (#3180/behavior-lock: emptyPrdValueIsFalsyAndTreatedAsAbsent,
+        // section-manifest-init-facts.test.cjs "flag-shaped value"). Advance
+        // by 1 so the following flag token is validated on its own merits on
+        // the next iteration.
         const next = args[i + 1];
-        if (next === undefined || isFlagToken(next)) {
-          return {
-            ok: false,
-            kind: 'InvalidArgs',
-            arg: tok,
-            reason: `${formatDiagnosticToken(tok)} requires a value`,
-            exitReason: ERROR_REASON.USAGE,
-          };
-        }
-        i += 2;
+        i += next !== undefined && !isFlagToken(next) ? 2 : 1;
         continue;
       }
       if (booleanFlagSet.has(name)) {
         i += 1;
+        continue;
+      }
+      if (optionalValueFlagSet.has(name)) {
+        const next = args[i + 1];
+        i += next !== undefined && !isFlagToken(next) ? 2 : 1;
         continue;
       }
       const reason =

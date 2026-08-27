@@ -963,7 +963,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
   function routePrSubrepo({ args, cwd, raw, error }) {
     const message = args[1];
-          const { repo, branch } = parseNamedArgsOrExit(args, { valueFlags: ['repo', 'branch'], positionals: 2 }, error);
+          // #3884: the commit message is an optional leading positional the
+          // caller owns (args[1]) — but when it is OMITTED, args[1] is itself
+          // the first flag (e.g. `--repo`), and a static `positionals: 2`
+          // treats that flag's own value as an unexpected trailing positional
+          // before cmdPrSubrepo's own "commit message required" guard ever
+          // runs. Widen the boundary only when args[1] genuinely looks like a
+          // message (not flag-shaped), mirroring the same fix applied to
+          // `state complete-phase`.
+          const messagePresent = message !== undefined && !message.startsWith('--');
+          const { repo, branch } = parseNamedArgsOrExit(args, { valueFlags: ['repo', 'branch'], positionals: messagePresent ? 2 : 1 }, error);
           commands.cmdPrSubrepo(cwd, repo, branch, message, raw);
   }
 
