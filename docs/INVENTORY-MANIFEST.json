@@ -371,6 +371,7 @@
       "estimate-cli.cjs",
       "eval-command-router.cjs",
       "eval.cjs",
+      "exit-code-registry.cjs",
       "external-descriptor-trust.cjs",
       "external-job.cjs",
       "fallow-runner.cjs",

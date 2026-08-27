@@ -519,6 +519,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `eval-command-router.cjs` | Routes the `eval.score` verb (compiled from `src/eval-command-router.cts`, gitignored) — thin dispatcher into the eval scoring module (#1579) |
 | `eval.cjs` | Deterministic eval scoring (compiled from `src/eval.cts`, gitignored) — `computeEvalScore` (coverage*0.6 + infra*0.4, bands 80/60/40) + `cmdEvalScore` CLI domain guard; moves the gsd-eval-auditor's weighted arithmetic out of the prompt into code (#10 / #1579) |
 | `estimate-cli.cjs` | I/O seam over `phase-estimation.cjs` — the `estimate-check` and `estimate-calibration` query verbs; reads the `workflow.smart_zone_tokens` budget and `.planning/estimation-calibration.json`, both degrading to defaults rather than failing planning (#2630) |
+| `exit-code-registry.cjs` | Generated exit-code allocator — one number, one meaning table of registered process exit codes (band rules: `2` hook-adapter only, `64`-`78` generic, `80`-`125` domain); emitted by `scripts/gen-exit-code-registry.cjs --write` (ADR-3889 §1/§2); exports `EXIT_CODES` and the pure, total `exitCodeFor`/`nameForExitCode` |
 | `observability/event.cjs` | DispatchEvent shape factory for every Hub dispatch — traceId/parentTraceId/command/result/timestamp record consumed by DispatchLogger (#177, ADR-0174 P1.3/P1.4) |
 | `external-descriptor-trust.cjs` | Defense-in-depth path-containment check for third-party plugin descriptors (#1681) |
 | `external-job.cjs` | Produces scheduler manifests for asynchronous external jobs; SLURM is the first backend (#1164) |
