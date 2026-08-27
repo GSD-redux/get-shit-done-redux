@@ -20,6 +20,9 @@ import { INIT_SUBCOMMANDS } from './command-aliases.cjs';
 import cjsCommandRouterAdapter = require('./cjs-command-router-adapter.cjs');
 const { routeCjsCommandFamily } = cjsCommandRouterAdapter;
 import { parseNamedArgsOrExit } from './command-arg-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import ioModule = require('./io.cjs');
+const { ERROR_REASON } = ioModule;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,7 +66,7 @@ interface RouteInitCommandOptions {
   args: string[];
   cwd: string;
   raw: boolean;
-  error: (message: string) => void;
+  error: (message: string, reason?: string) => void;
 }
 
 type DebugSubcommand = 'debug' | 'list' | 'status' | 'continue';
@@ -323,7 +326,7 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
         );
         const projection = projectDebugInvocation(args.slice(2));
         if (!projection.ok) {
-          error(projection.reason);
+          error(projection.reason, ERROR_REASON.USAGE);
           return;
         }
         const route = projection.data;

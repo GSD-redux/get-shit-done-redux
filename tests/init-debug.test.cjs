@@ -78,6 +78,14 @@ function runJson(argv, cwd, env = {}) {
   return JSON.parse(result.output);
 }
 
+function runJsonError(argv, cwd) {
+  const result = runGsdTools(argv, cwd, { GSD_JSON_ERRORS: '1' });
+  assert.equal(result.success, false, `expected rejection: ${argv.join(' ')}`);
+  const payload = JSON.parse(result.error);
+  assert.equal(payload.ok, false);
+  return payload;
+}
+
 function assertPolicyOffOrCleanReject(result, label, { reconciliationEligible = true } = {}) {
   if (!result.success) {
     assert.notEqual(result.exitCode, 0, `${label}: rejection must use a clean nonzero exit`);
@@ -430,10 +438,24 @@ describe('init.debug resolves runtime-evidence policy at the real CLI seam (#312
       ['init', 'debug', '--runtime-probes', '--no-runtime-probes'],
       ['init', 'debug', '--no-runtime-probes', '--runtime-probes'],
     ]) {
-      const result = runGsdTools(argv, tmpDir);
-      assert.equal(result.success, false, `conflicting flags must fail: ${argv.join(' ')}`);
-      assert.notEqual(result.exitCode, 0);
-      assert.equal((result.error || '').includes('    at '), false, 'expected a clean CLI error, not a stack trace');
+      const payload = runJsonError(argv, tmpDir);
+      assert.equal(payload.reason, 'usage');
+    }
+  });
+
+  test('invalid subcommand forms and slugs emit typed usage errors', () => {
+    for (const argv of [
+      ['init', 'debug', 'list', 'extra'],
+      ['init', 'debug', 'status'],
+      ['init', 'debug', 'status', 'Bad-Slug'],
+      ['init', 'debug', 'continue'],
+      ['init', 'debug', 'continue', 'Bad-Slug'],
+      ['init', 'debug', 'continue', 'valid-slug', 'extra'],
+      ['init', 'debug', 'continue', 'valid-slug', '--diagnose'],
+      ['init', 'debug', '--diagnose', '--runtime-probes'],
+    ]) {
+      const payload = runJsonError(argv, tmpDir);
+      assert.equal(payload.reason, 'usage', argv.join(' '));
     }
   });
 
