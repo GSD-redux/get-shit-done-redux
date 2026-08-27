@@ -95,40 +95,40 @@ function parseHarnessFlag(flag) {
   return { param: m[1], value: m[2] };
 }
 
-// ─── #3566: per-install runtime marker ────────────────────────────────────────
+// ─── #3897 rung 2: per-install runtime marker, single canonical owner ────────
 // bin/install.js writes `<install>/gsd-core/.gsd-runtime` for EVERY runtime
 // install (#2297), co-located with VERSION. Unlike `~/.gsd/defaults.json` —
 // which is host-wide and names whichever runtime's install ran LAST, the exact
 // leakage #2840's config.cjs change exists to prevent — the marker describes
 // THIS install, which is the property runtime identity needs on a machine
-// with 2+ runtimes. Mirrors readInstallRuntimeMarker in src/model-resolver.cts
-// (same cache + test-seam shape); this hook cannot import that module without
-// dragging the whole model-resolution stack into a PreToolUse hot path, so the
-// 5-line read lives here against the same sibling-layout assumption the hook's
-// own require('../gsd-core/bin/lib/…') already makes. Epic #3473 B3 owns
-// consolidating every marker reader into one shared seam.
-let _installMarkerCache; // undefined = unread; null = known absent; string = value
-
+// with 2+ runtimes. Previously this hook held its own private reader/cache
+// (one of four #3897 found); it now delegates to the single canonical owner,
+// `src/runtime-slash.cts` (compiled to gsd-core/bin/lib/runtime-slash.cjs),
+// reached through `ensureRuntimeBuild()` like every other compiled-lib require
+// in this file (`scripts/lint-hooks-runtime-build-seam.cjs`).
 function readInstallRuntimeMarker() {
-  if (_installMarkerCache !== undefined) return _installMarkerCache;
   try {
-    const markerPath = path.join(__dirname, '..', 'gsd-core', '.gsd-runtime');
-    const raw = fs.readFileSync(markerPath, 'utf-8').trim();
-    _installMarkerCache = raw || null;
+    ensureRuntimeBuild();
+    const runtimeSlash = require('../gsd-core/bin/lib/runtime-slash.cjs');
+    return runtimeSlash.readInstallRuntimeMarker();
   } catch {
-    // No marker: dev/source tree, or an install predating #2297 — "no signal
-    // from this rung", never a resolution failure. Falls through to the
-    // defaults rung below.
-    _installMarkerCache = null;
+    // Unbuilt runtime library, or any other failure reaching the canonical
+    // owner — "no signal from this rung" (N4), never a resolution failure.
+    return null;
   }
-  return _installMarkerCache;
 }
 
-// Test seam for the marker rung (the dev/source tree has no marker file, so
-// the read always bottoms out at null there — same seam contract as
-// model-resolver.cts's _setInstallRuntimeMarkerForTests, #2297).
+// Test seam for the marker rung — forwards to the canonical owner's seam so
+// this hook and runtime-slash.cjs always share one cache (#3897 rung 2).
 function _setInstallRuntimeMarkerForTests(value) {
-  _installMarkerCache = value;
+  try {
+    ensureRuntimeBuild();
+    const runtimeSlash = require('../gsd-core/bin/lib/runtime-slash.cjs');
+    runtimeSlash._setInstallRuntimeMarkerForTests(value);
+  } catch {
+    // Test-only seam; an unbuilt library here means the test itself will fail
+    // downstream, which is a louder and more actionable signal than throwing here.
+  }
 }
 
 /**

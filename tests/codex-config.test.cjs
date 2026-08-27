@@ -67,7 +67,7 @@ const {
   mergeCodexConfig,
   install,
   GSD_CODEX_MARKER,
-  CODEX_AGENT_SANDBOX,
+  deriveCodexSandboxMode,
   // #3897 rung 3 (ADR-3473 §8.3, option 2 — HALT.md): anticipated new export
   // holding the 16 explicit read-only pins for roles whose tool contract would
   // otherwise derive workspace-write. Does not exist on the current tree —
@@ -942,6 +942,29 @@ description: Maps the codebase
 // synthetic `tools:` fixture cannot prove the CURRENT tree's byte output is
 // preserved, only that the derivation LOGIC agrees with a made-up example.
 
+// #3897 rung 3 — bin/install.js's `CODEX_AGENT_SANDBOX` map is DELETED
+// (ADR-3473 §8.3): HALT.md measured that deriving `workspace-write` iff an
+// agent's `tools:` frontmatter declares Write/Edit reproduces every one of
+// these 11 entries exactly, with zero disagreements, making the hand-
+// maintained map fully redundant. This literal is the pre-#3897
+// `CODEX_AGENT_SANDBOX` contents, preserved here as a regression baseline —
+// the only surviving copy of these 11 role -> mode pairs. T21 below and the
+// `CODEX_AGENT_SANDBOX (deleted map, derivation regression baseline)` describe
+// block both reference this ONE literal rather than duplicating it.
+const PRE_3897_CODEX_AGENT_SANDBOX = {
+  'gsd-executor': 'workspace-write',
+  'gsd-planner': 'workspace-write',
+  'gsd-phase-researcher': 'workspace-write',
+  'gsd-project-researcher': 'workspace-write',
+  'gsd-research-synthesizer': 'workspace-write',
+  'gsd-verifier': 'workspace-write',
+  'gsd-codebase-mapper': 'workspace-write',
+  'gsd-roadmapper': 'workspace-write',
+  'gsd-debugger': 'workspace-write',
+  'gsd-plan-checker': 'read-only',
+  'gsd-integration-checker': 'read-only',
+};
+
 describe('#3897 rung 3: sandbox_mode derivation and the hold list', () => {
   const AGENTS_DIR = path.join(__dirname, '..', 'agents');
 
@@ -1004,14 +1027,15 @@ describe('#3897 rung 3: sandbox_mode derivation and the hold list', () => {
   };
 
   // The 16 roles HALT.md measured as widening: declare Write/Edit, not in the
-  // (pre-deletion) CODEX_AGENT_SANDBOX map, so today's `|| 'read-only'`
-  // fallback under-grants them. Computed here from the REAL agents/*.md tools
-  // frontmatter and the REAL current map — never hand-copied from HALT.md's
-  // prose — so this list cannot silently drift from what agents/ actually
-  // declares (T30: "derived, not a second hardcoded copy").
+  // pre-#3897 CODEX_AGENT_SANDBOX map (now deleted; PRE_3897_CODEX_AGENT_SANDBOX
+  // above is the surviving baseline of its contents), so today's
+  // `|| 'read-only'` fallback under-grants them. Computed here from the REAL
+  // agents/*.md tools frontmatter and that baseline — never hand-copied from
+  // HALT.md's prose — so this list cannot silently drift from what agents/
+  // actually declares (T30: "derived, not a second hardcoded copy").
   const measuredWideningRoles = Object.keys(EXPECTED_SANDBOX_BY_ROLE).filter((role) => {
     const declaresWrite = declaresWriteOrEdit(realAgentToolsRaw(role));
-    const inOldMap = Object.prototype.hasOwnProperty.call(CODEX_AGENT_SANDBOX, role);
+    const inOldMap = Object.prototype.hasOwnProperty.call(PRE_3897_CODEX_AGENT_SANDBOX, role);
     return declaresWrite && !inOldMap;
   });
 
@@ -1045,7 +1069,7 @@ describe('#3897 rung 3: sandbox_mode derivation and the hold list', () => {
   });
 
   test('T21 mappedRolesDeriveToTheirFormerValue: every former CODEX_AGENT_SANDBOX entry (11) derives to the identical value from its real tool contract', () => {
-    for (const [role, formerValue] of Object.entries(CODEX_AGENT_SANDBOX)) {
+    for (const [role, formerValue] of Object.entries(PRE_3897_CODEX_AGENT_SANDBOX)) {
       const derivesWorkspaceWrite = declaresWriteOrEdit(realAgentToolsRaw(role));
       const derived = derivesWorkspaceWrite ? 'workspace-write' : 'read-only';
       assert.equal(
@@ -1054,12 +1078,12 @@ describe('#3897 rung 3: sandbox_mode derivation and the hold list', () => {
         `${role}: the tool-contract derivation must reproduce the former map value exactly (HALT.md: zero disagreements across all 11)`,
       );
     }
-    assert.equal(Object.keys(CODEX_AGENT_SANDBOX).length, 11);
+    assert.equal(Object.keys(PRE_3897_CODEX_AGENT_SANDBOX).length, 11);
   });
 
   test('T22 nonWritingFallbackRoleDerivesReadOnly: a fallback role declaring neither Write nor Edit derives read-only (S2)', () => {
     const role = 'gsd-user-profiler'; // tools: Read (no Write/Edit), never in the map
-    assert.equal(Object.prototype.hasOwnProperty.call(CODEX_AGENT_SANDBOX, role), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(PRE_3897_CODEX_AGENT_SANDBOX, role), false);
     assert.equal(declaresWriteOrEdit(realAgentToolsRaw(role)), false);
     const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
     const toml = generateCodexAgentToml(role, content);
@@ -1319,29 +1343,44 @@ describe('installCodexConfig sandboxTier threading seam', () => {
 // codex.sandboxTier === 'codex-agent-sandbox') confirms the real registry has
 // valid values for all 15 runtimes.
 
-// ─── CODEX_AGENT_SANDBOX mapping ────────────────────────────────────────────────
+// ─── CODEX_AGENT_SANDBOX (deleted map): derivation regression baseline ──────────
 
-describe('CODEX_AGENT_SANDBOX', () => {
-  test('has all 11 agents mapped', () => {
-    const agentNames = Object.keys(CODEX_AGENT_SANDBOX);
+describe('CODEX_AGENT_SANDBOX (deleted map, derivation regression baseline)', () => {
+  // bin/install.js's CODEX_AGENT_SANDBOX map is gone (ADR-3473 §8.3, #3897
+  // rung 3) — deriveCodexSandboxMode is the sole owner of sandbox_mode now.
+  // These tests assert the SAME underlying property the deleted map's own
+  // suite used to assert (which 11 roles get which sandbox_mode), but against
+  // the real derivation and the real agents/*.md content, sourced from the
+  // PRE_3897_CODEX_AGENT_SANDBOX baseline literal above rather than the map.
+  const AGENTS_DIR = path.join(__dirname, '..', 'agents');
+
+  function realDerivedSandboxMode(role) {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+    return deriveCodexSandboxMode(role, content);
+  }
+
+  test('has all 11 baseline agents', () => {
+    const agentNames = Object.keys(PRE_3897_CODEX_AGENT_SANDBOX);
     assert.strictEqual(agentNames.length, 11, 'has 11 agents');
   });
 
-  test('workspace-write agents have write tools', () => {
+  test('workspace-write agents still derive workspace-write', () => {
     const writeAgents = [
       'gsd-executor', 'gsd-planner', 'gsd-phase-researcher',
       'gsd-project-researcher', 'gsd-research-synthesizer', 'gsd-verifier',
       'gsd-codebase-mapper', 'gsd-roadmapper', 'gsd-debugger',
     ];
     for (const name of writeAgents) {
-      assert.strictEqual(CODEX_AGENT_SANDBOX[name], 'workspace-write', `${name} is workspace-write`);
+      assert.strictEqual(PRE_3897_CODEX_AGENT_SANDBOX[name], 'workspace-write', `${name} baseline is workspace-write`);
+      assert.strictEqual(realDerivedSandboxMode(name), 'workspace-write', `${name} still derives workspace-write`);
     }
   });
 
-  test('read-only agents have no write tools', () => {
+  test('read-only agents still derive read-only', () => {
     const readOnlyAgents = ['gsd-plan-checker', 'gsd-integration-checker'];
     for (const name of readOnlyAgents) {
-      assert.strictEqual(CODEX_AGENT_SANDBOX[name], 'read-only', `${name} is read-only`);
+      assert.strictEqual(PRE_3897_CODEX_AGENT_SANDBOX[name], 'read-only', `${name} baseline is read-only`);
+      assert.strictEqual(realDerivedSandboxMode(name), 'read-only', `${name} still derives read-only`);
     }
   });
 });

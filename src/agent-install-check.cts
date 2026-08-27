@@ -69,6 +69,31 @@ interface CodexModelPostureResult {
   reason?: PostureReason;
 }
 
+/**
+ * #3897 rung 3 (ADR-3473 §8.3, HALT.md option 2) — a violation entry for
+ * {@link checkCodexSandboxPosture}. Distinct shape from {@link PostureViolation}:
+ * this check reports a drift between an EXPECTED and a FOUND `sandbox_mode`,
+ * not a single offending value. `reason` is populated only for the UNREADABLE
+ * case (mirrors {@link checkCodexModelPosture}); a drift violation carries
+ * `expected`/`found` instead.
+ */
+interface SandboxPostureViolation {
+  agent: string;
+  file: string;
+  reason?: PostureReason;
+  expected?: string;
+  found?: string;
+}
+
+interface CodexSandboxPostureResult {
+  ok: boolean;
+  violations: SandboxPostureViolation[];
+  checked: string[];
+  agents_dir: string;
+  agent_runtime: string;
+  reason?: PostureReason;
+}
+
 // Matches the value-truncation convention in bin/install.js's
 // _warnCodexModelOverrideDropped: values over 64 chars are capped so an
 // oversized or secret-shaped config value can never reach a report in full.
@@ -345,6 +370,134 @@ function checkCodexModelPosture(runtime?: string, projectRoot?: string): CodexMo
   };
 }
 
+// #3897 rung 3 — the canonical bundled `agents/*.md` source directory (the
+// tool-contract source of truth), resolved the same install-relative way
+// getAgentsDir resolves the claude case, WITHOUT that function's npm-global
+// node_modules redirect: that redirect exists so a Codex/claude INSTALL is
+// never validated against itself, but here we deliberately want the bundled
+// copy every time — it is the only place the `tools:` contract a role
+// derives its sandbox_mode from actually lives, in every install shape
+// (repo-dev tree or npm-global package, where the package still ships its
+// own agents/ alongside bin/ and gsd-core/).
+function _canonicalAgentSourceDir(): string {
+  return path.join(__dirname, '..', '..', '..', 'agents');
+}
+
+/**
+ * Validate installed Codex `.toml` agents' `sandbox_mode` against what each
+ * role's own tool contract derives (#3897, ADR-3473 §8.3 criterion 3,
+ * HALT.md option 2). Sibling to {@link checkCodexModelPosture} — same shape,
+ * same short-circuits — but a different defect class: a TOML whose
+ * `sandbox_mode` disagrees with the derived expectation, not a bad `model`.
+ *
+ * `bin/install.js`'s `deriveCodexSandboxMode` (and the `CODEX_SANDBOX_HOLDS`
+ * hold list + its own self-invalidation checks it embeds) is required
+ * lazily and reused here rather than re-implemented, so the emitter and this
+ * posture check can never silently diverge on the same tool-contract
+ * predicate — the exact generative-fix-divergence shape this epic exists to
+ * close. A stale/orphaned hold throws from inside that shared derivation,
+ * which is deliberate: this check is a validator in the sense §8.3's
+ * self-invalidation requirement names ("fail loudly at the point the emitter
+ * or its validator runs").
+ *
+ * Read-only: detects, never repairs — same posture as {@link checkCodexModelPosture}.
+ *
+ * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
+ * @param projectRoot - canonical project root for local-install discovery
+ */
+function checkCodexSandboxPosture(runtime?: string, projectRoot?: string): CodexSandboxPostureResult {
+  const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
+  if (resolvedRuntime !== 'codex') {
+    return {
+      ok: true,
+      violations: [],
+      checked: [],
+      agents_dir: '',
+      agent_runtime: resolvedRuntime,
+      reason: POSTURE_REASON.NOT_CODEX,
+    };
+  }
+
+  const agentsDir = getAgentsDir(resolvedRuntime, projectRoot);
+  if (!fs.existsSync(agentsDir)) {
+    return {
+      ok: true,
+      violations: [],
+      checked: [],
+      agents_dir: agentsDir,
+      agent_runtime: resolvedRuntime,
+      reason: POSTURE_REASON.AGENTS_DIR_MISSING,
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const installer = require(path.join(__dirname, '..', '..', '..', 'bin', 'install.js')) as {
+    deriveCodexSandboxMode: (agentName: string, agentContent: string) => string;
+  };
+  const canonicalAgentsDir = _canonicalAgentSourceDir();
+
+  // Same symlink guard as checkCodexModelPosture, same reason (never follow
+  // an agents-dir symlink into an arbitrary file's content).
+  const tomlFiles = fs
+    .readdirSync(agentsDir)
+    .filter((entry) => {
+      if (!entry.endsWith('.toml')) return false;
+      try {
+        return fs.lstatSync(path.join(agentsDir, entry)).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+
+  const checked: string[] = [];
+  const violations: SandboxPostureViolation[] = [];
+
+  for (const entry of tomlFiles) {
+    const agentName = entry.slice(0, -'.toml'.length);
+    const filePath = path.join(agentsDir, entry);
+    checked.push(agentName);
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      violations.push({ agent: agentName, file: filePath, reason: POSTURE_REASON.UNREADABLE });
+      continue;
+    }
+
+    const found = raw.match(/^sandbox_mode\s*=\s*"([^"]*)"$/m)?.[1];
+    if (found === undefined) {
+      // No sandbox_mode line at all (e.g. sandboxTier "none") is a deliberate,
+      // documented state elsewhere — not this check's business.
+      continue;
+    }
+
+    const canonicalFile = path.join(canonicalAgentsDir, `${agentName}.md`);
+    let canonicalContent: string;
+    try {
+      canonicalContent = fs.readFileSync(canonicalFile, 'utf8');
+    } catch {
+      // No canonical role source (a custom/non-roster agent) — nothing to
+      // derive an expectation from, so this is not this check's business.
+      continue;
+    }
+
+    const expected = installer.deriveCodexSandboxMode(agentName, canonicalContent);
+    if (expected !== found) {
+      violations.push({ agent: agentName, file: filePath, expected, found });
+    }
+  }
+
+  return {
+    ok: violations.length === 0,
+    violations,
+    checked,
+    agents_dir: agentsDir,
+    agent_runtime: resolvedRuntime,
+  };
+}
+
 /**
  * Probe a single agents dir for `<name>` across runtime filename variants.
  * Mirrors {@link checkAgentsInstalled}'s probe (`.md`, `.agent.md`, `.toml`,
@@ -410,6 +563,7 @@ export = {
   getAgentsDir,
   checkAgentsInstalled,
   checkCodexModelPosture,
+  checkCodexSandboxPosture,
   POSTURE_REASON,
   resolveAgentHint,
 };

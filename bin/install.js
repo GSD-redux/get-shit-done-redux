@@ -460,19 +460,95 @@ function resolveSharedHooksDirName(runtime) {
   return name;
 }
 
-const CODEX_AGENT_SANDBOX = {
-  'gsd-executor': 'workspace-write',
-  'gsd-planner': 'workspace-write',
-  'gsd-phase-researcher': 'workspace-write',
-  'gsd-project-researcher': 'workspace-write',
-  'gsd-research-synthesizer': 'workspace-write',
-  'gsd-verifier': 'workspace-write',
-  'gsd-codebase-mapper': 'workspace-write',
-  'gsd-roadmapper': 'workspace-write',
-  'gsd-debugger': 'workspace-write',
-  'gsd-plan-checker': 'read-only',
-  'gsd-integration-checker': 'read-only',
+// #3897 rung 3 — the 16 roles HALT.md measured as widening under derivation
+// (declare Write/Edit, never in the pre-#3897 CODEX_AGENT_SANDBOX map, so the
+// old `|| 'read-only'` fallback silently under-granted them). Pinned to
+// `read-only` pending the open question of whether Codex enforces
+// `sandbox_mode` or treats it as advisory (HALT.md). This list is CLOSED and
+// SHRINK-ONLY: a new writing role never lands here (S6, T26); it is validated
+// against the live tool contract every time it is consulted
+// (`_deriveCodexSandboxMode` below) and against the real `agents/` directory
+// (`validateCodexSandboxHolds` below) so a stale or orphaned entry fails
+// loudly instead of being silently honored forever — the exact defect this
+// rung deletes, rebuilt one list later (HALT.md's ledger claim).
+const CODEX_SANDBOX_HOLDS = {
+  'gsd-ai-researcher': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-code-fixer': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-code-reviewer': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-debug-session-manager': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-doc-classifier': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-doc-synthesizer': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-doc-verifier': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-doc-writer': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-dom-verifier': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-domain-researcher': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-eval-auditor': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-eval-planner': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-intel-updater': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-pattern-mapper': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-ui-auditor': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
+  'gsd-ui-researcher': 'declares Write/Edit; pending Codex sandbox_mode enforcement decision',
 };
+
+// #3897 rung 3 — true iff a `tools:` frontmatter value declares Write or Edit
+// as a whole token (never a substring match, so e.g. a hypothetical
+// "Edith"-named tool could never collide). Single predicate owner for both
+// the emitter (`_deriveCodexSandboxMode`) and the posture check
+// (`agent-install-check.cts`'s `checkCodexSandboxPosture`, which requires
+// this module lazily rather than re-implementing the rule).
+function _codexToolsDeclareWriteOrEdit(toolsRaw) {
+  const tokens = String(toolsRaw || '').split(',').map((t) => t.trim());
+  return tokens.includes('Write') || tokens.includes('Edit');
+}
+
+// #3897 rung 3 — the single owner of sandbox_mode derivation: `workspace-write`
+// iff the role's own frontmatter `tools:` declares Write/Edit, UNLESS the role
+// is held (CODEX_SANDBOX_HOLDS) at `read-only`. A held role whose live tool
+// contract no longer derives broader than its pin is a STALE hold (S4) —
+// fail loudly naming the role rather than silently honoring it forever,
+// which is exactly the hand-maintained-subset-map defect this rung deletes.
+function _deriveCodexSandboxModeFromFrontmatter(agentName, frontmatterText) {
+  const toolsRaw = extractFrontmatterField(frontmatterText, 'tools') || '';
+  const derivesBroader = _codexToolsDeclareWriteOrEdit(toolsRaw);
+  if (Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, agentName)) {
+    if (!derivesBroader) {
+      throw new Error(
+        `CODEX_SANDBOX_HOLDS: stale hold for "${agentName}" — its current tools: frontmatter no longer ` +
+        'declares Write/Edit, so the pin no longer holds anything broader than what derivation would ' +
+        'already produce. Remove this entry (ADR-3473 §8.3 / HALT.md: the hold list is self-invalidating ' +
+        'and must shrink to zero, never be silently honored once stale).'
+      );
+    }
+    return 'read-only';
+  }
+  return derivesBroader ? 'workspace-write' : 'read-only';
+}
+
+// Exported form for external callers (e.g. `checkCodexSandboxPosture`) that
+// hold raw agent markdown rather than an already-extracted frontmatter slice.
+// Parses via the SAME extractFrontmatterAndBody/extractFrontmatterField pair
+// generateCodexAgentToml uses — never a second, independent parser.
+function deriveCodexSandboxMode(agentName, agentContent) {
+  const { frontmatter } = extractFrontmatterAndBody(agentContent);
+  return _deriveCodexSandboxModeFromFrontmatter(agentName, frontmatter || '');
+}
+
+// #3897 rung 3 (S5) — every CODEX_SANDBOX_HOLDS key must still name a real
+// `<agentsSrcDir>/<role>.md`. A hold for a role that no longer exists is
+// stale and must fail loudly, not be silently ignored (else the hold list
+// only ever grows/rots instead of shrinking to zero as HALT.md's decision is
+// taken). Called once per Codex install, before any TOML is written.
+function validateCodexSandboxHolds(agentsSrcDir) {
+  for (const role of Object.keys(CODEX_SANDBOX_HOLDS)) {
+    const agentFile = path.join(agentsSrcDir, `${role}.md`);
+    if (!fs.existsSync(agentFile)) {
+      throw new Error(
+        `CODEX_SANDBOX_HOLDS: stale hold for "${role}" — no ${agentFile} exists. The hold list is ` +
+        'closed and shrink-only (ADR-3473 §8.3 / HALT.md); remove this entry.'
+      );
+    }
+  }
+}
 
 // Copilot tool name mapping — Claude Code tools to GitHub Copilot tools
 // Tool mapping applies ONLY to agents, NOT to skills (per CONTEXT.md decision)
@@ -4010,9 +4086,13 @@ function _resetCodexWarningDedupeForTests() {
  * @param {object|null} effortCfg        — #443: merged effort config from readGsdEffectiveEffortConfig
  */
 function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, runtimeResolver = null, effortCfg = null, sandboxTier = 'codex-agent-sandbox') {
-  const sandboxMode = CODEX_AGENT_SANDBOX[agentName] || 'read-only';
   const { frontmatter, body } = extractFrontmatterAndBody(agentContent);
   const frontmatterText = frontmatter || '';
+  // #3897 rung 3 — derived from the role's own tool contract (HALT.md option
+  // 2). The former hand-maintained CODEX_AGENT_SANDBOX map is deleted (ADR-3473
+  // §8.3): it was fully redundant with this derivation, zero disagreements
+  // across all 11 entries. Never a silent `|| 'read-only'` fallback either.
+  const sandboxMode = _deriveCodexSandboxModeFromFrontmatter(agentName, frontmatterText);
   const resolvedName = extractFrontmatterField(frontmatterText, 'name') || agentName;
   const resolvedDescription = toSingleLine(
     extractFrontmatterField(frontmatterText, 'description') || `GSD agent ${resolvedName}`
@@ -6924,6 +7004,10 @@ function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-san
     );
   }
   fs.mkdirSync(agentsTomlDir, { recursive: true });
+
+  // #3897 rung 3 (S5) — fail loudly, before writing anything, if the hold
+  // list names a role that no longer exists in the bundled agents source.
+  validateCodexSandboxHolds(agentsSrc);
 
   const agentEntries = fs.readdirSync(agentsSrc).filter(f => f.startsWith('gsd-') && f.endsWith('.md'));
   const agents = [];
@@ -13712,7 +13796,10 @@ module.exports = {
     GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS,
     GSD_CLAUDE_DENY_PERMISSIONS,
     GSD_CODEX_MARKER,
-    CODEX_AGENT_SANDBOX,
+    // #3897 rung 3 (ADR-3473 §8.3, HALT.md option 2)
+    CODEX_SANDBOX_HOLDS,
+    deriveCodexSandboxMode,
+    validateCodexSandboxHolds,
     getGlobalDir,
     getConfigDirFromHome,
     resolveKiloConfigPath,
