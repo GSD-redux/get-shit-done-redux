@@ -1706,6 +1706,30 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           }
   }
 
+  /**
+   * #3737 — strict read of the project-level worktree opt-out from
+   * `.planning/config.json`. True ONLY when `workflow.use_worktrees` is the
+   * boolean `false`; an absent key, unreadable/malformed config, or any
+   * non-boolean value (including the string "false") degrades to false —
+   * worktrees are ON by default, so the degraded answer is "not opted out".
+   * Direct file read, deliberately NOT loadConfig: this resolver backs
+   * sentinel writes and must never trigger config normalization/rewrites
+   * (same discipline as resolveDispatchIsolationDecision's resolveRuntime
+   * comment above). Never throws.
+   */
+  function projectWorktreesOptedOut(cwd) {
+    try {
+      const { planningDir } = require('./lib/planning-workspace.cjs');
+      const cfgPath = require('path').join(planningDir(cwd), 'config.json');
+      const cfg = JSON.parse(require('fs').readFileSync(cfgPath, 'utf8'));
+      return cfg != null && typeof cfg === 'object'
+        && cfg.workflow != null && typeof cfg.workflow === 'object'
+        && cfg.workflow.use_worktrees === false;
+    } catch {
+      return false;
+    }
+  }
+
   function routeDispatchIsolation({ args, cwd, raw, error }) {
     // #2584 Phase 3 (#2627): typed query exposing the negotiated
     // `dispatch.isolation` to the execute-phase wave scheduler, so the
@@ -1778,6 +1802,25 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const planArg = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
       ? args[planIdx + 1]
       : null;
+
+    // #3737: the project-level opt-out (workflow.use_worktrees === false) is
+    // decided HERE, before the sentinel write — not only in the workflow
+    // shell blocks that run after this resolve. Pre-fix, any plain re-query
+    // (config re-read, wave transition, second plan dispatch) re-persisted
+    // the naturally-resolved host capability over the `--force-isolation
+    // none` record the dispatch-isolation reference mandates, and the guard
+    // then denied the sequential dispatch the config explicitly asked for.
+    // Applied AFTER --force-isolation so the documented rule holds: the
+    // opt-out wins on every host, over both the natural resolution and any
+    // force. Strict `=== false`: the default is worktrees ON, so an absent
+    // key, an unreadable/malformed config, or a non-boolean value degrades
+    // to "not opted out" (mirrors readConfigJsonBoolean's no-coercion
+    // discipline in lib/init.cjs).
+    if (projectWorktreesOptedOut(cwd)) {
+      isolation = 'none';
+      harnessFlag = null;
+      exec = null;
+    }
 
     // Side-effect write (#3045 CORE REDESIGN) — see the doc comment above.
     // Never allowed to affect this query's own stdout contract or throw.
