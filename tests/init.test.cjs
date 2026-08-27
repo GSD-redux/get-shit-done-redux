@@ -4721,7 +4721,9 @@ describe('init.new-project — GSD_PROJECT scoping (#3749)', () => {
     const out1 = JSON.parse(r1.output);
     assert.equal(out1['project_exists'], true,
       `#3749: project_path (${out1['project_path']}) names an existing file — project_exists must be true`);
-    assert.ok(String(out1['project_path']).includes(path.join('.planning', 'second-product')));
+    // project_path is POSIX-normalized by toPosixPath — compare with a literal
+    // forward-slash path, not path.join (which yields backslashes on Windows).
+    assert.ok(String(out1['project_path']).includes('.planning/second-product'));
 
     // An unrelated root PROJECT.md must not change the verdict.
     fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# unrelated\n');
