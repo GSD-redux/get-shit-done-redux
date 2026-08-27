@@ -2049,6 +2049,138 @@ describe('mergeCodexConfig', () => {
     assert.ok(content.includes('# first line wins\n[model]\r\nname = "o3"'), 'preserves the existing mixed-EOL model content');
     assert.ok(content.includes(`\n\n${GSD_CODEX_MARKER}\n`), 'writes the managed block using the first newline style');
   });
+
+  // ─── #3610: top-level keys below the marker must not be captured by [agents] ──
+  //
+  // Since #2088 the managed block opens with a bare `[agents]` table header. On
+  // upgrade (marker present) the block is regenerated IN PLACE, so a top-level
+  // key that lived below the marker (e.g. Codex Computer Use's `notify`) would
+  // parse as an [agents] member — validateCodexConfigSchema correctly rejected
+  // the merged file and the install aborted mid-flight.
+
+  test('#3610: top-level keys below the marker are hoisted above the managed block and the merged file validates', () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    fs.writeFileSync(
+      configPath,
+      `${GSD_CODEX_MARKER}\n\nnotify = ["x", "turn-ended"]\n\n[features]\nhooks = true\n`,
+    );
+
+    mergeCodexConfig(configPath, sampleBlock);
+
+    const content = fs.readFileSync(configPath, 'utf8');
+    const schema = validateCodexConfigSchema(content);
+    assert.ok(schema.ok, `merged config must pass Codex schema validation: ${schema.reason || ''}`);
+    const notifyIdx = content.indexOf('notify = ');
+    const agentsIdx = content.indexOf('[agents]');
+    assert.ok(notifyIdx !== -1 && agentsIdx !== -1, 'both the key and the agents table must be present');
+    assert.ok(notifyIdx < agentsIdx, 'a surviving top-level key must precede the [agents] table header, not parse as its member');
+    assert.ok(content.includes('[features]'), 'user tables below the marker are preserved after the block');
+  });
+
+  test('#3610 boundary: fresh install (no marker) with a top-level key still validates unchanged', () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    fs.writeFileSync(configPath, 'notify = ["x", "turn-ended"]\n\n[features]\nhooks = true\n');
+
+    mergeCodexConfig(configPath, sampleBlock);
+
+    const schema = validateCodexConfigSchema(fs.readFileSync(configPath, 'utf8'));
+    assert.ok(schema.ok, `fresh-install merge must validate: ${schema.reason || ''}`);
+  });
+
+  test('#3610 boundary: key above the marker is untouched by the hoist', () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    fs.writeFileSync(configPath, `notify = ["x"]\n\n${GSD_CODEX_MARKER}\n\n[features]\nhooks = true\n`);
+
+    mergeCodexConfig(configPath, sampleBlock);
+
+    const content = fs.readFileSync(configPath, 'utf8');
+    const schema = validateCodexConfigSchema(content);
+    assert.ok(schema.ok, `control merge must validate: ${schema.reason || ''}`);
+    assert.ok(content.indexOf('notify = ') < content.indexOf(GSD_CODEX_MARKER), 'the pre-marker key stays pre-marker');
+  });
+
+  test('#3610: a multiline top-level value below the marker hoists as one unit', () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    const multiline = 'notify = [\n  "x",\n  "turn-ended",\n]';
+    fs.writeFileSync(configPath, `${GSD_CODEX_MARKER}\n\n${multiline}\n\n[features]\nhooks = true\n`);
+
+    mergeCodexConfig(configPath, sampleBlock);
+
+    const content = fs.readFileSync(configPath, 'utf8');
+    const schema = validateCodexConfigSchema(content);
+    assert.ok(schema.ok, `multiline hoist must validate: ${schema.reason || ''}`);
+    const hoistedAt = content.indexOf(multiline);
+    assert.ok(hoistedAt !== -1, 'the multiline value must survive the hoist intact');
+    assert.ok(hoistedAt < content.indexOf('[agents]'), 'the whole multiline value lands above the table header');
+  });
+
+  test('#3610: hoisted keys land at FILE scope even when the pre-marker region ends inside a table', () => {
+    // The default real-world layout: user tables ABOVE the marker, a top-level
+    // key below it. Appending the key after the pre-marker tables would merely
+    // capture it into THOSE tables ([features].notify) — the same defect class,
+    // silent to validateCodexConfigSchema, which inspects only agents/hooks.
+    const configPath = path.join(tmpDir, 'config.toml');
+    fs.writeFileSync(
+      configPath,
+      `[features]\nhooks = true\n\n${GSD_CODEX_MARKER}\n\nnotify = ["x", "turn-ended"]\n\n[profiles.fast]\nmodel = "gpt-5"\n`,
+    );
+
+    mergeCodexConfig(configPath, sampleBlock);
+
+    const content = fs.readFileSync(configPath, 'utf8');
+    const schema = validateCodexConfigSchema(content);
+    assert.ok(schema.ok, `merge must validate: ${schema.reason || ''}`);
+    const parsed = parseTomlToObject(content);
+    assert.ok(Array.isArray(parsed.notify), 'the surviving key must parse as a top-level array');
+    assert.ok(!parsed.features || !('notify' in parsed.features), 'the key must NOT be captured into the pre-marker [features] table');
+    assert.ok(content.indexOf('notify = ') < content.indexOf('[features]'), 'file scope means before the FIRST table header, not just above the GSD block');
+  });
+
+  test('#3610: a top-level multiline STRING containing a table-header lookalike hoists intact', () => {
+    // The record parser must not treat the [looks.like.a.header] line inside
+    // the """ string as a table header (startsInMultilineString) — the split
+    // must land after the whole value.
+    const configPath = path.join(tmpDir, 'config.toml');
+    const value = 'banner = """\nnot a [table.header] line\n"""\n';
+    fs.writeFileSync(configPath, `${GSD_CODEX_MARKER}\n\n${value}\n[features]\nhooks = true\n`);
+
+    mergeCodexConfig(configPath, sampleBlock);
+
+    const content = fs.readFileSync(configPath, 'utf8');
+    const schema = validateCodexConfigSchema(content);
+    assert.ok(schema.ok, `multiline-string hoist must validate: ${schema.reason || ''}`);
+    const hoistedAt = content.indexOf(value.trim());
+    assert.ok(hoistedAt !== -1, 'the multiline string must survive intact');
+    assert.ok(hoistedAt < content.indexOf('[agents]'), 'the whole string value lands above the table header');
+  });
+
+  test('#3610: merging twice is idempotent (the first merge is a fixed point)', () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    fs.writeFileSync(
+      configPath,
+      `[features]\nhooks = true\n\n${GSD_CODEX_MARKER}\n\nnotify = ["x"]\n\n[profiles.fast]\nmodel = "gpt-5"\n`,
+    );
+
+    mergeCodexConfig(configPath, sampleBlock);
+    const once = fs.readFileSync(configPath, 'utf8');
+    mergeCodexConfig(configPath, sampleBlock);
+    assert.strictEqual(fs.readFileSync(configPath, 'utf8'), once, 'the second merge must not move anything');
+  });
+
+  test('#3610: CRLF config with a top-level key below the marker validates', () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    fs.writeFileSync(
+      configPath,
+      `${GSD_CODEX_MARKER}\r\n\r\nnotify = ["x", "turn-ended"]\r\n\r\n[features]\r\nhooks = true\r\n`,
+    );
+
+    mergeCodexConfig(configPath, sampleBlock);
+
+    const content = fs.readFileSync(configPath, 'utf8');
+    const schema = validateCodexConfigSchema(content);
+    assert.ok(schema.ok, `CRLF upgrade merge must validate: ${schema.reason || ''}`);
+    assert.ok(content.indexOf('notify = ') < content.indexOf('[agents]'), 'hoist holds under CRLF');
+  });
 });
 
 

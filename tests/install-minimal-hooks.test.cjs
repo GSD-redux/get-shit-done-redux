@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/... substrings are external URL citations (qwenlm/code.claude.com) in comments, not repo paths.
 /**
  * Installer Module — Sections 9–11 + 13.
  *

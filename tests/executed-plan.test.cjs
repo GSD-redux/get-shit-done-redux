@@ -54,22 +54,14 @@ const TEST_ATTRIBUTION = () => 'Co-Authored-By: Test <t@example.com>';
 
 /**
  * Sandbox HOME/USERPROFILE for the duration of a test. Some runtimes (e.g.
- * codex) resolve a kind's `home` via os.homedir(); without this, an
- * in-process install would write into the developer's real home directory.
- * Mirrors tests/install-runtime-artifacts.test.cjs's sandboxHome().
+ * codex) resolve a kind's `home` via os.homedir(); without this, an in-process
+ * install would write into the developer's real home directory.
+ *
+ * #3712: promoted to tests/helpers.cjs, from the byte-identical copy that used
+ * to live here. It now also sets the sandbox marker src/real-home-guard.cts
+ * needs to stay permissive on hosts with no readable passwd entry.
  */
-function sandboxHome(t, dir) {
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = dir;
-  process.env.USERPROFILE = dir;
-  t.after(() => {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-  });
-}
+const { sandboxHome } = require('./helpers.cjs');
 
 // ─── E3 — the opencode-family early return (matrix row E3) ──────────────────
 
@@ -1173,12 +1165,29 @@ describe('installRuntimeArtifacts — K3: real install before/after, full recurs
     for (const runtime of ['claude', 'qwen']) {
       const dirA = createTempDir(`gsd-k3-${runtime}-a-`);
       const dirB = createTempDir(`gsd-k3-${runtime}-b-`);
-      t.after(() => { cleanup(dirA); cleanup(dirB); });
+      // Two SEQUENTIAL sandboxes for one test: sandboxHome()'s per-call
+      // t.after hooks each save the env as they found it, so the second call
+      // saves the FIRST sandbox as its "original" — hook ordering then leaves
+      // HOME pointing at dirA after the test, leaking into later tests in the
+      // shard (observed on the windows matrix: a leaked gsd-k3-qwen-* home
+      // made the L2 property's antigravity/global run refuse via the
+      // #3712 real-home guard). Manage the env directly with ONE restore.
+      const savedHome = process.env.HOME;
+      const savedUserProfile = process.env.USERPROFILE;
+      const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;
+      t.after(() => {
+        if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+        if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+        if (savedMarker === undefined) delete process.env.GSD_TEST_HOME_SANDBOX; else process.env.GSD_TEST_HOME_SANDBOX = savedMarker;
+        cleanup(dirA); cleanup(dirB);
+      });
 
-      sandboxHome(t, dirA);
-      installRuntimeArtifacts(runtime, dirA, 'global', RESOLVED_FULL);
-      sandboxHome(t, dirB);
-      installRuntimeArtifacts(runtime, dirB, 'global', RESOLVED_FULL);
+      for (const dir of [dirA, dirB]) {
+        process.env.HOME = dir;
+        process.env.USERPROFILE = dir;
+        process.env.GSD_TEST_HOME_SANDBOX = dir;
+        installRuntimeArtifacts(runtime, dir, 'global', RESOLVED_FULL);
+      }
 
       const filesA = walkFilesRecursively(dirA);
       const filesB = walkFilesRecursively(dirB);
@@ -1268,17 +1277,36 @@ describe('installRuntimeArtifacts — L2: plan is deterministic (property)', () 
     };
   }
 
-  test('plan is deterministic', () => {
+  test('plan is deterministic', (t) => {
     const runtimes = Object.keys(registry.runtimes);
     const RUNTIME_ARB = fc.constantFrom(...runtimes);
     const SCOPE_ARB = fc.constantFrom('global', 'local');
     let hits = 0;
+    // #3738: the per-run HOME sandbox must EXIST on disk — the #3712 guard's
+    // sandbox exemption fails closed when it cannot stat the effective home
+    // (identify() -> 'absent'), which is exactly what a never-created configDir
+    // gives it on the windows matrix where tmpdir sits under the real home.
+    const createdL2Dirs = [];
+    t.after(() => { for (const d of createdL2Dirs) cleanup(d); });
 
     fc.assert(
       fc.property(RUNTIME_ARB, SCOPE_ARB, (runtime, scope) => {
         // configDir is never created for real — both calls run against fresh,
         // independent fake adapters, so no real fs cleanup is needed here.
         const configDir = path.join(os.tmpdir(), `gsd-l2-${runtime}-${crypto.randomUUID()}`);
+        fs.mkdirSync(configDir, { recursive: true });
+        createdL2Dirs.push(configDir);
+        // #3738: a home-override runtime (antigravity → <HOME>/.gemini/config)
+        // resolves its dest from os.homedir(), NOT configDir — sandbox HOME to
+        // configDir for the duration of both calls (mirroring L1 above) so the
+        // plan never escapes into an ambient or leaked home and the #3712
+        // real-home guard stays satisfied on hosts where tmpdir sits under the
+        // real home (windows).
+        const savedL2Home = process.env.HOME;
+        const savedL2UserProfile = process.env.USERPROFILE;
+        process.env.HOME = configDir;
+        process.env.USERPROFILE = configDir;
+        try {
         const planA = installRuntimeArtifacts(runtime, configDir, scope, RESOLVED_CORE, undefined, undefined, { fs: createFakeInstallFs() });
         const planB = installRuntimeArtifacts(runtime, configDir, scope, RESOLVED_CORE, undefined, undefined, { fs: createFakeInstallFs() });
         hits++;
@@ -1289,6 +1317,10 @@ describe('installRuntimeArtifacts — L2: plan is deterministic (property)', () 
           `L2 (${runtime}/${scope}): two installs against fresh fake adapters with the same inputs must ` +
           'yield structurally identical plans (temp-dir names normalized — see normalizePlanForIdempotence)',
         );
+        } finally {
+          if (savedL2Home === undefined) delete process.env.HOME; else process.env.HOME = savedL2Home;
+          if (savedL2UserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedL2UserProfile;
+        }
       }),
       { numRuns: 30, seed: 2874, verbose: true },
     );

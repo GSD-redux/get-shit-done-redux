@@ -1,3 +1,4 @@
+// docs-guard-exempt: codebuddy.ai/docs/... is an external URL and docs/adr/58-...md is a comment citation; neither is read.
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
@@ -37,6 +38,7 @@ const {
   installerEnv,
   stripAnsi,
   runMinimalInstall,
+  walk,
 } = require('./helpers/install-shared.cjs');
 
 const {
@@ -218,18 +220,11 @@ function readAllSkillMd(dir) {
 // write to (and an uninstall would mutate) the developer's REAL ~/.agents/skills.
 // Sandbox HOME/USERPROFILE to configDir before resolving the layout or invoking
 // install/uninstall so codex's resolved skills dir is configDir/.agents/skills.
-function sandboxHome(t, dir) {
-  const savedHome = process.env.HOME;
-  const savedUserProfile = process.env.USERPROFILE;
-  process.env.HOME = dir;
-  process.env.USERPROFILE = dir;
-  t.after(() => {
-    if (savedHome === undefined) delete process.env.HOME;
-    else process.env.HOME = savedHome;
-    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = savedUserProfile;
-  });
-}
+//
+// #3712: promoted to tests/helpers.cjs, from the byte-identical copy that used to
+// live here. It now also sets the sandbox marker src/real-home-guard.cts needs to
+// stay permissive on hosts with no readable passwd entry.
+const { sandboxHome } = require('./helpers.cjs');
 
 describe('installRuntimeArtifacts — skills runtimes write gsd-prefixed skill dirs', () => {
   for (const runtime of SKILLS_RUNTIMES_LAYOUT) {
@@ -1006,6 +1001,10 @@ describe('skills wrapper threads install scope into converter isGlobal (regressi
       const globalDir = createTempDir(`gsd-ial-g-${runtime}-`);
       const localDir = createTempDir(`gsd-ial-l-${runtime}-`);
       t.after(() => { cleanup(globalDir); cleanup(localDir); });
+      // #3738: antigravity's global skills kind resolves its `home` override
+      // from os.homedir(); sandbox HOME (with the #3712 marker) so the global
+      // install writes inside globalDir instead of the runner's real home.
+      sandboxHome(t, globalDir);
 
       installRuntimeArtifacts(runtime, globalDir, 'global', RESOLVED_CORE);
       installRuntimeArtifacts(runtime, localDir, 'local', RESOLVED_CORE);
@@ -1014,8 +1013,10 @@ describe('skills wrapper threads install scope into converter isGlobal (regressi
       const lSkills = resolveRuntimeArtifactLayout(runtime, localDir, 'local').kinds.find(k => k.kind === 'skills');
       assert.ok(gSkills && lSkills, `${runtime}: must resolve a skills kind for both scopes`);
 
-      const gCombined = readAllSkillMd(path.join(globalDir, gSkills.destSubpath));
-      const lCombined = readAllSkillMd(path.join(localDir, lSkills.destSubpath));
+      // #3738: the global skills tree may live under the kind `home` override
+      // (antigravity → ~/.gemini/config), so honor it like the installer does.
+      const gCombined = readAllSkillMd(path.join(gSkills.home ?? globalDir, gSkills.destSubpath));
+      const lCombined = readAllSkillMd(path.join(lSkills.home ?? localDir, lSkills.destSubpath));
 
       // Precondition (non-vacuity guard): some core skill carries a ~/.claude
       // reference, so the GLOBAL install surfaces the global home marker. If this
@@ -1112,6 +1113,58 @@ describe('convertClaudeToAntigravityContent bare path replacement (#2418)', () =
       // Result should contain exactly one occurrence of the replacement path
       const count = (result.match(/~\/.gemini\/antigravity\//g) || []).length;
       assert.strictEqual(count, 1, `Expected exactly 1 replacement, got ${count} in: ${result}`);
+    });
+
+    // #3738: global skills install under ~/.gemini/config/skills (the dir AGY
+    // scans), while gsd-core runtime references stay under configHome. A skills
+    // path must therefore rewrite to the config root, not ~/.gemini/antigravity.
+    test('replaces ~/.claude/skills/ with ~/.gemini/config/skills (#3738)', () => {
+      const input = 'Skill dirs live at `~/.claude/skills/gsd-*/`.';
+      const result = convertClaudeToAntigravityContent(input, true);
+      assert.ok(
+        result.includes('~/.gemini/config/skills/gsd-*/'),
+        `Expected ~/.gemini/config/skills rewrite, got: ${result}`
+      );
+      assert.ok(
+        !result.includes('~/.gemini/antigravity/skills'),
+        `Skills must not point at the deprecated dir, got: ${result}`
+      );
+    });
+
+    test('replaces $HOME/.claude/skills/ with $HOME/.gemini/config/skills (#3738)', () => {
+      const input = 'ls $HOME/.claude/skills/';
+      const result = convertClaudeToAntigravityContent(input, true);
+      assert.ok(
+        result.includes('$HOME/.gemini/config/skills/'),
+        `Expected $HOME/.gemini/config/skills rewrite, got: ${result}`
+      );
+      assert.ok(!result.includes('$HOME/.claude/'), `Expected full replacement, got: ${result}`);
+    });
+
+    test('replaces bare ~/.claude/skills (no trailing slash) with ~/.gemini/config/skills (#3738)', () => {
+      const input = 'ls ~/.claude/skills';
+      const result = convertClaudeToAntigravityContent(input, true);
+      assert.ok(
+        result.includes('~/.gemini/config/skills'),
+        `bare skills form must divert to the config root, got: ${result}`
+      );
+      assert.ok(
+        !result.includes('~/.gemini/antigravity/skills'),
+        `bare skills form must not fall through to the retired configHome path, got: ${result}`
+      );
+    });
+
+    test('keeps gsd-core references under ~/.gemini/antigravity when a skills ref is present (#3738)', () => {
+      const input = 'Read ~/.claude/gsd-core/workflows/x.md then list ~/.claude/skills/.';
+      const result = convertClaudeToAntigravityContent(input, true);
+      assert.ok(
+        result.includes('~/.gemini/antigravity/gsd-core/workflows/x.md'),
+        `gsd-core ref must stay under configHome, got: ${result}`
+      );
+      assert.ok(
+        result.includes('~/.gemini/config/skills/'),
+        `skills ref must move to the config root, got: ${result}`
+      );
     });
   });
 
@@ -2710,7 +2763,7 @@ const path = require('node:path');
 const {
   install,
 } = require('../bin/install.js');
-const { readGsdRuntimeProfileResolver } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
+const { readGsdRuntimeProfileResolver, resolveAgentModelOverride } = require('../gsd-core/bin/lib/install-model-override-resolver.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const makeTmp = (prefix) => createTempDir(`gsd-2794-${prefix}-`);
@@ -2784,6 +2837,233 @@ describe('bug-2794: readGsdRuntimeProfileResolver resolves opencode tier overrid
     assert.ok(resolver !== null);
     const entry = resolver.resolve('gsd-nonexistent-agent');
     assert.strictEqual(entry, null, 'unknown agent name yields null');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #3705 — install-time bake honours model_policy, matching dispatch
+// ────────────────────────────────────────────────────────────────────────
+//
+// The install-time chain read `runtime` / `model_profile` /
+// `model_profile_overrides` and nothing else — `model_policy` appeared ZERO
+// times in bin/install.js and in install-model-override-resolver.cts, against 16
+// in the dispatch resolver. So a project configured for a non-Anthropic provider
+// had every agent's frontmatter rebaked to catalog `anthropic/claude-*` IDs on
+// each update, while `query resolve-model` returned the policy model. Only the
+// frontmatter is what a spawn uses, so the disagreement was silent — OpenCode
+// then falls back to the un-typed `general` subagent on the session model.
+//
+// Precedence here was MEASURED against dispatch on the same config, not assumed:
+// policy-only -> policy model; tier-overrides-only -> the override; BOTH ->
+// policy model. So `model_overrides` > `model_policy` > tier table > catalog.
+//
+// Home is sandboxed via HOME *and* USERPROFILE (the #2794 block's convention) —
+// `os.homedir()` reads both, and setting only HOME passes vacuously on Windows.
+describe('#3705: install-time bake honours model_policy', () => {
+  let projectDir;
+  let homeDir;
+  let origHome;
+  let origUP;
+
+  const POLICY = {
+    provider: 'generic',
+    high: 'synthetic/hf:moonshotai/Kimi-K3',
+    medium: 'synthetic/hf:zai-org/GLM-5.2',
+    low: 'synthetic/hf:zai-org/GLM-5.2',
+  };
+  const TIER_OVERRIDES = { opencode: { opus: 'TIEROVERRIDE-opus', sonnet: 'TIEROVERRIDE-sonnet' } };
+
+  beforeEach(() => {
+    projectDir = makeTmp('proj-3705');
+    homeDir = makeTmp('home-3705');
+    origHome = process.env.HOME;
+    origUP = process.env.USERPROFILE;
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+  });
+
+  afterEach(() => {
+    if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+    if (origUP === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = origUP;
+    cleanup(projectDir);
+    cleanup(homeDir);
+  });
+
+  const projectConfig = (cfg) => writeJson(path.join(projectDir, '.planning', 'config.json'), cfg);
+  const homeDefaults = (cfg) => writeJson(path.join(homeDir, '.gsd', 'defaults.json'), cfg);
+  const bake = (agent, overrides = null) =>
+    resolveAgentModelOverride(agent, overrides, readGsdRuntimeProfileResolver(projectDir));
+
+  // ── the defect ────────────────────────────────────────────────────────
+
+  test('a generic policy is baked instead of the catalog anthropic tier', () => {
+    projectConfig({ runtime: 'opencode', model_policy: POLICY });
+
+    // gsd-executor's balanced tier is sonnet -> the policy's `medium`.
+    assert.strictEqual(bake('gsd-executor'), POLICY.medium);
+    assert.doesNotMatch(String(bake('gsd-executor')), /^anthropic\/claude-/,
+      'the whole defect is the catalog Anthropic ID being baked over a configured provider');
+  });
+
+  test('tiers map to the policy the same way across agents', () => {
+    projectConfig({ runtime: 'opencode', model_policy: POLICY });
+
+    // gsd-planner is an opus-tier agent, gsd-code-reviewer a sonnet-tier one.
+    assert.strictEqual(bake('gsd-planner'), POLICY.high);
+    assert.strictEqual(bake('gsd-code-reviewer'), POLICY.medium);
+  });
+
+  test('policy outranks model_profile_overrides, matching dispatch', () => {
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: POLICY,
+      model_profile_overrides: TIER_OVERRIDES,
+    });
+
+    assert.strictEqual(bake('gsd-executor'), POLICY.medium,
+      'measured dispatch order: with both configured, policy wins');
+  });
+
+  test('an explicit per-agent model_overrides entry still outranks policy (#2256)', () => {
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: POLICY,
+      model_profile_overrides: TIER_OVERRIDES,
+    });
+
+    assert.strictEqual(bake('gsd-executor', { 'gsd-executor': 'EXPLICIT' }), 'EXPLICIT');
+  });
+
+  test('kilo is fixed by the same shared seam, not an opencode special case (#2794 J8)', () => {
+    // The docstring on this seam says kilo and opencode "can never diverge"
+    // because they route through one function. That claim is only worth
+    // anything if it is exercised.
+    projectConfig({ runtime: 'kilo', model_policy: POLICY });
+
+    assert.strictEqual(bake('gsd-executor'), POLICY.medium);
+  });
+
+  // ── negative space: no policy must bake EXACTLY as before ─────────────
+
+  test('without a policy, tier overrides bake exactly as they did', () => {
+    projectConfig({ runtime: 'opencode', model_profile_overrides: TIER_OVERRIDES });
+
+    assert.strictEqual(bake('gsd-executor'), 'TIEROVERRIDE-sonnet');
+  });
+
+  test('without a policy or overrides, the catalog tier bakes exactly as it did', () => {
+    // The load-bearing control: this change adds a step to a chain that runs on
+    // EVERY install for both static-frontmatter runtimes. If a project with no
+    // policy bakes anything different, the fix has silently re-baked every
+    // existing user.
+    projectConfig({ runtime: 'opencode' });
+
+    assert.match(String(bake('gsd-executor')), /^anthropic\/claude-/);
+  });
+
+  test('model_profile: inherit still omits the key, policy notwithstanding', () => {
+    // Policy must not resurrect a bake the user disabled (#3543's intent).
+    projectConfig({ runtime: 'opencode', model_profile: 'inherit', model_policy: POLICY });
+
+    assert.strictEqual(bake('gsd-executor'), null);
+  });
+
+  test('a policy that resolves to nothing falls through to the tier table, never to null', () => {
+    // Returning null here would OMIT a frontmatter key that used to be written —
+    // a different regression than the one being fixed.
+    projectConfig({ runtime: 'opencode', model_policy: { provider: 'not-a-real-provider' } });
+    assert.match(String(bake('gsd-executor')), /^anthropic\/claude-/, 'unknown provider');
+
+    projectConfig({ runtime: 'opencode', model_policy: { provider: 'generic', medium: 'M', low: 'L' } });
+    assert.match(String(bake('gsd-planner')), /^anthropic\/claude-/,
+      'policy declares no `high`, so the opus-tier agent falls through');
+    assert.strictEqual(bake('gsd-executor'), 'M', 'while the tiers it DOES declare still resolve');
+  });
+
+  test('an agent absent from MODEL_PROFILES yields null, not a throw', () => {
+    projectConfig({ runtime: 'opencode', model_policy: POLICY });
+
+    assert.strictEqual(bake('gsd-nonexistent-agent'), null);
+  });
+
+  // ── config precedence ────────────────────────────────────────────────
+
+  test('a policy in ~/.gsd/defaults.json is honoured', () => {
+    homeDefaults({ runtime: 'opencode', model_profile: 'balanced', model_policy: POLICY });
+    projectConfig({ runtime: 'opencode' });
+
+    assert.strictEqual(bake('gsd-executor'), POLICY.medium);
+  });
+
+  test('a project policy wins over a home-defaults policy', () => {
+    homeDefaults({ runtime: 'opencode', model_profile: 'balanced', model_policy: POLICY });
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: { provider: 'generic', high: 'P-high', medium: 'P-medium', low: 'P-low' },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'P-medium');
+  });
+
+  // ── the rest of resolveModelPolicy's contract, reached through the bake ──
+
+  test('a named provider preset resolves through the same owner', () => {
+    projectConfig({ runtime: 'opencode', model_policy: { provider: 'openai' } });
+
+    const baked = bake('gsd-executor');
+    assert.ok(baked, 'a known preset must resolve');
+    assert.doesNotMatch(String(baked), /^anthropic\/claude-/, 'the preset, not the catalog default');
+  });
+
+  test('the runtime_tiers escape hatch is honoured for the DOCUMENTED config shape', () => {
+    // Review finding (blocker). The first version of this test put a `runtime`
+    // key INSIDE `model_policy`, duplicating the top-level one. No real config
+    // does that — docs/CONFIGURATION.md puts `runtime` at the top level and keeps
+    // only `provider`/`runtime_tiers` inside the policy — and that one fabricated
+    // key was the only reason the test passed. `resolveModelPolicy`'s
+    // runtime_tiers branch reads `policy['runtime']`, which dispatch injects and
+    // the bake did not, so runtime_tiers was silently skipped for every real
+    // config. The fixture below is the documented shape verbatim.
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: {
+        provider: 'generic',
+        runtime_tiers: { opencode: { sonnet: 'runtime-tiers-model' } },
+        medium: 'GENERIC-medium',
+      },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'runtime-tiers-model',
+      'runtime_tiers must outrank the flat generic keys — and must be reached at all');
+  });
+
+  test('runtime_tiers accepts the object entry form the docs show', () => {
+    // docs/CONFIGURATION.md's own example uses `{ model, reasoning_effort }`
+    // rather than a bare string.
+    projectConfig({
+      runtime: 'codex',
+      model_policy: {
+        provider: 'openai',
+        runtime_tiers: { codex: { sonnet: { model: 'gpt-5.6-terra', reasoning_effort: 'medium' } } },
+      },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'gpt-5.6-terra');
+  });
+
+  test('a runtime_tiers block for a DIFFERENT runtime does not leak', () => {
+    // The injected runtime is what selects the block; a mismatch must fall
+    // through rather than borrow another runtime's pins.
+    projectConfig({
+      runtime: 'opencode',
+      model_policy: {
+        provider: 'generic',
+        runtime_tiers: { codex: { sonnet: 'CODEX-only' } },
+        medium: 'GENERIC-medium',
+      },
+    });
+
+    assert.strictEqual(bake('gsd-executor'), 'GENERIC-medium');
   });
 });
 
@@ -3834,7 +4114,10 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
       `gsd-planner.toml should have model_reasoning_effort = "low" from config override\nActual:\n${tomlContent.slice(0, 500)}`);
   });
 
-  test('Codex .toml clamps effort max → xhigh when agent_overrides.gsd-planner=max', () => {
+  // #3007: corrected — Codex's gpt-5.6-sol advertises 'max' in its own
+  // supported_reasoning_levels, so install-time rendering now passes 'max'
+  // through instead of clamping it to 'xhigh'.
+  test('Codex .toml renders effort max → max when agent_overrides.gsd-planner=max', () => {
     const projectDir = path.dirname(codexHome);
     // Overwrite config with max override. #3241: include an explicit
     // model_overrides pin (D1 removed the resolver-only auto-embed).
@@ -3860,11 +4143,11 @@ describe('#443 Config-driven: effort.agent_overrides drives install-time effort'
     );
     assert.match(tomlContent, /^model\s*=\s*"gpt-5.6-sol"$/m,
       `gsd-planner.toml should pin Codex model when runtime:"codex" is configured\nActual:\n${tomlContent.slice(0, 500)}`);
-    // Codex does not support 'max' → clamped to 'xhigh'
-    assert.match(tomlContent, /^model_reasoning_effort\s*=\s*"xhigh"$/m,
-      `gsd-planner.toml should clamp max → xhigh for Codex\nActual:\n${tomlContent.slice(0, 500)}`);
-    assert.doesNotMatch(tomlContent, /model_reasoning_effort\s*=\s*"max"/,
-      'Codex .toml must never contain model_reasoning_effort = "max"');
+    // gpt-5.6-sol advertises 'max' -> renders through unchanged, no clamp.
+    assert.match(tomlContent, /^model_reasoning_effort\s*=\s*"max"$/m,
+      `gsd-planner.toml should render max for Codex on a model that advertises it\nActual:\n${tomlContent.slice(0, 500)}`);
+    assert.doesNotMatch(tomlContent, /model_reasoning_effort\s*=\s*"xhigh"/,
+      'Codex .toml must not clamp "max" down to "xhigh" for a model that advertises max');
   });
 });
 
@@ -5090,13 +5373,20 @@ describe('Bug #2911: migrateLegacyDevPreferencesToSkill honors the skills-kind h
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
+    // #3712: record WHICH home this sandboxed to. src/real-home-guard.cts fails
+    // closed on hosts with no readable passwd entry, and this is what proves a
+    // genuinely-sandboxed caller there. Without it these calls would be refused.
+    const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
+    process.env.GSD_TEST_HOME_SANDBOX = fakeHome;
     try {
       return fn();
     } finally {
       if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
       if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+      if (savedMarker === undefined) delete process.env.GSD_TEST_HOME_SANDBOX;
+      else process.env.GSD_TEST_HOME_SANDBOX = savedMarker;
     }
   }
 
@@ -7249,5 +7539,179 @@ describe('#2875: user-artifact-staging — call-site integration (C7 anti-inertn
     // The staging entry is consumed by the recovery step itself.
     const entries = fs.existsSync(stagingRoot) ? fs.readdirSync(stagingRoot) : [];
     assert.equal(entries.length, 0, 'the orphan is discarded once recovered — not left for a third run to find again');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3719: applyAgentPathRewrites (install-profiles.cts:964, the agents/
+// staging pipeline's pre-converter path-rewrite step) never calls
+// restoreClaudeGlobalAtRefTilde — the same restore #3133/#3544 wired into
+// the skill-staging and gsd-core/ spec-tree emit paths. A real global Claude
+// install therefore ships every `agents/gsd-*.md` `@`-include as
+// `@$HOME/.claude/...`, which Claude Code does not expand: the include
+// silently loads nothing (planner guidance, the untrusted-input boundary,
+// the agent-skills bootstrap, the mandatory initial read).
+//
+// Uses the real spawned installer (runMinimalInstall, `bin/install.js`
+// subprocess) so a green run here proves the fix reaches the actual emit
+// path, not just the pure function tested in tests/path-replacement.test.cjs.
+// ---------------------------------------------------------------------------
+describe('#3719: real global Claude install — agents/*.md @-refs must resolve on tilde', () => {
+  let claudeGlobal;
+  let projectLocal;
+
+  before(() => {
+    claudeGlobal = runMinimalInstall({ runtime: 'claude', scope: 'global' });
+    projectLocal = runMinimalInstall({ runtime: 'claude', scope: 'local' });
+  });
+
+  after(() => {
+    cleanup(claudeGlobal.root);
+    cleanup(projectLocal.root);
+  });
+
+  // A live `@`-include is BARE markdown. An occurrence inside an inline-code span is
+  // PROSE ABOUT one — `gsd-core/CHANGELOG.md` ships the #3133/#3544 entries, which
+  // quote `@$HOME/...` verbatim while describing the very defect this row guards.
+  //
+  // Dropping the line-start anchor (correct: it hid 48 mid-line refs) made those
+  // entries visible to this scan, so the row went red on a CORRECT tree. The fix is
+  // to strip inline-code spans, NOT to restore the anchor — restoring it would trade
+  // a false positive for the false negative that let this bug ship in the first place.
+  const INLINE_CODE_SPAN_RE = /`[^`]*`/g;
+  function collectAtHomeLines(rootDir) {
+    const failures = [];
+    for (const file of walk(rootDir)) {
+      if (!file.endsWith('.md')) continue;
+      const content = fs.readFileSync(file, 'utf8');
+      for (const line of splitLines(content)) {
+        if (/@\$HOME\//.test(line.replace(INLINE_CODE_SPAN_RE, ''))) failures.push({ file, line });
+      }
+    }
+    return failures;
+  }
+
+  test('row 3 [RED] — a real global Claude install emits ZERO @$HOME/ lines across agents/*.md', () => {
+    const agentsDir = path.join(claudeGlobal.configDir, 'agents');
+    assert.ok(fs.existsSync(agentsDir), `expected ${agentsDir} to exist`);
+    const failures = [];
+    for (const file of walk(agentsDir)) {
+      if (!file.endsWith('.md')) continue;
+      const content = fs.readFileSync(file, 'utf8');
+      for (const line of splitLines(content)) {
+        if (/@\$HOME\//.test(line.replace(INLINE_CODE_SPAN_RE, ''))) failures.push(`${path.relative(agentsDir, file)}: ${line}`);
+      }
+    }
+    assert.deepStrictEqual(failures, [], `agents/*.md files with a broken @$HOME/ include:\n${failures.join('\n')}`);
+  });
+
+  test('row 4 [RED, non-vacuity] — that same install DOES emit @~/ includes in agents/*.md', () => {
+    const agentsDir = path.join(claudeGlobal.configDir, 'agents');
+    const planner = fs.readFileSync(path.join(agentsDir, 'gsd-planner.md'), 'utf8');
+    const tildeLines = splitLines(planner).filter((l) => l.startsWith('@~/'));
+    assert.ok(
+      tildeLines.length > 0,
+      `expected at least one @~/ line in gsd-planner.md (proves the file is not empty/absent), got: ${JSON.stringify(splitLines(planner).filter((l) => l.startsWith('@')))}`,
+    );
+    assert.ok(
+      tildeLines.some((l) => l.includes('mandatory-initial-read.md')),
+      `expected the mandatory-initial-read.md @-include specifically to survive on tilde, got: ${JSON.stringify(tildeLines)}`,
+    );
+  });
+
+  test('row 5 [CONTROL] — skills and workflows emit paths still emit @~/ (no #3133/#3544 regression)', () => {
+    const gsdCoreDir = path.join(claudeGlobal.configDir, 'gsd-core');
+    assert.ok(fs.existsSync(gsdCoreDir), `expected ${gsdCoreDir} to exist`);
+    const failures = collectAtHomeLines(gsdCoreDir);
+    assert.deepStrictEqual(failures, [], `#3544 regression — @$HOME/ lines under gsd-core/:\n${failures.map(f => `${f.file}: ${f.line}`).join('\n')}`);
+    const skillsDir = path.join(claudeGlobal.configDir, 'skills');
+    assert.ok(fs.existsSync(skillsDir), `expected ${skillsDir} to exist`);
+    let sawTilde = false;
+    for (const file of walk(skillsDir)) {
+      if (!file.endsWith('.md')) continue;
+      if (splitLines(fs.readFileSync(file, 'utf8')).some((l) => l.startsWith('@~/'))) sawTilde = true;
+    }
+    assert.ok(sawTilde, 'expected at least one skills/ SKILL.md to still carry an @~/ include (#3133 not regressed)');
+  });
+
+  // THE KEY ROW: walk the ENTIRE emitted tree — not an enumerated list of known
+  // paths — so a new emit path added later is covered automatically by landing
+  // in the same tree. Reports every offending file so a future failure is
+  // diagnosable without re-deriving the failing path by hand.
+  test('row 6 [RED, PARITY] — no file anywhere in the emitted global Claude install tree contains @$HOME/', () => {
+    const failures = collectAtHomeLines(claudeGlobal.configDir);
+    assert.deepStrictEqual(
+      failures,
+      [],
+      `found @$HOME/ lines under the entire emitted tree (${claudeGlobal.configDir}):\n` +
+        failures.map((f) => `  ${path.relative(claudeGlobal.configDir, f.file)}: ${f.line}`).join('\n'),
+    );
+  });
+
+  test('row 8 [CONTROL] — a project-scoped (non-global) Claude install is unaffected', () => {
+    const agentsDir = path.join(projectLocal.configDir, 'agents');
+    assert.ok(fs.existsSync(agentsDir), `expected ${agentsDir} to exist`);
+    // Local install's pathPrefix is absolute (not $HOME-form) — restoreClaudeGlobalAtRefTilde
+    // is a documented no-op for it, and there must be no @$HOME/ or bare @~/.claude leak either.
+    const failures = [];
+    for (const file of walk(agentsDir)) {
+      if (!file.endsWith('.md')) continue;
+      const content = fs.readFileSync(file, 'utf8');
+      for (const line of splitLines(content)) {
+        if (/^@\$HOME\//.test(line) || /^@~\/\.claude\//.test(line)) failures.push(`${path.relative(agentsDir, file)}: ${line}`);
+      }
+    }
+    assert.deepStrictEqual(failures, [], `local install must not leak @$HOME/ or @~/.claude/:\n${failures.join('\n')}`);
+  });
+});
+
+// ── #3738: antigravity global artifacts install under ~/.gemini/config ────────
+describe('#3738: antigravity global artifacts install under ~/.gemini/config', () => {
+  test('global skills and agents dest dirs resolve under <home>/.gemini/config, not configHome', (t) => {
+    const configDir = createTempDir('gsd-3738-antigravity-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const layout = resolveRuntimeArtifactLayout('antigravity', configDir, 'global');
+    const skillsKind = layout.kinds.find(k => k.kind === 'skills');
+    const agentsKind = layout.kinds.find(k => k.kind === 'agents');
+    assert.ok(skillsKind, 'antigravity must have a skills kind');
+    assert.ok(agentsKind, 'antigravity must have an agents kind');
+    const expectedHome = path.join(configDir, '.gemini', 'config');
+    assert.strictEqual(skillsKind.home, expectedHome, 'skills home override must be ~/.gemini/config');
+    assert.strictEqual(agentsKind.home, expectedHome, 'agents home override must be ~/.gemini/config');
+
+    installRuntimeArtifacts('antigravity', configDir, 'global', RESOLVED_CORE);
+
+    assert.ok(
+      fs.existsSync(path.join(expectedHome, 'skills', 'gsd-help', 'SKILL.md')),
+      'a gsd-* skill must exist under ~/.gemini/config/skills'
+    );
+    const agentsDir = path.join(expectedHome, 'agents');
+    assert.ok(fs.existsSync(agentsDir), '~/.gemini/config/agents must exist');
+    assert.ok(
+      fs.readdirSync(agentsDir).some(n => n.startsWith('gsd-')),
+      'at least one gsd-* agent must exist under ~/.gemini/config/agents'
+    );
+    assert.ok(
+      !fs.existsSync(path.join(configDir, 'skills')),
+      'no skills dir may be created under the configHome (~/.gemini/antigravity)'
+    );
+    assert.ok(
+      !fs.existsSync(path.join(configDir, 'agents')),
+      'no agents dir may be created under the configHome (~/.gemini/antigravity)'
+    );
+  });
+
+  test('local (workspace) layout is unchanged: .agents/skills and .agents/agents', (t) => {
+    const configDir = createTempDir('gsd-3738-antigravity-local-');
+    t.after(() => cleanup(configDir));
+    sandboxHome(t, configDir);
+
+    const layout = resolveRuntimeArtifactLayout('antigravity', configDir, 'local');
+    for (const kind of layout.kinds) {
+      assert.strictEqual(kind.home, undefined, `local ${kind.kind} must not carry a home override`);
+    }
+
   });
 });

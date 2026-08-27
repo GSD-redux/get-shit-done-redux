@@ -42,6 +42,7 @@ const {
   MINIMUM_MANIFEST_FAMILIES,
   runMinimalInstall,
   buildParityManifest,
+  extraEmitRootsFor,
   PKG_VERSION,
 } = require('./install-shared.cjs');
 const { mergeAckSources, MAX_ACK_FRAGMENTS } = require('./emitted-diff.cjs');
@@ -898,7 +899,12 @@ function currentManifests({ repoRoot } = {}) {
   for (const { name, runtime, scope } of MANIFEST_FAMILIES) {
     const { configDir, root } = runMinimalInstall({ runtime, scope, installScript });
     try {
-      manifests[name] = buildParityManifest(configDir, root, { pkgVersion });
+      manifests[name] = buildParityManifest(configDir, root, {
+        pkgVersion,
+        // #3738: cover home-override emit roots outside configDir (antigravity
+        // → <HOME>/.gemini/config) so the differential keeps seeing them.
+        extraEmitRoots: extraEmitRootsFor(runtime, scope, root),
+      });
     } finally {
       cleanup(root);
     }

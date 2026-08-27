@@ -1,3 +1,4 @@
+// docs-guard-exempt: opencode.ai/docs/... is an external URL citation in comments, not a repo path.
 'use strict';
 
 /**

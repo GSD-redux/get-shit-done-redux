@@ -271,20 +271,29 @@ describe('B2 — CLI loop render-hooks: exit 0, activeHooks:[], placeholder for 
 describe('B3 — init bundles for 5-step loop entry seam: exit 0 and valid JSON with capabilities off', () => {
   // Cases: the 5-step loop's main init entry points (those available without git)
   const INIT_CASES = [
+    // #3884 (ADR-3473 §8.4): these three init subcommands take the phase as a
+    // bare POSITIONAL (docs/CLI-TOOLS.md:775 `init plan-phase <phase>`, :787
+    // `init execute-phase <phase>`) — there is no `--phase` flag for any of
+    // them. Under the pre-#3884 permissive parser, `--phase 01-stub` silently
+    // resolved to phase_found:false (args[2] literally became the string
+    // "--phase"), which these tests never caught because they only checked
+    // exit 0 and key PRESENCE. Corrected to the real, documented positional
+    // form and strengthened to assert phase_found === true so a future
+    // regression of this kind fails loudly instead of passing vacuously.
     {
       label: 'init plan-phase',
-      args: ['init', 'plan-phase', '--phase', '01-stub'],
+      args: ['init', 'plan-phase', '01-stub'],
       // Required fields that prove the bundle is a real JSON object used by the loop
       requiredFields: ['tdd_mode', 'phase_found', 'planning_exists'],
     },
     {
       label: 'init execute-phase',
-      args: ['init', 'execute-phase', '--phase', '01-stub'],
+      args: ['init', 'execute-phase', '01-stub'],
       requiredFields: ['tdd_mode', 'phase_found', 'config_exists'],
     },
     {
       label: 'init verify-work',
-      args: ['init', 'verify-work', '--phase', '01-stub'],
+      args: ['init', 'verify-work', '01-stub'],
       requiredFields: ['phase_found', 'commit_docs'],
     },
   ];
@@ -296,6 +305,12 @@ describe('B3 — init bundles for 5-step loop entry seam: exit 0 and valid JSON 
       before(() => {
         // Bare project with .planning/ but all caps off in config
         tmpDir = makeProject(ALL_FALSE_CONFIG);
+        // A real phase directory matching the "01-stub" argument used by every
+        // INIT_CASES entry above — without it, phase_found is trivially false
+        // regardless of whether the CLI call shape is correct, and the
+        // strengthened phase_found:true assertion below could not distinguish
+        // a working positional form from the #3358-class silent-drop bug.
+        fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-stub'), { recursive: true });
       });
 
       after(() => {
@@ -330,6 +345,16 @@ describe('B3 — init bundles for 5-step loop entry seam: exit 0 and valid JSON 
             `${label}: bundle must contain field "${field}", got keys: ${Object.keys(parsed).join(', ')}`,
           );
         }
+        // Genuine assertion, not merely key presence (see the fix note on
+        // INIT_CASES above): the seeded project has a real "01-stub" phase
+        // directory, so the phase MUST actually resolve. A silently-dropped
+        // phase argument still has a `phase_found` key (value `false`) — key
+        // presence alone would pass on that defect.
+        assert.strictEqual(
+          parsed.phase_found,
+          true,
+          `${label}: phase "01-stub" must actually resolve (phase_found:true), got: ${JSON.stringify(parsed.phase_found)}`,
+        );
       });
 
       test(`${label} returns parseable JSON with bare project (no config at all)`, () => {

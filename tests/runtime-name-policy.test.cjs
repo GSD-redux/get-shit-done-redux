@@ -1,3 +1,4 @@
+// docs-guard-exempt: kilo.ai/docs/... is an external URL citation in a comment, not a repo path.
 'use strict';
 
 const { describe, test } = require('node:test');

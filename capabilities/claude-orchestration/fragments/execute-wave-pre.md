@@ -206,8 +206,15 @@ unchanged:
    gsd_run query worktree.record-agent --manifest "$WAVE_WORKTREE_MANIFEST" \
      --agent-id "<metadata.agent_id>" --path "<metadata.worktree_path>" \
      --branch "<metadata.branch>" --base "<metadata.expected_base>" \
-     --files "<plan files_modified, space-separated>"
+     --files "<plan files_modified, space-separated>" \
+     --deletions "<plan files_deleted, space-separated>"
    ```
+
+   `--deletions` (#3003) carries the plan's declared `files_deleted` so a plan that scoped a file
+   removal merges through `cleanup-wave` instead of being blocked. Unlike `--files` it is not
+   advisory: omitting it leaves the deletions guard blocking on any deletion at all, so this
+   dispatch path must pass it or plans declaring a removal fail to merge here while succeeding on
+   the inline path.
 
    The verb's write-strict validation applies as inline: on a non-zero exit or any
    missing field, stop and ask for recovery — do not append an under-populated entry.

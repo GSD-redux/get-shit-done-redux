@@ -24,7 +24,7 @@ import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import cjsCommandRouterAdapter = require('./cjs-command-router-adapter.cjs');
 const { routeCjsCommandFamily } = cjsCommandRouterAdapter;
-import { parseNamedArgs } from './command-arg-projection.cjs';
+import { parseNamedArgsOrExit } from './command-arg-projection.cjs';
 import { classifyContextUtilization, STATES } from './context-utilization.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ function routeValidateCommand({ verify, args, cwd, raw, output: outputFn, error 
       // context: CJS-only — complex inline logic using classifyContextUtilization
       // with custom output formatting that has no direct SDK counterpart.
       context: () => {
-        const opts = parseNamedArgs(args, ['tokens-used', 'context-window']);
+        const opts = parseNamedArgsOrExit(args, { valueFlags: ['tokens-used', 'context-window'], booleanFlags: ['json'], positionals: 2 }, error);
         if (opts['tokens-used'] === null) {
           error('--tokens-used <integer> is required for `validate context`');
           return;
@@ -91,7 +91,7 @@ function routeValidateCommand({ verify, args, cwd, raw, output: outputFn, error 
           return;
         }
         const result = { ...classified, recommendation: RECOMMENDATIONS[classified.state] };
-        if (args.includes('--json')) {
+        if (opts['json'] === true) {
           outputFn(result, raw);
         } else {
           const lines = [`Context utilization: ${result.percent}% (${result.state})`];

@@ -16,7 +16,7 @@ const { writeSurface, readSurface, resolveSurface, listSurface, applySurface } =
 const { loadSkillsManifest, writeActiveProfile, resolveProfile } = require('../gsd-core/bin/lib/install-profiles.cjs');
 const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
 const { CLUSTERS, allClusteredSkills } = require('../gsd-core/bin/lib/clusters.cjs');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, sandboxHome } = require('./helpers.cjs');
 
 const REAL_COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
 
@@ -1140,13 +1140,20 @@ describe('skills-kind destination parity: installer vs surface-apply (#2911)', (
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
+    // #3712: record WHICH home this sandboxed to. src/real-home-guard.cts fails
+    // closed on hosts with no readable passwd entry, and this is what proves a
+    // genuinely-sandboxed caller there. Without it these calls would be refused.
+    const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
+    process.env.GSD_TEST_HOME_SANDBOX = fakeHome;
     try {
       return fn();
     } finally {
       if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
       if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+      if (savedMarker === undefined) delete process.env.GSD_TEST_HOME_SANDBOX;
+      else process.env.GSD_TEST_HOME_SANDBOX = savedMarker;
     }
   }
 
@@ -1173,13 +1180,14 @@ describe('skills-kind destination parity: installer vs surface-apply (#2911)', (
 
   test('registry home-override discrimination report (#2911)', () => {
     const overrides = runtimesWithHomeOverride();
-    // Stated per the brief: at time of writing only codex/global has a `home`
-    // override, so this parity test discriminates on exactly one runtime/scope
-    // pair. This assertion documents that fact and fails loudly if the set
-    // ever changes shape unexpectedly empty (a discrimination-less parity
-    // test would be silently vacuous).
+    // Stated per the brief: at time of writing only codex/global had a `home`
+    // override; #3738 added antigravity/global (skills AND agents →
+    // ~/.gemini/config, the dir AGY scans). This parity test discriminates on
+    // exactly these runtime/scope pairs. This assertion documents that fact and
+    // fails loudly if the set ever changes shape unexpectedly empty (a
+    // discrimination-less parity test would be silently vacuous).
     assert.ok(overrides.length > 0, 'expected at least one runtime/scope with a home override (codex/global)');
-    assert.deepStrictEqual(overrides, ['codex/global'], `home-override set changed — update this test's documentation. Found: ${overrides.join(', ')}`);
+    assert.deepStrictEqual(overrides, ['antigravity/global', 'codex/global'], `home-override set changed — update this test's documentation. Found: ${overrides.join(', ')}`);
   });
 
   for (const scope of ['global', 'local']) {
@@ -1265,13 +1273,20 @@ describe('codex skills-kind destination: home override (#2911)', () => {
   function withFakeHome(fakeHome, fn) {
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
+    // #3712: record WHICH home this sandboxed to. src/real-home-guard.cts fails
+    // closed on hosts with no readable passwd entry, and this is what proves a
+    // genuinely-sandboxed caller there. Without it these calls would be refused.
+    const savedMarker = process.env.GSD_TEST_HOME_SANDBOX;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
+    process.env.GSD_TEST_HOME_SANDBOX = fakeHome;
     try {
       return fn();
     } finally {
       if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
       if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+      if (savedMarker === undefined) delete process.env.GSD_TEST_HOME_SANDBOX;
+      else process.env.GSD_TEST_HOME_SANDBOX = savedMarker;
     }
   }
 
@@ -1372,6 +1387,14 @@ describe('installOpencodeFamilySkills destination parity (#2911 sibling coverage
       const configDir = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-2911-ocfs-${runtime}-`));
       const fakeHomeOverride = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-2911-ocfs-home-${runtime}-`));
       t.after(() => { cleanup(configDir); cleanup(fakeHomeOverride); });
+      // #3712 — this row drives a skills-kind `home` override on purpose, which is
+      // exactly what the test-home guard exists to police, so it has to declare the
+      // sandbox rather than rely on the destination happening to sit outside the
+      // real home. On POSIX it does (os.tmpdir() is /tmp or /var/folders); on
+      // Windows os.tmpdir() is under %USERPROFILE%, so without this the guard
+      // correctly refuses and the row fails on Windows only. HOME is the override
+      // itself, which is the home this call actually writes under.
+      sandboxHome(t, fakeHomeOverride);
 
       const originalResolve = runtimeArtifactLayoutModule.resolveRuntimeArtifactLayout;
       // Capture the real destSubpath before patching so the assertion below

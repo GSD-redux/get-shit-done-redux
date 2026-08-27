@@ -215,7 +215,7 @@ function getDeletedFiles(root, baseRef) {
   // Deliberately let a git failure (unresolvable ref, no merge base, etc.)
   // propagate as a plain Error — main() treats ANY scan() failure as "cannot
   // resolve this base ref in this environment" and degrades to a skip,
-  // matching lint-fix-has-regression-test.cjs. There is no failure mode here
+  // matching lint-fix-has-regression-tests.cjs. There is no failure mode here
   // that should hard-exit non-zero; a real drift is only ever reported once
   // the diff succeeds and findSurvivingReferences finds a violation.
   const out = cp.execFileSync('git', ['diff', '--name-status', `${baseRef}...HEAD`], {
@@ -284,7 +284,7 @@ function main() {
   } catch (e) {
     // origin/<base> unreachable in this environment (e.g. a shallow local
     // clone with no matching remote-tracking ref) — degrade to a skip rather
-    // than a false failure, matching lint-fix-has-regression-test.cjs.
+    // than a false failure, matching lint-fix-has-regression-tests.cjs.
     console.log(`lint-removed-but-needed: could not resolve ${baseRef}, skipping (${e.message})`);
     return;
   }

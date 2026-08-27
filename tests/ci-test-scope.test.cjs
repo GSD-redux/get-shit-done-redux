@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/...' strings are synthetic changed-file inputs fed to scopeFor()/classify(); the docs/ literal is never read as file content.
 'use strict';
 
 const { describe, test } = require('node:test');

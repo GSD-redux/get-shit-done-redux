@@ -35,8 +35,15 @@
     "reviewsSection": "CodeRabbit",
     "evidenceClass": "diff-only",
     "requiresBinaries": [],
-    "promptBudgetKey": null,
+    "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.coderabbit",
     "modelConfigKey": null,
     "handler": null
+  },
+  "config": {
+    "review.max_prompt_tokens_per_reviewer.coderabbit": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    }
   }
 }

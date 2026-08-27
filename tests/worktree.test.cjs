@@ -28,6 +28,7 @@ const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /**
  * Bound for every subprocess in this file: git plumbing/worktree commands
@@ -208,19 +209,28 @@ const DISCOVERY_PIPELINE =
   'grep "^worktree " | grep "\\.claude/worktrees/agent-" | sed \'s/^worktree //\'';
 
 function runDiscoveryAgainstFixture(porcelain) {
+  // Bash FAN-OUT: a `grep | grep | sed` pipeline under one `bash`
+  // interpreter, not a single git plumbing call — the wrong class for
+  // `WORKTREE_TIMEOUT_MS`. Same class as the observed CI failures in
+  // tests/quick-branching.test.cjs (PR #3787 run 32668773524) and
+  // tests/worktree-safety.test.cjs (`next` run 32608945654). See
+  // HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the class rationale.
   const out = runHook('-c', [DISCOVERY_PIPELINE], {
     interpreter: 'bash',
     input: porcelain,
-    timeoutMs: WORKTREE_TIMEOUT_MS,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
   }).stdout;
   return out.split('\n').filter((l) => l.length > 0);
 }
 
 function runDiscoveryAgainstRepo(repoCwd) {
+  // Bash FAN-OUT: `git worktree list` piped through `grep | grep | sed`
+  // under one `bash` interpreter — same class rationale as
+  // `runDiscoveryAgainstFixture` above.
   const out = runHook('-c', [`git worktree list --porcelain | ${DISCOVERY_PIPELINE}`], {
     interpreter: 'bash',
     cwd: repoCwd,
-    timeoutMs: WORKTREE_TIMEOUT_MS,
+    timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
   }).stdout;
   return out.split('\n').filter((l) => l.length > 0);
 }
@@ -726,11 +736,15 @@ while IFS= read -r WT; do
   printf 'ITER:%s\\n' "$WT"
 done < <(${DISCOVERY_PIPELINE})
 `;
-      // bash needed for process substitution `< <(...)`.
+      // bash needed for process substitution `< <(...)`. FAN-OUT: the
+      // `while/read` loop drives the `grep | grep | sed` discovery
+      // pipeline under one `bash` interpreter — same class rationale as
+      // runDiscoveryAgainstRepo above; see HOOK_FANOUT_TIMEOUT_MS in
+      // ./helpers/timeouts.cjs.
       const out = runHook('-c', [script], {
         interpreter: 'bash',
         input: porcelain,
-        timeoutMs: WORKTREE_TIMEOUT_MS,
+        timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
       }).stdout;
       const iterations = out
         .split('\n')

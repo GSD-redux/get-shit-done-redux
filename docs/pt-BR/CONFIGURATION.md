@@ -47,6 +47,7 @@ O GSD armazena as configurações do projeto em `.planning/config.json`. Criado 
     "use_worktrees": true,
     "code_review": true,
     "code_review_depth": "standard",
+    "code_review_depth_overrides": [],
     "plan_bounce": false,
     "plan_bounce_script": null,
     "plan_bounce_passes": 2,
@@ -248,6 +249,7 @@ Todos os controles de fluxo de trabalho seguem o padrão **ausente = habilitado*
 | `workflow.worktree_skip_hooks` | boolean | `false` | Quando `true`, os agentes executores no modo worktree passam `--no-verify` (ignorando hooks de pré-commit) e a validação de hook pós-onda é executada contra o resultado mesclado. Válvula de escape opt-in para projetos cujos hooks não podem ser executados em worktrees de agente. Padrão `false` executa hooks em cada commit (#2924). |
 | `workflow.code_review` | boolean | `true` | Habilita os comandos `/gsd-code-review` e `/gsd-code-review --fix`. Quando `false`, os comandos saem com uma mensagem de gate de configuração. Adicionado na v1.34 |
 | `workflow.code_review_depth` | string | `standard` | Profundidade de revisão padrão para `/gsd-code-review`: `quick` (somente correspondência de padrão), `standard` (análise por arquivo) ou `deep` (entre arquivos com grafos de importação). Pode ser substituído por execução com `--depth=`. Adicionado na v1.34 |
+| `workflow.code_review_depth_overrides` | array | `[]` | Lista ordenada de regras `{ paths: string[], depth }` que aumentam a profundidade de `/gsd-code-review` para diretórios específicos, ex.: `[{ "paths": ["src/auth"], "depth": "deep" }]`. Cada `paths` da regra é comparado com o conjunto de arquivos alterados da revisão por prefixo de diretório com segmentos completos (`src/auth` corresponde a `src/auth/token.ts`, nunca a `src/authfoo/x.ts` ou `docs/src/auth/x.ts`); a comparação diferencia maiúsculas/minúsculas, como o git. Sintaxe glob (`*`, `?`) é um erro de configuração, não um atalho para prefixo. Um único arquivo correspondido eleva a profundidade de toda a revisão — a profundidade não é aplicada por arquivo. Ordem de resolução: flag `--depth=` → regra correspondente mais forte → `workflow.code_review_depth` → `standard`; uma regra correspondente prevalece mesmo quando seu nível é mais fraco que o padrão global. Uma regra malformada (`depth` inválido, sintaxe glob, caminho absoluto, segmento `..`, caminho vazio, `overrides` que não é array, regra que não é objeto, `paths` malformado) é um erro de configuração e a revisão é interrompida em vez de usar um valor padrão silenciosamente. A profundidade resolvida e a regra correspondente são exibidas na saída da revisão. Adicionado em #2554 |
 | `workflow.plan_bounce` | boolean | `false` | Executa script de validação externo nos planos gerados. Quando habilitado, o orquestrador de fase de planejamento encaminha cada PLAN.md pelo script especificado por `plan_bounce_script` e bloqueia em saída diferente de zero. Adicionado na v1.36 |
 | `workflow.plan_bounce_script` | string | (nenhum) | Caminho para o script externo invocado na validação de bounce de plano. Recebe o caminho do PLAN.md como primeiro argumento. Obrigatório quando `plan_bounce` é `true`. Adicionado na v1.36 |
 | `workflow.plan_bounce_passes` | number | `2` | Número de passagens sequenciais de bounce a executar. Cada passagem alimenta a saída da passagem anterior de volta no validador. Valores maiores aumentam o rigor ao custo de latência. Adicionado na v1.36 |
@@ -350,6 +352,7 @@ As seguintes combinações de `mode`, `granularity`, `model_profile` e controles
 | Configuração | Tipo | Padrão | Descrição |
 |---------|------|---------|-------------|
 | `planning.commit_docs` | boolean | `true` | Define se os arquivos de `.planning/` são commitados no git |
+| `planning.pr_strict` | boolean | `false` | Modo de filtro para `/gsd-pr-branch`. `false` mantém o estado estrutural de planejamento (STATE.md, ROADMAP.md, MILESTONES.md, PROJECT.md, REQUIREMENTS.md, milestones/) no branch de PR; `true` remove todos os caminhos de `.planning/` |
 | `planning.search_gitignored` | boolean | `false` | Adiciona `--no-ignore` em buscas amplas para incluir `.planning/` |
 | `planning.sub_repos` | array de strings | `[]` | Caminhos de sub-repositórios aninhados relativos à raiz do projeto. Quando definido, as ferramentas com reconhecimento de GSD limitam a busca de fase, resolução de caminho e operações de commit por sub-repo em vez de tratar o repositório externo como um monorepo |
 

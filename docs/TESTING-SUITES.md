@@ -142,15 +142,28 @@ The differential attribution check reports the file and the byte delta. To resol
    section and `CONTEXT.md`'s `### Emitted Artifact Provenance` entry. Name the
    fragment for your issue or PR (something nobody else is using) — the failure
    output prints a minimal valid document you can paste. This is deliberately a
-   per-PR fragment, not one shared file: fragments can never conflict across
-   PRs, and a fragment appearing in your diff *is* the visible signal. If the
-   failure instead names a path a merged PR already acknowledged (a **spent**
-   entry sitting in an existing fragment), reword that fragment's `reason` in
-   place to explain the new ripple — do not add a duplicate entry for the same
-   path; two ack sources naming the same path is a hard, loudly-reported error.
+   per-PR fragment, not one shared file: two fragments can never *merge-conflict*
+   with each other, and a fragment appearing in your diff *is* the visible signal.
+   They do, however, share a path key space. If the failure instead names a path a
+   merged PR already acknowledged (a **spent** entry sitting in an existing
+   fragment), you have two routes and the error text names both: `git rm` that
+   fragment if every entry in it is spent — it gates nothing and only holds the
+   keys — or, if it is still live, reword/extend its `reason` in place to explain
+   the new ripple. Either way, do not add a duplicate entry for the same path; two
+   ack sources naming the same path is a hard, loudly-reported error.
    The legacy single `tests/emitted-drift-ack.json` is still read and unioned
    in for branches that carry it, but new acknowledgments never go there.
-3. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
+3. **Your fragment is deleted once it has merged (#3078).** A fragment on `next`
+   is spent by definition — its prose is already at the base, so it can no longer
+   clear anything — while still owning its path keys, which walls off the next PR
+   that grows one of them. The `guard-no-ack-on-next` job reds `next` and prints
+   the exact `git rm` for every fully-spent fragment. A *partially* spent fragment
+   is deliberately left alone. Since #3875 you do not have to run that `git rm`:
+   the `ack-fragment-sweep` workflow (`.github/workflows/ack-fragment-sweep.yml`)
+   asks the guard for its own sweep list every six hours and opens a PR deleting
+   exactly what it named, holding back any fragment an open PR still touches
+   (#3842).
+4. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
    is incidental: for a workflow, move per-mode bodies to
    `workflows/<name>/modes/`, templates to `workflows/<name>/templates/`, and
    shared prose to `gsd-core/references/`; for an agent, lift shared boilerplate
@@ -340,6 +353,99 @@ routinely, that is a bug report, not a workflow.
 Reported paths are labelled `CREATED`, `MODIFIED`, `DELETED`, or `UNVERIFIED`.
 `UNVERIFIED` means a scan bound was hit and the path could not be attested
 either way — it is never the same as clean.
+
+## The mergeability preflight
+
+Before any of the matrix below is provisioned, every `pull_request` compute lane
+waits on one shared gate: **`PR mergeability`**, the reusable workflow
+`.github/workflows/pr-mergeable-preflight.yml`. **A pull request with a merge
+conflict runs no CI at all until the conflict is resolved** (#3833).
+
+### Reference
+
+| Verdict | When | Job result | Effect on the pipeline |
+|---|---|---|---|
+| `MERGEABLE` | GitHub reported `mergeable: true` | success | everything runs as normal |
+| `CONFLICTED` | GitHub reported `mergeable: false` | **failure** | every gated job is skipped; `Required tests` and `Stryker mutation score` report **red** |
+| `INDETERMINATE` | mergeability still unknown after the retry budget, or the API read failed | success **(fails open)** | everything runs as normal; a `::warning::` is emitted |
+| `SKIPPED_NOT_A_PR` | the event is not `pull_request` (push, `workflow_dispatch`, a `release.yml` call into `install-smoke.yml`) | success | everything runs as normal; **zero** API calls |
+| `INDETERMINATE` (bootstrap) | `scripts/ci-pr-mergeability.cjs` is absent at the base sha | success **(fails open)** | everything runs as normal; a `::warning::` names the cause |
+
+The bootstrap row is a consequence of the checkout being pinned to the base sha:
+the preflight runs the script **as it exists on the base branch**, so the script
+is absent on the pull request that introduces it, and on any branch whose base
+predates it. Absent is not "conflicted" — it is one more thing the gate cannot
+determine, so it takes the same fail-open path. The arm is self-healing and
+never fires again once the script is on the base branch; a test pins it in place
+so a future reader does not mistake it for dead code.
+
+The verdict comes from `scripts/ci-pr-mergeability.cjs`, which polls
+`GET /repos/{owner}/{repo}/pulls/{number}` until `mergeable` is non-null.
+GitHub computes mergeability in an **asynchronous background job** and returns
+`null` while it is in progress, so a single cold read is never authoritative —
+the poll is required, not defensive.
+
+Two properties are load-bearing and easy to break:
+
+- **Only `mergeable === true` / `=== false` decides the verdict.** `null` is
+  falsy, so a truthiness test (`if (!mergeable)`) would classify every cold read
+  as a conflict and red every PR in the repo.
+- **`mergeable_state` never decides the verdict.** Its `blocked` value means
+  "required checks have not passed", which is true *while this very job is
+  running* — gating on it self-deadlocks the pipeline. It is read for the
+  failure message only.
+
+Gated: `test.yml` (`lint-tests`, `test`, `test-inert`, `test-full`,
+`coverage-gate`, `qa-loop-walk`, `required-tests`), `install-smoke.yml`,
+`mutation.yml`, `security-scan.yml`, `docs-required.yml`,
+`changeset-required.yml`, `default-flip-documentation.yml`, `branch-naming.yml`.
+
+**Deliberately not gated:** the `pull_request_target` policy and security lanes —
+auto-close-unsolicited-PRs, close-draft-PRs, the target/title/template
+validators, issue-link, and unauthorized-approval dismissal. Gating those would
+let a conflicted drive-by PR evade auto-close, so they keep running on a
+conflicted PR and a test asserts they are never wired to the preflight.
+
+### What it deliberately does not do
+
+**It applies no label.** The gate does not add or remove `needs-review: merge-conflict`.
+Eight caller workflows each invoke the preflight, so eight jobs would race to
+add-or-remove one label on every PR event, and it would force
+`pull-requests: write` into eight lanes that today hold `contents: read`.
+`needs-review: merge-conflict` stays a maintainer triage label applied during PR
+sweeps; the red check and its annotation are the machine signal.
+
+**It changes no branch protection.** `.github/rulesets/main-protection.json` is
+untouched and needs no new required context — GitHub natively refuses to merge a
+pull request with conflicts, so the ruleset already blocks it. (Adding the check
+as *required* before the workflow exists on the base branch would deadlock every
+open PR until it landed.)
+
+### What this does not replace
+
+`scripts/ci-rebase-check.cjs` is unchanged and still runs inside each matrix job,
+including its #2472 base-sha pin. The preflight is an early-exit optimization on
+GitHub's asynchronously-computed view; the in-job merge remains authoritative and
+covers the case where the base advances mid-run. **The gate is never a safety
+property** — every path except an explicit `mergeable: false` fails open, so an
+API outage simply restores the pre-#3833 behavior.
+
+### If your PR shows a red `PR mergeability` check
+
+The annotation names the base branch and the remedy. There is one step:
+
+```bash
+git fetch origin && git rebase origin/next && git push --force-with-lease
+```
+
+Resolve the conflicts the rebase reports, then push. The next `synchronize`
+event re-runs the preflight and the full pipeline comes back. (Because the
+sequence is a single command, this has no separate how-to page — see
+[CONTRIBUTING.md → Where Do I Open My PR?](../CONTRIBUTING.md#where-do-i-open-my-pr-branching-model)
+for the branching model that makes the rebase necessary in the first place.)
+
+Note the interaction with the sha-bound pass marker: a rebase changes your HEAD
+sha, which invalidates any prior remote-runner verification. Rebase *last*.
 
 ## CI matrix
 

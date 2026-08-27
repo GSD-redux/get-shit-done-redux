@@ -21,6 +21,7 @@ const {
   analyzeMarkdown,
   evaluateUatPassed,
 } = require('../gsd-core/bin/lib/uat-predicate.cjs');
+const { parseUatItemsWithStats } = require('../gsd-core/bin/lib/uat.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1194,6 +1195,32 @@ describe('FIX B — cross-line result: value must be on the same line', () => {
       'cross-line result must yield missing (blocker)');
   });
 
+  test('result: whose value sits on a following INDENTED line → missing (pinned #3078-CR divergence)', () => {
+    // #3078-CR (security review follow-up): on origin/next, the old
+    // `/^result:\s*\[?(\w+)\]?.*$/im` regex's `\s*` is greedy and matches
+    // ACROSS a newline, so `result:\n  blocked` parsed as `blocked` — a real
+    // row this shape reported 1/blocked. The split-then-match rewrite tests
+    // `result:` against a SINGLE already-split line, per the documented
+    // "value must sit on the SAME line as result:" contract (see the comment
+    // above RESULT_LINE_RE), so this now yields 'missing' (a parse gap, with
+    // the percentage withheld) instead of silently crossing the newline.
+    // This is a DELIBERATE, FAIL-SAFE divergence from the old cross-newline
+    // `\s*` behavior — pinned here so it is never "fixed" back by accident.
+    const content = [
+      '### 1. Indented-continuation Test',
+      'expected: Y',
+      'result:',
+      '  blocked',
+      '',
+    ].join('\n');
+    const items = parseUatResultItems(content);
+    assert.strictEqual(items.length, 1);
+    assert.notStrictEqual(items[0].result, 'blocked',
+      'a value on a following indented line must not be captured across the newline');
+    assert.strictEqual(items[0].result, 'missing',
+      'result: with its value on the next (even indented) line must yield missing, not the old cross-newline capture');
+  });
+
   test('evaluateUatPassed → passed:false for cross-line result:passed', () => {
     const tmpDir = makeTmpDir();
     try {
@@ -1455,5 +1482,175 @@ describe('evaluateUatPassed — property: wrapping in false-positive context nev
       }),
       { numRuns: 50 }
     );
+  });
+});
+
+// ─── #3078-CR MEDIUM: acceptance gate (uat-predicate.cjs) must AGREE with the ──
+// ─── audit surface (uat.cjs's parseUatItemsWithStats) on the same bytes ───────
+
+describe('#3078-CR: evaluateUatPassed agrees with the audit surface (parseUatItemsWithStats)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmDir(tmpDir);
+  });
+
+  test('U+2028 scalar-injection: gate blocks, audit surface reports the outstanding row — they AGREE', () => {
+    // A `result:` line reachable only via a U+2028 LINE SEPARATOR sitting inside
+    // an `expected: |` block-scalar body must not be read as a genuine
+    // column-0 match by EITHER surface. The real, later `result: blocked` line
+    // is the one that must win.
+    const LS = String.fromCharCode(0x2028);  // never a raw separator in source: a formatter that normalizes line separators would silently turn this fixture into an ordinary-character control that still passes
+    const body = [
+      '---',
+      'status: passed',
+      '---',
+      '',
+      '# UAT',
+      '',
+      '### 1. Alpha',
+      'expected: |',
+      '  x' + LS + 'result: pass',
+      'result: blocked',
+      '',
+    ].join('\n');
+    writeFile(tmpDir, '01-alpha-UAT.md', body);
+
+    const gateReport = evaluateUatPassed(tmpDir);
+    const auditReport = parseUatItemsWithStats(body);
+
+    // AGREEMENT, asserted explicitly (not each surface independently): both
+    // surfaces must consider this phase NOT clean, on the same test row.
+    assert.equal(gateReport.passed, false, 'gate: must not accept a blocked test as passed');
+    assert.equal(auditReport.items.length, 1, 'audit: the blocked row must surface as outstanding');
+    assert.equal(auditReport.items[0].result, 'blocked', 'audit: must read the real result, not the injected one');
+    const gateCheck = gateReport.checks.find((c) => c.test === 1);
+    assert.ok(gateCheck, 'gate: must record the test-1 check');
+    assert.equal(gateCheck.result, 'blocked', 'gate: must read the real result, not the injected one');
+    assert.equal(gateCheck.passing, false);
+    // Cross-surface identity: same test number, same result token.
+    assert.equal(gateCheck.result, auditReport.items[0].result, 'gate and audit surface must agree on the result token');
+  });
+
+  test('H-U28 restored: a heading delimited by U+2028 (not \n) is still found and blocks', () => {
+    // #3078-CR MEDIUM 1 (security review follow-up): origin/next found this
+    // heading via an /m-anchored scan whose LineTerminator set includes
+    // U+2028/U+2029; a naive split('\n')-only port of that scan silently
+    // stopped finding it, making the gate MORE PERMISSIVE than origin/next
+    // (measured: HEAD passed:true/0 blockers, origin/next passed:false/1
+    // blocker, for this exact shape). The heading scan now splits on
+    // \n/U+2028/U+2029 (a STRUCTURE frame) while the result: scan below it
+    // stays \n-only (an ATTRIBUTION frame, unchanged) -- so the heading is
+    // found, but its result: line -- separated from the heading by the same
+    // exotic separator -- is correctly NOT read across that boundary (that is
+    // the attribution guard I-U28 below exists to prove), yielding
+    // 'missing' rather than 'blocked'. Either token is a non-passing,
+    // blocking state, so the gate still BLOCKS -- the outcome origin/next
+    // produced, restored.
+    const LS = String.fromCharCode(0x2028);  // never a raw separator in source: a formatter that normalizes line separators would silently turn this fixture into an ordinary-character control that still passes
+    const content = 'Notes.' + LS + '### 2. B' + LS + 'result: blocked';
+    const items = parseUatResultItems(content);
+    assert.strictEqual(items.length, 1, 'a U+2028-delimited heading must still be found');
+    assert.strictEqual(items[0].test, 2);
+    assert.strictEqual(items[0].name, 'B');
+    // IDENTITY, not a proxy: the exact token. `notStrictEqual(..., 'passed')` also passes on
+    // 'pass', which IS in UAT_PASS_RESULTS -- so it could not catch a regression that
+    // attributed a PASSING result to the recovered heading, which is the whole risk here.
+    assert.strictEqual(items[0].result, 'missing',
+      'the result: line sits across the same exotic separator, so it is correctly NOT attributed -- '
+      + 'missing is a non-passing, blocking state');
+  });
+
+  test('H-U28 restored: evaluateUatPassed BLOCKS on the U+2028-delimited heading shape', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const LS = String.fromCharCode(0x2028);  // never a raw separator in source: a formatter that normalizes line separators would silently turn this fixture into an ordinary-character control that still passes
+      const content = 'Notes.' + LS + '### 2. B' + LS + 'result: blocked';
+      const body = ['---', 'status: passed', '---', '', '# UAT', '', content, ''].join('\n');
+      writeFile(tmpDir, '01-h28-UAT.md', body);
+      const report = evaluateUatPassed(tmpDir);
+      assert.strictEqual(report.passed, false, 'gate must block on the U+2028-delimited heading -- origin/next parity');
+      assert.ok(report.blockers.length > 0, 'a blocker must be recorded');
+    } finally {
+      rmDir(tmpDir);
+    }
+  });
+
+  test('CR-fenced case: gate and audit surface (parseUatItemsWithStats) agree -- neither silently clean', () => {
+    // #3078-CR MEDIUM 1 follow-up evidence: a lone-CR document
+    // (see:CRfenceCR### 2. BCRresult: blockedCRfence) has its CRs normalized
+    // to \n before parsing, which turns a literal fence-marker sequence into
+    // a REAL fence delimiter it was not before normalization -- the row ends
+    // up fenced and stripped on the gate side. Both surfaces must agree this
+    // phase is NOT clean (the gate must not pass while the audit surface
+    // reports a shortfall/gap for the same document).
+    const crBody = ['see:', '```', '### 2. B', 'result: blocked', '```'].join('\r');
+    const tmpDir = makeTmpDir();
+    try {
+      writeFile(tmpDir, '01-crfence-UAT.md', crBody);
+      const gateReport = evaluateUatPassed(tmpDir);
+      const auditReport = parseUatItemsWithStats(crBody);
+      assert.strictEqual(gateReport.passed, false, 'gate must not report a clean pass for this document');
+      assert.ok(auditReport.headingsSeen > 0, 'audit surface must see the heading exists');
+      assert.ok(auditReport.items.length === 0 && auditReport.shortfallBlocks > 0,
+        'audit surface must record the fenced row as an unresolved shortfall, not silently drop it');
+    } finally {
+      rmDir(tmpDir);
+    }
+  });
+
+  test('lone-CR frontmatter: gate no longer silently drops a blocking status hidden by an unnormalized read', () => {
+    // A lone-CR-terminated frontmatter fence (`---\rstatus: partial\r---`) must
+    // still be recognised as frontmatter — the raw, unnormalized read this
+    // fix replaces treated the whole fence as one unbroken line, so
+    // `extractFrontmatter` never matched it and the blocking `status: partial`
+    // was silently dropped (fail-OPEN, the false-clean this fix closes).
+    const body = [
+      '---\rstatus: partial\r---',
+      '',
+      '# UAT',
+      '',
+      '### 1. Alpha\rresult: passed',
+      '### 2. Beta\rresult: pass',
+      '',
+    ].join('\r');
+    writeFile(tmpDir, '01-beta-UAT.md', body);
+
+    const gateReport = evaluateUatPassed(tmpDir);
+    assert.equal(gateReport.passed, false, 'gate: the hidden status: partial must now block');
+    assert.ok(
+      gateReport.blockers.some((b) => b.includes('status=partial')),
+      'gate: the frontmatter status blocker must be surfaced, not silently dropped',
+    );
+  });
+
+  test('clean control: a normally-passing file agrees as passed on both surfaces', () => {
+    const body = [
+      '---',
+      'status: passed',
+      '---',
+      '',
+      '# UAT',
+      '',
+      '### 1. Alpha',
+      'result: passed',
+      '',
+      '### 2. Beta',
+      'result: pass',
+      '',
+    ].join('\n');
+    writeFile(tmpDir, '01-gamma-UAT.md', body);
+
+    const gateReport = evaluateUatPassed(tmpDir);
+    const auditReport = parseUatItemsWithStats(body);
+
+    // AGREEMENT: the gate accepts, and the audit surface reports NO outstanding
+    // (non-passing) rows for the same bytes.
+    assert.equal(gateReport.passed, true, 'gate: a clean file must still pass');
+    assert.equal(auditReport.items.length, 0, 'audit: a clean file must have no outstanding rows');
   });
 });

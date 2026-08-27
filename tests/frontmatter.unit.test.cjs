@@ -25,6 +25,8 @@ const {
   noOpObjectListSetError,
   parseMustHavesBlock,
   FRONTMATTER_SCHEMAS,
+  agentScalarNeedsDoubleQuoting,
+  escapeDoubleQuotedScalar,
 } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
 // ─── extractFrontmatter ───────────────────────────────────────────────────────
@@ -209,21 +211,13 @@ describe('extractFrontmatter: inline arrays', () => {
     assert.deepEqual(result, { tags: ['a, b', 'c', 'd'] });
   });
 
-  test('consecutive commas (empty items filtered)', () => {
-    const result = extractFrontmatter('---\ntags: [a,,b]\n---');
-    assert.deepEqual(result, { tags: ['a', 'b'] });
-  });
-
-  test('whitespace-only items filtered', () => {
-    const result = extractFrontmatter('---\ntags: [ , ]\n---');
-    assert.deepEqual(result, { tags: [] });
-  });
-
-  test('opening bracket only becomes empty array/object', () => {
-    const result = extractFrontmatter('---\ntags: [\n---');
-    assert.deepEqual(result, { tags: [] });
-    assert.ok(Array.isArray(result.tags));
-  });
+  // `repairMalformedInlineArrays` (and its `splitLegacyInlineArrayItems` helper), which these
+  // three cases pinned, was deleted (#3881 follow-up): a sweep of every tracked `*.md` file with
+  // a frontmatter fence (910 files) found ZERO documents whose parse result changed with the
+  // repair disabled. A real YAML flow sequence has none of this leniency — `[a,,b]` is an empty
+  // flow-sequence-entry syntax error, `[ , ]` is the same, and an unclosed `[` is an unterminated
+  // collection — so `extractFrontmatter` now correctly reports these as unparseable
+  // (`FRONTMATTER_UNPARSEABLE`) instead of silently repairing them.
 });
 
 describe('extractFrontmatter: dashed list arrays', () => {
@@ -248,10 +242,12 @@ describe('extractFrontmatter: dashed list arrays', () => {
     assert.deepEqual(result, { tags: ['single quoted'] });
   });
 
-  test('opening bracket followed by dashed list', () => {
-    const result = extractFrontmatter('---\ntags: [\n  - a\n  - b\n---');
-    assert.deepEqual(result, { tags: ['a', 'b'] });
-  });
+  // `repairMalformedInlineArrays`'s "bare unclosed `key: [` followed by a block-sequence"
+  // recovery, which this case pinned, was deleted alongside the rest of that function (#3881
+  // follow-up; see the note above `extractFrontmatter: inline arrays`) — zero tracked documents
+  // depended on it. A literal `[` with no closing bracket is an unterminated YAML flow
+  // collection; `extractFrontmatter` now reports it as unparseable rather than silently
+  // reinterpreting it as a block-sequence opener.
 });
 
 describe('extractFrontmatter: empty / missing values', () => {
@@ -1254,8 +1250,8 @@ describe('reconstructFrontmatter: strict-YAML round-trip (#1779)', () => {
   });
 });
 
-// #3497 — escape amplification. `escapeDoubleQuoted` escapes `\`/`"`/control
-// chars on every serialize (#1779), but `parseYamlRegion` only stripped the
+// #3497 — escape amplification. `escapeDoubleQuotedScalar` escapes `\`/`"`/control
+// chars on every serialize (#1779), but `parseGuardedYamlRegion` only stripped the
 // outer quote delimiters and never un-escaped the interior, so parse ∘ serialize
 // was NOT the identity: every read-modify-write cycle doubled the backslashes
 // (b → 2b+1, i.e. 2ⁿ−1 after n round-trips). A `last_activity_desc` containing
@@ -1510,5 +1506,238 @@ describe('stripFrontmatter', () => {
 
   test('empty string round-trips', () => {
     assert.strictEqual(stripFrontmatter(''), '');
+  });
+});
+
+// ─── agentScalarNeedsDoubleQuoting (#3706) ────────────────────────────────────
+//
+// Mutant-killing discipline: every boolean clause gets a true case AND a
+// near-miss false case one edit away, so flipping any operator/character
+// class in the source changes at least one assertion here.
+
+describe('agentScalarNeedsDoubleQuoting: delegates to scalarNeedsDoubleQuoting', () => {
+  test('empty string needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting(''), true);
+  });
+  test('embedded double quote needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a"b'), true);
+  });
+  test('embedded backslash needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a\\b'), true);
+  });
+  test('embedded control char needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a\u0001b'), true);
+  });
+  test('leading whitespace needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting(' abc'), true);
+  });
+  test('trailing whitespace needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('abc '), true);
+  });
+  for (const c of ['#', '&', '*', '!', '|', '>', '%', '@', '`', '[', ']', '{', '}', ',', "'"]) {
+    test(`leading indicator "${c}" needs quoting`, () => {
+      assert.equal(agentScalarNeedsDoubleQuoting(`${c}foo`), true);
+    });
+  }
+  test('near-miss: plain word does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('plainword'), false);
+  });
+});
+
+describe('agentScalarNeedsDoubleQuoting: first character must be alphanumeric', () => {
+  for (const v of ['~', '.inf', '.nan', '+1', '-1', '-0', '.5']) {
+    test(`non-alphanumeric first char "${v}" needs quoting`, () => {
+      assert.equal(agentScalarNeedsDoubleQuoting(v), true);
+    });
+  }
+  test('near-miss: alphanumeric-first with internal hyphen does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a-b'), false);
+  });
+  test('near-miss: digit-first non-numeric word does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('0abc'), false);
+  });
+  test('near-miss: alphanumeric-first with trailing hyphen does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('x-'), false);
+  });
+});
+
+describe('agentScalarNeedsDoubleQuoting: trailing colon', () => {
+  test('a bare trailing colon needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('foo:'), true);
+  });
+  test('near-miss: colon followed by more text does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('foo:bar'), false);
+  });
+  test('near-miss: single-char key:value shape does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a:b'), false);
+  });
+});
+
+describe('agentScalarNeedsDoubleQuoting: embedded ": " (colon + whitespace)', () => {
+  test('colon followed by space needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a: b'), true);
+  });
+  test('colon followed by tab needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a:\tb'), true);
+  });
+  test('near-miss: colon with no following whitespace does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a:b'), false);
+  });
+});
+
+describe('agentScalarNeedsDoubleQuoting: embedded " #" (whitespace + hash)', () => {
+  test('space followed by hash needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a #b'), true);
+  });
+  test('tab followed by hash needs quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a\t#b'), true);
+  });
+  test('near-miss: hash with no preceding whitespace does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a#b'), false);
+  });
+});
+
+describe('agentScalarNeedsDoubleQuoting: boolean/null words (case-insensitive)', () => {
+  for (const v of ['y', 'n', 'yes', 'no', 'true', 'false', 'on', 'off', 'null']) {
+    test(`lowercase word "${v}" needs quoting`, () => {
+      assert.equal(agentScalarNeedsDoubleQuoting(v), true);
+    });
+  }
+  for (const v of ['YES', 'No', 'TRUE', 'Null']) {
+    test(`mixed-case word "${v}" needs quoting (case-insensitivity)`, () => {
+      assert.equal(agentScalarNeedsDoubleQuoting(v), true);
+    });
+  }
+  test('near-miss: "yes1" is not an exact word match', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('yes1'), false);
+  });
+  test('near-miss: "nope" is not an exact word match', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('nope'), false);
+  });
+  test('near-miss: "nullish" is not an exact word match', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('nullish'), false);
+  });
+  test('near-miss: "onward" is not an exact word match', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('onward'), false);
+  });
+});
+
+describe('agentScalarNeedsDoubleQuoting: numeric-looking values', () => {
+  for (const v of [
+    '1', '123', '1.5', '1.', '1e5', '1E5', '1e+5', '1e-5', '1_000',
+    '0x1F', '0b101', '0o17', '0X1f', '12:30', '1:2:3', '12:30.5',
+  ]) {
+    test(`numeric form "${v}" needs quoting`, () => {
+      assert.equal(agentScalarNeedsDoubleQuoting(v), true);
+    });
+  }
+  test('near-miss: "1a" (digit then letter) does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('1a'), false);
+  });
+  test('near-miss: "a1" (letter then digit) does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('a1'), false);
+  });
+  test('near-miss: "x1e5" (non-digit first char) does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('x1e5'), false);
+  });
+  test('near-miss: "0xzz" (invalid hex digits) does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('0xzz'), false);
+  });
+  // Verified against the real implementation: the sexagesimal group only
+  // consumes a leading [0-5]? then one mandatory digit per ":" segment, so
+  // "12:99" cannot fully match YAML_NUMERIC_RE (the second "9" is left over)
+  // and no other clause fires either. The code does NOT reject an
+  // out-of-range (60-99) minute-like group — pinned here as actual behavior,
+  // not the originally assumed "false because minutes must be 0-59".
+  test('"12:99" does not need quoting (sexagesimal regex cannot consume the trailing digit)', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('12:99'), false);
+  });
+});
+
+describe('agentScalarNeedsDoubleQuoting: YAML timestamp', () => {
+  for (const v of [
+    '2026-08-25', '2026-8-5', '2026-08-25T10:00:00Z', '2026-08-25 10:00:00',
+  ]) {
+    test(`timestamp form "${v}" needs quoting`, () => {
+      assert.equal(agentScalarNeedsDoubleQuoting(v), true);
+    });
+  }
+  test('near-miss: "2026-08" (missing day) does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('2026-08'), false);
+  });
+  // Verified against the real implementation: this string never reaches the
+  // timestamp clause at all — the pure-digit numeric clause (YAML_NUMERIC_RE's
+  // first alternative matches any \d[\d_]* string) fires first and returns
+  // true. So "20260825" IS true, but for a different reason than "looks like
+  // a date"; it does not exercise YAML_TIMESTAMP_RE.
+  test('"20260825" (no hyphens) needs quoting via the numeric clause, not the timestamp clause', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('20260825'), true);
+  });
+  // This is the case that actually pins YAML_TIMESTAMP_RE's trailing
+  // `(?:[Tt ].*)?$` anchor: the numeric clause cannot match (hyphens present,
+  // no colon), so only the timestamp regex is left to decide, and it rejects
+  // trailing text that isn't introduced by "T"/"t"/" ".
+  test('"2026-08-25x" (trailing junk not preceded by T/t/space) does not need quoting', () => {
+    assert.equal(agentScalarNeedsDoubleQuoting('2026-08-25x'), false);
+  });
+});
+
+describe('agentScalarNeedsDoubleQuoting: real-world values that must stay unquoted', () => {
+  for (const v of [
+    'sonnet', 'synthetic/hf:zai-org/GLM-5.2', 'gpt-5.6-luna', 'claude-opus-5',
+    'high', 'xhigh', 'minimal', 'a.b', 'GLM-5.2',
+  ]) {
+    test(`"${v}" does not need quoting`, () => {
+      assert.equal(agentScalarNeedsDoubleQuoting(v), false);
+    });
+  }
+});
+
+// ─── escapeDoubleQuotedScalar (#1779 / #3497) ────────────────────────────────────────
+
+describe('escapeDoubleQuotedScalar: exact output strings', () => {
+  test('backslash is escaped before the quote it precedes (ordering matters)', () => {
+    // Input: a, \, ", b. If the quote were escaped BEFORE the backslash, the
+    // backslash added in front of the quote would then itself get doubled by
+    // a subsequent backslash pass, producing a different (wrong) string. The
+    // real order (backslash first, then quote) yields exactly 3 backslashes
+    // followed by the quote.
+    const input = 'a' + '\\' + '"' + 'b';
+    const expected = 'a' + '\\'.repeat(3) + '"' + 'b';
+    assert.equal(escapeDoubleQuotedScalar(input), expected);
+  });
+
+  test('double quote alone', () => {
+    assert.equal(escapeDoubleQuotedScalar('"'), '\\"');
+  });
+
+  test('newline alone', () => {
+    assert.equal(escapeDoubleQuotedScalar('\n'), '\\n');
+  });
+
+  test('tab alone', () => {
+    assert.equal(escapeDoubleQuotedScalar('\t'), '\\t');
+  });
+
+  test('carriage return alone', () => {
+    assert.equal(escapeDoubleQuotedScalar('\r'), '\\r');
+  });
+
+  test('a C0 control char (0x01) becomes lowercase zero-padded \\xHH', () => {
+    assert.equal(escapeDoubleQuotedScalar('\u0001'), '\\x01');
+  });
+
+  test('DEL (0x7f) becomes \\x7f', () => {
+    assert.equal(escapeDoubleQuotedScalar('\u007f'), '\\x7f');
+  });
+
+  test('plain string with no specials is returned unchanged', () => {
+    assert.equal(escapeDoubleQuotedScalar('plain'), 'plain');
+  });
+
+  test('combined input exercising every escape in one pass', () => {
+    const input = 'a\\b"c\nd\te\rf\u0001g\u007fh';
+    const expected = 'a\\\\b\\"c\\nd\\te\\rf\\x01g\\x7fh';
+    assert.equal(escapeDoubleQuotedScalar(input), expected);
   });
 });

@@ -58,7 +58,7 @@
  * real, non-mocked `buildPlanningSnapshot(tmpCwd)` call (see
  * `tests/health-diagnostic-rules/root-existence.test.cjs`). This guard
  * therefore verifies the fixture-proof invariant STATICALLY against the
- * test files' own text — mirroring `scripts/lint-fix-has-regression-test.cjs`'s
+ * test files' own text — mirroring `scripts/lint-fix-has-regression-tests.cjs`'s
  * house style — rather than dynamically re-running fixture-building code
  * this guard does not own.
  */
@@ -82,14 +82,70 @@ const CONSISTENCY_TEST_FILE = path.join(REPO_ROOT, 'tests', 'health-diagnostic-r
 const CONSISTENCY_CODE_PREFIX_RE = /^C\d{3}$/;
 
 // Phase 12 (#3310, ADR-3180 §8.5 extension) — the S0NN namespace's own
-// fixture-proof pass. These 7 codes are NOT collected in any exported
-// `Rule[]` array: `cmdStateValidate` (src/state.cts) builds `Diagnostic[]`
-// directly via a local `stateDiagnostic()` helper, not via the rule-table
-// evaluator (out of scope for the RULES/CONSISTENCY_RULES-keyed passes
-// above). The list is therefore hardcoded here instead of read from the
-// compiled module.
+// fixture-proof pass. These codes are NOT collected in any exported `Rule[]`
+// array: `cmdStateValidate` (src/state.cts) builds `Diagnostic[]` directly via
+// a local `stateDiagnostic()` helper, not via the rule-table evaluator (out of
+// scope for the RULES/CONSISTENCY_RULES-keyed passes above).
+//
+// #3696: the list is DISCOVERED from the source, not hardcoded. It used to be a
+// literal `['S001', ..., 'S007']`, which is precisely the shape ADR-3180
+// Decision 4(a) forbids — "guards discover call sites by whole-repo scan, never
+// by an allowlist of known files" — because such a guard can only ever be as
+// complete as the author's recall. Adding S008/S009 to `cmdStateValidate` left
+// this pass reporting a confident, green "7 code(s), all fixture-covered" while
+// two new codes had no fixture requirement at all: a zero it did not earn. The
+// scan below cannot report a code it has not read out of the source.
 const STATE_VALIDATE_TEST_FILE = path.join(REPO_ROOT, 'tests', 'state.test.cjs');
-const STATE_VALIDATE_CODES = ['S001', 'S002', 'S003', 'S004', 'S005', 'S006', 'S007'];
+const STATE_VALIDATE_SOURCE_FILE = path.join(REPO_ROOT, 'src', 'state.cts');
+// `g` is required by String.prototype.matchAll, which (unlike .exec) does not
+// carry lastIndex across calls — so this constant is safe to share.
+// #3696 review: `\s*` before `(` too. Requiring no space silently dropped a
+// `stateDiagnostic ('S010', …)` call site from the discovered set, and since the
+// fail-closed check below only fires on a FULLY empty result, a partial miss
+// escaped the fixture-proof check entirely — the same "only as complete as the
+// author's recall" failure this rewrite exists to prevent.
+const STATE_DIAGNOSTIC_CALL_RE = /\bstateDiagnostic\s*\(\s*(['"`])(S\d{3})\1/g;
+
+/**
+ * Every S0NN code `cmdStateValidate` can emit, read off its
+ * `stateDiagnostic(...)` call sites in `sourceText`.
+ *
+ * Takes the source TEXT rather than reading the path itself, so the discovery
+ * rule is exercisable against controlled fixtures — including the fail-closed
+ * path below, which is the branch that matters and which a path-reading
+ * function could only be tested on by mutating the real `src/state.cts`.
+ *
+ * Fails closed. An empty result means the helper was renamed or its call shape
+ * changed, and a guard that answers "0 codes, all covered" to that is worse than
+ * no guard — so it raises instead. Line/regex-based (not full AST) per this
+ * repo's existing lint-guard house style, same as TITLED_BLOCK_RE below.
+ */
+function discoverStateValidateCodes(sourceText, sourceLabel = formatRepoRelative(STATE_VALIDATE_SOURCE_FILE)) {
+  const codes = [...sourceText.matchAll(STATE_DIAGNOSTIC_CALL_RE)].map((m) => m[2]);
+  const unique = [...new Set(codes)].sort();
+  if (unique.length === 0) {
+    throw new ExitError(
+      1,
+      `lint-health-diagnostic-rule-table: found no stateDiagnostic() call sites in ${sourceLabel}.\n`
+        + '  This pass discovers the S0NN code set from those call sites (#3696), so an empty\n'
+        + '  result means the helper was renamed or its call shape changed — not that there are\n'
+        + '  no codes. Update STATE_DIAGNOSTIC_CALL_RE to match the new shape.\n',
+    );
+  }
+  return unique;
+}
+
+function readStateValidateSource() {
+  if (!fs.existsSync(STATE_VALIDATE_SOURCE_FILE)) {
+    throw new ExitError(
+      1,
+      `lint-health-diagnostic-rule-table: cannot discover S0NN codes — ${formatRepoRelative(STATE_VALIDATE_SOURCE_FILE)} not found.\n`,
+    );
+  }
+  return fs.readFileSync(STATE_VALIDATE_SOURCE_FILE, 'utf8');
+}
+
+const STATE_VALIDATE_CODES = discoverStateValidateCodes(readStateValidateSource());
 
 // Matches `describe(`/`test(`/`it(` calls whose first argument is a string
 // literal, capturing that literal as the block's title. Line/regex-based
@@ -401,4 +457,5 @@ module.exports = {
   CONSISTENCY_TEST_FILE,
   STATE_VALIDATE_TEST_FILE,
   STATE_VALIDATE_CODES,
+  discoverStateValidateCodes,
 };

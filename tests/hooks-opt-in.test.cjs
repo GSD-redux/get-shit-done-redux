@@ -21,11 +21,18 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { runHook } = require('./helpers/process-seam.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const HOOKS_DIR = path.join(__dirname, '..', 'hooks');
 const isWindows = process.platform === 'win32';
-// 15000: a single bash hook script under test, not an install or a build.
-const HOOK_TIMEOUT_MS = 15000;
+// This is a bash FAN-OUT: the hook itself runs under `bash`, and it shells
+// out to `node` (see hookEnv below, which puts node on PATH for exactly that
+// reason). 15000ms was sized for a single-probe class, not this one. Same
+// class as the observed CI failures in tests/quick-branching.test.cjs (PR
+// #3787 run 32668773524) and tests/worktree-safety.test.cjs (`next` run
+// 32608945654) — see HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the
+// class rationale.
+const HOOK_TIMEOUT_MS = HOOK_FANOUT_TIMEOUT_MS;
 
 // Ensure the running node binary is on PATH so bash hooks can call `node`
 // (Claude Code shell sessions do not have `node` on PATH).

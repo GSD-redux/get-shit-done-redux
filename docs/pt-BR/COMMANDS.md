@@ -219,7 +219,7 @@ Loop de convergência de planos cross-AI — replaneja com feedback de revisão 
 |------------------|-------------|-----------|
 | `N` | **Sim** | Número da fase a planejar e revisar |
 | Flags de revisor | Não | Repassa todas as flags de lane de revisor: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code` |
-| `--all` | Não | Executa todos os revisores configurados em paralelo |
+| `--all` | Não | Executa todos os revisores configurados. As lanes são despachadas **sequencialmente** por padrão; defina `review.parallel_lanes` como `true` para despachá-las simultaneamente em uma única passagem de revisão |
 | `--max-cycles N` | Não | Substitui o limite de ciclos (padrão 3) |
 
 **Comportamento de saída:** O loop termina quando a contagem HIGH chega a zero. A detecção de estagnação avisa quando a contagem HIGH não diminui entre ciclos. O portão de escalação solicita ao usuário que prossiga ou revise manualmente quando `--max-cycles` é atingido com preocupações HIGH ainda em aberto.
@@ -921,7 +921,7 @@ Extrai padrões reutilizáveis, antipadrões e decisões arquiteturais do trabal
 | `--format` | Formato de saída: `markdown` (padrão), `json` |
 
 **Pré-requisitos:** A fase foi executada (arquivos SUMMARY.md existem)
-**Produz:** `.planning/learnings/{phase}-LEARNINGS.md`
+**Produz:** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **Extrai:**
 - Decisões arquiteturais e sua justificativa
@@ -1166,7 +1166,7 @@ Revisa arquivos de código-fonte alterados durante uma fase em busca de bugs, vu
 | Argumento | Obrigatório | Descrição |
 |-----------|-------------|-----------|
 | `N` | **Sim** | Número da fase cujas mudanças revisar (por exemplo, `2` ou `02`) |
-| `--depth=quick\|standard\|deep` | Não | Nível de profundidade da revisão (substitui a configuração `workflow.code_review_depth`). `quick`: somente correspondência de padrões (~2 min). `standard`: análise por arquivo com verificações específicas de linguagem (~5–15 min, padrão). `deep`: análise entre arquivos incluindo grafos de importação e cadeias de chamadas (~15–30 min) |
+| `--depth=quick\|standard\|deep` | Não | Nível de profundidade da revisão. Substitui tanto `workflow.code_review_depth` quanto qualquer regra de caminho correspondente em `workflow.code_review_depth_overrides` — a flag sempre prevalece. `quick`: somente correspondência de padrões (~2 min). `standard`: análise por arquivo com verificações específicas de linguagem (~5–15 min, padrão). `deep`: análise entre arquivos incluindo grafos de importação e cadeias de chamadas (~15–30 min) |
 | `--files file1,file2,...` | Não | Lista explícita de arquivos separados por vírgula; ignora completamente o escopo SUMMARY/git |
 | `--fix` | Não | Corrige automaticamente problemas após a revisão — lê REVIEW.md, cria agente corretor, faz commit de cada correção atomicamente |
 | `--fix --all` | Não | Inclui descobertas Info no escopo de correção (padrão: somente Critical + Warning) |

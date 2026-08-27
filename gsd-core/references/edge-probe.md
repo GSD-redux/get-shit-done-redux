@@ -47,6 +47,14 @@ The five shapes are: `numeric-range`, `collection`, `text`, `stateful`, `io`. Wh
 `shapes` is absent, a heuristic classifier proposes them from the requirement prose
 (propose-then-confirm) — the author may correct the shape.
 
+**`text` is English, whatever language the SPEC is in.** The heuristic cues are English
+word-boundary patterns, so a project running with `response_language` set must pass `text` as a
+faithful English translation of the requirement; the SPEC itself keeps the original language and
+the `id` is never translated. Prose in another language matches no cue, classifies to zero
+shapes, and surfaces as `unclassified` (#1110) — the probe contributes nothing. Where a
+requirement carries no cue even in English, author `shapes` explicitly rather than leaning on
+the classifier.
+
 ## Taxonomy (8 categories)
 
 Closed and small by design: a fixed eight the author must explicitly clear beats thirty

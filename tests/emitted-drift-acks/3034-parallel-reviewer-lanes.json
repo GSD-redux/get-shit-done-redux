@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "review.md": {
+      "reason": "#3034 adds opt-in concurrent reviewer-lane dispatch to the invoke_reviewers step. The growth is the feature plus the reasoning that has to travel with it, because this block is shipped shell that is read by an agent at runtime rather than by a compiler: the strict-equality guard and its fail-safe polarity (deliberately inverted relative to the commit_docs guard, so it does not read as an inconsistency to be tidied away), why per-lane result files replaced a shared append (concurrent O_APPEND is atomic only below PIPE_BUF, and write_reviews parses that JSONL to render the models:/model_sources: frontmatter), why aggregation walks selection order rather than completion order, why the slug list is de-duplicated before dispatch, and why the loop body was hoisted into one shared function instead of forking into two dispatch bodies. No prose was moved into an eagerly @-imported reference to shrink the measured file -- total loaded context grew by exactly this diff."
+    }
+  }
+}

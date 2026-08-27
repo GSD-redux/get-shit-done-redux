@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/adr/NNNN.md below is a sourcePath metadata label passed to parseAdrMarkdown, never read from disk.
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 

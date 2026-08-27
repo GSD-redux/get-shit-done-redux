@@ -41,6 +41,15 @@ const { cleanup } = require('./helpers.cjs');
 const STATE_CJS_PATH = path.join(
   __dirname, '..', 'gsd-core', 'bin', 'lib', 'state.cjs'
 );
+// ADR-3473 §8.6: the writer worker's writeStateMd call now needs a
+// rebuildStateTransaction() — resolved as a separate require path since the
+// worker script runs in its own isolated module scope.
+const STATE_TRANSITION_CJS_PATH = path.join(
+  __dirname, '..', 'gsd-core', 'bin', 'lib', 'state-transition.cjs'
+);
+const FRONTMATTER_CJS_PATH = path.join(
+  __dirname, '..', 'gsd-core', 'bin', 'lib', 'frontmatter.cjs'
+);
 
 const MINIMAL_STATE_MD = [
   '# Project State',
@@ -123,10 +132,21 @@ fs.openSync = function(filePath, flags, mode) {
 // any module-level SAB allocations from a prior require contaminating sabCount.)
 delete require.cache[workerData.stateCjsPath];
 const { writeStateMd } = require(workerData.stateCjsPath);
+const { rebuildStateTransaction } = require(workerData.stateTransitionCjsPath);
+const { extractFrontmatter } = require(workerData.frontmatterCjsPath);
 
 let callErr = null;
 try {
-  writeStateMd(workerData.statePath, workerData.content, workerData.tmpDir);
+  // ADR-3473 §8.6: writeStateMd now requires a rebuild() transaction — this
+  // worker's write mirrors REGENERATE_STATE's shape (a fresh, no-frontmatter
+  // MINIMAL_STATE_MD body), so the snapshot is of whatever (if anything)
+  // already exists on disk at statePath before this write.
+  const priorContent = fs.existsSync(workerData.statePath)
+    ? fs.readFileSync(workerData.statePath, 'utf8')
+    : '';
+  writeStateMd(workerData.statePath, workerData.content, rebuildStateTransaction({
+    snapshot: extractFrontmatter(priorContent, workerData.statePath),
+  }), workerData.tmpDir);
 } catch (e) {
   callErr = (e && e.message) ? e.message : String(e);
 }
@@ -244,6 +264,8 @@ describe('perf #316: acquireStateLock hoists sleep buffer — exactly one SAB pe
             eval: true,
             workerData: {
               stateCjsPath: STATE_CJS_PATH,
+              stateTransitionCjsPath: STATE_TRANSITION_CJS_PATH,
+              frontmatterCjsPath: FRONTMATTER_CJS_PATH,
               statePath,
               content: MINIMAL_STATE_MD,
               tmpDir,

@@ -260,6 +260,46 @@ describe('bracket grammar: sentinel guard', () => {
     assert.strictEqual(core.isSentinelPhaseId('feature-branch'), false);
   });
 
+  test('#3639: isSentinelPhaseDir reads the MILESTONE off a bracket dir name, convention-less', () => {
+    // The disk-side guards see raw DIRECTORY names and do not know the repo's
+    // convention. isSentinelPhaseDir recognizes the full bracket dir shape
+    // (code prefix, dot, MILESTONE digits, hyphen, PHASE digits) so sentinel
+    // milestone dirs are recognized without a convention argument.
+    assert.strictEqual(core.isSentinelPhaseDir('GSD.999-07-icebox'), true);
+    assert.strictEqual(core.isSentinelPhaseDir('GSD.00-01-backlog'), true);
+    assert.strictEqual(core.isSentinelPhaseDir('GSD.000-01-padded'), true);
+    // Ordinary bracket milestones: not sentinels.
+    assert.strictEqual(core.isSentinelPhaseDir('GSD.03-01-auth'), false);
+    assert.strictEqual(core.isSentinelPhaseDir('GSD.998-01-near-icebox'), false);
+    // Legacy sentinel dirs keep their recognition through the same helper.
+    assert.strictEqual(core.isSentinelPhaseDir('999-interim'), true);
+    assert.strictEqual(core.isSentinelPhaseDir('0-drafts'), true);
+    assert.strictEqual(core.isSentinelPhaseDir('M-999-07-icebox'), true);
+  });
+
+  test('#3639: isSentinelPhaseDir never re-reads #1324 letter-prefixed REAL dirs as bracket sentinels', () => {
+    // ADR-2121 indistinguishability: the bracket branch requires PHASE DIGITS
+    // after the milestone hyphen — `P0.0-foundation` (letters after the
+    // hyphen) never matches it, and the legacy branch already returns false
+    // for these (pinned in the suite above).
+    assert.strictEqual(core.isSentinelPhaseDir('P0.0-foundation'), false);
+    assert.strictEqual(core.isSentinelPhaseDir('P0.999-x'), false);
+    assert.strictEqual(core.isSentinelPhaseDir('P0.3-2'), false);
+  });
+
+  test('#3639 disclosed residual: #1324 digit-continuation dirs with a SENTINEL-valued first decimal read as bracket sentinels', () => {
+    // ADR-2121: `{code}.{0|999}-{digit}...` is string-indistinguishable from
+    // a bracket sentinel dir — no convention-free discriminator exists. The
+    // dir-aware recognizer takes the sentinel reading (conservative at the
+    // disk-guard sites: a suppressed warning, never deleted data), while the
+    // NON-sentinel first decimals stay ordinary. Pinned so a change to either
+    // reading is a deliberate act, not drift.
+    assert.strictEqual(core.isSentinelPhaseDir('P0.0-1-foundation'), true);
+    assert.strictEqual(core.isSentinelPhaseDir('P0.999-2-x'), true);
+    assert.strictEqual(core.isSentinelPhaseDir('P0.3-2'), false);
+    assert.strictEqual(core.isSentinelPhaseDir('P0.1-2-x'), false);
+  });
+
   test('the bracket sentinel path is OFF by default: a convention-less #1324 dir is not a sentinel', () => {
     // `P0.0-foundation` is a real #1324 letter-prefixed phase, NOT milestone-0
     // sentinel. Auto-detecting the `P0`/`.0` prefix would be a false positive

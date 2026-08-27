@@ -1,3 +1,4 @@
+// docs-guard-exempt: '/proj/docs/notes.md' is a synthetic tool_input fixture path for a prompt-injection probe, never real repo content.
 // allow-test-rule: structural-regression-guard
 // #3596 calls out "secret-looking values in inputs, logs, stdout, stderr, and
 // thrown errors" as required negative-proof cases. The only way to assert

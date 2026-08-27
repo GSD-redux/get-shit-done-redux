@@ -1,1 +1,0 @@
-{"version":1,"paths":{"progress.md":{"reason":"#1762: Route V.missing and Route V.unknown now consume the dynamic ${VERIFICATION_NEXT_ACTION} block (matching the existing V.gaps/V.human format) instead of a hardcoded duplicate string, so the routing text stays reassuring and in sync with src/verification.cts's reworded next_action — deliberate growth, not drift."}}}

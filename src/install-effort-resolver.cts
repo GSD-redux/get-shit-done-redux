@@ -76,7 +76,11 @@ function _readGsdConfigFile(absPath: string, label: string): Record<string, unkn
 
 interface EffortCatalog {
   AGENT_DEFAULT_TIERS: Record<string, string>;
-  renderEffortForRuntime: (runtime: string, effort: string) => { value: string };
+  // #3007: `value` is `string | null` — declaring it `string` here was a
+  // structural lie that silently defeated TS null-checking for anything
+  // routed through this seam (a rejected/unrenderable effort level renders
+  // null, e.g. 'ultra' or an exhausted catalog clamp).
+  renderEffortForRuntime: (runtime: string, effort: string) => { value: string | null };
   EFFORT_MANIFEST_TIER_DEFAULTS: Record<string, string>;
   EFFORT_MANIFEST_DEFAULT: string;
 }
@@ -94,7 +98,11 @@ function _getGsdEffortCatalog(): EffortCatalog {
   // eslint-disable-next-line @typescript-eslint/no-require-imports -- model-catalog.cjs is an export= CommonJS module
   const { AGENT_DEFAULT_TIERS, renderEffortForRuntime } = require('./model-catalog.cjs') as {
     AGENT_DEFAULT_TIERS: Record<string, string>;
-    renderEffortForRuntime: (runtime: string, effort: string) => { value: string };
+    // #3007: `value` is `string | null` — declaring it `string` here was a
+  // structural lie that silently defeated TS null-checking for anything
+  // routed through this seam (a rejected/unrenderable effort level renders
+  // null, e.g. 'ultra' or an exhausted catalog clamp).
+  renderEffortForRuntime: (runtime: string, effort: string) => { value: string | null };
   };
 
   // This module lives in gsd-core/bin/lib/, so the shared manifest is one level

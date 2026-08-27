@@ -240,6 +240,9 @@ See [Package Legitimacy Gate in the User Guide](USER-GUIDE.md#package-legitimacy
 **In-repo value citation:**
 For any in-repo *discrete value* the researcher reports — an enum, a schema or type union, an error code, a status constant, or a filesystem path — a `[VERIFIED: …]` tag requires that it opened the source-of-truth file with `Read` during the run and cited the path **and line range** (`[VERIFIED: src/types/order.ts:14-22]`). The values are quoted verbatim in RESEARCH.md beside the claim, and any value used in a code example must also appear in that quote; anything else stays `[ASSUMED]`. A codebase `grep`, training memory, or a web search do not earn the tag on their own. This stops a plausible-but-drifted enum from reaching PLAN.md — where the planner lifts it into the plan's `<interfaces>` context block and the executor trusts it as ground truth — and surfacing only as a mid-execution deviation at typecheck.
 
+**Absent-evidence citation:**
+A compatibility claim the researcher reports — "this library does not support that runtime version" — earns a `[VERIFIED: …]` tag only from *positive* evidence. Metadata that is simply **missing** (no `python_requires`, no `engines` field, no per-version classifier, no changelog entry, no matching row in a support matrix) does not qualify, however authoritative the registry or documentation consulted: an absence says nothing about the version you are ruling out *and* nothing about the version you are standardizing on, so the same evidence would "prove" both. The rule keys on the evidence rather than the wording, so rephrasing the claim positively ("supports only up to 3.13") changes nothing, and an absence is equally not evidence that the version *is* supported. A **present** constraint is the opposite case and still earns the tag — `requires-python = ">=3.9,<3.12"` is a declared exclusion — as does documentation stating the incompatibility affirmatively, which is `[CITED: …]`. What separates the two is whether the declaration bounds every value or only the ones it names: an explicit range or upper bound speaks about all versions, while an enumerated allow-list that stops short of the target (classifiers running `:: 3.9` through `:: 3.13` with no `:: 3.14`) stays silent about the target and remains a governed absence unless the project says the list is exhaustive. See [How-to: verify a dependency-compatibility claim](how-to/verify-a-dependency-compatibility-claim.md). The one route from an absence to `[VERIFIED]` is a positive falsification attempt: run it against the real target and paste the failing output. Everything short of that stays `[ASSUMED]`, which routes the claim through the usual confirmation checkpoint before it can lock a decision in CONTEXT.md — so a probe you cannot run in this environment costs a checkpoint, not a blocked plan.
+
 ```bash
 /gsd-plan-phase 1                              # Research + plan + verify phase 1
 /gsd-plan-phase 3 --skip-research              # Plan without research (familiar domain)
@@ -264,10 +267,23 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 |-----------------|----------|-------------|
 | `N` | **Yes** | Phase number to plan and review |
 | Reviewer flags | No | Pass through every reviewer lane flag: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code` |
-| `--all` | No | Run every configured reviewer in parallel |
+| `--all` | No | Run every configured reviewer. Lanes are dispatched **sequentially by default**; set `review.parallel_lanes` to `true` to dispatch them concurrently within a single review pass |
 | `--max-cycles N` | No | Override cycle cap (default 3) |
 
 **Exit behavior:** Loop exits when both `current_high` and `current_actionable` hit zero. Stall detection warns when the total unresolved review count is not decreasing across cycles. Escalation gate asks the user to proceed or review manually when `--max-cycles` is hit with HIGH or actionable non-HIGH concerns still open.
+
+**Consensus gate (2+ reviewers only).** When two or more reviewers actually run in a cycle, a HIGH raised by exactly one of them is weighed by what the claim asserts before it counts toward `current_high`:
+
+| Lone reviewer's HIGH asserts | Counts toward `current_high` when |
+|---|---|
+| **Existence** — a symbol, file, flag, commit or ID exists, is absent, or says something specific | source-grounding confirms it, **or** another reviewer raised the same concern |
+| **Judgment** — a design or correctness property (missing idempotency, a race, an absent rate limit) | always, **unless** that reviewer's section opens with an evidence-quality discount marker (`[reviewed-without-source-citations]`, `[reviewed-without-repo-access]`, or a diff-only lane) |
+
+Judgment-class findings are deliberately exempt from corroboration: reviewers catch materially different classes of issue, so requiring two of them to independently raise the same architectural concern would suppress exactly what a multi-reviewer setup exists to surface. A suppressed HIGH is still reported, tagged `(single-reviewer, unconfirmed)` — never dropped. If **every** reviewer in a cycle carries a discount marker the gate disengages entirely, so a cycle in which nothing was verified can never be counted as converged. `current_actionable` is unaffected.
+
+With a single reviewer configured — the common case — behavior is unchanged. See [reviewer instances](../gsd-core/references/reviewer-instances.md) for how this interacts with `review.reviewer_instances`.
+
+**What this gate does not do.** It weighs *evidence*, not correctness. A reviewer that cites source evidence anywhere in its review is never discount-marked, so a **judgment-class finding it invents still counts on its own** — the marker catches "cited nothing" and "had no repo access", not "drew the wrong conclusion from a real citation". That is the deliberate side of the trade: the alternative is requiring corroboration for design findings, which suppresses the genuine architectural concern only one reviewer noticed, and would make adding reviewers *weaken* the gate. Existence-class claims are the ones tightened here.
 
 ```bash
 /gsd-plan-review-convergence 3                    # Default reviewers, 3 cycles
@@ -652,6 +668,31 @@ node gsd-tools.cjs phase uat-passed 3 --raw                  # Machine-readable 
 
 ---
 
+### `planning inspect`
+
+Emit a read-only, schema-versioned JSON snapshot of the whole planning state —
+milestone identity, active phase/plan/status, per-phase verification, roadmap
+acceptance and UAT evidence (kept separate), requirement rows with mapped-phase
+traceability, plan and task rows with planned/changed file provenance, and
+independent `accepted_phases` / `completed_plans` fractions.
+
+For downstream tools that need planning state without re-parsing GSD's Markdown.
+Mutates nothing. Takes no arguments — a stray positional or unknown flag is a
+fail-loud usage error rather than a silently-ignored one.
+
+```bash
+node gsd-tools.cjs query planning inspect       # schema-v1 snapshot
+node gsd-tools.cjs query planning.inspect       # dotted canonical form, identical
+node gsd-tools.cjs query planning inspect --cwd /path/to/project
+```
+
+Check `schema_version` before reading any other field, and branch on each value's
+`scope` — `complete` with an empty value is a real answer, `unreadable` is not.
+Full field reference: [CLI Tools](CLI-TOOLS.md#planning-inspect). Integration
+walkthrough: [Consume the planning snapshot](how-to/consume-the-planning-snapshot.md).
+
+---
+
 ## Navigation Commands
 
 ### `/gsd-next`
@@ -748,6 +789,16 @@ Interactive command center for managing multiple phases from one terminal.
 ```
 
 **Phase completion is disk-strict (ADR-3180 §7.4, issue #3186).** A phase's status here — and in `roadmap analyze`, `roadmap update-plan-progress`, and `phase complete` — is decided by one rule: a passing `*-VERIFICATION.md` on disk, checked unconditionally (plan count is never a precondition, so a zero-plan phase with a passing verification reports complete). A ticked `- [x]` checkbox in `ROADMAP.md` is a human annotation only; it carries no machine authority and is never consulted for these commands' completion verdicts. `roadmap update-plan-progress` additionally withholds writing the checkbox/completion date while any plan in the phase has no matching `*-SUMMARY.md`, mirroring `phase complete`'s own coverage gate.
+
+**Which phase comes *next* is a different question, and the roadmap answers it.** Disk-strictness
+governs whether a phase is *complete*; it does not decide the successor. `phase complete` resolves
+`next_phase` as the **lowest-numbered phase above the completed one that `ROADMAP.md` declares** for the
+current milestone, regardless of which phase directories happen to exist. Phase *numbers* decide the
+sequence — the order rows happen to appear in the file does not — a phase that has not been planned yet has no directory, and must still
+be selected ahead of a later phase that does. When the roadmap and the directories agree, the
+directory supplies the spelling (the zero-padded token and its on-disk slug). The directory scan is
+the fallback only when no readable roadmap phase list exists (#3701; the same rule #3581 established
+for `init.progress`).
 
 **Checkpoint Heartbeats (#2410):**
 
@@ -1169,7 +1220,7 @@ Extract reusable patterns, anti-patterns, and architectural decisions from compl
 | `--format` | Output format: `markdown` (default), `json` |
 
 **Prerequisites:** Phase has been executed (SUMMARY.md files exist)
-**Produces:** `.planning/learnings/{phase}-LEARNINGS.md`
+**Produces:** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **Extracts:**
 - Architectural decisions and their rationale
@@ -1240,6 +1291,55 @@ gsd-tools check verify-command-paths 3 --raw    # probe phase 3's verify command
 ```
 
 See [Resolve verify-command path findings](how-to/resolve-verify-command-path-findings.md).
+
+### `gsd-tools check verify-failure-directions`
+
+Deterministic presence probe over a phase's stated failing directions (#3172). Run automatically
+by `/gsd-plan-phase` before the plan-check pass and handed to `gsd-plan-checker`; runnable by
+hand to see what the checker saw.
+
+Every runnable `<automated>` command must carry a `<fails_when>` sibling naming what output
+constitutes failure. A command with no expressible failure mode is not an acceptance test.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `N` | **Yes** | Phase number whose `-PLAN.md` files are probed |
+
+| Flag | Description |
+|------|-------------|
+| `--raw` | Emit the JSON payload with no surrounding prose |
+
+**Prerequisites:** none — an unresolvable phase degrades to a JSON payload with `readError` set
+rather than failing.
+**Produces:** JSON on stdout. Nothing is written to disk.
+
+**It never executes command text**, and it never authors a statement for the planner — a
+prescribed failure signal would be copied verbatim and carry no information.
+
+**Pairing.** Within one `<task>`, each `<fails_when>` binds to the nearest **preceding**
+`<automated>`; the first statement after a command is the binding one. N runnable commands need
+N statements. A redundant second statement for the same command is ignored.
+
+Each row of `commands` carries `command`, `statement`, `plan`, `task`, `status`, and `severity`.
+
+| `status` | `severity` | Meaning |
+|---|---|---|
+| `ok` | `none` | A non-empty, non-placeholder statement is bound to this command |
+| `missing` | `blocker` | The command has no `<fails_when>` at all |
+| `empty` | `blocker` | A `<fails_when>` is present but blank |
+| `placeholder` | `blocker` | The whole statement is `TBD`, `TODO`, `N/A`, `NA`, `none`, `unknown`, `TBA`, `?`, or `-` (case-insensitive, whole value only) |
+| `orphan` | `warning` | A `<fails_when>` that follows no command — it satisfies nothing |
+| `sentinel` | `none` | A Nyquist `MISSING — Wave 0 …` placeholder; not runnable, so exempt |
+
+The top-level `status` is `blocked` when any row is a blocker, `unresolvable` when the probe
+could not look, and `ok` otherwise. A non-empty `readError` means the probe **could not look** —
+distinct from finding nothing.
+
+```bash
+gsd-tools check verify-failure-directions 3 --raw    # probe phase 3's failing directions
+```
+
+See [State a failing direction](how-to/state-a-failing-direction.md).
 
 ---
 
@@ -1575,7 +1675,7 @@ Review source files changed during a phase for bugs, security vulnerabilities, a
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `N` | **Yes** | Phase number whose changes to review (e.g., `2` or `02`) |
-| `--depth=quick\|standard\|deep` | No | Review depth level (overrides `workflow.code_review_depth` config). `quick`: pattern-matching only (~2 min). `standard`: per-file analysis with language-specific checks (~5–15 min, default). `deep`: cross-file analysis including import graphs and call chains (~15–30 min) |
+| `--depth=quick\|standard\|deep` | No | Review depth level. Overrides both `workflow.code_review_depth` and any matching `workflow.code_review_depth_overrides` path rule — the flag always wins. `quick`: pattern-matching only (~2 min). `standard`: per-file analysis with language-specific checks (~5–15 min, default). `deep`: cross-file analysis including import graphs and call chains (~15–30 min) |
 | `--files file1,file2,...` | No | Explicit comma-separated file list; skips SUMMARY/git scoping entirely |
 | `--fix` | No | Auto-fix issues after review — reads REVIEW.md, spawns fixer agent, commits each fix atomically |
 | `--fix --all` | No | Include Info findings in fix scope (default: Critical + Warning only) |
@@ -1708,6 +1808,10 @@ Create a clean PR branch by filtering out `.planning/` commits.
 | `target branch` | No | Base branch (default: `main`) |
 
 **Purpose:** Reviewers see only code changes, not GSD planning artifacts.
+
+**Prerequisites:** Clean working tree — uncommitted changes are rejected before the PR branch is created.
+
+**Filter mode:** Set by [`planning.pr_strict`](CONFIGURATION.md#planning-settings). Default (`false`) keeps structural planning state — `STATE.md`, `ROADMAP.md`, `MILESTONES.md`, `PROJECT.md`, `REQUIREMENTS.md`, `milestones/**` — and drops the transient subdirectories. Strict (`true`) drops every `.planning/` path. The active mode is printed in the run header and in the verification summary.
 
 ```bash
 /gsd-pr-branch                     # Filter against main
@@ -1931,6 +2035,64 @@ Presence and posture are separate verdicts: a missing agent is reported in `miss
 
 ---
 
+### `state update <field> <value>`
+
+Update a single STATE.md field.
+
+**Prerequisites:** `.planning/STATE.md` exists
+**Produces:** `{updated: true, preserved: [...]}`, or `{updated: false, reason, preserved: [...]}`
+
+```bash
+node gsd-tools.cjs state update "Stopped at" "finished the migration"
+```
+
+#### Frontmatter keys are projections — write the body field
+
+STATE.md's frontmatter is **re-derived from the body on every write**. So a frontmatter key like
+`stopped_at` is not the value; it is a projection of the body field `Stopped at:`. Ask to update the
+key and the command refuses, naming the field that does work:
+
+```json
+{
+  "updated": false,
+  "reason": "Field \"stopped_at\" is a body-derived frontmatter key and is not directly writable. Update its body source instead: state update \"Stopped At\" <value>."
+}
+```
+
+This is distinct from a field that genuinely is not there, which still reports
+`Field "…" not found in STATE.md`. The two used to be indistinguishable (#3699).
+
+| Frontmatter key | Body source |
+|---|---|
+| `current_phase` | `Current Phase` (or the prose `Phase:` line) |
+| `current_phase_name` | `Current Phase Name` (or the prose `Phase:` name) |
+| `current_plan` | `Current Plan` |
+| `status` | `Status` |
+| `stopped_at` | `Stopped At` / `Stopped at` (under `## Session`) |
+| `paused_at` | `Paused At` (under `## Session`) |
+| `last_activity` | `Last Activity` / `Last activity` (date part) |
+| `last_activity_desc` | `Last Activity Description` (or the prose after the dash) |
+
+Keys not in this table have no body source at all — `milestone` and `milestone_name` come from
+ROADMAP.md, `progress.*` from a scan of `.planning/phases/`, and `last_updated` / `state_head` /
+`gsd_state_version` are recomputed on every write. The refusal names which of those applies.
+
+#### Repairing a document whose body source is missing
+
+If frontmatter carries a key but the body has **no** source line for it, there is nothing to derive
+from and neither route can write. In that one case the frontmatter key *is* directly writable, and
+the command says so:
+
+```json
+{ "updated": true, "wrote": "frontmatter", "preserved": [] }
+```
+
+`wrote: "frontmatter"` appears only on this repair path — an ordinary update omits it. The fallback
+is deliberately narrow: it will not fire while any body source line still exists (even one stranded
+in an archive section), and it will not invent a frontmatter key that is not already there.
+
+---
+
 ### `state validate`
 
 Detect drift between STATE.md and the actual filesystem.
@@ -1942,6 +2104,24 @@ Detect drift between STATE.md and the actual filesystem.
 node gsd-tools.cjs state validate
 ```
 
+| Flag | Description |
+|------|-------------|
+| `--strict` | Exit non-zero when the report is not `valid: true`. Off by default. |
+
+Without `--strict` the command always exits `0`, including when it reports
+`valid: false` — so a CI step or git hook has to parse the JSON to decide whether
+state is correct. `--strict` makes the verdict gateable directly:
+
+```bash
+node gsd-tools.cjs state validate --strict || echo "STATE.md needs attention"
+```
+
+The default is deliberately unchanged: the exit status is observable behavior that
+reaches downstream consumers who cannot be enumerated, so opting in is a choice the
+caller makes rather than one imposed on every existing script.
+
+A missing or unreadable STATE.md exits non-zero under `--strict` too — those report
+`error` or `valid: false` and are as gateable as any drift warning.
 The report also carries a `scope` field reporting whether the drift derivation could actually run:
 
 | `scope` | Meaning |
@@ -1964,6 +2144,8 @@ Each `warnings` entry is a coded diagnostic object (`{code, severity, message, r
 | `S005` | warning | STATE.md's plan count disagrees with the plan count on disk |
 | `S006` | warning | STATE.md still says "executing" but a `*-VERIFICATION.md` in the phase shows verification passed |
 | `S007` | warning | Every plan in the phase has a summary, but STATE.md still says "executing" |
+| `S008` | warning | STATE.md's `Last activity` value does not begin with a real calendar date, so no reader can date the project's activity |
+| `S009` | warning | The `Last activity` description wrapped onto a second line, and every reader silently drops the remainder |
 
 ---
 
@@ -2037,6 +2219,54 @@ Mark the current phase as COMPLETE in STATE.md — updates the body `Status`, `L
 ```bash
 node gsd-tools.cjs state complete-phase --phase 3
 ```
+
+---
+
+### `runtime-identity`
+
+Report the package coordinates of the `gsd-tools` that is executing. Used by the runtime
+launcher preamble to confirm a shipped workflow reached this package's tool rather than a
+different package that also provides a `gsd-tools` binary.
+
+**Prerequisites:** none — it reads no project state and needs no resolvable project root
+**Produces:** a JSON identity payload on stdout
+
+```bash
+node gsd-tools.cjs runtime-identity
+```
+
+```json
+{
+  "packageName": "@opengsd/gsd-core",
+  "version": "1.12.0"
+}
+```
+
+| Field | Type | Value |
+|---|---|---|
+| `packageName` | string | Always `@opengsd/gsd-core`. Baked at build time from `package.json`, so it survives an installed tree that carries no real `package.json`. |
+| `version` | string | The installed host version. Falls back to `0.0.0` when neither `gsd-core/VERSION` nor a runtime-root `package.json` is readable. |
+
+`--raw` emits the same payload on a single line.
+
+The payload is additive-only: consumers must ignore unrecognized keys. `version` is
+reported but is **not** asserted by the launcher check — identity alone determines whether
+the check passes, so a `0.0.0` development tree still verifies.
+
+The launcher preamble runs this verb once, immediately after it resolves a tool and before
+any workflow verb executes. It matches the `--raw` output **anchored to the start** of the
+payload — a substring search would accept `{"packageName":"get-shit-done-cc","note":
+"@opengsd/gsd-core"}` — and exports the outcome as `GSD_IDENTITY_STATUS`:
+
+| `GSD_IDENTITY_STATUS` | Meaning |
+|---|---|
+| `ok` | The resolved tool proved it is `@opengsd/gsd-core`. |
+| `unverified` | It did not. Either a different package, or an `@opengsd/gsd-core` older than this verb. The preamble prints one line to stderr and continues — the rollout is warn-then-fail. |
+
+The same verb is still useful by hand for answering "which tool am I actually running?".
+
+See [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) for using it,
+and [Runtime identity](FEATURES.md#168-runtime-identity) for the rationale.
 
 ---
 

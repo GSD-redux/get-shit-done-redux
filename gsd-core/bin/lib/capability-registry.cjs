@@ -97,7 +97,7 @@ const capabilities = {
     "role": "runtime",
     "version": "1.11.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -128,7 +128,8 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeCommandToAntigravitySkill"
+            "converter": "convertClaudeCommandToAntigravitySkill",
+            "home": ".gemini/config"
           },
           {
             "kind": "agents",
@@ -136,7 +137,8 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeAgentToAntigravityAgent"
+            "converter": "convertClaudeAgentToAntigravityAgent",
+            "home": ".gemini/config"
           }
         ],
         "local": [
@@ -227,7 +229,7 @@ const capabilities = {
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
     },
@@ -236,6 +238,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      },
+      "review.max_prompt_tokens_per_reviewer.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
       }
     }
   },
@@ -631,7 +638,7 @@ const capabilities = {
       "reviewsSection": "Claude",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
       "handler": null
     },
@@ -640,6 +647,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Claude reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -705,7 +717,7 @@ const capabilities = {
         "into": "executor",
         "fragment": {
           "path": "fragments/execute-wave-pre.md",
-          "inline": "# Claude orchestration — Workflow execution backend (BETA)\n\n> Injected at `execute:wave:pre` `into: executor` only when\n> `claude_orchestration.enabled` is true. Default-off; `onError: skip`.\n\n## When this contribution is active\n\nThe Claude orchestration capability is **default-off and BETA**. It activates only\nwhen ALL of the following hold:\n\n1. `claude_orchestration.enabled` is `true` in `.planning/config.json`, AND\n2. the active runtime is **Claude Code** (the Workflow tool is Claude / Agent\n   SDK-specific), AND\n3. `claude_orchestration.execution_backend` resolves to `workflow` — either\n   explicitly, or via `auto` — **and** the Agent SDK version is\n   `>= claude_orchestration.min_agent_sdk_version` (default `0.3.149`). The SDK\n   floor applies in both `auto` and `workflow` modes (fail-closed: a pre-release\n   or older SDK never activates the preview backend).\n\nDetection is fail-closed: any miss degrades to **inline, manual, one-agent-per-\nmessage dispatch** — exactly today's behaviour. On a non-Claude runtime this\ncontribution is a no-op.\n\n## Why `execute:wave:pre` (not `execute:wave:post`)\n\nThis is a **dispatch-backend selector** — it decides HOW a wave's executor agents\nare spawned. That decision has to be made BEFORE the wave's `Agent()` calls in\n`execute-phase.md` step 3, not after the wave has already finished (#2285). The\ncapability previously registered at `execute:wave:post`, which fires only after\nworktree merge/post-merge tests/tracking updates — by then the wave was already\ndispatched inline, so the contribution was structurally unable to change how\ndispatch happened. This fragment is injected at the point that actually precedes\ndispatch.\n\n## What the orchestrator does when the Workflow backend is active\n\nBefore spawning executor agents for the current wave (execute-phase.md step 3),\nresolve the dispatch backend through the single composed CLI seam:\n\n```bash\ngsd-tools claude-orchestration resolve-wave-dispatch \\\n  --waves \"$WAVE_MANIFEST_PATH\" --run-id \"$PHASE_RUN_ID\" \\\n  --runtime \"$RUNTIME\" \\\n  --phase-dir \"$PHASE_DIR\" --raw\n```\n\n`--agent-sdk-version` is no longer passed here (#2590). The router resolves the\ninstalled Agent SDK version itself; see **Agent SDK version** below. The former\n`${AGENT_SDK_VERSION:+--agent-sdk-version \"$AGENT_SDK_VERSION\"}` line was also\n**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it\ncollapsed to a SINGLE argv element there, `argValue()` never matched, and the run\nfailed into `agent_sdk_version_unknown` — indistinguishable from genuinely\nunknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.\n\nThis composes `detectWorkflowBackend` (the gate ladder above) with\n`emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure\nfunction backing it is `resolveWaveDispatch` in\n`gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:\n`{ backend: 'inline'|'workflow', reason, script?, summary? }`.\n\n### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)\n\nThese are NOT pre-existing execute-phase.md variables — the orchestrator builds\nthem at this step, from data it already has in-context from `discover_and_group_plans`\n(the `PLAN_INDEX` JSON) and step 2.5 (the per-plan `USE_WORKTREES_FOR_PLAN` decision):\n\n1. **`$PHASE_DIR`** — reuse `{phase_dir}` from the `INIT` bundle (already loaded\n   in the `initialize` step). No new value needed.\n\n2. **`$PHASE_RUN_ID`** — a stable identifier for THIS phase-execution attempt, so\n   `resumeFromRunId` can resume an interrupted run without re-dispatching plans\n   the Workflow tool already completed. Construct it deterministically —\n   `execute-{phase_number}-{phase_slug}` — from `INIT`'s `phase_number`/`phase_slug`\n   (both are already validated identifiers used elsewhere in this workflow, so\n   they satisfy `emitWorkflowScript`'s `isScriptableIdentifier` check). Do NOT\n   mint a new random id per wave — the SAME `$PHASE_RUN_ID` is reused for every\n   wave in the phase so the Workflow tool can correctly track cross-wave resume\n   state.\n\n3. **`$WAVE_MANIFEST_PATH`** — a fresh temp file for THIS wave's manifest (one\n   wave = one `waves` array with a single entry, matching the wave-by-wave\n   dispatch loop; do not batch multiple waves into one manifest — waves are\n   dispatched in wave order, not all at once):\n\n   ```bash\n   WAVE_MANIFEST_PATH=$(mktemp \"${TMPDIR:-/tmp}/gsd-wave-dispatch-XXXXXX\") && mv \"$WAVE_MANIFEST_PATH\" \"$WAVE_MANIFEST_PATH.json\" && WAVE_MANIFEST_PATH=\"$WAVE_MANIFEST_PATH.json\"\n   ```\n\n   Then **use the Write tool** (not a bash/jq pipeline — the orchestrator already\n   has every field parsed in-context) to write the manifest JSON to\n   `$WAVE_MANIFEST_PATH`:\n\n   ```json\n   {\n     \"waves\": [\n       {\n         \"id\": \"wave-{N}\",\n         \"plans\": [\n           {\n             \"id\": \"{plan_id}\",\n             \"brief\": \"{the SAME <objective>...<success_criteria> prompt block step 3 builds for this plan's inline Agent() call}\",\n             \"files_modified\": [\"{from PLAN_INDEX.plans[].files_modified for this plan}\"],\n             \"use_worktree\": {true unless step 2.5 set USE_WORKTREES_FOR_PLAN=false for this plan}\n           }\n         ]\n       }\n     ]\n   }\n   ```\n\n   - **`id`** — the plan id from `PLAN_INDEX`, e.g. `\"01-01\"`.\n   - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`\n     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/\n     `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/\n     `{phase_name}` substituted) — a short summary here would NOT reproduce\n     step 3's behavior and would violate the \"identical artifacts\" contract.\n   - **`files_modified`** — copy verbatim from the plan's `PLAN_INDEX` entry.\n   - **`use_worktree`** — `true` for every plan UNLESS step 2.5's per-plan\n     worktree gate (`execute-phase/steps/per-plan-worktree-gate.md`) set\n     `USE_WORKTREES_FOR_PLAN=false` for that plan (submodule-touching plan, or\n     project-level `USE_WORKTREES=false`) — in which case pass `false` here so\n     `emitWorkflowScript` omits `isolation: \"worktree\"` for that plan (#2772 /\n     #2285 finding 1). **Never** hardcode `true` — that would force worktree\n     isolation on a plan the inline path explicitly keeps out of worktrees.\n\n4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.\n\n**Agent SDK version:** the orchestrator has no *bash-computable* way to\nintrospect the live Agent SDK version — but the router runs in Node, so it\nresolves the version itself (#2590), in this order:\n\n1. an explicit `--agent-sdk-version <ver>` (pin a version),\n2. `GSD_AGENT_SDK_VERSION`,\n3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from\n   its `package.json` on disk by walking `node_modules` up the tree. (Read\n   directly rather than via `require.resolve`: the SDK's `exports` map does not\n   expose `./package.json`, so `require.resolve` throws\n   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)\n\nPreviously nothing computed this at all, so gate 5 returned\n`agent_sdk_version_unknown` on **every** automated run and the Workflow backend\ncould never activate — while `gsd-tools capability state` still reported the\ncapability `active: true`. Fail-closed is preserved: when no version can be\nresolved, gate 5 still declines to `inline`. What changed is that a resolvable\nversion is now actually found, so a genuinely-too-old SDK reports\n`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.\n\n**If `backend == \"workflow\"`:** run the emitted `script` via the Workflow tool\nfor THIS wave instead of the per-message `Agent()` loop in step 3. The script\ncomposes the SAME `gsd-executor` agent type the inline path uses, with\nworktree isolation applied PER PLAN from the manifest's `use_worktree` field\n(see `emitWorkflowScript`):\n\n- **waves → one or more sequential `parallel()` barriers** — each wave is a\n  barrier group; when plans within a wave share `files_modified`, they are split\n  into separate sequential stages within that wave's barrier.\n- **plans → `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })`**\n  when `use_worktree` is not `false`, or `agent(brief, { agentType: 'gsd-executor' })`\n  (no isolation) when it is — so the produced `SUMMARY.md` and commits are\n  identical to inline dispatch, INCLUDING the inline path's submodule safety\n  gate (#2772 / #2285 finding 1).\n- **`files_modified` overlap → separate sequential stages** — the same overlap\n  rule execute-phase already applies inline (step 1 of the wave loop).\n- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's\n  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,\n  not a script function; the script deliberately does not call it (#2590 — doing\n  so threw \"resumeFromRunId is not defined\" and rejected the entire script).\n  Omitting it from the tool invocation silently regresses phase-resume to a\n  no-op: an interrupted phase re-runs completed plans.\n\n### After the run: manifest bridge into the merge chain (#3302)\n\nThe single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also\nmeans step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on\nthis path. The orchestrator MUST bridge the run's per-agent results into the SAME\nmanifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run\nunchanged:\n\n1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,\n   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:\n\n   ```bash\n   if [ -z \"${WAVE_WORKTREE_MANIFEST:-}\" ]; then\n     M=$(mktemp \"${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX\") && mv \"$M\" \"$M.json\" && WAVE_WORKTREE_MANIFEST=\"$M.json\" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)\n     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back\n     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.\n     ORCH_ROOT=$(git rev-parse --show-toplevel)\n     ORCH_ROOT=\"$ORCH_ROOT\" MANIFEST=\"$WAVE_WORKTREE_MANIFEST\" node -e 'const fs=require(\"fs\");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+\"\\n\")'\n     export WAVE_WORKTREE_MANIFEST\n   fi\n   ```\n\n2. **Invoke the Workflow tool with the emitted script and\n   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry\n   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that\n   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,\n   expected_base}` — captured by the executor itself per\n   `agents/gsd-executor.md`), or `null` when the agent's result carried none\n   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).\n\n3. **Record every worktree plan** exactly as inline dispatch does at step 3's\n   \"After each `Agent()` returns\" — one `worktree.record-agent` per returned entry\n   with `expects_worktree: true` and complete metadata:\n\n   ```bash\n   gsd_run query worktree.record-agent --manifest \"$WAVE_WORKTREE_MANIFEST\" \\\n     --agent-id \"<metadata.agent_id>\" --path \"<metadata.worktree_path>\" \\\n     --branch \"<metadata.branch>\" --base \"<metadata.expected_base>\" \\\n     --files \"<plan files_modified, space-separated>\"\n   ```\n\n   The verb's write-strict validation applies as inline: on a non-zero exit or any\n   missing field, stop and ask for recovery — do not append an under-populated entry.\n\n4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**\n   After recording, the manifest must hold one entry per `expects_worktree: true`\n   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected\n   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count\n   mismatch — means commits are stranded on their `worktree-wf_*` branches and\n   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the\n   phase with the failing plan id and the recovery hint below; do NOT run\n   `worktree.cleanup-wave` and do NOT proceed to step 4.\n\n   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover\n   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one\n   `{\"type\":\"result\",…}` line per agent — in the Workflow run's transcript dir), re-run\n   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be\n   recovered either, merge the branch manually after review — never discard it.\n\n5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final\n   messages, so a previously-completed plan can return with `metadata: null`. Recover\n   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it\n   cannot be recovered, fail loudly per rule 4 — a resumed run must never report\n   success over silently-dropped agent work.\n\n6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the\n   manifest): they ran without isolation; their commits are already on the main working\n   tree. No record-agent entry, no manifest write.\n\nWith the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's\nmanifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run\nUNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their\nmetadata; the merge chain itself is the inline path's own, now with real input.\n\n**If `backend == \"inline\"`** (any gate miss, or `resolve-wave-dispatch` itself\nunavailable/erroring): proceed to step 3's standard per-message `Agent()`\ndispatch — the default, byte-identical-to-today path. `onError: skip` on this\ncontribution means a `resolve-wave-dispatch` command failure is treated exactly\nlike an `inline` result, never as a fatal wave error.\n\n## Fallback contract\n\nDetection is fail-closed end-to-end: capability disabled, non-Claude runtime,\n`execution_backend:\"inline\"`, missing/incapable host descriptor, unknown or\nbelow-floor Agent SDK version, or an `emitWorkflowScript` failure on a malformed\nwave manifest — ANY of these degrades to `backend:\"inline\"` and execute-phase's\nstandard inline dispatch (step 3) runs unmodified. The Workflow backend never\npartially activates; the executor MUST NOT assume parallelism, a shared budget,\nor resume-from-run-id semantics when `backend == \"inline\"`.\n"
+          "inline": "# Claude orchestration — Workflow execution backend (BETA)\n\n> Injected at `execute:wave:pre` `into: executor` only when\n> `claude_orchestration.enabled` is true. Default-off; `onError: skip`.\n\n## When this contribution is active\n\nThe Claude orchestration capability is **default-off and BETA**. It activates only\nwhen ALL of the following hold:\n\n1. `claude_orchestration.enabled` is `true` in `.planning/config.json`, AND\n2. the active runtime is **Claude Code** (the Workflow tool is Claude / Agent\n   SDK-specific), AND\n3. `claude_orchestration.execution_backend` resolves to `workflow` — either\n   explicitly, or via `auto` — **and** the Agent SDK version is\n   `>= claude_orchestration.min_agent_sdk_version` (default `0.3.149`). The SDK\n   floor applies in both `auto` and `workflow` modes (fail-closed: a pre-release\n   or older SDK never activates the preview backend).\n\nDetection is fail-closed: any miss degrades to **inline, manual, one-agent-per-\nmessage dispatch** — exactly today's behaviour. On a non-Claude runtime this\ncontribution is a no-op.\n\n## Why `execute:wave:pre` (not `execute:wave:post`)\n\nThis is a **dispatch-backend selector** — it decides HOW a wave's executor agents\nare spawned. That decision has to be made BEFORE the wave's `Agent()` calls in\n`execute-phase.md` step 3, not after the wave has already finished (#2285). The\ncapability previously registered at `execute:wave:post`, which fires only after\nworktree merge/post-merge tests/tracking updates — by then the wave was already\ndispatched inline, so the contribution was structurally unable to change how\ndispatch happened. This fragment is injected at the point that actually precedes\ndispatch.\n\n## What the orchestrator does when the Workflow backend is active\n\nBefore spawning executor agents for the current wave (execute-phase.md step 3),\nresolve the dispatch backend through the single composed CLI seam:\n\n```bash\ngsd-tools claude-orchestration resolve-wave-dispatch \\\n  --waves \"$WAVE_MANIFEST_PATH\" --run-id \"$PHASE_RUN_ID\" \\\n  --runtime \"$RUNTIME\" \\\n  --phase-dir \"$PHASE_DIR\" --raw\n```\n\n`--agent-sdk-version` is no longer passed here (#2590). The router resolves the\ninstalled Agent SDK version itself; see **Agent SDK version** below. The former\n`${AGENT_SDK_VERSION:+--agent-sdk-version \"$AGENT_SDK_VERSION\"}` line was also\n**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it\ncollapsed to a SINGLE argv element there, `argValue()` never matched, and the run\nfailed into `agent_sdk_version_unknown` — indistinguishable from genuinely\nunknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.\n\nThis composes `detectWorkflowBackend` (the gate ladder above) with\n`emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure\nfunction backing it is `resolveWaveDispatch` in\n`gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:\n`{ backend: 'inline'|'workflow', reason, script?, summary? }`.\n\n### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)\n\nThese are NOT pre-existing execute-phase.md variables — the orchestrator builds\nthem at this step, from data it already has in-context from `discover_and_group_plans`\n(the `PLAN_INDEX` JSON) and step 2.5 (the per-plan `USE_WORKTREES_FOR_PLAN` decision):\n\n1. **`$PHASE_DIR`** — reuse `{phase_dir}` from the `INIT` bundle (already loaded\n   in the `initialize` step). No new value needed.\n\n2. **`$PHASE_RUN_ID`** — a stable identifier for THIS phase-execution attempt, so\n   `resumeFromRunId` can resume an interrupted run without re-dispatching plans\n   the Workflow tool already completed. Construct it deterministically —\n   `execute-{phase_number}-{phase_slug}` — from `INIT`'s `phase_number`/`phase_slug`\n   (both are already validated identifiers used elsewhere in this workflow, so\n   they satisfy `emitWorkflowScript`'s `isScriptableIdentifier` check). Do NOT\n   mint a new random id per wave — the SAME `$PHASE_RUN_ID` is reused for every\n   wave in the phase so the Workflow tool can correctly track cross-wave resume\n   state.\n\n3. **`$WAVE_MANIFEST_PATH`** — a fresh temp file for THIS wave's manifest (one\n   wave = one `waves` array with a single entry, matching the wave-by-wave\n   dispatch loop; do not batch multiple waves into one manifest — waves are\n   dispatched in wave order, not all at once):\n\n   ```bash\n   WAVE_MANIFEST_PATH=$(mktemp \"${TMPDIR:-/tmp}/gsd-wave-dispatch-XXXXXX\") && mv \"$WAVE_MANIFEST_PATH\" \"$WAVE_MANIFEST_PATH.json\" && WAVE_MANIFEST_PATH=\"$WAVE_MANIFEST_PATH.json\"\n   ```\n\n   Then **use the Write tool** (not a bash/jq pipeline — the orchestrator already\n   has every field parsed in-context) to write the manifest JSON to\n   `$WAVE_MANIFEST_PATH`:\n\n   ```json\n   {\n     \"waves\": [\n       {\n         \"id\": \"wave-{N}\",\n         \"plans\": [\n           {\n             \"id\": \"{plan_id}\",\n             \"brief\": \"{the SAME <objective>...<success_criteria> prompt block step 3 builds for this plan's inline Agent() call}\",\n             \"files_modified\": [\"{from PLAN_INDEX.plans[].files_modified for this plan}\"],\n             \"use_worktree\": {true unless step 2.5 set USE_WORKTREES_FOR_PLAN=false for this plan}\n           }\n         ]\n       }\n     ]\n   }\n   ```\n\n   - **`id`** — the plan id from `PLAN_INDEX`, e.g. `\"01-01\"`.\n   - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`\n     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/\n     `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/\n     `{phase_name}` substituted) — a short summary here would NOT reproduce\n     step 3's behavior and would violate the \"identical artifacts\" contract.\n   - **`files_modified`** — copy verbatim from the plan's `PLAN_INDEX` entry.\n   - **`use_worktree`** — `true` for every plan UNLESS step 2.5's per-plan\n     worktree gate (`execute-phase/steps/per-plan-worktree-gate.md`) set\n     `USE_WORKTREES_FOR_PLAN=false` for that plan (submodule-touching plan, or\n     project-level `USE_WORKTREES=false`) — in which case pass `false` here so\n     `emitWorkflowScript` omits `isolation: \"worktree\"` for that plan (#2772 /\n     #2285 finding 1). **Never** hardcode `true` — that would force worktree\n     isolation on a plan the inline path explicitly keeps out of worktrees.\n\n4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.\n\n**Agent SDK version:** the orchestrator has no *bash-computable* way to\nintrospect the live Agent SDK version — but the router runs in Node, so it\nresolves the version itself (#2590), in this order:\n\n1. an explicit `--agent-sdk-version <ver>` (pin a version),\n2. `GSD_AGENT_SDK_VERSION`,\n3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from\n   its `package.json` on disk by walking `node_modules` up the tree. (Read\n   directly rather than via `require.resolve`: the SDK's `exports` map does not\n   expose `./package.json`, so `require.resolve` throws\n   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)\n\nPreviously nothing computed this at all, so gate 5 returned\n`agent_sdk_version_unknown` on **every** automated run and the Workflow backend\ncould never activate — while `gsd-tools capability state` still reported the\ncapability `active: true`. Fail-closed is preserved: when no version can be\nresolved, gate 5 still declines to `inline`. What changed is that a resolvable\nversion is now actually found, so a genuinely-too-old SDK reports\n`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.\n\n**If `backend == \"workflow\"`:** run the emitted `script` via the Workflow tool\nfor THIS wave instead of the per-message `Agent()` loop in step 3. The script\ncomposes the SAME `gsd-executor` agent type the inline path uses, with\nworktree isolation applied PER PLAN from the manifest's `use_worktree` field\n(see `emitWorkflowScript`):\n\n- **waves → one or more sequential `parallel()` barriers** — each wave is a\n  barrier group; when plans within a wave share `files_modified`, they are split\n  into separate sequential stages within that wave's barrier.\n- **plans → `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })`**\n  when `use_worktree` is not `false`, or `agent(brief, { agentType: 'gsd-executor' })`\n  (no isolation) when it is — so the produced `SUMMARY.md` and commits are\n  identical to inline dispatch, INCLUDING the inline path's submodule safety\n  gate (#2772 / #2285 finding 1).\n- **`files_modified` overlap → separate sequential stages** — the same overlap\n  rule execute-phase already applies inline (step 1 of the wave loop).\n- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's\n  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,\n  not a script function; the script deliberately does not call it (#2590 — doing\n  so threw \"resumeFromRunId is not defined\" and rejected the entire script).\n  Omitting it from the tool invocation silently regresses phase-resume to a\n  no-op: an interrupted phase re-runs completed plans.\n\n### After the run: manifest bridge into the merge chain (#3302)\n\nThe single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also\nmeans step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on\nthis path. The orchestrator MUST bridge the run's per-agent results into the SAME\nmanifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run\nunchanged:\n\n1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,\n   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:\n\n   ```bash\n   if [ -z \"${WAVE_WORKTREE_MANIFEST:-}\" ]; then\n     M=$(mktemp \"${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX\") && mv \"$M\" \"$M.json\" && WAVE_WORKTREE_MANIFEST=\"$M.json\" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)\n     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back\n     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.\n     ORCH_ROOT=$(git rev-parse --show-toplevel)\n     ORCH_ROOT=\"$ORCH_ROOT\" MANIFEST=\"$WAVE_WORKTREE_MANIFEST\" node -e 'const fs=require(\"fs\");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+\"\\n\")'\n     export WAVE_WORKTREE_MANIFEST\n   fi\n   ```\n\n2. **Invoke the Workflow tool with the emitted script and\n   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry\n   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that\n   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,\n   expected_base}` — captured by the executor itself per\n   `agents/gsd-executor.md`), or `null` when the agent's result carried none\n   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).\n\n3. **Record every worktree plan** exactly as inline dispatch does at step 3's\n   \"After each `Agent()` returns\" — one `worktree.record-agent` per returned entry\n   with `expects_worktree: true` and complete metadata:\n\n   ```bash\n   gsd_run query worktree.record-agent --manifest \"$WAVE_WORKTREE_MANIFEST\" \\\n     --agent-id \"<metadata.agent_id>\" --path \"<metadata.worktree_path>\" \\\n     --branch \"<metadata.branch>\" --base \"<metadata.expected_base>\" \\\n     --files \"<plan files_modified, space-separated>\" \\\n     --deletions \"<plan files_deleted, space-separated>\"\n   ```\n\n   `--deletions` (#3003) carries the plan's declared `files_deleted` so a plan that scoped a file\n   removal merges through `cleanup-wave` instead of being blocked. Unlike `--files` it is not\n   advisory: omitting it leaves the deletions guard blocking on any deletion at all, so this\n   dispatch path must pass it or plans declaring a removal fail to merge here while succeeding on\n   the inline path.\n\n   The verb's write-strict validation applies as inline: on a non-zero exit or any\n   missing field, stop and ask for recovery — do not append an under-populated entry.\n\n4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**\n   After recording, the manifest must hold one entry per `expects_worktree: true`\n   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected\n   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count\n   mismatch — means commits are stranded on their `worktree-wf_*` branches and\n   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the\n   phase with the failing plan id and the recovery hint below; do NOT run\n   `worktree.cleanup-wave` and do NOT proceed to step 4.\n\n   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover\n   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one\n   `{\"type\":\"result\",…}` line per agent — in the Workflow run's transcript dir), re-run\n   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be\n   recovered either, merge the branch manually after review — never discard it.\n\n5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final\n   messages, so a previously-completed plan can return with `metadata: null`. Recover\n   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it\n   cannot be recovered, fail loudly per rule 4 — a resumed run must never report\n   success over silently-dropped agent work.\n\n6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the\n   manifest): they ran without isolation; their commits are already on the main working\n   tree. No record-agent entry, no manifest write.\n\nWith the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's\nmanifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run\nUNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their\nmetadata; the merge chain itself is the inline path's own, now with real input.\n\n**If `backend == \"inline\"`** (any gate miss, or `resolve-wave-dispatch` itself\nunavailable/erroring): proceed to step 3's standard per-message `Agent()`\ndispatch — the default, byte-identical-to-today path. `onError: skip` on this\ncontribution means a `resolve-wave-dispatch` command failure is treated exactly\nlike an `inline` result, never as a fatal wave error.\n\n## Fallback contract\n\nDetection is fail-closed end-to-end: capability disabled, non-Claude runtime,\n`execution_backend:\"inline\"`, missing/incapable host descriptor, unknown or\nbelow-floor Agent SDK version, or an `emitWorkflowScript` failure on a malformed\nwave manifest — ANY of these degrades to `backend:\"inline\"` and execute-phase's\nstandard inline dispatch (step 3) runs unmodified. The Workflow backend never\npartially activates; the executor MUST NOT assume parallelism, a shared budget,\nor resume-from-run-id semantics when `backend == \"inline\"`.\n"
         },
         "produces": [],
         "consumes": [
@@ -1038,9 +1050,16 @@ const capabilities = {
       "reviewsSection": "CodeRabbit",
       "evidenceClass": "diff-only",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.coderabbit",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.coderabbit": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "codex": {
@@ -1145,7 +1164,8 @@ const capabilities = {
           "exec"
         ],
         "cwdFlag": "--cd",
-        "promptFlag": null
+        "promptFlag": null,
+        "modelFlag": "--model"
       },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
@@ -1187,7 +1207,7 @@ const capabilities = {
       "reviewsSection": "Codex",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
       "handler": null
     },
@@ -1196,6 +1216,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Codex reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -1445,9 +1470,16 @@ const capabilities = {
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.cursor": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "drift": {
@@ -1690,7 +1722,7 @@ const capabilities = {
       "reviewsSection": "Gemini",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.gemini",
       "modelConfigKey": "review.models.gemini",
       "handler": null
     },
@@ -1699,6 +1731,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Gemini reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.gemini": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -2278,7 +2315,7 @@ const capabilities = {
       "reviewsSection": "Kimi Code",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
       "handler": null
     },
@@ -2287,8 +2324,66 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Kimi Code reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
+  },
+  "live-dom-uat": {
+    "id": "live-dom-uat",
+    "role": "feature",
+    "version": "1.11.0",
+    "title": "Live-DOM UAT",
+    "description": "Default-off live-DOM verification (#2856). Confines browser MCP reach to one purpose-built agent (gsd-dom-verifier) that carries the browser globs in its own tools: line, registered as an additive step hook at execute:wave:post. agents/gsd-executor.md is deliberately NOT widened: for a first-party agent the static tool list is the only control that exists, no capability can grant tools to one (ADR-1244 D2), no hook kind grants tool permissions (ADR-857 D4), and there is no per-dispatch tool override. Gated by activationKey workflow.live_dom_uat (default false), so with the key off the capability resolves inactive and the hook does not render at all. NOTE on the browser profile lock: chrome-devtools-mcp holds an exclusive lock on $HOME/.cache/chrome-devtools-mcp/chrome-profile, and --isolated is a flag on the user's own MCP-server registration that GSD cannot pass. Concurrent execution waves sharing one profile will therefore collide; the step tolerates and reports that (onError: skip, never blocking) rather than pretending to coordinate a resource it does not own.",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.11.0"
+    },
+    "runtimeCompat": {
+      "supported": [
+        "*"
+      ],
+      "unsupported": []
+    },
+    "skills": [],
+    "agents": [
+      "gsd-dom-verifier"
+    ],
+    "activationKey": "workflow.live_dom_uat",
+    "config": {
+      "workflow.live_dom_uat": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable live-DOM verification. Default-off: browser MCP reach is opt-in per project. When on, the orchestrator's automated UI verification may additionally use mcp__chrome-devtools__* / mcp__claude-in-chrome__* when present, and a gsd-dom-verifier step runs after each execution wave. When off, neither surface reaches a browser and the pre-existing mcp__playwright__* path is unchanged."
+      }
+    },
+    "hooks": [],
+    "steps": [
+      {
+        "point": "execute:wave:post",
+        "ref": {
+          "agent": "gsd-dom-verifier"
+        },
+        "fragment": {
+          "path": "fragments/execute-wave-post.md",
+          "inline": "<objective>\nVerify the live-DOM acceptance criteria for the execution wave that just completed.\nAnswer: \"of this wave's stated UI acceptance criteria, which can I observe in a live DOM\nright now, and which could I not look at?\"\n\nThis step is ADDITIVE. It never halts the wave, never fails the phase, and never rewrites\nSUMMARY.md. If you cannot look, say so and finish.\n</objective>\n\n<required_reading>\n- {phase_dir}/{phase_num}-PLAN.md (the wave's tasks and their acceptance criteria)\n- {phase_dir}/{phase_num}-UI-SPEC.md if it exists (the design contract, when the phase has one)\n</required_reading>\n\n<browser_surface>\nYou carry exactly two browser MCP families: `mcp__chrome-devtools__*` and\n`mcp__claude-in-chrome__*`. Use whichever responds. Do not assume they expose the same\ntool names — probe, then use what is there. Do not paper over differences between them.\n\nYou do NOT carry the Playwright MCP family. That path belongs to the orchestrator's\nown verification step and is not yours.\n</browser_surface>\n\n<profile_lock>\n`chrome-devtools-mcp` holds an exclusive lock on its browser profile\n(`$HOME/.cache/chrome-devtools-mcp/chrome-profile`). A second concurrent instance fails with:\n\n```\nThe browser is already running for <dir>. Use --isolated to run multiple browser instances.\n```\n\nIf you see that, or any equivalent lock error:\n\n1. Record `outcome: could_not_look` and `reason: profile_locked`.\n2. Name `--isolated` in the notes, so the operator knows the remedy is a flag on THEIR MCP\n   server registration.\n3. **Stop.** Do not retry, do not loop, do not wait for the lock. GSD cannot pass\n   `--isolated` — it is not GSD's flag — and a retry loop here just holds up the wave.\n\nParallel execution waves sharing one profile WILL hit this. It is an expected condition,\nnot a defect, and it is not a reason to fail anything.\n</profile_lock>\n\n<method>\nFor each UI acceptance criterion you can identify in the wave's plan:\n\n1. Resolve its target URL. If no dev server or target is reachable, that criterion is\n   `could_not_look` / `target_unreachable` — not a failure.\n2. Open it with the browser family that responded.\n3. Observe the DOM for the specific, stated condition. Assert on structure and content —\n   an element's presence, its text, its attributes, its computed state.\n4. Record `passed` when the stated condition is observably true, `needs_review` when it is\n   ambiguous or requires human judgement (subjective aesthetics, content accuracy).\n\nScope limit for this version: DOM observation against stated criteria only. No screenshot\ndiffing, no accessibility audit, no performance tracing. If a criterion needs one of those,\nmark it `needs_review` and say which.\n\nNever invent a criterion. If the plan states no UI acceptance criteria, that is\n`outcome: nothing_to_report` / `reason: no_criteria`, and it is a perfectly good result.\n</method>\n\n<output>\nWrite to: {phase_dir}/{phase_num}-DOM-VERIFY.md\n\nFrontmatter carries scalars only, so a reader can get the verdict without parsing prose:\n\n```\n---\nschema_version: 1\nwave: {wave_number}\noutcome: verified | nothing_to_report | could_not_look\nreason: ok | no_criteria | no_browser_mcp | profile_locked | target_unreachable\nchecked: <integer>\npassed: <integer>\nneeds_review: <integer>\n---\n```\n\nThen a short body: one line per criterion with its verdict, and — when `outcome` is\n`could_not_look` — exactly what stopped you and what the operator would change.\n\n**`nothing_to_report` and `could_not_look` are different outcomes and must never be\nconflated.** \"There were no UI criteria in this wave\" and \"there were criteria but I had no\nbrowser\" look identical in a summary that collapses them, and that ambiguity is the reported\nproblem this capability exists to remove.\n</output>\n"
+        },
+        "produces": [
+          "DOM-VERIFY.md"
+        ],
+        "consumes": [
+          "PLAN.md"
+        ],
+        "when": "workflow.live_dom_uat",
+        "onError": "skip"
+      }
+    ],
+    "contributions": [],
+    "gates": []
   },
   "llama-cpp": {
     "id": "llama-cpp",
@@ -2852,7 +2947,7 @@ const capabilities = {
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
       "handler": "opencode"
     },
@@ -2861,6 +2956,11 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the OpenCode reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -3198,9 +3298,16 @@ const capabilities = {
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.qwen": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "refactor-trigger": {
@@ -3993,6 +4100,7 @@ const byAgent = {
   "gsd-eval-planner": "ai-integration",
   "gsd-code-reviewer": "code-review",
   "gsd-code-fixer": "code-review",
+  "gsd-dom-verifier": "live-dom-uat",
   "gsd-mempalace-curator": "mempalace",
   "gsd-nyquist-auditor": "nyquist",
   "gsd-pattern-mapper": "pattern-mapper",
@@ -4315,7 +4423,7 @@ const byLoopPoint = {
         "into": "executor",
         "fragment": {
           "path": "fragments/execute-wave-pre.md",
-          "inline": "# Claude orchestration — Workflow execution backend (BETA)\n\n> Injected at `execute:wave:pre` `into: executor` only when\n> `claude_orchestration.enabled` is true. Default-off; `onError: skip`.\n\n## When this contribution is active\n\nThe Claude orchestration capability is **default-off and BETA**. It activates only\nwhen ALL of the following hold:\n\n1. `claude_orchestration.enabled` is `true` in `.planning/config.json`, AND\n2. the active runtime is **Claude Code** (the Workflow tool is Claude / Agent\n   SDK-specific), AND\n3. `claude_orchestration.execution_backend` resolves to `workflow` — either\n   explicitly, or via `auto` — **and** the Agent SDK version is\n   `>= claude_orchestration.min_agent_sdk_version` (default `0.3.149`). The SDK\n   floor applies in both `auto` and `workflow` modes (fail-closed: a pre-release\n   or older SDK never activates the preview backend).\n\nDetection is fail-closed: any miss degrades to **inline, manual, one-agent-per-\nmessage dispatch** — exactly today's behaviour. On a non-Claude runtime this\ncontribution is a no-op.\n\n## Why `execute:wave:pre` (not `execute:wave:post`)\n\nThis is a **dispatch-backend selector** — it decides HOW a wave's executor agents\nare spawned. That decision has to be made BEFORE the wave's `Agent()` calls in\n`execute-phase.md` step 3, not after the wave has already finished (#2285). The\ncapability previously registered at `execute:wave:post`, which fires only after\nworktree merge/post-merge tests/tracking updates — by then the wave was already\ndispatched inline, so the contribution was structurally unable to change how\ndispatch happened. This fragment is injected at the point that actually precedes\ndispatch.\n\n## What the orchestrator does when the Workflow backend is active\n\nBefore spawning executor agents for the current wave (execute-phase.md step 3),\nresolve the dispatch backend through the single composed CLI seam:\n\n```bash\ngsd-tools claude-orchestration resolve-wave-dispatch \\\n  --waves \"$WAVE_MANIFEST_PATH\" --run-id \"$PHASE_RUN_ID\" \\\n  --runtime \"$RUNTIME\" \\\n  --phase-dir \"$PHASE_DIR\" --raw\n```\n\n`--agent-sdk-version` is no longer passed here (#2590). The router resolves the\ninstalled Agent SDK version itself; see **Agent SDK version** below. The former\n`${AGENT_SDK_VERSION:+--agent-sdk-version \"$AGENT_SDK_VERSION\"}` line was also\n**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it\ncollapsed to a SINGLE argv element there, `argValue()` never matched, and the run\nfailed into `agent_sdk_version_unknown` — indistinguishable from genuinely\nunknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.\n\nThis composes `detectWorkflowBackend` (the gate ladder above) with\n`emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure\nfunction backing it is `resolveWaveDispatch` in\n`gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:\n`{ backend: 'inline'|'workflow', reason, script?, summary? }`.\n\n### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)\n\nThese are NOT pre-existing execute-phase.md variables — the orchestrator builds\nthem at this step, from data it already has in-context from `discover_and_group_plans`\n(the `PLAN_INDEX` JSON) and step 2.5 (the per-plan `USE_WORKTREES_FOR_PLAN` decision):\n\n1. **`$PHASE_DIR`** — reuse `{phase_dir}` from the `INIT` bundle (already loaded\n   in the `initialize` step). No new value needed.\n\n2. **`$PHASE_RUN_ID`** — a stable identifier for THIS phase-execution attempt, so\n   `resumeFromRunId` can resume an interrupted run without re-dispatching plans\n   the Workflow tool already completed. Construct it deterministically —\n   `execute-{phase_number}-{phase_slug}` — from `INIT`'s `phase_number`/`phase_slug`\n   (both are already validated identifiers used elsewhere in this workflow, so\n   they satisfy `emitWorkflowScript`'s `isScriptableIdentifier` check). Do NOT\n   mint a new random id per wave — the SAME `$PHASE_RUN_ID` is reused for every\n   wave in the phase so the Workflow tool can correctly track cross-wave resume\n   state.\n\n3. **`$WAVE_MANIFEST_PATH`** — a fresh temp file for THIS wave's manifest (one\n   wave = one `waves` array with a single entry, matching the wave-by-wave\n   dispatch loop; do not batch multiple waves into one manifest — waves are\n   dispatched in wave order, not all at once):\n\n   ```bash\n   WAVE_MANIFEST_PATH=$(mktemp \"${TMPDIR:-/tmp}/gsd-wave-dispatch-XXXXXX\") && mv \"$WAVE_MANIFEST_PATH\" \"$WAVE_MANIFEST_PATH.json\" && WAVE_MANIFEST_PATH=\"$WAVE_MANIFEST_PATH.json\"\n   ```\n\n   Then **use the Write tool** (not a bash/jq pipeline — the orchestrator already\n   has every field parsed in-context) to write the manifest JSON to\n   `$WAVE_MANIFEST_PATH`:\n\n   ```json\n   {\n     \"waves\": [\n       {\n         \"id\": \"wave-{N}\",\n         \"plans\": [\n           {\n             \"id\": \"{plan_id}\",\n             \"brief\": \"{the SAME <objective>...<success_criteria> prompt block step 3 builds for this plan's inline Agent() call}\",\n             \"files_modified\": [\"{from PLAN_INDEX.plans[].files_modified for this plan}\"],\n             \"use_worktree\": {true unless step 2.5 set USE_WORKTREES_FOR_PLAN=false for this plan}\n           }\n         ]\n       }\n     ]\n   }\n   ```\n\n   - **`id`** — the plan id from `PLAN_INDEX`, e.g. `\"01-01\"`.\n   - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`\n     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/\n     `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/\n     `{phase_name}` substituted) — a short summary here would NOT reproduce\n     step 3's behavior and would violate the \"identical artifacts\" contract.\n   - **`files_modified`** — copy verbatim from the plan's `PLAN_INDEX` entry.\n   - **`use_worktree`** — `true` for every plan UNLESS step 2.5's per-plan\n     worktree gate (`execute-phase/steps/per-plan-worktree-gate.md`) set\n     `USE_WORKTREES_FOR_PLAN=false` for that plan (submodule-touching plan, or\n     project-level `USE_WORKTREES=false`) — in which case pass `false` here so\n     `emitWorkflowScript` omits `isolation: \"worktree\"` for that plan (#2772 /\n     #2285 finding 1). **Never** hardcode `true` — that would force worktree\n     isolation on a plan the inline path explicitly keeps out of worktrees.\n\n4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.\n\n**Agent SDK version:** the orchestrator has no *bash-computable* way to\nintrospect the live Agent SDK version — but the router runs in Node, so it\nresolves the version itself (#2590), in this order:\n\n1. an explicit `--agent-sdk-version <ver>` (pin a version),\n2. `GSD_AGENT_SDK_VERSION`,\n3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from\n   its `package.json` on disk by walking `node_modules` up the tree. (Read\n   directly rather than via `require.resolve`: the SDK's `exports` map does not\n   expose `./package.json`, so `require.resolve` throws\n   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)\n\nPreviously nothing computed this at all, so gate 5 returned\n`agent_sdk_version_unknown` on **every** automated run and the Workflow backend\ncould never activate — while `gsd-tools capability state` still reported the\ncapability `active: true`. Fail-closed is preserved: when no version can be\nresolved, gate 5 still declines to `inline`. What changed is that a resolvable\nversion is now actually found, so a genuinely-too-old SDK reports\n`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.\n\n**If `backend == \"workflow\"`:** run the emitted `script` via the Workflow tool\nfor THIS wave instead of the per-message `Agent()` loop in step 3. The script\ncomposes the SAME `gsd-executor` agent type the inline path uses, with\nworktree isolation applied PER PLAN from the manifest's `use_worktree` field\n(see `emitWorkflowScript`):\n\n- **waves → one or more sequential `parallel()` barriers** — each wave is a\n  barrier group; when plans within a wave share `files_modified`, they are split\n  into separate sequential stages within that wave's barrier.\n- **plans → `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })`**\n  when `use_worktree` is not `false`, or `agent(brief, { agentType: 'gsd-executor' })`\n  (no isolation) when it is — so the produced `SUMMARY.md` and commits are\n  identical to inline dispatch, INCLUDING the inline path's submodule safety\n  gate (#2772 / #2285 finding 1).\n- **`files_modified` overlap → separate sequential stages** — the same overlap\n  rule execute-phase already applies inline (step 1 of the wave loop).\n- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's\n  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,\n  not a script function; the script deliberately does not call it (#2590 — doing\n  so threw \"resumeFromRunId is not defined\" and rejected the entire script).\n  Omitting it from the tool invocation silently regresses phase-resume to a\n  no-op: an interrupted phase re-runs completed plans.\n\n### After the run: manifest bridge into the merge chain (#3302)\n\nThe single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also\nmeans step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on\nthis path. The orchestrator MUST bridge the run's per-agent results into the SAME\nmanifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run\nunchanged:\n\n1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,\n   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:\n\n   ```bash\n   if [ -z \"${WAVE_WORKTREE_MANIFEST:-}\" ]; then\n     M=$(mktemp \"${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX\") && mv \"$M\" \"$M.json\" && WAVE_WORKTREE_MANIFEST=\"$M.json\" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)\n     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back\n     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.\n     ORCH_ROOT=$(git rev-parse --show-toplevel)\n     ORCH_ROOT=\"$ORCH_ROOT\" MANIFEST=\"$WAVE_WORKTREE_MANIFEST\" node -e 'const fs=require(\"fs\");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+\"\\n\")'\n     export WAVE_WORKTREE_MANIFEST\n   fi\n   ```\n\n2. **Invoke the Workflow tool with the emitted script and\n   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry\n   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that\n   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,\n   expected_base}` — captured by the executor itself per\n   `agents/gsd-executor.md`), or `null` when the agent's result carried none\n   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).\n\n3. **Record every worktree plan** exactly as inline dispatch does at step 3's\n   \"After each `Agent()` returns\" — one `worktree.record-agent` per returned entry\n   with `expects_worktree: true` and complete metadata:\n\n   ```bash\n   gsd_run query worktree.record-agent --manifest \"$WAVE_WORKTREE_MANIFEST\" \\\n     --agent-id \"<metadata.agent_id>\" --path \"<metadata.worktree_path>\" \\\n     --branch \"<metadata.branch>\" --base \"<metadata.expected_base>\" \\\n     --files \"<plan files_modified, space-separated>\"\n   ```\n\n   The verb's write-strict validation applies as inline: on a non-zero exit or any\n   missing field, stop and ask for recovery — do not append an under-populated entry.\n\n4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**\n   After recording, the manifest must hold one entry per `expects_worktree: true`\n   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected\n   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count\n   mismatch — means commits are stranded on their `worktree-wf_*` branches and\n   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the\n   phase with the failing plan id and the recovery hint below; do NOT run\n   `worktree.cleanup-wave` and do NOT proceed to step 4.\n\n   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover\n   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one\n   `{\"type\":\"result\",…}` line per agent — in the Workflow run's transcript dir), re-run\n   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be\n   recovered either, merge the branch manually after review — never discard it.\n\n5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final\n   messages, so a previously-completed plan can return with `metadata: null`. Recover\n   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it\n   cannot be recovered, fail loudly per rule 4 — a resumed run must never report\n   success over silently-dropped agent work.\n\n6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the\n   manifest): they ran without isolation; their commits are already on the main working\n   tree. No record-agent entry, no manifest write.\n\nWith the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's\nmanifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run\nUNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their\nmetadata; the merge chain itself is the inline path's own, now with real input.\n\n**If `backend == \"inline\"`** (any gate miss, or `resolve-wave-dispatch` itself\nunavailable/erroring): proceed to step 3's standard per-message `Agent()`\ndispatch — the default, byte-identical-to-today path. `onError: skip` on this\ncontribution means a `resolve-wave-dispatch` command failure is treated exactly\nlike an `inline` result, never as a fatal wave error.\n\n## Fallback contract\n\nDetection is fail-closed end-to-end: capability disabled, non-Claude runtime,\n`execution_backend:\"inline\"`, missing/incapable host descriptor, unknown or\nbelow-floor Agent SDK version, or an `emitWorkflowScript` failure on a malformed\nwave manifest — ANY of these degrades to `backend:\"inline\"` and execute-phase's\nstandard inline dispatch (step 3) runs unmodified. The Workflow backend never\npartially activates; the executor MUST NOT assume parallelism, a shared budget,\nor resume-from-run-id semantics when `backend == \"inline\"`.\n"
+          "inline": "# Claude orchestration — Workflow execution backend (BETA)\n\n> Injected at `execute:wave:pre` `into: executor` only when\n> `claude_orchestration.enabled` is true. Default-off; `onError: skip`.\n\n## When this contribution is active\n\nThe Claude orchestration capability is **default-off and BETA**. It activates only\nwhen ALL of the following hold:\n\n1. `claude_orchestration.enabled` is `true` in `.planning/config.json`, AND\n2. the active runtime is **Claude Code** (the Workflow tool is Claude / Agent\n   SDK-specific), AND\n3. `claude_orchestration.execution_backend` resolves to `workflow` — either\n   explicitly, or via `auto` — **and** the Agent SDK version is\n   `>= claude_orchestration.min_agent_sdk_version` (default `0.3.149`). The SDK\n   floor applies in both `auto` and `workflow` modes (fail-closed: a pre-release\n   or older SDK never activates the preview backend).\n\nDetection is fail-closed: any miss degrades to **inline, manual, one-agent-per-\nmessage dispatch** — exactly today's behaviour. On a non-Claude runtime this\ncontribution is a no-op.\n\n## Why `execute:wave:pre` (not `execute:wave:post`)\n\nThis is a **dispatch-backend selector** — it decides HOW a wave's executor agents\nare spawned. That decision has to be made BEFORE the wave's `Agent()` calls in\n`execute-phase.md` step 3, not after the wave has already finished (#2285). The\ncapability previously registered at `execute:wave:post`, which fires only after\nworktree merge/post-merge tests/tracking updates — by then the wave was already\ndispatched inline, so the contribution was structurally unable to change how\ndispatch happened. This fragment is injected at the point that actually precedes\ndispatch.\n\n## What the orchestrator does when the Workflow backend is active\n\nBefore spawning executor agents for the current wave (execute-phase.md step 3),\nresolve the dispatch backend through the single composed CLI seam:\n\n```bash\ngsd-tools claude-orchestration resolve-wave-dispatch \\\n  --waves \"$WAVE_MANIFEST_PATH\" --run-id \"$PHASE_RUN_ID\" \\\n  --runtime \"$RUNTIME\" \\\n  --phase-dir \"$PHASE_DIR\" --raw\n```\n\n`--agent-sdk-version` is no longer passed here (#2590). The router resolves the\ninstalled Agent SDK version itself; see **Agent SDK version** below. The former\n`${AGENT_SDK_VERSION:+--agent-sdk-version \"$AGENT_SDK_VERSION\"}` line was also\n**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it\ncollapsed to a SINGLE argv element there, `argValue()` never matched, and the run\nfailed into `agent_sdk_version_unknown` — indistinguishable from genuinely\nunknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.\n\nThis composes `detectWorkflowBackend` (the gate ladder above) with\n`emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure\nfunction backing it is `resolveWaveDispatch` in\n`gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:\n`{ backend: 'inline'|'workflow', reason, script?, summary? }`.\n\n### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)\n\nThese are NOT pre-existing execute-phase.md variables — the orchestrator builds\nthem at this step, from data it already has in-context from `discover_and_group_plans`\n(the `PLAN_INDEX` JSON) and step 2.5 (the per-plan `USE_WORKTREES_FOR_PLAN` decision):\n\n1. **`$PHASE_DIR`** — reuse `{phase_dir}` from the `INIT` bundle (already loaded\n   in the `initialize` step). No new value needed.\n\n2. **`$PHASE_RUN_ID`** — a stable identifier for THIS phase-execution attempt, so\n   `resumeFromRunId` can resume an interrupted run without re-dispatching plans\n   the Workflow tool already completed. Construct it deterministically —\n   `execute-{phase_number}-{phase_slug}` — from `INIT`'s `phase_number`/`phase_slug`\n   (both are already validated identifiers used elsewhere in this workflow, so\n   they satisfy `emitWorkflowScript`'s `isScriptableIdentifier` check). Do NOT\n   mint a new random id per wave — the SAME `$PHASE_RUN_ID` is reused for every\n   wave in the phase so the Workflow tool can correctly track cross-wave resume\n   state.\n\n3. **`$WAVE_MANIFEST_PATH`** — a fresh temp file for THIS wave's manifest (one\n   wave = one `waves` array with a single entry, matching the wave-by-wave\n   dispatch loop; do not batch multiple waves into one manifest — waves are\n   dispatched in wave order, not all at once):\n\n   ```bash\n   WAVE_MANIFEST_PATH=$(mktemp \"${TMPDIR:-/tmp}/gsd-wave-dispatch-XXXXXX\") && mv \"$WAVE_MANIFEST_PATH\" \"$WAVE_MANIFEST_PATH.json\" && WAVE_MANIFEST_PATH=\"$WAVE_MANIFEST_PATH.json\"\n   ```\n\n   Then **use the Write tool** (not a bash/jq pipeline — the orchestrator already\n   has every field parsed in-context) to write the manifest JSON to\n   `$WAVE_MANIFEST_PATH`:\n\n   ```json\n   {\n     \"waves\": [\n       {\n         \"id\": \"wave-{N}\",\n         \"plans\": [\n           {\n             \"id\": \"{plan_id}\",\n             \"brief\": \"{the SAME <objective>...<success_criteria> prompt block step 3 builds for this plan's inline Agent() call}\",\n             \"files_modified\": [\"{from PLAN_INDEX.plans[].files_modified for this plan}\"],\n             \"use_worktree\": {true unless step 2.5 set USE_WORKTREES_FOR_PLAN=false for this plan}\n           }\n         ]\n       }\n     ]\n   }\n   ```\n\n   - **`id`** — the plan id from `PLAN_INDEX`, e.g. `\"01-01\"`.\n   - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`\n     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/\n     `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/\n     `{phase_name}` substituted) — a short summary here would NOT reproduce\n     step 3's behavior and would violate the \"identical artifacts\" contract.\n   - **`files_modified`** — copy verbatim from the plan's `PLAN_INDEX` entry.\n   - **`use_worktree`** — `true` for every plan UNLESS step 2.5's per-plan\n     worktree gate (`execute-phase/steps/per-plan-worktree-gate.md`) set\n     `USE_WORKTREES_FOR_PLAN=false` for that plan (submodule-touching plan, or\n     project-level `USE_WORKTREES=false`) — in which case pass `false` here so\n     `emitWorkflowScript` omits `isolation: \"worktree\"` for that plan (#2772 /\n     #2285 finding 1). **Never** hardcode `true` — that would force worktree\n     isolation on a plan the inline path explicitly keeps out of worktrees.\n\n4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.\n\n**Agent SDK version:** the orchestrator has no *bash-computable* way to\nintrospect the live Agent SDK version — but the router runs in Node, so it\nresolves the version itself (#2590), in this order:\n\n1. an explicit `--agent-sdk-version <ver>` (pin a version),\n2. `GSD_AGENT_SDK_VERSION`,\n3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from\n   its `package.json` on disk by walking `node_modules` up the tree. (Read\n   directly rather than via `require.resolve`: the SDK's `exports` map does not\n   expose `./package.json`, so `require.resolve` throws\n   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)\n\nPreviously nothing computed this at all, so gate 5 returned\n`agent_sdk_version_unknown` on **every** automated run and the Workflow backend\ncould never activate — while `gsd-tools capability state` still reported the\ncapability `active: true`. Fail-closed is preserved: when no version can be\nresolved, gate 5 still declines to `inline`. What changed is that a resolvable\nversion is now actually found, so a genuinely-too-old SDK reports\n`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.\n\n**If `backend == \"workflow\"`:** run the emitted `script` via the Workflow tool\nfor THIS wave instead of the per-message `Agent()` loop in step 3. The script\ncomposes the SAME `gsd-executor` agent type the inline path uses, with\nworktree isolation applied PER PLAN from the manifest's `use_worktree` field\n(see `emitWorkflowScript`):\n\n- **waves → one or more sequential `parallel()` barriers** — each wave is a\n  barrier group; when plans within a wave share `files_modified`, they are split\n  into separate sequential stages within that wave's barrier.\n- **plans → `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })`**\n  when `use_worktree` is not `false`, or `agent(brief, { agentType: 'gsd-executor' })`\n  (no isolation) when it is — so the produced `SUMMARY.md` and commits are\n  identical to inline dispatch, INCLUDING the inline path's submodule safety\n  gate (#2772 / #2285 finding 1).\n- **`files_modified` overlap → separate sequential stages** — the same overlap\n  rule execute-phase already applies inline (step 1 of the wave loop).\n- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's\n  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,\n  not a script function; the script deliberately does not call it (#2590 — doing\n  so threw \"resumeFromRunId is not defined\" and rejected the entire script).\n  Omitting it from the tool invocation silently regresses phase-resume to a\n  no-op: an interrupted phase re-runs completed plans.\n\n### After the run: manifest bridge into the merge chain (#3302)\n\nThe single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also\nmeans step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on\nthis path. The orchestrator MUST bridge the run's per-agent results into the SAME\nmanifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run\nunchanged:\n\n1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,\n   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:\n\n   ```bash\n   if [ -z \"${WAVE_WORKTREE_MANIFEST:-}\" ]; then\n     M=$(mktemp \"${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX\") && mv \"$M\" \"$M.json\" && WAVE_WORKTREE_MANIFEST=\"$M.json\" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)\n     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back\n     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.\n     ORCH_ROOT=$(git rev-parse --show-toplevel)\n     ORCH_ROOT=\"$ORCH_ROOT\" MANIFEST=\"$WAVE_WORKTREE_MANIFEST\" node -e 'const fs=require(\"fs\");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+\"\\n\")'\n     export WAVE_WORKTREE_MANIFEST\n   fi\n   ```\n\n2. **Invoke the Workflow tool with the emitted script and\n   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry\n   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that\n   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,\n   expected_base}` — captured by the executor itself per\n   `agents/gsd-executor.md`), or `null` when the agent's result carried none\n   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).\n\n3. **Record every worktree plan** exactly as inline dispatch does at step 3's\n   \"After each `Agent()` returns\" — one `worktree.record-agent` per returned entry\n   with `expects_worktree: true` and complete metadata:\n\n   ```bash\n   gsd_run query worktree.record-agent --manifest \"$WAVE_WORKTREE_MANIFEST\" \\\n     --agent-id \"<metadata.agent_id>\" --path \"<metadata.worktree_path>\" \\\n     --branch \"<metadata.branch>\" --base \"<metadata.expected_base>\" \\\n     --files \"<plan files_modified, space-separated>\" \\\n     --deletions \"<plan files_deleted, space-separated>\"\n   ```\n\n   `--deletions` (#3003) carries the plan's declared `files_deleted` so a plan that scoped a file\n   removal merges through `cleanup-wave` instead of being blocked. Unlike `--files` it is not\n   advisory: omitting it leaves the deletions guard blocking on any deletion at all, so this\n   dispatch path must pass it or plans declaring a removal fail to merge here while succeeding on\n   the inline path.\n\n   The verb's write-strict validation applies as inline: on a non-zero exit or any\n   missing field, stop and ask for recovery — do not append an under-populated entry.\n\n4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**\n   After recording, the manifest must hold one entry per `expects_worktree: true`\n   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected\n   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count\n   mismatch — means commits are stranded on their `worktree-wf_*` branches and\n   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the\n   phase with the failing plan id and the recovery hint below; do NOT run\n   `worktree.cleanup-wave` and do NOT proceed to step 4.\n\n   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover\n   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one\n   `{\"type\":\"result\",…}` line per agent — in the Workflow run's transcript dir), re-run\n   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be\n   recovered either, merge the branch manually after review — never discard it.\n\n5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final\n   messages, so a previously-completed plan can return with `metadata: null`. Recover\n   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it\n   cannot be recovered, fail loudly per rule 4 — a resumed run must never report\n   success over silently-dropped agent work.\n\n6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the\n   manifest): they ran without isolation; their commits are already on the main working\n   tree. No record-agent entry, no manifest write.\n\nWith the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's\nmanifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run\nUNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their\nmetadata; the merge chain itself is the inline path's own, now with real input.\n\n**If `backend == \"inline\"`** (any gate miss, or `resolve-wave-dispatch` itself\nunavailable/erroring): proceed to step 3's standard per-message `Agent()`\ndispatch — the default, byte-identical-to-today path. `onError: skip` on this\ncontribution means a `resolve-wave-dispatch` command failure is treated exactly\nlike an `inline` result, never as a fatal wave error.\n\n## Fallback contract\n\nDetection is fail-closed end-to-end: capability disabled, non-Claude runtime,\n`execution_backend:\"inline\"`, missing/incapable host descriptor, unknown or\nbelow-floor Agent SDK version, or an `emitWorkflowScript` failure on a malformed\nwave manifest — ANY of these degrades to `backend:\"inline\"` and execute-phase's\nstandard inline dispatch (step 3) runs unmodified. The Workflow backend never\npartially activates; the executor MUST NOT assume parallelism, a shared budget,\nor resume-from-run-id semantics when `backend == \"inline\"`.\n"
         },
         "produces": [],
         "consumes": [
@@ -4328,7 +4436,27 @@ const byLoopPoint = {
     "gates": []
   },
   "execute:wave:post": {
-    "steps": [],
+    "steps": [
+      {
+        "capId": "live-dom-uat",
+        "point": "execute:wave:post",
+        "ref": {
+          "agent": "gsd-dom-verifier"
+        },
+        "fragment": {
+          "path": "fragments/execute-wave-post.md",
+          "inline": "<objective>\nVerify the live-DOM acceptance criteria for the execution wave that just completed.\nAnswer: \"of this wave's stated UI acceptance criteria, which can I observe in a live DOM\nright now, and which could I not look at?\"\n\nThis step is ADDITIVE. It never halts the wave, never fails the phase, and never rewrites\nSUMMARY.md. If you cannot look, say so and finish.\n</objective>\n\n<required_reading>\n- {phase_dir}/{phase_num}-PLAN.md (the wave's tasks and their acceptance criteria)\n- {phase_dir}/{phase_num}-UI-SPEC.md if it exists (the design contract, when the phase has one)\n</required_reading>\n\n<browser_surface>\nYou carry exactly two browser MCP families: `mcp__chrome-devtools__*` and\n`mcp__claude-in-chrome__*`. Use whichever responds. Do not assume they expose the same\ntool names — probe, then use what is there. Do not paper over differences between them.\n\nYou do NOT carry the Playwright MCP family. That path belongs to the orchestrator's\nown verification step and is not yours.\n</browser_surface>\n\n<profile_lock>\n`chrome-devtools-mcp` holds an exclusive lock on its browser profile\n(`$HOME/.cache/chrome-devtools-mcp/chrome-profile`). A second concurrent instance fails with:\n\n```\nThe browser is already running for <dir>. Use --isolated to run multiple browser instances.\n```\n\nIf you see that, or any equivalent lock error:\n\n1. Record `outcome: could_not_look` and `reason: profile_locked`.\n2. Name `--isolated` in the notes, so the operator knows the remedy is a flag on THEIR MCP\n   server registration.\n3. **Stop.** Do not retry, do not loop, do not wait for the lock. GSD cannot pass\n   `--isolated` — it is not GSD's flag — and a retry loop here just holds up the wave.\n\nParallel execution waves sharing one profile WILL hit this. It is an expected condition,\nnot a defect, and it is not a reason to fail anything.\n</profile_lock>\n\n<method>\nFor each UI acceptance criterion you can identify in the wave's plan:\n\n1. Resolve its target URL. If no dev server or target is reachable, that criterion is\n   `could_not_look` / `target_unreachable` — not a failure.\n2. Open it with the browser family that responded.\n3. Observe the DOM for the specific, stated condition. Assert on structure and content —\n   an element's presence, its text, its attributes, its computed state.\n4. Record `passed` when the stated condition is observably true, `needs_review` when it is\n   ambiguous or requires human judgement (subjective aesthetics, content accuracy).\n\nScope limit for this version: DOM observation against stated criteria only. No screenshot\ndiffing, no accessibility audit, no performance tracing. If a criterion needs one of those,\nmark it `needs_review` and say which.\n\nNever invent a criterion. If the plan states no UI acceptance criteria, that is\n`outcome: nothing_to_report` / `reason: no_criteria`, and it is a perfectly good result.\n</method>\n\n<output>\nWrite to: {phase_dir}/{phase_num}-DOM-VERIFY.md\n\nFrontmatter carries scalars only, so a reader can get the verdict without parsing prose:\n\n```\n---\nschema_version: 1\nwave: {wave_number}\noutcome: verified | nothing_to_report | could_not_look\nreason: ok | no_criteria | no_browser_mcp | profile_locked | target_unreachable\nchecked: <integer>\npassed: <integer>\nneeds_review: <integer>\n---\n```\n\nThen a short body: one line per criterion with its verdict, and — when `outcome` is\n`could_not_look` — exactly what stopped you and what the operator would change.\n\n**`nothing_to_report` and `could_not_look` are different outcomes and must never be\nconflated.** \"There were no UI criteria in this wave\" and \"there were criteria but I had no\nbrowser\" look identical in a summary that collapses them, and that ambiguity is the reported\nproblem this capability exists to remove.\n</output>\n"
+        },
+        "produces": [
+          "DOM-VERIFY.md"
+        ],
+        "consumes": [
+          "PLAN.md"
+        ],
+        "when": "workflow.live_dom_uat",
+        "onError": "skip"
+      }
+    ],
     "contributions": [
       {
         "capId": "external-job",
@@ -4580,15 +4708,20 @@ const configKeys = {
   "workflow.ai_integration_phase": "ai-integration",
   "workflow.api_coverage_gate": "ai-integration",
   "review.models.agy": "antigravity",
+  "review.max_prompt_tokens_per_reviewer.antigravity": "antigravity",
   "workflow.assumption_delta": "assumption-delta",
   "workflow.windows_enforce": "broken-windows",
   "review.models.claude": "claude",
+  "review.max_prompt_tokens_per_reviewer.claude": "claude",
   "claude_orchestration.enabled": "claude-orchestration",
   "claude_orchestration.execution_backend": "claude-orchestration",
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
+  "review.max_prompt_tokens_per_reviewer.coderabbit": "coderabbit",
   "review.models.codex": "codex",
+  "review.max_prompt_tokens_per_reviewer.codex": "codex",
+  "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
@@ -4600,9 +4733,12 @@ const configKeys = {
   "external_job.poll_timeout_ms": "external-job",
   "workflow.post_planning_gaps": "gap-analysis",
   "review.models.gemini": "gemini",
+  "review.max_prompt_tokens_per_reviewer.gemini": "gemini",
   "graphify.enabled": "graphify",
   "intel.enabled": "intel",
   "review.models.kimi-code": "kimi-code",
+  "review.max_prompt_tokens_per_reviewer.kimi-code": "kimi-code",
+  "workflow.live_dom_uat": "live-dom-uat",
   "review.models.llama_cpp": "llama-cpp",
   "review.llama_cpp_host": "llama-cpp",
   "review.max_prompt_tokens_per_reviewer.llama_cpp": "llama-cpp",
@@ -4624,8 +4760,10 @@ const configKeys = {
   "review.ollama_host": "ollama",
   "review.max_prompt_tokens_per_reviewer.ollama": "ollama",
   "review.models.opencode": "opencode",
+  "review.max_prompt_tokens_per_reviewer.opencode": "opencode",
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
+  "review.max_prompt_tokens_per_reviewer.qwen": "qwen",
   "refactor.trigger_enabled": "refactor-trigger",
   "refactor.complexity_threshold": "refactor-trigger",
   "refactor.complexity_jump_delta": "refactor-trigger",
@@ -4660,6 +4798,12 @@ const configSchema = {
     "default": "",
     "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
   },
+  "review.max_prompt_tokens_per_reviewer.antigravity": {
+    "owner": "antigravity",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
+  },
   "workflow.assumption_delta": {
     "owner": "assumption-delta",
     "type": "boolean",
@@ -4677,6 +4821,12 @@ const configSchema = {
     "type": "string",
     "default": "",
     "description": "Model passed to the Claude reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.claude": {
+    "owner": "claude",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "claude_orchestration.enabled": {
     "owner": "claude-orchestration",
@@ -4718,11 +4868,29 @@ const configSchema = {
       "deep"
     ]
   },
+  "review.max_prompt_tokens_per_reviewer.coderabbit": {
+    "owner": "coderabbit",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
   "review.models.codex": {
     "owner": "codex",
     "type": "string",
     "default": "",
     "description": "Model passed to the Codex reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.codex": {
+    "owner": "codex",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.max_prompt_tokens_per_reviewer.cursor": {
+    "owner": "cursor",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "workflow.drift_threshold": {
     "owner": "drift",
@@ -4797,6 +4965,12 @@ const configSchema = {
     "default": "",
     "description": "Model passed to the Gemini reviewer lane."
   },
+  "review.max_prompt_tokens_per_reviewer.gemini": {
+    "owner": "gemini",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
   "graphify.enabled": {
     "owner": "graphify",
     "type": "boolean",
@@ -4814,6 +4988,18 @@ const configSchema = {
     "type": "string",
     "default": "",
     "description": "Model passed to the Kimi Code reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.kimi-code": {
+    "owner": "kimi-code",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "workflow.live_dom_uat": {
+    "owner": "live-dom-uat",
+    "type": "boolean",
+    "default": false,
+    "description": "Enable live-DOM verification. Default-off: browser MCP reach is opt-in per project. When on, the orchestrator's automated UI verification may additionally use mcp__chrome-devtools__* / mcp__claude-in-chrome__* when present, and a gsd-dom-verifier step runs after each execution wave. When off, neither surface reaches a browser and the pre-existing mcp__playwright__* path is unchanged."
   },
   "review.models.llama_cpp": {
     "owner": "llama-cpp",
@@ -4946,6 +5132,12 @@ const configSchema = {
     "default": "",
     "description": "Model passed to the OpenCode reviewer lane."
   },
+  "review.max_prompt_tokens_per_reviewer.opencode": {
+    "owner": "opencode",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
   "workflow.pattern_mapper": {
     "owner": "pattern-mapper",
     "type": "boolean",
@@ -4957,6 +5149,12 @@ const configSchema = {
     "type": "boolean",
     "default": false,
     "description": "Enable the developer profiling pipeline commands (scan-sessions, extract-messages, profile-sample, write-profile, etc.)."
+  },
+  "review.max_prompt_tokens_per_reviewer.qwen": {
+    "owner": "qwen",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "refactor.trigger_enabled": {
     "owner": "refactor-trigger",
@@ -5051,7 +5249,7 @@ const runtimes = {
     "role": "runtime",
     "version": "1.11.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -5082,7 +5280,8 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeCommandToAntigravitySkill"
+            "converter": "convertClaudeCommandToAntigravitySkill",
+            "home": ".gemini/config"
           },
           {
             "kind": "agents",
@@ -5090,7 +5289,8 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeAgentToAntigravityAgent"
+            "converter": "convertClaudeAgentToAntigravityAgent",
+            "home": ".gemini/config"
           }
         ],
         "local": [
@@ -5181,7 +5381,7 @@ const runtimes = {
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
     },
@@ -5190,6 +5390,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      },
+      "review.max_prompt_tokens_per_reviewer.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
       }
     }
   },
@@ -5456,7 +5661,7 @@ const runtimes = {
       "reviewsSection": "Claude",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
       "handler": null
     },
@@ -5465,6 +5670,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Claude reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -5779,7 +5989,8 @@ const runtimes = {
           "exec"
         ],
         "cwdFlag": "--cd",
-        "promptFlag": null
+        "promptFlag": null,
+        "modelFlag": "--model"
       },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
@@ -5821,7 +6032,7 @@ const runtimes = {
       "reviewsSection": "Codex",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
       "handler": null
     },
@@ -5830,6 +6041,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Codex reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -6079,9 +6295,16 @@ const runtimes = {
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.cursor": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "hermes": {
@@ -6567,7 +6790,7 @@ const runtimes = {
       "reviewsSection": "Kimi Code",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
       "handler": null
     },
@@ -6576,6 +6799,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Kimi Code reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -6743,7 +6971,7 @@ const runtimes = {
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
       "handler": "opencode"
     },
@@ -6752,6 +6980,11 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the OpenCode reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -6958,9 +7191,16 @@ const runtimes = {
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.qwen": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "trae": {
@@ -7500,6 +7740,7 @@ const _requiresGraph = {
   "kilo": [],
   "kimi": [],
   "kimi-code": [],
+  "live-dom-uat": [],
   "llama-cpp": [],
   "lm-studio": [],
   "mempalace": [],

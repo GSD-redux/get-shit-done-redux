@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/CONTEXT-INDEX.json is mentioned only in module-doc comments; the test reads root CONTEXT.md and mocked fs, never a real docs/ path.
 'use strict';
 
 /**

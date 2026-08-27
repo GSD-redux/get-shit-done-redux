@@ -18,6 +18,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseLocator = require('./phase-locator.cjs');
 import os from 'node:os';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
@@ -198,9 +201,51 @@ function learningsDelete(id: string, opts?: { storeDir?: string }): boolean {
   return true;
 }
 
+/**
+ * #3683 — resolve which learnings artifact a copy reads. The extractor writes
+ * phase-scoped `{PHASE_DIR}/{PADDED}-LEARNINGS.md`; the legacy shape is a
+ * project-root `LEARNINGS.md`. The MOST RECENT phase-scoped artifact wins (a
+ * gated completion copies the phase it just wrote); the project-root file is
+ * the fallback when no phase artifact exists. Returns null when neither shape
+ * is present.
+ */
+function resolveLearningsSource(planningDir: string): string | null {
+  let best: { p: string; m: number } | null = null;
+  const phasesDir = path.join(planningDir, 'phases');
+  // Phase enumeration routes through the sanctioned seam (the #3185 drift
+  // guard rejects ad-hoc re-derivations): no cwd → every phase dir in the
+  // tree, sentinel dirs excluded, unreadable phases dir already degraded to
+  // an empty list by the locator itself.
+  const { value: phaseDirNames } = phaseLocator.listMilestonePhaseDirs(phasesDir);
+  for (const entry of phaseDirNames) {
+    const phaseDir = path.join(phasesDir, entry);
+    let files: string[];
+    try {
+      files = fs.readdirSync(phaseDir);
+    } catch {
+      // An unreadable phase dir (ACL, removal race) must not crash the copy —
+      // skip it and keep scanning.
+      continue;
+    }
+    for (const f of files) {
+      if (!/-LEARNINGS\.md$/i.test(f)) continue;
+      const p = path.join(phaseDir, f);
+      try {
+        const m = fs.statSync(p).mtimeMs;
+        if (best === null || m > best.m) best = { p, m };
+      } catch {
+        continue;
+      }
+    }
+  }
+  if (best !== null) return best.p;
+  const rootPath = path.join(planningDir, 'LEARNINGS.md');
+  return fs.existsSync(rootPath) ? rootPath : null;
+}
+
 function learningsCopyFromProject(planningDir: string, opts?: WriteOpts & { sourceProject?: string }): CopyResult {
-  const learningsPath = path.join(planningDir, 'LEARNINGS.md');
-  if (!fs.existsSync(learningsPath)) {
+  const learningsPath = resolveLearningsSource(planningDir);
+  if (learningsPath === null) {
     return { total: 0, created: 0, skipped: 0 };
   }
 
@@ -223,31 +268,51 @@ function learningsCopyFromProject(planningDir: string, opts?: WriteOpts & { sour
     }
   }
 
-  // Parse markdown: split on ## headings
+  // Parse markdown: split on ## category headings.
+  // #3683: the real producer (extract-learnings.md write_learnings) writes ##
+  // categories containing ### item headings — each item is ONE learning (the
+  // store's relevance contract caps injection by count, so category-sized
+  // blobs defeat it). A bare ## section with no ### items keeps the legacy
+  // single-learning shape.
   const sections = content.split(/^## /m).slice(1); // skip preamble before first ##
   let created = 0;
   let skipped = 0;
 
-  for (const section of sections) {
-    const lines = section.trim().split('\n');
-    const title = lines[0].trim();
-    const body = lines.slice(1).join('\n').trim();
-    if (!body) continue;
-
-    // Extract tags from title (simple: use words as tags)
-    const tags = title.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-
+  const writeOne = (title: string, body: string, extraTags: string[]): void => {
+    const tags = Array.from(new Set([
+      ...extraTags,
+      ...title.toLowerCase().split(/\s+/).filter(w => w.length > 2),
+    ]));
     const result = learningsWrite({
       source_project: sourceProject,
       learning: body,
       context: title,
       tags,
     }, { ...opts, dedupeIndex });
+    if (result.created) created++;
+    else skipped++;
+  };
 
-    if (result.created) {
-      created++;
-    } else {
-      skipped++;
+  for (const section of sections) {
+    const lines = section.trim().split('\n');
+    const category = lines[0].trim();
+    const body = lines.slice(1).join('\n').trim();
+    if (!body) continue;
+    const categoryTag = category.toLowerCase().split(/\s+/)[0] || '';
+
+    // Split into ### items when present; otherwise one learning per section.
+    const items = body.split(/^### /m).map(s => s.trim()).filter(s => s.length > 0);
+    const hasItemHeadings = /^### /m.test(body);
+    if (!hasItemHeadings) {
+      writeOne(category, body, categoryTag ? [categoryTag] : []);
+      continue;
+    }
+    for (const item of items) {
+      const itemLines = item.split('\n');
+      const title = itemLines[0].trim();
+      const itemBody = itemLines.slice(1).join('\n').trim();
+      if (!itemBody && !title) continue;
+      writeOne(title, itemBody || title, categoryTag ? [categoryTag] : []);
     }
   }
 

@@ -219,7 +219,7 @@ WebSearch에서 가져온 패키지는 `[ASSUMED]`(`[VERIFIED]`가 아님)로 �
 |-----------------|----------|-------------|
 | `N` | **예** | 계획 및 리뷰할 단계 번호 |
 | 리뷰어 플래그 | 아니요 | 모든 리뷰어 레인 플래그를 그대로 전달: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code` |
-| `--all` | 아니요 | 구성된 모든 리뷰어를 병렬로 실행 |
+| `--all` | 아니요 | 구성된 모든 리뷰어를 실행합니다. 레인은 기본적으로 **순차적으로** 디스패치되며, `review.parallel_lanes`를 `true`로 설정하면 단일 리뷰 패스 내에서 동시에 디스패치됩니다 |
 | `--max-cycles N` | 아니요 | 사이클 상한 재정의 (기본값 3) |
 
 **종료 동작:** HIGH 카운트가 0이 되면 루프 종료. 사이클 간 HIGH 카운트가 감소하지 않을 때 정체 감지 경고. `--max-cycles`에 도달해도 HIGH 우려사항이 남아 있으면 에스컬레이션 게이트가 계속 진행하거나 수동 리뷰를 요청합니다.
@@ -924,7 +924,7 @@ GSD 보장을 통해 애드혹 작업을 실행합니다.
 | `--format` | 출력 형식: `markdown` (기본값), `json` |
 
 **전제 조건:** 단계가 실행됨 (SUMMARY.md 파일 존재)
-**생성 결과:** `.planning/learnings/{phase}-LEARNINGS.md`
+**생성 결과:** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **추출 내용:**
 - 아키텍처 결정 및 근거
@@ -1169,7 +1169,7 @@ AI 시스템 구축을 포함하는 단계에 대한 AI-SPEC.md 디자인 계약
 | 인수 | 필수 | 설명 |
 |----------|----------|-------------|
 | `N` | **예** | 검토할 변경사항이 있는 단계 번호 (예: `2` 또는 `02`) |
-| `--depth=quick\|standard\|deep` | 아니요 | 검토 깊이 수준 (`workflow.code_review_depth` 설정 재정의). `quick`: 패턴 매칭만 (~2분). `standard`: 언어별 검사를 통한 파일별 분석 (~5–15분, 기본값). `deep`: 임포트 그래프와 호출 체인을 포함한 크로스 파일 분석 (~15–30분) |
+| `--depth=quick\|standard\|deep` | 아니요 | 검토 깊이 수준. `workflow.code_review_depth`와 일치하는 `workflow.code_review_depth_overrides` 경로 규칙을 모두 재정의합니다 — 플래그가 항상 우선합니다. `quick`: 패턴 매칭만 (~2분). `standard`: 언어별 검사를 통한 파일별 분석 (~5–15분, 기본값). `deep`: 임포트 그래프와 호출 체인을 포함한 크로스 파일 분석 (~15–30분) |
 | `--files file1,file2,...` | 아니요 | 명시적 쉼표 구분 파일 목록; SUMMARY/git 범위 지정을 완전히 건너뜀 |
 | `--fix` | 아니요 | 검토 후 자동 문제 수정 — REVIEW.md를 읽고, 수정자 에이전트를 생성하고, 각 수정을 원자적으로 커밋 |
 | `--fix --all` | 아니요 | 수정 범위에 Info 결과 포함 (기본값: Critical + Warning만) |

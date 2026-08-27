@@ -1,3 +1,4 @@
+// docs-guard-exempt: cursor.com/docs/... is an external URL citation in an assert message, not a repo path.
 // allow-test-rule: structural-regression-guard — AC2 requires asserting no `runtime === 'cursor'` string-equality branch remains in bin/install.js/src — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2089)
 'use strict';
 

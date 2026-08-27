@@ -26,10 +26,15 @@ log the plaintext value. The workflow follows these rules:
 - **`config-set` output is masked** for keys in the secret set
   (`brave_search`, `firecrawl`, `exa_search`) — see
   `gsd-core/bin/lib/secrets.cjs`.
-- **Agent-type and CLI slug validation.** `agent_skills.<agent-type>` and
-  `review.models.<cli>` keys are matched against `^[a-zA-Z0-9_-]+$`. Inputs
+- **Agent-type and CLI slug validation.** `agent_skills.<agent-type>` slug
+  inputs are checked against `^[a-zA-Z0-9_-]+$` before any write; inputs
   containing path separators (`/`, `\`, `..`), whitespace, or shell
-  metacharacters are rejected. This closes off skill-injection attacks.
+  metacharacters are rejected. This closes off skill-injection attacks on
+  that open namespace (dynamic key pattern). For `review.models.<cli>` no
+  slug-shape check is needed or performed: the gate is membership in the
+  closed, registry-derived settable set (see the review-models section
+  below), which subsumes slug shape — slug shape alone never makes a
+  `review.models.*` key writable.
 </security>
 
 <required_reading>
@@ -42,7 +47,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 Ensure config exists and resolve the active config path (flat vs workstream, #2282):
 
 ```bash
-_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; if [ -f "$GSD_TOOLS" ]; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif command -v gsd-tools >/dev/null 2>&1; then GSD_TOOLS="$(command -v gsd-tools)"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd-tools is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
+_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --default "" 2>/dev/null || echo "")
 gsd_run query config-ensure-section
 if [[ -z "${GSD_CONFIG_PATH:-}" ]]; then
@@ -148,9 +153,23 @@ gsd_run query config-set brave_search null
 
 <step name="section_2_review_models">
 
-`review.models.<cli>` is a map that tells the code-review workflow which
-shell command to invoke for a given reviewer flavor. Supported flavors:
-`claude`, `codex`, `gemini`, `opencode`.
+`review.models.<cli>` is a closed, registry-derived map that tells the review
+workflow which model id a reviewer lane uses. It is not an open namespace: a
+`review.models.<cli>` key is settable only when that lane's capability
+declares a `modelConfigKey`, and `config-set` accepts exactly those keys
+(federated from the capability registry). No dynamic-key regex governs this
+namespace — any other slug fails with `Unknown config key`.
+
+Settable keys (the shipped registry's model-bearing lanes):
+
+`review.models.agy` (Antigravity), `review.models.claude`, `review.models.codex`,
+`review.models.gemini`, `review.models.kimi-code`, `review.models.llama_cpp`,
+`review.models.lm_studio`, `review.models.ollama`, `review.models.opencode`.
+
+Reviewer lanes `cursor`, `qwen`, and `coderabbit` declare no `modelConfigKey` —
+there is nothing to configure for them here (whether they should have a
+per-lane model key is a separate question, out of scope for this workflow).
+If the user asks for one of those, say exactly that and skip.
 
 ```text
 AskUserQuestion([
@@ -159,7 +178,7 @@ AskUserQuestion([
     header: "Review",
     multiSelect: false,
     options: [
-      { label: "Configure CLI", description: "Pick a reviewer flavor and set/clear its command" },
+      { label: "Configure CLI", description: "Pick a reviewer lane and set/clear its model id" },
       { label: "Done", description: "Finish this section" }
     ]
   }
@@ -171,7 +190,7 @@ If "Configure CLI" is selected, ask:
 ```text
 AskUserQuestion([
   {
-    question: "Which reviewer CLI do you want to configure?",
+    question: "Which reviewer lane do you want to configure? (Common lanes below; any settable lane from the list above works — or type its slug)",
     header: "CLI",
     multiSelect: false,
     options: [
@@ -184,7 +203,18 @@ AskUserQuestion([
 ])
 ```
 
-For the selected CLI, show the current value (or `(unset)`) and offer
+For a slug received as free text, check it against the settable set above.
+If it is not one of the settable keys, print:
+
+```text
+Rejected: review.models.<slug> is not settable — only the reviewer lanes whose
+keys are enumerated above can be configured here. (cursor, qwen, and
+coderabbit have no per-lane model key.)
+```
+
+and re-prompt.
+
+For the selected lane, show the current value (or `(unset)`) and offer
 Leave / Replace / Clear, followed by a text-input prompt for the model id
 string. Write via:
 
@@ -194,10 +224,6 @@ gsd_run query config-set review.models.<cli> "<model id>"
 
 After each update, return to the "Review model CLI mapping — what next?" question.
 Loop until the user selects "Done".
-
-The `review.models.<cli>` key is validated by the dynamic pattern
-`^review\.models\.[a-zA-Z0-9_-]+$`. Empty CLI slugs and path-containing slugs
-are rejected by `config-set` before any write.
 </step>
 
 <step name="section_3_agent_skills">
@@ -249,12 +275,23 @@ spaces, or shell metacharacters).
 
 and re-prompt.
 
-For a selected slug, prompt for the comma-separated skill list (text input).
-Show the current value if any, offer Leave / Replace / Clear. Write via:
+For a selected slug, prompt for the skill list (text input; a comma-separated
+reply is fine). Show the current value if any, offer Leave / Replace / Clear.
+
+Split the reply before writing: the resolver never splits strings, so a
+comma-joined string would be stored as ONE skill path that silently fails
+resolution at spawn time (#3651 — `gsd-core/references/planning-config.md`:
+"Paths cannot be comma-joined into one string; each path must be its own
+array element"). Split on commas, trim each entry, drop empty entries, reject
+any entry containing a quote character (`'` or `"` — it cannot be written
+safely through the single-quoted form), and write the JSON array form:
 
 ```bash
-gsd_run query config-set agent_skills.<slug> "<skill-a,skill-b,skill-c>"
+gsd_run query config-set agent_skills.<slug> '["skills/alpha","skills/beta"]'
 ```
+
+A single skill may be written as one bare string or a one-element array —
+both resolve identically.
 
 After each update, return to the "Agent skills mapping — what next?" question.
 Loop until "Done".
@@ -265,9 +302,7 @@ Display the masked confirmation table. **No plaintext API keys appear in this
 output under any circumstance.**
 
 ```text
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► INTEGRATIONS UPDATED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► INTEGRATIONS UPDATED
 
 Search Integrations
 | Field              | Value             |
@@ -278,12 +313,10 @@ Search Integrations
 | search_gitignored  | true | false      |
 
 Code Review CLI Routing
-| CLI         | Command                              |
+| Lane        | Model id                             |
 |-------------|--------------------------------------|
-| claude      | <value or (session model default)>   |
-| codex       | <value or (unset)>                   |
-| gemini      | <value or (unset)>                   |
-| opencode    | <value or (unset)>                   |
+| <lane>      | <value or (unset)>                   |
+| ...         | ... one row per lane the user set    |
 
 Agent Skills Injection
 | Agent Type       | Skills                    |
@@ -310,6 +343,6 @@ Quick commands:
 - [ ] User presented with three sections: Search Integrations, Review CLI Routing, Agent Skills Injection
 - [ ] API keys written plaintext only to `config.json`; never echoed, never logged, never displayed
 - [ ] Masked confirmation table uses `****<last-4>` for set keys and `(unset)` for null
-- [ ] `review.models.<cli>` and `agent_skills.<agent-type>` keys validated against `[a-zA-Z0-9_-]+` before write
+- [ ] `agent_skills.<agent-type>` slugs validated against `[a-zA-Z0-9_-]+` before write; `review.models.<cli>` slugs accepted only from the registry-derived settable set; skill lists written as JSON arrays (never comma-joined strings)
 - [ ] Config merge preserves all keys outside the three sections this workflow owns
 </success_criteria>

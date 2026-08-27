@@ -37,7 +37,28 @@ const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
 const ROUTER_PATH = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
-const SCAN_DIRS = ['agents', path.join('gsd-core', 'workflows')];
+// #3809 widened this from agents/ + workflows/ to include gsd-core/references/,
+// which was carrying 37 bare calls the guard simply never looked at.
+//
+// commands/ is deliberately NOT here, and that is a finding rather than an
+// oversight. Its files cannot use the shared launcher the way workflows and agents
+// do: tests/graphify-visualization.test.cjs extracts individual Step-3 shell chains
+// and runs them standalone, so each fenced block needs its OWN preamble —
+// graphify.md carries five on purpose, and collapsing them to one produces
+// `gsd_run: command not found` (exit 127). tests/gsd-tools-path-refs.test.cjs
+// (#1766) separately pins commands/gsd/workstreams.md to the literal string
+// `gsd-tools query workstream.list`. Bringing commands/ under this guard therefore
+// needs those two contracts reconciled first; it is not a scan-set widening.
+//
+// skills/ is absent for a different reason: it is generated from commands/ by
+// scripts/gen-plugin-skills.cjs and pinned by lint:generated-sync, so guarding the
+// source guards both, and scanning the generated mirror would double-report every
+// future offender.
+const SCAN_DIRS = [
+  'agents',
+  path.join('gsd-core', 'workflows'),
+  path.join('gsd-core', 'references'),
+];
 
 // Derive the verb set the bare-call guard matches against. Most top-level
 // verbs live in the host-command router table as `'verb': routeHandler` entries
@@ -82,12 +103,11 @@ const BARE_COMMAND_RE = new RegExp(
 // Each entry MUST carry a one-line reason; the test prints the allowlist on
 // failure so a reviewer can see exactly what is sanctioned.
 const PROSE_ALLOWLIST = [
-  { file: 'agents/gsd-executor.md', line: 793, reason: 'describes the SDK return envelope of `gsd-tools query commit`; not an instruction to run the bare word' },
+  { file: 'agents/gsd-executor.md', line: 795, reason: 'describes the SDK return envelope of `gsd-tools query commit`; not an instruction to run the bare word' },
   { file: 'agents/gsd-phase-researcher.md', line: 33, reason: 'package-legitimacy provenance rule names the command as the source of an OK verdict; descriptive' },
   { file: 'agents/gsd-roadmapper.md', line: 642, reason: 'parenthetical "e.g." naming SDK queries a user *could* run; not an agent instruction' },
   { file: 'agents/gsd-intel-updater.md', line: 40, reason: 'cross-platform note names the `gsd-tools intel <subcommand>` CLI surface descriptively ("CLI invocations go through..."); not an agent instruction' },
-  { file: 'gsd-core/workflows/execute-plan.md', line: 414, reason: 'describes the downstream SDK validation step (`validated downstream by ...`); names the mechanism, does not instruct the agent to type it' },
-  { file: 'agents/gsd-research-synthesizer.md', line: 65, reason: 'a code comment inside a fenced block explaining what the commit step loads (`# Planning config loaded via gsd-tools query ...`); descriptive, not an invocation — and explicitly names gsd-tools.cjs as the alternative' },
+  { file: 'gsd-core/workflows/execute-plan.md', line: 415, reason: 'describes the downstream SDK validation step (`validated downstream by ...`); names the mechanism, does not instruct the agent to type it' },
 ];
 
 // Resolver-snippet definition lines / probes that must never be flagged. A line

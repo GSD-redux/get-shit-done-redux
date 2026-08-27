@@ -148,7 +148,7 @@
     "reviewsSection": "Claude",
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
-    "promptBudgetKey": null,
+    "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
     "modelConfigKey": "review.models.claude",
     "handler": null
   },
@@ -157,6 +157,11 @@
       "type": "string",
       "default": "",
       "description": "Model passed to the Claude reviewer lane."
+    },
+    "review.max_prompt_tokens_per_reviewer.claude": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
     }
   }
 }

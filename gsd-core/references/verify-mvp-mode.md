@@ -14,7 +14,7 @@ The user-flow form mirrors what a real user does: open, fill, click, see. No HTT
 ## When this framing applies
 
 The framing fires when:
-- The phase under verification has `**Mode:** mvp` in ROADMAP.md (parsed via `gsd-tools query roadmap.get-phase --pick mode`).
+- The phase under verification has `**Mode:** mvp` in ROADMAP.md (parsed via `gsd_run query roadmap.get-phase --pick mode`).
 - AND the phase has a user-story-formatted goal (set by `/gsd mvp-phase` per Phase 2): "As a [user role], I want to [capability], so that [outcome]."
 
 If the phase has `mode: mvp` but the goal is NOT in user-story format, the verifier surfaces this as a discrepancy and asks the user to run `/gsd mvp-phase` to reformat the goal — same pattern as the planner agent under MVP_MODE (per `gsd-core/references/planner-mvp-mode.md`).

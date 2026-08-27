@@ -121,6 +121,7 @@ GSD는 프로젝트 설정을 `.planning/config.json`에 저장합니다. `/gsd-
 | 설정 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | `planning.commit_docs` | boolean | `true` | `.planning/` 파일을 git에 커밋할지 여부 |
+| `planning.pr_strict` | boolean | `false` | `/gsd-pr-branch`의 필터 모드. `false`는 STATE.md, ROADMAP.md, MILESTONES.md, PROJECT.md, REQUIREMENTS.md, milestones/ 등 구조적 플래닝 상태를 PR 브랜치에 유지하고, `true`는 모든 `.planning/` 경로를 제거함 |
 | `planning.search_gitignored` | boolean | `false` | 광범위한 검색에 `--no-ignore`를 추가하여 `.planning/`을 포함 |
 
 ### 자동 감지

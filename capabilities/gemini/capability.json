@@ -36,7 +36,7 @@
     "reviewsSection": "Gemini",
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
-    "promptBudgetKey": null,
+    "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.gemini",
     "modelConfigKey": "review.models.gemini",
     "handler": null
   },
@@ -45,6 +45,11 @@
       "type": "string",
       "default": "",
       "description": "Model passed to the Gemini reviewer lane."
+    },
+    "review.max_prompt_tokens_per_reviewer.gemini": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
     }
   }
 }

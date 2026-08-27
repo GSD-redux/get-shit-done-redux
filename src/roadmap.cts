@@ -19,7 +19,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
+const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
@@ -34,6 +34,11 @@ import { platformWriteSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningPaths, withPlanningLock, findContextMdIn } = planningWorkspace;
+// #3641: milestone-scope's convention resolution reads the project config
+// (no cycle — config-loader does not import this module).
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import configLoaderForScope = require('./config-loader.cjs');
+const { loadConfig: loadConfigForScope } = configLoaderForScope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -529,18 +534,17 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
 
   // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
-  // #3185 exemption (documented reason, not a file allowlist — ADR-3180
-  // Decision 4a): this is a heading->directory LOOKUP INDEX, not a milestone
-  // enumeration. It must see the PHYSICAL set so a heading already scoped by
-  // extractCurrentMilestoneScoped above can find its directory; filtering it
-  // through listMilestonePhaseDirs would scope the same set twice.
-  const _phaseDirNames = (() => {
-    try {
-      return fs.readdirSync(phasesDir, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name);
-    } catch { return []; }
-  })();
+  // #3185 exemption reason (ADR-3180 Decision 4a): this is a heading->directory
+  // LOOKUP INDEX, not a milestone enumeration. It must see the PHYSICAL set so
+  // a heading already scoped by extractCurrentMilestoneScoped above can find
+  // its directory; filtering it through listMilestonePhaseDirs would scope
+  // the same set twice. #3882 (ADR-3473 §8.2): routed through the named
+  // "physical set, sentinels included" axis instead of a hand-rolled
+  // readdirSync — every heading matched below already excludes sentinel
+  // phase numbers via isSentinelPhaseId before it ever consults this list
+  // (collectAnalyzePhases), so a sentinel directory's presence here is
+  // output-invariant; this only removes the re-derivation, not the reason.
+  const _phaseDirNames = listAllPhaseDirs(phasesDir, { includeSentinels: true }).value;
 
   // Scan the scoped milestone window for phase-detail headings and enrich each
   // with its on-disk status. Extracted into `collectAnalyzePhases` (#3165) so
@@ -707,7 +711,35 @@ function cmdRoadmapMilestoneScope(cwd: string, raw: boolean): void {
   }
 
   const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
-  const { value: window, scope } = extractCurrentMilestoneScoped(rawContent, cwd);
+  // #3641: resolve phase_id_convention and thread it into the scope axis, so
+  // this probe and `roadmap validate`'s V005 answer the SAME question the
+  // SAME way for a bracket-convention project — a window the classifier
+  // calls TRUNCATED in validate must never read COMPLETE here (the #3262
+  // capture/compare guard consumes this scope). Resolution mirrors the
+  // validate router's: .planning/config.json first, ROADMAP.md frontmatter
+  // as fallback.
+  let phaseIdConvention: string | undefined | null;
+  try {
+    const cfg = loadConfigForScope(cwd);
+    phaseIdConvention = cfg['phase_id_convention'] as string | undefined | null;
+  } catch {
+    phaseIdConvention = undefined;
+  }
+  if (phaseIdConvention === undefined || phaseIdConvention === null) {
+    // Bounded per local/no-unbounded-quantifier (#2128): frontmatter is a
+    // short header block — 4KB is orders of magnitude beyond any real one.
+    const fmMatch = rawContent.match(/^---\r?\n([\s\S]{0,4000}?)\r?\n---/);
+    if (fmMatch) {
+      const kvMatch = fmMatch[1].match(/^phase_id_convention:\s*(.*)$/m);
+      if (kvMatch) {
+        const val = kvMatch[1].trim();
+        if (val !== 'null' && val !== '') {
+          phaseIdConvention = val.replace(/^["']|["']$/g, '');
+        }
+      }
+    }
+  }
+  const { value: window, scope } = extractCurrentMilestoneScoped(rawContent, cwd, undefined, phaseIdConvention);
   // Document order (Set insertion order) — deterministic for a given document.
   const phases = [...scanMilestonePhaseIds(window)];
   output({ scope, phases, phase_count: phases.length }, raw, undefined);

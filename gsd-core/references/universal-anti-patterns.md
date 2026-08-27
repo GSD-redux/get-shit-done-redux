@@ -34,7 +34,7 @@ Reference: `gsd-core/references/questioning.md` for the full anti-pattern list.
 
 ## State Management Anti-Patterns
 
-15. **No direct Write/Edit to STATE.md or ROADMAP.md for mutations.** Always use `gsd-tools query` for registered state/roadmap handlers (e.g. `state.update`, `state.advance-plan`, `roadmap.update-plan-progress`), or legacy `node …/gsd-tools.cjs` for CLI-only commands. Direct Write tool usage bypasses safe update logic and is unsafe in multi-session environments. Exception: first-time creation of STATE.md from template is allowed.
+15. **No direct Write/Edit to STATE.md or ROADMAP.md for mutations.** Always use `gsd_run query` for registered state/roadmap handlers (e.g. `state.update`, `state.advance-plan`, `roadmap.update-plan-progress`), or legacy `node …/gsd-tools.cjs` for CLI-only commands. Direct Write tool usage bypasses safe update logic and is unsafe in multi-session environments. Exception: first-time creation of STATE.md from template is allowed.
 
 ## Behavioral Rules
 
@@ -53,7 +53,7 @@ Reference: `gsd-core/references/questioning.md` for the full anti-pattern list.
 ## GSD-Specific Rules
 
 24. **Do not** check for `mode === 'auto'` or `mode === 'autonomous'` -- GSD uses `yolo` config flag. Check `yolo: true` for autonomous mode, absence or `false` for interactive mode.
-25. **Prefer `gsd-tools query`** for orchestration when a handler exists; when shelling out to the legacy CLI, use **`gsd-tools.cjs`** (not `gsd-tools.js` or any other filename) — GSD ships the programmatic API as CommonJS for Node.js CLI compatibility.
+25. **Prefer `gsd_run query`** for orchestration when a handler exists; when shelling out to the legacy CLI, go through the same `gsd_run` launcher rather than naming the shim file. The shim is not on PATH under any name ending in `.cjs`, and an agent that meets the bare filename falls back to searching the filesystem for it — on Git Bash for Windows that is a full-drive `find.exe` traversal (#3809). `gsd_run` resolves the CommonJS shim itself across every runtime home.
 26. **Plan files MUST follow `{padded_phase}-{NN}-PLAN.md` pattern** (e.g., `01-01-PLAN.md`). Never use `PLAN-01.md`, `plan-01.md`, or any other variation -- gsd-tools detection depends on this exact pattern.
 27. **Do not start executing the next plan before writing the SUMMARY.md for the current plan** -- downstream plans may reference it via `@` includes.
 

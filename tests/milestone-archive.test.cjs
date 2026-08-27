@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/TESTING-SUITES.md is cited only in a placement-note comment; never read.
 'use strict';
 
 /**
@@ -451,6 +452,13 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', name), { recursive: true });
   }
 
+  // #3884 (ADR-3473 §8.4): `--json` was never a real flag for `init
+  // new-milestone` — `init` subcommands always emit a JSON bundle regardless
+  // of any flag (the machine-readable-output flag is `--raw`, documented at
+  // docs/CLI-TOOLS.md:30, not `--json`). Under the pre-#3884 permissive
+  // parser the unrecognized token was silently dropped and the assertions
+  // below never actually depended on it; the strict parser now rejects it.
+  // Removed across this describe block's four call sites.
   test('init.new-milestone counts CK-NN-name dirs against numeric `Phase N:` headings', () => {
     writeConfig(tmpDir, { project_code: 'CK' });
     writeState(tmpDir, 'v1.0.0');
@@ -463,7 +471,7 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     ensurePhaseDir(tmpDir, 'CK-01-discovery');
     ensurePhaseDir(tmpDir, 'CK-02-build');
 
-    const r = runGsdTools(['init', 'new-milestone', '--json'], tmpDir);
+    const r = runGsdTools(['init', 'new-milestone'], tmpDir);
     assert.ok(r.success, `init new-milestone failed: ${r.error || r.output}`);
     const payload = JSON.parse(r.output);
     assert.strictEqual(payload.phase_dir_count, 2,
@@ -479,7 +487,7 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     ].join('\n'));
     ensurePhaseDir(tmpDir, '01-first');
 
-    const r = runGsdTools(['init', 'new-milestone', '--json'], tmpDir);
+    const r = runGsdTools(['init', 'new-milestone'], tmpDir);
     assert.ok(r.success);
     assert.strictEqual(JSON.parse(r.output).phase_dir_count, 1);
   });
@@ -494,7 +502,7 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     ].join('\n'));
     ensurePhaseDir(tmpDir, 'PROJ-42');
 
-    const r = runGsdTools(['init', 'new-milestone', '--json'], tmpDir);
+    const r = runGsdTools(['init', 'new-milestone'], tmpDir);
     assert.ok(r.success);
     assert.strictEqual(JSON.parse(r.output).phase_dir_count, 1,
       'PROJ-42 directory must still match Phase PROJ-42: via the custom-ID path');
@@ -512,7 +520,7 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     ensurePhaseDir(tmpDir, 'CK-99-backlog');
     ensurePhaseDir(tmpDir, 'CK-100-future');
 
-    const r = runGsdTools(['init', 'new-milestone', '--json'], tmpDir);
+    const r = runGsdTools(['init', 'new-milestone'], tmpDir);
     assert.ok(r.success);
     assert.strictEqual(JSON.parse(r.output).phase_dir_count, 1,
       'only CK-01-first should match Phase 1; CK-99 and CK-100 must be excluded');

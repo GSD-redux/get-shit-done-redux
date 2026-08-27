@@ -14,7 +14,7 @@ A plan that survives review from 2-3 independent AI systems is more robust.
 Check which AI CLIs are available on the system:
 
 ```bash
-_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; if [ -f "$GSD_TOOLS" ]; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif command -v gsd-tools >/dev/null 2>&1; then GSD_TOOLS="$(command -v gsd-tools)"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd-tools is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
+_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 # Check each CLI
 command -v gemini >/dev/null 2>&1 && echo "gemini:available" || echo "gemini:missing"
 command -v claude >/dev/null 2>&1 && echo "claude:available" || echo "claude:missing"
@@ -316,7 +316,11 @@ reintroduce the flag (even spelled out in prose — a regression test bans the l
 If `section_manifest` is `null` or `"reviewer-instances-note-2"` is in its `included` list: read and execute `gsd-core/workflows/review/steps/reviewer-instances-note-2.md`. Otherwise skip — do not read the file.
 <!-- /gsd:section -->
 
-Lanes run **sequentially, not in parallel** — concurrent invocation trips provider rate limits.
+Lanes run **sequentially by default** — concurrent invocation trips provider rate limits, and a lane
+lost to one is a cross-AI review that quietly went blind in one eye. A project whose providers can
+accept the concurrency opts in with `review.parallel_lanes: true` (#3034): the selected lanes are
+dispatched together and **all** joined before aggregation. The default is unchanged, and convergence
+cycles stay sequential either way — only the lanes *within* one pass overlap.
 
 ```bash
 # #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
@@ -326,6 +330,13 @@ RUN_DIR="{run_dir}"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # SELECTED_REVIEWERS is the comma-separated result of reviewer selection (ADR-0011 precedence:
 # explicit flags > --all > review.default_reviewers > all detected). Unchanged by this phase.
+
+# #3034: opt-in concurrent lane dispatch. STRICT equality on "true" is deliberate — "1", "yes" and
+# "TRUE" must NOT opt in, so a mistyped config gets the conservative behaviour rather than firing
+# concurrent requests at a rate-limited provider. Note the `|| echo "false"` fallback is the
+# OPPOSITE polarity from the commit_docs guard, which fails OPEN: there, failing open preserves the
+# user's intent; here it would fire exactly the requests the default exists to prevent.
+PARALLEL_LANES=$(gsd_run query config-get review.parallel_lanes --raw 2>/dev/null || echo "false")
 
 # Shared budget-trim helper. Was defined inside the Ollama leg; it is lane-agnostic, so it is
 # hoisted here now that any lane may declare a promptBudgetKey. Returns non-zero when the budget
@@ -360,7 +371,20 @@ gsd_run query review-lane plan \
   --selected "$SELECTED_REVIEWERS" --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" --json \
   > "$RUN_DIR/gsd-review-lanes.json"
 
-for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+# One lane, start to finish. Hoisted into a function so the sequential and concurrent paths share
+# ONE body: two dispatch bodies kept in sync by hand is the generative-fix divergence ADR-2782 spent
+# a phase deleting, and it is what let #2494/#2605 be filed twice as the same defect.
+#
+# The result goes to a SLUG-SCOPED file, never a shared append. Concurrent O_APPEND is atomic only
+# below PIPE_BUF (4096 on Linux, 512 on some platforms), so a lane result above that bound could
+# interleave — and write_reviews parses this JSONL to render the models:/model_sources: frontmatter,
+# so a torn line is a broken REVIEWS.md, not a cosmetic log defect.
+run_review_lane() {
+  # `local` is hygiene, not a live fix: each `&`-dispatched call already forks its own subshell, so
+  # concurrent lanes cannot share these today. Scoped anyway so the isolation is a property of this
+  # function rather than of the dispatch mechanism happening to fork.
+  local SLUG LANE_BUDGET PROMPT_ARG TRIMMED
+  SLUG="$1"
   # Per-lane prompt budget. The lane declares its own `promptBudgetKey`; `plan` resolved it,
   # applying #2797's sentinel rule (-1 = unset → fall back to the global budget; 0 legitimately
   # means "do not trim this lane"). Trimming itself stays in prompt-budget, which owns it.
@@ -378,7 +402,9 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
       # response used to (#2605), so leave the skip visible in the review output, not only on stderr.
       echo "$SLUG review skipped: prompt budget (${LANE_BUDGET} tokens) too small for the minimum review set." \
         > "$RUN_DIR/gsd-review-$SLUG.md"
-      continue
+      # Was `continue` when this was a loop body. Inside a function that keyword is not the loop
+      # control it looks like — `return 0` is what skips this lane and leaves it with no result line.
+      return 0
     fi
   fi
 
@@ -387,7 +413,50 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
   # normal, failing to run one somebody asked for is an error.
   gsd_run query review-lane invoke --slug "$SLUG" \
     --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" $PROMPT_ARG $EXPLICIT_FLAG --json \
-    >> "$RUN_DIR/gsd-review-lane-results.jsonl"
+    > "$RUN_DIR/gsd-review-lane-result-$SLUG.json"
+}
+
+# Split ONCE, de-duplicated, and reuse for both loops below. Two reasons, and the second is
+# load-bearing: a slug repeated in SELECTED_REVIEWERS would put TWO concurrent background jobs on
+# `> "$RUN_DIR/gsd-review-lane-result-$SLUG.json"` — the same file, both truncating. The shared-append
+# form this replaced could not corrupt itself that way, so de-duping is what keeps the concurrent
+# path no worse than the sequential one. Selection de-dupes today (the roster is a Set;
+# review.default_reviewers normalizes lowercase-unique), but reachability analysis is not a contract
+# and the next caller should not have to redo it.
+#
+# A plain string accumulator, not an array: zsh and bash disagree on array indexing and this block
+# runs under both (see the nullglob/NULL_GLOB pairing above).
+DISPATCH_SLUGS=""
+for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+  case " $DISPATCH_SLUGS " in
+    *" $SLUG "*) continue ;;
+  esac
+  DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
+done
+
+for SLUG in $DISPATCH_SLUGS; do
+  if [ "$PARALLEL_LANES" = "true" ]; then
+    run_review_lane "$SLUG" &
+  else
+    run_review_lane "$SLUG"
+  fi
+done
+
+# Join every dispatched lane. A bare `wait` with no background jobs returns 0, so the sequential
+# path needs no guard around it. NOTHING below this line may run before every lane has finished —
+# write_reviews renders REVIEWS.md and the consensus summary from the aggregate below, and a review
+# assembled from a partial set looks complete while silently missing a reviewer.
+wait
+
+# Aggregate in SELECTED_REVIEWERS order, NOT completion order, so the JSONL a concurrent run
+# produces is byte-identical to the one a sequential run produces. This is post-join and therefore
+# single-threaded, so `>>` here is safe. A lane that was budget-skipped, or that never started,
+# leaves no result file and correctly contributes no line.
+for SLUG in $DISPATCH_SLUGS; do
+  LANE_RESULT="$RUN_DIR/gsd-review-lane-result-$SLUG.json"
+  if [ -f "$LANE_RESULT" ]; then
+    cat "$LANE_RESULT" >> "$RUN_DIR/gsd-review-lane-results.jsonl"
+  fi
 done
 ```
 
@@ -404,9 +473,7 @@ blocked, not silently redirected** (ADR-2782 D5).
 
 Display progress:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► CROSS-AI REVIEW — Phase {N}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► CROSS-AI REVIEW — Phase {N}
 
 ◆ Reviewing with {CLI}... done ✓
 ◆ Reviewing with {CLI}... done ✓
@@ -507,9 +574,7 @@ gsd_run query commit "docs: cross-AI review for phase {N}" --files {phase_dir}/{
 Display summary:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► REVIEW COMPLETE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► REVIEW COMPLETE
 
 Phase {N} reviewed by {count} AI systems.
 

@@ -224,6 +224,61 @@ describe('W007 — disk dir with no ROADMAP entry', () => {
     assert.deepEqual(ruleFor('W007').check(snapshot), []);
   });
 
+  test('#3639: does not fire for a BRACKET icebox directory (GSD.999-07-icebox) even with no roadmap entry', (t) => {
+    // Bracket sentinel-ness lives in the MILESTONE portion ({CODE}.999-{PP});
+    // the convention-less predicate read only the phase token and never saw it.
+    const cwd = createTempDir('gsd-3639-w007-bracket-ice-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## GSD.03 Current 🚧', '', '### Phase 3.1: Foo'].join('\n'));
+    makePhaseDir(cwd, 'GSD.03-01-foo');
+    makePhaseDir(cwd, 'GSD.999-07-icebox');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const diagnostics = ruleFor('W007').check(snapshot);
+    assert.deepEqual(
+      diagnostics.filter((d) => d.message.includes('999-07-icebox')),
+      [],
+      `a bracket icebox dir is never-on-roadmap by convention — no orphan warning. Got: ${JSON.stringify(diagnostics)}`,
+    );
+  });
+
+  test('#3639: does not fire for a BRACKET pre-milestone directory (GSD.00-01-backlog)', (t) => {
+    const cwd = createTempDir('gsd-3639-w007-bracket-pre-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## GSD.03 Current 🚧', '', '### Phase 3.1: Foo'].join('\n'));
+    makePhaseDir(cwd, 'GSD.03-01-foo');
+    makePhaseDir(cwd, 'GSD.00-01-backlog');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const diagnostics = ruleFor('W007').check(snapshot);
+    assert.deepEqual(
+      diagnostics.filter((d) => d.message.includes('00-01-backlog')),
+      [],
+      `a bracket pre-milestone dir is never-on-roadmap by convention. Got: ${JSON.stringify(diagnostics)}`,
+    );
+  });
+
+  test('#3639 over-suppression guard: an UNCLAIMED ordinary #1324 digit-continuation dir still fires W007', (t) => {
+    // The disclosed residual (#3639 review): #1324 dirs with a SENTINEL-valued
+    // first decimal (`P0.0-1-x`) are indistinguishable from bracket sentinels
+    // and read as sentinel (suppressed). This row pins that the family is not
+    // BLANKET-suppressed: a NON-sentinel first decimal (`P0.1-2-x`), unclaimed,
+    // must still fire — otherwise the recognizer would silently swallow every
+    // letter-prefixed real dir.
+    const cwd = createTempDir('gsd-3639-w007-over-sup-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+    makePhaseDir(cwd, '01-foo');
+    makePhaseDir(cwd, 'P0.1-2-x');
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const diagnostics = ruleFor('W007').check(snapshot);
+    assert.ok(
+      diagnostics.some((d) => d.message.includes('P0.1-2')),
+      `an unclaimed ordinary #1324 digit-continuation dir must still fire W007 (the message names the extracted token, not the full dir). Got: ${JSON.stringify(diagnostics)}`,
+    );
+  });
+
   test('boundary: zero declared phases and zero phase directories produces zero findings', (t) => {
     const cwd = createTempDir('gsd-3309-w007-4-');
     t.after(() => cleanup(cwd));

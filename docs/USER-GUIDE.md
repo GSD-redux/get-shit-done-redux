@@ -11,6 +11,7 @@ A narrative companion guide to GSD Core — orient yourself here, then follow th
 
 - [Slash-command forms](#slash-command-forms-hyphen-vs-colon)
 - [Namespace routing primer](#namespace-routing-primer-gsd-ns--v140)
+- [Reading GSD's output](#reading-gsds-output)
 - [Project lifecycle overview](#project-lifecycle-overview)
 - [Workflow Diagrams](#workflow-diagrams)
 - [UI Design Contract](#ui-design-contract)
@@ -71,6 +72,66 @@ On the seven nesting runtimes listed above, upgrading to v1.40 changes skill inv
 - **After:** only the 6 `gsd-ns-*` router bundles appear at the top level. Concrete skills are reachable via the router's routing table and a `Read skills/<name>/SKILL.md` call. Direct bare-name invocation of concrete skills through the Skill tool's listing no longer works.
 - **Slash commands unchanged:** `/gsd-plan-phase`, `/gsd-discuss-phase`, etc. still work directly where a commands surface is installed.
 - **Upgrade prune:** the installer's existing prune step removes the legacy top-level `gsd-<concrete>/` skill directories on upgrade — no manual cleanup is needed.
+
+---
+
+## Reading GSD's output
+
+GSD marks its sections with Markdown, not with drawn borders. There are exactly
+three forms, and every workflow, checkpoint and report uses them:
+
+| You see | It means |
+|---|---|
+| `### GSD ► {STAGE NAME}` | A major workflow transition — planning, executing a wave, verifying, completing |
+| `### CHECKPOINT: {Type}` | GSD is waiting on you. The bolded `**→ …**` line at the bottom tells you what to type |
+| `---` | A break between two sections — most often before the **▶ Next Up** block at the end of a completion |
+
+Panels that used to be drawn with box characters are now a heading followed by
+their rows as ordinary lines. A checkpoint reads:
+
+```
+### CHECKPOINT: Verification Required
+
+Progress: 5/8 tasks complete
+Task: Responsive dashboard layout
+
+How to verify:
+  1. Visit: http://localhost:3000/dashboard
+
+---
+
+**→ YOUR ACTION: Type "approved" or describe issues**
+```
+
+### Why there are no drawn borders
+
+Earlier releases framed stage banners between two 53-character runs
+of `━`, and checkpoints were a 62-column box drawn with `╔`, `║` and `╚`. Those
+runs are ordinary text to whatever renders GSD's output. In a pane narrower than
+the run, the rule wraps and the leftover glyphs land on a second line — so the
+border comes apart from the heading it was framing, and the output looks broken
+rather than merely narrow. Reported against the Codex desktop interface in
+[#3028](https://github.com/open-gsd/gsd-core/issues/3028).
+
+A Markdown heading and a thematic break carry the same structure without
+committing to a width, so they read correctly in a narrow pane and a wide one.
+
+This is unconditional: every runtime gets the same output. The alternative — a
+capability flag that kept line-art for terminal-oriented runtimes — was weighed
+and rejected, because it leaves two output conventions to keep in sync forever
+for a gain that is aesthetic rather than structural. What a terminal loses is the
+drawn frame; what it keeps is the title, the hierarchy and the break, none of
+which depended on the frame. The reasoning is recorded in
+`gsd-core/references/ui-brand.md § Why this is unconditional, not per-runtime`.
+If you run GSD in a host where the heading form reads worse than the old boxes
+did, that is worth reporting — it is the evidence that would justify the flag.
+
+Single-cell tokens are unaffected and unchanged: the status symbols
+(`✓ ✗ ◆ ○ ⚠`), the `GSD ►` prefix, and the ten-cell progress gauge
+(`Progress: ████████░░ 80%`) are not runs and do not wrap.
+
+The convention is specified in `gsd-core/references/ui-brand.md` and enforced
+against all shipped content by `tests/responsive-separators.test.cjs`.
 
 ---
 

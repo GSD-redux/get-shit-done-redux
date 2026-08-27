@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/reference/host-integration-capability-matrix.md is cited only in a comment; never read.
 'use strict';
 
 /**
@@ -53,6 +54,8 @@ const {
   KIMI_HOOKS_TOML_MARKER_BEGIN,
   KIMI_HOOKS_TOML_MARKER_END,
 } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
+const { COMMONJS_MARKER_CONTENT } = require('../gsd-core/bin/lib/commonjs-marker.cjs');
+const fc = require('fast-check');
 
 const KIMI_CAP = JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', 'capabilities', 'kimi', 'capability.json'), 'utf8'),
@@ -348,14 +351,20 @@ function hasGsdHooksBlock(tomlPath) {
   return stripKimiHooksTomlBlock(content) !== content;
 }
 
-/** Spawn the real installer for one Kimi variant against a shared sandbox HOME. */
-function runKimiInstall(root, runtime, { extraEnv = {}, uninstall = false } = {}) {
+/**
+ * Spawn the real installer for one Kimi variant against a shared sandbox HOME.
+ *
+ * `extraArgs` (#3031) appends installer flags beyond the uninstall switch — the
+ * opt-in `--reclaim-kimi-legacy` path needs them, and threading them here keeps
+ * every Kimi test on one spawn helper.
+ */
+function runKimiInstall(root, runtime, { extraEnv = {}, uninstall = false, extraArgs = [] } = {}) {
   return runMinimalInstall({
     runtime,
     scope: 'global',
     root,
     extraEnv,
-    extraArgs: uninstall ? ['--uninstall'] : [],
+    extraArgs: [...(uninstall ? ['--uninstall'] : []), ...extraArgs],
   });
 }
 
@@ -498,5 +507,275 @@ describe('kimi vs kimi-code hooks-TOML root (#2755)', () => {
     // hooks BLOCK stayed off the default root instead of directory absence.
     assert.ok(!hasGsdHooksBlock(path.join(root, '.kimi-code', 'config.toml')),
       'neither default hooks root may receive the GSD block when both overrides are set');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #3031: opt-in reclaim of the ~/.kimi artifacts a pre-#2755 install orphaned
+// ---------------------------------------------------------------------------
+
+/**
+ * The GSD hook script name the bundle really installs, so seeded wreckage
+ * matches what the pre-#2755 installer actually left behind.
+ */
+const SEEDED_GSD_HOOK = 'gsd-check-update.js';
+const RECLAIM_FLAG = '--reclaim-kimi-legacy';
+
+/**
+ * Seed a sandbox HOME with exactly what a pre-#2755 `--kimi-code` install left
+ * in `~/.kimi`: GSD's managed block in the native config.toml, a hook script,
+ * and the CommonJS marker inside hooks/.
+ */
+function seedLegacyKimiRoot(home, { userTomlPre = '', userTomlPost = '' } = {}) {
+  const root = path.join(home, '.kimi');
+  const hooksDir = path.join(root, 'hooks');
+  fs.mkdirSync(hooksDir, { recursive: true });
+
+  const block = [
+    KIMI_HOOKS_TOML_MARKER_BEGIN,
+    '',
+    '[[hooks]]',
+    'event = "SessionStart"',
+    `command = "node \\"${toPosixPath(root)}/hooks/${SEEDED_GSD_HOOK}\\""`,
+    '',
+    KIMI_HOOKS_TOML_MARKER_END,
+  ].join('\n');
+
+  const parts = [userTomlPre, block, userTomlPost].filter((part) => part !== '');
+  fs.writeFileSync(path.join(root, 'config.toml'), `${parts.join('\n\n')}\n`);
+  fs.writeFileSync(path.join(hooksDir, SEEDED_GSD_HOOK), '// GSD hook\n');
+  fs.writeFileSync(path.join(hooksDir, 'package.json'), COMMONJS_MARKER_CONTENT);
+
+  return { root, hooksDir, tomlPath: path.join(root, 'config.toml') };
+}
+
+describe('#3031 — opt-in reclaim of orphaned ~/.kimi GSD artifacts', () => {
+  test('reclaims the legacy ~/.kimi GSD artifacts when --reclaim-kimi-legacy is passed', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    const legacy = seedLegacyKimiRoot(root);
+
+    runKimiInstall(root, 'kimi-code', { extraArgs: [RECLAIM_FLAG] });
+
+    assert.ok(!hasGsdHooksBlock(legacy.tomlPath),
+      'the stale GSD [[hooks]] block must be gone from ~/.kimi/config.toml');
+    assert.ok(!fs.existsSync(path.join(legacy.hooksDir, SEEDED_GSD_HOOK)),
+      'the orphaned GSD hook script must be removed from ~/.kimi/hooks/');
+    assert.ok(!fs.existsSync(path.join(legacy.hooksDir, 'package.json')),
+      'the orphaned CommonJS marker must be removed from ~/.kimi/hooks/');
+    assert.ok(hasGsdHooksBlock(path.join(root, '.kimi-code', 'config.toml')),
+      'the kimi-code install itself must still have written its own GSD block');
+  });
+
+  test('leaves ~/.kimi untouched without the flag (cleanup is opt-in)', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    const legacy = seedLegacyKimiRoot(root);
+    const before = fs.readFileSync(legacy.tomlPath, 'utf8');
+
+    runKimiInstall(root, 'kimi-code');
+
+    assert.equal(fs.readFileSync(legacy.tomlPath, 'utf8'), before,
+      '~/.kimi/config.toml must be byte-identical when the flag is absent');
+    assert.ok(fs.existsSync(path.join(legacy.hooksDir, SEEDED_GSD_HOOK)),
+      'the hook bundle must survive when the flag is absent');
+  });
+
+  test('preserves user-authored config.toml sections and non-GSD hook files', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    const legacy = seedLegacyKimiRoot(root, {
+      userTomlPre: '[providers.moonshot]\napi_key = "USER-OWNED"',
+      userTomlPost: '[ui]\ntheme = "dark"',
+    });
+    const userHook = path.join(legacy.hooksDir, 'my-own-hook.js');
+    fs.writeFileSync(userHook, '// authored by the user\n');
+
+    runKimiInstall(root, 'kimi-code', { extraArgs: [RECLAIM_FLAG] });
+
+    const after = fs.readFileSync(legacy.tomlPath, 'utf8');
+    assert.ok(!hasGsdHooksBlock(legacy.tomlPath), 'the GSD block must be gone');
+    assert.match(after, /api_key = "USER-OWNED"/, 'user provider section must survive');
+    assert.match(after, /theme = "dark"/, 'user ui section must survive');
+    assert.ok(fs.existsSync(userHook), 'a user-authored hook script must never be removed');
+  });
+
+  test('never reclaims when the install runtime is kimi itself', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    const legacy = seedLegacyKimiRoot(root);
+
+    runKimiInstall(root, 'kimi', { extraArgs: [RECLAIM_FLAG] });
+
+    assert.ok(hasGsdHooksBlock(legacy.tomlPath),
+      'a --kimi install must never reclaim ~/.kimi — that is its own hooks root');
+  });
+
+  test('skips reclaim when the legacy root resolves to the install root', (t) => {
+    // Both overrides pointed at ONE directory collapse "the legacy root" onto
+    // "the root this install just wrote". An unguarded reclaim would delete its
+    // own output.
+    const root = sandboxHome(t, 'gsd-3031-');
+    const shared = sandboxHome(t, 'gsd-3031-shared-');
+
+    runKimiInstall(root, 'kimi-code', {
+      extraArgs: [RECLAIM_FLAG],
+      extraEnv: { KIMI_SHARE_DIR: shared, KIMI_CODE_HOME: shared },
+    });
+
+    assert.ok(hasGsdHooksBlock(path.join(shared, 'config.toml')),
+      'reclaim must not delete the hooks block this very install just wrote');
+  });
+
+  test('never reclaims when the same invocation also installs kimi', (t) => {
+    // The flag asserts "I only use Kimi Code". `--all` — or an explicit
+    // `--kimi --kimi-code` — falsifies that, and selectRuntimesFromArgs puts
+    // `kimi` BEFORE `kimi-code` in both, so an unguarded reclaim installs Kimi
+    // CLI's hooks and deletes them moments later in the same run, exiting 0.
+    const root = sandboxHome(t, 'gsd-3031-');
+
+    // Adding `--kimi` to a kimi-code install makes selectRuntimesFromArgs
+    // return BOTH runtimes, exactly as `--all` does.
+    runKimiInstall(root, 'kimi-code', { extraArgs: ['--kimi', RECLAIM_FLAG] });
+
+    assert.ok(hasGsdHooksBlock(path.join(root, '.kimi', 'config.toml')),
+      'Kimi CLI hooks installed by this same run must survive the reclaim');
+    assert.ok(hasGsdHooksBlock(path.join(root, '.kimi-code', 'config.toml')),
+      'the kimi-code install itself must still succeed');
+  });
+
+  test('skips reclaim when the two roots differ only by a symlink alias', (t) => {
+    // The roots come from user-controlled env vars, so "same directory" and
+    // "same string" are not the same question. A resolve-only comparison
+    // returns false here and the reclaim would delete the hooks this very
+    // install just wrote.
+    if (process.platform === 'win32') {
+      t.skip('symlink creation requires elevated privileges on Windows');
+      return;
+    }
+    const root = sandboxHome(t, 'gsd-3031-');
+    const real = path.join(root, 'realkimi');
+    const link = path.join(root, 'linkkimi');
+    fs.mkdirSync(real, { recursive: true });
+    fs.symlinkSync(real, link);
+
+    runKimiInstall(root, 'kimi-code', {
+      extraArgs: [RECLAIM_FLAG],
+      extraEnv: { KIMI_CODE_HOME: real, KIMI_SHARE_DIR: link },
+    });
+
+    assert.ok(hasGsdHooksBlock(path.join(real, 'config.toml')),
+      'a symlinked alias of the install root must not be reclaimed');
+  });
+
+  test('skips reclaim when the two roots differ only by case on a case-insensitive filesystem', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    const real = path.join(root, 'casekimi');
+    const upper = path.join(root, 'CASEKIMI');
+    fs.mkdirSync(real, { recursive: true });
+
+    // Probe the ACTUAL filesystem rather than inferring from process.platform:
+    // macOS can be formatted case-sensitively and Linux can mount otherwise.
+    if (!fs.existsSync(upper)) {
+      t.skip('filesystem is case-sensitive — these are genuinely two directories');
+      return;
+    }
+
+    runKimiInstall(root, 'kimi-code', {
+      extraArgs: [RECLAIM_FLAG],
+      extraEnv: { KIMI_CODE_HOME: real, KIMI_SHARE_DIR: upper },
+    });
+
+    assert.ok(hasGsdHooksBlock(path.join(real, 'config.toml')),
+      'a case-variant alias of the install root must not be reclaimed');
+  });
+
+  test('is a no-op when no legacy ~/.kimi root exists', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+
+    runKimiInstall(root, 'kimi-code', { extraArgs: [RECLAIM_FLAG] });
+
+    assert.ok(!fs.existsSync(path.join(root, '.kimi')),
+      'reclaim must not create a legacy root that never existed');
+    assert.ok(hasGsdHooksBlock(path.join(root, '.kimi-code', 'config.toml')),
+      'the kimi-code install itself must still succeed');
+  });
+
+  test('is idempotent across repeated reclaims', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    const legacy = seedLegacyKimiRoot(root);
+    const read = () => (fs.existsSync(legacy.tomlPath)
+      ? fs.readFileSync(legacy.tomlPath, 'utf8')
+      : null);
+
+    // runKimiInstall asserts exit 0, so a crash on the second pass fails here.
+    runKimiInstall(root, 'kimi-code', { extraArgs: [RECLAIM_FLAG] });
+    const afterFirst = read();
+    runKimiInstall(root, 'kimi-code', { extraArgs: [RECLAIM_FLAG] });
+
+    assert.equal(read(), afterFirst, 'a second reclaim must change nothing further');
+  });
+
+  test('warns instead of silently no-opping when the flag cannot apply', (t) => {
+    // The flag only ever acts inside the kimi-code GLOBAL branch. Consuming it
+    // in silence is indistinguishable from "it ran and found nothing", which
+    // for a cleanup the user explicitly asked for is the wrong answer.
+    const wrongRuntime = runMinimalInstall({
+      runtime: 'claude',
+      scope: 'global',
+      root: sandboxHome(t, 'gsd-3031-'),
+      extraArgs: [RECLAIM_FLAG],
+    });
+    assert.match(`${wrongRuntime.stdout}${wrongRuntime.stderr}`, /--reclaim-kimi-legacy ignored/,
+      'a non-kimi-code install must say the flag did nothing');
+
+    // kimi-code declares hostBehaviors.localInstallDeferred, so install()
+    // returns before the hooks branch — the scope warning has to be raised
+    // before that early return, not inside it.
+    const localScope = runMinimalInstall({
+      runtime: 'kimi-code',
+      scope: 'local',
+      root: sandboxHome(t, 'gsd-3031-'),
+      extraArgs: [RECLAIM_FLAG],
+    });
+    assert.match(`${localScope.stdout}${localScope.stderr}`, /--reclaim-kimi-legacy ignored/,
+      'a local install must say the flag did nothing');
+  });
+
+  test('does not warn on the happy path', (t) => {
+    const root = sandboxHome(t, 'gsd-3031-');
+    seedLegacyKimiRoot(root);
+
+    const result = runKimiInstall(root, 'kimi-code', { extraArgs: [RECLAIM_FLAG] });
+
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /--reclaim-kimi-legacy ignored/,
+      'the warning must not fire when the reclaim actually runs');
+  });
+
+  test('property: stripping the GSD block never destroys user content', () => {
+    const userText = fc.stringMatching(/^[A-Za-z0-9_= ."[\]]{1,40}$/);
+
+    fc.assert(
+      fc.property(userText, userText, (pre, post) => {
+        const block = [
+          KIMI_HOOKS_TOML_MARKER_BEGIN,
+          '',
+          '[[hooks]]',
+          'event = "SessionStart"',
+          '',
+          KIMI_HOOKS_TOML_MARKER_END,
+        ].join('\n');
+        const stripped = stripKimiHooksTomlBlock(`${pre}\n\n${block}\n\n${post}\n`);
+
+        assert.ok(stripped === null || !stripped.includes(KIMI_HOOKS_TOML_MARKER_BEGIN),
+          'the managed block itself must always be removed');
+
+        const survives = (text) => {
+          const trimmed = text.trim();
+          if (trimmed === '') return true;
+          return stripped !== null && stripped.includes(trimmed);
+        };
+        assert.ok(survives(pre), `user prefix lost: ${JSON.stringify(pre)}`);
+        assert.ok(survives(post), `user suffix lost: ${JSON.stringify(post)}`);
+      }),
+      { numRuns: 100 },
+    );
   });
 });

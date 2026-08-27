@@ -1,5 +1,5 @@
 7b. **Pre-wave dependency check (waves 2+ only):**
-    Before wave N+1, run `gsd-tools.cjs query verify.key-links {phase_dir}/{plan}-PLAN.md` for each upcoming plan.
+    Before wave N+1, run `gsd_run query verify.key-links {phase_dir}/{plan}-PLAN.md` for each upcoming plan.
     If any PRIOR-wave artifact link fails, present:
     - `## Cross-Plan Wiring Gap` with plan/link/from/pattern rows
     - Options: investigate+fix before continue, or continue with cascade risk
@@ -24,19 +24,16 @@
    # Unset per-wave manifest so wave N+1 creates a fresh one (#3384, #1369).
    unset WAVE_WORKTREE_MANIFEST
 
-   # Between-wave base refresh (#1369): after wave N merges and tracking commits, HEAD has
-   # advanced. Re-assert worktree.baseRef:"head" (idempotent — no-op if already set) so the
-   # Claude Code harness re-reads the live HEAD on the next Agent(isolation="worktree") call
-   # rather than using a cached session-start commit as the fork base.
+   # Between-wave base re-check (#1369, #3659): after wave N merges and tracking commits,
+   # HEAD has advanced. Re-asserting worktree.baseRef:"head" is deliberately NOT done here —
+   # the runtime harness does not read project-settings baseRef (#48), so in
+   # harness-worktree mode the setting cannot influence the fork base. The safety re-check
+   # below compares HEAD against the REAL fork base and degrades the remaining waves
+   # whenever they diverge, avoiding the base-mismatch FATAL in executor agents.
    if [ "$ISOLATION" = "harness-worktree" ] && [ "$USE_WORKTREES" != "false" ]; then
-     gsd_run query worktree.set-baseref 2>/dev/null || true
-
-     # Safety re-check: evaluate degradation AFTER the wave N commits. If HEAD has diverged
-     # from origin/HEAD and baseRef is NOT "head", degrade remaining waves to sequential to
-     # avoid the base-mismatch FATAL in executor agents.
-     _BETWEEN_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || echo "false")
+     _BETWEEN_DEGRADE=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick shouldDegrade 2>/dev/null || echo "false")
      if [ "$_BETWEEN_DEGRADE" = "true" ]; then
-       _DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
+       _DEGRADE_MSG=$(gsd_run query worktree.base-check --mode "$ISOLATION" --pick message 2>/dev/null || true)
        [ -n "$_DEGRADE_MSG" ] && printf '%s\n' "$_DEGRADE_MSG" >&2
        printf 'Degrading to sequential mode for remaining waves: HEAD advanced past worktree fork base after wave %s merge (#1369).\n' "${N}" >&2
        # Both must move together (#2652): dispatch keys on ISOLATION.

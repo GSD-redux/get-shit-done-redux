@@ -18,7 +18,7 @@ Claude App cannot forward TUI menu selections back to the host.
 
 - Per-session: pass `--text` flag to any command (e.g.,
   `/gsd:discuss-phase --text`)
-- Per-project: `gsd-tools.cjs query config-set workflow.text_mode true`
+- Per-project: `gsd_run query config-set workflow.text_mode true`
 
 Text mode applies to ALL workflows in the session, not just discuss-phase.
 

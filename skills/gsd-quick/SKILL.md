@@ -86,12 +86,14 @@ For each directory found:
 Display format:
 ```
 Quick Tasks
-────────────────────────────────────────────────────────────
+
+---
 slug                           date        status
 backup-s3-policy               2026-04-10  in-progress
 auth-token-refresh-fix         2026-04-09  complete ✓
 update-node-deps               2026-04-08  abandoned? (>7 days, no summary)
-────────────────────────────────────────────────────────────
+
+---
 3 tasks (1 complete, 2 incomplete/in-progress)
 ```
 
@@ -113,12 +115,14 @@ If no directory found, print `No quick task found with slug: {SLUG}` and stop.
 Read PLAN.md and SUMMARY.md (if exists) for the given slug. Display:
 ```
 Quick Task: {slug}
-─────────────────────────────────────
+
+---
 Plan file: .planning/quick/{dir}/PLAN.md
 Status: {status from SUMMARY.md frontmatter, or "no summary yet"}
 Description: {first non-empty line from PLAN.md after frontmatter}
 Last action: {last meaningful line of SUMMARY.md, or "none"}
-─────────────────────────────────────
+
+---
 Resume with: /gsd-quick resume {slug}
 ```
 

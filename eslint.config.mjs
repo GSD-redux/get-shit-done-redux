@@ -82,6 +82,8 @@ export default tseslint.config(
       // lint the src/install-model-override-resolver.cts source, not this.
       'gsd-core/bin/lib/install-model-override-resolver.cjs',
       'gsd-core/bin/lib/install-engine.cjs',
+      // #3712: tsc-generated runtime artifact — lint src/real-home-guard.cts, not this.
+      'gsd-core/bin/lib/real-home-guard.cjs',
       // #2874 (epic #2866 Phase 5): tsc-generated runtime artifact — lint the
       // src/install-fs-adapter.cts source, not this.
       'gsd-core/bin/lib/install-fs-adapter.cjs',
@@ -109,6 +111,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/prohibition-enforcement.cjs',
       'gsd-core/bin/lib/ui-consideration-probe.cjs',
       'gsd-core/bin/lib/code-review-flags.cjs',
+      'gsd-core/bin/lib/code-review-depth.cjs',
       'gsd-core/bin/lib/context-utilization.cjs',
       'gsd-core/bin/lib/broken-windows.cjs',
       'gsd-core/bin/lib/complexity-trigger.cjs',
@@ -118,6 +121,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/artifacts.cjs',
       'gsd-core/bin/lib/assumption-delta.cjs',
       'gsd-core/bin/lib/state-transition.cjs',
+      // #3873: tsc-generated runtime artifact — lint the src/state-md-schema.cts source, not this.
+      'gsd-core/bin/lib/state-md-schema.cjs',
       'gsd-core/bin/lib/command-arg-projection.cjs',
       'gsd-core/bin/lib/clock.cjs',
       'gsd-core/bin/lib/ui-safety-gate.cjs',
@@ -135,6 +140,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/secrets.cjs',
       'gsd-core/bin/lib/smart-entry.cjs',
       'gsd-core/bin/lib/phase-lifecycle.cjs',
+      // #3227: tsc-generated artifact — lint src/state-contract.cts, not this.
+      'gsd-core/bin/lib/state-contract.cjs',
       'gsd-core/bin/lib/workstream-name-policy.cjs',
       'gsd-core/bin/lib/decisions.cjs',
       'gsd-core/bin/lib/validate.cjs',
@@ -156,6 +163,12 @@ export default tseslint.config(
       'gsd-core/bin/lib/configuration.cjs',
       'gsd-core/bin/lib/state-document.cjs',
       'gsd-core/bin/lib/planning-snapshot.cjs',
+      // #2790: tsc-generated runtime artifacts — lint the src/*.cts sources
+      // (src/planning-inspect.cts, src/planning-command-router.cts,
+      // src/plan-document.cts), not these emitted .cjs files.
+      'gsd-core/bin/lib/planning-inspect.cjs',
+      'gsd-core/bin/lib/planning-command-router.cjs',
+      'gsd-core/bin/lib/plan-document.cjs',
       'gsd-core/bin/lib/pattern.cjs',
       'gsd-core/bin/lib/text-lines.cjs',
       'gsd-core/bin/lib/token-scanner.cjs',
@@ -196,6 +209,9 @@ export default tseslint.config(
       // 009 also imports node builtins (fs, path) like 007, so tsc emits the
       // same `__importDefault` helper. ADR-457: the linted source is the .cts.
       'gsd-core/bin/lib/installer-migrations/009-pi-retire-reserved-hooks-dir.cjs',
+      // 010 also imports node builtins (fs, path) like 007/009, so tsc emits
+      // the same `__importDefault` helper. ADR-457: the linted source is the .cts.
+      'gsd-core/bin/lib/installer-migrations/010-antigravity-retire-confighome-artifacts.cjs',
       'gsd-core/bin/lib/observability/logger.cjs',
       'gsd-core/bin/lib/active-workstream-store.cjs',
       'gsd-core/bin/lib/adr-parser.cjs',
@@ -287,6 +303,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/capability-writer.cjs',
       // issue #1754: tsc-generated runtime artifact — lint the src/cli-skew-check.cts source.
       'gsd-core/bin/lib/cli-skew-check.cjs',
+      // issue #3146: tsc-generated runtime artifact — lint the src/runtime-identity.cts source.
+      'gsd-core/bin/lib/runtime-identity.cjs',
       // issue #1355: tsc-generated runtime artifact — lint the src/teams-status.cts source.
       'gsd-core/bin/lib/teams-status.cjs',
       // ADR-1372: tsc-generated runtime artifact — lint the src/markdown-sectionizer.cts source.
@@ -323,6 +341,12 @@ export default tseslint.config(
       // src/pattern.cts — module resolution for a .cts source is relative to
       // src/, not the output dir). Same verbatim-third-party exemption.
       'src/vendor/**',
+      // #3904 (ADR-3889 Phase 0): tsc-generated runtime artifact — generated
+      // by scripts/gen-scripts-cli-exit.cjs from a fresh compile of
+      // src/cli-exit.cts, and byte-guarded by `npm run lint:generated-sync`
+      // (stricter than lint: it forbids ANY hand edit, not just bad ones).
+      // Lint the src/cli-exit.cts source, not this emitted copy.
+      'scripts/lib/cli-exit.cjs',
     ],
   },
 
