@@ -653,7 +653,7 @@ describe('#3544: _restoreClaudeGlobalAtRefTilde (spec-tree @-ref restore, unit)'
 // ────────────────────────────────────────────────────────────────────────
 // #3719 GAP 2: restoreClaudeGlobalAtRefTilde used to build the substitution
 // with a STRING passed as the 2nd arg to .replace() — `content.replace(re,
-// '@' + tildeEquivalent)`. When tildeEquivalent (derived from an attacker- or
+// '@' + tildeEquivalent)`. When tildeEquivalent (derived from an
 // operator-controlled --config-dir pathPrefix) contains the literal sequence
 // `$&` or `` $` ``, the JS engine treats those as REPLACEMENT PATTERNS, not
 // literal text: `$&` re-inserts the whole match (duplicating the matched
