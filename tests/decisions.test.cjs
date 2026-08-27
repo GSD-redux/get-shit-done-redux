@@ -1300,3 +1300,414 @@ describe('check.decision-coverage-plan — empty contextPath argument fails clos
       `Missing contextPath argument must fail closed. Got: ${JSON.stringify(parsed)}`);
   });
 });
+
+// ─── #3939: decision bullet whose bold lead-in wraps across a line break ──────
+//
+// parseDecisionLines matched each PHYSICAL line against the three bullet
+// grammars, and all three require the closing `**` on the same line as the
+// opening one. A decision bullet whose bold lead-in wraps — the shape GSD's own
+// discuss-phase writer emits whenever a title runs past the wrap column — closes
+// its bold run on a line the grammars never see together with the `- **D-`
+// anchor, so all three miss and the #1365 parse-miss guard fires. One such miss
+// forces `could-not-parse`, which hard-blocks check.decision-coverage-plan.
+//
+// Fix: assemble the LOGICAL bullet before matching. A decision bullet whose bold
+// run is still open at end-of-line absorbs following lines until the run closes;
+// only then do the three grammars (unchanged) see it. Joining is bounded — a
+// blank line, a new bullet, a heading, or end-of-block stops it — so a genuinely
+// malformed bullet (an unterminated bold run) still reaches the parse-miss guard
+// and still fails loud. The wrapped bullet must parse to exactly what the same
+// bullet written on one physical line parses to (parity, not a new grammar).
+
+describe('#3939: decision bullet with a wrapped bold lead-in parses as one logical bullet', () => {
+  test('titled-colon form wrapped across a line break is parsed, not a parse-miss', () => {
+    const md = [
+      '<decisions>',
+      '- **D-01: A titled-colon decision whose bold title wraps onto the',
+      '  next line.** body text',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `A wrapped bold lead-in must not force could-not-parse. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-01'],
+      `D-01 must be extracted. Got: ${JSON.stringify(result.decisions)}`);
+    assert.strictEqual(result.decisions[0].text, 'body text',
+      `Text is the body after the closing bold run. Got: ${JSON.stringify(result.decisions[0].text)}`);
+  });
+
+  test('em-dash form wrapped across a line break is parsed, not a parse-miss', () => {
+    const md = [
+      '<decisions>',
+      '- **D-02 — an em-dash title that wraps onto the',
+      '  next line** body text',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `A wrapped em-dash lead-in must not force could-not-parse. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-02']);
+    assert.strictEqual(result.decisions[0].text, 'body text');
+  });
+
+  test('colon-immediate form wrapped across a line break is parsed, not a parse-miss', () => {
+    const md = [
+      '<decisions>',
+      '- **D-03 a long pre-colon prose run that keeps',
+      '  going:** body text',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `A wrapped colon-immediate lead-in must not force could-not-parse. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-03']);
+    assert.strictEqual(result.decisions[0].text, 'body text');
+  });
+
+  test('a wrapped bullet parses to exactly what the same bullet on one line parses to', () => {
+    const wrapped = extractDecisions([
+      '<decisions>',
+      '- **D-04 [informational]: A title that wraps',
+      '  here.** body text continues',
+      '</decisions>',
+    ].join('\n'));
+    const oneLine = extractDecisions([
+      '<decisions>',
+      '- **D-04 [informational]: A title that wraps here.** body text continues',
+      '</decisions>',
+    ].join('\n'));
+    assert.deepStrictEqual(wrapped, oneLine,
+      `Wrapping must be markdown-insignificant: the wrapped bullet must parse identically to the same bullet on one physical line. Wrapped: ${JSON.stringify(wrapped)} One-line: ${JSON.stringify(oneLine)}`);
+    assert.strictEqual(wrapped.decisions[0].trackable, false,
+      'the [informational] tag must survive the join (non-trackable)');
+  });
+
+  test('a bold lead-in wrapped across three physical lines is parsed', () => {
+    const md = [
+      '<decisions>',
+      '- **D-05: A very long title that',
+      '  keeps going and',
+      '  going.** body text',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `A lead-in wrapped over three lines must parse. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-05']);
+  });
+
+  test('body continuation lines after a wrapped lead-in still fold into the decision text', () => {
+    const md = [
+      '<decisions>',
+      '- **D-06: A title that wraps onto the',
+      '  next line.** first body line',
+      '  second body line',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed');
+    assert.strictEqual(result.decisions[0].text, 'first body line second body line',
+      `Continuation handling must be unchanged after the join. Got: ${JSON.stringify(result.decisions[0].text)}`);
+  });
+
+  test('wrapped and single-line bullets in one block all parse (the reported field shape)', () => {
+    const md = [
+      '<decisions>',
+      '### Implementation',
+      '- **D-01: A decision whose bold title wraps onto the',
+      '  next line.** body one',
+      '- **D-02:** a single-line colon-immediate decision',
+      '- **D-03 — an em-dash title that wraps onto the',
+      '  next line** body three',
+      '- **D-04: A single-line titled decision.** body four',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `A block mixing wrapped and single-line bullets must parse. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-01', 'D-02', 'D-03', 'D-04'],
+      `Every bullet must be extracted in document order. Got: ${JSON.stringify(result.decisions.map((d) => d.id))}`);
+    assert.strictEqual(result.decisions[0].category, 'Implementation',
+      'the category heading must still attach to a wrapped bullet');
+  });
+
+  test('CRLF newlines: a wrapped bold lead-in is parsed (cross-platform)', () => {
+    const md = [
+      '<decisions>',
+      '- **D-01: A title that wraps onto the',
+      '  next line.** body text',
+      '</decisions>',
+    ].join('\r\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `CRLF content must join identically to LF. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-01']);
+    assert.strictEqual(result.decisions[0].text, 'body text',
+      `No stray carriage return may survive the join. Got: ${JSON.stringify(result.decisions[0].text)}`);
+  });
+
+  test('markdown-header fallback path also parses a wrapped bold lead-in (#1364 path)', () => {
+    const md = [
+      '## Locked decisions',
+      '- **D-01: A title that wraps onto the',
+      '  next line.** body text',
+      '- **D-02:** single line',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `The header-fallback path shares parseDecisionLines and must behave identically. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-01', 'D-02']);
+  });
+
+  // ── Negative proof: the #1365 fail-loud guard must still fire ───────────────
+
+  test('NEGATIVE: an unterminated bold run is still a parse-miss (fail-loud preserved)', () => {
+    const md = [
+      '<decisions>',
+      '- **D-01: a bold run that never closes',
+      '  more prose that never closes it either',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `A genuinely malformed bullet must still fail loud, not be swallowed by the join. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions, [],
+      `No decision may be manufactured from an unterminated bold run. Got: ${JSON.stringify(result.decisions)}`);
+  });
+
+  test('NEGATIVE: a blank line stops the join — closing ** after it is still a parse-miss', () => {
+    const md = [
+      '<decisions>',
+      '- **D-01: a title interrupted by a blank line',
+      '',
+      '  closes here.** body text',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `A blank line terminates a bullet; the join must not reach across it. Got: ${JSON.stringify(result)}`);
+  });
+
+  test('NEGATIVE: a whitespace-only line stops the join', () => {
+    const md = [
+      '<decisions>',
+      '- **D-01: a title interrupted by a whitespace-only line',
+      '   ',
+      '  closes here.** body text',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `A whitespace-only line must terminate the bullet exactly like a blank one. Got: ${JSON.stringify(result)}`);
+  });
+
+  test('NEGATIVE: a following bullet stops the join and is still parsed on its own', () => {
+    const md = [
+      '<decisions>',
+      '- **D-01: a title whose bold run never closes',
+      '- **D-02:** a well-formed sibling',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `The unterminated D-01 must still fail loud. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-02'],
+      `The join must not swallow the sibling bullet. Got: ${JSON.stringify(result.decisions.map((d) => d.id))}`);
+  });
+
+  test('NEGATIVE: a heading stops the join', () => {
+    const md = [
+      '<decisions>',
+      '- **D-01: a title whose bold run never closes',
+      '### Implementation',
+      '- **D-02:** a well-formed decision under the heading',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `The unterminated D-01 must still fail loud. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-02']);
+    assert.strictEqual(result.decisions[0].category, 'Implementation',
+      `The heading must not be swallowed into the open bullet. Got: ${JSON.stringify(result.decisions[0].category)}`);
+  });
+
+  test('NEGATIVE: a numbered list item stops the join — its inline ** must not close the run', () => {
+    // Without the full block-construct terminator set the join would absorb the
+    // list item and "close" on the OPENING ** of its inline bold, manufacturing a
+    // decision out of a bullet whose own bold run never closes.
+    const md = [
+      '<decisions>',
+      '- **D-01: a title whose bold run never closes',
+      '  1. step with **em** here',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `A nested ordered-list item is a new block; the unterminated bullet must still fail loud. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions, [],
+      `No decision may be manufactured from the list item's inline bold. Got: ${JSON.stringify(result.decisions)}`);
+  });
+
+  test('NEGATIVE: star and plus list markers stop the join', () => {
+    for (const marker of ['*', '+']) {
+      const md = [
+        '<decisions>',
+        '- **D-01: a title whose bold run never closes',
+        `  ${marker} item with **em** here`,
+        '</decisions>',
+      ].join('\n');
+      const result = extractDecisions(md);
+      assert.strictEqual(result.outcome, 'could-not-parse',
+        `A '${marker}' list marker is a new block; the unterminated bullet must still fail loud. Got: ${JSON.stringify(result)}`);
+    }
+  });
+
+  test('NEGATIVE: a table row and a blockquote stop the join', () => {
+    for (const block of ['| col **x** | y |', '> quoted **em** text']) {
+      const md = [
+        '<decisions>',
+        '- **D-01: a title whose bold run never closes',
+        `  ${block}`,
+        '</decisions>',
+      ].join('\n');
+      const result = extractDecisions(md);
+      assert.strictEqual(result.outcome, 'could-not-parse',
+        `A block-level construct must stop the join. Got for ${JSON.stringify(block)}: ${JSON.stringify(result)}`);
+    }
+  });
+
+  test('a continuation line opening with emphasis is text, not a list marker', () => {
+    // `*in*` has no space after the `*`, so it is emphasis — the join must absorb
+    // it. (The joined title then contains `*`, which the titled-colon grammar's
+    // `[^:*]*` discipline rejects, exactly as it does on one physical line.)
+    const wrapped = extractDecisions([
+      '<decisions>',
+      '- **D-01: sanitised on the way',
+      '  *in*.** body text',
+      '</decisions>',
+    ].join('\n'));
+    const oneLine = extractDecisions([
+      '<decisions>',
+      '- **D-01: sanitised on the way *in*.** body text',
+      '</decisions>',
+    ].join('\n'));
+    assert.deepStrictEqual(wrapped, oneLine,
+      `An emphasis-opening continuation line must join, giving the same verdict as the one-line form. Wrapped: ${JSON.stringify(wrapped)} One-line: ${JSON.stringify(oneLine)}`);
+  });
+
+  test('an inline **bold** inside a wrapped title gives the same result as on one line', () => {
+    // Absorption stops at the first ** on a continuation line, so an inline bold
+    // inside the title closes the run early. Parity with the one-line form is the
+    // contract — the text past the early close re-attaches via continuation folding.
+    const wrapped = extractDecisions([
+      '<decisions>',
+      '- **D-01: a title that',
+      '  has **inline bold** inside.** body text',
+      '</decisions>',
+    ].join('\n'));
+    const oneLine = extractDecisions([
+      '<decisions>',
+      '- **D-01: a title that has **inline bold** inside.** body text',
+      '</decisions>',
+    ].join('\n'));
+    assert.deepStrictEqual(wrapped, oneLine,
+      `Wrapping must stay markdown-insignificant even when the title carries inline bold. Wrapped: ${JSON.stringify(wrapped)} One-line: ${JSON.stringify(oneLine)}`);
+  });
+
+  test('NEGATIVE: a long unterminated run still fails loud (scan is bounded, not quadratic)', () => {
+    // The join scans each absorbed line ONCE (per-segment search, no re-scan of
+    // the accumulated candidate), so a pathological block degrades linearly
+    // instead of quadratically — this runs on the plan gate's hot path over
+    // user-authored files.
+    const lines = ['<decisions>', '- **D-01: a bold run that never closes'];
+    for (let i = 0; i < 5000; i += 1) lines.push(`  filler prose line ${i} that never closes the run`);
+    lines.push('</decisions>');
+    const result = extractDecisions(lines.join('\n'));
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `A long unterminated run must still fail loud. Got: ${JSON.stringify(result.outcome)}`);
+    assert.deepStrictEqual(result.decisions, []);
+  });
+
+  test('NEGATIVE GUARD: the single-line malformed bullet of FIX B is still a parse-miss', () => {
+    // `- **D-02** ratio 3:1` closes its bold run on the same line with neither a
+    // colon-before-`**` nor an em-dash — a genuine miss, unrelated to wrapping.
+    const md = [
+      '<decisions>',
+      '- **D-01:** use JWT tokens',
+      '- **D-02** ratio 3:1',
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'could-not-parse',
+      `FIX B behaviour must be unchanged. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-01']);
+  });
+
+  test('NEGATIVE GUARD: a nested cross-reference bullet is still elaboration, not a join target (#3169)', () => {
+    const md = [
+      '<decisions>',
+      '- **D-15: A title that wraps onto the',
+      '  next line.** some decision',
+      "  - **D-06's fix does not close this.** a nested cross-reference",
+      '</decisions>',
+    ].join('\n');
+    const result = extractDecisions(md);
+    assert.strictEqual(result.outcome, 'parsed',
+      `#3169 handling must survive the join. Got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result.decisions.map((d) => d.id), ['D-15'],
+      `The nested bullet is elaboration, not a second entry. Got: ${JSON.stringify(result.decisions.map((d) => d.id))}`);
+    assert.ok(result.decisions[0].text.includes("D-06's fix does not close this"),
+      `The nested bullet must still fold into D-15's text. Got: ${JSON.stringify(result.decisions[0].text)}`);
+  });
+});
+
+// ─── #3939 gate-level: a wrapped bold lead-in must not hard-block the gate ────
+
+describe('check.decision-coverage-plan — wrapped bold lead-in does not hard-block (#3939)', () => {
+  let tmpDir;
+  let planningDir;
+  let phaseDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3939-');
+    planningDir = path.join(tmpDir, '.planning');
+    phaseDir = path.join(planningDir, 'phases', '01-init');
+    fs.mkdirSync(phaseDir, { recursive: true });
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  test('FAIL-FIRST: CONTEXT.md whose decision titles wrap → gate reports real coverage, not could-not-parse', () => {
+    // Before the fix: both bullets are parse-misses → outcome could-not-parse →
+    // the gate hard-blocks with passed:false even though the plan covers both.
+    writeContextFile(phaseDir, [
+      '# Phase 1 Context',
+      '',
+      '<decisions>',
+      '### Implementation',
+      '- **D-01: Persist the raw delivery headers. Do not resolve by a second',
+      '  round-trip.** JSON arrays preserve repeated headers in order.',
+      '- **D-02: A one-time, resumable backfill fills the new columns for already',
+      '  indexed rows.** Sync fills them inline going forward.',
+      '</decisions>',
+    ].join('\n'));
+    writePlanFile(phaseDir, '01', [
+      '# Plan',
+      '',
+      '## Must Haves',
+      '',
+      '- D-01: persist the raw delivery headers',
+      '- D-02: implement the resumable backfill command',
+    ].join('\n'));
+
+    const contextPath = path.join(phaseDir, 'CONTEXT.md');
+    const result = runDecisionCoveragePlan(phaseDir, contextPath, tmpDir);
+    const parsed = JSON.parse(result.output || '{}');
+    assert.strictEqual(parsed.passed, true,
+      `A CONTEXT.md whose decision titles merely wrap must not hard-block the gate. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.total, 2,
+      `Both wrapped decisions must be counted. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.covered, 2,
+      `Both wrapped decisions must be seen as covered by the plan. Got: ${JSON.stringify(parsed)}`);
+  });
+});
