@@ -41,8 +41,27 @@ const PLAN_PHASE_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'plan-phase.md'
 const PLANNER_PATH = path.join(ROOT, 'agents', 'gsd-planner.md');
 const PLANNER_COUPLING_REF_PATH = path.join(ROOT, 'gsd-core', 'references', 'planner-coupling.md');
 
+const VERIFY_WORK_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'verify-work.md');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+
 const agentDoc = fs.readFileSync(AGENT_PATH, 'utf-8');
 const docsAgents = fs.readFileSync(DOCS_AGENTS_PATH, 'utf-8');
+
+// Severity tokens inside a span's fenced ```yaml examples only. Prose may
+// legitimately contrast another tier ("this shape would be a blocker — see
+// Dimension 9"); the yaml examples are the declaration the model copies, so
+// severity assertions scope here (round-5 Minor 3).
+function yamlSeverityTiers(span) {
+  const tiers = [];
+  let inYaml = false;
+  for (const line of splitLines(span)) {
+    if (line.trim() === '```yaml') { inYaml = true; continue; }
+    if (inYaml && line.trim() === '```') { inYaml = false; continue; }
+    const m = inYaml ? line.match(/severity:\s*(\w+)/) : null;
+    if (m) tiers.push(m[1].toLowerCase());
+  }
+  return tiers;
+}
 
 // ── Span helpers ───────────────────────────────────────────────────
 // Offsets of the headings that bound each region. `indexOfHeading` returns -1 when
@@ -166,10 +185,11 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
         new RegExp(`severity:\\s*${tier}`),
         `Dimension 3b's example issue must carry severity: ${tier} — the tier revision-loop.md exempts`
       );
-      // The negative is derived too: every severity token in the span must BE the
-      // exempt tier. If revision-loop.md's exemption ever moves, this fails naming
-      // the real conflict instead of blaming the agent file with a stale hardcode.
-      const tiersInSpan = [...span.matchAll(/severity:\s*(\w+)/g)].map((m) => m[1].toLowerCase());
+      // The negative is derived too: every severity token in the span's yaml
+      // examples must BE the exempt tier. If revision-loop.md's exemption ever
+      // moves, this fails naming the real conflict instead of blaming the agent
+      // file with a stale hardcode.
+      const tiersInSpan = yamlSeverityTiers(span);
       assert.ok(tiersInSpan.length > 0, 'Dimension 3b must carry at least one severity-tagged example');
       for (const found of tiersInSpan) {
         assert.strictEqual(
@@ -191,9 +211,8 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
         /never\s+(a\s+)?blocker/i,
         'Dimension 3b must state that the finding is never a blocker'
       );
-      assert.doesNotMatch(
-        span,
-        /severity:\s*blocker/,
+      assert.ok(
+        !yamlSeverityTiers(span).includes('blocker'),
         'Dimension 3b must not contain a blocker-severity example — it is advisory only'
       );
     });
@@ -321,16 +340,17 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
     // assertion is exactly how the defect arrived.
 
     test('plan-phase accepts an INFO-only issues block without entering the revision loop', () => {
-      const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
       const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
+      // Pins the full single-line paragraph: a reflow of that line in plan-phase.md
+      // reds this find() — update the startsWith prefix and the regexes together.
       const paragraph = splitLines(planPhase).find((line) =>
         line.startsWith('Parse issue count from checker return:')
       );
       assert.ok(paragraph, 'plan-phase.md step 12 must carry the parse-issue-count paragraph');
       assert.match(
         paragraph,
-        /likewise when the block has only INFO entries \(display them as advisories\)/,
-        'step 12 must accept an INFO-only issues block and surface the advisories (#3724 criterion 1)'
+        /likewise when every entry in the block is explicitly INFO \(display them as advisories\)/,
+        'step 12 must accept only an explicitly-INFO issues block, surfacing the advisories (#3724 criterion 1)'
       );
     });
 
@@ -365,9 +385,9 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
       // checker's sentinels (agent-contracts.md), spawning it over all phase plans with
       // no dimension override — so 3b is live there and its handler must be
       // severity-aware, or the guaranteed replan #3724 fixed survives on that surface.
-      const verifyWork = fs.readFileSync(
-        path.join(ROOT, 'gsd-core', 'workflows', 'verify-work.md'), 'utf-8');
-      const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
+      const verifyWork = fs.readFileSync(VERIFY_WORK_PATH, 'utf-8');
+      // Pins the full single-line handler: a reflow of that line in verify-work.md
+      // reds this find() — update the startsWith prefix and the regexes together.
       const handler = splitLines(verifyWork).find((line) =>
         line.startsWith('- **ISSUES FOUND:**')
       );
@@ -379,17 +399,18 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
       );
       assert.match(
         handler,
-        /only INFO entries/,
-        'the verify_gap_plans handler must accept an INFO-only issues block without revising'
+        /every entry is explicitly INFO/,
+        'the verify_gap_plans handler must accept only an explicitly-INFO issues block (whitelist, not count-zero)'
       );
     });
 
-    test('plan-phase iteration cap (limit+1) recounts severities instead of gating on advisories', () => {
-      // Round-4 Minor 1 / boundary coverage: the INFO-only accept must hold at
-      // iteration_count >= 3 too, or an advisory-only third check halts the workflow
-      // on a "0 issues remain" user gate.
+    test('plan-phase iteration cap recounts severities instead of gating on advisories', () => {
+      // Round-4 Minor 1: the INFO-only accept must hold at iteration_count >= 3 too,
+      // or an advisory-only third check halts the workflow on a "0 issues remain"
+      // user gate. This is a prose pin, not an executed boundary check: the >= 3 arm's
+      // text is what both the limit and limit+1 iterations land on, so one string
+      // match covers both — nothing here runs a counter (round-5 Minor 4).
       const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
-      const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
       const lines = splitLines(planPhase);
       const armIndex = lines.findIndex((line) => line.startsWith('**If iteration_count >= 3:**'));
       assert.ok(armIndex >= 0, 'plan-phase.md must carry the iteration_count >= 3 arm');
@@ -401,8 +422,64 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
       );
       assert.match(
         armWindow,
-        /INFO-only.*proceed to step 13/,
+        /explicitly INFO — display any advisories and proceed to step 13/,
         'an INFO-only result at the iteration cap must accept, not halt on the user gate'
+      );
+    });
+
+    test('the fail-closed severity rule is verbatim-identical on all three gate surfaces', () => {
+      // Round-5 Blockers 2+3: a count-based accept ("BLOCKER + WARNING count is zero")
+      // is also true for an entry whose severity is missing, misspelled, or
+      // unrecognized — auto-accepting what base sent to the revision loop. All three
+      // gates carry one canonical clause, asserted verbatim, so the predicates cannot
+      // drift apart again (Generative Fix Divergence).
+      const CLAUSE = 'an entry whose severity is missing or unrecognized counts as a BLOCKER (fail closed)';
+      const planPhase = fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
+      const verifyWork = fs.readFileSync(VERIFY_WORK_PATH, 'utf-8');
+      const lines = splitLines(planPhase);
+      const parseLine = lines.find((line) => line.startsWith('Parse issue count from checker return:'));
+      assert.ok(
+        parseLine && parseLine.includes(CLAUSE),
+        'the plan-phase iteration_count < 3 arm must carry the fail-closed clause verbatim'
+      );
+      const armIndex = lines.findIndex((line) => line.startsWith('**If iteration_count >= 3:**'));
+      assert.ok(armIndex >= 0, 'plan-phase.md must carry the iteration_count >= 3 arm');
+      const armWindow = lines.slice(armIndex, armIndex + 5).join(' ');
+      assert.ok(
+        armWindow.includes(CLAUSE),
+        'the plan-phase iteration_count >= 3 arm must carry the fail-closed clause verbatim'
+      );
+      const handler = splitLines(verifyWork).find((line) => line.startsWith('- **ISSUES FOUND:**'));
+      assert.ok(
+        handler && handler.includes(CLAUSE),
+        'the verify-work verify_gap_plans handler must carry the fail-closed clause verbatim'
+      );
+    });
+
+    test('the checker returns ## ISSUES FOUND for an INFO-only result, with an advisories section', () => {
+      // Round-5 Blocker 1: with 3b at severity info, an INFO-only result satisfied
+      // the old step-10 `passed` rule and routed to ## VERIFICATION PASSED — a
+      // template with no issues block — so the advisory this fix exists to surface
+      // was dropped, and both orchestrator display clauses were unreachable.
+      assert.match(
+        agentDoc,
+        /An INFO-only result is NOT `passed`/,
+        'step 10 must exclude an INFO-only result from `passed`'
+      );
+      assert.match(
+        agentDoc,
+        /Return `## ISSUES FOUND` even when every issue is INFO/,
+        'step 10 must route an INFO-only result to ## ISSUES FOUND so the block reaches the orchestrator'
+      );
+      assert.match(
+        agentDoc,
+        /### Advisories \(info\)/,
+        'the ISSUES FOUND template must carry an advisories section so INFO entries render'
+      );
+      assert.match(
+        agentDoc,
+        /Advisory only — no revision required/,
+        'the recommendation must not claim a planner return for an INFO-only result'
       );
     });
 
