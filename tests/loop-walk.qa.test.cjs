@@ -29,7 +29,7 @@ const { MUTATIONS, apply, NOOP } = require('./qa/mutations.cjs');
 const { loadScenario, runScenario, assertWiringIsLive } = require('./qa/scenario.cjs');
 const { buildReport } = require('./qa/report.cjs');
 const { resolveRef } = require('./qa/fixtures/index.cjs');
-const { resolveWithin, resolveForCompare } = require('./qa/paths.cjs');
+const { resolveWithin, resolveForCompare, isUnderProjectDir } = require('./qa/paths.cjs');
 const { LOOP_HOST_CONTRACT } = require('../gsd-core/bin/lib/loop-host-contract.cjs');
 const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
 const { evaluateUatPassed } = require('../gsd-core/bin/lib/uat-predicate.cjs');
@@ -1197,6 +1197,37 @@ describe('path containment', () => {
     t.after(() => walk.cleanup());
     walk.writeArtifact('.planning/PROJECT.md', '# ok\n');
     assert.strictEqual(fs.existsSync(path.join(walk.dir, '.planning', 'PROJECT.md')), true);
+  });
+
+  test('isUnderProjectDir treats a Windows DOS 8.3 short-name alias and its long form as the same directory (Windows CI regression: RUNNER~1 vs runneradmin)', () => {
+    // Real-world shape observed on windows-latest CI: one side resolved via a path that still
+    // carries the 8.3 short-name segment (RUNNER~1), the other via the fully expanded long name
+    // (runneradmin) -- same directory on disk, two different strings, unless the realpath
+    // implementation used for comparison actually expands the short name. Only
+    // `fs.realpathSync.native` performs that expansion; plain `fs.realpathSync` does not, which
+    // was the root cause. Injected here (rather than skipped on non-Windows) via the
+    // `realpathFn` seam so this regression is caught on every platform, not just Windows.
+    const shortForm = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\gsd-loop-walk-GP8Q6U';
+    const longForm = 'C:/Users/runneradmin/AppData/Local/Temp/gsd-loop-walk-GP8Q6U';
+    const fakeNativeRealpath = (p) => (p === shortForm ? longForm : p);
+
+    const resolvedProjectDir = resolveForCompare(shortForm, fakeNativeRealpath);
+    const resolvedCandidate = resolveForCompare(longForm, fakeNativeRealpath);
+
+    assert.strictEqual(resolvedProjectDir, longForm);
+    assert.strictEqual(resolvedCandidate, longForm);
+    assert.strictEqual(isUnderProjectDir(resolvedCandidate, resolvedProjectDir), true);
+  });
+
+  test('isUnderProjectDir positive control: a genuinely outside path is still reported as outside, even through the injected realpathFn seam', () => {
+    const projectDir = 'C:/Users/runneradmin/AppData/Local/Temp/gsd-loop-walk-GP8Q6U';
+    const outsideDir = 'C:/Users/runneradmin/AppData/Local/Temp/gsd-loop-walk-OTHER';
+    const identityRealpath = (p) => p;
+
+    const resolvedProjectDir = resolveForCompare(projectDir, identityRealpath);
+    const resolvedCandidate = resolveForCompare(outsideDir, identityRealpath);
+
+    assert.strictEqual(isUnderProjectDir(resolvedCandidate, resolvedProjectDir), false);
   });
 
   test('mutations apply("delete", ...) rejects a traversing relPath', (t) => {
