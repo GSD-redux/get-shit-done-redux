@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "count": 263,
+  "count": 275,
   "classes": {
     "ARCH": 1,
     "CI": 2,
@@ -18,6 +18,7 @@
     "PROHIB": 10,
     "RELEASE-NOTES": 31,
     "RULESET": 60,
+    "SEAM": 12,
     "SESSION": 9,
     "WAVE": 5,
     "WORKSTREAM": 5,
@@ -28,1579 +29,1651 @@
       "id": "ARCH.SKILL.improve-codebase.next-candidates",
       "klass": "ARCH",
       "value": "[Workstream Progress Projection Module]",
-      "line": 680
+      "line": 691
     },
     {
       "id": "CI.GATE.changeset-lint",
       "klass": "CI",
       "value": "hard-fail for user-facing code diffs unless .changeset/* or PR has no-changelog label",
-      "line": 664
+      "line": 675
     },
     {
       "id": "CI.GATE.issue-link-required",
       "klass": "CI",
       "value": "hard-fail if PR body lacks closes/fixes/resolves #<issue>",
-      "line": 663
+      "line": 674
     },
     {
       "id": "CONFIG.LOCATION.SEAM.in-process-scrub",
       "klass": "CONFIG",
       "value": "TEST_ENV_BASE reaches CHILD env only; a test calling install() IN-PROCESS must additionally use helpers.scrubConfigLocationEnv() in beforeEach + its restorer in afterEach — HOME/USERPROFILE sandboxing is NOT sufficient because getGlobalConfigDir is env-FIRST",
-      "line": 698
+      "line": 711
     },
     {
       "id": "CONFIG.LOCATION.SEAM.kimi-two-homes",
       "klass": "CONFIG",
       "value": "kimi declares TWO config-location vars: KIMI_CONFIG_DIR (registry, generic Agent-Skills root via resolveKimiGlobalDir) and KIMI_SHARE_DIR (KIMI_HOOKS_TOML_DESCRIPTOR, kimi's OWN native config.toml carrying GSD's [[hooks]] block via resolveKimiHooksTomlDir); a registry-only derivation covers the first and silently misses the second",
-      "line": 697
+      "line": 710
     },
     {
       "id": "CONFIG.LOCATION.SEAM.scrub-set",
       "klass": "CONFIG",
       "value": "tests/helpers.cjs CONFIG_LOCATION_ENV_KEYS is DERIVED from five sources rather than maintained as one hand-written list (source 4 IS a literal residue list, for vars that fit no other rung — what is never hand-listed is the SET): capability-registry runtimes[].runtime.configHome.env AND [].configHome.skillsHome.env + runtime-homes NON_REGISTRY_CONFIG_HOME_DESCRIPTORS[].env AND [].skillsHome.env (a descriptor is a descriptor — BOTH descriptor rungs walk skillsHome, which resolves independently via resolveSkillsBaseFromDescriptor) + runtime-homes GSD_LOCATION_ENV_KEYS + a residue list (GROK_AGENTS_HOME, GSD_RUNTIME, GSD_PROJECT, GSD_WORKSTREAM) + WRITE_ESCAPE_PERMISSION_ENV_KEYS (GSD_ALLOW_SYMLINKED_DEST — a permission, not a location: it names no path but disarms the symlink-escape guard, so blanking it makes the guard STRICTER, never looser); adding a config-location var means making it ENUMERABLE at one of those sources, not appending a literal",
-      "line": 695
+      "line": 708
     },
     {
       "id": "CONFIG.LOCATION.SEAM.two-families",
       "klass": "CONFIG",
       "value": "runtime configHomes (where a third-party runtime keeps config, registry- or descriptor-declared) and GSD's OWN location vars (GSD_HOME -> $GSD_HOME/.gsd store, GSD_AGENTS_DIR -> getAgentsDir priority 1) are DISTINCT families; no registry derivation reaches the second, and treating a miss there as a registry gap is what produced review round 2",
-      "line": 696
+      "line": 709
     },
     {
       "id": "CONFIG.SEAM.loadConfig-context",
       "klass": "CONFIG",
       "value": "loadConfig(cwd,{workstream}) replaces env-mutation fallback; no temporary process.env GSD_WORKSTREAM rewrites",
-      "line": 694
+      "line": 707
     },
     {
       "id": "EXEC.CLASSIFY.classes",
       "klass": "EXEC",
       "value": "{class:'quota-exceeded'|'classify-handoff-bug'|'unknown-failure', sentinel?, retryAfterSeconds?}",
-      "line": 913
+      "line": 929
     },
     {
       "id": "EXEC.CLASSIFY.cross-runtime",
       "klass": "EXEC",
       "value": "Anthropic/CC: usage limit|rate limit|quota|429|retry-after; Copilot CLI: rate_limit (stem); Codex CLI: 429|usage_limit_reached|too many requests",
-      "line": 915
+      "line": 931
     },
     {
       "id": "EXEC.CLASSIFY.handler",
       "klass": "EXEC",
       "value": "gsd-core/bin/lib/agent-command-router.cjs:classifyAgentFailure (registered via command-aliases.cjs; mutation:false outputMode:json)",
-      "line": 911
+      "line": 927
     },
     {
       "id": "EXEC.CLASSIFY.precedence",
       "klass": "EXEC",
       "value": "quota sentinel wins over classifyHandoffIfNeeded bug when both appear",
-      "line": 916
+      "line": 932
     },
     {
       "id": "EXEC.CLASSIFY.proactive-signal-not-usable",
       "klass": "EXEC",
       "value": "Anthropic exposes anthropic-ratelimit-* headers + Agent SDK RateLimitEvent; Claude Code subprocess does NOT forward to hooks/statusline today (upstream #33820, #22407, #32796)",
-      "line": 918
+      "line": 934
     },
     {
       "id": "EXEC.CLASSIFY.retry-after-parser",
       "klass": "EXEC",
       "value": "\\bretry[-_ ]after[:\\s]+(\\d+)\\b avoids embedded-word false matches like noretry-after",
-      "line": 917
+      "line": 933
     },
     {
       "id": "EXEC.CLASSIFY.sentinel-order",
       "klass": "EXEC",
       "value": "most specific first: 429 beats too-many-requests; resource_exhausted beats quota (array order in src/agent-command-router.cts QUOTA_SENTINELS checks resource_exhausted before quota); case-insensitive; canonical sentinel value is lower-cased form",
-      "line": 914
+      "line": 930
     },
     {
       "id": "EXEC.CLASSIFY.workflow",
       "klass": "EXEC",
       "value": "gsd-core/workflows/execute-phase.md step 7; class-distinct prompts (quota-to-wait-for-reset; classify-handoff-bug-to-spot-check; unknown-to-continue/stop)",
-      "line": 912
+      "line": 928
     },
     {
       "id": "GSD-RESEARCH.CONTEXT-DISCIPLINE",
       "klass": "GSD-RESEARCH",
       "value": "less-context levers: subagent isolation + compact provider output + fetches-to-disk + cache-returns-digest; API clear_tool_uses/memory tool are the conceptual model, not a Claude Code harness knob",
-      "line": 446
+      "line": 457
     },
     {
       "id": "GSD-RESEARCH.INTEGRATION.L2-hybrid",
       "klass": "GSD-RESEARCH",
       "value": "code owns cache+legitimacy+confidence+provider-pick (gsd-tools query research-plan/research-store/package-legitimacy); MCP owns the fetch; agent returns RESEARCH.md path, never raw fetches",
-      "line": 444
+      "line": 455
     },
     {
       "id": "GSD-RESEARCH.MODULE.package-legitimacy",
       "klass": "GSD-RESEARCH",
       "value": "registry-API verdicts (npm/PyPI/crates.io injectable adapters) computed from thresholds {minAgeDays:30,minWeeklyDownloads:1000,requireRepo:true}; verdict OK|SUS|SLOP per package; slopcheck=optional adapter that can only escalate, never the install-or-degrade gate",
-      "line": 443
+      "line": 454
     },
     {
       "id": "GSD-RESEARCH.MODULE.research-provider",
       "klass": "GSD-RESEARCH",
       "value": "single source of truth PROVIDER_WATERFALL (docs Context7->Ref->Jina->websearch; web Exa->Tavily->Perplexity->Brave->websearch; scrape Firecrawl->Jina); planResearch returns cache-hits+fetch-plan; classifyConfidence stamps HIGH|MEDIUM|LOW by provider AUTHORITY + verification EVIDENCE (HIGH requires code-computed ground-truth corroboration e.g. legitimacyVerdict OK; provider authority alone caps at MEDIUM; SLOP caps at LOW); Firecrawl is scrape-only (not in the docs or web legs)",
-      "line": 442
+      "line": 453
     },
     {
       "id": "GSD-RESEARCH.MODULE.research-store",
       "klass": "GSD-RESEARCH",
       "value": "content-addressed cache; key=sha256(ecosystem+library+version+query+kind); getResearch->{hit,stale} never throws (mirrors graphify staleness); ttlForSource curated HIGH 30d|MED 7d|web LOW 1d; tiers: curated-doc kinds -> ~/.gsd/research-cache (cross-project), web/synthesis -> project .planning/research/.cache",
-      "line": 441
+      "line": 452
     },
     {
       "id": "GSD-RESEARCH.PROVIDER.availability",
       "klass": "GSD-RESEARCH",
       "value": "config flags brave_search/exa_search/firecrawl/tavily_search/ref_search/perplexity/jina (env <X>_API_KEY or ~/.gsd/<x>_api_key); context7/jina/websearch always available; planResearch falls through waterfall to websearch terminal",
-      "line": 445
+      "line": 456
     },
     {
       "id": "LEARNING.prompt-budget.boundary-gap",
       "klass": "LEARNING",
       "value": "PR #3708 commit 2df566ed reserved NOTE_RESERVE_TOKENS in pressure-threshold AND in minSet pre-check; both buggy paths only fire when baseTokens ∈ (effectiveBudget - NOTE_RESERVE_TOKENS, effectiveBudget]; original test suite used budgets far from that band so neither path was exercised; fix bde1ae8f confines NOTE_RESERVE accounting to post-trim assembly path only; future budget/limit code MUST add boundary fixtures per RULESET.TESTS.boundary-coverage.fixtures",
-      "line": 609
+      "line": 620
     },
     {
       "id": "LIVE-CONFIG.GUARD.SEAM.ci-blind",
       "klass": "LIVE-CONFIG",
       "value": "the AMBIENT-ENV half stays CI-blind — CI never has these vars set, so green CI is not evidence for it; what strict mode catches in CI is the suite's own default-root leaks (HOME/USERPROFILE-derived), the guard remains the only loud signal for ambient-var escapes",
-      "line": 704
+      "line": 717
     },
     {
       "id": "LIVE-CONFIG.GUARD.SEAM.module",
       "klass": "LIVE-CONFIG",
       "value": "scripts/live-config-guard.cjs (deliberately NOT scripts/lib/, which the installer copies to users wholesale while uninstall removes only an allowlist; excluded from the npm tarball via package.json files[] together with its whole require chain run-tests.cjs/affected-tests-lib.cjs/run-affected-tests.cjs — a partial exclusion trips the #2858 shipped-requires-only-shipped gate); exports [resolveLiveConfigRoots, resolveExtraWatchTargets, snapshotLiveConfig, diffLiveConfig, formatViolations, newestMtime]; driven by scripts/run-tests.cjs pre/post suite",
-      "line": 699
+      "line": 712
     },
     {
       "id": "LIVE-CONFIG.GUARD.SEAM.non-root-targets",
       "klass": "LIVE-CONFIG",
       "value": "resolveExtraWatchTargets covers THREE live write surfaces that are not runtime config ROOTS (skills bases are a DELIBERATE non-target — the config-root layout misfires beneath them, so they need their own layout): $GSD_HOME/.gsd watched WHOLESALE (exclusively GSD-owned, so the shared-root trap does not apply) plus ONE config.toml per NON_REGISTRY_CONFIG_HOME_DESCRIPTORS entry, each watched as a SINGLE FILE (those roots belong to their products) — today three targets, since #2755 split Kimi CLI (~/.kimi, KIMI_SHARE_DIR) from Kimi Code (~/.kimi-code, KIMI_CODE_HOME); the targets are DERIVED by iterating that array, never by calling a named resolver, so a further descriptor is picked up without editing the guard PROVIDED it owns the same NON_REGISTRY_OWNED_FILE ('config.toml') — one that owns a different filename needs a per-descriptor mapping, the named residual the guard states at its own definition. SECOND RESIDUAL: config.toml is not all GSD writes into those roots — installSharedHooksBundle also populates <root>/hooks/, which is UNWATCHED; closing it is a layout decision, like skills bases; passed to snapshotLiveConfig explicitly so a fixture-root caller cannot pull the real ~/.gsd into its snapshot",
-      "line": 701
+      "line": 714
     },
     {
       "id": "LIVE-CONFIG.GUARD.SEAM.scope",
       "klass": "LIVE-CONFIG",
       "value": "ownership-based, never whole-root: GSD_OWNED_ENTRIES top-level footprint + children whose name startsWith GSD_ARTIFACT_PREFIX ('gsd-') under GSD_PREFIXED_PARENTS (dirs shared with the host agent); watching a shared root wholesale false-positives on the host's own writes and a guard that cries wolf gets disabled",
-      "line": 700
+      "line": 713
     },
     {
       "id": "LIVE-CONFIG.GUARD.SEAM.severity",
       "klass": "LIVE-CONFIG",
       "value": "reports by default locally; CI wires GSD_STRICT_LIVE_CONFIG_GUARD=1 on Linux/macOS lanes (test.yml, all three test jobs) so a suite-produced leak FAILS those runs; Windows lanes stay report-only pending the documented pre-existing USERPROFILE sweep (~190 test sites sandbox HOME alone) — promote once that lands; skipped by GSD_SKIP_LIVE_CONFIG_GUARD=1",
-      "line": 703
+      "line": 716
     },
     {
       "id": "LIVE-CONFIG.GUARD.SEAM.truncation",
       "klass": "LIVE-CONFIG",
       "value": "MAX_ENTRIES/MAX_DEPTH bound the walk; a bound hit sets truncated and diffLiveConfig emits kind:'unverified' — a truncated scan MUST NOT read as clean; boundary covered at {limit-1,limit,limit+1} via newestMtime's injected budget plus fast-check monotonicity, per RULESET.TESTS.boundary-coverage + RULESET.TESTS.property-based-testing",
-      "line": 702
+      "line": 715
     },
     {
       "id": "META.RULE.brief-must-cite-doc",
       "klass": "META",
       "value": "agent prompts MUST quote the canonical doc line being applied; paraphrasing from predicate memory drifts and produces violations",
-      "line": 755
+      "line": 768
     },
     {
       "id": "META.RULE.brief-no-paraphrase",
       "klass": "META",
       "value": "writing \"k040 — never leave changelog box unchecked\" caused 5 of 8 agents to edit CHANGELOG.md in violation of CONTRIBUTING.md L110",
-      "line": 756
+      "line": 769
     },
     {
       "id": "META.RULE.canonical-source-precedence",
       "klass": "META",
       "value": "CONTRIBUTING.md > docs/adr/* > CONTEXT.md > agent memory",
-      "line": 753
+      "line": 766
     },
     {
       "id": "META.RULE.read-contributing-first",
       "klass": "META",
       "value": "read CONTRIBUTING.md sections \"Pull Request Guidelines\" + \"CHANGELOG Entries\" before EVERY agent dispatch",
-      "line": 754
+      "line": 767
     },
     {
       "id": "PLANNING.PATH.PARITY.project-scope",
       "klass": "PLANNING",
       "value": ".planning/<project> (never .planning/projects/<project>); mirror planning-workspace.cjs planningDir()",
-      "line": 689
+      "line": 702
     },
     {
       "id": "PLANNING.PATH.SEAM.helpers",
       "klass": "PLANNING",
       "value": "helpers.planningPaths delegates to workspacePlanningPaths + resolveWorkspaceContext; precedence explicit-ws > env-ws > env-project > root",
-      "line": 690
+      "line": 703
     },
     {
       "id": "PLANNING.PATH.SEAM.init-handlers",
       "klass": "PLANNING",
       "value": "[initExecutePhase, initPlanPhase, initPhaseOp, initMilestoneOp] consume helpers.planningPaths().planning (no direct relPlanningPath join)",
-      "line": 691
+      "line": 704
     },
     {
       "id": "PR.3267.POSTMORTEM.recovery",
       "klass": "PR",
       "value": "[issue#3270 created, label approved-enhancement applied, PR reopened, body includes \"Closes #3270\", label no-changelog applied]",
-      "line": 668
+      "line": 679
     },
     {
       "id": "PR.3267.POSTMORTEM.root-cause",
       "klass": "PR",
       "value": "[missing issue link, missing changeset/no-changelog]",
-      "line": 667
+      "line": 678
     },
     {
       "id": "PRED.k320.canonical-source",
       "klass": "PRED",
       "value": "CONTRIBUTING.md L193-211",
-      "line": 759
+      "line": 772
     },
     {
       "id": "PRED.k320.ci-enforcement",
       "klass": "PRED",
       "value": "scripts/changeset/lint.cjs",
-      "line": 765
+      "line": 778
     },
     {
       "id": "PRED.k320.ci-paths-monitored",
       "klass": "PRED",
       "value": "bin/ gsd-core/ src/ agents/ commands/ hooks/ sdk/src/ sdk/prompts/",
-      "line": 766
+      "line": 779
     },
     {
       "id": "PRED.k320.cure",
       "klass": "PRED",
       "value": "drop .changeset/<adj>-<noun>-<noun>.md fragment ONLY",
-      "line": 761
+      "line": 774
     },
     {
       "id": "PRED.k320.evidence",
       "klass": "PRED",
       "value": "PR #3302 merge-conflict against #3308 CHANGELOG.md row 2026-05-09",
-      "line": 768
+      "line": 781
     },
     {
       "id": "PRED.k320.opt-out-label",
       "klass": "PRED",
       "value": "no-changelog",
-      "line": 764
+      "line": 777
     },
     {
       "id": "PRED.k320.recovery",
       "klass": "PRED",
       "value": "open Removed-typed cleanup PR deleting only the redundant row",
-      "line": 767
+      "line": 780
     },
     {
       "id": "PRED.k320.rule",
       "klass": "PRED",
       "value": "do not edit CHANGELOG.md in feature/fix/enhancement PRs",
-      "line": 760
+      "line": 773
     },
     {
       "id": "PRED.k320.signal",
       "klass": "PRED",
       "value": "changelog-direct-edit-forbidden",
-      "line": 758
+      "line": 771
     },
     {
       "id": "PRED.k320.tool",
       "klass": "PRED",
       "value": "npm run changeset -- --type <T> --pr <NNN> --body \"...\"",
-      "line": 762
+      "line": 775
     },
     {
       "id": "PRED.k320.types",
       "klass": "PRED",
       "value": "Added|Changed|Deprecated|Removed|Fixed|Security",
-      "line": 763
+      "line": 776
     },
     {
       "id": "PRED.k321.evidence",
       "klass": "PRED",
       "value": "PRs #3304/#3305 (2026-05-09): real Minor/Major findings in body, 0 threads",
-      "line": 774
+      "line": 787
     },
     {
       "id": "PRED.k321.poll-shape",
       "klass": "PRED",
       "value": "parse pulls/<n>/reviews body AND graphql reviewThreads",
-      "line": 772
+      "line": 785
     },
     {
       "id": "PRED.k321.resolution",
       "klass": "PRED",
       "value": "address in code; no GraphQL resolveReviewThread needed for body-only findings",
-      "line": 773
+      "line": 786
     },
     {
       "id": "PRED.k321.shape",
       "klass": "PRED",
       "value": "CR posts \"[!CAUTION] outside the diff\" findings in review BODY, not in reviewThreads",
-      "line": 771
+      "line": 784
     },
     {
       "id": "PRED.k321.signal",
       "klass": "PRED",
       "value": "cr-outside-diff-range-finding",
-      "line": 770
+      "line": 783
     },
     {
       "id": "PRED.k322.cure-1",
       "klass": "PRED",
       "value": "2nd retrigger ~10min after first ack",
-      "line": 779
+      "line": 792
     },
     {
       "id": "PRED.k322.cure-2",
       "klass": "PRED",
       "value": "if silent at 50min, treat as silent-pass with maintainer flag in merge-commit body",
-      "line": 780
+      "line": 793
     },
     {
       "id": "PRED.k322.distinct-from",
       "klass": "PRED",
       "value": "k080",
-      "line": 777
+      "line": 790
     },
     {
       "id": "PRED.k322.evidence",
       "klass": "PRED",
       "value": "PR #3306 (2026-05-09): 0 reviews after 50min + 2 retriggers",
-      "line": 782
+      "line": 795
     },
     {
       "id": "PRED.k322.merge-gate-impact",
       "klass": "PRED",
       "value": "k070 real_coderabbit_review_present unsatisfied; requires maintainer judgment",
-      "line": 781
+      "line": 794
     },
     {
       "id": "PRED.k322.shape",
       "klass": "PRED",
       "value": "ack posted, real review never lands within [5s, 410s] cooldown after burst of N PRs <15min",
-      "line": 778
+      "line": 791
     },
     {
       "id": "PRED.k322.signal",
       "klass": "PRED",
       "value": "cr-sustained-throttle",
-      "line": 776
+      "line": 789
     },
     {
       "id": "PRED.k323.cure-alt",
       "klass": "PRED",
       "value": "consolidate into single PR when 2+ issues share root cause",
-      "line": 787
+      "line": 800
     },
     {
       "id": "PRED.k323.cure-pre-dispatch",
       "klass": "PRED",
       "value": "brief one agent canonical-owner; brief others to EXCLUDE shared site",
-      "line": 786
+      "line": 799
     },
     {
       "id": "PRED.k323.evidence",
       "klass": "PRED",
       "value": "#3300 (#3297) overlapped #3306 (#3298) on add-backlog.md hunks 2026-05-09",
-      "line": 789
+      "line": 802
     },
     {
       "id": "PRED.k323.recovery",
       "klass": "PRED",
       "value": "close smaller PR as \"subsumed by #N\" or rebase second to drop overlap hunk",
-      "line": 788
+      "line": 801
     },
     {
       "id": "PRED.k323.shape",
       "klass": "PRED",
       "value": "2+ open issues touch same canonical bug site; each fix's sibling-audit produces overlapping diff",
-      "line": 785
+      "line": 798
     },
     {
       "id": "PRED.k323.signal",
       "klass": "PRED",
       "value": "sibling-audit-cross-pr-overlap",
-      "line": 784
+      "line": 797
     },
     {
       "id": "PRED.k324.cure",
       "klass": "PRED",
       "value": "verify via gh api on every agent-completion notification; never trust narrative",
-      "line": 793
+      "line": 806
     },
     {
       "id": "PRED.k324.evidence",
       "klass": "PRED",
       "value": "2026-05-09 session: 5+ mid-monitor terminations across PRs #3232/#3271/#3251/#3255/#3262",
-      "line": 795
+      "line": 808
     },
     {
       "id": "PRED.k324.k095-restatement",
       "klass": "PRED",
       "value": "k095 confirmed shape: agent reports \"waiting for monitor\" / \"tests still running\" then terminates",
-      "line": 792
+      "line": 805
     },
     {
       "id": "PRED.k324.poll-shape",
       "klass": "PRED",
       "value": "gh pr view <n> --json mergeStateStatus,statusCheckRollup + pulls/<n>/reviews + graphql reviewThreads + issues/<n>/comments tail",
-      "line": 794
+      "line": 807
     },
     {
       "id": "PRED.k324.signal",
       "klass": "PRED",
       "value": "agent-terminates-mid-monitor",
-      "line": 791
+      "line": 804
     },
     {
       "id": "PRED.k325.cleanup",
       "klass": "PRED",
       "value": "git worktree remove --force <path> for aged agent worktrees",
-      "line": 800
+      "line": 813
     },
     {
       "id": "PRED.k325.cure",
       "klass": "PRED",
       "value": "detached-HEAD: git checkout --detach $(git ls-remote origin <branch>); modify; commit; git push --force-with-lease=<branch>:<remote-sha> origin HEAD:refs/heads/<branch>",
-      "line": 799
+      "line": 812
     },
     {
       "id": "PRED.k325.evidence",
       "klass": "PRED",
       "value": "2026-05-09 CHANGELOG.md strip on PRs #3300/#3302/#3304/#3305 required detached-HEAD",
-      "line": 801
+      "line": 814
     },
     {
       "id": "PRED.k325.shape",
       "klass": "PRED",
       "value": "git checkout <branch> errors \"already used by worktree at <agent-worktree>\"",
-      "line": 798
+      "line": 811
     },
     {
       "id": "PRED.k325.signal",
       "klass": "PRED",
       "value": "worktree-branch-lock-on-force-push",
-      "line": 797
+      "line": 810
     },
     {
       "id": "PRED.k326.cure",
       "klass": "PRED",
       "value": "quote canonical doc verbatim in brief; mentally simulate \"if all N agents follow this brief literally, do they violate any rule?\"",
-      "line": 805
+      "line": 818
     },
     {
       "id": "PRED.k326.evidence",
       "klass": "PRED",
       "value": "2026-05-09 brief \"k040 — update CHANGELOG.md\" → 5 of 8 agents violated CONTRIBUTING.md L110",
-      "line": 806
+      "line": 819
     },
     {
       "id": "PRED.k326.shape",
       "klass": "PRED",
       "value": "N parallel agents amplify a single brief-vs-doc contradiction into N violations",
-      "line": 804
+      "line": 817
     },
     {
       "id": "PRED.k326.signal",
       "klass": "PRED",
       "value": "brief-contradicts-canonical-doc",
-      "line": 803
+      "line": 816
     },
     {
       "id": "PRED.k327.ack-shape",
       "klass": "PRED",
       "value": "body \"✅ Actions performed - Full review triggered\"",
-      "line": 809
+      "line": 822
     },
     {
       "id": "PRED.k327.cooldown-normal",
       "klass": "PRED",
       "value": "[5s, 410s]",
-      "line": 812
+      "line": 825
     },
     {
       "id": "PRED.k327.cooldown-throttled",
       "klass": "PRED",
       "value": "k322",
-      "line": 813
+      "line": 826
     },
     {
       "id": "PRED.k327.distinguish-key",
       "klass": "PRED",
       "value": "len(pulls/<n>/reviews) — ack=0, real=≥1",
-      "line": 811
+      "line": 824
     },
     {
       "id": "PRED.k327.real-review-shape",
       "klass": "PRED",
       "value": "body starts \"Actionable comments posted: N\" OR \"[!CAUTION] Some comments are outside the diff\"",
-      "line": 810
+      "line": 823
     },
     {
       "id": "PRED.k327.signal",
       "klass": "PRED",
       "value": "cr-ack-vs-real-review",
-      "line": 808
+      "line": 821
     },
     {
       "id": "PRED.k328.audit-list",
       "klass": "PRED",
       "value": "[heading-matches-class, closing-keyword-present, changeset-fragment-or-no-changelog-label]",
-      "line": 818
+      "line": 831
     },
     {
       "id": "PRED.k328.canonical-source",
       "klass": "PRED",
       "value": "CONTRIBUTING.md L48,L64,L81 (template links) + .github/PULL_REQUEST_TEMPLATE/{fix,enhancement,feature}.md L1 (heading text)",
-      "line": 816
+      "line": 829
     },
     {
       "id": "PRED.k328.k100-restatement",
       "klass": "PRED",
       "value": "heading must match issue class: bug→## Fix PR, enhancement→## Enhancement PR, feature→## Feature PR",
-      "line": 817
+      "line": 830
     },
     {
       "id": "PRED.k328.signal",
       "klass": "PRED",
       "value": "pr-template-typed-heading-required",
-      "line": 815
+      "line": 828
     },
     {
       "id": "PRED.k329.body",
       "klass": "PRED",
       "value": "**<Bold user-visible change>** — <symptom-led explanation>. (#<NNN>)",
-      "line": 824
+      "line": 837
     },
     {
       "id": "PRED.k329.canonical-source",
       "klass": "PRED",
       "value": "CONTRIBUTING.md L196-202 + .changeset/README.md",
-      "line": 821
+      "line": 834
     },
     {
       "id": "PRED.k329.filename",
       "klass": "PRED",
       "value": ".changeset/<adj>-<noun>-<noun>.md",
-      "line": 822
+      "line": 835
     },
     {
       "id": "PRED.k329.frontmatter",
       "klass": "PRED",
       "value": "---\\\\ntype: <Added|Changed|Deprecated|Removed|Fixed|Security>\\\\npr: <NNN>\\\\n---",
-      "line": 823
+      "line": 836
     },
     {
       "id": "PRED.k329.observed-clean",
       "klass": "PRED",
       "value": "#3299 sunny-ibex-wave, #3301 sturdy-rams-caper, #3306 3298-phase-dir-prefix-drift-workflows",
-      "line": 825
+      "line": 838
     },
     {
       "id": "PRED.k329.signal",
       "klass": "PRED",
       "value": "changeset-fragment-canonical-shape",
-      "line": 820
+      "line": 833
     },
     {
       "id": "PRED.k330.fallback",
       "klass": "PRED",
       "value": "append predicate-format findings directly to CONTEXT.md",
-      "line": 829
+      "line": 842
     },
     {
       "id": "PRED.k330.shape",
       "klass": "PRED",
       "value": "mempalace MCP tools require explicit user call; AI cannot trigger",
-      "line": 828
+      "line": 841
     },
     {
       "id": "PRED.k330.signal",
       "klass": "PRED",
       "value": "mempalace-diary-not-callable-by-ai",
-      "line": 827
+      "line": 840
     },
     {
       "id": "PRED.k331.cure",
       "klass": "PRED",
       "value": "gh pr close <n> with NO --comment flag",
-      "line": 834
+      "line": 847
     },
     {
       "id": "PRED.k331.evidence",
       "klass": "PRED",
       "value": "2026-05-09 wave-3: violation on #3300 close, deleted within 30s",
-      "line": 836
+      "line": 849
     },
     {
       "id": "PRED.k331.k101-restatement",
       "klass": "PRED",
       "value": "k101 includes close-time --comment flag; rationale belongs in subsuming PR's squash-merge body",
-      "line": 833
+      "line": 846
     },
     {
       "id": "PRED.k331.recovery",
       "klass": "PRED",
       "value": "if violation lands, gh api -X DELETE repos/<o>/<r>/issues/comments/<id>",
-      "line": 835
+      "line": 848
     },
     {
       "id": "PRED.k331.shape",
       "klass": "PRED",
       "value": "instruction \"close with no comment (rationale)\" — parenthetical is rationale, NOT comment body",
-      "line": 832
+      "line": 845
     },
     {
       "id": "PRED.k331.signal",
       "klass": "PRED",
       "value": "close-with-no-comment-is-literal",
-      "line": 831
+      "line": 844
     },
     {
       "id": "PROBE.ci.surface",
       "klass": "PROBE",
       "value": "the contract (parse/validate, projection round-trip, fail-closed guards), NEVER the LLM judgment (ADR-550 D5)",
-      "line": 578
+      "line": 589
     },
     {
       "id": "PROBE.core.seam",
       "klass": "PROBE",
       "value": "analyzeCoverage(items,resolutions?,validators) ingests ALREADY-proposed items; does NOT assume deterministic propose (ADR-550 D7b)",
-      "line": 571
+      "line": 582
     },
     {
       "id": "PROBE.edge.verification",
       "klass": "PROBE",
       "value": "explicit|backstop",
-      "line": 573
+      "line": 584
     },
     {
       "id": "PROBE.family",
       "klass": "PROBE",
       "value": "edge-probe(shape-axis)+prohibition-probe(must-NOT-axis)+ui-consideration-probe(UI-state-axis), shared probe-core, run as spec-phase/ui-phase soft gates (ADR-550 D7; #1867)",
-      "line": 569
+      "line": 580
     },
     {
       "id": "PROBE.item.axes",
       "klass": "PROBE",
       "value": "status{resolved|dismissed|unresolved} x verification{<probe-defined>|null} — orthogonal; the lifecycle enum carries no verification fact (ADR-550 D7a)",
-      "line": 572
+      "line": 583
     },
     {
       "id": "PROBE.principle",
       "klass": "PROBE",
       "value": "verifier-reach-equals-spec-reach (a goal-backward verifier only checks assertions that exist; probes make omitted assertions exist before code) — ADR-857 verification-substrate boundary; docs/design/verifier-reach.md",
-      "line": 568
+      "line": 579
     },
     {
       "id": "PROBE.prohib.verification",
       "klass": "PROBE",
       "value": "test|judgment",
-      "line": 574
+      "line": 585
     },
     {
       "id": "PROBE.protocol",
       "klass": "PROBE",
       "value": "recall(adversarial over-generate)->precision(drop routine-engineering); dismissals require a non-empty reason",
-      "line": 570
+      "line": 581
     },
     {
       "id": "PROBE.ui.axis",
       "klass": "PROBE",
       "value": "MIXED — closed compiled shape-rooted 8 (empty/loading/error/populated/partial/overflow/zero-one-many/long-text) via ui-consideration-probe adapter; open UX (real-time/a11y/i18n-RTL) prose-owned in references/domain-probes.md, NOT compiled (#1867)",
-      "line": 576
+      "line": 587
     },
     {
       "id": "PROBE.ui.seam",
       "klass": "PROBE",
       "value": "ui-phase Step 9.5 post-verification: element-cue classify -> propose-then-confirm (partial-cue mitigation, Goodhart) -> autoResolve --auto floor (never dismiss; unclassified stays unresolved #1110) -> ## UI Considerations write-back -> plan-phase `## UI Considerations` lift rule (#1867)",
-      "line": 577
+      "line": 588
     },
     {
       "id": "PROBE.ui.verification",
       "klass": "PROBE",
       "value": "explicit|backstop",
-      "line": 575
+      "line": 586
     },
     {
       "id": "PROC.AGENT-DISPATCH.completion-verify",
       "klass": "PROC",
       "value": "run k324.poll-shape on every agent-completion notification",
-      "line": 840
+      "line": 853
     },
     {
       "id": "PROC.AGENT-DISPATCH.parallel-overlap-audit",
       "klass": "PROC",
       "value": "before dispatching N sibling-audit fixers, compute file-set union and assign canonical owners",
-      "line": 839
+      "line": 852
     },
     {
       "id": "PROC.AGENT-DISPATCH.preflight",
       "klass": "PROC",
       "value": "[read-CONTRIBUTING.md-fresh, read-relevant-ADRs, cite-specific-line-in-brief, require-closing-keyword, require-changeset-fragment, forbid-CHANGELOG.md-edit, require-isolation-worktree, forbid-self-PR-comment, mandate-trust-but-verify]",
-      "line": 838
+      "line": 851
     },
     {
       "id": "PROC.MERGE-WAVE.changelog-strip-pattern",
       "klass": "PROC",
       "value": "detached-HEAD per k325 + git checkout main -- CHANGELOG.md + commit + force-with-lease",
-      "line": 844
+      "line": 857
     },
     {
       "id": "PROC.MERGE-WAVE.merge-tool",
       "klass": "PROC",
       "value": "gh pr merge <n> --squash --delete-branch",
-      "line": 845
+      "line": 858
     },
     {
       "id": "PROC.MERGE-WAVE.merge-tool-warning",
       "klass": "PROC",
       "value": "delete-branch may fail with \"used by worktree at\" — harmless; remote branch still deleted",
-      "line": 846
+      "line": 859
     },
     {
       "id": "PROC.MERGE-WAVE.ordering",
       "klass": "PROC",
       "value": "[wave1: isolated-files, wave2: CHANGELOG-only-overlap (better: strip per k320), wave3: same-file-overlap with explicit decision]",
-      "line": 842
+      "line": 855
     },
     {
       "id": "PROC.MERGE-WAVE.preflight",
       "klass": "PROC",
       "value": "gh pr view <n> --json files for every PR; identify overlap pairs; surface to maintainer",
-      "line": 843
+      "line": 856
     },
     {
       "id": "PROC.PARALLEL-FIX-DISPATCH.observed",
       "klass": "PROC",
       "value": "#3541 + #3542 dispatched simultaneously this session; PRs #3546 #3547 opened green; one syntax slip caught by AGENT-RETIRED-SLASH-SYNTAX-DRIFT and fixed before second PR opened",
-      "line": 922
+      "line": 938
     },
     {
       "id": "PROC.PARALLEL-FIX-DISPATCH.pattern",
       "klass": "PROC",
       "value": "bot triage brief → worktree per branch → parallel sub-agents do rubber-duck/RCA/TDD implementation only → top-level orchestrator owns commit + gsd-test + push + PR + changeset-pr-backfill",
-      "line": 920
+      "line": 936
     },
     {
       "id": "PROC.PARALLEL-FIX-DISPATCH.rationale",
       "klass": "PROC",
       "value": "long-running test runs need cross-turn notifications (orchestrator-only); CONTRIBUTING.md gh-templates-first hook requires session-scoped Read calls sub-agents wouldn't otherwise make; sequencing test runs avoids GSD-TEST-CONCURRENT-OUTPUT-COLLISION",
-      "line": 921
+      "line": 937
     },
     {
       "id": "PROC.TRIAGE.comment-shape",
       "klass": "PROC",
       "value": "lead with \"duplicate of #NNNN, fixed by PR #MMMM, in v1.X.Y\"; show current code snippet proving bug-surface gone; give @latest and @next upgrade commands; close",
-      "line": 925
+      "line": 941
     },
     {
       "id": "PROC.TRIAGE.no-duplicate-label",
       "klass": "PROC",
       "value": "this repo has no duplicate label; framing lives in comment text + closing the issue",
-      "line": 926
+      "line": 942
     },
     {
       "id": "PROC.TRIAGE.routing-incoming",
       "klass": "PROC",
       "value": "stale-bug-already-fixed to close as duplicate of originating issue + cite fix PR + first stable tag; release-publish-or-backport to ready-for-human; reporter-can-self-test to awaiting-retest",
-      "line": 924
+      "line": 940
     },
     {
       "id": "PROHIB.canon-referral",
       "klass": "PROHIB",
       "value": "OWASP/GDPR/fairness-canon are REFERRED to /gsd:secure-phase+eslint, never minted as prohibitions (ADR-550 D6)",
-      "line": 580
+      "line": 591
     },
     {
       "id": "PROHIB.descriptor.shape",
       "klass": "PROHIB",
       "value": "5 FLAT scalars (check_kind,check_target,check_rule,check_violation_fixture,check_clean_fixture) — NEVER a nested check:{} (parseMustHavesBlock is a flat parser, src/frontmatter.cts)",
-      "line": 585
+      "line": 596
     },
     {
       "id": "PROHIB.enforce.adr",
       "klass": "PROHIB",
       "value": "docs/adr/1606-prohibition-enforcement-verify-seam.md (verify-time enforcement seam) + docs/adr/550-spec-phase-probe-contract.md (spec-phase contract)",
-      "line": 588
+      "line": 599
     },
     {
       "id": "PROHIB.enforce.causation",
       "klass": "PROHIB",
       "value": "clean-fixture control proves the red is content-caused not env-var-set; MANDATORY for node-test (#1906 supersedes #1346 opt-in) — absent clean-fixture ⇒ node-test un-provable/fail-closed; lint-rule needs none (its subject IS the linted file)",
-      "line": 584
+      "line": 595
     },
     {
       "id": "PROHIB.enforce.failfirst",
       "klass": "PROHIB",
       "value": "MACHINE-PROVEN against an author-supplied violation fixture (#1279); caller failFirst attestation DEMOTED to a non-authoritative hint (FF-08)",
-      "line": 583
+      "line": 594
     },
     {
       "id": "PROHIB.enforce.green-rule",
       "klass": "PROHIB",
       "value": "passed iff provenFailFirst===true && run.passed===true (runProhibitionEnforcement); every miss/fail/un-provable HARD-GATES both modes via dispositionForProhibition's fail-closed default",
-      "line": 581
+      "line": 592
     },
     {
       "id": "PROHIB.enforce.kinds",
       "klass": "PROHIB",
       "value": "node-test (non-vacuous red via isNonVacuousNodeTestRed; pass-side vacuity via isNonVacuousNodeTestPass) | lint-rule (eslint --format json filtered by ruleId)",
-      "line": 582
+      "line": 593
     },
     {
       "id": "PROHIB.judgment-tier",
       "klass": "PROHIB",
       "value": "never-silent / never-hard-halt soft gate; autonomous emits \"unverified-prohibition — human review recommended\" (exogenous grading, ADR-550 D4)",
-      "line": 587
+      "line": 598
     },
     {
       "id": "PROHIB.rail",
       "klass": "PROHIB",
       "value": "core verify rail, non-toggleable (ADR-857 verification-substrate boundary / decision #6); the verifier<->predicate contract is NOT an off-by-default capability",
-      "line": 586
+      "line": 597
     },
     {
       "id": "PROHIB.recall",
       "klass": "PROHIB",
       "value": "LLM-prose; no compiled prohibition-probe recall engine (only the schema/projection layer is code, ADR-550 D7b)",
-      "line": 579
+      "line": 590
     },
     {
       "id": "RELEASE-NOTES.ANTI-PATTERN",
       "klass": "RELEASE-NOTES",
       "value": "raw \"What's Changed\" PR list as final body for hotfix or feature release; \"Full Changelog only\" body for tagged release with >0 user-facing fixes",
-      "line": 735
+      "line": 748
     },
     {
       "id": "RELEASE-NOTES.ANTI-PATTERN.implementation-first",
       "klass": "RELEASE-NOTES",
       "value": "do not lead bullet with file path or function name; lead with symptom/user-visible behavior",
-      "line": 736
+      "line": 749
     },
     {
       "id": "RELEASE-NOTES.ANTI-PATTERN.risk-commentary",
       "klass": "RELEASE-NOTES",
       "value": "do not include \"may break\", \"be careful\", \"test thoroughly\" - release notes state what changed, not hedges about what might go wrong",
-      "line": 737
+      "line": 750
     },
     {
       "id": "RELEASE-NOTES.DEFAULT-STATE",
       "klass": "RELEASE-NOTES",
       "value": "auto-generated body is \"What's Changed\" PR list + Full Changelog link; treat as draft, not final",
-      "line": 711
+      "line": 724
     },
     {
       "id": "RELEASE-NOTES.EXAMPLE.hotfix",
       "klass": "RELEASE-NOTES",
       "value": "v1.41.1 (https://github.com/open-gsd/gsd-core/releases/tag/v1.41.1) - 14 fixes grouped by 6 subgroups",
-      "line": 739
+      "line": 752
     },
     {
       "id": "RELEASE-NOTES.EXAMPLE.minor-auto-acceptable",
       "klass": "RELEASE-NOTES",
       "value": "v1.41.0 - kept auto-generated body; many small fixes with clean conventional-commit titles",
-      "line": 741
+      "line": 754
     },
     {
       "id": "RELEASE-NOTES.EXAMPLE.rc",
       "klass": "RELEASE-NOTES",
       "value": "v1.7.0-rc.1 (https://github.com/open-gsd/gsd-core/releases/tag/v1.7.0-rc.1) - intro + Added/Changed/Fixed/Documentation taxonomy",
-      "line": 740
+      "line": 753
     },
     {
       "id": "RELEASE-NOTES.GATE.hotfix",
       "klass": "RELEASE-NOTES",
       "value": "manual edit required; auto-generated body for vX.Y.{Z>0} is \"Full Changelog only\" and must be replaced with structured body",
-      "line": 712
+      "line": 725
     },
     {
       "id": "RELEASE-NOTES.GATE.minor",
       "klass": "RELEASE-NOTES",
       "value": "auto-generated body acceptable when PR titles are clean; promote to structured body when >20 PRs or contains feature+refactor+fix mix",
-      "line": 714
+      "line": 727
     },
     {
       "id": "RELEASE-NOTES.GATE.rc",
       "klass": "RELEASE-NOTES",
       "value": "manual edit recommended; auto-generated PR list is acceptable for early RCs but final RC before vX.Y.0 should match standard",
-      "line": 713
+      "line": 726
     },
     {
       "id": "RELEASE-NOTES.RELEASE-STREAM.main-branch",
       "klass": "RELEASE-NOTES",
       "value": "next (RCs) + latest (stable); install via @next or @latest",
-      "line": 746
+      "line": 759
     },
     {
       "id": "RELEASE-NOTES.RELEASE-STREAM.rule",
       "klass": "RELEASE-NOTES",
       "value": "streams do not mix; do not document @next in hotfix/stable notes",
-      "line": 747
+      "line": 760
     },
     {
       "id": "RELEASE-NOTES.SCOPE",
       "klass": "RELEASE-NOTES",
       "value": "GitHub Releases body for tags vX.Y.Z, vX.Y.Z-rc.N; not CHANGELOG.md (changeset workflow owns that)",
-      "line": 710
+      "line": 723
     },
     {
       "id": "RELEASE-NOTES.SOURCE.changesets",
       "klass": "RELEASE-NOTES",
       "value": ".changeset/*.md (frontmatter pr: + body bullets)",
-      "line": 726
+      "line": 739
     },
     {
       "id": "RELEASE-NOTES.SOURCE.commits",
       "klass": "RELEASE-NOTES",
       "value": "git log <prev-tag>..<this-tag> --pretty=format:'%s%n%n%b' --no-merges",
-      "line": 725
+      "line": 738
     },
     {
       "id": "RELEASE-NOTES.SOURCE.pr-bodies",
       "klass": "RELEASE-NOTES",
       "value": "gh pr view <NNN> --json title,body for fixes lacking a changeset",
-      "line": 727
+      "line": 740
     },
     {
       "id": "RELEASE-NOTES.SOURCE.precedence",
       "klass": "RELEASE-NOTES",
       "value": "changeset body > commit body > PR body > commit subject (prefer authored content over auto-generated)",
-      "line": 728
+      "line": 741
     },
     {
       "id": "RELEASE-NOTES.STANDARD.bullet-shape",
       "klass": "RELEASE-NOTES",
       "value": "**Bold user-visible change** — explanation of what was broken or what's new, leading with symptom not implementation. Trailing (#NNN) PR ref.",
-      "line": 718
+      "line": 731
     },
     {
       "id": "RELEASE-NOTES.STANDARD.footer.full-changelog",
       "klass": "RELEASE-NOTES",
       "value": "**Full Changelog**: https://github.com/open-gsd/gsd-core/compare/<prev>...<this>",
-      "line": 722
+      "line": 735
     },
     {
       "id": "RELEASE-NOTES.STANDARD.footer.hotfix",
       "klass": "RELEASE-NOTES",
       "value": "Install/upgrade: \\`npx @opengsd/gsd-core@latest\\`",
-      "line": 720
+      "line": 733
     },
     {
       "id": "RELEASE-NOTES.STANDARD.footer.rc",
       "klass": "RELEASE-NOTES",
       "value": "Install for testing: \\`npx @opengsd/gsd-core@next\\` (per branch->dist-tag policy)",
-      "line": 721
+      "line": 734
     },
     {
       "id": "RELEASE-NOTES.STANDARD.heading-level",
       "klass": "RELEASE-NOTES",
       "value": "## for category, ### for subgroup (area), - for bullet",
-      "line": 717
+      "line": 730
     },
     {
       "id": "RELEASE-NOTES.STANDARD.intro",
       "klass": "RELEASE-NOTES",
       "value": "optional one-paragraph framing for RC/feature releases; omit for pure-fix hotfixes",
-      "line": 723
+      "line": 736
     },
     {
       "id": "RELEASE-NOTES.STANDARD.subgroups",
       "klass": "RELEASE-NOTES",
       "value": "phase-planning-state | workstream | query-dispatch-cli | code-review | install | capture | docs | architecture | security",
-      "line": 719
+      "line": 732
     },
     {
       "id": "RELEASE-NOTES.STANDARD.taxonomy",
       "klass": "RELEASE-NOTES",
       "value": "Keep-a-Changelog 1.1.0: Added | Changed | Deprecated | Removed | Fixed | Security | Documentation",
-      "line": 716
+      "line": 729
     },
     {
       "id": "RELEASE-NOTES.TEMPLATE.hotfix",
       "klass": "RELEASE-NOTES",
       "value": "## Fixed\\n\\n### <subgroup>\\n- **<bold change>** — <explanation>. (#<PR>)\\n\\n---\\n\\nInstall/upgrade: \\`npx @opengsd/gsd-core@latest\\`\\n\\n**Full Changelog**: <compare-url>",
-      "line": 743
+      "line": 756
     },
     {
       "id": "RELEASE-NOTES.TEMPLATE.rc",
       "klass": "RELEASE-NOTES",
       "value": "<one-paragraph intro>\\n\\n## Added\\n### <subgroup>\\n- **<change>** — <explanation>. (#<PR>)\\n\\n## Changed\\n### Architecture\\n- **<refactor>** — <user-visible benefit>. (#<PR>)\\n\\n## Fixed\\n### <subgroup>\\n- **<fix>** — <explanation>. (#<PR>)\\n\\n## Documentation\\n- **<docs change>** — <reason>. (#<PR>)\\n\\n---\\n\\nThis is a release candidate. Install for testing:\\n\\`\\`\\`bash\\nnpx @opengsd/gsd-core@next\\n\\`\\`\\`\\n\\n**Full Changelog**: <compare-url>",
-      "line": 744
+      "line": 757
     },
     {
       "id": "RELEASE-NOTES.WORKFLOW.edit",
       "klass": "RELEASE-NOTES",
       "value": "gh release edit <tag> --notes-file <path>",
-      "line": 730
+      "line": 743
     },
     {
       "id": "RELEASE-NOTES.WORKFLOW.idempotency",
       "klass": "RELEASE-NOTES",
       "value": "gh release edit overwrites body wholesale; safe to re-run after refining",
-      "line": 733
+      "line": 746
     },
     {
       "id": "RELEASE-NOTES.WORKFLOW.token",
       "klass": "RELEASE-NOTES",
       "value": "must use .envrc GITHUB_TOKEN per RULESET.GH.AUTH.DEFAULT (this doc); never ambient gh auth",
-      "line": 732
+      "line": 745
     },
     {
       "id": "RELEASE-NOTES.WORKFLOW.view",
       "klass": "RELEASE-NOTES",
       "value": "gh release view <tag> --json body --jq .body",
-      "line": 731
+      "line": 744
     },
     {
       "id": "RULESET.ADR-HEADER",
       "klass": "RULESET",
       "value": "every docs/adr/NNNN-*.md must open with - **Status:** Accepted|Proposed|Superseded (by [ADR-NNNN](file.md))|Legacy + - **Date:** YYYY-MM-DD immediately after title",
-      "line": 635
+      "line": 646
     },
     {
       "id": "RULESET.AGENT_SIZE_BUDGET",
       "klass": "RULESET",
       "value": "agent-size-budget (#1074; sibling of WORKFLOW_SIZE_BUDGET; BYTES not lines per #717/#683, rebased from lines in PR 3/3) = differential attribution size ratchet (PRIMARY anti-creep since #2724/ADR-2719 §4, same mechanism and same `Emitted-Drift-Ack-Growth:` commit trailer (ADR-3942, superseding ADR-2719 §3's fragment model) as WORKFLOW_SIZE_BUDGET, scoped to agents/gsd-*.md) + loose tier hard caps (red lines, never raised on approach: XL<=57344 / LARGE<=49152 / DEFAULT<=24576); net-new agents are DEFAULT-tier (no separate new-file cap). Sizes are measured via the shared scripts/workflow-size.cjs measureMdFiles(dir,predicate) counter (tests/helpers/emitted-runtime.cjs's currentSizes() and the guard's own tier-cap checks both import it). A grown agent fails the differential guard — ack + justify, or extract LAZILY to gsd-core/references/. DISTINCT from DEFECT.AGENT-FILE-SIZE-CAP-BREACH (a separate 45K-CHAR extraction-evidence threshold on gsd-planner via planner-decomposition/reachability tests): that guard proves mode-sections were extracted; this one bounds total agent bytes. Two guards, two units (chars vs bytes), two purposes. The prior per-file baseline (tests/agent-size-baseline.json, `npm run size:baseline`) is REMOVED by #2724",
-      "line": 624
+      "line": 635
     },
     {
       "id": "RULESET.ALLOWED-TOOLS-FRONTMATTER",
       "klass": "RULESET",
       "value": "command's allowed-tools must cover every tool the workflow calls (including Write for file creation); thin-wrapper pattern makes this easy to miss",
-      "line": 631
+      "line": 642
     },
     {
       "id": "RULESET.ARGUMENTS-SANITIZE",
       "klass": "RULESET",
       "value": "any workflow step constructing .planning/.../{SLUG}.md path from user input ($ARGUMENTS, parsed remainder) must sanitize inline ([a-z0-9-] only, reject ..//\\\\, max-length) — \"(already sanitized)\" must trace back to explicit guard; RESUME/fallback modes need own guards",
-      "line": 632
+      "line": 643
     },
     {
       "id": "RULESET.AUDIT.search-source-not-generated",
       "klass": "RULESET",
       "value": "verify an invariant/validation EXISTS by searching the AUTHORED source (src/*.cts OR the scripts/gen-*.cjs generator), never the generated bin/lib/*.cjs (gitignored, ADR-457); gen-time checks live in gen-*.cjs not the .cts it consumes → search BOTH before declaring absent; read generated .cjs only for output drift. Repro: grep src/*.cts for VALID_CONVERTER_NAMES → false \"5e ConverterName unenforced\"; actually enforced in gen-capability-registry.cjs. cf RULESET.TESTS.no-source-grep",
-      "line": 620
+      "line": 631
     },
     {
       "id": "RULESET.CAPABILITY.cutover-self-gating",
       "klass": "RULESET",
       "value": "a phase-6 per-feature cutover moves the host's phase-context detection + mode/flag logic INTO the skill (self-gating, per ADR-894); the loop hook is intentionally COARSE — \"invoke skill X at point Y when config Z\" — and carries no detection/mode. WORKED EXAMPLE: plan-phase.md §5.6 UI gate (frontend-detection via ui-safety-gate.cjs + --auto/manual branch + --skip-ui bypass) must move into gsd-ui-phase before its plan:pre hook can replace the inline call without behavior loss. Spike #1018 finding.",
-      "line": 396
+      "line": 405
     },
     {
       "id": "RULESET.CAPABILITY.off-means-off",
       "klass": "RULESET",
       "value": "the host derives shared outputs from the ACTIVE hook set (via loop.render-hooks); a hook may ADD a labeled block or be COUNTED into a host-computed aggregate (e.g. a score denominator), but NEVER mutates host source — so a disabled capability yields the base output by construction, not by authoring discipline. Ratify in ADR-894; proven by spike #1018.",
-      "line": 394
+      "line": 403
     },
     {
       "id": "RULESET.CAPABILITY.precedence-engine-single-owner",
       "klass": "RULESET",
       "value": "the config-key four-level precedence walk (loadConfig result → workstream config.json → root config.json → registry.configSchema default → absent) is owned solely by src/capability-activation.cts: raw-value primitive resolveConfigKey(dotKey, {config,cwd,registry}) and boolean wrapper _resolveActivationValue(dotKey,config,cwd,registry); loop-resolver.cts imports the engine (no duplicate); resolveConfigValues in loop-resolver.cts delegates to resolveConfigKey; resolveCapabilityRuntimeState does NOT return registry/config — callers import capability-registry.cjs and call loadConfig(cwd) directly.",
-      "line": 400
+      "line": 409
     },
     {
       "id": "RULESET.CAPABILITY.step-additive-gate-blocks",
       "klass": "RULESET",
       "value": "a `step` hook is purely additive (invoke skill + produce artifacts, NEVER halts the host); host-blocking preconditions are `gate`s (blocking:true, onError:halt); runtime/mode context (auto/chain vs manual) self-gates IN THE SKILL, not via `when` (config-only). §5.6 = plan:pre step (ui-phase; skill self-gates on frontend+pipeline, auto-fires only in pipelines) + a NEW plan:pre gate (frontend-and-no-UI-SPEC → halt, when:workflow.ui_safety_gate); the loop.render-hooks dispatch template handles steps AND gates. Resolves #1022.",
-      "line": 398
+      "line": 407
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.COMPLETE",
       "klass": "RULESET",
       "value": "required_checks_green && coderabbit_check_pass && graphQL(reviewThreads.unresolved_count)==0",
-      "line": 657
+      "line": 668
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.GRAPHQL",
       "klass": "RULESET",
       "value": "reviewThreads(first:100){nodes{id isResolved comments{nodes{author body path line originalLine url}}}}; use unresolved threads as authoritative, not badge text alone",
-      "line": 658
+      "line": 669
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.OPEN_PRS",
       "klass": "RULESET",
       "value": "gh pr list --repo open-gsd/gsd-core --author @me --state open; repeat near end because open PR set can change mid-run",
-      "line": 656
+      "line": 667
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.RERUN",
       "klass": "RULESET",
       "value": "after every push wait for CodeRabbit completion, then re-query unresolved threads; CodeRabbit can add new findings after earlier threads were resolved",
-      "line": 659
+      "line": 670
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.RESOLVE",
       "klass": "RULESET",
       "value": "fix validated finding -> focused tests -> commit/push -> resolveReviewThread(threadId) -> wait CI/CodeRabbit -> final unresolved_count query",
-      "line": 660
+      "line": 671
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.SCOPE",
       "klass": "RULESET",
       "value": "if a new @me open PR appears during final list, include it in the same guard pass before declaring all-open-PRs complete",
-      "line": 661
+      "line": 672
     },
     {
       "id": "RULESET.CONTENT-PATH-NORMALIZATION",
       "klass": "RULESET",
       "value": "filesystem paths substituted into markdown body text (@-references, workflow .md, agent .md, generated docs, command bodies) MUST be normalized to POSIX forward slashes via .replace(/\\\\/g,'/') at the production source BEFORE substitution; never push normalization to tests; cross-platform content is POSIX-only; applies to: computePathPrefix output, install-path rewrites, generated shim paths emitted into .md bodies; idempotent on POSIX so unconditional; mechanically enforced by local/normalize-path-in-content (eslint, src/**/*.cts; #1733)",
-      "line": 862
+      "line": 875
     },
     {
       "id": "RULESET.CONTRIB.CLASSIFY.enhancement",
       "klass": "RULESET",
       "value": "requires approved-enhancement before implementation",
-      "line": 650
+      "line": 661
     },
     {
       "id": "RULESET.CONTRIB.CLASSIFY.feature",
       "klass": "RULESET",
       "value": "requires approved-feature before implementation",
-      "line": 651
+      "line": 662
     },
     {
       "id": "RULESET.CONTRIB.CLASSIFY.fix",
       "klass": "RULESET",
       "value": "requires confirmed-bug before implementation (legacy 'confirmed' label is back-compat only for duplicate-sweep exemption, not a valid implementation gate)",
-      "line": 649
+      "line": 660
     },
     {
       "id": "RULESET.CONTRIB.GATE.ORDER",
       "klass": "RULESET",
       "value": "issue-first -> approval-label -> code -> PR-link -> changeset/no-changelog",
-      "line": 648
+      "line": 659
     },
     {
       "id": "RULESET.CR-THREAD-RESOLVE",
       "klass": "RULESET",
       "value": "after adding // allow-test-rule: to silence lint, resolve existing inline CR threads via graphql resolveReviewThread mutation before merge — open threads mislead future reviewers; pattern: gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"PRRT_...\"}) { thread { isResolved } } }'",
-      "line": 642
+      "line": 653
     },
     {
       "id": "RULESET.EMITTED_ATTRIBUTION",
       "klass": "RULESET",
       "value": "the emitted-artifact family (ADR-2719, epic #2719) — POST-CUTOVER (#2724, Phase 4). Historically tests/fixtures/golden-install-parity/*.json (19 path→hash manifests) + tests/workflow-size-baseline.json + tests/agent-size-baseline.json were all committed, PURE FUNCTIONS of the source tree whose correct merge was ALWAYS \"recompute\" — 140 of 143 conflicted-file instances across the open PR queue were these files. #2724 DELETES all three, the golden test (tests/golden-install-parity.test.cjs), the generator (scripts/gen-golden-install-parity-zcode.cjs), `npm run gen:golden`, `UPDATE_GOLDEN`, the merge-driver bridge (scripts/git-merge-regen-driver.cjs, `npm run setup:merge-driver`, the .gitattributes merge=gsd-regen block), and scripts/update-size-baseline.cjs (`npm run size:baseline`). The differential attribution check (tests/emitted-attribution.test.cjs + tests/emitted-provenance.test.cjs) is now the SOLE gate for emitted-artifact propagation AND size growth — no committed artifact, nothing to hand-merge, nothing to regenerate. `npm run regen:derived` still exists for what remains committed and derived: build, registry, ADR index, capability matrix, inventory manifest, manifest versions, and `tests/fixtures/install-tree/*.json` (now `npm run gen:install-tree`, folded into `regen:derived`). tests/fixtures/install-tree/*.json is DELIBERATELY EXCLUDED from the cutover (ADR-2719 §7): it conflicts on 0 of 7, its diffs are readable, and it preserves \"the installer stopped shipping X\" as a hard absolute failure — capturing it would convert that absolute into an attribution-free auto-resolve. The baseline the differential compares against is now published by `scripts/gen-emitted-baseline.cjs` on every push to `next` (cached, keyed on sha) and restored in PR lanes via `GSD_EMITTED_BASELINE`/`resolveBaseline()` (tests/helpers/emitted-baseline.cjs); a cache miss falls back to an in-job build via a throwaway `git worktree` (tests/helpers/emitted-runtime.cjs's `buildBaselineAtRef`). REMEDIATION IS PART OF THE GATE (#2778): the failure output names its own remedy, because a gate that states a requirement and withholds the means of satisfying it is a maintainer round-trip, not a gate — ADR-2719 §3's \"conspicuous declaration\" only works if the contributor can discover how to make it. Both failing branches name the commit trailer to add — `Emitted-Drift-Ack-Hash:` or `Emitted-Drift-Ack-Growth:` (ADR-3942) — print its exact grammar (`<key> — <reason>`, key and reason split on the FIRST em dash), and repeat \"do NOT regenerate anything\" — post-#2724 there is nothing left to regenerate, and hunting for a deleted baseline is the predictable wrong guess. The two branches key on DIFFERENT, now STRUCTURALLY DISTINCT trailer key spaces (separate maps since ADR-3942, closing a latent defect where a growth key could satisfy a hash lookup by naming coincidence and vice versa) and each says which: the hash pass keys on the EMITTED PATH (always contains a `/`, `Emitted-Drift-Ack-Hash:`), the size ratchet keys on the BARE FILENAME (`Emitted-Drift-Ack-Growth:`; `currentSizes` writes `sizes[entry.name]` from readdirSync over `gsd-core/workflows/` + `agents/`). A stale-ack failure additionally says to drop the trailer line (amending the commit) when removing its last entry, since a lingering unused trailer signals nothing; post-#2789 it also offers CORRECTING the reason to name the ripple actually made, which is the other honest resolution and the one a contributor usually wants. NOT ack-able and deliberately given no ack text: the `NEW_FILE_CAP` branch, whose remedy is extraction. Text is sourced from one frozen `REMEDIATION` export in tests/helpers/emitted-diff.cjs, whose example line is rendered via `renderAckTrailer` (`<name>: <key> — <reason>`, ADR-3942) so the taught grammar cannot drift from what `parseAckTrailers` actually accepts (a round-trip test feeds the printed line back through the parser); a key that is reserved (`__proto__`/`constructor`/`prototype`) or contains `<`, `>`, or whitespace is rejected loudly, and a doc example like `<emitted/path> — <reason>` must never parse as a real declaration. Note the ADR's Consequences originally called the #2724 migration \"terminal\"; #2778 corrected that — it is terminal only for a PR that grows no shipped file. The ack was PR-lifetime data kept in permanent, shared, merge-path state, and each fix generated the next defect until ADR-3942 moved it off the tree entirely (see `### Emitted Artifact Provenance`): the single shared `tests/emitted-drift-ack.json` was a guaranteed merge-conflict cell (#2789; 5 of 6 conflicting PRs in one open queue collided on it and nothing else); #2914 replaced it with per-PR fragments under `tests/emitted-drift-acks/` — the `.changeset/` shape — ending the FILE conflict but not the KEY conflict, since two sources could never name the same path; #3078 found a fully-spent fragment left on `next` still walled off every key it owned (measured at the sweep: 45 fragments owning 403 paths, up from 13/272 at triage 19 days earlier) and added the post-merge-only `guard-no-ack-on-next` job plus a manual sweep; #3842's hand sweep handed three in-flight external PRs a `modify/delete` conflict each; #3823's hand-authored sweep, computed at branch time against a guard that evaluates at merge time, lost the race to a fragment merged mid-flight and left `next` red for 24 consecutive pushes; #3875's timed sweeper workflow automated the remedy but could not merge its own PRs (three independent, deterministic defects — bad conventional-title match, wrong CI-lane classification, no auto-merge path). ADR-3942 ends the chain: the escape hatch is now a commit trailer scoped to the PR's own commits, so there is no shared file, no shared key namespace, and nothing to sweep — the fragment directory, the next-lane guard job, the scheduled sweep workflow and the standalone ack linter are all DELETED (named by ROLE rather than by filename on purpose: a backticked path here asserts a LIVE repo path and `check-glossary-refs.cjs` fails on one that does not exist, while `lint-removed-but-needed.cjs` additionally fails on a deleted file's bare BASENAME appearing anywhere it scans — and this predicate's generated projection lands in docs/, which it does scan. ADR-3942 carries the exact paths; it sits under docs/adr/, which that guard exempts as a historical record). cf `RULESET.WORKFLOW_SIZE_BUDGET`, `RULESET.AGENT_SIZE_BUDGET`; see `### Emitted Artifact Provenance`",
-      "line": 625
+      "line": 636
     },
     {
       "id": "RULESET.GENERATIVE-FIX",
       "klass": "RULESET",
       "value": "parallel implementations diverge silently when no parity test enforces equality at the test layer; for any new constant/array/parser shared between two parallel surfaces (two workflow surfaces, or a generated artifact and its hand-authored source), the same commit MUST add a parity assertion that fails when the two diverge; exemplar: tests/runtime-launcher-parity.test.cjs (asserts every workflow bash block uses the canonical gsd_run launcher)",
-      "line": 860
+      "line": 873
     },
     {
       "id": "RULESET.GH.AUTH.DEFAULT",
       "klass": "RULESET",
       "value": "source .envrc GITHUB_TOKEN before gh; exception=ambient allowed only when user explicitly says machine-only fallback",
-      "line": 655
+      "line": 666
     },
     {
       "id": "RULESET.HARNESS.test-memory-guard",
       "klass": "RULESET",
       "value": "~/.claude/hooks/test-memory-guard.sh fires on every Bash PreToolUse; if argv[0]∈{node|vitest|jest|mocha|tsx|ts-node|tap|ava|playwright|cypress} OR matches (npm|pnpm|yarn|bun) (run )?(t|test|tests|vitest|jest); blocks via hookSpecificOutput.permissionDecision=deny when sum(RSS of running matching procs, excluding tsserver|*-mcp|claude|Electron|...) ≥ 4 GiB OR when argv[0] basename matches a running process's argv[0]. Exception: node --version|-v|--help|-h|-p|-e are trivial probes and skip the check. Designed for a 24 GB Mac where prior accidental fan-out exhausted RAM",
-      "line": 901
+      "line": 917
     },
     {
       "id": "RULESET.MANIFEST-CANONICAL-KEY",
       "klass": "RULESET",
       "value": "docs/INVENTORY-MANIFEST.json has a single top-level key: families; ALL EIGHT families.* arrays (agents/commands/workflows/references/cli_modules/hooks flat, plus workflow_modes/workflow_steps nested — #2996, epic #1671 Phase 6.5) are canonical, consumed by test suites — tests/inventory-manifest-sync.test.cjs reads all eight, edit-phase/enh-2380/enh-2430 tests read commands+workflows; the six flat families are keyed by BARE BASENAME while the two nested families are keyed by <workflow>/<subdir>/<file> path, deliberately, because two workflows may each own a same-named step file and a basename key would silently drop one under a JSON-equality comparison; recursion is bounded at exactly one named subdirectory, never a general walk; the family tables live ONCE in scripts/gen-inventory-manifest.cjs and are IMPORTED by the test (the test formerly redeclared them, a DEFECT.GENERATIVE-FIX divergence that let a new family be verified by nobody while still reporting green); the old generated date field and the stale top-level workflows key are both gone; regen via node scripts/gen-inventory-manifest.cjs --write, AFTER build:lib; #3762 added the ROSTER half — tests/inventory-manifest-sync.test.cjs now also asserts every manifest entry has a hand-written row in docs/INVENTORY.md, via the pure matcher in tests/helpers/inventory-roster.cjs. Scope is the SIX FLAT families only, each searched inside its own `## ` section; workflow_steps/workflow_modes are DELIBERATELY exempt because docs/INVENTORY.md §\"Workflow Sub-Files\" is a shipped decision that they carry no hand-written per-file rows. Matching is whole-CELL-exact (never substring — the rostered host-integration-adapters/imperative-hook-bus.cjs must not satisfy the separate top-level hook-bus.cjs) and section-scoped (smart-entry.md and smart-entry.cjs are different families), EXCEPT commands, which match on the row's Source-column link to ../commands/gsd/<file>.md because the six ns-* namespace routers deliberately RENDER a name that is not their file stem (/gsd-workflow ← ns-workflow.md) — DEFECT.DISPLAY-VALUE-AS-IDENTITY. Landing the gate required backfilling 32 pre-existing unrostered surfaces on next",
-      "line": 636
+      "line": 647
     },
     {
       "id": "RULESET.PR-FLOW.docker-before-push",
       "klass": "RULESET",
       "value": "before ANY git push of any fix to any PR, run gsd-test (docker on the remote, mirrors ubuntu CI) and confirm exit 0. macOS-local node --test is NOT a substitute — many failures are platform-specific (path separators, case sensitivity, locale, fs semantics). Watchdog with Monitor on the output log; never set a sleep/timer and walk away. Source: user feedback 2026-05-16 — \"we don't set a timer we actively watch and record results in real time as possible\". SUPERSEDED 2026-07-17: 'confirm exit 0' is a false-green trap — piping/backgrounding can report exit 0 on a failed suite; gate on the verdict-line outcome:\"passed\" for the exact HEAD sha instead. See CLAUDE.md's gsd-test rule and the gsd-test-is-ref-based-commit-first predicate for the current, correct gating contract.",
-      "line": 903
+      "line": 919
     },
     {
       "id": "RULESET.PR-FLOW.templates-mandatory",
       "klass": "RULESET",
       "value": "every gh pr create|edit|gh issue create|edit MUST first invoke the gh-templates-first skill and Read (Read tool, not Bash cat — k321 read-tracking) the matching template in .github/. Apply ALL required sections; never write freeform bodies. Repo enforces this via gsd-pr-template-policy GitHub Action which flags any non-templated body — the bot allows the PR to stay open only because authors are contributors-or-higher, but the warning is a real complaint that must be cured. Source: user feedback 2026-05-16 (multi-message escalation) — \"the whole reason i have that github action is because you fucking blow through and ignore using the templates\"",
-      "line": 905
+      "line": 921
     },
     {
       "id": "RULESET.PR-SCOPE.one-concern-per-pr",
       "klass": "RULESET",
       "value": "split unrelated changes into separate PRs; cherry-pick doc changes to dedicated docs/ branch immediately, then force-push original to remove the commit",
-      "line": 638
+      "line": 649
     },
     {
       "id": "RULESET.SHARED-HELPERS-LINT-VS-TEST",
       "klass": "RULESET",
       "value": "when a lint script and test suite both implement same constant (CANONICAL_TOOLS) or parser (parseFrontmatter, executionContextRefs), extract to scripts/*-helpers.cjs required by both — silent divergence otherwise",
-      "line": 633
+      "line": 644
     },
     {
       "id": "RULESET.TESTS.CODERABBIT_FIX",
       "klass": "RULESET",
       "value": "prefer exported-function behavioral tests over source-grep; lint-no-source-grep rejects readFileSync source assertions without allow-test-rule",
-      "line": 662
+      "line": 673
     },
     {
       "id": "RULESET.TESTS.boundary-coverage",
       "klass": "RULESET",
       "value": "tests MUST exercise inputs at and near the threshold/limit, not only trivial-fit and trivial-overflow; pick inputs where N ∈ {limit-1, limit, limit+1} and where pre-trim/pre-check accumulators ≈ effective limit; \"very small\" and \"very large\" inputs alone do not constitute edge-case coverage and routinely miss off-by-one + reservation-accounting bugs",
-      "line": 605
+      "line": 616
     },
     {
       "id": "RULESET.TESTS.boundary-coverage.anti-pattern",
       "klass": "RULESET",
       "value": "test suites that pair budget:1_000_000 (trivially fits) with budget:1 (trivially overflows) and skip the boundary region; failure mode that shipped PR #3708 UNNEEDED_TRIM + FALSE_HARDFAIL regressions (commit 2df566ed, fixed bde1ae8f)",
-      "line": 608
+      "line": 619
     },
     {
       "id": "RULESET.TESTS.boundary-coverage.fixtures",
       "klass": "RULESET",
       "value": "for any code with budget/limit/quota/threshold parameter, test suite MUST include: (a) input where SUT estimate == limit exactly, (b) input where estimate == limit - 1, (c) input where estimate == limit + 1, (d) input where any internal reserve/safety constant pushes baseline within reserve-distance of limit (catches early-pressure firing)",
-      "line": 607
+      "line": 618
     },
     {
       "id": "RULESET.TESTS.clock-seam",
       "klass": "RULESET",
       "value": "concurrency logic must accept an optional {clock=Date} parameter; tests control time via t.mock.timers.enable(['Date']) + t.mock.timers.setTime(0) + t.mock.timers.tick(N); real OS scheduler races are not a permitted test pattern after ADR 456 (2026-05-28); real-race tests are deleted once deterministic seam tests cover the same logical path; clock.cjs realClock adds nowIso() (→ new Date(this.now()).toISOString()) and today() (→ nowIso().split('T')[0]) so all date-stamping in state.cjs routes through the seam; subprocess time-pin adapter: set GSD_TEST_MODE=1 + GSD_NOW_MS=<epoch-ms> in runGsdTools env to pin the date written by the SUT without touching real wall-clock (issue #474)",
-      "line": 612
+      "line": 623
     },
     {
       "id": "RULESET.TESTS.coderabbit-fix-prefer",
       "klass": "RULESET",
       "value": "behavioral tests (call exported fn, capture JSON, assert typed fields) over source-grep",
-      "line": 603
+      "line": 614
     },
     {
       "id": "RULESET.TESTS.delete-bad-tests",
       "klass": "RULESET",
       "value": "pass-always / vacuous-truth / source-grep / elapsed-time / real-race / permanent-allow-test-rule tests are DELETED and replaced with compliant tests in the same PR; not skipped, not commented out, not permanently exempted; replacement must cover the same logical path via typed-surface assertion or clock-seam pattern",
-      "line": 617
+      "line": 628
     },
     {
       "id": "RULESET.TESTS.diagnostics",
       "klass": "RULESET",
       "value": "after JSON.parse, assert output shape (Array.isArray(output.phases)) with raw-output-prefix diagnostics before .map() — prevents opaque TypeErrors when CLI output shape changes",
-      "line": 604
+      "line": 615
     },
     {
       "id": "RULESET.TESTS.escape-regex",
       "klass": "RULESET",
       "value": "new RegExp(\"prefix${var}\") must escapeRegex(var); phase-id.cjs exports escapeRegex (core.cjs re-export spine retired in epic #1267); phase IDs like 5.1 contain . which is metacharacter",
-      "line": 600
+      "line": 611
     },
     {
       "id": "RULESET.TESTS.eslint-harness",
       "klass": "RULESET",
       "value": "ADR 452 (2026-05-28): ESLint flat config + typescript-eslint + eslint-plugin-n + eslint-plugin-no-only-tests + local plugin at eslint-rules/ (repo root, NOT scripts/eslint-rules/); replaces scripts/lint-*.cjs regex scanners (fully removed in #632); all three test-rigor rules now ship at error in tests/**/*.test.cjs scope: local/no-source-grep and local/no-magic-sleep-in-tests promoted by #3313, local/no-elapsed-assertion promoted by #3331 once #3314 delivered its ADR-456 §(a) precondition (epic #1885 was subsumed into epic #3053 and closed stale before this promotion landed)",
-      "line": 618
+      "line": 629
     },
     {
       "id": "RULESET.TESTS.feedback-loop-convergence",
       "klass": "RULESET",
       "value": "when a feature's OUTPUT feeds back into its own INPUT (calibration, retry backoff, adaptive budgets, ratchets, any self-correcting signal), step-wise tests are NOT sufficient evidence of correctness: they assert `given X return Y` while the defect lives in the TRAJECTORY across iterations. Required: a closed-loop test that (a) drives the REAL end-to-end surface — not the pure core alone, since composition bugs live between surfaces — for N >= 2x the loop's window, (b) asserts convergence on the known-true value, (c) asserts the fixed point (an already-correct history must produce NO correction), and (d) asserts boundedness under an adversarial/oscillating history. Two defects shipped past a green ~26,800-test suite in epic #1952 for want of exactly this: calibration applied twice across two surfaces (factor^2, #2631) and calibration measured against its own corrected output so it oscillated to ~1.41 instead of converging on 2.0 (#2632). Every unit, boundary, property and round-trip test passed for both. HOW TO SPOT ONE (the detection tell, not a judgment call): the feature's own acceptance criterion carries a TEMPORAL QUANTIFIER — \"after N phases\", \"subsequent\", \"over time\", \"improves\", \"learns\", \"adapts\". That phrasing means the claim is about a TRAJECTORY, so a step-wise `given X return Y` test does not test the claim that was made. #1952's AC4 read \"After N phases, the error is computed and applied as a correction to SUBSEQUENT estimates\" — the tell was in plain sight and was still tested as a point. Survey of this repo (2026-07): estimation calibration is the ONLY true instance; size/mutation ratchets are exempt because they fail on both growth AND shrinkage (cannot self-satisfy), and retry ladders (node_repair_budget, plan_bounce_passes, provider_escalation) terminate rather than feed back. Test anchor: tests/estimate-loop-convergence.test.cjs",
-      "line": 606
+      "line": 617
     },
     {
       "id": "RULESET.TESTS.guard-toplevel-readFileSync",
       "klass": "RULESET",
       "value": "module-level const src = readFileSync(...) throws before any test() registers — wrap in try/catch in test() or use lazy load",
-      "line": 602
+      "line": 613
     },
     {
       "id": "RULESET.TESTS.mutation-runner",
       "klass": "RULESET",
       "value": "Stryker executes every shard through the OFFICIAL @stryker-mutator/tap-runner (testRunner:'tap'), never the built-in 'command' runner (#3915); 'command' is the one runner Stryker excludes from coverage analysis, which forced coverageAnalysis:'off' and made cost strictly linear in (mutants x whole-shard test time) — the frontmatter shard measured 1751s on run 33021042847 vs 212s for the next slowest. tap.testFiles is injected per shard via MUTATION_TEST_FILES (mutation.yml env <- matrix.tests <- scripts/mutation-matrix.cjs buildResult); resolveMutationTestFiles is the SINGLE fail-closed reader and existence-checks every entry, because the tap runner's findTestyLookingFiles resolves the list with glob() and a non-matching pattern yields an EMPTY list SILENTLY (a fast, confident, meaningless run). tap.forceBail is FALSE by measurement, not preference: 3 of 26 shard test files spawn subprocesses (config-schema.property, core-utils, feat-3881-yaml-parser-consequences) and bail fires on every KILLED mutant, so leaving it on kills processes mid-spawnSync and orphans their children; Stryker's separate disableBail still skips remaining FILES, which is most of the win. tap.nodeArgs and top-level buildCommand stay UNSET so no rebuild lands between mutation and test (ADR-457). Coverage granularity is per FILE, not per test (\"a test is always a test file\"), so the #2790 excludeTests bans on spawn-heavy integration files remain necessary and unchanged",
-      "line": 615
+      "line": 626
     },
     {
       "id": "RULESET.TESTS.mutation-score",
       "klass": "RULESET",
       "value": "Stryker runs incremental (--since origin/next) on ubuntu-latest/Node24 CI leg; default threshold 80% killed/total; surviving mutants in scope block merge unless path is listed in stryker.config.mjs with documented reason; treat surviving mutant as a failing test specification",
-      "line": 614
+      "line": 625
     },
     {
       "id": "RULESET.TESTS.mutation-score-denominator",
       "klass": "RULESET",
       "value": "the gated number is mutation-testing-metrics' mutationScore = totalDetected/totalValid, which counts NoCoverage in the denominator EXACTLY as Survived; both Stryker's own thresholds.break (core dist/src/reporters/mutation-test-report-helper.js) and scripts/check-mutation-score-ratchet.cjs read THAT field, which is what makes the #3915 coverageAnalysis 'off'->'perTest' switch score-neutral. NEVER gate on mutationScoreBasedOnCoveredCode — it EXCLUDES NoCoverage and inflates sharply under perTest (measured on a synthetic report: 8 killed/2 survived = 80 and 80; 8 killed/2 noCoverage = 80 and 100), so swapping to the better-sounding field would make every minScore floor trivially satisfiable and the gate decorative. Under the pre-#3915 coverageAnalysis:'off' the two fields were ALWAYS identical (noCoverage was structurally 0), which is why nothing had ever pinned the choice; tests/mutation-score-ratchet.test.cjs now pins it with a non-vacuity assertion that the two numbers genuinely diverge",
-      "line": 616
+      "line": 627
     },
     {
       "id": "RULESET.TESTS.no-dead-regex-in-includes",
       "klass": "RULESET",
       "value": "src.includes(\"foo.*bar\") is always false — .* is regex metacharacter not wildcard; use new RegExp(...).test(src) or delete",
-      "line": 601
+      "line": 612
     },
     {
       "id": "RULESET.TESTS.no-duplicate-fold-marker",
       "klass": "RULESET",
       "value": "local/no-duplicate-fold-marker ESLint AST rule (eslint-rules/no-duplicate-fold-marker.cjs, #3271) reports the 2nd and every later __foldDescribe(\"folded:<marker> ...\") call carrying a marker already seen in the SAME file, naming the first occurrence's line; error in tests/**/*.cjs. The key is the WHITESPACE-delimited token after folded:, NOT a [a-z0-9-]* slice — a slice truncates at \".\" and collides feat-443-effort-fast-mode.integration with feat-443-effort-fast-mode (two distinct suites coexisting in tests/model-resolver.test.cjs), and NOT the whole title, so a re-fold under a different batch label (\"B1 #1970\" vs \"B5 #1975\") is still caught. Deliberately silent on: a __foldDescribe title with no folded: prefix (the alias is reused for one ordinary describe in tests/review-default-reviewers-workflow.test.cjs), a plain describe(), a non-literal title, and the same marker in two DIFFERENT files (the defect class is intra-file).",
-      "line": 597
+      "line": 608
     },
     {
       "id": "RULESET.TESTS.no-duplicate-fold-marker.why",
       "klass": "RULESET",
       "value": "consolidation epic #1969 folds are self-contained blocks, so a second verbatim copy parses, registers and PASSES twice — nothing reports it; #3271 found 25 such copies (~5,800 lines) in tests/install.test.cjs (18), tests/install-minimal-hooks.test.cjs (5) and tests/install-write-confinement.test.cjs (2), all from one stale-base re-application in 6d072435d (#1975 re-applying #1970's hunks, 2026-07-03). Ref DEFECT.GENERATIVE-FIX: the two copies drift apart silently when a contributor fixes one and leaves the other asserting the old behavior, with the suite still green.",
-      "line": 598
+      "line": 609
     },
     {
       "id": "RULESET.TESTS.no-source-grep",
       "klass": "RULESET",
       "value": "local/no-source-grep ESLint AST rule (eslint-rules/no-source-grep.cjs) rejects readFileSync of a source .cjs/.js/.ts path bound to a var later hit with .includes()/.match()/.startsWith()/.endsWith()/.indexOf()/.search(); error in tests/**/*.test.cjs, warn in gsd-core/bin/**/*.cjs + scripts/**/*.cjs (ADR 452 retired the old regex script, removed for good in #632)",
-      "line": 594
+      "line": 605
     },
     {
       "id": "RULESET.TESTS.no-source-grep.exemption",
       "klass": "RULESET",
       "value": "// allow-test-rule: <runtime-contract-is-the-product> with one-line justification; reserved for tests where the file content IS the product surface (STATE.md, config.toml, hooks.json, agent .md). Migration to typed-IR parser tracked in #2974.",
-      "line": 595
+      "line": 606
     },
     {
       "id": "RULESET.TESTS.no-source-grep.tmp-file-traps",
       "klass": "RULESET",
       "value": "reading tmp files written by the SUT in tests still trips lint; round-trip through CLI (e.g. frontmatter get) instead of readFileSync+.includes()",
-      "line": 596
+      "line": 607
     },
     {
       "id": "RULESET.TESTS.no-timing-assertion",
       "klass": "RULESET",
       "value": "do not assert on wall-clock elapsed time (Date.now() delta, performance.now(), process.hrtime() comparison); such assertions test the host machine not the SUT and flake on loaded CI runners; enforcement: local/no-elapsed-assertion ESLint rule, error (promoted by #3331 once #3314 delivered the ADR-456 §(a) reachability rule + deterministic backfill precondition); canonical replacement: clock-seam pattern with node:test mock.timers",
-      "line": 611
+      "line": 622
     },
     {
       "id": "RULESET.TESTS.property-based-testing",
       "klass": "RULESET",
       "value": "modules implementing parsing / transformation / budget-limit / bijective contracts must include at least one fast-check (fc) property test asserting a domain invariant; invariant categories: round-trip, monotonicity, boundary-containment, idempotency; property tests live in *.test.cjs alongside unit tests; CI signal: Stryker mutation score below 80% blocks merge",
-      "line": 613
+      "line": 624
     },
     {
       "id": "RULESET.TRIAGE-EXISTING-WORK",
       "klass": "RULESET",
       "value": "before writing agent brief for confirmed bug, check (1) local branches git branch -a | grep <issue>, (2) untracked/modified files on that branch, (3) stash, (4) open PRs with matching head branch — recover existing work rather than re-implement",
-      "line": 640
+      "line": 651
     },
     {
       "id": "RULESET.WORKFLOW.COVERAGE-METADATA",
       "klass": "RULESET",
       "value": "#1602 SUMMARY frontmatter `coverage:` block (list of {id,description,requirement?,verification:[{kind∈unit|integration|e2e|automated_ui|manual_procedural|other, ref, status∈pass|fail|unknown}],human_judgment:bool,rationale?}) is the per-deliverable RTM consumed DETERMINISTICALLY by verify-work extract_tests via `gsd-tools uat classify-coverage --summary <f>` (src/coverage.cts → bin/lib/coverage.cjs). AUTHORING: execute-plan create_summary populates it from task <verify> results; every deliverable MUST be classified; fail-safe default = human_judgment:true + rationale. CLASSIFY CONTRACT: auto-pass (skip human) ONLY when human_judgment===false (strict boolean) AND verification non-empty AND every status==='pass' AND zero validation errors — else PRESENT to human. mode:legacy (no block) ⇒ byte-identical prose `## Accomplishments` fall-through; `coverage: []` ⇒ mode:coverage, zero entries (single-confirmation). Frozen IR: MODE/PRESENT_REASON/ERROR_CODE enums locked by tests/coverage-metadata-parser.test.cjs. extractFrontmatter CANNOT parse it (scalars-only `-` items) → dedicated parser, sibling of parseMustHavesBlock. Asymmetry by design: false-negative=redundant prompt (status quo); false-positive=shipped bug UAT existed to catch",
-      "line": 629
+      "line": 640
     },
     {
       "id": "RULESET.WORKFLOW_EXECUTE_END_TO_END",
       "klass": "RULESET",
       "value": "standard for single-workflow commands is \"Execute end-to-end.\" (no bolded **Follow the X workflow** fragments); flag-dispatch routing uses \"execute the X workflow end-to-end.\" in routing bullets — convention verified live across ~20 commands/gsd/*.md files; no ADR currently documents this specific phrasing rule (ADR-0002 covers the adjacent but distinct command-contract/@-ref-resolution seam, not this convention)",
-      "line": 628
+      "line": 639
     },
     {
       "id": "RULESET.WORKFLOW_EXECUTION_CONTEXT",
       "klass": "RULESET",
       "value": "@-ref in commands/gsd/*.md must resolve to an existing file on disk; regression test in tests/docs-update.test.cjs (folds former \\`bug-3135-capture-backlog-workflow\\`, consolidation epic #1969); INVENTORY.md row + INVENTORY-MANIFEST.json families.workflows must stay in sync; \"Invoked by\" attribution must move when a flag absorbs a micro-skill",
-      "line": 627
+      "line": 638
     },
     {
       "id": "RULESET.WORKFLOW_FILE_NAMES",
       "klass": "RULESET",
       "value": "workflow files use hyphens; <step name=\"...\"> XML attributes must match (extract-learnings not extract_learnings); tests should pin exact hyphenated name",
-      "line": 626
+      "line": 637
     },
     {
       "id": "RULESET.WORKFLOW_MARKDOWN.FENCES",
       "klass": "RULESET",
       "value": "preserve opening language fence when editing shell snippets in workflow markdown; malformed fence creates fresh CR threads (MD040)",
-      "line": 622
+      "line": 633
     },
     {
       "id": "RULESET.WORKFLOW_SIZE_BUDGET",
       "klass": "RULESET",
       "value": "workflow size enforcement (#1074; BYTES not lines per #717; LF-normalized per #683) = differential attribution size ratchet (PRIMARY anti-creep since #2724/ADR-2719 §4: tests/emitted-attribution.test.cjs's real-tree test reports growth in any gsd-core/workflows/*.md with its exact byte delta vs `next`, no committed snapshot, requires an `Emitted-Drift-Ack-Growth:` commit trailer on the PR's own commits (ADR-3942, superseding ADR-2719 §3's fragment model — key is the bare filename, reason follows ` — `)) + loose tier hard caps (outer red lines, NEVER raised on approach: XL<=98304 / LARGE<=61440 / DEFAULT<=40960) + discuss-phase<32000; a file that grew fails the differential guard — add an ack entry naming the file and reason, justify the growth in the PR (or extract LAZILY-loaded content; eager @-imports don't reduce loaded context); crossing a hard cap means EXTRACT, not bump. The prior per-file baseline (tests/workflow-size-baseline.json, `npm run size:baseline`) is REMOVED by #2724. Its new-file cap (ADR-1610 Decision point 3, un-baselined files <=32768, the Codex anchor) is REVIVED inside the differential's size ratchet itself (`NEW_FILE_CAP` in tests/helpers/emitted-diff.cjs) rather than lost: \"not yet baselined\" is exactly \"present in sizeCurrent, absent from sizeBaseline\", a signal the ratchet already computes for its own reasons. NOT ack-able — same as the tier hard caps, the fix is extraction. Narrower than the original: this check cannot see XL/LARGE tiering (tests/workflow-size-budget.test.cjs's classification, invisible to the pure differential module), so a legitimately large NEW file must extract rather than tier in, one release earlier than an existing file would need to — a disclosed, deliberate simplification",
-      "line": 623
+      "line": 634
+    },
+    {
+      "id": "SEAM.capability-activation-precedence-owner.enforced-by",
+      "klass": "SEAM",
+      "value": "test:tests/capability-precedence-parity.test.cjs",
+      "line": 411
+    },
+    {
+      "id": "SEAM.capability-activation-precedence-owner.owns",
+      "klass": "SEAM",
+      "value": "the config-key four-level precedence walk (loadConfig result → workstream config.json → root config.json → registry.configSchema default → absent), owned solely by src/capability-activation.cts",
+      "line": 410
+    },
+    {
+      "id": "SEAM.git-query-readonly-seam.enforced-by",
+      "klass": "SEAM",
+      "value": "test:tests/git-base-branch.test.cjs",
+      "line": 206
+    },
+    {
+      "id": "SEAM.git-query-readonly-seam.owns",
+      "klass": "SEAM",
+      "value": "bounded, never-throw git repository introspection — base-branch detection, worktree-info detection, phase change-set detection",
+      "line": 205
+    },
+    {
+      "id": "SEAM.phase-locator-milestone-enum.enforced-by",
+      "klass": "SEAM",
+      "value": "test:tests/phase-locator.test.cjs",
+      "line": 39
+    },
+    {
+      "id": "SEAM.phase-locator-milestone-enum.owns",
+      "klass": "SEAM",
+      "value": "listMilestonePhaseDirs(phasesDir, opts) is the single canonical owner of milestone-scoped phase-directory enumeration (ADR-3180 Decision 1, Phase 3, #3185)",
+      "line": 38
+    },
+    {
+      "id": "SEAM.shellcmdproj-win-binary-resolution.enforced-by",
+      "klass": "SEAM",
+      "value": "lint-rule:no-private-binary-resolution",
+      "line": 884
+    },
+    {
+      "id": "SEAM.shellcmdproj-win-binary-resolution.owns",
+      "klass": "SEAM",
+      "value": "Windows binary resolution (resolveExecutableBinary, projectSpawnInvocation) — which file a declared command name actually names, and cmd.exe mediation",
+      "line": 883
+    },
+    {
+      "id": "SEAM.verification-isphasecomplete.enforced-by",
+      "klass": "SEAM",
+      "value": "test:tests/verification-status.test.cjs",
+      "line": 30
+    },
+    {
+      "id": "SEAM.verification-isphasecomplete.owns",
+      "klass": "SEAM",
+      "value": "isPhaseComplete(phaseDir, deps?) is the single canonical owner of \"is phase P complete?\" (ADR-3180 §7.4, issue #3186)",
+      "line": 29
+    },
+    {
+      "id": "SEAM.worktree-safety-policy.enforced-by",
+      "klass": "SEAM",
+      "value": "test:tests/worktree-safety.test.cjs",
+      "line": 701
+    },
+    {
+      "id": "SEAM.worktree-safety-policy.owns",
+      "klass": "SEAM",
+      "value": "Worktree Safety Policy Module — resolveWorktreeContext, parseWorktreePorcelain, planWorktreePrune, executeWorktreePrunePlan, W017 classification (see WORKTREE.SEAM.* above for full interface/invariant detail)",
+      "line": 700
     },
     {
       "id": "SESSION.2026-05-05",
       "klass": "SESSION",
       "value": "[PRED.k320..k331 introduced; DEFECT.SOURCE-GREP-IN-NEW-TESTS, DEFECT.CHANGESET-PR-FIELD-DRIFT, DEFECT.PHASE-DIR-PREFIX-DRIFT, DEFECT.PROMPT-INJECTION-SCAN-COLLISION; ADR-0002 thin-wrapper pattern findings folded into RULESET.WORKFLOW_*]",
-      "line": 891
+      "line": 907
     },
     {
       "id": "SESSION.2026-05-05.sdk-bridge",
       "klass": "SESSION",
       "value": "PR #3158 SDK Runtime Bridge — observability isolation rule; strict-mode dispatchMode reporting invariant; transport decision ordering (guard before event emission); folded into Dispatch Policy Module glossary",
-      "line": 892
+      "line": 908
     },
     {
       "id": "SESSION.2026-05-09",
       "klass": "SESSION",
       "value": "[8-PR triage wave, 7 merged + 1 subsumed; META.RULE.* introduced; WAVE.LESSON.* captured; k320/k322/k323/k326/k331 evidence; AI Ops Memory predicate format established]",
-      "line": 893
+      "line": 909
     },
     {
       "id": "SESSION.2026-05-10",
       "klass": "SESSION",
       "value": "[ai-ops memory consolidation; release-notes standard taxonomy + templates; RELEASE-NOTES.* predicates introduced]",
-      "line": 894
+      "line": 910
     },
     {
       "id": "SESSION.2026-05-13",
       "klass": "SESSION",
       "value": "[Shell Command Projection Module expansion (#3465-#3468); ADR-0009 superseded; new exports for subprocess dispatch and platform file I/O; phase-gated migration plan; PR #3464 three-gate invariant CI+CR+unresolved=0; PR #3470 stash-include-untracked rebase pattern]",
-      "line": 895
+      "line": 911
     },
     {
       "id": "SESSION.2026-05-14",
       "klass": "SESSION",
       "value": "[#3095/PR #3490 EXEC.CLASSIFY.* introduced (Anthropic/Copilot/Codex/Gemini [runtime removed #1928] cross-runtime rate-limit sentinel coverage); #3489/PR #3499 DEFECT.STATE-TRAMPLE.idempotency-oracle (STATE.md current_phase field is oracle for state.complete-phase); #3488/PR #3501 DAG resolver same-phase short-form depends_on (shortFormToId index added to sdk/src/query/phase.ts); #3491/PR #3502 DEFECT.NESTED-GIT-INIT (gitWorktreeInfoInternal helper); #3493/PR #3500 extractCurrentMilestone generic Phase Details continuation past planned-milestone siblings; #3503/PR #3504 DEFECT.PATH-SUBSTRING-CHECK (trailing-slash anchor for homedir checks); #3346/PR #3505 codex AoT TOML leaf-key via extractFlatHookEventName; #3506/PR #3507 label-scoped stale-bot sub-job pattern; multi-PR triage operational lessons folded into PROC.TRIAGE.*; #3508 DEFECT.AGENT-ISOLATION-SILENT-FAIL; gsd-test image-missing auto-build (locally-built image via embedded heredoc Dockerfile); refined PRED.k322 threshold to 3 PRs/<10min]",
-      "line": 896
+      "line": 912
     },
     {
       "id": "SESSION.2026-05-15",
       "klass": "SESSION",
       "value": "[#3537/PR #3538 DEFECT.PHASE-REGEX-FANOUT — phaseMarkdownRegexSource promoted to core.cjs and wired to 7 sites; parity-style regression test established as DEFECT.GENERATIVE-FIX exemplar; trek-e/gsd-test-runner#1 filed for DEFECT.GSD-TEST-MIRROR-POISONED — chown-back-before-exec legacy gap (poisoned holodeck mirror unstuck via authorized docker chown to remote 1000:1000); RULESET.PR-FLOW.* codified from project CLAUDE.md load-bearing rule; first dispatch under run-tests-before-create held cleanly (PR #3520 worker stopped on Docker exit 12 infra failure, orchestrator opened PR after unblock); CONTEXT.md refactored from 882 lines of mixed prose+predicates into ~500 lines of pure-predicate format with chronological session log]",
-      "line": 897
+      "line": 913
     },
     {
       "id": "SESSION.2026-05-15.parallel-fix-dispatch",
       "klass": "SESSION",
       "value": "[#3542/PR #3546 prohibit git stash family in executor agents (shared refs/stash across worktrees); #3541/PR #3547 non-TTY resolution for installer prompt-user actions (default remove for SDK build artifacts, keep for skills/gsd-*/SKILL.md); #3545 filed for gsd-test-summary concurrent /tmp output collision; new predicates DEFECT.HOOK-OVER-ENFORCEMENT.read-tool-tracking, DEFECT.GSD-TEST-CONCURRENT-OUTPUT-COLLISION, DEFECT.SUBAGENT-LONG-RUNNING-BG-STALL, DEFECT.AGENT-RETIRED-SLASH-SYNTAX-DRIFT, PROC.PARALLEL-FIX-DISPATCH; agent-trust-but-verify caught /gsd-update retired-syntax comment slip in #3541 implementation before PR open]",
-      "line": 898
+      "line": 914
     },
     {
       "id": "SESSION.2026-05-16",
       "klass": "SESSION",
       "value": "[multi-PR triage wave (#3577/3581/3640/3641/3642/3648/3649/3637/3639). Established global PreToolUse hook ~/.claude/hooks/test-memory-guard.sh denying new node/test spawns when sum(RSS of node|vitest|jest|...) >= 4 GiB on the 24 GB Mac OR when a same-runner process is already in argv[0] — hard deny via hookSpecificOutput.permissionDecision=deny. PR #3577 fix: revert config-ensure-section dispatch to CJS cmdConfigEnsureSection (SDK author wrote single-section semantics under a name whose legacy callers expect full-default config init); plus 3 SDK parity carve-outs (configNewProject defaults align with sdk/shared/config-defaults.manifest.json, return relative .planning/config.json path, drop quotes from Unknown config key, lead malformed-JSON error with \"Failed to read config.json:\"). PR #3649 fix: chunk node --test spawn at 28K argv ceiling (Windows CreateProcess lpCommandLine cap 32,767 was instantly aborting unchunked spawn of 546 paths). Chunking fix surfaced 14 pre-existing Windows-only test bugs (4010 pass / 14 fail; vs 0/0 before — entire suite was un-runnable on Windows). PRs #3639 + #3637 confirmed unable to stand alone (legitimately depend on Phase 6 scaffolding only present on feat/3575-enforcement-hardening) — user decision: cherry-pick into #3577 and close. Five other PRs each had ≤1 unresolved CR thread of the changeset-pr-number / null-vs-throw / implicit-Claude-runtime / docs-stale-guidance / hardcoded-tests-path family — all quick wins. New predicates: DEFECT.SDK-PORT-NAME-COLLISION, DEFECT.WINDOWS-ARGV-OVERFLOW, DEFECT.STACKED-PR-CANNOT-STAND-ALONE, DEFECT.CANARY-VERSION-LEAK, DEFECT.GSD-TEST-HOST-MID-RUN-DEATH, RULESET.HARNESS.test-memory-guard, RULESET.PR-FLOW.docker-before-push, RULESET.PR-FLOW.templates-mandatory]",
-      "line": 899
+      "line": 915
     },
     {
       "id": "WAVE.LESSON.agent-narrative-unreliable",
       "klass": "WAVE",
       "value": "k095/k324 confirmed at scale: 5 of 8 agents terminated mid-monitor with stale claims requiring direct verification",
-      "line": 853
+      "line": 866
     },
     {
       "id": "WAVE.LESSON.changelog-policy-violation-multiplier",
       "klass": "WAVE",
       "value": "brief contradicting CONTRIBUTING.md's changelog-fragment policy (\"CHANGELOG Entries — Drop a Fragment\" section) produced violations on 5 of 8 PRs (#3300, #3302, #3304, #3305, #3308); k326 + k320 capture",
-      "line": 850
+      "line": 863
     },
     {
       "id": "WAVE.LESSON.cr-throttle-burst-correlation",
       "klass": "WAVE",
       "value": "8 PRs in <15min triggered k322 sustained-throttle on multiple PRs (#3306 worst case)",
-      "line": 851
+      "line": 864
     },
     {
       "id": "WAVE.LESSON.k101-still-trips",
       "klass": "WAVE",
       "value": "even after CONTEXT.md k101 reinforcement, agent of record posted self-PR comment on close; k331 adds explicit close-time literal-instruction guard",
-      "line": 854
+      "line": 867
     },
     {
       "id": "WAVE.LESSON.sibling-audit-overlap",
       "klass": "WAVE",
       "value": "k015-family parallel dispatch on #3297 + #3298 produced k323 add-backlog.md cross-PR overlap",
-      "line": 852
+      "line": 865
     },
     {
       "id": "WORKSTREAM.INVARIANT.migrate-name",
       "klass": "WORKSTREAM",
       "value": "must normalize through canonical slug policy",
-      "line": 676
+      "line": 687
     },
     {
       "id": "WORKSTREAM.INVARIANT.slug-contract",
       "klass": "WORKSTREAM",
       "value": "all .planning/workstreams/<name> must be addressable by set/get/status/complete",
-      "line": 677
+      "line": 688
     },
     {
       "id": "WORKSTREAM.NAME.POLICY.cjs-module",
       "klass": "WORKSTREAM",
       "value": "gsd-core/bin/lib/workstream-name-policy.cjs owns toWorkstreamSlug + active-name/path-segment validation",
-      "line": 692
+      "line": 705
     },
     {
       "id": "WORKSTREAM.POINTER.SEAM.cjs-module",
       "klass": "WORKSTREAM",
       "value": "gsd-core/bin/lib/active-workstream-store.cjs owns read/write self-heal for .planning/active-workstream",
-      "line": 693
+      "line": 706
     },
     {
       "id": "WORKSTREAM.REGRESSION.test-anchor",
       "klass": "WORKSTREAM",
       "value": "tests/workstream.test.cjs::normalizes --migrate-name to a valid workstream slug",
-      "line": 678
+      "line": 689
     },
     {
       "id": "WORKTREE.SEAM.caller-rule",
       "klass": "WORKTREE",
       "value": "verify.cjs must consume inspectWorktreeHealth for W017 classification; no ad-hoc porcelain parsing in callers",
-      "line": 686
+      "line": 697
     },
     {
       "id": "WORKTREE.SEAM.current",
       "klass": "WORKTREE",
       "value": "Worktree Safety Policy Module",
-      "line": 670
+      "line": 681
     },
     {
       "id": "WORKTREE.SEAM.decision-1",
       "klass": "WORKTREE",
       "value": "retain non-destructive default; destructive path only as explicit future opt-in scaffold",
-      "line": 674
+      "line": 685
     },
     {
       "id": "WORKTREE.SEAM.default-prune-policy",
       "klass": "WORKTREE",
       "value": "metadata_prune_only (non-destructive)",
-      "line": 673
+      "line": 684
     },
     {
       "id": "WORKTREE.SEAM.files",
       "klass": "WORKTREE",
       "value": "[gsd-core/bin/lib/worktree-safety.cjs]",
-      "line": 671
+      "line": 682
     },
     {
       "id": "WORKTREE.SEAM.interface",
       "klass": "WORKTREE",
       "value": "[resolveWorktreeContext, parseWorktreePorcelain, planWorktreePrune, executeWorktreePrunePlan, planWorktreeRecordAgent, cmdWorktreeRecordAgent]",
-      "line": 672
+      "line": 683
     },
     {
       "id": "WORKTREE.SEAM.invariant",
       "klass": "WORKTREE",
       "value": "parser failure must degrade to metadata_prune_only and never escalate to destructive removal",
-      "line": 684
+      "line": 695
     },
     {
       "id": "WORKTREE.SEAM.inventory-interface",
       "klass": "WORKTREE",
       "value": "[listLinkedWorktreePaths, inspectWorktreeHealth]",
-      "line": 685
+      "line": 696
     },
     {
       "id": "WORKTREE.SEAM.inventory-snapshot",
       "klass": "WORKTREE",
       "value": "snapshotWorktreeInventory(repoRoot,{staleAfterMs,nowMs}) is canonical linked-worktree health snapshot for callers",
-      "line": 688
+      "line": 699
     },
     {
       "id": "WORKTREE.SEAM.test-anchor-w017",
       "klass": "WORKTREE",
       "value": "tests/orphan-worktree-detection.test.cjs + tests/worktree-safety.test.cjs",
-      "line": 687
+      "line": 698
     },
     {
       "id": "WORKTREE.SEAM.test-anchors",
       "klass": "WORKTREE",
       "value": "[resolveWorktreeContext:has_local_planning|linked_worktree|not_git_repo|main_worktree, planWorktreePrune:git_list_failed|worktrees_present|no_worktrees|parser_throw_fallback, executeWorktreePrunePlan:missing_plan|skip_passthrough|unsupported_action|metadata_prune_only]",
-      "line": 683
+      "line": 694
     },
     {
       "id": "WORKTREE.SEAM.test-policy",
       "klass": "WORKTREE",
       "value": "cover all decision branches in policy module before changing prune behavior",
-      "line": 682
+      "line": 693
     }
   ],
   "duplicates": []

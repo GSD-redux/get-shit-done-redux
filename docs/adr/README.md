@@ -258,6 +258,7 @@ These govern the system as it stands. Cite these.
 | [ADR-3473](3473-enforcement-by-construction.md) | Enforcement by Construction — One Owner per Invariant | Accepted | — |
 | [ADR-3574](3574-install-materialization-primitives.md) | Install materialization shares primitives, not one writer | Accepted | — |
 | [ADR-3625](3625-vetted-spawn-library-evaluation.md) | The platform seam keeps its own Windows binary resolution rather than adopting a spawn library | Accepted | — |
+| [ADR-3626](3626-context-md-seam-claim-gate.md) | CONTEXT.md seam claims carry a checkable enforcement pointer | Accepted | — |
 | [ADR-3660](3660-runtime-artifact-layout-module.md) | Runtime Artifact Layout Module owns per-runtime artifact placement | Accepted | [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) |
 
 ### Proposed
