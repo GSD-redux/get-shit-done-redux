@@ -83,7 +83,18 @@ function isRootPlanFile(fileName: string): boolean {
   // fallback so legacy `<N>-PLAN-<NN>-SUMMARY.md` names (which contain the
   // substring "PLAN") are not double-counted as plans. (#500 RC2)
   if (isRootSummaryFile(fileName)) return false;
-  return /\.md$/i.test(fileName) && /PLAN/i.test(fileName);
+  // #3741: the PLAN token must be DELIMITED — anchored at the start or after
+  // a hyphen, and followed only by an optional `-<digits>…` suffix before
+  // `.md` (the `…` keeps the legacy slug form `3-PLAN-01-setup.md` that
+  // gsd-plan-phase writes, per #3128). A bare substring test counted
+  // REPLAN-INPUTS / PLANNING-INPUTS / PLANNING-NOTES as plans, inflating
+  // planCount and STATE.md's derived total_plans. Delimited keeps the
+  // fallback's deliberate permissiveness for legacy single-token names
+  // (`plan.md`, `Plan.md`, `01-PLAN-02.md`, `3-PLAN-01-setup.md`) while
+  // excluding any name where PLAN is merely embedded in a larger word
+  // (REPLAN, PLANNING) — the same anchoring discipline isNestedPlanFile
+  // already applies.
+  return /(^|-)PLAN(-\d+.*)?\.md$/i.test(fileName);
 }
 
 function isNestedPlanFile(fileName: string): boolean {
@@ -105,7 +116,7 @@ function isNestedSummaryFile(fileName: string): boolean {
  * `allPlanFiles` ENTRY (root form bare, nested form `plans/`-prefixed, exactly
  * as those arrays store them) — root `<phase>-<NN>-PLAN.md`/bare `PLAN.md`,
  * or nested `plans/PLAN-<NN>....md`/`plans/<x>-PLAN-<NN>....md` — WITHOUT
- * `isRootPlanFile`'s loose `/\.md$/i && /PLAN/i` fallback.
+ * `isRootPlanFile`'s loose delimited-PLAN fallback.
  *
  * The `plans/` prefix check is load-bearing, not cosmetic: `isNestedPlanFile`
  * matches ANY basename containing `-PLAN-<digits>...md` with no anchor

@@ -20,6 +20,7 @@ const {
 } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
 const { normalizePhaseName } = require('../gsd-core/bin/lib/phase-id.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 // ─── extractFrontmatter ─────────────────────────────────────────────────────
 
@@ -2556,8 +2557,24 @@ function extractStep(content, stepName) {
  * if no fenced bash block is found.
  */
 function extractFirstBashBlock(stepText) {
-  const m = /```bash\r?\n([\s\S]*?)```/.exec(stepText);
-  return m ? m[1] : null;
+  const lines = stepText.split(/\r?\n/);
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    if ((block.infoString || '').trim() !== 'bash') continue;
+    return lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+  }
+  return null;
+}
+
+/** Remove the FIRST ```bash ... ``` fenced block (fence lines included) from `stepText`. */
+function stripFirstBashBlock(stepText) {
+  const lines = stepText.split(/\r?\n/);
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    if ((block.infoString || '').trim() !== 'bash') continue;
+    return lines.slice(0, block.openLineIdx).concat(lines.slice(block.closeLineIdx + 1)).join('\n');
+  }
+  return stepText;
 }
 
 /**
@@ -2641,7 +2658,7 @@ describe('#2847: gsd-planner.md validate_plan step BINDS --schema to gap_closure
     // The SAME variable name the bash block reads must appear in the step's prose
     // (outside the bash block) — otherwise the "binding" is a variable nothing
     // ever explains how to set, which is not meaningfully better than a literal.
-    const proseOutsideBash = validateStep.replace(/```bash\r?\n[\s\S]*?```/, '');
+    const proseOutsideBash = stripFirstBashBlock(validateStep);
     assert.ok(
       proseOutsideBash.includes(`$${varName}`) || proseOutsideBash.includes(`\`$${varName}\``),
       `step prose must explain how $${varName} is set — the bash block references it but nothing binds it`

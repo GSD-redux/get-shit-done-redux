@@ -113,7 +113,7 @@ Sequencing inside Phase 1 that the platform forces:
 1. Author the contiguous protocol section and its extracted step file — this is what satisfies admission gate (1).
 2. Only then admit the atom across grammar, predicate, fact and router, and regenerate the section manifest.
 3. Update the tests that assert on `debug.md`'s literal text (`tests/debug-session-management.test.cjs`, `tests/debug-session-manager-commit.test.cjs`, `tests/claude-skills-migration.test.cjs`) in the same PR; regenerate `tests/fixtures/install-tree/*.json` via `npm run regen:derived`.
-4. Add a per-PR `tests/emitted-drift-acks/` fragment for `debug.md`'s growth, keyed on the bare filename.
+4. Add an `Emitted-Drift-Ack-Growth:` commit trailer for `debug.md`'s growth, keyed on the bare filename (ADR-3942; was a `tests/emitted-drift-acks/` fragment before that).
 
 ## Consequences
 

@@ -334,6 +334,16 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 > **The guard roster names no §8.3 casualty.** Its only §8.3-tagged row is `local/no-adhoc-regex-escape`, marked *widened*, not retired. Nothing is retired by this rule.
 >
 > **What this means for the phase:** unlike §8.2, this section is genuinely unbuilt — the rewrites it asserts have not happened. It is a work list, not a conformance check, and it should be read that way.
+>
+> **ANSWER, 2026-08-27 (#3897, carrying Phase 6's remaining rungs) — rungs 2–4 built; re-measured, not inherited.**
+>
+> | As corrected above | Now measured |
+> |---|---|
+> | "`resolveRuntime` reads no marker at all… PR #3382 … CLOSED and unmerged" | **Fixed.** `resolveRuntime` (`src/runtime-slash.cts`) now resolves `GSD_RUNTIME > config.runtime > install marker > 'claude'`. The four hand-rolled `readInstallRuntimeMarker` copies (`model-resolver.cts` + two in `gsd-cursor-subagent-start.js` + one in `gsd-agent-isolation-guard.js`) are consolidated into one module-level-cached reader owned by `runtime-slash.cts`; the marker's raw contents are routed through the same `resolveRuntimeNameFromCandidates` normalization the env rung uses, never trusted verbatim. Mined from #3382 per this ADR's own direction, not re-derived. |
+> | "`generateCodexAgentToml` still reads `CODEX_AGENT_SANDBOX[agentName] \|\| 'read-only'`… `checkAgentsInstalled` has no `sandbox_mode` assertion" | **Fixed, with a qualification.** `CODEX_AGENT_SANDBOX` (11 entries) and the silent `\|\| 'read-only'` fallback are deleted; `sandbox_mode` now derives from each role's declared `tools:` frontmatter (`Write`/`Edit` present → `workspace-write`, else `read-only`). Emitted TOML is byte-identical for all 35 roles today: 17 roles that would derive broader are held at `read-only` behind an explicit, self-invalidating hold list (`CODEX_SANDBOX_HOLDS`) pending a decision on whether Codex enforces `sandbox_mode`. The 17th was surfaced only by review: the tools reader was single-line, so a YAML list-form `tools:` block returned just its first item and `gsd-nyquist-auditor`'s declared `Write`/`Edit` were read as an absence. **Deriving from a declaration you cannot parse is not deriving** — the reader now handles both shapes, and the role joined the hold list rather than the count being left flattering. **That conflict was surfaced rather than resolved silently:** §8.3's own criterion asks both that the sandbox *derive from the declared tool contract* and that *no role gain a broader sandbox*, and those cannot both hold — a faithful derivation widens 17 roles that the deleted map never listed and that fell through its silent `|| 'read-only'` default. The resolution taken is derive-and-hold: the derivation becomes the single owner of the rule now, and each hold is released as its role's enforcement question is answered. A hold is reversible; a widened sandbox that turns out to be enforced is not. `checkAgentsInstalled` (`src/agent-install-check.cts`) still checks presence only; the semantic assertion is a sibling function, `checkCodexSandboxPosture`, wired into `validate agents`'s `sandbox_posture` field — report-only, exit 0, matching the pre-existing `codex_posture` precedent, not folded into `checkAgentsInstalled` itself. |
+> | "The `shortFormToId` rule below is accurate — no such tier exists on `next`" | **Now built.** `resolveDependencyId` (`src/phase.cts`) gained the third, in-phase-only tier recovered verbatim from the retired SDK lineage (`sdk/src/query/phase.ts` at `11918dcc3^`): `depends_on: ["01"]` resolves to the sibling plan whose canonical id ends `-01`, first-write-wins on a same-phase collision. The display mapping at `phase.cts:961` stays passthrough by design (#3785) — this tier is not routed through it. |
+>
+> The guard-roster line above is unaffected: no lint guard is retired by this rung, only the hand-maintained map and the four marker-reader copies.
 
 **Rule — consolidation carries invariants forward explicitly.** A lineage consolidation may not delete an invariant along with the surface that held it. The `shortFormToId` tier existed in the retired SDK lineage; the surviving lineage never received it, the gap was recorded only in an archived changeset and a `// KNOWN GAP:` comment, and both went away with the surface (#3427). **A parity note in an archived changeset is not a tracking mechanism.**
 
@@ -468,10 +478,10 @@ Net across the set: one guard retired, one increase recorded honestly. The incre
 | `scripts/lint-state-field-drift.cjs` | **RETAINED** — the Phase-3 retirement instruction rested on a wrong premise about what this guard does; see §8.8's amendment. It guards the ADR-3180 §7.7 / #3187 coercion ladder, which no schema makes unrepresentable. |
 | `scripts/lint-vendored-deps.cjs` | **not reusable as-is** — generalized to a manifest by §8.1; see the correction below |
 | `local/no-external-require-in-bin` | reused as-is; enforces §8.1's packaging rule |
-| `local/no-adhoc-markdown-parsing` | widened past `src/**/*.cts` per Decision 5 (coverage fix, tracked on #3426/#3239) |
-| `local/no-adhoc-regex-escape` | widened to `MemberExpression`/`TSAsExpression` with a `.source`-aware exemption (§8.3) |
+| `local/no-adhoc-markdown-parsing` | **DONE (#3951)** — self-gating filename check fixed (it made the glob widening inert) and reach extended to `tests/**`/`scripts/**`; 80 violations resolved. **#3426/#3239 are NOT closed by this** — they need new detectors, see the ledger amendment. |
+| `local/no-adhoc-regex-escape` | **DONE (#3951)** — widened to `MemberExpression` with a `.source`-aware exemption keyed on the property; 18 safe sites exempt, 3 provenance-exempt, 6 real findings marked. |
 | `scripts/lint-frontmatter-scalar-broad-grep.cjs` | **NOT a casualty of §8.1 — retained.** See the correction below. |
-| `scripts/lint-phase-enumeration-drift.cjs` | expected casualty of §8.2 — **verify before retiring** (Phase 5) |
+| `scripts/lint-phase-enumeration-drift.cjs` | **RETAINED** — verified at Phase 5 and not retired. #3882 migrated 2 of 23 exemptions; `readdirSync` is a raw Node API no seam makes unwritable, and 21 exemptions remain wired. See the ledger amendment. |
 
 > **Correction, 2026-08-26 (Phase 4, #3881) — two rows in this roster were wrong, and they are the
 > FOURTH and FIFTH wrong premises in this ADR.** Both were caught by applying the rule recorded in
@@ -500,3 +510,53 @@ Net across the set: one guard retired, one increase recorded honestly. The incre
 > `FAILSAFE_SCHEMA` and `YAMLException` — which also makes anchors, aliases and custom types
 > unreachable from typed code, a capability gate rather than a shortcut. It is therefore excluded
 > from the byte-compare and pinned by a test instead.
+
+> **LEDGER AMENDMENT, 2026-08-27 (#3951) — B6's "net guard count must fall" is amended, not
+> achieved, and the epic's own prescribed fix for one widening was a no-op.** This is the SIXTH
+> wrong premise recorded in this ADR, found the same way as the other five: by measuring before
+> building.
+>
+> **The count rose, and the attribution is the point.** Measured `66ad3d625` (epic filing,
+> 2026-08-14) → `origin/next`: `scripts/lint-*.cjs` 38 → 44, `eslint-rules/*.cjs` 24 → 25.
+> **62 → 69, delta +7.** But **five of the seven are unrelated to this epic** — three from #3753,
+> plus #3582, #3409, #3619 — and one (`lint-mutation-test-derivation-drift.cjs`) was added BY a
+> phase of it, #3881. The epic *did* retire one thing, sub-file: **#3884 removed Detector A** from
+> `lint-unreachable-guard-drift.cjs`, ledger *"net: −1 detector, 0 added"*, because §8.4's non-zero
+> `--pick` exit made the forbidden idiom correct.
+>
+> **Every named casualty is load-bearing, and no dead guard exists.** `lint-state-field-drift.cjs`
+> and `lint-frontmatter-scalar-broad-grep.cjs` already carry retractions above; #3873 additionally
+> landed `tests/lint-state-field-drift-retained.test.cjs`, which **fails on deletion**.
+> `lint-phase-enumeration-drift.cjs` was verified at Phase 5 and retained: #3882 migrated **2 of 23**
+> exemptions and its own commit message names six call sites that cannot migrate, because
+> `readdirSync` is a raw Node API no seam makes unwritable — 21 exemptions remain wired. A sweep of
+> all 22 rules and all `scripts/lint-*.cjs` found **no provably dead guard**. There is therefore no
+> honest way to make the count fall; forcing it down would trade real coverage for a number, which
+> is precisely the Goodhart outcome Decision 6 exists to prevent.
+>
+> **The B6(b) instruction as written was inert.** `eslint-rules/no-adhoc-markdown-parsing.cjs`
+> short-circuits `create()` to `{}` unless the path matches `/(?:^|\/)src\/[^/]+\.cts$` — it
+> **self-gates on its own filename**. Widening only the `files:` glob, which is what B6 says to do,
+> ships a rule that still returns `{}` for every new path. Both halves had to move. The same regex
+> was flat-only, so 28 `.cts` files in `src/` subdirectories sat inside the registered
+> `src/**/*.cts` glob and were silently skipped — a latent hole (0 violations there today), fixed by
+> adopting the correct form already present at `require-subprocess-timeout.cjs:196`.
+>
+> **And #3426/#3239 are NOT reachable by that widening.** `tests/package-legitimacy-gate.test.cjs`
+> yields **zero** violations even with the gate bypassed: its hand-rolled scans are real but built
+> from line filters and `split('|')`, not the regex-literal fingerprints this rule detects. They
+> need new detectors. The roster row above tracked them against the wrong mechanism.
+>
+> **What the widenings actually cost and bought.** `no-adhoc-regex-escape` widened to
+> `MemberExpression`: 27 sites by AST walk — 18 safe `X.source` (the "~10" estimate was an
+> undercount), 3 provenance-exempt `_SOURCE` constants reached through required modules, **6 real
+> findings**. `no-adhoc-markdown-parsing` widened to `tests/**` and `scripts/**`: **80 violations
+> across 43 files**, 70 routed through the existing seams and 10 suppressed. One of the 80 was a
+> test that **passed for the wrong reason** — `config-field-docs.test.cjs` asserted
+> `notEqual(cell, '600')` against the *Type* column rather than *Default*, so a guard against
+> `workflow.subagent_timeout` regressing to the seconds default could never fire.
+>
+> **The rule Decision 6 should carry going forward:** a guard ledger is a claim about COVERAGE, not
+> a claim about COUNT. "Net count must fall" is measurable and wrong; "every guard is reachable, and
+> each retirement names what makes its defect unrepresentable" is the property that was actually
+> wanted. B6 is satisfied against the second reading and is recorded as amended against the first.

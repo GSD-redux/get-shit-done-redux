@@ -82,10 +82,12 @@ const ACKS_DIR = path.join(REPO_ROOT, ...ACKS_DIR_REL_PATH.split('/'));
 const BASELINE_VERSION = 1;
 
 /**
- * Upper bound on fragment files read in one pass — mirrors the identical cap
- * in `scripts/lint-emitted-drift-ack.cjs` (`MAX_ACK_FRAGMENTS`). Exceeding it
- * throws rather than silently truncating the listing, which would silently
- * drop acknowledgments from consideration — exactly the class of silent
+ * Upper bound on fragment files read in one pass — this cap is this script's own,
+ * for its own acknowledgment set (`tests/qa/smell-acks/`), which ADR-3942 does not
+ * touch. The emitted-drift ack this cap used to mirror moved to a commit trailer
+ * (ADR-3942) and no longer has a fragment-directory cap of its own to mirror.
+ * Exceeding it throws rather than silently truncating the listing, which would
+ * silently drop acknowledgments from consideration — exactly the class of silent
  * failure this whole seam exists to prevent.
  */
 const MAX_ACK_FRAGMENTS = 500;

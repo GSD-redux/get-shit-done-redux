@@ -56,6 +56,7 @@ const { normalizeNodePath } = require('../gsd-core/bin/lib/runtime-hooks-surface
 const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+const { findTableWithColumns } = require('../gsd-core/bin/lib/markdown-table.cjs');
 // #2874 AC3 exemplar (see the qwen install/uninstall group below): resolves
 // the SAME 'full' profile install(false, <runtime>) resolves by default
 // (bin/install.js's _activeProfileName falls back to 'full' when no
@@ -1879,12 +1880,12 @@ describe('#767 Parity: docs/AGENTS.md "Disallowed Tools" rows match READONLY_AGE
       const sectionEnd = nextSectionIdx === -1 ? agentsDoc.length : nextSectionIdx;
       const section = agentsDoc.slice(agentHeaderIdx, sectionEnd);
 
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/AGENTS.md table row, bounded, not adversarial input
-      const disallowedMatch = section.match(/\|\s*\*\*Disallowed Tools\*\*\s*\|\s*([^|]+)\|/);
-      assert.ok(disallowedMatch,
+      const table = findTableWithColumns(section, ['Property', 'Value']);
+      const row = table && table.rows.find((r) => r.Property === '**Disallowed Tools**');
+      assert.ok(row,
         `docs/AGENTS.md section for ${agent} must have a "Disallowed Tools" table row`);
 
-      const docTools = disallowedMatch[1].trim();
+      const docTools = row.Value.trim();
       assert.equal(docTools, expectedTools,
         `docs/AGENTS.md "Disallowed Tools" for ${agent} must be "${expectedTools}" but got "${docTools}"`);
     });
@@ -6478,6 +6479,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const os = require('node:os');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 // A single short CLI query (install.js --skills-root <runtime>) — no full
 // install or build involved.
@@ -7068,7 +7070,10 @@ describe('sync-skills.md — required behavioral specs', () => {
   // elsewhere is held to the same rule.
   test('every $DEST_ROOT read is preceded by a DEST_ROOT= assignment in the same bash block', () => {
     content = content || readWorkflow();
-    const bashBlocks = [...content.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
+    const __destRootLines = content.split(/\r?\n/);
+    const bashBlocks = scanFencedBlocks(__destRootLines)
+      .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash')
+      .map((b) => __destRootLines.slice(b.openLineIdx + 1, b.closeLineIdx).join('\n'));
     assert.ok(
       bashBlocks.length > 0,
       'extractor matched no fenced ```bash blocks at all — the workflow must contain some'
@@ -7327,6 +7332,7 @@ const NO_BASH = process.platform === 'win32';
 
 test('real install: cursor negotiates --worktree through its own emitted gate and it lands in the emitted Agent() slot (#2652)', { skip: NO_BASH }, (t) => {
   const { readFileNormalized } = require('./helpers.cjs');
+  const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-inst-cursor-gate-'));
   t.after(() => cleanup(dir));
     // Through the process seam and the install isolation seam, never a
@@ -7370,10 +7376,15 @@ test('real install: cursor negotiates --worktree through its own emitted gate an
     // subject is "does the emitted gate resolve cursor correctly" failed as
     // "there is no such block".
     const gateText = readFileNormalized(gate);
+    const gateLines = gateText.split('\n');
+    const gateBashBlocks = scanFencedBlocks(gateLines)
+      .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash');
     const blockUnder = (heading) => {
-      const at = gateText.indexOf(`## ${heading}`);
-      if (at === -1) return undefined;
-      return (gateText.slice(at).match(/```bash\r?\n([\s\S]*?)```/) || [])[1];
+      const headingLineIdx = gateLines.findIndex((l) => l.includes(`## ${heading}`));
+      if (headingLineIdx === -1) return undefined;
+      const block = gateBashBlocks.find((b) => b.openLineIdx > headingLineIdx);
+      if (!block) return undefined;
+      return gateLines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
     };
     const resolveBlock = blockUnder('Resolve ISOLATION');
     const flagBlock = blockUnder('Resolve the harness flag');

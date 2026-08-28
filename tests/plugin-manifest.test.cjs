@@ -347,7 +347,9 @@ describe('C: plugin.json schema validation', () => {
       const value = manifest[key];
 
       if (propDef.pattern && typeof value === 'string') {
-        const re = new RegExp(propDef.pattern);
+        // Pattern extracted verbatim from the schema fixture — the shipped
+        // JSON-schema pattern IS the product under test (#3951).
+        const re = new RegExp(propDef.pattern); // allow-adhoc-regex-escape: runtime-contract-is-the-product
         if (!re.test(value)) {
           errors.push(`"${key}" must match ${propDef.pattern}, got "${value}"`);
         }

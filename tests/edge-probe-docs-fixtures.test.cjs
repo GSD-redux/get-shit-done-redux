@@ -15,6 +15,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const docPath = path.join(__dirname, '..', 'gsd-core', 'references', 'edge-probe.md');
 const fixturesRoot = path.join(__dirname, '..', 'gsd-core', 'references', 'edge-probe-fixtures');
@@ -25,10 +26,15 @@ const specTemplatePath = path.join(__dirname, '..', 'gsd-core', 'templates', 'sp
 // The \n? before the closing fence allows blocks whose closing fence has no preceding newline
 // (fixes the silent-skip bug where a trailing-fence-with-no-newline was not matched).
 function taggedJsonBlocks(md) {
-  const re = /```json edge-probe:([^\r\n]+)\r?\n([\s\S]*?)\r?\n?```/g;
+  const lines = md.split(/\r?\n/);
   const out = {};
-  let m;
-  while ((m = re.exec(md))) out[m[1].trim()] = m[2];
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    const info = block.infoString || '';
+    const tagMatch = /^json edge-probe:([^\r\n]+)$/.exec(info);
+    if (!tagMatch) continue;
+    out[tagMatch[1].trim()] = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+  }
   return out;
 }
 

@@ -36,6 +36,11 @@ import { MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS, CL
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveRuntimeNameFromCandidates } from './runtime-name-policy.cjs';
+import {
+  readInstallRuntimeMarker,
+  _setInstallRuntimeMarkerForTests,
+  _resetInstallRuntimeMarkerCacheForTests,
+} from './runtime-slash.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspaceMod = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspaceMod;
@@ -61,30 +66,12 @@ const { planningDir } = planningWorkspaceMod;
 // loudly here instead of silently omitting.
 const RUNTIMES_WITH_NATIVE_ALIASES: ReadonlySet<string> = new Set(['claude']);
 
-let _installMarkerCache: string | null | undefined;
-function readInstallRuntimeMarker(): string | null {
-  if (_installMarkerCache !== undefined) return _installMarkerCache;
-  try {
-    const markerPath = path.join(__dirname, '..', '..', '.gsd-runtime');
-    const raw = fs.readFileSync(markerPath, 'utf8').trim();
-    _installMarkerCache = raw || null;
-  } catch {
-    // No marker: dev/source tree, or an install predating #2297. Fall through to
-    // the 'claude' default (keeps tier aliases — never worse than the bug).
-    _installMarkerCache = null;
-  }
-  return _installMarkerCache;
-}
-
-// Test seams for the install-marker rung (the dev/source tree has no marker, so
-// the file read always bottoms out at 'claude' — these let tests exercise the
-// third precedence rung and reset the module-level cache between cases).
-function _setInstallRuntimeMarkerForTests(value: string | null): void {
-  _installMarkerCache = value;
-}
-function _resetInstallRuntimeMarkerCacheForTests(): void {
-  _installMarkerCache = undefined;
-}
+// #3897 rung 2: the marker reader + its cache and test seams were promoted to
+// the canonical owner, `runtime-slash.cts` (imported above) — this module now
+// consumes that single implementation instead of holding its own copy. N5:
+// behaviour and the seam contract are unchanged by the move; the re-exports
+// below (`export =` at the bottom of this file) preserve every existing
+// caller's `require('./model-resolver.cjs')` surface byte-for-behaviour.
 
 // The runtime whose install is actually resolving, canonicalized so an alias or
 // case variant (e.g. "claude-code"/"Claude") cannot defeat the native-alias

@@ -20,6 +20,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const AGENTS_DIR = path.join(ROOT, 'agents');
@@ -291,9 +292,9 @@ describe('plan-phase.md — source audit orchestration (#2091)', () => {
 
   test('step 9b does not use "too complex" language', () => {
     // Extract just step 9b content (between "## 9b" and "## 9c" or "## 10")
-    const step9bMatch = workflowContent.match(/## 9b\.([\s\S]*?)(?=## 9c|## 10)/);
-    if (step9bMatch) {
-      const step9b = step9bMatch[1];
+    const step9bSection = collectSection(workflowContent, (h) => h.text.startsWith('9b.'));
+    if (step9bSection) {
+      const step9b = step9bSection.body;
       assert.ok(
         !step9b.includes('too complex'),
         'step 9b must not use "too complex" — use context budget language instead'

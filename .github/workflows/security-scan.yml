@@ -61,26 +61,62 @@ jobs:
       - name: Dependency integrity gate
         run: node scripts/check-npm-integrity.cjs
 
+      # ADR-3889 Phase 4 (#3908): the scanners now distinguish "ran, zero
+      # files in scope" (NO_INPUT, e.g. a docs/image-only PR) from "could not
+      # establish scope" (UNAVAILABLE, e.g. a bad ref or unreadable input) —
+      # previously both collapsed to a silent exit 0. NO_INPUT must still
+      # PASS this job (nothing was in scope to scan); UNAVAILABLE must FAIL
+      # it (the scan never actually ran). Each step sources the generated
+      # exit-code fragment rather than hardcoding the NO_INPUT integer, and
+      # only recodes exactly that one outcome to 0 — every other exit code
+      # (0, UNAVAILABLE, findings) passes through unchanged.
       - name: Prompt injection scan
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           chmod +x scripts/prompt-injection-scan.sh
+          . gsd-core/bin/shared/exit-codes.sh
+          set +e
           scripts/prompt-injection-scan.sh --diff "origin/$BASE_REF"
+          code=$?
+          set -e
+          if [ "$code" -eq "$EXIT_NO_INPUT" ]; then
+            echo "prompt-injection-scan: NO_INPUT — nothing in scope, treated as pass"
+            exit 0
+          fi
+          exit "$code"
 
       - name: Base64 obfuscation scan
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           chmod +x scripts/base64-scan.sh
+          . gsd-core/bin/shared/exit-codes.sh
+          set +e
           scripts/base64-scan.sh --diff "origin/$BASE_REF"
+          code=$?
+          set -e
+          if [ "$code" -eq "$EXIT_NO_INPUT" ]; then
+            echo "base64-scan: NO_INPUT — nothing in scope, treated as pass"
+            exit 0
+          fi
+          exit "$code"
 
       - name: Secret scan
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           chmod +x scripts/secret-scan.sh
+          . gsd-core/bin/shared/exit-codes.sh
+          set +e
           scripts/secret-scan.sh --diff "origin/$BASE_REF"
+          code=$?
+          set -e
+          if [ "$code" -eq "$EXIT_NO_INPUT" ]; then
+            echo "secret-scan: NO_INPUT — nothing in scope, treated as pass"
+            exit 0
+          fi
+          exit "$code"
 
       - name: Secret scan exclusion lint
         run: |

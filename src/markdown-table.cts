@@ -739,6 +739,17 @@ export interface QuickTaskFields {
   commit: string;
   status?: string;
   directory?: string;
+  /**
+   * The canonical `${quick_id}` cell (#3356 defect 1). When supplied, the `#`
+   * cell renders this value verbatim instead of the positional ordinal
+   * `rows.length + 1` — matching `workflows/quick.md`'s Step 7c row shape for
+   * callers that actually have a quick id and task directory (e.g. a
+   * `--quick-id`-bearing `gsd-tools quick-tasks-append` invocation). Omitted
+   * (the `fast.md` caller, which has neither a quick id nor a task
+   * directory — #2133) falls back to the ordinal exactly as before; this is
+   * a pure widening, never a behavior change for existing callers.
+   */
+  quickId?: string;
 }
 
 /**
@@ -788,7 +799,7 @@ export function appendQuickTaskRow(
   const rowNumber = parsed.value.rows.length + 1;
   const cellFor = (col: string): string => {
     switch (col) {
-      case '#': return escapeCell(String(rowNumber));
+      case '#': return escapeCell(fields.quickId ?? String(rowNumber));
       case 'Description': return escapeCell(fields.description);
       case 'Date': return escapeCell(fields.date);
       case 'Commit': return escapeCell(fields.commit);

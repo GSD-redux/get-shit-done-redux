@@ -103,9 +103,26 @@ const rule = {
   },
 
   create(context) {
-    // Only run on src/*.cts files
+    // Only run on src/**/*.cts, tests/**/*.cjs, and scripts/**/*.cjs files.
+    // `.*` (not `[^/]+`) so the gate matches subdirectories too — the
+    // registered glob (src/**/*.cts) already covers them
+    // (health-diagnostic-rules/, installer-migrations/, observability/,
+    // host-integration-adapters/, vendor/); a flat-only gate silently
+    // exempted 28 files that were supposed to be linted (#3951 B6(b)).
+    // Mirrors the correct form already used by
+    // require-subprocess-timeout.cjs's own src/**/*.cts gate.
+    // Widened to tests/**/*.cjs and scripts/**/*.cjs (#3951 Rung B) to match
+    // the registration in eslint.config.mjs — the gate and the registration
+    // must agree, or the rule silently returns {} for paths it is supposedly
+    // registered on (the exact bug this widening fixes in the other
+    // direction).
     const filename = context.getFilename ? context.getFilename() : context.filename;
-    if (!/(?:^|\/)src\/[^/]+\.cts$/.test(filename.replace(/\\/g, '/'))) {
+    const normalized = filename.replace(/\\/g, '/');
+    if (
+      !/(?:^|\/)src\/.*\.cts$/.test(normalized)
+      && !/(?:^|\/)tests\/.*\.cjs$/.test(normalized)
+      && !/(?:^|\/)scripts\/.*\.cjs$/.test(normalized)
+    ) {
       return {};
     }
 

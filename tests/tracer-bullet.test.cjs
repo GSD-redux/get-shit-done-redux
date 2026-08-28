@@ -24,6 +24,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf-8');
@@ -778,10 +779,13 @@ describe('#3299 regression: tracer feedback gate honors workflow.human_verify_mo
       'the first non-blank line after the tracer task shape marker must be a LIVE ```xml fence opener — '
       + 'a commented-out or non-adjacent decoy template must not be selectable',
     );
-    const after = lines.slice(openIdx).join('\n');
-    const fence = after.match(/```xml[^\r\n]*\r?\n([\s\S]*?)```/);
-    assert.ok(fence, 'the tracer task shape must be followed by a fenced xml block');
-    const verifies = fence[1].match(/<verify>[\s\S]*?<\/verify>/g) || [];
+    const afterLines = lines.slice(openIdx);
+    const xmlFence = scanFencedBlocks(afterLines).find(
+      (b) => b.closeLineIdx !== -1 && /^xml(?:\s.*)?$/.test((b.infoString || '').trim()),
+    );
+    assert.ok(xmlFence, 'the tracer task shape must be followed by a fenced xml block');
+    const fenceBody = afterLines.slice(xmlFence.openLineIdx + 1, xmlFence.closeLineIdx).join('\n');
+    const verifies = fenceBody.match(/<verify>[\s\S]*?<\/verify>/g) || [];
     assert.strictEqual(verifies.length, 1, `the tracer template must contain exactly ONE <verify>, found ${verifies.length}`);
     const inner = verifies[0].replace(/^<verify>/, '').replace(/<\/verify>$/, '').replace(/\s+/g, ' ').trim();
     assert.match(inner, /^<automated>[^<>]+<\/automated>$/,

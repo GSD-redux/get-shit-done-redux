@@ -1744,6 +1744,102 @@ describe('no-adhoc-markdown-parsing rule', () => {
     assert.strictEqual(typeof noAdhocMarkdownParsing.create, 'function');
   });
 
+  // ── #3951 B6(b): filename-gate reach — src/**/*.cts, subdirectories included ──
+  // The gate used to be `/(?:^|\/)src\/[^/]+\.cts$/` (flat-only), which
+  // silently exempted 28 files in src/ subdirectories
+  // (health-diagnostic-rules/, installer-migrations/, observability/,
+  // host-integration-adapters/, vendor/) even though the eslint.config.mjs
+  // registration (src/**/*.cts) already covers them. These three rows pin
+  // that the gate and the registration agree — a subdirectory path is
+  // linted, a flat src/ path keeps working, and a path outside src/ stays
+  // exempt.
+
+  test('invalid: a table-regex fingerprint under a src/ SUBDIRECTORY is linted (gate reach)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'src/health-diagnostic-rules/some-check.cts',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: the same fingerprint under a FLAT src/*.cts path still is linted (regression, not exempt)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: the same fingerprint OUTSIDE src/+tests/+scripts/ is NOT linted (gate and registration must agree)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'gsd-core/bin/lib/foo.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // ── #3951 Rung B: filename-gate reach — tests/**/*.cjs and scripts/**/*.cjs ──
+  // The gate self-restricted to src/**/*.cts only. eslint.config.mjs also
+  // registers the rule on tests/**/*.cjs and scripts/**/*.cjs (Rung B); these
+  // rows pin that the gate and the registration agree for BOTH new globs —
+  // a path each registration covers must not be silently skipped by the
+  // gate, and a path outside all three globs stays exempt (mirrors the
+  // src/ subdirectory rows above, which pinned the same contract for #3951
+  // B6(b)).
+
+  test('invalid: a table-regex fingerprint under tests/**/*.cjs is linted (gate/registration parity)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'tests/some.test.cjs',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: a table-regex fingerprint under a tests/ SUBDIRECTORY is linted (gate reach)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'tests/fixtures/some.test.cjs',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: a table-regex fingerprint under scripts/**/*.cjs is linted (gate/registration parity)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellPattern = /\|[^|]*\|/;`,
+          filename: 'scripts/some-tool.cjs',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
   // ── POSITIVE cases: flag fence-block-strip and section-collect ────────────
 
   test('invalid: fence-block-strip regex with triple-backtick and multiline body', () => {
@@ -1882,18 +1978,35 @@ describe('no-adhoc-markdown-parsing rule', () => {
     });
   });
 
-  test('valid: rule is inert outside src/*.cts files', () => {
+  // #3951 Rung B: the gate's reach is src/**/*.cts, tests/**/*.cjs and
+  // scripts/**/*.cjs — the same fingerprints under those three roots are now
+  // linted, and the negative space (a path outside all three) stays exempt.
+  test('invalid: fence-block-strip and section-collect fingerprints under tests/ and scripts/ are now flagged (gate/registration parity)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          // Same fence-block-strip regex under tests/**/*.cjs → now linted
+          code: String.raw`const stripFences = /~~~[\s\S]*?~~~/;`,
+          filename: 'tests/some.test.cjs',
+          errors: [{ messageId: 'fenceRegex' }],
+        },
+        {
+          // Same section-collect regex under scripts/**/*.cjs → now linted
+          code: String.raw`const p = /(##\s*X\n)([\s\S]*?)(?=\n##|$)/;`,
+          filename: 'scripts/helper.cjs',
+          errors: [{ messageId: 'sectionCollect' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: the same fence-block-strip fingerprint OUTSIDE src/+tests/+scripts/ stays NOT flagged (negative space preserved)', () => {
     ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
       valid: [
         {
-          // Same fence-block-strip regex in a test file → rule does not apply
           code: String.raw`const stripFences = /~~~[\s\S]*?~~~/;`,
-          filename: 'tests/some.test.cjs',
-        },
-        {
-          // Same regex in a scripts file → rule does not apply
-          code: String.raw`const p = /(##\s*X\n)([\s\S]*?)(?=\n##|$)/;`,
-          filename: 'scripts/helper.cjs',
+          filename: 'gsd-core/bin/lib/foo.cjs',
         },
       ],
       invalid: [],
@@ -1975,12 +2088,28 @@ describe('no-adhoc-markdown-parsing rule', () => {
     });
   });
 
-  test('valid: table-regex in a non-src/*.cts file is not flagged (rule is inert there)', () => {
+  // #3951 Rung B: table-regex under scripts/**/*.cjs is now linted (gate/
+  // registration parity); the same fingerprint outside src/+tests/+scripts/
+  // stays exempt (negative space preserved).
+  test('invalid: table-regex under scripts/**/*.cjs is now flagged (gate/registration parity)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const rowRe = /\|[^|]*\|/;`,
+          filename: 'scripts/helper.cjs',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: the same table-regex fingerprint OUTSIDE src/+tests/+scripts/ stays NOT flagged', () => {
     ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
       valid: [
         {
           code: String.raw`const rowRe = /\|[^|]*\|/;`,
-          filename: 'scripts/helper.cjs',
+          filename: 'gsd-core/bin/lib/foo.cjs',
         },
       ],
       invalid: [],
@@ -2110,12 +2239,27 @@ describe('no-adhoc-markdown-parsing rule', () => {
     });
   });
 
-  test('valid: new RegExp(...) table-regex in a non-src/*.cts file is not flagged', () => {
+  // #3951 Rung B: a new RegExp(...) table-regex under tests/**/*.cjs is now
+  // linted; the same fingerprint outside src/+tests/+scripts/ stays exempt.
+  test('invalid: new RegExp(...) table-regex under tests/**/*.cjs is now flagged (gate/registration parity)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const rowRe = new RegExp('\\|[^|]*\\|');`,
+          filename: 'tests/some.test.cjs',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: the same new RegExp(...) table-regex fingerprint OUTSIDE src/+tests/+scripts/ stays NOT flagged', () => {
     ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
       valid: [
         {
           code: String.raw`const rowRe = new RegExp('\\|[^|]*\\|');`,
-          filename: 'scripts/helper.cjs',
+          filename: 'gsd-core/bin/lib/foo.cjs',
         },
       ],
       invalid: [],
@@ -2206,12 +2350,28 @@ describe('no-adhoc-markdown-parsing rule', () => {
     });
   });
 
-  test('valid: .replace() ad-hoc mutation in a non-src/*.cts file is not flagged', () => {
+  // #3951 Rung B: an ad-hoc .replace() mutation under scripts/**/*.cjs is now
+  // linted (both the CallExpression and its Literal argument fire); the same
+  // fingerprint outside src/+tests/+scripts/ stays exempt.
+  test('invalid: .replace() ad-hoc mutation under scripts/**/*.cjs is now flagged (gate/registration parity)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`roadmapContent.replace(/\|[^|]*\|/, 'x');`,
+          filename: 'scripts/helper.cjs',
+          errors: [{ messageId: 'adhocReplaceMutation' }, { messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: the same .replace() ad-hoc mutation fingerprint OUTSIDE src/+tests/+scripts/ stays NOT flagged', () => {
     ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
       valid: [
         {
           code: String.raw`roadmapContent.replace(/\|[^|]*\|/, 'x');`,
-          filename: 'scripts/helper.cjs',
+          filename: 'gsd-core/bin/lib/foo.cjs',
         },
       ],
       invalid: [],

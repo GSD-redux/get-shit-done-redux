@@ -33,6 +33,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const WORKER_PATH = path.join(__dirname, '..', 'hooks', 'gsd-check-update-worker.js');
 const PROJECTION_PATH = path.join(
@@ -630,10 +631,12 @@ describe('bug-2784: update.md cache-clear covers shared cache path', () => {
     const stepContent = stepMatch[0];
 
     const bashLines = [];
-    const fenceRe = /```(?:bash|sh)\r?\n([\s\S]*?)```/g;
-    let m;
-    while ((m = fenceRe.exec(stepContent)) !== null) {
-      for (const line of m[1].split(/\r?\n/)) {
+    const stepLines = stepContent.split(/\r?\n/);
+    for (const block of scanFencedBlocks(stepLines)) {
+      if (block.closeLineIdx === -1) continue;
+      const info = (block.infoString || '').trim();
+      if (info !== 'bash' && info !== 'sh') continue;
+      for (const line of stepLines.slice(block.openLineIdx + 1, block.closeLineIdx)) {
         const trimmed = line.trim();
         if (trimmed) bashLines.push(trimmed);
       }

@@ -318,8 +318,14 @@ function mergeDefaults(parsed: Record<string, unknown>): Record<string, unknown>
   return deepMergeConfig(defaults, parsed);
 }
 
-function migrateOnDisk(cwd: string, workstream?: string): MigrateOnDiskResult {
-  const configPath = join(planningDir(cwd, workstream), 'config.json');
+function migrateOnDisk(cwd: string, workstream?: string, configPathOverride?: string): MigrateOnDiskResult {
+  // #3749: the caller (cmdMigrateConfig in config.cts) supplies the config
+  // path resolved through planning-workspace's PROJECT-aware planningDir.
+  // This module cannot import that sibling (#3571 install-layout contract),
+  // and its own local planningDir above is deliberately workstream-only —
+  // resolving here through the local copy made migrate-config under
+  // GSD_PROJECT rewrite the ROOT config instead of the scoped one.
+  const configPath = configPathOverride ?? join(planningDir(cwd, workstream), 'config.json');
   let raw: string;
   try {
     raw = readFileSync(configPath, 'utf-8');

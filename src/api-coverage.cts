@@ -51,9 +51,13 @@
  *   renderCoverageMatrix(rows) -> string
  *   DEFAULT_API_COVERAGE_TERMS
  *
- * CLI:
+ * CLI (ADR-3889 Phase 3, #3907):
  *   echo "$SCOPE" | node gsd-core/bin/lib/api-coverage.cjs [--json]
- *     exit 0 = integration detected, 1 = none, 2 = startup error
+ *     exit 0 = integration detected, 1 = none (real input, examined, no signal),
+ *     NO_INPUT (registry, src/cli-exit.cts) = stdin empty/whitespace-only,
+ *     UNAVAILABLE (registry) = stdin read failed
+ *     --json additionally prints the typed IR on stdout (unchanged for 0/1);
+ *     NO_INPUT/UNAVAILABLE print {skipped:true, reason:"no_input"|"stdin_error"}
  */
 
 import { stripFencedCode, scanInlineCodeSpans, extractFencedBlock } from './markdown-sectionizer.cjs';
@@ -939,12 +943,26 @@ export function renderCoverageMatrix(rows: readonly CoverageRow[]): string {
 // ── CLI entry point ──────────────────────────────────────────────────────────
 // Reads phase-scope text from STDIN (not argv) to avoid OS ARG_MAX limits.
 // Invoked by workflow bash as: echo "$SCOPE" | node .../api-coverage.cjs [--json]
-// Exit 0 = integration detected, 1 = none, 2 = startup error. Mirrors
-// assumption-delta.cjs / ui-safety-gate.cjs.
+//
+// Exit codes (ADR-3889 Phase 3, #3907): 0 = integration detected, 1 = none
+// (real input, examined, no signal), NO_INPUT (registry — src/cli-exit.cts) =
+// stdin empty/whitespace-only, UNAVAILABLE (registry) = stdin read failed.
+// The prior single "2 = startup error" arm let empty input flow into the
+// detector and exit 1 — an unexamined input reported as an authoritative
+// negative. Under --json, NO_INPUT/UNAVAILABLE emit `{skipped:true,
+// reason:"no_input"|"stdin_error"}` — no `detected` key, so a stale
+// `detected:false` can never sit beside `skipped:true`; the detected/no-signal
+// `--json` payloads are byte-identical to before. Terminates via terminateNow
+// (write-then-terminate, total by construction), not raw process.exit — these
+// exits fire from inside a stdin event handler. Mirrors assumption-delta.cjs /
+// ui-safety-gate.cjs.
 
 if (require.main === module) {
   const argv = process.argv.slice(2);
   const wantJson = argv.includes('--json');
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const cliExit = require('./cli-exit.cjs') as { terminateNow: (outcome: string, payload: unknown) => never };
 
   let termsOverride: Partial<ApiCoverageTermSet> | undefined;
   const verbsIdx = argv.indexOf('--verbs');
@@ -970,14 +988,18 @@ if (require.main === module) {
   process.stdin.on('data', (chunk: string) => chunks.push(chunk));
   process.stdin.on('end', () => {
     const input = chunks.join('');
-    const result = detectApiIntegration(input, termsOverride);
-    if (wantJson) {
-      process.stdout.write(JSON.stringify(result) + '\n');
+    // Whitespace-only counts as empty (ADR-3889 §1's NO_INPUT: "zero units
+    // were in scope, and that emptiness is known to be genuine"). Real input
+    // — including a lone NUL byte, which .trim() does not strip — always
+    // falls through to the detector.
+    if (input.trim().length === 0) {
+      cliExit.terminateNow('NO_INPUT', wantJson ? { skipped: true, reason: 'no_input' } : undefined);
     }
-    process.exit(result.detected ? 0 : 1);
+    const result = detectApiIntegration(input, termsOverride);
+    cliExit.terminateNow(result.detected ? 'PASS' : 'FAIL', wantJson ? result : undefined);
   });
   process.stdin.on('error', (err: Error) => {
     process.stderr.write(`ERROR: api-coverage.cjs stdin read failed: ${err.message}\n`);
-    process.exit(2);
+    cliExit.terminateNow('UNAVAILABLE', wantJson ? { skipped: true, reason: 'stdin_error' } : undefined);
   });
 }

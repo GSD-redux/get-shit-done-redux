@@ -1204,7 +1204,11 @@ function cmdConfigPath(cwd: string, _raw: boolean, workstreamContext: Workstream
  */
 function cmdMigrateConfig(cwd: string, raw: boolean): void {
   const ws = process.env['GSD_WORKSTREAM'] || null;
-  const report = migrateOnDisk(cwd, ws || undefined);
+  // #3749: resolve the migration target through the project-aware resolver so
+  // GSD_PROJECT scopes the write; migrateOnDisk itself cannot (see its
+  // configPathOverride note).
+  const scopedConfigPath = path.join(planningDir(cwd, ws || undefined), 'config.json');
+  const report = migrateOnDisk(cwd, ws || undefined, scopedConfigPath);
 
   // #3760: deduplicated on (path, reason), so a repeated invocation stays quiet.
   if (report.skipped.length > 0) {

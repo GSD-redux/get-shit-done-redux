@@ -20,6 +20,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const { HOOK_ON_CRASH, allow, crash } = require('./lib/hook-exit.js');
+
+// This guard is pure advisory UX — a reminder to Read before Write/Edit on
+// non-Claude-Code runtimes. A crash here must not block a legitimate Write/
+// Edit; the worst outcome of failing open is the model hitting the runtime's
+// own read-before-edit rejection it was trying to help avoid (#3911).
+const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 
 // #2304: Kimi's native hook bus delivers Kimi's tool vocabulary in the payload
 // (Write → WriteFile, Edit/MultiEdit → StrReplaceFile) while the [[hooks]]
@@ -116,7 +123,7 @@ function normalizeKimiPayload(data) {
 }
 
 let input = '';
-const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+const stdinTimeout = setTimeout(() => allow(undefined), 3000);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
@@ -127,7 +134,7 @@ process.stdin.on('end', () => {
 
     // Only intercept Write and Edit tool calls
     if (toolName !== 'Write' && toolName !== 'Edit') {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Claude Code natively enforces read-before-edit — skip the advisory (#1984, #2344, #2520).
@@ -151,7 +158,7 @@ process.stdin.on('end', () => {
       process.env.CLAUDE_SESSION_ID ||
       process.env.CLAUDECODE;
     if (isClaudeCode) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // #2595 (review Major 3, sibling sweep): typed read — same class as the
@@ -160,7 +167,7 @@ process.stdin.on('end', () => {
       ? data.tool_input.file_path
       : '';
     if (!filePath) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Only inject guidance when the file already exists.
@@ -174,7 +181,7 @@ process.stdin.on('end', () => {
     }
 
     if (!fileExists) {
-      process.exit(0);
+      allow(undefined);
     }
 
     const fileName = path.basename(filePath);
@@ -193,7 +200,9 @@ process.stdin.on('end', () => {
 
     process.stdout.write(JSON.stringify(output));
   } catch {
-    // Silent fail — never block tool execution
-    process.exit(0);
+    // Silent fail — never block tool execution.
+    // ON_CRASH is declared ALLOW at module top: this preserves today's
+    // exit(0) fail-open behavior exactly (#3911).
+    crash(ON_CRASH, undefined);
   }
 });

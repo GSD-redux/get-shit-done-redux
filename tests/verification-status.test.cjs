@@ -42,6 +42,7 @@ const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
 const { runGit: seamRunGit, OUTCOME } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const {
   VERIFIER_STATUSES,
@@ -1864,8 +1865,10 @@ describe('#2868: verification status CLI drives the execute-phase stranded-phase
     // the jq form in order to explain why it is not used, and an assertion
     // over the whole file would fire on its own rationale.
     const content = fs.readFileSync(QUICK_VERIFICATION, 'utf-8');
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
-    const fences = content.match(/```bash\r?\n[\s\S]*?```/g) || [];
+    const contentLines = content.split(/\r?\n/);
+    const fences = scanFencedBlocks(contentLines)
+      .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash')
+      .map((b) => contentLines.slice(b.openLineIdx, b.closeLineIdx + 1).join('\n'));
     const statusFence = fences.find((f) => f.includes('gsd_run query verification.status'));
 
     assert.ok(statusFence, 'the status read must live in a bash fence');

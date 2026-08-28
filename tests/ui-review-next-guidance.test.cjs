@@ -92,7 +92,9 @@ describe('manager verify dispatch', () => {
     assert.match(compoundBlock, /gsd-verify-work/);
     assert.doesNotMatch(
       compoundBlock,
-      /Inline verification:\s*```[\s\S]*Skill\(skill="gsd-verify-work", args="\{PHASE_NUM\}"\)/,
+      // Not a fence PARSE — a negative-text probe asserting a banned prose
+      // pattern is absent; there is no fence content being extracted.
+      /Inline verification:\s*```[\s\S]*Skill\(skill="gsd-verify-work", args="\{PHASE_NUM\}"\)/, // allow-adhoc-markdown: negative-text probe, not a fence parse
     );
   });
 });

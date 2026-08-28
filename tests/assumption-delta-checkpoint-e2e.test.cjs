@@ -127,11 +127,19 @@ describe('assumption-delta scan query — phase-section detection (#1561)', () =
     assert.deepStrictEqual(parsed.signals, []);
   });
 
-  test('unknown phase → detected:false, no throw (graceful)', () => {
+  test('unknown phase → skipped, no throw (graceful) (#3909)', () => {
     tmpDir = makeRoadmapProject();
     const r = scanQuery(tmpDir, 999, ['--json']);
     assert.ok(r.success, `scan should succeed on unknown phase. stderr: ${r.error}`);
-    assert.strictEqual(JSON.parse(r.output).detected, false);
+    const parsed = JSON.parse(r.output);
+    // This asserted `detected:false` until #3909. That was the fabrication
+    // itself pinned as intended behavior: phase 999 does not exist, so the
+    // detector was handed the empty string and its "no core assumption
+    // changed" answer described nothing. The graceful-degradation contract
+    // the test was protecting (succeeds, does not throw) is unchanged.
+    assert.strictEqual(parsed.skipped, true);
+    assert.strictEqual(parsed.reason, 'phase_unresolved');
+    assert.strictEqual(parsed.detected, undefined);
   });
 
   test('--terms override narrows the vocabulary (custom cue fires, default cue does not)', () => {
@@ -224,5 +232,86 @@ describe('assumption-delta capability — plan:pre render-hooks wiring (#1561)',
       gates.every((g) => g.capId !== 'assumption-delta'),
       'assumption-delta must never register a blocking gate at plan:pre'
     );
+  });
+});
+
+// ─── An unresolved phase section is not a negative verdict (#3909, P5) ────────
+// `routeAssumptionDelta` fed `detectAssumptionDelta(section ?? '')`, so a phase
+// section that could not be resolved at all (no ROADMAP.md, unknown phase
+// number) was scanned as the empty string and reported as an examined-and-
+// negative result. That is a fabricated verdict: the probe never had input.
+// The route now reports the skipped-with-reason shape instead. Exit code stays
+// 0 — this is an ADR-2980 degraded result reported through the payload, and
+// ADR-3889 P8 pins the gsd-tools projection at v1.
+describe('query assumption-delta scan — unresolved phase reports skipped (#3909)', () => {
+  let tmpDir;
+  afterEach(() => { if (tmpDir) { cleanup(tmpDir); tmpDir = null; } });
+
+  function writeRoadmap(dir, body) {
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), body, 'utf8');
+  }
+
+  function scan(cwd, phase, extra = []) {
+    const r = runTools(['query', 'assumption-delta', 'scan', phase, '--json', ...extra], cwd);
+    return { raw: r, json: JSON.parse(r.output) };
+  }
+
+  test('CONTROL: a resolved section with no cues still reports detected:false', () => {
+    tmpDir = makeProject({ workflow: { assumption_delta: true } });
+    writeRoadmap(tmpDir, '# Roadmap\n\n### Phase 01: Cleanup\n\nRefactor the internal state machine.\n');
+    const { raw, json } = scan(tmpDir, '01');
+    assert.strictEqual(raw.exitCode, 0);
+    assert.strictEqual(json.detected, false, 'an examined section with no cues is a real negative');
+    assert.strictEqual(json.skipped, undefined, 'a real scan must NOT be reported as skipped');
+  });
+
+  test('CONTROL: a resolved section with a pluralization cue still detects', () => {
+    tmpDir = makeProject({ workflow: { assumption_delta: true } });
+    writeRoadmap(tmpDir, '# Roadmap\n\n### Phase 01: Auth\n\nAdd a second authentication method.\n');
+    const { json } = scan(tmpDir, '01');
+    assert.strictEqual(json.detected, true);
+    assert.strictEqual(json.skipped, undefined);
+  });
+
+  test('no ROADMAP.md at all reports skipped, not detected:false', () => {
+    tmpDir = makeProject({ workflow: { assumption_delta: true } });
+    const { raw, json } = scan(tmpDir, '01');
+    assert.strictEqual(json.skipped, true, 'a probe with no input must not assert a verdict');
+    assert.strictEqual(json.reason, 'phase_unresolved');
+    assert.strictEqual(
+      json.detected,
+      undefined,
+      'a skipped payload must carry no detected key — that is what makes it distinguishable',
+    );
+    assert.strictEqual(raw.exitCode, 0, 'degraded result stays exit 0 (ADR-2980; P8 pins v1)');
+  });
+
+  test('a ROADMAP.md that does not contain the phase reports skipped', () => {
+    tmpDir = makeProject({ workflow: { assumption_delta: true } });
+    writeRoadmap(tmpDir, '# Roadmap\n\n### Phase 01: Auth\n\nAdd a second authentication method.\n');
+    const { json } = scan(tmpDir, '99');
+    assert.strictEqual(json.skipped, true, 'an unknown phase number resolves to nothing');
+    assert.strictEqual(json.reason, 'phase_unresolved');
+  });
+
+  test('BOUNDARY: a resolved but body-less section is EXAMINED, not skipped', () => {
+    tmpDir = makeProject({ workflow: { assumption_delta: true } });
+    writeRoadmap(tmpDir, '# Roadmap\n\n### Phase 01: Empty\n\n   \n\t\n\n### Phase 02: Next\n\nBody.\n');
+    const { json } = scan(tmpDir, '01');
+    // The resolver returns the heading line alone for a body-less section, so
+    // the phase WAS found and the detector did examine what the roadmap holds
+    // for it. `skipped` is reserved for the cases where the resolver returns
+    // null — an unknown phase number, or no ROADMAP.md at all. Pinning that
+    // line here keeps the distinction the issue actually asks for (found vs
+    // not found) from drifting into a vaguer "looks empty to me".
+    assert.strictEqual(json.skipped, undefined, 'a resolved section is not a skip');
+    assert.strictEqual(json.detected, false, 'the heading alone carries no cues — a real negative');
+  });
+
+  test('--terms does not rescue an unresolved phase', () => {
+    tmpDir = makeProject({ workflow: { assumption_delta: true } });
+    const { json } = scan(tmpDir, '01', ['--terms', 'second,alternative']);
+    assert.strictEqual(json.skipped, true, 'a vocabulary override cannot manufacture a scan');
+    assert.strictEqual(json.reason, 'phase_unresolved');
   });
 });

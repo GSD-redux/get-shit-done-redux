@@ -33,6 +33,7 @@ const path = require('path');
 const helpers = require('./helpers.cjs');
 const { runGsdTools, createTempProject, cleanup, TOOLS_PATH } = helpers;
 const processSeam = require('./helpers/process-seam.cjs');
+const { collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 // runGsdTools's legacy shape drops stderr on success, but the #3311 contract
 // is exactly that a conflict is VISIBLE — these tests must see stderr. Drive
@@ -631,9 +632,9 @@ describe('#3311 guard: advancePlan stays a targeted field replace', () => {
     const after = result.content;
 
     const section = (text) => {
-      const m = text.match(/## Current Position\s*\r?\n([\s\S]*?)(?=\r?\n##|$)/i);
-      assert.ok(m, 'Current Position section must exist');
-      return m[1];
+      const s = collectSection(text, (h) => /^Current Position$/i.test(h.text));
+      assert.ok(s, 'Current Position section must exist');
+      return s.body;
     };
     const beforeSection = section(before);
     assert.ok(beforeSection.length > 0, 'before-section must be non-empty');
