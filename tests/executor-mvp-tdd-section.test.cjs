@@ -827,6 +827,41 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'without the trailer; the snippet must report it as `missing_red_commit`. See #3770.');
   });
 
+  test('the MVP+TDD gate reference does not claim a capability the contract disclaims', () => {
+    const ref = fs.readFileSync(REF, 'utf-8');
+    const start = ref.indexOf('## What the gate checks');
+    assert.ok(start > -1, 'execute-mvp-tdd.md must carry ## What the gate checks');
+    const rest = ref.indexOf('\n## ', start + 1);
+    const checks = rest > -1 ? ref.slice(start, rest) : ref.slice(start);
+
+    assert.ok(checks.includes('is not yet mechanised'),
+      'the gate checks must say that judging the recorded run against the RED predicate is not '
+      + 'yet mechanised. tdd.md says so in as many words and defers that judgment to the coded '
+      + 'gate; an executor told otherwise reports a verdict it never computed. See #3770.');
+    assert.ok(!checks.includes('satisfies the RED predicate'),
+      'the gate checks must not claim the trailer\'s recorded run satisfies the RED predicate. '
+      + 'The region is scoped to the checks so the escalation section below stays free to '
+      + 'discuss the predicate. See #3770.');
+    assert.ok(checks.includes('`~/.claude/gsd-core/references/tdd.md`'),
+      'the rewritten check must keep the install-resolvable citation verbatim. Without this the '
+      + 'capability claim could be dropped by deleting the whole line, taking one of the four '
+      + 'RED-contract consumer references with it. See #3770.');
+
+    const codeStart = ref.indexOf('Reason: {');
+    assert.ok(codeStart > -1, 'the halt report must carry a `Reason: {...}` vocabulary line');
+    assert.strictEqual(ref.indexOf('Reason: {', codeStart + 1), -1,
+      'the halt report must carry exactly one reason-code vocabulary');
+    const codeLine = ref.slice(codeStart, ref.indexOf('}', codeStart) + 1);
+    for (const code of ['missing_red_commit', 'missing_red_evidence',
+      'red_commit_not_failing', 'feat_before_test']) {
+      assert.ok(codeLine.includes(code),
+        `the reason vocabulary must offer \`${code}\`. tdd.md distinguishes three RED failures `
+        + 'and the shipped vocabulary named two of them, leaving a matching commit whose '
+        + 'red-evidence: value comes back empty with no word for what happened. The new code is '
+        + 'an addition, so the three existing codes must survive it. See #3770.');
+    }
+  });
+
   test("the Commit Pattern's RED exemplar carries the Evidence trailer verbatim", () => {
     const blocks = fencedBlocks(sliceH2(TDD_SOURCE, 'Commit Pattern for TDD Plans'));
     assert.strictEqual(blocks.length, 1, '## Commit Pattern must carry one fenced block');
@@ -834,5 +869,25 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'the RED exemplar must reproduce the ### Evidence trailer line byte-for-byte. Strict ' +
       'equality against the single fixture is what stops the two exemplars drifting apart — ' +
       'a retyped or re-wrapped copy is exactly the drift. See #3770.');
+
+    // The feature token comes from the fixture itself, never a literal: a future fixture
+    // change that also updates the subjects still passes, one that updates only the
+    // trailer fails.
+    const line = trailerLine();
+    const targetTest = JSON.parse(line.slice(line.indexOf(':') + 1)).target_test;
+    const feature = targetTest.slice(targetTest.lastIndexOf('::') + 2)
+      .replace(/^test_/, '').split('_')[0];
+    assert.ok(feature.length > 2, 'the fixture target_test must yield a feature token');
+
+    const subjects = blocks[0].split('\n')
+      .filter((l) => /^(test|feat|refactor)\(/.test(l));
+    assert.strictEqual(subjects.length, 3, 'the exemplar must carry three commit subjects');
+    for (const subject of subjects) {
+      assert.ok(subject.toLowerCase().includes(feature),
+        `the exemplar subject "${subject}" must name the feature \`${feature}\` its own `
+        + 'red-evidence: trailer records. An exemplar that pairs one feature\'s subject with '
+        + "another feature's evidence teaches the reader that the two are unrelated, which is "
+        + 'exactly the coupling the contract asserts. See #3770.');
+    }
   });
 });
