@@ -27,12 +27,20 @@ const ROADMAPPER = path.join(__dirname, '..', 'agents', 'gsd-roadmapper.md');
 test('#3797: the roadmapper follows one write-first contract (approval is the orchestrator\'s)', () => {
   const md = fs.readFileSync(ROADMAPPER, 'utf-8');
   assert.ok(
-    !/for user approval/i.test(md),
+    !/for (user )?approval/i.test(md),
     '#3797: the agent cannot host a user approval loop — approve-first phrasing must not return',
   );
   assert.ok(
     !/Awaiting \/ Approve/.test(md),
     '#3797: the Awaiting/Approve output footer is the old contract; revision is the orchestrator\'s gate plus Step 9 re-runs',
+  );
+  assert.ok(
+    !/^## ROADMAP DRAFT/m.test(md),
+    '#3797: the agent returns ## ROADMAP CREATED — a DRAFT header matches no orchestrator branch (they branch on CREATED/BLOCKED only)',
+  );
+  assert.ok(
+    /Files written immediately/.test(md),
+    'the checklist must pin the write-first ordering',
   );
   assert.ok(
     /^## Step 7: Write Files Immediately$/m.test(md),
@@ -43,7 +51,7 @@ test('#3797: the roadmapper follows one write-first contract (approval is the or
     '#3797: the checklist must not claim files are written after an approval the agent never hosts',
   );
   assert.ok(
-    /^## Step 9: Handle Revision/.test(md),
+    /^## Step 9: Handle Revision \(if needed\)$/m.test(md),
     'reactive revision (Step 9) stays — it is the revision path under the write-first contract too',
   );
 });
