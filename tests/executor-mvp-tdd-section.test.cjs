@@ -547,3 +547,38 @@ describe('RED contract — worked examples carry <red_contract> (#3770)', () => 
     assertSiblingRedContract(tddBlocks[0], "the planner's task-level TDD example");
   });
 });
+
+// allow-test-rule: source-text-is-the-product (see #3770)
+// tdd.md is the canonical RED source; these guard it against contradicting
+// itself two headings below the contract it now owns.
+describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () => {
+  test("tdd.md's own gate sections defer to the RED contract", () => {
+    const start = TDD_SOURCE.indexOf('## Gate Enforcement Rules');
+    assert.ok(start > -1, 'tdd.md must carry ## Gate Enforcement Rules');
+    const end = TDD_SOURCE.indexOf('</gate_enforcement>', start);
+    assert.ok(end > -1, 'the gate-enforcement region must be closed');
+    const gates = TDD_SOURCE.slice(start, end);
+
+    assert.ok(gates.includes('| RED |'),
+      'the Gate Definitions table must still carry its RED row — this guards the negative ' +
+      'assertion below from being satisfied by deleting the table');
+    assert.ok(gates.includes('red-evidence'),
+      'the gate region must name the red-evidence: trailer it validates against');
+    assert.ok(gates.includes('RED Contract'),
+      'the gate region must cite the RED Contract section rather than re-deciding RED itself');
+    // The pre-#3770 rule, scoped to this region only: ## RED Contract and its
+    // Outcomes table legitimately discuss failing before implementation.
+    assert.ok(!gates.includes('Test exists AND fails before implementation'),
+      'the gate region still presents the commit-subject-only rule as the RED validation. ' +
+      'Two versions of RED then coexist unqualified in the same canonical file. See #3770.');
+  });
+
+  test("the Commit Pattern's RED exemplar carries the Evidence trailer verbatim", () => {
+    const blocks = fencedBlocks(sliceH2(TDD_SOURCE, 'Commit Pattern for TDD Plans'));
+    assert.strictEqual(blocks.length, 1, '## Commit Pattern must carry one fenced block');
+    assert.ok(blocks[0].split('\n').includes(trailerLine()),
+      'the RED exemplar must reproduce the ### Evidence trailer line byte-for-byte. Strict ' +
+      'equality against the single fixture is what stops the two exemplars drifting apart — ' +
+      'a retyped or re-wrapped copy is exactly the drift. See #3770.');
+  });
+});
