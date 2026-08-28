@@ -2047,10 +2047,24 @@ function acknowledgeDeferredItem(content: string, targetText: string): Acknowled
   // a real field there (and first-wins means the insert branch could not
   // outrank it). Everything else falls through to the insert branch below,
   // which the marker-free and no-status controls already round-trip.
-  const statusFieldRe = /^\s*(\*+status:\*+|status:)/i;
-  const statusFieldReLine0 = /^\s*(?:-\s+)?(\*+status:\*+|status:)/i;
-  const statusLineIdx = matchedLines.findIndex((rawLine, idx) =>
-    (idx === 0 ? statusFieldReLine0 : statusFieldRe).test(rawLine.replace(/\r$/, '')));
+  //
+  // #3775: the CASE axis of the same rule. The reader lowercases BOLDED
+  // keys only; bare keys keep their literal case (#3457 design), so a bare
+  // `Status:`/`STATUS:` line is stored under key `Status` and never read as
+  // fields.status. The search therefore matches a bolded key in ANY case
+  // and a bare key in LOWERCASE only — never a bare Title-case/UPPER line,
+  // which must fall through to the insert branch whose lowercase output the
+  // reader consumes (leaving any human `Status: resolved` untouched).
+  const statusFieldBoldedRe = /^\s*\*+status:\*+/i;
+  const statusFieldBareRe = /^\s*status:/;
+  const statusFieldBoldedReLine0 = /^\s*(?:-\s+)?\*+status:\*+/i;
+  const statusFieldBareReLine0 = /^\s*(?:-\s+)?status:/;
+  const statusLineIdx = matchedLines.findIndex((rawLine, idx) => {
+    const line = rawLine.replace(/\r$/, '');
+    return idx === 0
+      ? (statusFieldBoldedReLine0.test(line) || statusFieldBareReLine0.test(line))
+      : (statusFieldBoldedRe.test(line) || statusFieldBareRe.test(line));
+  });
 
   // No CRLF-preservation branch here (WARNING 1, #3458 follow-up review):
   // every write goes through `platformWriteSync` → `normalizeContent`, which

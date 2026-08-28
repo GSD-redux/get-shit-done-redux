@@ -276,6 +276,7 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | [ADR-1671](1671-dynamic-context-management-platform.md) | Dynamic context management platform | Proposed | — |
 | [ADR-1953](1953-complexity-triggered-refactor.md) | Complexity-triggered refactor — the loop measures the entropy it just added | Proposed | — |
 | [ADR-3128](3128-adaptive-runtime-evidence.md) | Adaptive runtime evidence for GSD Debug | Proposed | — |
+| [ADR-3646](3646-per-task-content-resolution-seam.md) | Per-task external-tracker content-resolution seam | Proposed | — |
 | [ADR-3889](3889-process-exit-contract.md) | One exit-code registry — 0 and 1 are free, everything else is allocated | Proposed | — |
 | [ADR-3942](3942-emitted-drift-ack-commit-trailer.md) | The emitted-drift acknowledgment is PR-lifetime data — it belongs in a commit trailer, not the working tree | Proposed | — |
 

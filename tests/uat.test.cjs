@@ -6634,3 +6634,60 @@ describe('#3740: acknowledge round-trips through the reader (parse → acknowled
     assert.equal(r.after.status, 'acknowledged');
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────
+// #3775: the case axis of the writer/reader disagreement #3740 fixed for
+// markers. The ack writer searched status lines case-INSENSITIVELY on both
+// the bolded and bare alternatives, but the reader lowercases BOLDED keys
+// only — bare keys keep their literal case (#3457 design). A bare
+// `Status:`/`STATUS:` line was therefore rewritten in place while the reader
+// stored it under key `Status`, never `fields.status`: the ack returned ok,
+// the entry stayed outstanding, and a human `Status: resolved` was silently
+// downgraded. The writer now matches exactly what the reader reads back —
+// bolded in any case, bare in lowercase only — so Title-case shapes take the
+// insert branch whose lowercase line the reader reads.
+describe('#3775: ack matches exactly the status-line shapes the reader reads back', () => {
+  function roundTrip(body) {
+    const content = '## Deferred Items\n\n' + body + '\n';
+    const before = parseDeferredItemsWithStatus(content);
+    assert.equal(before.length, 1, `fixture must parse to one entry, got ${before.length}`);
+    const ack = acknowledgeDeferredItem(content, before[0].name);
+    const after = parseDeferredItemsWithStatus(ack.content);
+    assert.equal(after.length, 1, 'acknowledged file must still parse to one entry');
+    return { ack, before: before[0], after: after[0], content: ack.content };
+  }
+
+  test('bare Title-case and UPPER status lines ack via the insert branch the reader reads', () => {
+    for (const body of [
+      '- alpha\n  Status: open',   // A: bare Title-case continuation
+      '- Status: open',             // D: bare Title-case on line 0
+      '- alpha\n  STATUS: open',   // E: bare UPPER continuation
+    ]) {
+      const r = roundTrip(body);
+      assert.equal(r.ack.status, 'ok');
+      assert.equal(r.after.status, 'acknowledged',
+        `#3775: ${JSON.stringify(body)} must end acknowledged via the insert branch; got "${r.after.status}"`);
+    }
+  });
+
+  test('a human-written bare Status: resolved line is never clobbered', () => {
+    const r = roundTrip('- alpha\n  Status: resolved');
+    assert.equal(r.ack.status, 'ok');
+    assert.equal(r.after.status, 'acknowledged', 'the entry must read acknowledged afterward');
+    assert.ok(r.content.includes('  Status: resolved'),
+      `#3775: the human's resolution marker must remain byte-untouched; got:\n${r.content}`);
+    assert.ok(r.content.includes('status: acknowledged'),
+      'the inserted lowercase marker line the reader consumes must be present');
+  });
+
+  test('#3775 control: bolded and lowercase status lines still rewrite in place', () => {
+    for (const body of ['- alpha\n  **Status:** open', '- alpha\n  status: open']) {
+      const r = roundTrip(body);
+      assert.equal(r.ack.status, 'ok');
+      assert.equal(r.after.status, 'acknowledged');
+      const statusLines = r.content.split('\n').filter((l) => /\*{0,2}\s*status:\s*/i.test(l) && l.trim() !== '');
+      assert.equal(statusLines.length, 1,
+        `control must rewrite in place — exactly one status line, got ${JSON.stringify(statusLines)}`);
+    }
+  });
+});

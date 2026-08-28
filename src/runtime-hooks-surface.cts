@@ -459,8 +459,9 @@ function normalizeNodePath(execPath: string, opts?: NodeNormOpts): string {
       candidates.push(`${fnmRoot}/aliases/default/node.exe`);
       candidates.push(`${fnmRoot}/aliases/default/bin/node`);
     }
-    if (env.APPDATA) {
-      candidates.push(`${normalizeRootDir(env.APPDATA)}/fnm/aliases/default/node.exe`);
+    const appdata = shellCmdProjection.envGet(env, 'APPDATA');
+    if (appdata) {
+      candidates.push(`${normalizeRootDir(appdata)}/fnm/aliases/default/node.exe`);
     }
     for (const candidate of candidates) {
       if (candidate && existsSync(candidate)) return candidate;

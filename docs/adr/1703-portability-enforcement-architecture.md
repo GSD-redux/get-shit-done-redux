@@ -77,6 +77,7 @@ Replace all three with a single coherent mechanism: **AST-based ESLint rules in 
 | `normalize-path-in-content` | `DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT` (`RULESET.CONTENT-PATH-NORMALIZATION`) | `src/**/*.cts` |
 | `require-fs-op-fallback` | `DEFECT.WINDOWS-FS-OPS` | `src/**/*.cts`, build/install |
 | `no-private-binary-resolution` | `DEFECT.WINDOWS-PRIVATE-BINARY-RESOLUTION` | `src/**/*.cts`, `gsd-core/bin/**`, `scripts/**`, `hooks/**` |
+| `no-exact-case-env-access` | `DEFECT.WINDOWS-EXACT-CASE-ENV-ACCESS` | `src/**/*.cts`, `gsd-core/bin/**`, `scripts/**`, `hooks/**` |
 
 **Amendment (2026-08-18, epic #3411 Phase 3 / #3619).** `no-private-binary-resolution` is the
 first catalog entry added after the original seven, and it extends this architecture to a
@@ -109,6 +110,31 @@ Two scoping consequences worth recording, because both were arrived at rather th
 
 The rule started **green** with nothing suppressed and nothing grandfathered — Phases 1 and 2 had
 already removed every private resolver, which is what made a strict ratchet possible at all.
+
+**Amendment (2026-08-27, epic #3411 Phase 4 / #3624).** `no-exact-case-env-access` extends the
+architecture to a second production-runtime class: PR #3621 (epic #3411 Phase 1) shipped
+`resolveExecutableBinary` reading `env['PATH']` where `env` could be a plain object (`{
+...process.env, ...opts.env }`, which loses `process.env`'s case-insensitive Proxy) — a Windows
+CI-only failure caught and fixed by adding `envGet(env, name)` inside the seam. This rule
+generalizes that fix into a ratchet: it flags a read of any casing of `PATH`, `PATHEXT`,
+`ComSpec`, `USERPROFILE`, `TEMP`, `TMP`, or `APPDATA` (the vocabulary's
+`WINDOWS_CASE_VARYING_ENV_VARS`) off any receiver that is not literally `process.env` — dot or
+bracket notation, or destructuring — using the same seam exemption anchoring as
+`no-private-binary-resolution`.
+
+Matching had to be narrower than "any property access whose name matches the vocabulary,
+case-insensitively": a first pass produced 113 false positives, because ordinary lowercase
+property access (`config.path`, `artifact['path']`) collides with the vocab entry `PATH` under
+case-insensitive comparison. The shipped rule additionally requires the receiver to be
+"env-shaped" — literally `<expr>.env` / `<expr>['env']` or a bare identifier named `env` (any
+casing) — for both notations and for destructuring alike, which is what distinguishes
+`opts.env['PATH']` (flagged) from `artifact['path']` (not flagged) without def-use/scope tracing.
+One real pre-existing violation of the tightened rule was found and fixed in the same PR:
+`src/runtime-hooks-surface.cts`'s `normalizeNodePath` read `env.APPDATA` off a runtime union
+(`(opts && opts.env) || process.env`) that may be a plain object — migrated to `envGet(env,
+'APPDATA')`. `envGet` (formerly the seam-private `_envGet`) is now exported from
+`src/shell-command-projection.cts` specifically so this rule's remediation message ("route
+through `envGet`") names a real, callable helper.
 
 **Taxonomy coverage.** This catalog addresses every `DEFECT.WINDOWS-*` class plus
 `DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE` in `CONTEXT.md`, to the extent each is *statically*
