@@ -556,6 +556,51 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         why: 'the arm-2 scoping rationale must name the compensating condition, which lives in '
           + 'execute-mvp-tdd.md, or the coded gate gets built with a real hole in it',
       },
+      {
+        section: 'Declaration',
+        needle: 'offers no single test id to select — and record `expected_failure.subject`, '
+          + '`target_test` and the observed `actual.subject`',
+        verdict: null,
+        why: '`id_matches` admits an observed id equal to or longer than the declared one, never '
+          + 'shorter, and go reports a compile-time miss against `./pricing_test.go:6:12` while '
+          + 'the declaration says `./pricing_test.go` — the unmatched suffix begins `:` and not '
+          + '`[`, so unless the rule binds the OBSERVED `actual.subject` too, `id_matches` is '
+          + 'false and a legitimate go outside-in RED is rejected by the contract that exists to '
+          + 'admit it. The needle spans the junction between the granularity half and the '
+          + 'recording half on purpose: one sentence carrying two ideas can be half-deleted',
+      },
+      {
+        section: 'Declaration',
+        needle: 'Recorded for audit only: the predicate reads no field of it',
+        verdict: null,
+        why: '`implementation_target` has no predicate role; a reader who believes the predicate '
+          + 'compares it will re-derive the unsatisfiable arm 2 this plan removed',
+      },
+      {
+        section: 'Declaration',
+        needle: 'The production module or symbol GREEN will create or change',
+        verdict: null,
+        why: 'the shipped exemplar expects a `call`-phase `AssertionError`, which requires the '
+          + 'symbol to already exist; a create-only definition makes the exemplar’s own '
+          + 'declared state unreachable',
+      },
+      {
+        section: 'Declaration',
+        needle: 'a mode marker naming production intent, not a prediction of what the runner '
+          + 'will print',
+        verdict: null,
+        why: 'with the observed subject always the test file, the declared equality is the ONLY '
+          + 'thing left that selects arm 2, and it selects from declared fields alone before any '
+          + 'run',
+      },
+      {
+        section: 'Evidence',
+        needle: '`id_matches` relates the observed subject to `plan.target_test` in both arms',
+        verdict: null,
+        why: 'the sentence said the relation applies to the target-test arm only, which becomes '
+          + 'false the moment arm 2 uses it; a stale scoping sentence is how a reader concludes '
+          + 'the two arms compare different things',
+      },
     ];
 
     for (const row of rows) {
@@ -627,8 +672,16 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       'block, and the original defect. See #3770.');
 
     const outsideInArm = lines.slice(disjunctions[0] + 1).join('\n');
-    assert.match(outsideInArm, /plan\.implementation_target/,
-      'the outside-in arm must anchor the observed subject to the declared implementation target');
+    const arm2Anchor = '    id_matches(actual.subject, plan.target_test)';
+    assert.match(outsideInArm,
+      new RegExp(`^${arm2Anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'),
+      'the outside-in arm must anchor the observed subject on the DECLARED TARGET TEST. ' +
+      '`actual.subject == plan.implementation_target` is unsatisfiable: no runner reports an ' +
+      'outside-in miss against the implementation symbol — pytest reports it against the test ' +
+      'file and go against `./pricing_test.go:6:12` — so the only routes to a passing arm were ' +
+      'to fabricate the subject or to abandon outside-in RED. Matched as a whole line under ' +
+      '`^…$` with the `m` flag, so a paraphrase, a reordering or a superset line fails here ' +
+      'rather than passing on a substring. See #3770.');
     assert.match(outsideInArm, /outside-in missing-target mode/,
       'the outside-in arm must keep its second conjunct — without it, any declaration whose ' +
       'expected class happens to match slips through. Dropped twice already. See #3770.');
