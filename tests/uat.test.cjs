@@ -6692,16 +6692,19 @@ describe('#3781: acknowledge supports the heading-delimited entry shape', () => 
   });
 
   test('pending bullets alongside heading entries ack without disturbing siblings', () => {
+    // Inner headings must be H3+ — a sibling H2 would end the level-bounded
+    // '## Deferred Items' section (collectSection), so the realistic shapes
+    // are H3 containers with H4 leaves.
     const doc = [
       '## Deferred Items',
       '',
       '- loose preamble item',
       '',
-      '## Findings group',
+      '### Findings group',
       '',
       '- container-direct item',
       '',
-      '### Finding one',
+      '#### Finding one',
       '- did a thing',
       '',
     ].join('\n');
@@ -6772,7 +6775,9 @@ describe('#3781: acknowledge supports the heading-delimited entry shape', () => 
       '',
     ].join('\n');
     const before = parseDeferredItemsWithStatus(doc);
-    assert.equal(before.length, 1, 'fixture self-check: the leaf entry parses');
+    // The leaf entry AND the table row itself (parseDeferredTableItems unions
+    // over the same section) both surface.
+    assert.equal(before.length, 2, 'fixture self-check: leaf entry + table row');
     const ack = acknowledgeDeferredItem(doc, before[0].name);
     assert.equal(ack.status, 'unsupported_heading_shape',
       'a table line inside the entry body makes its span non-contiguous — refuse');
@@ -6805,16 +6810,15 @@ describe('#3781: acknowledge supports the heading-delimited entry shape', () => 
   });
 
   test('flat and mixed heading-depth files ack their leaf entries', () => {
-    const flat = '# Notes\n\n# Finding A\n- item one\n\n# Finding B\n- item two\n';
-    const flatSection = '## Deferred Items\n\n' + flat;
+    const flatSection = '## Deferred Items\n\n### Notes\n\n#### Finding A\n- item one\n\n#### Finding B\n- item two\n';
     let items = parseDeferredItemsWithStatus(flatSection);
-    assert.equal(items.length, 3, 'container title + two leaves');
+    assert.equal(items.length, 2, 'container group + two leaves');
     const ackA = acknowledgeDeferredItem(flatSection, 'Finding A - item one');
     assert.equal(ackA.status, 'ok');
     assert.equal(parseDeferredItemsWithStatus(ackA.content).map((e) => e.status).filter(Boolean).length, 1,
       'exactly one entry acknowledged');
 
-    const mixed = '## Deferred Items\n\n## Childless group\n- solo item\n\n## Parent group\n### Child one\n- child item\n';
+    const mixed = '## Deferred Items\n\n### Childless group\n- solo item\n\n### Parent group\n#### Child one\n- child item\n';
     items = parseDeferredItemsWithStatus(mixed);
     assert.ok(items.length >= 2, 'fixture self-check: mixed depths parse');
     const ackSolo = acknowledgeDeferredItem(mixed, 'Childless group - solo item');
@@ -6830,150 +6834,6 @@ describe('#3781: acknowledge supports the heading-delimited entry shape', () => 
     assert.equal(ack.status, 'ok');
     assert.ok(ack.content.includes('  - **Status:** acknowledged'),
       `the raw line's bullet marker and indent must survive the rewrite; got:\n${ack.content}`);
-  });
-
-  test('fully-headless file is byte-for-byte unchanged by this feature', () => {
-    const doc = '## Deferred Items\n\n- alpha\n  status: open\n';
-    const before = parseDeferredItemsWithStatus(doc);
-    const ack = acknowledgeDeferredItem(doc, before[0].name);
-    assert.equal(ack.status, 'ok');
-    assert.equal(ack.content, '## Deferred Items\n\n- alpha\n  status: acknowledged\n',
-      'the pre-existing headless splice shape must be untouched');
-  });
-});
-
-describe('#3781: acknowledge supports the heading-delimited entry shape', () => {
-  const leafDoc = [
-    '## Deferred Items',
-    '',
-    '### Finding one',
-    '- did a thing',
-    '- evidence gathered',
-    '',
-  ].join('\n');
-
-  test('leaf entry without status acks via the insert branch the reader reads', () => {
-    const before = parseDeferredItemsWithStatus(leafDoc);
-    assert.equal(before.length, 1);
-    assert.equal(before[0].status, '');
-
-    const ack = acknowledgeDeferredItem(leafDoc, before[0].name);
-    assert.equal(ack.status, 'ok', `pre-fix this refused unsupported_heading_shape; got ${ack.status}`);
-
-    const after = parseDeferredItemsWithStatus(ack.content);
-    assert.equal(after.length, 1);
-    assert.equal(after[0].status, 'acknowledged', 'the entry must read acknowledged afterward');
-
-    // AC7 sentence trap: the marker goes after the LAST non-blank line, never
-    // spliced mid-entry after the heading line.
-    const lines = ack.content.split('\n');
-    const markerIdx = lines.findIndex((l) => /status: acknowledged/.test(l));
-    const lastBodyIdx = lines.findIndex((l) => l === '- evidence gathered');
-    assert.ok(markerIdx > lastBodyIdx, 'marker must follow the entry\'s last non-blank line');
-    assert.ok(lines.includes('- did a thing') && lines.includes('- evidence gathered'),
-      'the soft-wrapped body must remain intact');
-  });
-
-  test('leaf entry with an existing Status field is replaced in place', () => {
-    const doc = leafDoc.replace('- did a thing', '- **Status:** open\n- did a thing');
-    const before = parseDeferredItemsWithStatus(doc);
-    assert.equal(before[0].status, 'open');
-
-    const ack = acknowledgeDeferredItem(doc, before[0].name);
-    assert.equal(ack.status, 'ok');
-
-    const statusLines = ack.content.split('\n').filter((l) => /status:/i.test(l) && l.trim() !== '');
-    assert.equal(statusLines.length, 1, `exactly one status line, got ${JSON.stringify(statusLines)}`);
-    assert.match(statusLines[0], /\*\*Status:\*\*\s*acknowledged/);
-    assert.equal(parseDeferredItemsWithStatus(ack.content)[0].status, 'acknowledged');
-  });
-
-  test('pending bullets alongside heading entries ack without disturbing siblings', () => {
-    const doc = [
-      '## Deferred Items',
-      '',
-      '- loose preamble item',
-      '',
-      '## Findings group',
-      '',
-      '- container-direct item',
-      '',
-      '### Finding one',
-      '- did a thing',
-      '',
-    ].join('\n');
-    const before = parseDeferredItemsWithStatus(doc);
-    assert.equal(before.length, 3, `fixture must parse to three entries, got ${JSON.stringify(before)}`);
-
-    const ackPreamble = acknowledgeDeferredItem(doc, 'loose preamble item');
-    assert.equal(ackPreamble.status, 'ok');
-    let items = parseDeferredItemsWithStatus(ackPreamble.content);
-    assert.equal(items[0].status, 'acknowledged');
-    assert.equal(items[1].status, '', 'container-direct sibling untouched');
-    assert.equal(items[2].status, '', 'leaf sibling untouched');
-
-    const ackContainerDirect = acknowledgeDeferredItem(ackPreamble.content, 'container-direct item');
-    assert.equal(ackContainerDirect.status, 'ok');
-    items = parseDeferredItemsWithStatus(ackContainerDirect.content);
-    assert.deepEqual(items.map((e) => e.status), ['acknowledged', 'acknowledged', ''],
-      'each pending bullet acks independently');
-    assert.ok(ackContainerDirect.content.includes('- did a thing'), 'leaf entry text untouched');
-  });
-
-  test('already_resolved / ambiguous / not_found semantics match the headless shape', () => {
-    const resolvedDoc = leafDoc.replace('- did a thing', '- **Status:** resolved\n- did a thing');
-    const resolved = acknowledgeDeferredItem(resolvedDoc, parseDeferredItemsWithStatus(resolvedDoc)[0].name);
-    assert.equal(resolved.status, 'already_resolved');
-    assert.equal(resolved.content, resolvedDoc, 'file unchanged');
-
-    const dupDoc = [
-      '## Deferred Items',
-      '',
-      '### Finding one',
-      '- did a thing',
-      '',
-      '### Finding two',
-      '- did a thing',
-      '',
-    ].join('\n');
-    // Both leaves carry bullet `- did a thing`; identity text differs by heading,
-    // so force ambiguity with identical heading+body.
-    const dupDoc2 = [
-      '## Deferred Items',
-      '',
-      '### Same',
-      '- did a thing',
-      '',
-      '### Same',
-      '- did a thing',
-      '',
-    ].join('\n');
-    const dup = acknowledgeDeferredItem(dupDoc2, parseDeferredItemsWithStatus(dupDoc2)[0].name);
-    assert.equal(dup.status, 'ambiguous');
-    assert.equal(dup.content, dupDoc2, 'file unchanged');
-
-    const missing = acknowledgeDeferredItem(leafDoc, 'no such entry');
-    assert.equal(missing.status, 'not_found');
-    assert.equal(missing.content, leafDoc);
-    void dupDoc;
-  });
-
-  test('entries with embedded GFM table rows still refuse', () => {
-    const doc = [
-      '## Deferred Items',
-      '',
-      '### Finding one',
-      '- did a thing',
-      '| a | b |',
-      '- more evidence',
-      '',
-    ].join('\n');
-    const before = parseDeferredItemsWithStatus(doc);
-    assert.equal(before.length, 1, 'fixture self-check: the leaf entry parses');
-    const ack = acknowledgeDeferredItem(doc, before[0].name);
-    assert.equal(ack.status, 'unsupported_heading_shape',
-      'a table line inside the entry body makes its span non-contiguous — refuse');
-    assert.equal(ack.content, doc, 'file unchanged');
   });
 
   test('fully-headless file is byte-for-byte unchanged by this feature', () => {

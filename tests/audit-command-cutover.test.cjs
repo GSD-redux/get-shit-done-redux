@@ -2077,17 +2077,39 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       assert.match(result.error, /no deferred item matched/i);
     });
 
-    test('BLOCKER 1: heading-delimited (#3457) deferred-items shape is refused as unsupported_heading_shape, not guessed at', () => {
+    test('BLOCKER 1 (updated for #3781): heading-delimited (#3457) entries ack via the CLI; only table-embedded spans still refuse', () => {
       const phaseDir = planningPath('phases', '01-alpha');
       fs.mkdirSync(phaseDir, { recursive: true });
       const filePath = path.join(phaseDir, 'deferred-items.md');
-      const before = ['## Deferred Items', '', '### Something out of scope', '', 'Some detail line.', ''].join('\n');
-      fs.writeFileSync(filePath, before);
 
-      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Something out of scope', '--milestone', 'v1.0']);
-      assert.equal(result.success, false, 'heading-delimited shape must be refused');
-      assert.match(result.error, /heading-delimited/i);
-      assert.equal(fs.readFileSync(filePath, 'utf-8'), before, 'file must be byte-identical — nothing written on refusal');
+      // #3781: the heading shape is now SUPPORTED — a bullet-bearing leaf
+      // acks through the CLI writer.
+      const ackable = ['## Deferred Items', '', '### Something out of scope', '', '- a real bullet', ''].join('\n');
+      fs.writeFileSync(filePath, ackable);
+      // --text must be the reader-derived identity: rawGapEntryText joins the
+      // heading text, the blank line, and the bullet with single spaces —
+      // the blank line contributes an empty segment, hence the double space.
+      const okResult = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Something out of scope  - a real bullet', '--milestone', 'v1.0']);
+      assert.equal(okResult.success, true, `heading-shaped entries must be acknowledgeable; stderr: ${okResult.error}`);
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /status: acknowledged/);
+
+      // A table row embedded in the entry's span is still refused — a
+      // non-contiguous span cannot anchor a safe write.
+      const tabled = ['## Deferred Items', '', '### Tabled finding', '', '- a bullet', '| x | y |', ''].join('\n');
+      fs.writeFileSync(filePath, tabled);
+      const refuse = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Tabled finding  - a bullet', '--milestone', 'v1.0']);
+      assert.equal(refuse.success, false, 'table-embedded spans must still refuse');
+      assert.match(refuse.error, /GFM table row/i);
+      assert.equal(fs.readFileSync(filePath, 'utf-8'), tabled, 'file must be byte-identical — nothing written on refusal');
+
+      // Prose-only headings were never items (reader contract) — not_found,
+      // never a write.
+      const proseOnly = ['## Deferred Items', '', '### Something out of scope', '', 'Some detail line.', ''].join('\n');
+      fs.writeFileSync(filePath, proseOnly);
+      const nf = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Something out of scope', '--milestone', 'v1.0']);
+      assert.equal(nf.success, false, 'prose-only headings contribute no entry');
+      assert.match(nf.error, /no deferred item matched/i);
+      assert.equal(fs.readFileSync(filePath, 'utf-8'), proseOnly, 'file must be byte-identical');
     });
 
     // ── F1 (#3458 follow-up review, HIGH): the writer must splice by the
