@@ -184,11 +184,12 @@ Two further obligations:
   position — environment prefix, flag argument, URL, header — substituting the variable's
   placeholder name. This is an obligation, not a pattern list, so no unlisted position leaks by
   omission.
-- **`expected` is recorded but never compared against the declaration by the predicate.** It is the
-  executor's echo; comparing the predicate's inputs against that echo would let a mis-copied
-  trailer approve itself. The trailer's `target_test` is the same kind of echo and gets the same
-  treatment — the predicate anchors on `plan.target_test`, the declared value, so a self-reported
-  id cannot be bent to fit whatever the run produced.
+- **`expected` and `target_test` are the executor's echoes, so the predicate pins both to the
+  declaration before comparing anything against them.** `trailer.expected == plan.expected_failure`
+  and `trailer.target_test == plan.target_test` are shared conjuncts that must hold first; only
+  then do the `actual`-versus-`expected` field comparisons carry meaning. Pinning is what stops a
+  mis-copied trailer from approving itself by agreeing with its own echo, and what stops a
+  self-reported id from being bent to fit whatever the run produced.
 
 No `version` field. The top-level key set must equal exactly these seven, and that equality is
 itself the fail-closed mechanism: a foreign or future schema fails it instead of being partly
@@ -203,10 +204,10 @@ honoured.
 ```text
 valid_red =
   exit_status != 0
-# AND trailer.expected == plan.expected_failure          -- Phase 3, see below
+  AND trailer.expected == plan.expected_failure
   AND actual.phase == expected.phase
   AND actual.class_or_mode == expected.class_or_mode
-# AND trailer.target_test == plan.target_test            -- Phase 3, see below
+  AND trailer.target_test == plan.target_test
   AND (
     selected_count > 0
     AND target_executed
@@ -220,9 +221,13 @@ valid_red =
 This file is the block's only source. Reproduce it character-for-character wherever it is quoted:
 every paraphrase of it so far has silently dropped a conjunct.
 
-**The two commented conjuncts** bind the trailer's `expected` and `target_test` echoes to the
-declaration. Nothing holds a plan object at predicate time yet, so they ship commented rather than
-deleted, keeping the deferral visible in the artifact an executor reads.
+**The first and fourth shared conjuncts** are the pinning pair that binds the trailer's `expected`
+and `target_test` echoes to the declaration. They shipped commented out at first, deferred to
+Phase 3 on the grounds that no plan object is held at predicate time. That deferral is withdrawn:
+both reference only `plan.expected_failure` and `plan.target_test`, symbols the parenthesised group
+below already consumes, so deferring them introduced no plan-side input Phase 3 did not already
+require — while leaving the `actual`-versus-`expected` comparisons above them as a self-comparison
+of the trailer against its own echo.
 
 **Two refinements**, neither narrowing the shape: `actual == expected` is written out as its two
 field comparisons, omitting `subject` because the arms bind `actual.subject` to plan-declared
