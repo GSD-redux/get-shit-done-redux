@@ -4475,15 +4475,21 @@ describe('git-cmd.js resolveCommitSubject', () => {
       'feat(auth): add login flow');
   });
 
-  test('accepts the opener spellings bash accepts', () => {
-    assert.strictEqual(resolveCommitSubject(sub('<<EOF', 'fix: bare', 'EOF')), 'fix: bare');
-    assert.strictEqual(resolveCommitSubject(sub('<< EOF', 'fix: spaced', 'EOF')), 'fix: spaced');
+  test('accepts the QUOTED opener spellings, which bash does not expand', () => {
+    // Only the spellings that SUPPRESS expansion may be resolved. The two bare
+    // rows that used to live here — `<<EOF` and `<< EOF`, both asserted to
+    // resolve — are the round-4 BLOCKER and now assert the opposite, in the
+    // dedicated row below (review of #3816, round 4).
     // no space before << is legal bash too (review of #3816, round 3)
     assert.strictEqual(resolveCommitSubject("$(cat<<'EOF'\nfix: nospace\nEOF\n)"), 'fix: nospace');
     // NOTE: resolvable HERE, but unreachable through gsd-validate-commit.sh —
-    // its `-m` capture stops at this spelling's own delimiter quote. The
-    // hook-level row in tests/hooks-opt-in.test.cjs pins that limit; both are
-    // correct together (review of #3816).
+    // its DOUBLE-quoted `-m` capture stops at this spelling's own delimiter
+    // quote. Round 4 disproved the stronger form of this claim: the
+    // SINGLE-quoted capture delivers the spelling intact, so "unreachable"
+    // held only for one arm. It holds for both now because the hook gates the
+    // resolver on the double-quoted arm — a consequence of that gate, not a
+    // property of the capture alone. The hook-level rows in
+    // tests/hooks-opt-in.test.cjs pin both halves; all are correct together.
     assert.strictEqual(resolveCommitSubject(sub('<<"EOF"', 'fix: dquoted', 'EOF')), 'fix: dquoted');
     // A delimiter that is not identifier-shaped is still a valid bash word.
     assert.strictEqual(resolveCommitSubject(sub("<<'END-MSG'", 'fix: hyphen tag', 'END-MSG')),
@@ -4498,7 +4504,12 @@ describe('git-cmd.js resolveCommitSubject', () => {
   test('<<- strips the leading tabs bash strips', () => {
     // With `<<-`, bash removes leading TABS from body lines, so the subject the
     // user sees has none. Returning the raw line blocked a conforming message.
-    assert.strictEqual(resolveCommitSubject("$(cat <<-EOF\n\tfix(parser): strip heredoc tabs\n\tEOF\n)"),
+    // The delimiter is QUOTED here because `<<-` and quoting are independent:
+    // `<<-` controls tab stripping, the quote controls expansion. This row is
+    // about tab stripping, so it uses a spelling that is resolvable at all —
+    // a bare `<<-EOF` is refused by the round-4 expansion guard, which is that
+    // guard's row to assert, not this one's.
+    assert.strictEqual(resolveCommitSubject("$(cat <<-'EOF'\n\tfix(parser): strip heredoc tabs\n\tEOF\n)"),
       'fix(parser): strip heredoc tabs');
   });
 
@@ -4506,7 +4517,7 @@ describe('git-cmd.js resolveCommitSubject', () => {
     // `$(cat <<'EOF'` then straight to `EOF` — the message is empty, and the
     // delimiter must not be mistaken for the subject.
     assert.strictEqual(resolveCommitSubject("$(cat <<'EOF'\nEOF\n)"), '');
-    assert.strictEqual(resolveCommitSubject("$(cat <<-EOF\n\tEOF\n)"), '',
+    assert.strictEqual(resolveCommitSubject("$(cat <<-'EOF'\n\tEOF\n)"), '',
       'the <<- form strips the tab first, so the terminator still matches');
   });
 
@@ -4610,8 +4621,35 @@ describe('git-cmd.js resolveCommitSubject', () => {
   });
 
   test('a backslash-escaped delimiter is the same delimiter', () => {
+    // `<<\\D` suppresses expansion exactly as `<<'D'` does, so it stays
+    // resolvable. This is the row that makes the bare-delimiter guard below a
+    // real distinction rather than a blanket refusal: the two spellings differ
+    // by one character and by whether bash expands the body.
     assert.strictEqual(resolveCommitSubject('$(cat <<\\EOF\nfix: backslash tag\nEOF\n)'),
       'fix: backslash tag');
+  });
+
+  test('BLOCKER (round 4): a BARE delimiter is not resolved — bash expands that body', () => {
+    // Review of #3816, round 4. Only `<<'D'`, `<<"D"` and `<<\\D` suppress
+    // expansion. With a bare `<<D` bash substitutes `$var`, `$(...)` and
+    // arithmetic into the body BEFORE git sees it, so the literal text here is
+    // not the subject git receives — resolving it dodged the format gate
+    // (`feat: $UNSET_VAR` -> git gets `feat:`) and the length gate
+    // (`feat: ${LONG}` -> git gets any length). Falling back to the opener line
+    // is the same fail-closed rule the metacharacter, truncation and
+    // post-terminator guards follow.
+    //
+    // Non-vacuous: every body below is conforming, so a resolver that still
+    // read the body returns the body and these fail.
+    assert.strictEqual(resolveCommitSubject(sub('<<EOF', 'fix: bare', 'EOF')),
+      '$(cat <<EOF', 'a bare delimiter must fall back to the opener line');
+    assert.strictEqual(resolveCommitSubject(sub('<< EOF', 'fix: spaced', 'EOF')),
+      '$(cat << EOF', 'a spaced bare delimiter is still bare');
+    assert.strictEqual(resolveCommitSubject(sub('<<-EOF', '\tfix: dashed bare', 'EOF')),
+      '$(cat <<-EOF', '<<- does not quote the delimiter; it only strips tabs');
+    // The expansion that makes this a bypass rather than a nicety.
+    assert.strictEqual(resolveCommitSubject(sub('<<EOF', 'feat: $UNSET_VAR', 'EOF')),
+      '$(cat <<EOF', "git's real subject here is `feat:` — never the unexpanded literal");
   });
 
   // RULESET.TESTS.property-based-testing — this is a parser/transformation on a

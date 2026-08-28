@@ -215,17 +215,23 @@ function isGitSubcommand(cmd, sub) {
  * ALLOWED a non-conforming commit: an enforcement bypass, not just a
  * misclassification (review of #3802).
  *
- * KNOWN LIMIT: an UNQUOTED delimiter (`<<EOF`) makes bash expand `$var` and
- * `$(...)` in the body, so this validates the literal text rather than what git
- * receives — the same pre-existing limit as expansions in a plain `-m "..."`
- * argument, and the anchored recognition above is unaffected by it (review of
- * #3816).
+ * NOT resolved, by design: an UNQUOTED delimiter (`<<EOF`). bash expands `$var`
+ * and `$(...)` in that body, so the literal text here is not what git receives.
+ * An earlier revision resolved it anyway and called the gap "the same
+ * pre-existing limit as expansions in a plain `-m` argument" — that framing was
+ * wrong on both halves: on base the whole heredoc form was blocked, so this fix
+ * CREATED the path, and it dodged the length gate as well as the format gate.
+ * See the expansion guard in the body (review of #3816, round 4).
  *
  * KNOWN LIMIT: the DOUBLE-QUOTED delimiter spelling (`<<"EOF"`) is resolvable
- * here but unreachable through the caller — `gsd-validate-commit.sh`'s `-m`
- * capture stops at the first `"`, which in that spelling is the delimiter's own
- * quote, so the resolver only ever sees a truncated opener and the commit stays
- * blocked. That is the pre-fix behaviour for the whole form (fail closed, a
+ * here but unreachable through the caller — `gsd-validate-commit.sh`'s
+ * double-quoted `-m` capture stops at the first `"`, which in that spelling is
+ * the delimiter's own quote, so the resolver only ever sees a truncated opener
+ * and the commit stays blocked. Its single-quoted `-m` capture DOES deliver the
+ * spelling intact, which is why an earlier revision's claim of unreachability
+ * was false; the caller now gates the resolver on the double-quoted arm alone
+ * (review of #3816, round 4), so the claim holds again — for that reason, not
+ * by luck. That is the pre-fix behaviour for the whole form (fail closed, a
  * false positive on one rare spelling), and widening the bash capture to span
  * inner quotes would change what is captured for EVERY message containing one —
  * a regression class this fix deliberately does not touch (Codex review of
@@ -263,9 +269,30 @@ function resolveCommitSubject(messageArg) {
   // `cat[ \t]*<<`, not `+`: bash accepts `cat<<'EOF'` with no space (review of
   // #3816, round 3), and recognizing it costs nothing — the token before `<<`
   // is still literally `cat`.
-  const opener = /^\$\([ \t]*(?:[\w./-]*\/)?cat[ \t]*<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([^\s'"();|&<>\\]+))[ \t]*$/
+  //
+  // The delimiter alternatives are split so the BARE spelling is its own group:
+  // `\\(...)` (backslash-quoted) and `(...)` (bare) were one `\\?(...)` branch,
+  // which conflated the only two spellings that differ in bash. See the
+  // expansion guard below.
+  const opener = /^\$\([ \t]*(?:[\w./-]*\/)?cat[ \t]*<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\([^\s'"();|&<>\\]+)|([^\s'"();|&<>\\]+))[ \t]*$/
     .exec(lines[0]);
   if (!opener) return lines[0];
+
+  // EXPANSION GUARD (review of #3816, round 4 — BLOCKER). Only `<<'D'`, `<<"D"`
+  // and `<<\D` suppress expansion. A BARE `<<D` is expanded by bash, so the body
+  // captured here is NOT the text git receives, and measuring it is an
+  // enforcement bypass in both gates at once:
+  //
+  //     -m "$(cat <<EOF\nfeat: $UNSET_VAR\nEOF\n)"   git gets `feat:`  -> format gate dodged
+  //     -m "$(cat <<EOF\nfeat: ${LONG}\nEOF\n)"      git gets any length -> length gate dodged
+  //
+  // Both measured base=2 -> head=0 against the real hook. This is NOT the
+  // pre-existing plain-`-m` expansion limit an earlier revision claimed it was:
+  // on base the whole heredoc form was blocked, so no expansion inside a body
+  // ever reached an allow — this fix created the path, and closes it here.
+  // Same rule every other guard in this function follows: when the real subject
+  // cannot be known, fall back to the opener line, which fails the format gate.
+  if (opener[5]) return lines[0];
 
   // `<<-` strips leading TABS from every body line, including the terminator.
   const stripTabs = opener[1] === '-';

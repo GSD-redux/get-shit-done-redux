@@ -425,17 +425,20 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
       'the subject is the first NON-empty body line');
   });
 
-  test('validate-commit resolves the other heredoc opener spellings, both directions', () => {
+  test('validate-commit resolves the QUOTED heredoc opener spellings, both directions', () => {
     // Both directions per spelling, deliberately. Asserting only "conforming
     // passes" would also pass if the resolver returned an empty subject for a
     // spelling it failed to recognise — an allow, but for the wrong reason
     // (review of #3802). Pairing it with a non-conforming body that must BLOCK
     // proves the body is genuinely being read.
+    //
+    // Only the spellings that SUPPRESS expansion belong here: `<<'D'`, `<<"D"`
+    // and `<<\D`. The bare spellings moved to the row below, which pins the
+    // opposite contract (review of #3816, round 4).
     for (const [label, open, close, indent] of [
-      ['bare <<TAG', '<<EOF', 'EOF', ''],
       ["<<-'TAG' (tab-stripped)", "<<-'MSG'", '\tMSG', '\t'],
-      ['<< TAG (spaced)', '<< EOF', 'EOF', ''],
       ["<<'END-MSG' (non-identifier tag)", "<<'END-MSG'", 'END-MSG', ''],
+      ['<<\\TAG (backslash-quoted)', '<<\\EOF', 'EOF', ''],
     ]) {
       assert.strictEqual(runHookCmd(heredoc(`${indent}fix(api): correct status code`, open, close)).status, 0,
         `${label}: a conforming message in this spelling must pass`);
@@ -443,6 +446,92 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
         `${label}: a NON-conforming message in this spelling must still block — if this passes, the `
         + 'resolver is returning an empty subject rather than reading the body');
     }
+  });
+
+  test('validate-commit BLOCKS a bare heredoc delimiter — bash expands that body (round-4 BLOCKER)', () => {
+    // Review of #3816, round 4. This row previously asserted the OPPOSITE
+    // (`['bare <<TAG', '<<EOF', 'EOF', '']` expecting exit 0), so the suite
+    // itself defended the bypass and the fix could not land without editing a
+    // test that read as intentional. RULESET.TESTS.delete-bad-tests: a test
+    // asserting the defective behaviour is corrected in the same change as the
+    // behaviour.
+    //
+    // WHY the contract flips: only `<<'D'`, `<<"D"` and `<<\D` suppress
+    // expansion. A bare `<<D` is expanded by bash, so the body captured by the
+    // hook is not the text git receives, and resolving it dodges BOTH gates.
+    // Verified with an argv-printing stub: `-m "$(cat <<EOF\nfeat: $UNSET\nEOF\n)"`
+    // reaches git as `feat: ` — subject `feat:`, non-conforming — while the
+    // literal body measured as conforming.
+    for (const [label, open] of [
+      ['bare <<TAG', '<<EOF'],
+      ['<< TAG (spaced, bare)', '<< EOF'],
+      ['<<-TAG (bare, tab-stripping)', '<<-EOF'],
+    ]) {
+      const result = runHookCmd(heredoc('fix(api): correct status code', open, 'EOF'));
+      assert.strictEqual(result.status, 2,
+        `${label}: must BLOCK even though the literal body looks conforming — bash expands this `
+        + 'body, so the validated text is not the text git receives');
+      assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION',
+        `${label}: falls back to the opener line, which fails the format gate`);
+    }
+  });
+
+  test('validate-commit BLOCKS an expansion inside a bare-delimiter body (round-4 BLOCKER)', () => {
+    // The measured bypass itself, in both its gate-dodging forms. Non-vacuous:
+    // each literal body IS conforming and IS within 72 chars, so a resolver
+    // that measured the literal returns exit 0 — which is what head did before
+    // this fix (base=2 -> head=0, measured against the real hook).
+    const expanded = runHookCmd('git commit -m "$(cat <<EOF\nfeat: $UNSET_VAR\nEOF\n)"');
+    assert.strictEqual(expanded.status, 2,
+      'git receives `feat: ` (subject `feat:`) once bash expands $UNSET_VAR — the format gate must '
+      + 'not be judged against the unexpanded literal');
+    assert.strictEqual(JSON.parse(expanded.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+
+    const lengthDodge = runHookCmd('git commit -m "$(cat <<EOF\nfeat: ${LONG}\nEOF\n)"');
+    assert.strictEqual(lengthDodge.status, 2,
+      '${LONG} expands to any length at all, so measuring the 12-char literal dodges '
+      + 'COMMIT_SUBJECT_TOO_LONG — the same prefix-measurement class the truncation and '
+      + 'post-terminator guards exist for, through expansion rather than composition');
+  });
+
+  test('validate-commit does not resolve a heredoc in the SINGLE-quoted -m arm (round-4 BLOCKER)', () => {
+    // Review of #3816, round 4. Inside `-m '...'` bash performs NO command
+    // substitution, so `$(cat <<'EOF'` is literal text and git's real subject
+    // is that opener line. Resolving the body there validates a message git
+    // never receives. All four spellings measured base=2 -> head=0 before this
+    // fix; reachable by the ordinary slip of typing `'` for `"`.
+    //
+    // Non-vacuous by construction: every body below is conforming, so a hook
+    // that resolves the sq arm returns exit 0 on all four.
+    //
+    // The `heredoc()` helper hard-codes the double quote, which is exactly why
+    // this arm went untested for three rounds — these rows build the command
+    // directly.
+    for (const [label, open] of [
+      ['<<"EOF"', '<<"EOF"'],
+      ["<<'EOF'", "<<'EOF'"],
+      ['<<\\EOF', '<<\\EOF'],
+      ['bare <<EOF', '<<EOF'],
+      ['<< EOF (spaced)', '<< EOF'],
+    ]) {
+      const result = runHookCmd(`git commit -m '$(cat ${open}\nfeat(auth): looks conforming\nEOF\n)'`);
+      assert.strictEqual(result.status, 2,
+        `sq arm, ${label}: must BLOCK — bash does not substitute inside single quotes, so git's `
+        + "real subject is the literal opener line, not the body");
+      assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+    }
+  });
+
+  test('the adjacency guard is scoped to the arm that matched (round-4 Minor 1)', () => {
+    // Review of #3816, round 4, Minor 1. The guard tested BOTH quote styles
+    // against the whole command irrespective of which arm produced the
+    // message, so a double-quoted heredoc whose BODY mentions a glued
+    // single-quoted token tripped the sq arm and lost the fix for a message
+    // that never had a prefix problem. Measured 2/2 before, 0 after.
+    assert.strictEqual(
+      runHookCmd(heredoc("feat: stop passing -m 'foo'bar to git")).status, 0,
+      'a glued single-quoted token inside a DOUBLE-quoted heredoc body must not trip the '
+      + 'single-quote adjacency arm');
   });
 
   test('validate-commit blocks a substitution composed with more text (round-3 BLOCKER)', () => {

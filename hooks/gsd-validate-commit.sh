@@ -30,12 +30,19 @@ if GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" node -e "
   const {isGitSubcommand}=require(process.env.GIT_CMD_LIB);
   process.exit(isGitSubcommand(process.argv[1],'commit')?0:1);
 " "$CMD" 2>/dev/null; then
-  # Extract message from -m flag
+  # Extract message from -m flag.
+  #
+  # MSG_QUOTE records WHICH arm matched. bash treats the two arms differently
+  # and the subject step below depends on that difference — see the resolver
+  # gate (review of #3816, round 4).
   MSG=""
+  MSG_QUOTE=""
   if [[ "$CMD" =~ -m[[:space:]]+\"([^\"]+)\" ]]; then
     MSG="${BASH_REMATCH[1]}"
+    MSG_QUOTE=dq
   elif [[ "$CMD" =~ -m[[:space:]]+\'([^\']+)\' ]]; then
     MSG="${BASH_REMATCH[1]}"
+    MSG_QUOTE=sq
   fi
 
   if [ -n "$MSG" ]; then
@@ -56,6 +63,16 @@ if GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" node -e "
     # if node or the library is unavailable, so a broken extractor degrades to the
     # old behavior instead of becoming a new silent-allow path.
     #
+    # SINGLE-QUOTE GATE (review of #3816, round 4 — BLOCKER). The resolver may
+    # only run on the DOUBLE-quoted arm. Inside `-m '...'` bash performs NO
+    # command substitution, so `$(cat <<'EOF'` is literal text and git's real
+    # subject is that opener line — resolving the body there validates a
+    # message git never receives. Measured against the real hook, all four
+    # spellings (`<<'E'`, `<<"E"`, `<<\E`, `<<E`) went base=2 -> head=0: a
+    # net-new bypass reachable by the ordinary authoring slip of typing `'`
+    # for `"`. The sq arm therefore keeps the pre-fix `head -1`, which is exact
+    # base parity.
+    #
     # ADJACENCY GUARD (review of #3816): text glued to the CLOSING quote —
     # `-m "$(cat <<'EOF' ... )"suffix` — is concatenated by bash into the SAME
     # argument, so the capture above holds only a PREFIX of the real message.
@@ -65,15 +82,18 @@ if GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" node -e "
     # the end of the command, skip the resolver and keep the pre-fix subject
     # (first captured line): the heredoc form then fails the format gate
     # exactly as it did on base, and the plain single-line form keeps base
-    # behavior unchanged.
-    if [[ "$CMD" =~ -m[[:space:]]+\"[^\"]+\"[^[:space:]] ]] \
-      || [[ "$CMD" =~ -m[[:space:]]+\'[^\']+\'[^[:space:]] ]]; then
-      SUBJECT=$(echo "$MSG" | head -1)
-    else
+    # behavior unchanged. The guard is tested against the arm that MATCHED,
+    # not against both: testing both let a double-quoted heredoc whose BODY
+    # mentions a glued single-quoted token (`-m "... -m 'foo'bar ..."`) trip
+    # the sq arm and lose the fix for a message that never had a prefix
+    # problem (review of #3816, round 4, Minor 1).
+    if [ "$MSG_QUOTE" = dq ] && ! [[ "$CMD" =~ -m[[:space:]]+\"[^\"]+\"[^[:space:]] ]]; then
       SUBJECT=$(GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" MSG="$MSG" node -e "
         const {resolveCommitSubject}=require(process.env.GIT_CMD_LIB);
         process.stdout.write(resolveCommitSubject(process.env.MSG));
       " 2>/dev/null) || SUBJECT=$(echo "$MSG" | head -1)
+    else
+      SUBJECT=$(echo "$MSG" | head -1)
     fi
     # Validate Conventional Commits format
     if ! [[ "$SUBJECT" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\(.+\))?:[[:space:]].+ ]]; then
