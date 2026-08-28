@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "execute-phase.md": "#3552: the handle_branching \"none\" arm's inline protected-branch-warning block is replaced with a one-line pointer to a new execute-phase/steps/protected-branch.md (content moved verbatim, no ack needed for that path itself) so execute-phase.md's own growth fits inside the frozen ADR-857 Phase 6 margin ceiling (93400 bytes) — intervening next PRs left only 34 bytes of headroom by the time this branch rebased onto upstream/next @ 63abcfac. 93366 -> 93385 bytes (+19), 15 bytes inside the ceiling.",
-    "ship.md": "#3552: ship preflight step 3 now asks the same typed git.base-branch --is-protected predicate as execute-phase, binding IS_PROTECTED and warning without refusing execution or blocking the branching_strategy=none feature-branch offer; it degrades visibly (rather than silently reading an empty result as \"not protected\") when the query itself fails to run. 36398 -> 36841 bytes (+443), measured against upstream/next @ 63abcfac. Well inside the XL cap (98304, tests/workflow-size-budget.test.cjs)."
-  }
-}

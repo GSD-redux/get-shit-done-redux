@@ -33,9 +33,13 @@
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoader = require('./config-loader.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import io = require('./io.cjs');
 import { normalizeLegacyKeys } from './configuration.cjs';
+import { sanitizeLabel } from './security.cjs';
 import { execGit as execGitSeam } from './shell-command-projection.cjs';
 
+const { error, ERROR_REASON } = io;
 const { loadConfig: loadConfigSeam } = configLoader;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -78,9 +82,9 @@ interface EffectiveGitConfig {
 /** Render a rejected config value for a diagnostic without throwing on exotic input. */
 function renderRejected(value: unknown): string {
   try {
-    return JSON.stringify(value) ?? String(value);
+    return sanitizeLabel(JSON.stringify(value) ?? String(value));
   } catch {
-    return String(value);
+    return sanitizeLabel(String(value));
   }
 }
 
@@ -550,7 +554,9 @@ export function cmdGitBaseBranch(
   deps?: BaseBranchDeps
 ): string {
   if (args[0] === '--is-protected') {
-    if (args.length > 2) throw new Error('Unknown surplus positional argument for --is-protected');
+    if (args.length > 2) {
+      error('Usage: git base-branch --is-protected [<branch>]', ERROR_REASON.USAGE);
+    }
     const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
     // `git branch --show-current` prints nothing on a detached HEAD, so the
     // call sites legitimately pass an explicit empty string: no protected
@@ -594,7 +600,9 @@ export function cmdGitBaseBranch(
     write(rendered + '\n');
     return rendered;
   }
-  if (args.length > 0) throw new Error(`Unknown flag for git.base-branch: ${args[0]}`);
+  if (args.length > 0) {
+    error(`Unknown flag for git.base-branch: ${args[0]}`, ERROR_REASON.USAGE);
+  }
 
   const { branch, verified } = resolveBaseBranchDiagnostics(cwd, deps);
   if (!verified) {

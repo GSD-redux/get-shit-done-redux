@@ -30,6 +30,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runGsdTools, cleanup, readFileNormalized } = require('./helpers.cjs');
+const { ExitError } = require('../gsd-core/bin/lib/cli-exit.cjs');
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
@@ -699,6 +700,49 @@ describe('#3552: configured protected branches', () => {
       'a well-formed list must be silent — otherwise the diagnostic carries no signal');
   });
 
+  test('#3648 Nit F-7: renderRejected sanitizes control and ANSI characters in diagnostics', () => {
+    const diagnostics = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop', { malicious: 'bad\x1b[31m\nbranch' }] }),
+      write: () => {},
+      writeDiagnostic: (chunk) => diagnostics.push(chunk),
+    });
+
+    assert.strictEqual(diagnostics.length, 1);
+    const diag = diagnostics.join('');
+    assert.match(diag, /bad\\u001b\[31m/);
+    assert.strictEqual(diag.includes('\x1b'), false, 'diagnostic must not contain raw ESC control bytes');
+  });
+
+  test('#3552 execute-phase handle_branching wires protected-branch step with Read and execute (not Skip.)', () => {
+    const content = readFileNormalized(path.join(WORKFLOW_DIR, 'execute-phase.md'));
+    const stepMatch = content.match(/<step name="handle_branching">([\s\S]*?)<\/step>/);
+    assert.ok(stepMatch, 'handle_branching step must exist in execute-phase.md');
+    const stepBody = stepMatch[1];
+
+    assert.match(
+      stepBody,
+      /\*\*"none":\*\*\s+Read and execute `execute-phase\/steps\/protected-branch\.md`\./,
+      'execute-phase handle_branching "none" arm must instruct executor to Read and execute the step file',
+    );
+    assert.doesNotMatch(
+      stepBody,
+      /\*\*"none":\*\*\s*Skip\./,
+      'execute-phase handle_branching "none" arm must not say "Skip."',
+    );
+
+    // Negative control: verify the assertion rejects an advisory "Skip." pointer
+    const fakeAdvisoryBody = stepBody.replace(
+      /\*\*"none":\*\*\s+Read and execute `execute-phase\/steps\/protected-branch\.md`\./,
+      '**"none":** Skip. See `execute-phase/steps/protected-branch.md`.',
+    );
+    assert.doesNotMatch(
+      fakeAdvisoryBody,
+      /\*\*"none":\*\*\s+Read and execute `execute-phase\/steps\/protected-branch\.md`\./,
+      'negative control: fake advisory pointer must fail the wiring assertion',
+    );
+  });
+
   test('#3552 active workstream CLI uses configured list and excludes root-only names', (t) => {
     const dir = createGitRepo({ prefix: 'gsd-3552-cli-', defaultBranch: 'main' });
     t.after(() => cleanup(dir));
@@ -851,23 +895,43 @@ describe('#3552: configured protected branches', () => {
     assert.notDeepStrictEqual(detachedDiagnostics, missingDiagnostics,
       'the two paths must be distinguishable — that is the whole point of the arm');
 
-    const unknownFlagDiagnostics = [];
     assert.throws(
       () => gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protectd', 'develop'], {
         loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
-        writeDiagnostic: (chunk) => unknownFlagDiagnostics.push(chunk),
       }),
-      /unknown flag/i,
-      'a misspelled predicate flag must be rejected',
+      (err) => err instanceof ExitError && err.code === 1,
+      'a misspelled predicate flag must be rejected with exit 1 via error()',
     );
 
     assert.throws(
       () => gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop', 'extra'], {
         loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
       }),
-      /unexpected positional|exactly one|surplus/i,
-      'surplus predicate arguments must be rejected',
+      (err) => err instanceof ExitError && err.code === 1,
+      'surplus predicate arguments must be rejected with exit 1 via error()',
     );
+  });
+
+  test('#3648 cmdGitBaseBranch usage errors emit structured ERROR_REASON.USAGE and do not print stack trace', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3648-usage-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+
+    const unknownFlag = runGsdTools(['query', 'git.base-branch', '--unknown-flag', '--json-errors'], dir);
+    assert.strictEqual(unknownFlag.success, false);
+    assert.strictEqual(unknownFlag.exitCode, 1);
+    assert.doesNotMatch(unknownFlag.error, /^\s*at\s+/m, 'usage errors must not print stack traces');
+    let parsed = null;
+    try { parsed = JSON.parse(unknownFlag.error); } catch {}
+    assert.strictEqual(parsed?.reason, 'usage');
+
+    const surplusPositional = runGsdTools(['query', 'git.base-branch', '--is-protected', 'main', 'extra', '--json-errors'], dir);
+    assert.strictEqual(surplusPositional.success, false);
+    assert.strictEqual(surplusPositional.exitCode, 1);
+    assert.doesNotMatch(surplusPositional.error, /^\s*at\s+/m);
+    let parsedSurplus = null;
+    try { parsedSurplus = JSON.parse(surplusPositional.error); } catch {}
+    assert.strictEqual(parsedSurplus?.reason, 'usage');
   });
 
   test('#3648 Minor F-1: nested and flat predicate reads stay aligned with the loader', () => {

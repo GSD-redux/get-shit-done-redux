@@ -642,8 +642,13 @@ describe('config-get --default flag (#1893)', () => {
       );
     });
 
-    test('absent git.protected_branches resolves the documented empty-list default', () => {
-      assert.equal(run('config-get', 'git.protected_branches'), '[]');
+    test('absent git.protected_branches has no schema default ((none) per docs)', () => {
+      fs.mkdirSync(planningDir, { recursive: true });
+      fs.writeFileSync(path.join(planningDir, 'config.json'), '{}');
+      const { reason } = runExpectError('config-get', 'git.protected_branches');
+      assert.equal(reason, io.ERROR_REASON.CONFIG_KEY_NOT_FOUND);
+      const fallback = runRaw('config-get', 'git.protected_branches', '--default', '["main"]');
+      assert.equal(fallback, '["main"]');
     });
   });
 }
