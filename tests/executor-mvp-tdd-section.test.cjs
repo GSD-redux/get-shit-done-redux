@@ -619,6 +619,36 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'Two versions of RED then coexist unqualified in the same canonical file. See #3770.');
   });
 
+  test('the executor gate snippet matches on the commit subject and guards the empty SHA', () => {
+    const snippet = soleFencedBlock(
+      sliceH2(TDD_SOURCE, 'Gate Enforcement Rules'), 'Executor Gate Validation',
+    );
+
+    // Scoped to the fenced block, not the file: prose elsewhere may legitimately
+    // explain why the whole-message flag is wrong, and a file-wide negative would
+    // forbid its own rationale.
+    assert.ok(!snippet.includes('--grep='), // planner-discipline-allow: --grep=
+      'the gate snippet still searches the whole commit message. That matches a commit which ' +
+      'merely quotes a `test(...)` subject in its body, and `head -1` then prefers it because ' +
+      'git logs newest-first — so the executor reads the wrong commit\'s trailer. Reproduced ' +
+      'on git 2.55.0. See #3770.');
+
+    for (const kind of ['test', 'feat', 'refactor']) {
+      const anchored = `grep -m1 -E "^[0-9a-f]+ ${kind}\\(`;
+      assert.ok(snippet.includes(anchored),
+        `the ${kind}(...) search must be anchored to the commit subject via \`${anchored}\`. ` +
+        'All three searches share the same defect, so all three carry the fix. See #3770.');
+    }
+
+    assert.match(snippet, /if \[ -z "\$RED_SHA" \]/,
+      'the snippet must guard the empty RED_SHA. Unguarded, `git log -1 --format=… ""` exits ' +
+      '128 with a fatal ambiguous-argument error — and that is the most likely gate trip of ' +
+      'all. See #3770.');
+    assert.ok(snippet.includes('missing_red_commit'),
+      'no commit whose subject matches is a different outcome from a commit that exists ' +
+      'without the trailer; the snippet must report it as `missing_red_commit`. See #3770.');
+  });
+
   test("the Commit Pattern's RED exemplar carries the Evidence trailer verbatim", () => {
     const blocks = fencedBlocks(sliceH2(TDD_SOURCE, 'Commit Pattern for TDD Plans'));
     assert.strictEqual(blocks.length, 1, '## Commit Pattern must carry one fenced block');
