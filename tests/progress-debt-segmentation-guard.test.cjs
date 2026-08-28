@@ -23,10 +23,10 @@ const path = require('node:path');
 
 const PROGRESS_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress.md');
 
-// allow-test-rule: source-text-is-the-product (#3782)
 // progress.md is shipped workflow text — the bytes ARE what the runtime
 // loads, so a structural scan over it tests the deployed contract (same
-// shape as tests/config-get-raw-guard.test.cjs).
+// shape as tests/config-get-raw-guard.test.cjs, which needs no marker for
+// .md reads).
 function step16() {
   const md = fs.readFileSync(PROGRESS_MD, 'utf-8');
   const start = md.indexOf('**Step 1.6: Cross-phase health check**');
@@ -59,7 +59,7 @@ test('#3782: archived debt stays visible with its own labeled line', () => {
     '#3782: archived debt must be tracked as its own value',
   );
   assert.ok(
-    /\|\s*Archived milestones\s*\|/.test(step) || /archived verification debt/i.test(step),
-    '#3782: the warning section must render archived debt as its own labeled line — segmented, not hidden',
+    /items still open in archived milestones\)/.test(step),
+    '#3782: the warning header must label the archived segment — segmented, not hidden',
   );
 });
