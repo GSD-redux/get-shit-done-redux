@@ -29,6 +29,7 @@ const { runNode } = require('./helpers/process-seam.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const GEN_SCRIPT = path.join(REPO_ROOT, 'scripts', 'gen-exit-code-registry.cjs');
@@ -855,6 +856,140 @@ describe('gen-exit-code-docs: generated exit-code reference page (matrix F1-F4)'
     } finally {
       cleanup(tmp);
     }
+  });
+
+  // T1 (#3913 P9 review follow-up): a BANDS category present in neither
+  // CATEGORY_ROW_ORDER nor CATEGORY_MERGE_INTO must make generation THROW —
+  // not silently omit the new band from the rendered table while --check
+  // stays green (the exact defect assertBandCategoriesConsistent in
+  // gen-exit-code-docs.cjs closes). Driven via a scratch copy of both
+  // generator scripts, mirroring the widen-a-band regression test above —
+  // never the real committed files.
+  // Every T1-T3 scratch copy needs the same three sibling files
+  // gen-exit-code-docs.cjs's own `require`s resolve relative to itself:
+  // gen-exit-code-registry.cjs (source of BANDS), lib/cli-exit.cjs, and
+  // lib/exit-code-registry.cjs (cli-exit.cjs's own dependency). Loading the
+  // scratch module directly (never via `--check`/`--write`) and calling
+  // `loadEntries`/`buildDoc` against the REAL committed declaration isolates
+  // the assertion under test from the doc-page-drift machinery entirely.
+  function scaffoldScratchDocsModule(tmp, docsSrc) {
+    fs.mkdirSync(path.join(tmp, 'lib'), { recursive: true });
+    fs.copyFileSync(path.join(REPO_ROOT, 'scripts', 'lib', 'cli-exit.cjs'), path.join(tmp, 'lib', 'cli-exit.cjs'));
+    fs.copyFileSync(path.join(REPO_ROOT, 'scripts', 'lib', 'exit-code-registry.cjs'), path.join(tmp, 'lib', 'exit-code-registry.cjs'));
+    const entryPath = path.join(tmp, 'docsgen-entry.cjs');
+    fs.writeFileSync(entryPath, docsSrc, 'utf8');
+    return entryPath;
+  }
+
+  test('T1: a BANDS category with no CATEGORY_ROW_ORDER/CATEGORY_MERGE_INTO entry throws generation, not a silent omission', () => {
+    const tmp = createTempDir('gsd-exit-code-docs-p9cat-');
+    try {
+      const registrySrc = fs.readFileSync(GEN_SCRIPT, 'utf8');
+      const NEEDLE = "  { category: 'shell-signal', allocatable: false, test: (code) => code >= 126 },\n]);";
+      assert.ok(registrySrc.includes(NEEDLE), 'precondition: BANDS closing entry must still match');
+      const mutated = registrySrc.replace(
+        NEEDLE,
+        "  { category: 'shell-signal', allocatable: false, test: (code) => code >= 126 },\n"
+        + "  { category: 'brand-new-band', allocatable: true, test: (code) => code === 40 },\n]);",
+      );
+      assert.notEqual(mutated, registrySrc, 'precondition: the BANDS injection must actually change the source');
+      fs.writeFileSync(path.join(tmp, 'gen-exit-code-registry.cjs'), mutated, 'utf8');
+
+      const entryPath = scaffoldScratchDocsModule(tmp, fs.readFileSync(DOCS_GEN_SCRIPT, 'utf8'));
+      const scratchDocs = require(entryPath);
+      const entries = scratchDocs.loadEntries(REAL_DECLARATION_PATH);
+
+      // Pre-fix (RED): buildDoc succeeds and silently omits the new band —
+      // it never appears anywhere in the rendered table. Post-fix (GREEN):
+      // buildDoc throws naming the unaccounted category.
+      assert.throws(
+        () => scratchDocs.buildDoc(entries),
+        /fail_band_category_unaccounted:.*brand-new-band/,
+        'an unaccounted BANDS category must fail generation loudly, not render a table that silently omits it',
+      );
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  // T2: a CATEGORY_ROW_ORDER entry with no BAND_PROSE entry must throw rather
+  // than rendering the literal string "undefined" into the table.
+  test('T2: a CATEGORY_ROW_ORDER entry with no BAND_PROSE entry throws rather than rendering undefined', () => {
+    const tmp = createTempDir('gsd-exit-code-docs-p9cat-');
+    try {
+      fs.copyFileSync(GEN_SCRIPT, path.join(tmp, 'gen-exit-code-registry.cjs'));
+
+      const docsSrc = fs.readFileSync(DOCS_GEN_SCRIPT, 'utf8');
+      const NEEDLE = "  domain: '**Domain band.**";
+      assert.ok(docsSrc.includes(NEEDLE), 'precondition: BAND_PROSE.domain entry must still match');
+      // Delete the `domain` prose entry entirely while leaving `domain` in
+      // CATEGORY_ROW_ORDER — the exact stale-in-one-list-not-the-other shape.
+      // Line-filtered via splitLines (not a bare-`\n` regex) so this stays
+      // correct under Windows git-autocrlf CRLF line endings too.
+      const mutated = splitLines(docsSrc).filter((line) => !line.startsWith(NEEDLE)).join('\n');
+      assert.notEqual(mutated, docsSrc, 'precondition: the BAND_PROSE deletion must actually change the source');
+      assert.ok(!mutated.includes("domain: '**Domain band.**"), 'precondition: BAND_PROSE.domain must actually be gone');
+
+      const entryPath = scaffoldScratchDocsModule(tmp, mutated);
+      const scratchDocs = require(entryPath);
+      const entries = scratchDocs.loadEntries(REAL_DECLARATION_PATH);
+
+      assert.throws(
+        () => scratchDocs.buildDoc(entries),
+        /fail_band_prose_missing:.*domain/,
+        'a CATEGORY_ROW_ORDER entry missing from BAND_PROSE must fail generation loudly, not render "undefined"',
+      );
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  // T3: a stale BAND_PROSE category that no BANDS entry (directly, or via
+  // CATEGORY_MERGE_INTO) produces must throw — dead prose for a band that no
+  // longer exists is the same drift in the other direction.
+  test('T3: a stale BAND_PROSE category no BANDS entry produces throws', () => {
+    const tmp = createTempDir('gsd-exit-code-docs-p9cat-');
+    try {
+      fs.copyFileSync(GEN_SCRIPT, path.join(tmp, 'gen-exit-code-registry.cjs'));
+
+      const docsSrc = fs.readFileSync(DOCS_GEN_SCRIPT, 'utf8');
+      const NEEDLE = "const BAND_PROSE = Object.freeze({\n";
+      assert.ok(docsSrc.includes(NEEDLE), 'precondition: BAND_PROSE opening must still match');
+      const mutated = docsSrc.replace(
+        NEEDLE,
+        `${NEEDLE}  'long-retired-band': 'This band was retired and no BANDS entry produces it any more.',\n`,
+      );
+      assert.notEqual(mutated, docsSrc, 'precondition: the stale BAND_PROSE injection must actually change the source');
+
+      const entryPath = scaffoldScratchDocsModule(tmp, mutated);
+      const scratchDocs = require(entryPath);
+      const entries = scratchDocs.loadEntries(REAL_DECLARATION_PATH);
+
+      assert.throws(
+        () => scratchDocs.buildDoc(entries),
+        /fail_band_category_stale:.*long-retired-band/,
+        'a stale BAND_PROSE category with no producing BANDS entry must fail generation loudly',
+      );
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  // T4 (positive control): the REAL, unmodified configuration renders all six
+  // rows with no literal "undefined" anywhere in the page. Without this, a
+  // fix that throws unconditionally (rather than only on genuine drift) would
+  // still pass T1-T3 by accident.
+  test('T4: the real unmodified configuration renders all six band rows with no "undefined" in the page', () => {
+    const result = runDocsGen(['--check']);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const md = fs.readFileSync(REAL_DOC_PATH, 'utf8');
+    assert.ok(!md.includes('undefined'), 'the generated page must never contain the literal string "undefined"');
+    const bandTableSection = md.slice(md.indexOf('| Band | Meaning |'), md.indexOf('## The v1/v2 exit contract'));
+    // `|---|---|` starts with `|-`, not `| `, so it is already excluded by
+    // this pattern — only the header line (`| Band | Meaning |`) needs
+    // subtracting to leave just the data rows.
+    const rowCount = (bandTableSection.match(/^\| /gm) || []).length - 1;
+    assert.equal(rowCount, 6, 'the Reserved bands table must render exactly six rows (free, hook-only, node-reserved, outside-every-band, generic, domain)');
   });
 
   // Forward guard, not a regression test: buildDoc has no source of

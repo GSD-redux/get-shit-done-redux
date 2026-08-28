@@ -41,6 +41,7 @@ const {
   loadDeclaration,
   validateEntries,
   computeBandRanges,
+  BANDS,
 } = require('./gen-exit-code-registry.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -76,6 +77,67 @@ const BAND_PROSE = Object.freeze({
 const CATEGORY_ROW_ORDER = ['free', 'hook-only', 'node-reserved', 'outside-every-band', 'generic', 'domain'];
 const CATEGORY_MERGE_INTO = Object.freeze({ 'shell-signal': 'outside-every-band' });
 
+/**
+ * Guard against category-set drift across the three authored lists the
+ * "Reserved bands" table depends on: BANDS (gen-exit-code-registry.cjs — the
+ * single source of every category classifyBand can ever return),
+ * CATEGORY_ROW_ORDER (the rendered row order here), and BAND_PROSE (the
+ * hand-authored rationale text per row). Nothing type-checks that these three
+ * agree, so adding a BANDS category with no row/prose entry silently drops it
+ * from the table, and a row with no prose entry renders the literal string
+ * "undefined" — see #3913 P9 review finding (unchecked `BAND_PROSE[category]`
+ * lookup) and its root cause: three authored lists, only one of them derived.
+ * Throws loudly the first time any of the three sets diverge instead of
+ * silently omitting a row or rendering `undefined`.
+ */
+function assertBandCategoriesConsistent() {
+  // Every category classifyBand can ever return: each BANDS entry's own
+  // category, plus the synthetic 'outside-every-band' residual classifyBand
+  // falls back to for a code no BANDS entry claims (14-63, 79).
+  const producedCategories = new Set([...BANDS.map((b) => b.category), 'outside-every-band']);
+
+  // 1. Every produced category must resolve — directly, or via
+  //    CATEGORY_MERGE_INTO — to a row this page actually renders. Otherwise
+  //    it is silently dropped from the table (the #3913 P9 finding).
+  for (const category of producedCategories) {
+    const rowCategory = CATEGORY_MERGE_INTO[category] || category;
+    if (!CATEGORY_ROW_ORDER.includes(rowCategory)) {
+      throw new ExitError(1, `fail_band_category_unaccounted: BANDS category "${category}" resolves to row ` +
+        `"${rowCategory}", which is in neither CATEGORY_ROW_ORDER nor a CATEGORY_MERGE_INTO target — add it to ` +
+        'one or the other in scripts/gen-exit-code-docs.cjs.');
+    }
+  }
+
+  // 2. Every rendered row must have hand-authored rationale prose — otherwise
+  //    the table cell literally renders the string "undefined".
+  for (const category of CATEGORY_ROW_ORDER) {
+    if (!(category in BAND_PROSE)) {
+      throw new ExitError(1, `fail_band_prose_missing: CATEGORY_ROW_ORDER category "${category}" has no ` +
+        'BAND_PROSE entry — it would render the literal string "undefined" in the generated table.');
+    }
+  }
+
+  // 3. Reverse drift: a CATEGORY_ROW_ORDER or BAND_PROSE entry naming a
+  //    category no BANDS entry (nor the 'outside-every-band' residual)
+  //    produces is stale prose for a band that no longer exists.
+  const resolvedRowCategories = new Set(
+    [...producedCategories].map((category) => CATEGORY_MERGE_INTO[category] || category),
+  );
+  for (const category of CATEGORY_ROW_ORDER) {
+    if (!resolvedRowCategories.has(category)) {
+      throw new ExitError(1, `fail_band_category_stale: CATEGORY_ROW_ORDER names "${category}", which no BANDS ` +
+        'entry (directly, or via CATEGORY_MERGE_INTO) produces — remove it, or fix the drift between BANDS in ' +
+        'scripts/gen-exit-code-registry.cjs and CATEGORY_MERGE_INTO here.');
+    }
+  }
+  for (const category of Object.keys(BAND_PROSE)) {
+    if (!CATEGORY_ROW_ORDER.includes(category)) {
+      throw new ExitError(1, `fail_band_category_stale: BAND_PROSE has an entry for "${category}", which is not ` +
+        'in CATEGORY_ROW_ORDER — remove the stale prose, or add the row.');
+    }
+  }
+}
+
 /** Format one contiguous range as a Markdown-table-cell token. */
 function formatRange(range) {
   if (range.openEnded) return `\`${range.start}+\``;
@@ -89,6 +151,8 @@ function formatRange(range) {
  * row grouping/order above are authored.
  */
 function renderBandTable() {
+  assertBandCategoriesConsistent();
+
   const byCategory = new Map();
   for (const { category, ranges } of computeBandRanges(BAND_SCAN_MAX)) {
     const rowCategory = CATEGORY_MERGE_INTO[category] || category;
