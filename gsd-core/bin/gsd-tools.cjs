@@ -2778,9 +2778,17 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         );
       }
     } catch (e) {
+      // ADR-3889: error() now throws ExitError instead of calling
+      // process.exit(1) directly, so an ExitError raised by error() INSIDE
+      // this try (e.g. the "Unknown windows subcommand" call above, or one
+      // inside cmdWindowsStatus/Append/Waive/MarkFixed) lands HERE instead of
+      // terminating uncatchably. It must be re-thrown unconditionally, before
+      // the WindowsError name check below, or it falls through to the
+      // generic branch and gets re-wrapped with a wrong message/reason,
+      // discarding the original exit code.
+      if (e instanceof ExitError) throw e;
       // WindowsError carries a REASON code; surface it through the structured
-      // error path so tests can assert on the typed reason. `error()` calls
-      // process.exit(1) internally so we never reach the fall-through.
+      // error path so tests can assert on the typed reason.
       if (e && e.name === 'WindowsError' && typeof e.reason === 'string') {
         error(e.message || 'broken-windows error', e.reason);
       }

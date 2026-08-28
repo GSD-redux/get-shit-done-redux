@@ -18,6 +18,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 
 const io = require('../gsd-core/bin/lib/io.cjs');
+const { ExitError } = require('../gsd-core/bin/lib/cli-exit.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
@@ -186,12 +187,25 @@ describe('output()', () => {
 
 describe('error()', () => {
   const ioPath = path.resolve(__dirname, '../gsd-core/bin/lib/io.cjs');
+  const cliExitPath = path.resolve(__dirname, '../gsd-core/bin/lib/cli-exit.cjs');
+
+  // ADR-3889: io.error() now throws ExitError instead of calling
+  // process.exit() directly. A bare `node -e` script that calls io.error()
+  // with no termination seam would let that ExitError escape as an uncaught
+  // exception (a stack trace on stderr, not the single "Error: <msg>" line
+  // error() itself already wrote). Every harness script below wraps the
+  // error() call in runMain — the sanctioned entrypoint seam — so the
+  // process terminates exactly the way a real CLI invocation would: the one
+  // stderr write error() performs itself, then `process.exitCode = err.code`
+  // with nothing further written (ExitError from error() carries no message,
+  // so runMain's own "hasUserMessage" stderr write is a no-op here).
 
   test('plain-text mode: writes "Error: <msg>" to stderr and exits 1', () => {
     const script = `
       const io = require(${JSON.stringify(ioPath)});
+      const { runMain } = require(${JSON.stringify(cliExitPath)});
       io.setJsonErrorMode(false);
-      io.error('something went wrong');
+      runMain(() => { io.error('something went wrong'); });
     `;
     const result = runScript(script);
     assert.strictEqual(result.status, 1);
@@ -202,8 +216,9 @@ describe('error()', () => {
   test('plain-text mode: default reason does not appear in stderr text', () => {
     const script = `
       const io = require(${JSON.stringify(ioPath)});
+      const { runMain } = require(${JSON.stringify(cliExitPath)});
       io.setJsonErrorMode(false);
-      io.error('no reason code expected');
+      runMain(() => { io.error('no reason code expected'); });
     `;
     const result = runScript(script);
     assert.strictEqual(result.status, 1);
@@ -214,8 +229,9 @@ describe('error()', () => {
   test('JSON-error mode: writes structured JSON to stderr and exits 1', () => {
     const script = `
       const io = require(${JSON.stringify(ioPath)});
+      const { runMain } = require(${JSON.stringify(cliExitPath)});
       io.setJsonErrorMode(true);
-      io.error('structured error', io.ERROR_REASON.SDK_FAIL_FAST);
+      runMain(() => { io.error('structured error', io.ERROR_REASON.SDK_FAIL_FAST); });
     `;
     const result = runScript(script);
     assert.strictEqual(result.status, 1);
@@ -229,8 +245,9 @@ describe('error()', () => {
   test('JSON-error mode: defaults reason to UNKNOWN when not supplied', () => {
     const script = `
       const io = require(${JSON.stringify(ioPath)});
+      const { runMain } = require(${JSON.stringify(cliExitPath)});
       io.setJsonErrorMode(true);
-      io.error('no reason given');
+      runMain(() => { io.error('no reason given'); });
     `;
     const result = runScript(script);
     assert.strictEqual(result.status, 1);
@@ -249,8 +266,9 @@ describe('error()', () => {
     for (const [expected, key] of cases) {
       const script = `
         const io = require(${JSON.stringify(ioPath)});
+        const { runMain } = require(${JSON.stringify(cliExitPath)});
         io.setJsonErrorMode(true);
-        io.error('test', io.ERROR_REASON.${key});
+        runMain(() => { io.error('test', io.ERROR_REASON.${key}); });
       `;
       const result = runScript(script);
       assert.strictEqual(result.status, 1, `key=${key}`);
@@ -442,24 +460,36 @@ describe('bug #1008: io.output() tolerates a full / slow non-blocking pipe', () 
 });
 
 describe('bug #1008: io.error() tolerates a full non-blocking stderr pipe', () => {
-  test('retries on EAGAIN, emits the full message, and still exits', (t) => {
+  // ADR-3889: error() throws ExitError instead of calling process.exit()
+  // directly, so mocking process.exit and asserting doesNotThrow no longer
+  // matches the contract — error() now DOES throw, on purpose, and the
+  // termination semantics (translating that throw into a process exit code)
+  // belong to runMain() at the entrypoint, not to error() itself. This test
+  // asserts the real contract directly: catch the ExitError and check its
+  // `code`.
+  test('retries on EAGAIN, emits the full message, and throws ExitError(1)', () => {
     const written = [];
     let calls = 0;
-    let exitCode = null;
-    t.mock.method(process, 'exit', (code) => { exitCode = code; }); // neutralize the hard exit
-    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+    const restore = fs.writeSync;
+    fs.writeSync = (fd, data, offset, length) => {
       calls += 1;
       if (calls === 1) throw bug1008WriteError('EAGAIN', -11);
       assert.equal(fd, 2, 'error() must write to stderr');
       const chunk = bug1008ChunkOf(data, offset, length);
       written.push(chunk);
       return Buffer.byteLength(chunk, 'utf8');
-    });
-
-    assert.doesNotThrow(() => io.error('boom', io.ERROR_REASON.UNKNOWN));
+    };
+    try {
+      assert.throws(
+        () => io.error('boom', io.ERROR_REASON.UNKNOWN),
+        (err) => err instanceof ExitError && err.code === 1,
+        'error() must throw ExitError(1) after a retried write',
+      );
+    } finally {
+      fs.writeSync = restore;
+    }
     assert.ok(calls >= 2, 'error() should retry after EAGAIN');
     assert.equal(written.join(''), 'Error: boom\n');
-    assert.equal(exitCode, 1, 'error() must still exit(1) after a retried write');
   });
 });
 

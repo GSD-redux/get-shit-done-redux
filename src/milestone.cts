@@ -29,6 +29,9 @@ const { resolveQuickTaskSummaryFile } = auditMod;
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitMod = require('./cli-exit.cjs');
+const { ExitError } = cliExitMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateContract = require('./state-contract.cjs');
 const { publishStateContract } = stateContract;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -739,6 +742,12 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         );
       }
     } catch (e) {
+      // ADR-3889: error() now throws ExitError (carries no message) instead
+      // of calling process.exit() directly, so it can no longer be detected
+      // by sniffing e.message — an ExitError from our own guard above must be
+      // re-thrown UNCONDITIONALLY, before any message inspection, or the
+      // guard silently stops blocking milestone completion.
+      if (e instanceof ExitError) throw e;
       // If the error came from our guard, re-throw it; otherwise skip silently.
       const message = e instanceof Error ? e.message : String(e);
       if (message && message.startsWith('Cannot mark milestone complete:')) throw e;
