@@ -36,6 +36,13 @@ const DEBOUNCE_CALLS = 5;      // min tool uses between warnings
 // accepted one (it would exit above-threshold anyway), and a genuine
 // exhaustion warning is delayed by at most this window after a compact.
 const COMPACT_GRACE_SECONDS = 60;
+// How far AHEAD of this process's clock a watermark may be and still be
+// honored. PreCompact stamps it from the same clock as the reader, so the
+// legitimate skew is 0; this tolerance only absorbs a clock step. It is a
+// THRESHOLD, so it is named rather than inlined and carries its own boundary
+// trio (Codex review of #3808, round 4). Note it also extends the mute: a
+// watermark this far ahead pushes first recovery from +61 to +66 (measured).
+const WATERMARK_SKEW_SECONDS = 5;
 
 // One DEFINITION of what counts as a lifecycle event name, shared by the #3709
 // PreCompact reset and the #2289 output-envelope allowlist. Two call sites, one
@@ -194,11 +201,31 @@ process.stdin.on('end', () => {
     // honored only when its own timestamp is not ahead of this process's
     // clock (small skew allowed). No watermark, an unreadable one, or an
     // insane one all degrade to the plain STALE_SECONDS behaviour below.
+    //
+    // READ HARDENING (Codex review of #3808, round 4). The WRITE side already
+    // refuses to follow or overwrite a planted object (unlink-then-O_EXCL
+    // above), but this read was a bare readFileSync — so on any write-side
+    // give-up the planted object survived and every later invocation followed
+    // it. In a shared sticky os.tmpdir() that is a mute primitive (a planted
+    // recent watermark suppresses monitoring) and a stall primitive (a symlink
+    // to a FIFO blocks this synchronous read indefinitely; measured: such a
+    // read is still running after 300ms). The same lstat + O_NOFOLLOW pair the
+    // sentinel path uses, plus a size bound, applied to the file this PR adds.
+    // Every refusal degrades to "no watermark", never throws.
     try {
-      const watermark = JSON.parse(fs.readFileSync(watermarkPath, 'utf8'));
+      const st = fs.lstatSync(watermarkPath);
+      if (!st.isFile() || st.size > 4096) throw new Error('not a plain watermark');
+      const wfd = fs.openSync(watermarkPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+      let raw;
+      try {
+        const buf = Buffer.alloc(st.size);
+        fs.readSync(wfd, buf, 0, st.size, 0);
+        raw = buf.toString('utf8');
+      } finally { fs.closeSync(wfd); }
+      const watermark = JSON.parse(raw);
       if (
         watermark && typeof watermark.at === 'number'
-        && watermark.at <= now + 5
+        && watermark.at <= now + WATERMARK_SKEW_SECONDS
         && !(metrics.timestamp > watermark.at + COMPACT_GRACE_SECONDS)
       ) {
         process.exit(0);

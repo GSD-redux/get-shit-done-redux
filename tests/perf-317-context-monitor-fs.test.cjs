@@ -1512,6 +1512,15 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     // 'keep', NOT false: the defect is a bridge that is still THERE and still
     // reads fresh. Deleting it would make the row pass on the ENOENT early-exit
     // instead of on the fix — vacuous, and it was, until a mutation showed it.
+    //
+    // HONEST SCOPE (Codex review of #3808, round 4): this row asserts the
+    // COMPOSED post-compaction behaviour, not bridge deletion in isolation. Its
+    // sensitivity to a bridge-deletion regression rests on call()'s future
+    // stamp; with a production stamp the watermark would suppress the same
+    // reading and the row would stay green either way. The two guards genuinely
+    // overlap inside the window, so no end-to-end row can separate them. The
+    // DIRECT pin for bridge deletion is the next row, which asserts
+    // s.metrics() === null and cannot be satisfied by the watermark.
     const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep' });
     assert.strictEqual(stdout, '',
       'the next tool use after a compaction must not warn off a pre-compaction reading — the '
@@ -1790,12 +1799,20 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     // a CONTEXT WARNING. Reproduced by running this row under
     // `GEMINI_API_KEY=x`. The row is about readEventName's typing, so the
     // dialect variable is fixed rather than inherited.
-    const s = makeSession(t);
+    // A FRESH SESSION PER SUBCASE (Codex review of #3808, round 4). Both
+    // subcases shared one session, and the sentinel is the thing being
+    // asserted: the `42` iteration left one behind, so the hostile-object
+    // iteration's `assert.ok(s.warn())` passed off the PREVIOUS iteration's
+    // side effect. A regression where a hostile object throws BEFORE the
+    // bookkeeping would have kept the row green — vacuous for exactly the
+    // subcase the row exists for.
     const noGemini = { GEMINI_API_KEY: undefined };
     for (const [label, badEvent] of [
       ['number', 42],
       ['object', { toString: 'not-callable' }],
     ]) {
+      const s = makeSession(t);
+      assert.strictEqual(s.warnRaw(), null, `${label}: precondition — no sentinel from a prior subcase`);
       const { stdout, exitCode } = s.call(badEvent, 30, { env: noGemini });
       assert.strictEqual(exitCode, 0, `${label}: a malformed event name must never fail the hook`);
       assert.strictEqual(stdout, '', `${label}: unknown events emit nothing (#2289 allowlist)`);
@@ -1840,6 +1857,7 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
 
   function drive({
     remaining = 30, warnData = null, timestamp = NOW_S, watermarkAt = null, nowMs = NOW_MS,
+    plantWatermark = null,
   }) {
     const id = `fix-3709-trio-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const metricsPath = path.join(os.tmpdir(), `claude-ctx-${id}.json`);
@@ -1849,7 +1867,8 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
       session_id: id, remaining_percentage: remaining, used_pct: 100 - remaining, timestamp,
     }));
     if (warnData) fs.writeFileSync(warnPath, JSON.stringify(warnData));
-    if (watermarkAt !== null) fs.writeFileSync(watermarkPath, JSON.stringify({ at: watermarkAt }));
+    if (plantWatermark) plantWatermark(watermarkPath);
+    else if (watermarkAt !== null) fs.writeFileSync(watermarkPath, JSON.stringify({ at: watermarkAt }));
     let stdout = '';
     let exitCode = 0;
     try {
@@ -1862,8 +1881,12 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
     } catch (e) { stdout = e.stdout || ''; exitCode = e.status ?? 1; }
     finally {
       for (const p of [metricsPath, warnPath, watermarkPath]) {
-        try { fs.unlinkSync(p); } catch { /* absent */ }
+        try { fs.unlinkSync(p); } catch { /* absent, or the planted directory below */ }
       }
+      // A row may plant a DIRECTORY at the watermark path, which unlinkSync
+      // cannot remove. cleanup() rather than a raw rmSync: it carries the
+      // repo's Windows-EBUSY retry budget (local/no-raw-rmsync-in-tests).
+      try { if (fs.existsSync(watermarkPath)) cleanup(watermarkPath); } catch { /* best effort */ }
     }
     return { stdout, exitCode };
   }
@@ -1951,4 +1974,69 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
       }
     });
   }
+
+  // WATERMARK_SKEW_SECONDS is the OTHER threshold the watermark introduces, and
+  // it had no boundary coverage either — the only sanity row used now+3600,
+  // three orders of magnitude from the edge (Codex review of #3808, round 4).
+  // The gate is `watermark.at <= now + WATERMARK_SKEW_SECONDS`: +5 is honored,
+  // +6 is not. Mutating `<=` to `<`, or moving the constant, reds one row.
+  //
+  // This threshold is not cosmetic: an accepted +5 watermark pushes the grace
+  // window's end from +61 to +66, which is why the docs no longer claim the
+  // delay is bounded by COMPACT_GRACE_SECONDS alone.
+  for (const [skew, honored] of [[4, true], [5, true], [6, false]]) {
+    test(`WATERMARK_SKEW_SECONDS trio: a watermark ${skew}s ahead is ${honored ? 'honored' : 'ignored'}`, () => {
+      const { stdout, exitCode } = drive({
+        remaining: 30,
+        watermarkAt: NOW_S + skew,
+        timestamp: NOW_S,
+        nowMs: NOW_MS,
+      });
+      assert.strictEqual(exitCode, 0);
+      if (honored) {
+        assert.strictEqual(stdout, '',
+          `a watermark ${skew}s ahead is within the accepted skew, so the grace window applies `
+          + 'and this current reading is dropped');
+      } else {
+        assert.match(stdout, /CONTEXT WARNING/,
+          `a watermark ${skew}s ahead is beyond the accepted skew — it must be discarded as insane `
+          + 'rather than muting the monitor, which is how a clock step would silently disable it');
+      }
+    });
+  }
+
+  test('round 4: a watermark that is not a plain regular file is never followed', (t) => {
+    // The WRITE side already refused to follow or overwrite a planted object,
+    // but the READ was a bare readFileSync — so anything the write side gave up
+    // on was followed by every later invocation. Verified against the
+    // pre-hardening file: a symlink to a planted watermark WAS honored and muted
+    // the monitor; it is now refused (Codex review of #3808, round 4).
+    if (process.platform === 'win32') {
+      t.skip('symlink creation needs privilege on Windows; the guard is lstat+O_NOFOLLOW, '
+        + 'and libuv defines O_NOFOLLOW as 0 there — the lstat half still applies');
+      return;
+    }
+    const planted = path.join(os.tmpdir(), `fix-3709-planted-${Date.now()}.json`);
+    t.after(() => { try { fs.unlinkSync(planted); } catch { /* absent */ } });
+    fs.writeFileSync(planted, JSON.stringify({ at: NOW_S }));
+
+    // Control FIRST: a legitimate regular-file watermark is still honored, so
+    // the refusals below cannot pass by the hook simply ignoring watermarks.
+    assert.strictEqual(drive({ remaining: 30, watermarkAt: NOW_S, timestamp: NOW_S, nowMs: NOW_MS }).stdout, '',
+      'a plain watermark must still mute — otherwise the refusals prove nothing');
+
+    for (const [label, plant] of [
+      ['a symlink', (wp) => fs.symlinkSync(planted, wp)],
+      ['a directory', (wp) => fs.mkdirSync(wp)],
+      ['an oversized file', (wp) => fs.writeFileSync(wp, JSON.stringify({ at: NOW_S, pad: 'x'.repeat(8192) }))],
+    ]) {
+      const { stdout, exitCode } = drive({
+        remaining: 30, timestamp: NOW_S, nowMs: NOW_MS, plantWatermark: plant,
+      });
+      assert.strictEqual(exitCode, 0, `${label}: a refused watermark must never fail the hook`);
+      assert.match(stdout, /CONTEXT WARNING/,
+        `${label}: must not be honored as a watermark — in a shared sticky tmpdir that is a mute `
+        + 'primitive, and a symlink to a FIFO is a stall primitive on this synchronous read');
+    }
+  });
 });
