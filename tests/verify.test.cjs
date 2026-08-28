@@ -1620,6 +1620,28 @@ describe('verify artifacts command', () => {
       `Expected "No must_haves.artifacts" in error: ${output.error}`
     );
   });
+
+  // A non-empty artifacts block whose items are all bare strings (prose bullets
+  // with no `path:` key) is item-by-item skipped, leaving zero checked results.
+  // The verdict must not read GREEN over an empty result set — mirrors the
+  // positive-evidence floor at src/uat-predicate.cts (no vacuous pass). (#3956)
+  test('does not report a vacuous pass for an all-string artifacts block (#3956)', () => {
+    writePlanWithArtifacts(tmpDir, [
+      '- login flow implemented',
+      '- user can reset password',
+    ]);
+
+    const result = runGsdTools('verify artifacts .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 0, `Expected zero checked artifacts: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.all_passed,
+      false,
+      `Expected all_passed false over a zero-check block: ${JSON.stringify(output)}`
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1848,6 +1870,29 @@ describe('verify key-links command', () => {
     assert.ok(
       output.error.includes('No must_haves.key_links'),
       `Expected "No must_haves.key_links" in error: ${output.error}`
+    );
+  });
+
+  // A non-empty key_links block whose items are all bare strings (prose bullets
+  // with no `from:` key) is item-by-item skipped, leaving zero checked results.
+  // A pending link (a `from:` file promised by a same-or-later-wave plan) is a
+  // real parsed object that IS pushed to results, so this floor keys on the
+  // empty-result case only and does not disturb #1202 pending semantics. (#3956)
+  test('does not report a vacuous pass for an all-string key_links block (#3956)', () => {
+    writePlanWithKeyLinks(tmpDir, [
+      '- source calls the reset endpoint',
+      '- token is persisted',
+    ]);
+
+    const result = runGsdTools('verify key-links .planning/phases/01-test/01-01-PLAN.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.total, 0, `Expected zero checked links: ${JSON.stringify(output)}`);
+    assert.strictEqual(
+      output.all_verified,
+      false,
+      `Expected all_verified false over a zero-check block: ${JSON.stringify(output)}`
     );
   });
 
