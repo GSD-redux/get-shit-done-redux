@@ -249,6 +249,14 @@
       ],
       "issue": "3873",
       "justification": "ADR-3473 \u00a78.8 makes docs/reference/state-md.md and its four locale siblings generated-and-committed and adds the repo's first locale-parity check (verified: no locale-parity lint precedent exists here). That check is a distinct concern from docs-update (content freshness) and docs-parity-live-registry (registry parity); folding it into either would place an unrelated subject inside them purely to satisfy a count. The section it guards is absent from all four translations today and documents the status enum behind #3853."
+    },
+    "audit": {
+      "files": [
+        "audit-command-cutover.test.cjs",
+        "audit-fix-command.test.cjs",
+        "audit-milestone-filename-guard.test.cjs"
+      ],
+      "issue": "#3796 \u2014 the third file is a structural guard over the shipped audit-milestone workflow text (writer/reader filename agreement), not a behavior suite of the audit module; consolidation into the CLI suites would put a source-text scan behind spawn-heavy fixtures."
     }
   }
 }

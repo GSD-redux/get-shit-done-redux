@@ -183,7 +183,7 @@ Discovery only — never auto-calls `/gsd:validate-phase`.
 
 ## 6. Aggregate into v{version}-MILESTONE-AUDIT.md
 
-Create `.planning/v{version}-v{version}-MILESTONE-AUDIT.md` with:
+Create `.planning/v{version}-MILESTONE-AUDIT.md` with:
 
 ```yaml
 ---
