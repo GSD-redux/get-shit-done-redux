@@ -434,15 +434,21 @@ When `workflow.tdd_mode` is enabled in config, the RED/GREEN/REFACTOR gate seque
 After completing a `type: tdd` plan, the executor validates the git log:
 ```bash
 # Check for RED gate commit, then read its red-evidence: trailer
-RED_SHA=$(git log --format=%H --grep="^test(${PHASE}-${PLAN})" | head -1)
-git log -1 --format='%(trailers:key=red-evidence,valueonly)' "${RED_SHA}"
-# Check for GREEN gate commit  
-git log --oneline --grep="^feat(${PHASE}-${PLAN})" | head -1
+RED_SHA=$(git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ test\(${PHASE}-${PLAN}\):" | cut -d' ' -f1)
+if [ -z "$RED_SHA" ]; then
+  echo "missing_red_commit"
+else
+  git log -1 --format='%(trailers:key=red-evidence,valueonly)' "$RED_SHA"
+fi
+# Check for GREEN gate commit
+git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ feat\(${PHASE}-${PLAN}\):"
 # Check for optional REFACTOR gate commit
-git log --oneline --grep="^refactor(${PHASE}-${PLAN})" | head -1
+git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ refactor\(${PHASE}-${PLAN}\):"
 ```
 
-An empty trailer value is a missing RED gate. Judging the trailer's contents against the RED Predicate is not yet mechanised — the coded gate is Phase 3's; until then the executor reads the trailer and reports it. The predicate is in **RED Contract** above.
+Every search matches the commit **subject**, never the message body: a commit that quotes a `test(...)` subject in its body would otherwise match, and since git logs newest-first the decoy would be selected over the real RED commit.
+
+The two RED failures are distinct. No commit whose subject matches `test({phase}-{plan}):` is `missing_red_commit` — there is nothing to read. A matching commit whose `red-evidence:` trailer value comes back empty is a missing RED gate — the commit exists but was made without evidence. Judging the trailer's contents against the RED Predicate is not yet mechanised — the coded gate is Phase 3's; until then the executor reads the trailer and reports it. The predicate is in **RED Contract** above.
 
 If RED or GREEN gate commits are missing, add a `## TDD Gate Compliance` section to SUMMARY.md with the violation details.
 </gate_enforcement>
