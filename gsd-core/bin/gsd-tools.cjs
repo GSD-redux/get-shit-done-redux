@@ -1718,13 +1718,40 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
    * comment above). Never throws.
    */
   function projectWorktreesOptedOut(cwd) {
+    // #3963: the read must see the value `config-get` sees. Under
+    // GSD_WORKSTREAM, config-get inherits the ROOT config for keys the
+    // workstream config omits (config.cts resolveFromRootConfig, the #2714
+    // inheritance; loadConfig's deep-merge implements the same ladder for
+    // its consumers), so a root-level `use_worktrees: false` is part of the
+    // effective config even when the workstream file omits the key. Mirror
+    // that ladder for this one key with direct reads — never loadConfig,
+    // which normalizes and rewrites config on a path that backs sentinel
+    // writes (same discipline as the resolveRuntime comment in
+    // resolveDispatchIsolationDecision).
+    // Semantics: the workstream's OWN key wins; otherwise the root's (only
+    // under the ws-env gate — loadConfigResolved does NOT inherit root under
+    // GSD_PROJECT alone, and this read must not diverge from that); strict
+    // `=== false`; any read failure degrades to "not opted out".
     try {
-      const { planningDir } = require('./lib/planning-workspace.cjs');
-      const cfgPath = require('path').join(planningDir(cwd), 'config.json');
-      const cfg = JSON.parse(require('fs').readFileSync(cfgPath, 'utf8'));
-      return cfg != null && typeof cfg === 'object'
+      const { planningDir, planningRoot } = require('./lib/planning-workspace.cjs');
+      const readCfg = (p) => {
+        try {
+          return JSON.parse(require('fs').readFileSync(p, 'utf8'));
+        } catch {
+          return null;
+        }
+      };
+      const ownKey = (cfg) =>
+        cfg != null && typeof cfg === 'object'
         && cfg.workflow != null && typeof cfg.workflow === 'object'
-        && cfg.workflow.use_worktrees === false;
+        && Object.prototype.hasOwnProperty.call(cfg.workflow, 'use_worktrees');
+      const wsCfg = readCfg(require('path').join(planningDir(cwd), 'config.json'));
+      if (ownKey(wsCfg)) return wsCfg.workflow.use_worktrees === false;
+      if (process.env['GSD_WORKSTREAM']) {
+        const rootCfg = readCfg(require('path').join(planningRoot(cwd), 'config.json'));
+        if (ownKey(rootCfg)) return rootCfg.workflow.use_worktrees === false;
+      }
+      return false;
     } catch {
       return false;
     }
