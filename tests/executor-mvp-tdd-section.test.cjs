@@ -542,6 +542,20 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         why: "mutation N8 deleted the whole paragraph — ROADMAP Phase 2 SC3's second half — "
           + 'and the suite stayed green',
       },
+      {
+        section: 'Evidence',
+        needle: 'Recorded for audit only: the predicate reads no field of it',
+        verdict: null,
+        why: 'without the stated limitation a coded-gate implementer reads `command` as '
+          + 'validated input bound to `target_test`, which nothing in the predicate makes it',
+      },
+      {
+        section: 'RED Predicate',
+        needle: 'no condition proving the target test exists',
+        verdict: null,
+        why: 'the arm-2 scoping rationale must name the compensating condition, which lives in '
+          + 'execute-mvp-tdd.md, or the coded gate gets built with a real hole in it',
+      },
     ];
 
     for (const row of rows) {
@@ -655,6 +669,46 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         'distinguishing a shared conjunct from an arm conjunct in this block. See #3770.');
     }
   });
+
+  test(
+    "the predicate's prose names the pinning pair and claims nothing the predicate does not do",
+    () => {
+      // Everything after the closing fence: the prose paragraphs only. The scoping is
+      // load-bearing twice — the positive assertions must not be satisfiable by the
+      // fence's own conjunct lines, and the negative must not reach the halt rule's
+      // legitimate `fails the first conjunct` at the foot of the same h3.
+      const prose = sliceH3(CONTRACT, 'RED Predicate').split('```')[2];
+      assert.ok(prose, '### RED Predicate must carry prose below its fenced block');
+
+      for (const conjunct of [
+        'trailer.expected == plan.expected_failure',
+        'trailer.target_test == plan.target_test',
+      ]) {
+        assert.ok(prose.includes(conjunct),
+          `the pinning-pair sentence must name \`${conjunct}\` by its text, not by position. `
+          + "An ordinal contradicts this same file's inclusive conjunct counting eighteen lines "
+          + 'below, and mutation N13 rewrote that ordinal in the opposite direction against a '
+          + 'green suite — it was unpinned in both directions. See #3770.');
+      }
+
+      const ordinalPair = new RegExp(
+        '\\b(first|second|third|fourth|fifth)\\s{1,3}and\\s{1,3}'
+        + '(first|second|third|fourth|fifth)\\s{1,3}shared\\s{1,3}conjuncts\\b',
+        'i',
+      );
+      assert.doesNotMatch(prose, ordinalPair,
+        'the prose must not name the shared conjuncts as an ordinal pair. The counting is '
+        + 'ambiguous against the halt rule eighteen lines below, which counts inclusively, so '
+        + 'one of the two statements is always wrong. Name them by their text. See #3770.');
+
+      assert.ok(!prose.includes('strictly stronger'),
+        'the prose must not claim that omitting the `subject` comparison is strictly stronger. '
+        + 'It is false in a reachable configuration: arm 1 never requires '
+        + '`expected.subject == plan.target_test`, so an outside-in declaration judged by arm 1 '
+        + 'is authorized with `actual.subject != expected.subject`. See 02-VERIFICATION.md '
+        + 'Warning 5(a) and #3770.');
+    },
+  );
 });
 
 /**
