@@ -214,7 +214,7 @@ See @~/.claude/gsd-core/references/planner-guidance.md for Task Types table, Tas
 
 ## TDD Detection
 
-**When `workflow.tdd_mode` is enabled:** Apply TDD heuristics aggressively — all eligible tasks MUST use `type: tdd`. Read @~/.claude/gsd-core/references/tdd.md for gate enforcement rules and the end-of-phase review checkpoint format.
+**When `workflow.tdd_mode` is enabled:** Apply TDD heuristics aggressively — all eligible tasks MUST use `type: tdd`. Read `gsd-core/references/tdd.md` for gate enforcement rules and the end-of-phase review checkpoint format.
 
 **When `workflow.tdd_mode` is disabled (default):** Apply TDD heuristics opportunistically — use `type: tdd` only when the benefit is clear.
 
@@ -502,43 +502,11 @@ For checkpoint writing guidelines (DO/DON'T), anti-patterns, specificity compari
 
 <tdd_integration>
 
-## TDD Plan Structure
+## TDD Plan Structure and Cycle
 
-TDD candidates identified in task_breakdown get dedicated plans (type: tdd). One feature per TDD plan.
+Plan shape, the RED-GREEN-REFACTOR cycle and the commit pattern: `gsd-core/references/tdd.md`. That file is canonical; do not restate it here.
 
-```markdown
----
-phase: XX-name
-plan: NN
-type: tdd
----
-
-<objective>
-[What feature and why]
-Purpose: [Design benefit of TDD for this feature]
-Output: [Working, tested feature]
-</objective>
-
-<feature>
-  <name>[Feature name]</name>
-  <files>[source file, test file]</files>
-  <behavior>
-    [Expected behavior in testable terms]
-    Cases: input -> expected output
-  </behavior>
-  <implementation>[How to implement once tests pass]</implementation>
-</feature>
-```
-
-## Red-Green-Refactor Cycle
-
-**RED:** Create test file → write test describing expected behavior → run test (MUST fail) → commit: `test({phase}-{plan}): add failing test for [feature]`
-
-**GREEN:** Write minimal code to pass → run test (MUST pass) → commit: `feat({phase}-{plan}): implement [feature]`
-
-**REFACTOR (if needed):** Clean up → run tests (MUST pass) → commit: `refactor({phase}-{plan}): clean up [feature]`
-
-Each TDD plan produces 2-3 atomic commits.
+Every `tdd="true"` task carries a `<red_contract>` element as a **sibling** of `<behavior>`, declaring which failure counts as RED. Shape per the same path.
 
 ## Context Budget for TDD
 

@@ -16,9 +16,7 @@ If any of these is false, the gate is inactive — execution proceeds normally.
 For each task gated by MVP+TDD, the executor MUST verify (before running the implementation step):
 
 1. **A failing-test commit exists.** Search git log on the current branch for a commit matching `test({phase}-{plan})` whose subject mentions the same plan as the current task. The commit must touch a test file (`*.test.*`, `*.spec.*`, `tests/**`).
-2. **The test was actually red.** The commit message body or the executor's recent shell history must show the test failed when first run. Acceptable evidence:
-   - Commit message contains `RED:` prefix or `(RED)` tag
-   - Recent terminal output shows `FAIL` or non-zero exit on the new test before any implementation commit
+2. **The test was actually red.** The commit carries a `red-evidence:` trailer whose recorded run satisfies the RED predicate in `gsd-core/references/tdd.md`.
 3. **No implementation commit yet.** No `feat({phase}-{plan})` commit may exist for the same plan ID before the failing-test commit.
 
 If any check fails, the gate trips.
