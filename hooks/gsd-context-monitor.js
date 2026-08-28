@@ -162,7 +162,12 @@ process.stdin.on('end', () => {
         fs.writeSync(wfd, JSON.stringify({ at: Math.floor(Date.now() / 1000) }));
         fs.closeSync(wfd);
       } catch (e) { /* best effort — see above */ }
-      process.exit(0);
+      // allow(), not raw process.exit: #3911/ADR-3889 moved this hook onto the
+      // declared-policy exit vocabulary while this PR was in review, and the
+      // PreCompact branch is new here, so it needs the same conversion.
+      // A compaction is never blocked by this hook — ALLOW is the policy the
+      // rest of the file already declares.
+      allow(undefined);
     }
 
     // Check if context warnings are disabled via config.
@@ -235,7 +240,9 @@ process.stdin.on('end', () => {
         && watermark.at <= now + WATERMARK_SKEW_SECONDS
         && !(metrics.timestamp > watermark.at + COMPACT_GRACE_SECONDS)
       ) {
-        process.exit(0);
+        // Same #3911/ADR-3889 conversion as the PreCompact branch above: this
+        // gate is new in this PR, so it did not exist to be migrated.
+        allow(undefined);
       }
     } catch (e) { /* no watermark — nothing to compare against */ }
 
