@@ -602,11 +602,27 @@ describe('workflow progressive disclosure — MVP bodies lazy-loaded (#720)', ()
   test('every RED-contract consumer still cites the canonical tdd.md path (#3770)', () => {
     for (const file of TDD_CONSUMERS) {
       const content = fs.readFileSync(file, 'utf-8');
-      assert.ok(
-        content.includes('`gsd-core/references/tdd.md`'),
+      assert.match(
+        content,
+        /`(?:~\/\.claude\/)?gsd-core\/references\/tdd\.md`/,
         `${path.basename(file)} must cite \`gsd-core/references/tdd.md\` as a lazy backtick ` +
-        'path. Deleting the reference is not how the @-sigil test is satisfied, and a ' +
-        '~/.claude-prefixed form is not the canonical citation. See #720, #3770.'
+        'path, with or without the ~/.claude install prefix. Deleting the reference is not ' +
+        'how the @-sigil test is satisfied. See #720, #3770.'
+      );
+    }
+  });
+
+  test('every RED-contract consumer cites tdd.md at an install-resolvable path (#3770)', () => {
+    for (const file of TDD_CONSUMERS) {
+      const content = fs.readFileSync(file, 'utf-8');
+      assert.ok(
+        content.includes('`~/.claude/gsd-core/references/tdd.md`'),
+        `${path.basename(file)} must carry at least one \`~/.claude/gsd-core/references/tdd.md\` ` +
+        'citation. Agents run with cwd set to the USER\'s project, where the repo-relative ' +
+        'path does not exist. applyAgentPathRewrites in src/runtime-artifact-conversion.cts ' +
+        'rewrites the ~/.claude/ token to the installed host prefix and rewrites nothing ' +
+        'else, so the prefixed form is the portable one and the bare form resolves only ' +
+        'inside this repository. See #720, #3770.'
       );
     }
   });
