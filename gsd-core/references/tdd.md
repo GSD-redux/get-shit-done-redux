@@ -112,6 +112,39 @@ After completion, create SUMMARY.md with:
 **Result:** Each TDD plan produces 2-3 atomic commits.
 </execution_flow>
 
+<red_contract_spec>
+## RED Contract
+
+RED is not "the command exited non-zero". A collection error, a crashed fixture and an unrelated
+failing test all exit non-zero, and a legitimate outside-in RED that never reaches the test body
+looks identical to all three. So every `tdd="true"` task declares which failure counts before the
+run, and the RED commit records what was actually observed.
+
+### Declaration
+
+```xml
+<red_contract>
+  <target_test>tests/test_pricing.py::test_discount_reduces_total</target_test>
+  <implementation_target>pricing.apply_discount</implementation_target>
+  <expected_failure>
+    <phase>call</phase>
+    <class_or_mode>AssertionError</class_or_mode>
+    <subject>tests/test_pricing.py::test_discount_reduces_total</subject>
+  </expected_failure>
+</red_contract>
+```
+
+| Field | Meaning |
+|---|---|
+| `target_test` | The runner-native id of the test that must fail. Matched by `id_matches`, defined under **Evidence**. |
+| `implementation_target` | The production module or symbol GREEN will create. Always present, so an outside-in failure that never reaches the test body is still bound to a declared production intent. |
+| `expected_failure.phase` | The runner-native lifecycle phase the failure occurs in. **Open vocabulary, not an enum.** pytest's `collection`/`setup`/`call`/`teardown` are one runner's examples; a compiled language has no collection phase at all and declares `build`. The contract compares declared against observed and never validates the value against a list. |
+| `expected_failure.class_or_mode` | The runner-native exception class or failure mode. Never a message substring. For a compiler, the diagnostic's own class, not its wording. |
+| `expected_failure.subject` | What the failure is reported against: normally `target_test`; for an outside-in missing target, `implementation_target`. The predicate compares it against the plan's declared values and never routes on it — an echo may not choose the arm that judges it. There is no separate mode flag and no mode taxonomy. |
+
+`<red_contract>` is a **sibling** of `<behavior>`, never an attribute on it.
+</red_contract_spec>
+
 <test_quality>
 ## Good Tests vs Bad Tests
 
