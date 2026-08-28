@@ -442,6 +442,15 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       }
     }
 
+    // Sliced, not whole-block: moving the anchor down into the outside-in arm
+    // must fail here too, and a whole-block match would happily accept it.
+    const targetArm = lines.slice(openers[0] + 1, disjunctions[0]).join('\n');
+    assert.match(targetArm, /AND id_matches\(actual\.subject, plan\.target_test\)/,
+      'the target-test arm must keep its subject anchor. Without it the arm reduces to ' +
+      '`selected_count > 0 AND target_executed` plus the shared comparisons, which a run ' +
+      'where a DIFFERENT test failed satisfies — the outcome the Outcomes table says must ' +
+      'block, and the original defect. See #3770.');
+
     const outsideInArm = lines.slice(disjunctions[0] + 1).join('\n');
     assert.match(outsideInArm, /plan\.implementation_target/,
       'the outside-in arm must anchor the observed subject to the declared implementation target');
