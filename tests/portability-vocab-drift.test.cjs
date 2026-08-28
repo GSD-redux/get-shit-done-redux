@@ -23,7 +23,7 @@ const path = require('path');
 const tsParser = require('@typescript-eslint/parser');
 const espree = require('espree');
 
-const { PATH_RETURNING_FNS } = require('../eslint-rules/lib/portability-vocab.cjs');
+const { PATH_RETURNING_FNS, WINDOWS_CASE_VARYING_ENV_VARS } = require('../eslint-rules/lib/portability-vocab.cjs');
 
 // Functions exported from runtime-homes.cts that do NOT return a filesystem
 // path and therefore are intentionally excluded from PATH_RETURNING_FNS.
@@ -473,6 +473,73 @@ describe('portability-vocab drift guard', () => {
         `  curated list:  [${[...INSTALL_JS_PATH_HELPERS].sort().join(', ')}]\n` +
         `  vocab ∩ install.js: [${vocabHelpersDefinedInInstallJs.join(', ')}]\n` +
         `Reconcile the two lists.`,
+    );
+  });
+});
+
+describe('exact-case-env-access vocab drift guard', () => {
+  test('WINDOWS_CASE_VARYING_ENV_VARS is a non-empty array', () => {
+    assert.ok(Array.isArray(WINDOWS_CASE_VARYING_ENV_VARS));
+    assert.ok(WINDOWS_CASE_VARYING_ENV_VARS.length > 0);
+  });
+
+  test('every literal env-var name passed to envGet(...) in the seam is registered in WINDOWS_CASE_VARYING_ENV_VARS', () => {
+    const srcPath = path.join(__dirname, '..', 'src', 'shell-command-projection.cts');
+    const src = fs.readFileSync(srcPath, 'utf-8');
+
+    const ast = tsParser.parse(src, {
+      jsx: false,
+      loc: true,
+      range: true,
+      comment: true,
+      tokens: false,
+    });
+
+    // Collect the second-argument string literal of every `envGet(...)` call
+    // site anywhere in the file (no special-casing of nesting — walk everything).
+    const collected = [];
+    function walk(n) {
+      if (!n || typeof n !== 'object') return;
+      if (
+        n.type === 'CallExpression' &&
+        n.callee &&
+        n.callee.type === 'Identifier' &&
+        n.callee.name === 'envGet' &&
+        Array.isArray(n.arguments) &&
+        n.arguments[1] &&
+        n.arguments[1].type === 'Literal' &&
+        typeof n.arguments[1].value === 'string'
+      ) {
+        collected.push(n.arguments[1].value);
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'parent' || key === 'tokens' || key === 'comments' || key === 'loc' || key === 'range') continue;
+        const child = n[key];
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            if (item && typeof item === 'object' && item.type) walk(item);
+          }
+        } else if (child && typeof child === 'object' && child.type) {
+          walk(child);
+        }
+      }
+    }
+    walk(ast);
+
+    // Guard against the walker itself being broken (a silent 0-hit pass would
+    // make this test vacuously true).
+    assert.ok(
+      collected.length > 0,
+      `Expected to find at least one envGet(...) call site with a literal name in ${srcPath}, found none — the AST walker may be broken.`,
+    );
+
+    const vocabLower = new Set(WINDOWS_CASE_VARYING_ENV_VARS.map((v) => v.toLowerCase()));
+    const missing = collected.filter((name) => !vocabLower.has(name.toLowerCase()));
+
+    assert.deepStrictEqual(
+      missing,
+      [],
+      `These envGet(...) literal env-var names in src/shell-command-projection.cts are missing from WINDOWS_CASE_VARYING_ENV_VARS:\n  ${missing.join('\n  ')}\n\nAdd them to WINDOWS_CASE_VARYING_ENV_VARS in eslint-rules/lib/portability-vocab.cjs.`,
     );
   });
 });

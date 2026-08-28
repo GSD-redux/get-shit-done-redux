@@ -110,10 +110,13 @@ $ echo $?
 
 This is a **ratified contract**, not an accident — see
 [ADR-2980](adr/2980-payload-carried-error-is-a-degraded-result.md) for the decision and the blast
-radius that drove it. It applies to **60 call sites across nine modules** — `state`, `verify`,
+radius that drove it. It applies to **64 call sites across nine modules** — `state`, `verify`,
 `workstream`, `frontmatter`, `commands`, `template`, `phase`, `roadmap`, and `gsd2-import`.
 (Issues #2966 and #2980 record this as "42 sites"; that figure counts only the sites where `error`
-happens to be the object's first key. See ADR-2980 for why the real number is 60.)
+happens to be the object's first key. ADR-2980 itself re-derived the population as "60" by
+brace-matching; a further AST re-measure for [#3912](https://github.com/open-gsd/gsd-core/issues/3912)
+found the true current count is 64 — the same nine modules, with `frontmatter`, `phase`, and
+`roadmap` each having grown since. See ADR-2980's amendment for the breakdown.)
 
 ### Writing a correct caller
 
@@ -168,6 +171,73 @@ $ gsd-tools state update-progress            # STATE.md present, no Progress fie
   "reason": "Progress field not found in STATE.md"
 }
 ```
+
+## Outcome declaration and the versioned exit contract (ADR-3889 §4, #3912)
+
+Both failure channels above now **declare an outcome** on every terminating path, per
+[ADR-3889](adr/3889-process-exit-contract.md). Declaration is unconditional; whether it changes the
+observed exit code depends on which **exit-contract version** the process is running under.
+
+Turn on `v2` with either `--exit-contract=v2` or `GSD_EXIT_CONTRACT=v2` (a flag beats the env var if
+both are given). Absent either, the process runs `v1` — today's default and, for every existing
+caller, byte-identical to pre-#3912 behavior. See
+[Adopt the v2 exit contract](how-to/adopt-the-v2-exit-contract.md) for a worked migration.
+
+### `error(message, reason)`
+
+`error()`'s `reason` argument now maps onto a declared outcome name (`USAGE`, `NO_INPUT`,
+`UNAVAILABLE`, `INTERNAL`, or `FAIL`) via a fixed table over all 25 `ERROR_REASON` members.
+
+- **Under `v1`, the mapping is recorded but never projected.** `error()` still throws
+  `ExitError(1)` unconditionally, exactly as before — stderr and the exit code are byte-identical to
+  every prior release.
+- **Under `v2`, the mapping is projected through the exit-code registry.** `error()` throws
+  `ExitError(exitCodeFor(<mapped outcome>))` instead of a hardcoded `1` — so, for example, a call
+  with `ERROR_REASON.SDK_MISSING_ARG` or `ERROR_REASON.SDK_UNKNOWN_COMMAND` exits `64` (`USAGE`)
+  under `v2`, and one with `ERROR_REASON.CONFIG_KEY_NOT_FOUND` exits `66` (`NO_INPUT`).
+- **Most call sites are unaffected either way.** 226 of the 278 `error()` call sites in the repo
+  pass no `reason` at all, defaulting to `ERROR_REASON.UNKNOWN`, which maps to the generic `FAIL`
+  outcome (exit `1`) under both versions.
+
+### `output({ error: … })` — a degraded result is also a declared outcome
+
+The degraded-result idiom above now declares the outcome `DEGRADED` whenever `output()`'s payload
+carries a **serializable** `error` value — any key order, and regardless of that value's own
+truthiness (`0`/`null`/`''` all count). The one exclusion: `{ error: undefined }` does **not**
+declare `DEGRADED`, because `JSON.stringify` (the exact serializer `output()` uses) drops an
+object property whose value is `undefined` before it ever reaches the wire — a payload built that
+way reaches the caller as `{}`, with nothing to be degraded about.
+
+- **Under `v1`, `DEGRADED` projects to `0`** — deliberately: this is ADR-2980's compatibility
+  boundary, pinned so all 64 ratified sites keep exiting `0` byte-for-byte.
+- **Under `v2`, `DEGRADED` projects to `80`** — looked up from the exit-code registry, never
+  hardcoded, so a future re-allocation of `DEGRADED`'s number cannot silently desync this doc from
+  the shipped table.
+
+### Precedence — what code a void-returning command actually exits with
+
+A command's `main()` can end up producing a code from more than one source. The order, highest
+precedence first, is:
+
+1. **An explicit `main()` return** (a number or a registered outcome-name string) — always wins.
+2. **A non-zero `process.exitCode` `main()` already set directly** before returning — wins over
+   anything declared through `output()`. This is what keeps `state validate --strict` correct: it
+   sets `process.exitCode = 1` itself on a missing `STATE.md`, and a `DEGRADED` declared earlier in
+   the same call must not clobber that `1` back down to `DEGRADED`'s `v1` projection of `0`.
+3. **The declared outcome pending from `output()`** — consulted only when neither of the above set
+   anything.
+4. Otherwise the process exits `0`.
+
+**Projection may only ever set a code, never lower one.** A prior review pass concluded the pending
+declaration was fail-closed by construction; it was not — without rule 2 above, `state validate
+--strict` briefly exited `0` on a case that must exit `1`. If you add a new call path that sets
+`process.exitCode` directly, check it still wins over a later `output({error})` in the same
+invocation.
+
+**The declaration does not accumulate across calls.** `output()`'s declaration follows
+last-write-wins: a clean payload clears a prior `DEGRADED` declaration in the same invocation, and
+`runMain` clears the cell on every exit regardless of which branch produced the final code, so a
+later `runMain` call in the same process never inherits a stale declaration.
 
 ## Error code taxonomy
 

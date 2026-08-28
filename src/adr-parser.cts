@@ -11,6 +11,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { requireSafePath } from './security.cjs';
 import { collectSections } from './markdown-sectionizer.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { ExitError, runMain } = cliExitModule;
 
 const STATUS_REJECT_SET = new Set(['superseded', 'rejected', 'deprecated']);
 
@@ -462,12 +465,15 @@ function main(argv: string[]): void {
 }
 
 if (require.main === module) {
-  try {
-    main(process.argv.slice(2));
-  } catch (error) {
-    process.stderr.write(`Error: ${(error as Error).message}\n`);
-    process.exit(1);
-  }
+  runMain(() => {
+    try {
+      main(process.argv.slice(2));
+    } catch (err) {
+      // ExitError with a message so runMain's catch writes it verbatim
+      // (byte-identical to the prior `Error: ${message}\n` process.exit(1)).
+      throw new ExitError(1, `Error: ${(err as Error).message}`);
+    }
+  });
 }
 
 export = {

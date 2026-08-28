@@ -28,6 +28,9 @@ import {
   analyzeCoverage as coreAnalyzeCoverage,
   runProbeCli,
 } from './probe-core.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { runMain } = cliExitModule;
 
 /** The five data/behavior shapes a requirement can exhibit. */
 export type Shape = 'numeric-range' | 'collection' | 'text' | 'stateful' | 'io';
@@ -233,9 +236,14 @@ export function analyzeCoverage(
  * `require.main === module` so it runs only when the compiled `.cjs` is executed directly.
  */
 if (require.main === module) {
-  runProbeCli(
-    (requirements, resolutions) =>
-      analyzeCoverage(requirements as Requirement[], resolutions as Resolution<EdgeVerification>[]),
-    { usage: 'edge-probe.cjs <requirements.json> [resolutions.json]' },
-  );
+  // runProbeCli's default `exit` now throws ExitError (src/probe-core.cts) rather
+  // than calling process.exit directly, so this entry point must run under
+  // runMain to translate that throw into process.exitCode.
+  runMain(() => {
+    runProbeCli(
+      (requirements, resolutions) =>
+        analyzeCoverage(requirements as Requirement[], resolutions as Resolution<EdgeVerification>[]),
+      { usage: 'edge-probe.cjs <requirements.json> [resolutions.json]' },
+    );
+  });
 }

@@ -249,11 +249,16 @@ try {
   process.stderr.write((bootErr && bootErr.message ? bootErr.message : String(bootErr)) + '\n');
   // Fatal bootstrap failure before the CLI's ExitError/runMain machinery (which
   // lives in ./lib) is available to load, so a direct exit is the only option.
-  // eslint-disable-next-line n/no-process-exit
+  // #3910: this call runs BEFORE ./lib/cli-exit.cjs is even required, so the
+  // registered-exit seam (runMain/ExitError/terminateNow) does not exist yet
+  // at this point in the process's lifetime — there is nothing to route
+  // through. This is the second (and only other) sanctioned allowlist entry
+  // for local/require-registered-exit, alongside terminateNow's own body.
+  // eslint-disable-next-line n/no-process-exit, local/require-registered-exit
   process.exit(1);
 }
 
-const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { ExitError, runMain, resolveContractVersion } = require('./lib/cli-exit.cjs');
 const io = require('./lib/io.cjs');
 const { error, ERROR_REASON, setJsonErrorMode, output, formatDiagnosticToken } = io;
 const projectRoot = require('./lib/project-root.cjs');
@@ -2773,9 +2778,17 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         );
       }
     } catch (e) {
+      // ADR-3889: error() now throws ExitError instead of calling
+      // process.exit(1) directly, so an ExitError raised by error() INSIDE
+      // this try (e.g. the "Unknown windows subcommand" call above, or one
+      // inside cmdWindowsStatus/Append/Waive/MarkFixed) lands HERE instead of
+      // terminating uncatchably. It must be re-thrown unconditionally, before
+      // the WindowsError name check below, or it falls through to the
+      // generic branch and gets re-wrapped with a wrong message/reason,
+      // discarding the original exit code.
+      if (e instanceof ExitError) throw e;
       // WindowsError carries a REASON code; surface it through the structured
-      // error path so tests can assert on the typed reason. `error()` calls
-      // process.exit(1) internally so we never reach the fall-through.
+      // error path so tests can assert on the typed reason.
       if (e && e.name === 'WindowsError' && typeof e.reason === 'string') {
         error(e.message || 'broken-windows error', e.reason);
       }
@@ -4305,7 +4318,7 @@ function runWithTimeout(argv) {
 // this string and HOST_COMMAND_ROUTERS/SKIP_ROOT_RESOLUTION are three
 // independently hand-maintained sites and nothing previously caught them
 // drifting apart when a query command was added to only one or two.
-const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--project-dir <path>] [--ws <name>] [--json-errors]\n' +
+const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--project-dir <path>] [--ws <name>] [--json-errors] [--exit-contract=<v>]\n' +
   'Commands: agent, agent-skills, assumption-delta, audit-open, audit-uat, check, check-commit, commit, commit-docs-guard, commit-to-subrepo, pr-subrepo, ' +
   'config-ensure-section, config-get, config-new-project, config-path, config-set, migrate-config, normalize-test-command, ' +
   'context-predicates, current-timestamp, detect-custom-files, docs-init, drift-guard, effort, extract-messages, find-phase, ' +
@@ -4322,7 +4335,8 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   '  --cwd <path>       Override working directory for project-root resolution\n' +
   '  --project-dir <path>  Explicit project root; skips the ancestor walk-up entirely (must already contain .planning/)\n' +
   '  --ws <name>        Override active workstream (or set GSD_WORKSTREAM)\n' +
-  '  --json-errors      Emit structured JSON error objects on stderr (or set GSD_JSON_ERRORS=1)\n\n' +
+  '  --json-errors      Emit structured JSON error objects on stderr (or set GSD_JSON_ERRORS=1)\n' +
+  '  --exit-contract=<v>  Exit-code contract version: v1 (default) or v2 (or set GSD_EXIT_CONTRACT)\n\n' +
   'For command-specific argument requirements, invoke the command without args ' +
   '(e.g. `gsd-tools phase add`) — the resulting error lists what is required.';
 
@@ -4416,18 +4430,19 @@ function resolveMainWorktreeCwd(cwd, deps = {}) {
 async function main() {
   let args = process.argv.slice(2);
 
-  // #2351: run-with-timeout bounds a spawned command's wall clock portably
-  // (coreutils-independent). It MUST intercept HERE, before the global-flag
-  // parsing below — the wrapped command's argv is opaque and may itself contain
-  // --raw / --cwd / --pick that this dispatcher would otherwise consume.
-  {
-    let rwt = args;
-    if (rwt[0] === 'query') rwt = rwt.slice(1);
-    if (rwt[0] === 'run-with-timeout') {
-      // Return the child's exit code; runMain() maps it to process.exitCode.
-      return runWithTimeout(rwt.slice(1));
-    }
-  }
+  // These two global-flag blocks (--json-errors, --exit-contract) MUST run
+  // BEFORE the run-with-timeout interception below. run-with-timeout treats
+  // args[0] (post `query` stripping) as the sentinel and otherwise passes the
+  // remaining argv straight to the wrapped child — it never reaches the
+  // dispatcher's "Unknown command" fallback, but a global flag left in LEADING
+  // position (e.g. `--exit-contract=v2 run-with-timeout ...`) would be spliced
+  // out too late if these ran after, since neither block currently exists
+  // below this point to consume it. Splicing here, before run-with-timeout's
+  // own argv slicing, is what keeps both flags position-independent for every
+  // command, run-with-timeout included. Do not move these back below the
+  // run-with-timeout block (#confirmed regression: leading --exit-contract=v2
+  // and leading --json-errors both broke run-with-timeout when these blocks
+  // sat after it).
 
   // --json-errors / GSD_JSON_ERRORS=1: when active, error() emits structured
   // JSON ({ ok: false, reason: <ERROR_REASON code>, message }) to stderr
@@ -4445,6 +4460,41 @@ async function main() {
     args.splice(jsonErrorsIdx, 1);
   } else if (process.env.GSD_JSON_ERRORS === '1') {
     setJsonErrorMode(true);
+  }
+
+  // --exit-contract=<v> / GSD_EXIT_CONTRACT: resolve FIRST, before the splice
+  // below, so an invalid value (e.g. `v3`, or an empty `--exit-contract=`)
+  // throws EARLY — matching the --json-errors block's own "detect early,
+  // before any flag parsing that can fire error()" rationale above. This also
+  // memoizes the resolved version into the shared contract-version cell so a
+  // later terminateNow()/runMain() call projects against it correctly.
+  //
+  // The argv splice must happen here too, otherwise the dispatcher below sees
+  // "--exit-contract=<v>" as an unknown command when the flag is given in
+  // LEADING position (argv[0] is what the dispatcher treats as the command
+  // name). Splice EVERY occurrence, not just the first — findExitContractFlag
+  // only consults the first match, so a stray second token would otherwise
+  // survive into the dispatcher and reproduce the same "Unknown command".
+  resolveContractVersion({ argv: process.argv, env: process.env });
+  for (let i = args.length - 1; i >= 0; i--) {
+    if (typeof args[i] === 'string' && args[i].startsWith('--exit-contract=')) {
+      args.splice(i, 1);
+    }
+  }
+
+  // #2351: run-with-timeout bounds a spawned command's wall clock portably
+  // (coreutils-independent). It MUST intercept HERE, before the remaining
+  // flag parsing below — the wrapped command's argv is opaque and may itself
+  // contain --raw / --cwd / --pick that this dispatcher would otherwise
+  // consume. (--json-errors / --exit-contract are handled above this block,
+  // not below, precisely so they keep working with run-with-timeout.)
+  {
+    let rwt = args;
+    if (rwt[0] === 'query') rwt = rwt.slice(1);
+    if (rwt[0] === 'run-with-timeout') {
+      // Return the child's exit code; runMain() maps it to process.exitCode.
+      return runWithTimeout(rwt.slice(1));
+    }
   }
 
   // Optional cwd override for sandboxed subagents running outside project root.

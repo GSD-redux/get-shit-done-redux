@@ -141,6 +141,44 @@ function projectOutcome(outcome: unknown, version: unknown): number {
   return exitCodeFor(outcome);
 }
 
+/**
+ * Pending declared outcome (ADR-3889 §4, #3912): the outcome `output()`
+ * records when it detects a payload-carried error (`{ error }`, any key
+ * order) on a call that otherwise just returns — there is no thrown
+ * ExitError and no explicit `main()` return for `runMain` to project, so
+ * without this cell the declaration has nowhere to land. `runMain` reads it
+ * ONLY when `main()` itself returns no explicit code (void/undefined); an
+ * explicit number/string return always wins over whatever this cell holds.
+ *
+ * Held in a Symbol-keyed globalThis cell for the exact reason
+ * JSON_ERROR_MODE_KEY / CONTRACT_VERSION_KEY are (see their comments above):
+ * this module is emitted to three locations and thus loaded as independent
+ * module instances in any process that requires more than one, so a
+ * module-level variable would let those instances disagree about whether a
+ * degraded result was ever declared.
+ *
+ * LIFETIME (#3912 review fix): LAST DECLARATION WINS, CLEARED ON CONSUMPTION.
+ * This cell is NOT "was DEGRADED ever declared this process" — it is "is a
+ * degraded outcome pending RIGHT NOW". `output()` sets it to 'DEGRADED' on a
+ * payload-carried error and CLEARS it (`undefined`) on a clean payload, so a
+ * later clean `output()` call undoes an earlier degraded one in the same
+ * invocation. `runMain` clears it immediately after consuming it (in a
+ * `finally`, on both the pending-cell branch and the case where nothing was
+ * pending), so a second `runMain` in the same process starts clean. Without
+ * both halves the cell is monotonic for the life of the process: any later
+ * `main()` returning void would inherit a stale DEGRADED from an unrelated,
+ * earlier call — this is the leak #3912 review found and fixed.
+ */
+const PENDING_OUTCOME_KEY = Symbol.for('gsd.exit.pendingOutcome');
+
+function setPendingOutcome(v: unknown): void {
+  (globalThis as unknown as Record<symbol, unknown>)[PENDING_OUTCOME_KEY] = v;
+}
+
+function getPendingOutcome(): unknown {
+  return (globalThis as unknown as Record<symbol, unknown>)[PENDING_OUTCOME_KEY];
+}
+
 const EXIT_CONTRACT_FLAG_PREFIX = '--exit-contract=';
 
 /** Scan argv for the FIRST `--exit-contract=<value>` token; undefined if absent. */
@@ -222,11 +260,44 @@ class ExitError extends Error {
  * process.on('exit') cleanup still fires — this is precisely why runMain and
  * terminateNow are two different functions: drain-then-exit vs write-then-
  * terminate). main may be sync or async. Every arm below except the new
- * string one is UNCHANGED from before ADR-3889 Phase 2:
+ * string one and the void/pending-cell one is UNCHANGED from before
+ * ADR-3889 Phase 2:
  *   number return   -> process.exitCode = it (unchanged)
  *   string return   -> NEW: process.exitCode = projectOutcome(result, getContractVersion()),
  *                      UNLESS that projection is the HOOK_DENY exit code (see
  *                      the refusal below — 2 may only be produced by terminateNow).
+ *   void/undefined return -> NEW (#3912, ADR-3889 §4): an explicit return
+ *                      already handled above always wins, so this arm only
+ *                      runs when main() declared no outcome of its own. If
+ *                      the pending-outcome cell holds a value (currently only
+ *                      ever 'DEGRADED', set by io.cts's output() on a
+ *                      payload-carried error), project THAT through the
+ *                      current contract version — BUT ONLY when
+ *                      process.exitCode is not already a non-zero value.
+ *                      FULL PRECEDENCE ORDER for the code a void-returning
+ *                      main() ends up with:
+ *                        1. An explicit number/string return from main()
+ *                           (handled in the arms above) — always wins.
+ *                        2. A non-zero process.exitCode already set by main()
+ *                           itself before it returned (e.g. `state validate
+ *                           --strict`'s `emit()` setting 1 directly) — wins
+ *                           over the pending cell.
+ *                        3. The pending-outcome cell's projection — used only
+ *                           when process.exitCode is still unset/0.
+ *                        4. Otherwise process.exitCode stays 0 (default).
+ *                      This is a regression fix: unconditionally projecting
+ *                      the pending cell here used to CLOBBER an
+ *                      already-non-zero process.exitCode down to DEGRADED's
+ *                      v1 projection (0) — turning a real declared failure
+ *                      (e.g. `state validate --strict` against a missing
+ *                      STATE.md, which sets process.exitCode = 1 directly)
+ *                      into a false success. `runMain` must never LOWER an
+ *                      exit code that main() itself already raised. DEGRADED
+ *                      still projects to 0 under v1 when nothing else set a
+ *                      code — the same value this arm produced before this
+ *                      phase by doing nothing — so v1 behavior is
+ *                      byte-identical for every caller that never sets its
+ *                      own exit code.
  *   thrown ExitError -> process.exitCode = err.code (+ stderr err.message if hasUserMessage && code!=0) (unchanged)
  *   other throw -> when json-error mode is active, emits structured { ok:false, reason, message }
  *                  to stderr; otherwise writes raw stack trace. exit code = 1 in either case. (unchanged)
@@ -235,29 +306,57 @@ function runMain(main: () => number | string | void | Promise<number | string | 
   Promise.resolve()
     .then(() => main())
     .then((result) => {
-      if (typeof result === 'number') { process.exitCode = result; return; }
-      if (typeof result === 'string') {
-        const projected = projectOutcome(result, getContractVersion());
-        // ADR-3889 §3: exit code 2 (the hook-protocol deny) may
-        // ONLY be produced by terminateNow, never by runMain. runMain is
-        // drain-then-exit; a deny drained this way can be truncated on
-        // Windows, which is exactly why terminateNow (write-then-terminate)
-        // exists. Gated on the PROJECTED code, not on the literal string
-        // `'HOOK_DENY'`, so a future registry rename that still resolves to
-        // this code cannot slip past the guard.
-        if (projected === HOOK_DENY_CODE) {
-          process.stderr.write(
-            `runMain: refusing to exit with code ${HOOK_DENY_CODE} — outcome ${JSON.stringify(result)} `
-            + `projects to the ${HOOK_DENY_NAME} exit code, which is reserved to terminateNow. `
-            + `A hook-protocol deny must be delivered write-then-terminate via terminateNow(${JSON.stringify(result)}, payload), `
-            + 'never drain-then-exit via runMain — a drained deny can be truncated on Windows. '
-            + 'This is a caller bug: runMain must not be given a main() that returns HOOK_DENY.\n',
-          );
-          process.exitCode = exitCodeFor('INTERNAL');
+      // Cleared on EVERY branch below, not only the pending-cell-consuming
+      // void arm: an explicit number/string return means main() declared
+      // its own outcome and the cell (if anything set it earlier in this
+      // same invocation) is now stale — leaving it set would leak into the
+      // NEXT runMain call in this process, reintroducing the #3912 leak one
+      // level up. "Cleared on consumption" therefore means "consumption of
+      // this runMain call", not just "consumption of the pending value".
+      try {
+        if (typeof result === 'number') { process.exitCode = result; return; }
+        if (typeof result === 'string') {
+          const projected = projectOutcome(result, getContractVersion());
+          // ADR-3889 §3: exit code 2 (the hook-protocol deny) may
+          // ONLY be produced by terminateNow, never by runMain. runMain is
+          // drain-then-exit; a deny drained this way can be truncated on
+          // Windows, which is exactly why terminateNow (write-then-terminate)
+          // exists. Gated on the PROJECTED code, not on the literal string
+          // `'HOOK_DENY'`, so a future registry rename that still resolves to
+          // this code cannot slip past the guard.
+          if (projected === HOOK_DENY_CODE) {
+            process.stderr.write(
+              `runMain: refusing to exit with code ${HOOK_DENY_CODE} — outcome ${JSON.stringify(result)} `
+              + `projects to the ${HOOK_DENY_NAME} exit code, which is reserved to terminateNow. `
+              + `A hook-protocol deny must be delivered write-then-terminate via terminateNow(${JSON.stringify(result)}, payload), `
+              + 'never drain-then-exit via runMain — a drained deny can be truncated on Windows. '
+              + 'This is a caller bug: runMain must not be given a main() that returns HOOK_DENY.\n',
+            );
+            process.exitCode = exitCodeFor('INTERNAL');
+            return;
+          }
+          process.exitCode = projected;
           return;
         }
-        process.exitCode = projected;
-        return;
+        // result is undefined (void return): main declared no outcome itself.
+        // Fall back to the pending-outcome cell, if anything set it — but
+        // NEVER lower an exit code main() already raised on its own (see the
+        // precedence order in this function's doc comment above). Without
+        // this guard, a void-returning main() that set process.exitCode = 1
+        // directly (e.g. `state validate --strict` on a missing STATE.md)
+        // would have that 1 clobbered down to DEGRADED's v1 projection (0)
+        // by a payload-carried error the SAME call also recorded via
+        // io.cts's output() — a real failure silently reported as success.
+        const pending = getPendingOutcome();
+        if (typeof pending === 'string' && pending.length > 0 && !process.exitCode) {
+          process.exitCode = projectOutcome(pending, getContractVersion());
+        }
+      } finally {
+        // Cell is consumed exactly once per runMain call regardless of which
+        // branch above ran (see the cell's own doc comment — "last
+        // declaration wins, cleared on consumption") — so a later `runMain`
+        // in the same process never inherits this one's declaration.
+        setPendingOutcome(undefined);
       }
     })
     .catch((err: unknown) => {
@@ -461,4 +560,6 @@ export = {
   resolveContractVersion,
   getContractVersion,
   terminateNow,
+  setPendingOutcome,
+  getPendingOutcome,
 };

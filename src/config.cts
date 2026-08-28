@@ -13,6 +13,9 @@ import os from 'node:os';
 import io = require('./io.cjs');
 const { output, error, ERROR_REASON } = io;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitMod = require('./cli-exit.cjs');
+const { ExitError } = cliExitMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoader = require('./config-loader.cjs');
 const { CONFIG_DEFAULTS } = configLoader;
 import { platformWriteSync, platformEnsureDir } from './shell-command-projection.cjs';
@@ -1012,6 +1015,15 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
       error('No config.json found at ' + configPath, ERROR_REASON.CONFIG_NO_FILE);
     }
   } catch (err) {
+    // ADR-3889: error() now throws ExitError (carries no message) instead of
+    // calling process.exit() directly. The message-sniffing check below
+    // (`.startsWith('No config.json')`) can never match an ExitError raised
+    // by the "no config.json" error() call above it — ExitError.message
+    // defaults to `process exit ${code}` when no message is passed — so
+    // without this unconditional guard that ExitError falls through and gets
+    // re-wrapped as a WRONG reason (CONFIG_PARSE_FAILED instead of
+    // CONFIG_NO_FILE) with a nonsense message, plus a duplicate stderr write.
+    if (err instanceof ExitError) throw err;
     if ((err as Error).message.startsWith('No config.json')) throw err;
     error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
   }

@@ -853,6 +853,7 @@ const commands = require('../gsd-core/bin/lib/commands.cjs');
 const configCli = require('../gsd-core/bin/lib/config.cjs');
 const { loadConfigResolved, CONFIG_DEFAULTS } = require('../gsd-core/bin/lib/config-loader.cjs');
 const io = require('../gsd-core/bin/lib/io.cjs');
+const { ExitError } = require('../gsd-core/bin/lib/cli-exit.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE } = require('../gsd-core/bin/lib/phase-id.cjs');
 const { DYNAMIC_KEY_PATTERNS } = require('../gsd-core/bin/lib/config-schema.cjs');
 
@@ -906,11 +907,11 @@ function runCommit(tmpDir, message, files) {
   return JSON.parse(out);
 }
 
-/** Drives cmdConfigSet in-process, sentinel-exit style (mirrors
- * tests/config-get-default.test.cjs's runExpectError) for the one negative
- * (A4) case that must exercise error()'s process.exit(1) path. */
+/** Drives cmdConfigSet in-process (mirrors tests/config-get-default.test.cjs's
+ * runExpectError) for the one negative (A4) case that must exercise error()'s
+ * ExitError-throwing path (ADR-3889 — error() throws ExitError directly, it
+ * no longer calls process.exit()). */
 function runConfigSetExpectError(tmpDir, keyPath, value) {
-  const origExit = process.exit;
   const origWriteSync = fs.writeSync;
   io.setJsonErrorMode(true);
   let stderr = '';
@@ -923,14 +924,12 @@ function runConfigSetExpectError(tmpDir, keyPath, value) {
     stderr += chunk;
     return Buffer.byteLength(chunk);
   };
-  class _ExitSignal extends Error {}
-  process.exit = () => { throw new _ExitSignal('exit'); };
   try {
     configCli.cmdConfigSet(tmpDir, keyPath, value, true);
+    assert.fail('expected cmdConfigSet to throw ExitError');
   } catch (e) {
-    if (!(e instanceof _ExitSignal)) throw e;
+    if (!(e instanceof ExitError)) throw e;
   } finally {
-    process.exit = origExit;
     fs.writeSync = origWriteSync;
     io.setJsonErrorMode(false);
   }

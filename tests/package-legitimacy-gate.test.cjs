@@ -18,6 +18,14 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// ADR-2143 seam (#3239): both hand-rolled table parsers this file used to
+// carry have been rerouted onto the canonical parser. See parseAllMarkdownTables
+// below for the one piece that stays local (grouping contiguous `|`-line runs
+// into separate table fixtures) — grouping has no ADR-2143 equivalent and is
+// test-fixture-specific, not a GFM parsing concern; every actual PARSE is
+// delegated to the seam.
+const { parseMarkdownTable: parseTable } = require('../gsd-core/bin/lib/markdown-table.cjs');
+
 const AGENTS = path.join(__dirname, '..', 'agents');
 const RESEARCHER = path.join(AGENTS, 'gsd-phase-researcher.md');
 const PLANNER = path.join(AGENTS, 'gsd-planner.md');
@@ -152,31 +160,12 @@ function anyLineHasAll(lines, required) {
   return lines.some((line) => hasAllTokens(line, required));
 }
 
-function parseMarkdownTable(lines) {
-  const tableLines = lines.filter((line) => /^\s*\|/.test(line));
-  if (tableLines.length < 2) return null;
-
-  const toCells = (line) => line
-    .trim()
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => cell.trim());
-
-  const headers = toCells(tableLines[0]);
-  const rows = tableLines
-    .slice(2)
-    .map(toCells)
-    .filter((cells) => cells.length === headers.length)
-    .map((cells) => ({
-      cells,
-      fields: Object.fromEntries(headers.map((h, i) => [h, cells[i]])),
-    }));
-
-  return { headers, rows };
-}
-
-function parseMarkdownTables(lines) {
+// Groups contiguous `|`-prefixed lines into separate table-fixture blocks and
+// delegates each group's actual parse to the ADR-2143 seam (parseMarkdownTable
+// above). A malformed group (ragged row, missing delimiter row, etc.) throws
+// loudly instead of being silently filtered out — the exact "silent drop"
+// failure mode #3239 closes.
+function parseAllMarkdownTables(lines) {
   const groups = [];
   let current = [];
 
@@ -192,10 +181,66 @@ function parseMarkdownTables(lines) {
   }
   if (current.length > 0) groups.push(current);
 
-  return groups
-    .map((group) => parseMarkdownTable(group))
-    .filter(Boolean);
+  return groups.map((group) => {
+    const result = parseTable(group.join('\n'));
+    if (!result.ok) {
+      throw new Error(`malformed markdown table in fixture: ${result.reason}`);
+    }
+    return result.value;
+  });
 }
+
+describe('markdown-table seam reroute (#3239) — ragged rows and escaped pipes', () => {
+  test('ragged data row surfaces as a typed parse error, not a silent drop', () => {
+    const text = [
+      '| Package | Verdict |',
+      '|---------|---------|',
+      '| left-pad | OK |',
+      '| too-many-cells | OK | EXTRA |',
+    ].join('\n');
+
+    const result = parseTable(text);
+    assert.equal(result.ok, false, 'a ragged row must fail loudly, not parse as a truncated table');
+    assert.match(result.reason, /row 2 has 3 cells, expected 2/);
+  });
+
+  test('a cell containing an escaped pipe parses as one cell with a literal |, not two cells', () => {
+    const text = [
+      '| Package | Notes |',
+      '|---------|-------|',
+      String.raw`| left-pad | a\|b |`,
+    ].join('\n');
+
+    const result = parseTable(text);
+    assert.ok(result.ok, 'well-formed table with an escaped-pipe cell must parse');
+    assert.equal(result.value.rows[0].Notes, 'a|b');
+  });
+
+  test('parseAllMarkdownTables delegates each group to the seam and groups by blank-line boundaries', () => {
+    const lines = [
+      '| A | B |',
+      '|---|---|',
+      '| 1 | 2 |',
+      '',
+      '| C | D |',
+      '|---|---|',
+      '| 3 | 4 |',
+    ];
+    const tables = parseAllMarkdownTables(lines);
+    assert.equal(tables.length, 2);
+    assert.deepEqual(tables[0].columns, ['A', 'B']);
+    assert.deepEqual(tables[1].columns, ['C', 'D']);
+  });
+
+  test('parseAllMarkdownTables throws loudly when a group contains a ragged row', () => {
+    const lines = [
+      '| A | B |',
+      '|---|---|',
+      '| 1 | 2 | 3 |',
+    ];
+    assert.throws(() => parseAllMarkdownTables(lines), /malformed markdown table/);
+  });
+});
 
 function lineIndexes(lines, predicate) {
   const indexes = [];
@@ -282,13 +327,13 @@ describe('gsd-phase-researcher.md — Package Legitimacy Audit section in templa
     const section = templateSections.find((s) => s.heading === 'Package Legitimacy Audit');
     assert.ok(section, 'Package Legitimacy Audit section must exist');
 
-    const table = parseMarkdownTable(section.body);
-    assert.ok(table, 'Package Legitimacy Audit section must include a markdown table');
+    const result = parseTable(section.body.join('\n'));
+    assert.ok(result.ok, 'Package Legitimacy Audit section must include a valid markdown table');
 
     // 'slopcheck' column renamed to 'Verdict' to reflect the code seam (gsd-tools query package-legitimacy)
     const expected = ['Package', 'Registry', 'Age', 'Downloads', 'Verdict', 'Disposition'];
     for (const column of expected) {
-      assert.ok(table.headers.includes(column), `audit table must have "${column}" column`);
+      assert.ok(result.value.columns.includes(column), `audit table must have "${column}" column`);
     }
   });
 
@@ -296,10 +341,10 @@ describe('gsd-phase-researcher.md — Package Legitimacy Audit section in templa
     const section = templateSections.find((s) => s.heading === 'Package Legitimacy Audit');
     assert.ok(section, 'Package Legitimacy Audit section must exist');
 
-    const table = parseMarkdownTable(section.body);
-    assert.ok(table, 'Package Legitimacy Audit section must include a markdown table');
+    const result = parseTable(section.body.join('\n'));
+    assert.ok(result.ok, 'Package Legitimacy Audit section must include a valid markdown table');
 
-    const rowTexts = table.rows.map((row) => row.cells.join(' '));
+    const rowTexts = result.value.rows.map((row) => Object.values(row).join(' '));
     const slop = rowTexts.some((value) => hasAllTokens(value, ['slop']));
     const sus = rowTexts.some((value) => hasAllTokens(value, ['sus']));
     const ok = rowTexts.some((value) => hasAllTokens(value, ['ok']));
@@ -419,16 +464,16 @@ describe('gsd-planner.md — supply-chain row in threat_model template', () => {
   });
 
   test('threat_model template includes supply-chain row with mitigate disposition', () => {
-    const tables = parseMarkdownTables(threatModelBlock.split(/\r?\n/));
-    const strideTable = tables.find((table) => table.headers.includes('Threat ID'));
+    const tables = parseAllMarkdownTables(threatModelBlock.split(/\r?\n/));
+    const strideTable = tables.find((table) => table.columns.includes('Threat ID'));
     assert.ok(strideTable, 'threat_model must include STRIDE threat register table');
 
-    const supplyChainRow = strideTable.rows.find((row) => hasAllTokens(row.cells[0] || '', ['t-{phase}-sc']));
+    const supplyChainRow = strideTable.rows.find((row) => hasAllTokens(row['Threat ID'] || '', ['t-{phase}-sc']));
     assert.ok(supplyChainRow, 'threat_model must include T-{phase}-SC supply-chain row');
 
-    const dispoIdx = strideTable.headers.findIndex((h) => /disposition/i.test(String(h)));
-    assert.ok(dispoIdx >= 0, 'STRIDE table must have a Disposition column');
-    const disposition = supplyChainRow.cells[dispoIdx] || '';
+    const dispositionCol = strideTable.columns.find((h) => /disposition/i.test(h));
+    assert.ok(dispositionCol, 'STRIDE table must have a Disposition column');
+    const disposition = supplyChainRow[dispositionCol] || '';
     assert.ok(hasAllTokens(disposition, ['mitigate']), 'supply-chain threat disposition must be mitigate');
   });
 });

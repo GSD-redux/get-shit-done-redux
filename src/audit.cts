@@ -1657,7 +1657,10 @@ function cmdAuditAcknowledge(cwd: string, args: string[], raw: boolean): void {
       if (result.status === 'ambiguous') ioError(`--text "${text as string}" matches more than one deferred item — text must be unique`);
       if (result.status === 'already_resolved') ioError(`deferred item is already "status: resolved" — acknowledging a resolved item is a no-op`);
       if (result.status === 'unsupported_heading_shape') {
-        ioError('this deferred-items.md uses the heading-delimited (#3457) entry shape, which the CLI writer does not yet support — edit the file directly');
+        // #3781: heading-shaped entries are supported; the remaining refusal
+        // cause is a GFM table row embedded in the entry's span (non-contiguous
+        // — a write cannot be anchored safely).
+        ioError('this deferred item\'s span embeds a GFM table row, so the CLI writer cannot anchor a safe write to it — edit the file directly');
       }
       if (result.status === 'match_verification_failed') {
         ioError(`internal error: matched span for --text "${text as string}" did not re-verify before write — refused rather than risk writing the wrong entry`);

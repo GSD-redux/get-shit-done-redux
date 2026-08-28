@@ -27,6 +27,9 @@
  */
 
 import fs from 'node:fs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { ExitError } = cliExitModule;
 
 /** Resolution lifecycle — shared across every probe adapter. */
 export type Status = 'resolved' | 'dismissed' | 'unresolved';
@@ -692,7 +695,7 @@ export function runProbeCli(
   const readFile = options.readFile ?? ((p: string) => fs.readFileSync(p, 'utf8'));
   const write = options.write ?? ((s: string) => { process.stdout.write(s); });
   const writeErr = options.writeErr ?? ((s: string) => { process.stderr.write(s); });
-  const exit = options.exit ?? ((code: number) => { process.exit(code); });
+  const exit = options.exit ?? ((code: number) => { throw new ExitError(code); });
 
   const reqPath: string | undefined = argv[2];
   const resPath: string | undefined = argv[3];
