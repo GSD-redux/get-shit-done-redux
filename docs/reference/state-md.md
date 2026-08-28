@@ -205,7 +205,7 @@ Where the project stands right now:
 | `Last activity:` | ISO date (`YYYY-MM-DD`) when handler-written; narrative prose when executor-authored |
 | `Progress:` | Visual bar, e.g. `[████░░░░░░] 40%` |
 
-**Every field in this section is single-valued, and the section is overwritten rather than appended to.** A second `Phase:` line is not a second position and is not history — it is malformed input. Readers resolve a duplicated field by taking the **first** occurrence, so a later line appended in good faith is silently ignored rather than winning; nothing warns. Write the section by replacing it, never by adding a line.
+**Every field in this section is single-valued, and the section is overwritten rather than appended to.** A second `Phase:` line is not a second position and is not history — it is malformed input. Readers do **not** resolve a duplicate by document order; they resolve it by **form**, checked in this order regardless of where each form appears — bold `**Phase:** value` anywhere in the document, then plain `Phase: value` at the start of a line, then a pipe-table `| Phase | value |` row — and only *within* the winning form does the **first** occurrence win. Two practical consequences: a duplicate written in a higher-ranked form wins even if it comes first in the file, so a bold line appended "for emphasis" silently overrides an earlier plain line instead of being ignored; and an indented `Phase:` line is invisible to the plain form (which anchors at line-start) and falls through to whatever form matches next. Write the section by replacing it, never by adding a line.
 
 Progress *history* does not belong here. It accumulates in [`## Performance Metrics`](#performance-metrics) below, which is the section designed to grow.
 

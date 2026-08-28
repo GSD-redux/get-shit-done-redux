@@ -1201,73 +1201,101 @@ describe('stateExtractField and stateReplaceField helpers', () => {
     assert.strictEqual(result, 'Active', 'should match field name case-insensitively');
   });
 
-  // (#3812) docs/reference/state-md.md's "### Current Position" section now
-  // promises: every field there is single-valued, and a duplicated field
-  // resolves to the FIRST occurrence with no warning. These three rows pin
-  // that reader behavior so the doc can't silently drift from the code.
-  // T1 is load-bearing; T2/T3 exist so T1 can't pass for the wrong reason
-  // (e.g. a reader that returns the first line of the SECTION rather than
-  // the first matching FIELD). See
+  // (#3812) docs/reference/state-md.md's "### Current Position" section
+  // promises: every field there is single-valued, and duplicates resolve by
+  // FORM first (bold `**F:**` anywhere, then plain `^F:`, then pipe-table),
+  // and only within the winning form does first-occurrence win. #2956 already
+  // fixed the INTER-section case (a duplicate in a different section never
+  // shadows the real one) by scoping to `## Current Position`; these rows
+  // pin the INTRA-section case #2956 never addressed — every fixture here
+  // duplicates the field WITHIN the same `## Current Position` section, so a
+  // reader that merely scopes correctly (and gets first-occurrence right by
+  // accident) cannot pass. Each row is exercised through the real production
+  // chain — `stateCurrentPositionSlice` (the function `state.cts`'s private
+  // `matchCurrentPositionSection` delegates to) feeding `stateExtractField`
+  // — not bare `stateExtractField` over hand-scoped content, so section
+  // scoping is genuinely exercised rather than assumed. See
   // .gsd/phase/docs-3812-current-position-cardinality/50-test-matrix.md.
 
-  test('T1: duplicated Phase field resolves to the first occurrence (#3812)', () => {
+  function extractViaProductionChain(body, fieldName) {
+    const scope = stateDocument.stateCurrentPositionSlice(body) ?? body;
+    return stateExtractField(scope, fieldName);
+  }
+
+  test('T1: plain-then-plain intra-section duplicate resolves to the first occurrence (#3812)', () => {
     const content = [
       '# STATE',
       '',
-      '### Current Position',
+      '## Current Position',
       '',
-      'Phase: 1 of 5 (First)',
+      'Phase: 1 of 5 (First, plain)',
       'Plan: 1 of 3',
-      '',
-      '## Somewhere else',
-      'Phase: 9 of 9 (Appended later)',
+      'Phase: 9 of 9 (Second, plain)',
     ].join('\n');
 
-    const result = stateExtractField(content, 'Phase');
+    const result = extractViaProductionChain(content, 'Phase');
     assert.strictEqual(
       result,
-      '1 of 5 (First)',
-      'a duplicated Phase field must resolve to the first occurrence, per docs/reference/state-md.md'
+      '1 of 5 (First, plain)',
+      'within one form (plain), a duplicated Phase field must resolve to the first occurrence'
     );
   });
 
-  test('T2: a single, non-duplicated Phase field still resolves normally (#3812)', () => {
+  test('T2: mixed-form intra-section duplicate — later BOLD line beats an earlier plain line (#3812)', () => {
     const content = [
       '# STATE',
       '',
-      '### Current Position',
+      '## Current Position',
       '',
-      'Phase: 2 of 5 (Only occurrence)',
+      'Phase: 1 of 5 (First, plain)',
       'Plan: 1 of 3',
+      '**Phase:** 9 of 9 (Second, bold)',
     ].join('\n');
 
-    const result = stateExtractField(content, 'Phase');
+    const result = extractViaProductionChain(content, 'Phase');
     assert.strictEqual(
       result,
-      '2 of 5 (Only occurrence)',
-      'the ordinary, non-duplicated case must still resolve correctly'
+      '9 of 9 (Second, bold)',
+      'bold form outranks plain form regardless of document order, per docs/reference/state-md.md'
     );
   });
 
-  test('T3: a sibling field between duplicated Phase lines resolves to its own value (#3812)', () => {
+  test('T3: an indented Phase line is invisible to the plain form; the later un-indented line wins (#3812)', () => {
     const content = [
       '# STATE',
       '',
-      '### Current Position',
+      '## Current Position',
       '',
-      'Phase: 1 of 5 (First)',
+      '    Phase: 1 of 5 (Indented, ignored)',
+      'Phase: 9 of 9 (Un-indented, matches)',
+      'Plan: 1 of 3',
+    ].join('\n');
+
+    const result = extractViaProductionChain(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '9 of 9 (Un-indented, matches)',
+      'the plain form anchors at true line-start; an indented line never matches it'
+    );
+  });
+
+  test('T4: a sibling field between duplicated Phase lines resolves to its own value (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 5 (First, plain)',
       'Plan: 2 of 3',
-      '',
-      '## Somewhere else',
-      'Phase: 9 of 9 (Appended later)',
+      'Phase: 9 of 9 (Second, plain)',
     ].join('\n');
 
-    const phase = stateExtractField(content, 'Phase');
-    const plan = stateExtractField(content, 'Plan');
+    const phase = extractViaProductionChain(content, 'Phase');
+    const plan = extractViaProductionChain(content, 'Plan');
     assert.strictEqual(
       phase,
-      '1 of 5 (First)',
-      'Phase must still resolve to the first occurrence with a sibling field in between'
+      '1 of 5 (First, plain)',
+      'Phase must still resolve to the first occurrence within its form with a sibling field in between'
     );
     assert.strictEqual(
       plan,
