@@ -4807,7 +4807,9 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
     const r = runGsdTools(['query', 'init', 'map-codebase'], tmpDir, { GSD_PROJECT: 'second-product' });
     assert.ok(r.success, r.error);
     const out = JSON.parse(r.output);
-    assert.ok(String(out['codebase_dir']).includes(path.join('.planning', 'second-product')),
+    // codebase_dir is POSIX-normalized (toPosixPath) — compare against a
+    // literal forward-slash path, not path.join (backslashes on Windows).
+    assert.ok(String(out['codebase_dir']).includes('.planning/second-product'),
       `#3964: codebase_dir must be scoped, got ${out['codebase_dir']}`);
     assert.equal(out['codebase_dir_exists'], true,
       '#3964: the scoped codebase dir exists — must agree with verify scoping');
