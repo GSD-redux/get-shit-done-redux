@@ -377,6 +377,43 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     );
   });
 
+  test('the outside-in missing-target mode is defined by a declared-field equality', () => {
+    const declaration = sliceH3(CONTRACT, 'Declaration');
+    const opener = '| `expected_failure.subject` |';
+    const rows = declaration.split('\n').filter((line) => line.trim().startsWith(opener));
+    assert.strictEqual(rows.length, 1,
+      `### Declaration must carry exactly one "${opener}" field row to define the mode in`);
+    const row = rows[0];
+
+    assert.ok(row.includes('is an outside-in missing-target mode'),
+      'the subject row must name the mode with the predicate\'s own spelling. The second arm ' +
+      'reads `plan.expected_failure is an outside-in missing-target mode`; a definition that ' +
+      'spells it differently is not lexically bound to the conjunct it defines. See #3770.');
+    assert.match(row, /`expected_failure\.subject`[^|]*equals[^|]*`implementation_target`/,
+      'the mode must be defined as an equality between two declared fields — ' +
+      '`expected_failure.subject` equal to `implementation_target`. Phase 3 has to mechanize ' +
+      'the second arm from the declaration alone; a descriptive gloss is not decidable. ' +
+      'See #3770.');
+    assert.ok(row.includes('never routes on the observed'),
+      'the row must keep the true half of the routing claim: the predicate never routes on ' +
+      'the OBSERVED subject. See #3770.');
+    assert.ok(!row.includes('and never routes on it'),
+      'the row still claims the predicate never routes on `expected_failure.subject`. That ' +
+      'is false and it is what left the second arm unmechanizable: the declared equality is ' +
+      'the only decidable meaning the arm has. See #3770.');
+
+    for (const [where, text] of [
+      ['### Declaration', declaration],
+      ['the ### RED Predicate block', soleFencedBlock(CONTRACT, 'RED Predicate')],
+      ['### Outcomes', sliceH3(CONTRACT, 'Outcomes')],
+    ]) {
+      assert.ok(text.includes('outside-in missing-target mode'),
+        `${where} must spell the mode "outside-in missing-target mode". The predicate, its ` +
+        'definition and its outcome row have to name one thing one way, or the existing ' +
+        'outside-in assertion pins a spelling the rest of the file does not use. See #3770.');
+    }
+  });
+
   test('### Evidence names exactly the seven trailer fields', () => {
     const line = trailerLine();
     const parsed = JSON.parse(line.slice(line.indexOf(':') + 1));
