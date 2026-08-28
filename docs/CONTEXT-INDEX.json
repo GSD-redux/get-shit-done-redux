@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "count": 275,
+  "count": 277,
   "classes": {
     "ARCH": 1,
     "CI": 2,
@@ -18,7 +18,7 @@
     "PROHIB": 10,
     "RELEASE-NOTES": 31,
     "RULESET": 60,
-    "SEAM": 12,
+    "SEAM": 14,
     "SESSION": 9,
     "WAVE": 5,
     "WORKSTREAM": 5,
@@ -1204,6 +1204,16 @@
       "id": "SEAM.git-query-readonly-seam.owns",
       "klass": "SEAM",
       "value": "bounded, never-throw git repository introspection — base-branch detection, worktree-info detection, phase change-set detection"
+    },
+    {
+      "id": "SEAM.package-identity.enforced-by",
+      "klass": "SEAM",
+      "value": "test:tests/package-identity.test.cjs"
+    },
+    {
+      "id": "SEAM.package-identity.owns",
+      "klass": "SEAM",
+      "value": "GSD's published-package coordinates (packageName, binName, repoSlug, changelogRawUrl, manualInstallCommand) — single seam so a repoint/rename is a one-line change"
     },
     {
       "id": "SEAM.phase-locator-milestone-enum.enforced-by",

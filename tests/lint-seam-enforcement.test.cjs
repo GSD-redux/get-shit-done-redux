@@ -234,16 +234,10 @@ const localPlugin = {
 
 describe('lint-seam-enforcement: real repo has zero unresolved SEAM claims', () => {
   test('row 3: extractSeamFacts + checkSeamFacts against the real CONTEXT.md and eslint.config.mjs resolve cleanly', () => {
-    // EXPECTED TO PASS VACUOUSLY RIGHT NOW: if CONTEXT.md currently has zero
-    // SEAM.*.owns/enforced-by facts, extractSeamFacts returns empty maps and
-    // checkSeamFacts on empty maps returns [] trivially. A later commit in
-    // this same PR adds six real SEAM.*.owns/enforced-by facts (Shell Command
-    // Projection Module, Verification Module, Phase Locator Module, Git Query
-    // Module, capability-activation precedence engine, Worktree Safety Policy
-    // Module) backed by real lint rules/tests; this test then starts
-    // meaningfully exercising real data and proves they all resolve. It must
-    // never assert findings.length > 0 — deepEqual([]) is correct both before
-    // and after CONTEXT.md gains the six facts.
+    // Regression net for every SEAM.*.owns/enforced-by fact CONTEXT.md
+    // declares. deepEqual([]) is correct whether CONTEXT.md has zero facts
+    // (empty maps produce zero findings trivially) or many (each must
+    // resolve cleanly to a registered rule or an existing test file).
     const root = path.join(__dirname, '..');
     const contextText = fs.readFileSync(path.join(root, 'CONTEXT.md'), 'utf8');
     const eslintConfigText = fs.readFileSync(path.join(root, 'eslint.config.mjs'), 'utf8');

@@ -48,16 +48,22 @@ writes around it.
 3. **Scope**: resolves-only. The gate does not compute whether a rule's ESLint `files` glob or a
    test's exercised code paths actually reach every file the seam claims. This is a conscious,
    disclosed limitation — see Consequences.
-4. **No grandfather list** (ADR-1703 Decision 2, applied here): every current module-level
+4. **No grandfather list** (ADR-1703 Decision 2, applied here): every current *module-level*
    single-owner/single-seam claim in `CONTEXT.md` was enumerated and either backed with a real
    `SEAM.*.owns`/`enforced-by` pair, or its prose would be corrected to stop claiming exclusive
-   ownership. Six claims were found (Shell Command Projection Module's Windows-binary-resolution
+   ownership. Seven claims were found (Shell Command Projection Module's Windows-binary-resolution
    axis, Verification Module's `isPhaseComplete`, Phase Locator Module's
-   `listMilestonePhaseDirs`, Git Query Module, the capability-activation precedence engine, and
-   the Worktree Safety Policy Module); all six already had an existing, on-disk lint rule or test
-   file that plausibly anchors the claim once actually pointed to — none required a prose
-   downgrade. See `.gsd/phase/feat-3626-context-seam-claim-gate/40-design.md` for the full
-   seam-by-seam disposition table and verification evidence.
+   `listMilestonePhaseDirs`, Git Query Module, the capability-activation precedence engine, the
+   Worktree Safety Policy Module, and the Package Identity Module — the last caught by an isolated
+   adversarial review pass, not the first-pass sweep); all seven already had an existing, on-disk
+   lint rule or test file that plausibly anchors the claim once actually pointed to — none
+   required a prose downgrade. **Scope boundary**: several other "single owner" sentences exist at
+   *function* granularity inside already-covered, multi-function module entries (e.g. individual
+   STATE.md Document Module functions); these are deliberately out of scope — a seam claim is
+   about a module's boundary, matching the granularity `WORKTREE.SEAM.*` already set as precedent,
+   not every function-level ownership sentence. See
+   `.gsd/phase/feat-3626-context-seam-claim-gate/40-design.md` for the full seam-by-seam
+   disposition table, the scope-boundary rationale, and verification evidence.
 
 ## Consequences
 
