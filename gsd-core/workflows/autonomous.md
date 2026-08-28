@@ -238,7 +238,7 @@ Proceed to 3b.
 **If has_context is false:** Check if discuss is disabled via settings:
 
 ```bash
-SKIP_DISCUSS=$(gsd_run query config-get workflow.skip_discuss 2>/dev/null || echo "false")
+SKIP_DISCUSS=$(gsd_run query config-get workflow.skip_discuss --raw 2>/dev/null || echo "false")
 ```
 
 **If SKIP_DISCUSS is `true`:** Skip discuss entirely — the ROADMAP phase description is the spec. Display:

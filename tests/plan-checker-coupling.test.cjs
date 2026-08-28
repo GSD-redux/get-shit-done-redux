@@ -32,6 +32,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { stripFencedCode } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const AGENT_PATH = path.join(ROOT, 'agents', 'gsd-plan-checker.md');
@@ -78,7 +79,7 @@ function countOrderedItems(span) {
  * uniqueness or completeness check built on it is wrong before it starts.
  */
 function stripFences(content) {
-  return content.replace(/^```[\s\S]*?^```/gm, '');
+  return stripFencedCode(content).text;
 }
 
 describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)', () => {

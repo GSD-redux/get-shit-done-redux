@@ -200,7 +200,11 @@ function listPlanningDocCandidates(cwd: string): string[] {
 }
 
 function listCodebaseMapFiles(cwd: string): string[] {
-  const codebaseDir = path.join(planningRoot(cwd), 'codebase');
+  // #3964: project-scoped, agreeing with init's map-codebase surface and
+  // verify.cts's codebase drift check — a flat-root read made
+  // has_codebase_map/needs_codebase_map answer for the wrong project under
+  // GSD_PROJECT.
+  const codebaseDir = path.join(planningDir(cwd), 'codebase');
   if (!fs.existsSync(codebaseDir)) return [];
   return REQUIRED_CODEBASE_MAP_FILES.filter((file) =>
     fs.existsSync(path.join(codebaseDir, file)),

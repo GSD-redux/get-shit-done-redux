@@ -72,6 +72,20 @@ The `--strict` flag:
 
 If `--strict` finds findings that default mode does not, those findings represent either (a) an entry that should have been annotated and renewed, or (b) an actual secret that was only hidden by a stale exclusion. In both cases: investigate, remediate, and update the exclusion annotation.
 
+### Exit codes
+
+`secret-scan.sh`, `base64-scan.sh`, and `prompt-injection-scan.sh` share one contract, registered in `gsd-core/bin/shared/exit-codes.json` (ADR-3889):
+
+| Code | Meaning |
+|--:|---|
+| `0` | Clean — files were scanned, no findings. |
+| `1` | Findings detected. |
+| `64` (`USAGE`) | Bad argv — unknown mode, or a `--file`/`--dir` target that does not exist. |
+| `66` (`NO_INPUT`) | Ran; the scope was established and is genuinely empty (e.g. a diff touching only image files, or an all-docs PR). Not a failure. |
+| `69` (`UNAVAILABLE`) | Could not establish scope — a nonexistent `--diff` ref, running outside a git repository, a repository with no commits, or an unreadable `--dir`. Distinct from `NO_INPUT`: the scanner never actually ran. |
+
+CI (`.github/workflows/security-scan.yml`) treats `0` and `66` as passing steps and `1`/`69` as failing steps — a scan that could not run is a build failure, not a silent clean pass.
+
 References:
 - GitGuardian exclusion annotation convention: https://docs.gitguardian.com/internal-repositories-monitoring/integrations/cli/secrets
 - CNCF Security TAG threat-model exception lifecycle: https://github.com/cncf/tag-security/blob/main/community/working-groups/threat-modeling/templates/threats.md

@@ -2820,7 +2820,10 @@ const TEMPLATE_PATHS = [
  * @returns {string} The extracted code block body.
  */
 function extractFileTemplate(fileContent) {
-  const match = fileContent.match(/```markdown\r?\n([\s\S]*?)```/);
+  // Deliberately independent of the generator's own fence-handling — this is
+  // the bug #21 regression guard that must not share the seam
+  // gen-state-md-docs.cjs uses (see tests/gen-state-md-docs.test.cjs).
+  const match = fileContent.match(/```markdown\r?\n([\s\S]*?)```/); // allow-adhoc-markdown: deliberately independent of the generator's fence-handling — regresses bug #21
   assert.ok(match, 'No ```markdown code block found in template file');
   return match[1];
 }

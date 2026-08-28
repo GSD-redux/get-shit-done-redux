@@ -17,10 +17,12 @@
 #              This flag does not change secret-detection logic — only which
 #              exclusions are applied.
 #
-# Exit codes:
-#   0 = clean
-#   1 = findings detected
-#   2 = usage error
+# Exit codes (ADR-3889, #3908 — registered in gsd-core/bin/shared/exit-codes.json):
+#   0                = clean
+#   1                = findings detected
+#   $EXIT_USAGE       (64) = usage error (bad argv, missing --file/--dir target)
+#   $EXIT_NO_INPUT    (66) = ran; scope established; zero files in scope (genuinely empty)
+#   $EXIT_UNAVAILABLE (69) = could not establish scope (bad ref, not a repo, unreadable dir)
 #
 # Annotation format for .secretscanignore (required for --strict compliance):
 #   # allow: <pattern>  reason="..."  owner="..."  expires="YYYY-MM-DD"  [rule-id="..."]
@@ -38,6 +40,21 @@
 #   expired exclusions so that accumulated technical debt in the ignore-list
 #   cannot permanently hide secrets. See SECURITY.md for the audit runbook.
 set -euo pipefail
+
+# ─── Exit-code registry (ADR-3889, #3908) ────────────────────────────────────
+# Resolved relative to THIS script's location, not the caller's cwd, so this
+# works regardless of where the scanner is invoked from. Loud, non-zero
+# failure if the fragment is missing — never fall back to a guessed literal
+# integer, and never let a missing registry silently degrade to exit 0.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXIT_CODES_SH="$SCRIPT_DIR/../gsd-core/bin/shared/exit-codes.sh"
+if [[ ! -f "$EXIT_CODES_SH" ]]; then
+  echo "secret-scan: FATAL: exit-code registry not found at $EXIT_CODES_SH" >&2
+  echo "  Regenerate with: node scripts/gen-exit-code-registry.cjs --write" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "$EXIT_CODES_SH"
 
 # ─── Global mode flag ─────────────────────────────────────────────────────────
 STRICT_MODE=false
@@ -235,7 +252,31 @@ collect_files() {
   case "$mode" in
     --diff)
       local base="${1:-origin/main}"
-      git diff --name-only --diff-filter=ACMR "$base"...HEAD 2>/dev/null \
+      # Run git separately from the filter pipe so its OWN exit status (not
+      # grep's) decides whether the diff could be established. stdout and
+      # stderr are captured SEPARATELY (never merged with `2>&1`) so that a
+      # warning git writes to stderr on an otherwise successful diff can
+      # never be mistaken for a filename in the file list. On failure the
+      # captured stderr is emitted as the diagnostic; on success it is
+      # forwarded as a warning, never folded into the file list.
+      # `|| true` on the filter below is CORRECT (not gratuitous): `grep -v`
+      # exits 1 when every line is filtered out (e.g. an all-images diff),
+      # which is a legitimate empty result, not a failure to run.
+      local raw status err_file
+      err_file=$(mktemp)
+      raw=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD 2>"$err_file")
+      status=$?
+      if (( status != 0 )); then
+        cat "$err_file" >&2
+        rm -f "$err_file"
+        exit "$EXIT_UNAVAILABLE"
+      fi
+      if [[ -s "$err_file" ]]; then
+        echo "Warning: git diff emitted stderr output:" >&2
+        cat "$err_file" >&2
+      fi
+      rm -f "$err_file"
+      printf '%s\n' "$raw" \
         | grep -vE '\.(png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|otf|zip|tar|gz|pdf)$' || true
       ;;
     --file)
@@ -243,24 +284,41 @@ collect_files() {
         echo "$1"
       else
         echo "Error: file not found: $1" >&2
-        exit 2
+        exit "$EXIT_USAGE"
       fi
       ;;
     --dir)
       local dir="$1"
       if [[ ! -d "$dir" ]]; then
         echo "Error: directory not found: $dir" >&2
-        exit 2
+        exit "$EXIT_USAGE"
       fi
-      find "$dir" -type f ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/dist/*' \
-        ! -name '*.png' ! -name '*.jpg' ! -name '*.gif' ! -name '*.woff*' 2>/dev/null || true
+      # Same treatment as --diff: a `find` that fails (e.g. permission
+      # denied) must not be reported as an empty directory, and stdout/stderr
+      # are captured separately so a stderr warning never enters the file list.
+      local raw status err_file
+      err_file=$(mktemp)
+      raw=$(find "$dir" -type f ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/dist/*' \
+        ! -name '*.png' ! -name '*.jpg' ! -name '*.gif' ! -name '*.woff*' 2>"$err_file")
+      status=$?
+      if (( status != 0 )); then
+        cat "$err_file" >&2
+        rm -f "$err_file"
+        exit "$EXIT_UNAVAILABLE"
+      fi
+      if [[ -s "$err_file" ]]; then
+        echo "Warning: find emitted stderr output:" >&2
+        cat "$err_file" >&2
+      fi
+      rm -f "$err_file"
+      printf '%s\n' "$raw"
       ;;
     --stdin)
       cat
       ;;
     *)
       echo "Usage: $0 --diff [base] | --file <path> | --dir <path> | --stdin" >&2
-      exit 2
+      exit "$EXIT_USAGE"
       ;;
   esac
 }
@@ -300,7 +358,7 @@ scan_file() {
 main() {
   if [[ $# -eq 0 ]]; then
     echo "Usage: $0 --diff [base] | --file <path> | --dir <path> [--strict]" >&2
-    exit 2
+    exit "$EXIT_USAGE"
   fi
 
   # Parse --strict flag first (may appear anywhere in argv)
@@ -316,7 +374,7 @@ main() {
 
   if [[ $# -eq 0 ]]; then
     echo "Usage: $0 --diff [base] | --file <path> | --dir <path> [--strict]" >&2
-    exit 2
+    exit "$EXIT_USAGE"
   fi
 
   load_ignorelist
@@ -328,8 +386,12 @@ main() {
   files=$(collect_files "$mode" "$@")
 
   if [[ -z "$files" ]]; then
+    # collect_files already exited (UNAVAILABLE/USAGE) for anything that
+    # could not establish scope. Reaching here with an empty result means
+    # scope WAS established and is genuinely empty (e.g. an all-images
+    # diff) — that is NO_INPUT, not a silent clean pass.
     echo "secret-scan: no files to scan"
-    exit 0
+    exit "$EXIT_NO_INPUT"
   fi
 
   local total=0

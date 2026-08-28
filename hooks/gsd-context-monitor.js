@@ -22,6 +22,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { HOOK_ON_CRASH, allow, crash } = require('./lib/hook-exit.js');
+
+// This hook only injects an advisory context-usage warning; it never blocks
+// the tool call it rides in on. A crash here (e.g. a malformed bridge file)
+// must not turn a PostToolUse advisory into a blocked tool call — losing a
+// context warning is far cheaper than stalling the agent's work (#3911).
+const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 
 const WARNING_THRESHOLD = 35;  // remaining_percentage <= 35%
 const CRITICAL_THRESHOLD = 25; // remaining_percentage <= 25%
@@ -65,7 +72,7 @@ let input = '';
 // Windows/Git Bash, or slow Claude Code piping during large outputs),
 // exit silently instead of hanging until Claude Code kills the process
 // and reports "hook error". See #775, #1162.
-const stdinTimeout = setTimeout(() => process.exit(0), 10000);
+const stdinTimeout = setTimeout(() => allow(undefined), 10000);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
@@ -75,14 +82,14 @@ process.stdin.on('end', () => {
     const sessionId = data.session_id;
 
     if (!sessionId) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Reject session IDs that contain path traversal sequences or path separators.
     // session_id is used to construct file paths in /tmp — an unsanitized value
     // could escape the temp directory and read or write arbitrary files.
     if (/[/\\]|\.\./.test(sessionId)) {
-      process.exit(0);
+      allow(undefined);
     }
 
     const tmpDir = os.tmpdir();
@@ -166,7 +173,7 @@ process.stdin.on('end', () => {
       const configPath = path.join(cwd, '.planning', 'config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (config.hooks?.context_warnings === false) {
-        process.exit(0);
+        allow(undefined);
       }
     } catch (e) {
       // Missing or unparseable config → proceed with defaults (context warnings enabled)
@@ -179,7 +186,7 @@ process.stdin.on('end', () => {
     try {
       metricsRaw = fs.readFileSync(metricsPath, 'utf8');
     } catch (e) {
-      if (e && e.code === 'ENOENT') process.exit(0);
+      if (e && e.code === 'ENOENT') allow(undefined);
       throw e;
     }
     const metrics = JSON.parse(metricsRaw);
@@ -234,7 +241,7 @@ process.stdin.on('end', () => {
 
     // Ignore stale metrics
     if (metrics.timestamp && (now - metrics.timestamp) > STALE_SECONDS) {
-      process.exit(0);
+      allow(undefined);
     }
 
     const remaining = metrics.remaining_percentage;
@@ -242,7 +249,7 @@ process.stdin.on('end', () => {
 
     // No warning needed
     if (remaining > WARNING_THRESHOLD) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Debounce: check if we warned recently. `warnPath` is resolved above, next to
@@ -270,7 +277,7 @@ process.stdin.on('end', () => {
     if (!firstWarn && warnData.callsSinceWarn < DEBOUNCE_CALLS && !severityEscalated) {
       // Update counter and exit without warning
       fs.writeFileSync(warnPath, JSON.stringify(warnData));
-      process.exit(0);
+      allow(undefined);
     }
 
     // Reset debounce counter
@@ -357,7 +364,9 @@ process.stdin.on('end', () => {
       process.stdout.write(JSON.stringify(output));
     }
   } catch (e) {
-    // Silent fail -- never block tool execution
-    process.exit(0);
+    // Silent fail -- never block tool execution.
+    // ON_CRASH is declared ALLOW at module top: this preserves today's
+    // exit(0) fail-open behavior exactly (#3911).
+    crash(ON_CRASH, undefined);
   }
 });

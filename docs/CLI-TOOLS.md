@@ -464,7 +464,7 @@ node gsd-tools.cjs capability set code-review --gate workflow.code_review=false
 node gsd-tools.cjs query teams-status [--active]
 ```
 
-Read-only detector for claude-code's experimental agent-teams feature (issue #1355). Resolves the runtime via the canonical `GSD_RUNTIME` → `config.runtime` → `'claude'` precedence, then checks `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`.
+Read-only detector for claude-code's experimental agent-teams feature (issue #1355). Resolves the runtime via the canonical `GSD_RUNTIME` → `config.runtime` → per-install runtime marker → `'claude'` precedence (#3897), then checks `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`.
 
 **Default (no flags):** prints a JSON object and exits 0:
 
@@ -989,6 +989,15 @@ node gsd-tools.cjs verify-path-exists <path>
 
 # Append a row to STATE.md's "Quick Tasks Completed" table (schema-backed; #2133)
 node gsd-tools.cjs quick-tasks-append --task "<description>"
+# Optional (#3356) — supply a real quick id and task directory to write the canonical row the
+# `/gsd-quick` workflow itself renders, instead of a positional `#` and an em-dash `Directory`:
+node gsd-tools.cjs quick-tasks-append --task "<description>" --quick-id <id> --slug <slug>
+node gsd-tools.cjs quick-tasks-append --task "<description>" --directory "[<id>-<slug>](./quick/<id>-<slug>/)"
+# All three flags are optional. Omit them (as `fast.md` does, having neither an id nor a task
+# directory) and the emitted row is byte-identical to the pre-#3356 behavior. `--directory` wins
+# outright when given; otherwise `--quick-id` + `--slug` together derive the permalink.
+# This append touches only the body table — it no longer forces a re-derive of the disk-derived
+# `progress.*` frontmatter, which previously overwrote curated values (#3356).
 # See "Milestone Commands" below for `milestone archive-quick` (#2142) — sweeps .planning/quick/* into
 # milestones/<version>-quick/ and clears this table, without a full `milestone complete`.
 

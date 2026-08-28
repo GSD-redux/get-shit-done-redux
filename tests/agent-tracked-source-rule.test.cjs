@@ -81,13 +81,15 @@ describe('#3645 — agents write only git-tracked source paths', () => {
 
   // A prior version of this suite pinned the EXISTENCE and CONTENTS of the `3645` and
   // `3409` emitted-drift-acks fragments. An ack is scoped to the diff that introduced
-  // it (#2789's ack-lifecycle law): once #3645 merged and its growth is in `next`'s
-  // baseline, neither fragment gates anything — both are spent, and #3078's
-  // `guard-no-ack-on-next` sweeps them. A test may therefore never pin a fragment's
-  // existence or its prose; a fragment that is correctly swept would fail the pinning
-  // test for a reason that has nothing to do with the behavior it was meant to protect.
-  // #3645's actual protection is the two behavioral tests above — the mapper emitting
-  // only tracked analog paths, and the frozen planner file staying untouched — which
-  // this change leaves exactly as they were. The growth itself is protected by `next`'s
-  // emitted baseline (the differential attribution check), not by the spent fragment.
+  // it: once #3645 merged and its growth is in `next`'s baseline, the acknowledgment
+  // can never clear anything again. ADR-3942 moved the acknowledgment off the tree
+  // entirely — it is now a commit trailer (`Emitted-Drift-Ack-Hash:` /
+  // `Emitted-Drift-Ack-Growth:`) read from `git log $(git merge-base <base> HEAD)..HEAD`,
+  // so a merged one is out of range by construction. There is no artifact left in the
+  // tree to pin even if a test wanted to. A test may therefore never pin an
+  // acknowledgment's existence or its prose; #3645's actual protection is the two
+  // behavioral tests above — the mapper emitting only tracked analog paths, and the
+  // frozen planner file staying untouched — which this change leaves exactly as they
+  // were. The growth itself is protected by `next`'s emitted baseline (the differential
+  // attribution check), not by the (now nonexistent) acknowledgment artifact.
 });

@@ -1632,7 +1632,10 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
       // — see #2528 for the parallel drift problem in phase-locator/phase),
       // so this is the canonical path-segment-bound read, not a fourth copy.
       const phaseNum = detectPhaseNumberFromFiles(files);
-      if (phaseNum) {
+      // #3734: a 999.x/0.x backlog sentinel is a parking-lot entry, not a real
+      // phase — the phase arm must never branch-mutate for it (isSentinelPhaseId
+      // is the invariant's single owner, src/phase-id.cts).
+      if (phaseNum && !isSentinelPhaseId(phaseNum)) {
         const phaseInfo = findPhaseInternal(cwd, phaseNum) as Record<string, unknown> | null;
         if (phaseInfo) {
           branchName = (config['phase_branch_template'] as string)

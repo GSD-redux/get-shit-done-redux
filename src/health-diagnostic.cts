@@ -119,7 +119,7 @@ const CONSISTENCY_RULES: Rule[] = [
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspaceMod = require('./planning-workspace.cjs');
-const { planningRoot, planningDir } = planningWorkspaceMod;
+const { planningDir } = planningWorkspaceMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoaderMod = require('./config-loader.cjs');
 const { CONFIG_DEFAULTS } = configLoaderMod;
@@ -216,7 +216,13 @@ interface RepairPaths {
  * document for the read side.
  */
 function repairPaths(cwd: string): RepairPaths {
-  const rootBase = planningRoot(cwd);
+  // #3749: the project root is PROJECT-aware but deliberately NOT workstream-
+  // scoped — under GSD_PROJECT, config.json/MILESTONES.md/milestones belong to
+  // `.planning/<project>/` (the same base init.new-project's config_path
+  // names); under GSD_WORKSTREAM they stay at the workstream PARENT, keeping
+  // the documented root-vs-workstream split. planningDir(cwd, null) is exactly
+  // that base: project env honored, ws env suppressed.
+  const rootBase = planningDir(cwd, null);
   const wsBase = planningDir(cwd);
   return {
     rootBase,

@@ -15,6 +15,7 @@
         "config-defaults-runtime-exclusion.test.cjs",
         "config-field-docs.test.cjs",
         "config-get-default.test.cjs",
+        "config-get-raw-guard.test.cjs",
         "config-validation.test.cjs",
         "config.test.cjs"
       ],
@@ -39,7 +40,7 @@
         "frontmatter.unit.test.cjs"
       ],
       "issue": "3881",
-      "justification": "Grandfathered by #3227 for the original 4-file cluster (pre-existing over-cap, not new sprawl). #3881 (ADR-3473 §8.1, the js-yaml parser migration) adds two more: frontmatter-golden-parity.test.cjs (D-series golden-corpus diff against the legacy parser, ~900 real documents — cannot be folded into an existing file without losing its independent-of-current-parser provenance) and frontmatter-roundtrip.property.test.cjs (fast-check property coverage the migration's bijective-contract rule requires). Both are migration-specific, not incidental sprawl."
+      "justification": "Grandfathered by #3227 for the original 4-file cluster (pre-existing over-cap, not new sprawl). #3881 (ADR-3473 \u00a78.1, the js-yaml parser migration) adds two more: frontmatter-golden-parity.test.cjs (D-series golden-corpus diff against the legacy parser, ~900 real documents \u2014 cannot be folded into an existing file without losing its independent-of-current-parser provenance) and frontmatter-roundtrip.property.test.cjs (fast-check property coverage the migration's bijective-contract rule requires). Both are migration-specific, not incidental sprawl."
     },
     "graphify": {
       "files": [
@@ -247,7 +248,7 @@
         "docs-update.test.cjs"
       ],
       "issue": "3873",
-      "justification": "ADR-3473 §8.8 makes docs/reference/state-md.md and its four locale siblings generated-and-committed and adds the repo's first locale-parity check (verified: no locale-parity lint precedent exists here). That check is a distinct concern from docs-update (content freshness) and docs-parity-live-registry (registry parity); folding it into either would place an unrelated subject inside them purely to satisfy a count. The section it guards is absent from all four translations today and documents the status enum behind #3853."
+      "justification": "ADR-3473 \u00a78.8 makes docs/reference/state-md.md and its four locale siblings generated-and-committed and adds the repo's first locale-parity check (verified: no locale-parity lint precedent exists here). That check is a distinct concern from docs-update (content freshness) and docs-parity-live-registry (registry parity); folding it into either would place an unrelated subject inside them purely to satisfy a count. The section it guards is absent from all four translations today and documents the status enum behind #3853."
     }
   }
 }

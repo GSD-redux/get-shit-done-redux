@@ -300,6 +300,21 @@ function isReviewedPatternFragmentIdentifier(identifierName, scope) {
   return false;
 }
 
+/**
+ * Unwrap a chain of TypeScript `<expr> as T` casts (TSAsExpression) down to
+ * the innermost expression, so a cast around a MemberExpression/Identifier
+ * argument cannot hide its shape from the checks below. Zero sites exist in
+ * this repo today (#3951 Rung A measurement) — kept so a future cast cannot
+ * silently re-open the hole this widening closes.
+ */
+function unwrapTSAsExpression(node) {
+  let n = node;
+  while (n && n.type === 'TSAsExpression') {
+    n = n.expression;
+  }
+  return n;
+}
+
 /** Does `node` route through the seam (`escapeRegex(...)` / `literalPattern(...)`)? */
 function isSeamRoutedCall(node) {
   if (node.type !== 'CallExpression') return false;
@@ -382,18 +397,23 @@ const rule = {
         if (!node.callee || node.callee.type !== 'Identifier' || node.callee.name !== 'RegExp') return;
         const arg = node.arguments && node.arguments[0];
         if (!arg) return;
+        // #3951 Rung A: a `<expr> as T` cast around the argument (TSAsExpression)
+        // must not hide its shape from the checks below — unwrap to the
+        // innermost expression. Zero sites exist today; kept so a future cast
+        // cannot silently re-open the hole this widening closes.
+        const effectiveArg = unwrapTSAsExpression(arg);
 
         // Static text (string literal / no-interpolation template literal) —
         // fully known at lint time, not a runtime value. Never flagged.
-        if (arg.type === 'Literal' && typeof arg.value === 'string') return;
-        if (arg.type === 'TemplateLiteral' && (!arg.expressions || arg.expressions.length === 0)) return;
+        if (effectiveArg.type === 'Literal' && typeof effectiveArg.value === 'string') return;
+        if (effectiveArg.type === 'TemplateLiteral' && (!effectiveArg.expressions || effectiveArg.expressions.length === 0)) return;
 
         // Already routed through the seam — that IS the fix.
-        if (isSeamRoutedCall(arg)) return;
+        if (isSeamRoutedCall(effectiveArg)) return;
 
-        if (arg.type === 'Identifier') {
+        if (effectiveArg.type === 'Identifier') {
           const scope = context.getScope ? context.getScope() : sourceCode.getScope(node);
-          if (isReviewedPatternFragmentIdentifier(arg.name, scope)) {
+          if (isReviewedPatternFragmentIdentifier(effectiveArg.name, scope)) {
             return;
           }
 
@@ -408,7 +428,7 @@ const rule = {
           // isSoleReturnOfOwnParameter's doc comment): those identifiers
           // never carried the `_SOURCE` naming convention in the first
           // place, so this branch never reaches them.
-          if (SOURCE_SUFFIX_RE.test(arg.name)) {
+          if (SOURCE_SUFFIX_RE.test(effectiveArg.name)) {
             if (!isAllowed(node)) {
               context.report({ node, messageId: 'unsafeNewRegExp' });
             }
@@ -418,10 +438,66 @@ const rule = {
           // Narrow, false-positive-free shape only — see
           // isSoleReturnOfOwnParameter's doc comment for why the broader
           // "any non-literal identifier" heuristic was rejected.
-          if (isSoleReturnOfOwnParameter(node, arg)) {
+          if (isSoleReturnOfOwnParameter(node, effectiveArg)) {
             if (!isAllowed(node)) {
               context.report({ node, messageId: 'unsafeNewRegExp' });
             }
+          }
+          return;
+        }
+
+        // #3951 Rung A: `new RegExp(obj['key'])` / `new RegExp(cfg.pattern)`
+        // — the whole UNSAFE-NEW-REGEXP arm used to gate on
+        // `arg.type === 'Identifier'` alone, so a MemberExpression argument
+        // (computed or not) was never examined at all. That is why this rule
+        // never fired on the #3477 ReDoS (src/verify.cts:1239).
+        if (effectiveArg.type === 'MemberExpression') {
+          // (a) `.source`-exemption — `new RegExp(X.source, flags)` is the
+          // safe re-flag-composition idiom. Keyed ONLY on the PROPERTY being
+          // literally `source` (non-computed): exempting on the OBJECT
+          // instead would wave through `X.anything`, which buys nothing.
+          if (!effectiveArg.computed && effectiveArg.property && effectiveArg.property.type === 'Identifier') {
+            if (effectiveArg.property.name === 'source') return;
+
+            // (b) provenance exemption, extended to MemberExpressions: the
+            // same NAMING CONVENTION fallback isReviewedPatternFragmentIdentifier
+            // already trusts for bare identifiers — a `_SOURCE`-suffixed
+            // constant reached through a required module namespace, e.g.
+            // `phaseId.BRACKET_PHASE_TOKEN_SOURCE` where
+            // `const phaseId = require('./phase-id.cjs')`. Bound to the
+            // OBJECT's actual binding kind (import / require()-derived
+            // const), never to spelling alone — same #3410 guard-evasion
+            // discipline as the bare-identifier case above.
+            if (
+              SOURCE_SUFFIX_RE.test(effectiveArg.property.name)
+              && effectiveArg.object
+              && effectiveArg.object.type === 'Identifier'
+            ) {
+              const scope = context.getScope ? context.getScope() : sourceCode.getScope(node);
+              if (
+                resolvesToImportBinding(effectiveArg.object.name, scope)
+                || resolvesToRequireDerivedConstBinding(effectiveArg.object.name, scope)
+              ) {
+                return;
+              }
+            }
+          }
+
+          // Neither exemption applied — a MemberExpression argument (computed
+          // like `obj['key']`, or non-computed like `cfg.pattern`) with no
+          // proven-safe provenance is exactly ADR §7's "new RegExp() built
+          // from a runtime value with no escaping and no seam routing."
+          // Deliberately UNCONDITIONAL (unlike the bare-Identifier arm's
+          // narrower isSoleReturnOfOwnParameter gate): a MemberExpression
+          // argument categorically cannot be the "value already computed
+          // upstream, safely, and merely re-used" case that heuristic exists
+          // to avoid false-flagging — see isSoleReturnOfOwnParameter's doc
+          // comment. Measured across the repo: this arm's population is
+          // exactly the 27 `new RegExp(<MemberExpression>)` sites accounted
+          // for above (18 `.source`, 3 provenance-exempt, 6 real findings) —
+          // going wider than this shape is out of scope.
+          if (!isAllowed(node)) {
+            context.report({ node, messageId: 'unsafeNewRegExp' });
           }
         }
       },

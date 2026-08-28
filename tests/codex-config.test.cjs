@@ -67,13 +67,37 @@ const {
   mergeCodexConfig,
   install,
   GSD_CODEX_MARKER,
-  CODEX_AGENT_SANDBOX,
+  deriveCodexSandboxMode,
+  // #3897 rung 3 (ADR-3473 §8.3, option 2 — HALT.md): anticipated new export
+  // holding the 17 explicit read-only pins for roles whose tool contract would
+  // otherwise derive workspace-write (16 measured by HALT.md + gsd-nyquist-auditor,
+  // surfaced by the list-form parse fix). Does not exist on the current tree —
+  // destructuring a non-existent key is `undefined`, not a throw, so requiring
+  // this module still succeeds; every test below that touches it fails on its
+  // own `typeof` guard instead.
+  CODEX_SANDBOX_HOLDS,
   parseTomlToObject,
   validateCodexConfigSchema,
 } = require('../bin/install.js');
 
 const { resolveNodeRunner } = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
+// #3897 fixup: deriveCodexSandboxMode's 2nd param is now the already-resolved
+// `tools:` frontmatter VALUE, not raw agent content (codex-agent-toml.cjs no
+// longer parses frontmatter at all — no third copy of that extraction).
+const {
+  extractFrontmatterAndBody,
+  extractFrontmatterField,
+} = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+// #3897 list-form parse fix: the ONE shared `tools:`-value reader both
+// sandbox-feeding production paths (`bin/install.js`'s `generateCodexAgentToml`
+// and `agent-install-check.cts`'s `checkCodexSandboxPosture`) now route
+// through — handles inline (`tools: Read, Write`) AND YAML block-list
+// (`tools:` + indented `- Item` lines) form. Used below by `realAgentToolsRaw`
+// so the test's own measurement of "what does this role's tool contract
+// declare" cannot silently disagree with production (the exact generative-
+// fix-divergence shape this fix closes).
+const { extractToolsValue } = require('../gsd-core/bin/lib/codex-agent-toml.cjs');
 
 function runCodexInstall(codexHome, cwd = path.join(__dirname, '..')) {
   const previousCodeHome = process.env.CODEX_HOME;
@@ -483,9 +507,27 @@ tools: Read, Grep, Glob
     assert.ok(result.includes('description = "GSD agent gsd-unknown"'), 'falls back to synthetic description');
   });
 
-  test('defaults unknown agents to read-only', () => {
+  // #3897 CAUSE B fix: this used to assert the deleted name-based fallback
+  // (an unknown agent NAME defaulted to read-only regardless of its tool
+  // contract). Under derivation, identity no longer determines the sandbox —
+  // the tool contract does (S6: "a new writing role gets the contract, not
+  // the pin"). Split into the two rows the old single assertion conflated:
+  // absence of a `tools:` grant (N8) vs. an unknown role that legitimately
+  // declares a writing tool (S6).
+  test('unknown agent with no tools: frontmatter derives read-only (N8: absence is not a grant)', () => {
+    const noToolsAgent = `---
+name: gsd-unknown
+description: An unknown agent with no declared tools
+---
+
+<role>You are an unknown agent.</role>`;
+    const result = generateCodexAgentToml('gsd-unknown', noToolsAgent);
+    assert.ok(result.includes('sandbox_mode = "read-only"'), 'no tools: frontmatter -> read-only');
+  });
+
+  test('unknown agent declaring Write/Edit derives workspace-write (S6: the tool contract, not the pin, decides)', () => {
     const result = generateCodexAgentToml('gsd-unknown', sampleAgent);
-    assert.ok(result.includes('sandbox_mode = "read-only"'), 'defaults to read-only');
+    assert.ok(result.includes('sandbox_mode = "workspace-write"'), 'declares Write/Edit -> workspace-write');
   });
 
   // ─── #2256: model_overrides support ───────────────────────────────────────
@@ -919,6 +961,735 @@ description: Maps the codebase
   });
 });
 
+// ─── #3897 rung 3 (ADR-3473 §8.3, HALT.md option 2): sandbox_mode derives from
+// the tool contract, with 17 widening roles held at read-only ────────────────
+//
+// Spec: .gsd/phase/feat-3897-adr3473-83-rungs/{40-design,50-test-matrix}.md,
+// rows S1-S9 / T20-T30. Measured against `next` @ ad6abc896 (HALT.md):
+// deriving `workspace-write` iff an agent's frontmatter `tools:` declares
+// `Write` or `Edit` reproduces all 11 CODEX_AGENT_SANDBOX map entries exactly,
+// and would additionally widen 16 fallback roles that the map never covered.
+// HALT.md's 16 was measured against a `tools:`-VALUE reader that only handled
+// inline form; the #3897 list-form parse fix corrected `gsd-nyquist-auditor`'s
+// YAML block-list `tools:` (previously misread as `"- Read"`, no Write/Edit
+// found), which genuinely derives `workspace-write` and adds a 17th widening
+// role. `CODEX_SANDBOX_HOLDS` (destructured above; `undefined` on the current
+// tree) is this rung's pin list for those 17 — every row below that depends
+// on it fails on its own `typeof` guard until it lands.
+//
+// Deriving-from-real-content is deliberate for T20/T21/T26/T27/T30: a
+// synthetic `tools:` fixture cannot prove the CURRENT tree's byte output is
+// preserved, only that the derivation LOGIC agrees with a made-up example.
+
+// #3897 rung 3 — bin/install.js's `CODEX_AGENT_SANDBOX` map is DELETED
+// (ADR-3473 §8.3): HALT.md measured that deriving `workspace-write` iff an
+// agent's `tools:` frontmatter declares Write/Edit reproduces every one of
+// these 11 entries exactly, with zero disagreements, making the hand-
+// maintained map fully redundant. This literal is the pre-#3897
+// `CODEX_AGENT_SANDBOX` contents, preserved here as a regression baseline —
+// the only surviving copy of these 11 role -> mode pairs. T21 below and the
+// `CODEX_AGENT_SANDBOX (deleted map, derivation regression baseline)` describe
+// block both reference this ONE literal rather than duplicating it.
+const PRE_3897_CODEX_AGENT_SANDBOX = {
+  'gsd-executor': 'workspace-write',
+  'gsd-planner': 'workspace-write',
+  'gsd-phase-researcher': 'workspace-write',
+  'gsd-project-researcher': 'workspace-write',
+  'gsd-research-synthesizer': 'workspace-write',
+  'gsd-verifier': 'workspace-write',
+  'gsd-codebase-mapper': 'workspace-write',
+  'gsd-roadmapper': 'workspace-write',
+  'gsd-debugger': 'workspace-write',
+  'gsd-plan-checker': 'read-only',
+  'gsd-integration-checker': 'read-only',
+};
+
+describe('#3897 rung 3: sandbox_mode derivation and the hold list', () => {
+  const AGENTS_DIR = path.join(__dirname, '..', 'agents');
+
+  // #3897 rung 4 (isolated correctness review, MINOR finding 6): T20/N6 used
+  // to iterate `Object.keys(EXPECTED_SANDBOX_BY_ROLE)` and then pin
+  // `assert.equal(checked, 35)` — that pins the FIXTURE, not the roster, so a
+  // 36th agent added to `agents/` would be silently unchecked by the entire
+  // rung-3 block instead of failing loudly. Driven from the real roster
+  // instead; a dedicated parity test below fails loudly, naming any file
+  // present in one set and not the other, the moment the two diverge.
+  const AGENT_ROSTER_ROLES = fs
+    .readdirSync(AGENTS_DIR)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => f.slice(0, -'.md'.length))
+    .sort();
+
+  function realAgentToolsRaw(agentName) {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, `${agentName}.md`), 'utf8');
+    // #3897 list-form parse fix: route through the SAME shared extractor
+    // production uses, rather than a naive single-line regex here — a
+    // second, test-local reimplementation of "read the tools: value" is
+    // exactly the generative-fix-divergence shape that let this test's own
+    // `measuredWideningRoles` silently miss `gsd-nyquist-auditor` (YAML
+    // list-form `tools:`) before this fix.
+    return extractToolsValue(content) ?? '';
+  }
+
+  // #3897 rung 4 (isolated correctness review, NIT finding 7): this used to
+  // be a SEPARATE, simpler reimplementation of the real, private
+  // `_codexToolsDeclareWriteOrEdit` (codex-agent-toml.cts) — a naive
+  // comma-split-and-includes check that does not handle the real predicate's
+  // "except" negation form (F5). That is exactly the generative-fix-
+  // divergence shape CLAUDE.md warns about: a future change to the real
+  // predicate this copy does not mirror would silently disagree with it
+  // forever. `_codexToolsDeclareWriteOrEdit` is intentionally not exported
+  // (module-internal), so rather than reimplementing it a second time, this
+  // delegates to the REAL implementation through the public
+  // `deriveCodexSandboxMode`, pinned to an identity guaranteed to never be
+  // held or "suspicious" (F3) — with no hold in play,
+  // `deriveCodexSandboxMode(identity, toolsRaw) === 'workspace-write'` IS
+  // `_codexToolsDeclareWriteOrEdit(toolsRaw)`, byte for byte, because there is
+  // no second copy left to drift.
+  const PARITY_PROBE_IDENTITY = 'zzz-parity-probe-never-a-real-or-held-role';
+  function declaresWriteOrEdit(toolsRaw) {
+    return deriveCodexSandboxMode(PARITY_PROBE_IDENTITY, toolsRaw) === 'workspace-write';
+  }
+
+  test('sanity: the parity-probe identity used by declaresWriteOrEdit is never itself held or suspicious', () => {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, PARITY_PROBE_IDENTITY),
+      false,
+      'the probe identity must not collide with a real hold, or every T20/T21/T24 verdict derived from it would be silently wrong',
+    );
+    assert.equal(
+      deriveCodexSandboxMode(PARITY_PROBE_IDENTITY, 'Read, Write, Edit'),
+      'workspace-write',
+      'sanity: an unheld identity that declares Write/Edit must derive workspace-write',
+    );
+  });
+
+  // T20 (LOAD-BEARING, N6): frozen fixture of TODAY's real, per-role emitted
+  // sandbox_mode for all 35 roles in agents/ — captured from the CURRENT build
+  // by running the REAL generateCodexAgentToml against the REAL agent .md
+  // content (never a synthetic fixture) and committed here. This is the
+  // safety net for the refactor: it is true today (nothing has changed yet)
+  // and MUST remain true, per role, after sandbox_mode moves from the map to a
+  // derivation — an aggregate "35 roles emitted" count would pass even if one
+  // role silently widened; asserting per role (one test per role, mirroring
+  // codex-agent-toml.test.cjs's A14 round-trip pattern) does not let that hide.
+  const EXPECTED_SANDBOX_BY_ROLE = {
+    'gsd-advisor-researcher': 'read-only',
+    'gsd-ai-researcher': 'read-only',
+    'gsd-assumptions-analyzer': 'read-only',
+    'gsd-code-fixer': 'read-only',
+    'gsd-code-reviewer': 'read-only',
+    'gsd-codebase-mapper': 'workspace-write',
+    'gsd-debug-session-manager': 'read-only',
+    'gsd-debugger': 'workspace-write',
+    'gsd-doc-classifier': 'read-only',
+    'gsd-doc-synthesizer': 'read-only',
+    'gsd-doc-verifier': 'read-only',
+    'gsd-doc-writer': 'read-only',
+    'gsd-dom-verifier': 'read-only',
+    'gsd-domain-researcher': 'read-only',
+    'gsd-eval-auditor': 'read-only',
+    'gsd-eval-planner': 'read-only',
+    'gsd-executor': 'workspace-write',
+    'gsd-framework-selector': 'read-only',
+    'gsd-integration-checker': 'read-only',
+    'gsd-intel-updater': 'read-only',
+    'gsd-mempalace-curator': 'read-only',
+    'gsd-nyquist-auditor': 'read-only',
+    'gsd-pattern-mapper': 'read-only',
+    'gsd-phase-researcher': 'workspace-write',
+    'gsd-plan-checker': 'read-only',
+    'gsd-planner': 'workspace-write',
+    'gsd-project-researcher': 'workspace-write',
+    'gsd-research-synthesizer': 'workspace-write',
+    'gsd-roadmapper': 'workspace-write',
+    'gsd-security-auditor': 'read-only',
+    'gsd-ui-auditor': 'read-only',
+    'gsd-ui-checker': 'read-only',
+    'gsd-ui-researcher': 'read-only',
+    'gsd-user-profiler': 'read-only',
+    'gsd-verifier': 'workspace-write',
+  };
+
+  // The 17 roles that widen: declare Write/Edit, not in the pre-#3897
+  // CODEX_AGENT_SANDBOX map (now deleted; PRE_3897_CODEX_AGENT_SANDBOX above
+  // is the surviving baseline of its contents), so today's `|| 'read-only'`
+  // fallback under-grants them (16 measured by HALT.md + gsd-nyquist-auditor,
+  // whose YAML block-list `tools:` the pre-fix single-line reader misread as
+  // `"- Read"`, hiding its Write/Edit declaration). Computed here from the REAL
+  // agents/*.md tools frontmatter and that baseline — never hand-copied from
+  // HALT.md's prose — so this list cannot silently drift from what agents/
+  // actually declares (T30: "derived, not a second hardcoded copy").
+  const measuredWideningRoles = Object.keys(EXPECTED_SANDBOX_BY_ROLE).filter((role) => {
+    const declaresWrite = declaresWriteOrEdit(realAgentToolsRaw(role));
+    const inOldMap = Object.prototype.hasOwnProperty.call(PRE_3897_CODEX_AGENT_SANDBOX, role);
+    return declaresWrite && !inOldMap;
+  });
+
+  // #3897 rung 4 (isolated correctness review, MINOR finding 6): the roster
+  // and the expectation table must cover EXACTLY the same set of roles — a
+  // role present in one and not the other fails loudly here, by name,
+  // instead of being silently unchecked by the whole rung-3 block.
+  test('T20 roster parity: EXPECTED_SANDBOX_BY_ROLE covers exactly the real agents/ roster, no more, no fewer', () => {
+    const expectedRoles = Object.keys(EXPECTED_SANDBOX_BY_ROLE).sort();
+    const inRosterNotExpected = AGENT_ROSTER_ROLES.filter((r) => !expectedRoles.includes(r));
+    const inExpectedNotRoster = expectedRoles.filter((r) => !AGENT_ROSTER_ROLES.includes(r));
+    assert.deepEqual(
+      inRosterNotExpected,
+      [],
+      `agents/ contains role(s) with no EXPECTED_SANDBOX_BY_ROLE entry: ${JSON.stringify(inRosterNotExpected)} — add them or this rung's coverage silently skips them`,
+    );
+    assert.deepEqual(
+      inExpectedNotRoster,
+      [],
+      `EXPECTED_SANDBOX_BY_ROLE names role(s) no longer present in agents/: ${JSON.stringify(inExpectedNotRoster)} — remove the stale entry`,
+    );
+  });
+
+  for (const role of AGENT_ROSTER_ROLES) {
+    test(`T20 everyRoleEmitsTheSameSandboxAsBefore: ${role} emits sandbox_mode="${EXPECTED_SANDBOX_BY_ROLE[role]}" byte-identically`, () => {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(EXPECTED_SANDBOX_BY_ROLE, role),
+        `${role} exists in agents/ but has no EXPECTED_SANDBOX_BY_ROLE entry — see the roster-parity test above`,
+      );
+      const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+      const toml = generateCodexAgentToml(role, content);
+      const match = toml.match(/^sandbox_mode = "([^"]+)"$/m);
+      assert.ok(match, `${role}'s emitted TOML must contain a sandbox_mode line`);
+      assert.equal(
+        match[1],
+        EXPECTED_SANDBOX_BY_ROLE[role],
+        `${role} must emit the SAME sandbox_mode after the derivation refactor lands — a per-role regression, not an aggregate count`,
+      );
+    });
+  }
+
+  test('T30 holdListMatchesTheMeasuredWideningSet: CODEX_SANDBOX_HOLDS is exactly the 17 measured widening roles, derived not hardcoded twice', () => {
+    assert.equal(
+      typeof CODEX_SANDBOX_HOLDS,
+      'object',
+      'install.js must export CODEX_SANDBOX_HOLDS — the hold list does not exist yet',
+    );
+    assert.notEqual(CODEX_SANDBOX_HOLDS, null);
+    assert.deepEqual(
+      Object.keys(CODEX_SANDBOX_HOLDS).sort(),
+      measuredWideningRoles.sort(),
+      'CODEX_SANDBOX_HOLDS must equal exactly the set of roles that declare Write/Edit but were never in the old map — no more, no fewer',
+    );
+    // 16 measured by HALT.md against a single-line tools: reader + 1
+    // (gsd-nyquist-auditor, YAML block-list tools: — the list-form parse fix)
+    // = 17. `measuredWideningRoles` is computed from realAgentToolsRaw, which
+    // now routes through the fixed extractToolsValue, so this count moves
+    // WITH the parser fix rather than needing a second hand-edit.
+    assert.equal(measuredWideningRoles.length, 17, 'sanity: 17 widening roles against the current agents/ tree, once list-form tools: parses correctly');
+  });
+
+  test('T21 mappedRolesDeriveToTheirFormerValue: every former CODEX_AGENT_SANDBOX entry (11) derives to the identical value from its real tool contract', () => {
+    for (const [role, formerValue] of Object.entries(PRE_3897_CODEX_AGENT_SANDBOX)) {
+      const derivesWorkspaceWrite = declaresWriteOrEdit(realAgentToolsRaw(role));
+      const derived = derivesWorkspaceWrite ? 'workspace-write' : 'read-only';
+      assert.equal(
+        derived,
+        formerValue,
+        `${role}: the tool-contract derivation must reproduce the former map value exactly (HALT.md: zero disagreements across all 11)`,
+      );
+    }
+    assert.equal(Object.keys(PRE_3897_CODEX_AGENT_SANDBOX).length, 11);
+  });
+
+  test('T22 nonWritingFallbackRoleDerivesReadOnly: a fallback role declaring neither Write nor Edit derives read-only (S2)', () => {
+    const role = 'gsd-user-profiler'; // tools: Read (no Write/Edit), never in the map
+    assert.equal(Object.prototype.hasOwnProperty.call(PRE_3897_CODEX_AGENT_SANDBOX, role), false);
+    assert.equal(declaresWriteOrEdit(realAgentToolsRaw(role)), false);
+    const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+    const toml = generateCodexAgentToml(role, content);
+    assert.ok(toml.includes('sandbox_mode = "read-only"'));
+  });
+
+  test('T23 heldRoleStaysReadOnlyWithARecordedReason: one of the 17 held roles stays read-only via an explicit, reasoned hold (S3)', () => {
+    assert.equal(typeof CODEX_SANDBOX_HOLDS, 'object', 'CODEX_SANDBOX_HOLDS does not exist yet');
+    const role = 'gsd-doc-writer'; // declares Write+Edit; one of HALT.md's 16
+    assert.ok(declaresWriteOrEdit(realAgentToolsRaw(role)), 'sanity: this role must actually declare a writing tool');
+    assert.ok(Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, role), `${role} must be an explicit hold entry`);
+    const entry = CODEX_SANDBOX_HOLDS[role];
+    const reason = typeof entry === 'string' ? entry : entry && entry.reason;
+    assert.equal(typeof reason, 'string', `the hold for ${role} must carry a recorded reason string, not a bare boolean pin`);
+    assert.ok(reason.length > 0);
+    const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+    const toml = generateCodexAgentToml(role, content);
+    assert.ok(toml.includes('sandbox_mode = "read-only"'), 'byte-identical output despite the hold, per N6');
+  });
+
+  test('T24 staleHoldFailsRatherThanBeingHonored: a hold whose role no longer derives broader must FAIL, naming the role (S4)', () => {
+    assert.equal(
+      typeof CODEX_SANDBOX_HOLDS,
+      'object',
+      'CODEX_SANDBOX_HOLDS does not exist yet, so there is nothing to validate for staleness',
+    );
+    // Every REAL hold entry, right now, must still derive workspace-write from
+    // the tool contract. A hold for a role whose tools no longer declare
+    // Write/Edit is exactly the staleness this row exists to catch; without
+    // this assertion the hold list is honored unconditionally forever, which
+    // is the hand-maintained-subset-map defect this rung deletes, rebuilt one
+    // list later (the ledger claim HALT.md makes).
+    for (const role of Object.keys(CODEX_SANDBOX_HOLDS)) {
+      assert.ok(
+        declaresWriteOrEdit(realAgentToolsRaw(role)),
+        `stale hold: ${role} is pinned to read-only but its CURRENT tool contract no longer declares Write/Edit — this hold must fail validation, not be silently honored`,
+      );
+    }
+  });
+
+  test('T25 holdForUnknownRoleFails: a hold naming a role that no longer exists in agents/ must FAIL (S5)', () => {
+    assert.equal(
+      typeof CODEX_SANDBOX_HOLDS,
+      'object',
+      'CODEX_SANDBOX_HOLDS does not exist yet, so there is nothing to validate for an unknown role',
+    );
+    for (const role of Object.keys(CODEX_SANDBOX_HOLDS)) {
+      assert.ok(
+        fs.existsSync(path.join(AGENTS_DIR, `${role}.md`)),
+        `stale hold: ${role} is pinned but no longer exists in agents/ — this hold must fail validation`,
+      );
+    }
+  });
+
+  test('T26 newWritingRoleGetsTheContractNotThePin: a brand-new agent declaring Write, with no hold, derives workspace-write (S6) — RED today, falls back to read-only (#2540)', () => {
+    const newAgentContent = `---
+name: gsd-totally-new-agent
+description: A brand-new writing agent that has never been in the map or a hold
+tools: Read, Write, Bash
+---
+
+<role>You are a brand-new agent.</role>`;
+    // Today: CODEX_AGENT_SANDBOX['gsd-totally-new-agent'] is undefined, so the
+    // `|| 'read-only'` fallback silently under-grants it — the exact defect
+    // §8.3 exists to fix (24 of 35 roles fell through this fallback).
+    const toml = generateCodexAgentToml('gsd-totally-new-agent', newAgentContent);
+    assert.ok(
+      toml.includes('sandbox_mode = "workspace-write"'),
+      'a new agent declaring Write, absent from both the map and any hold, must derive workspace-write from its own tool contract — not silently fall back to read-only',
+    );
+  });
+
+  test('T27 absentToolContractIsNotAGrant: an agent with no tools: frontmatter at all derives read-only (N8/S7)', () => {
+    const noToolsContent = `---
+name: gsd-no-contract-agent
+description: Declares no tools frontmatter key at all
+---
+
+<role>You have no declared tools.</role>`;
+    const toml = generateCodexAgentToml('gsd-no-contract-agent', noToolsContent);
+    assert.ok(
+      toml.includes('sandbox_mode = "read-only"'),
+      'absence of a tools: contract must never be read as a grant of workspace-write',
+    );
+  });
+
+  // #3897 security review follow-up (post-merge blocker): `bin/install.js`'s
+  // Codex install loop used to key the CODEX_SANDBOX_HOLDS lookup off the
+  // agent's OWN frontmatter `name:` field (`extractFrontmatterField(frontmatter,
+  // 'name') || file.replace('.md', '')`) rather than its filename — so editing,
+  // or merely recasing, a held role's `name:` field (same file, same tool
+  // contract) silently derived `workspace-write` instead of the pinned
+  // `read-only`. Unlike the deleted CODEX_AGENT_SANDBOX map (an ALLOWLIST whose
+  // unmatched-key fallback was `read-only`, i.e. safe), CODEX_SANDBOX_HOLDS is a
+  // SUBTRACTION from a derivation that defaults to `workspace-write`, so the
+  // identical lookup-key mismatch now fails OPEN — a severity flip. The fix
+  // keys the hold off the canonical source FILENAME stem (what
+  // `validateCodexSandboxHolds` already verifies exists), threaded through
+  // `installCodexConfig`'s per-file loop independently of the frontmatter
+  // `name:` used for the TOML body, with a case-insensitive lookup as a second
+  // line of defense.
+  test('heldRoleCannotEscapeItsHoldByRenamingFrontmatter_3897: editing or recasing a held role\'s frontmatter name: must not change its sandbox_mode from read-only', () => {
+    const { installCodexConfig } = require('../bin/install.js');
+    const heldRole = 'gsd-doc-writer'; // one of the 17 CODEX_SANDBOX_HOLDS entries
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, heldRole),
+      `sanity: ${heldRole} must be a real CODEX_SANDBOX_HOLDS entry`,
+    );
+
+    const variants = [
+      { label: 'frontmatter name: edited to a different value', newName: 'gsd-doc-writer-x' },
+      { label: 'frontmatter name: merely recased', newName: 'GSD-Doc-Writer' },
+    ];
+
+    for (const { label, newName } of variants) {
+      const tmpAgentsSrc = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-codex-tamper-src-'));
+      const tmpDest = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-codex-tamper-dest-'));
+      try {
+        fs.cpSync(AGENTS_DIR, tmpAgentsSrc, { recursive: true });
+        const rolePath = path.join(tmpAgentsSrc, `${heldRole}.md`);
+        const original = fs.readFileSync(rolePath, 'utf8');
+        const tampered = original.replace(/^name:\s*.*$/m, `name: ${newName}`);
+        assert.notEqual(tampered, original, `sanity: the frontmatter name: line must actually change (${label})`);
+        fs.writeFileSync(rolePath, tampered);
+
+        // The FILE on disk is untouched (still `gsd-doc-writer.md`) — only its
+        // frontmatter content changed. validateCodexSandboxHolds only checks
+        // the file exists, so it does not (and should not) catch this by itself.
+        installCodexConfig(tmpDest, tmpAgentsSrc);
+
+        const emittedTomlPath = path.join(tmpDest, 'agents', `${newName}.toml`);
+        assert.ok(
+          fs.existsSync(emittedTomlPath),
+          `${label}: expected an emitted .toml at ${emittedTomlPath} (named after the tampered frontmatter name, per existing TOML-naming behavior — unrelated to this fix)`,
+        );
+        const toml = fs.readFileSync(emittedTomlPath, 'utf8');
+        const sandboxLine = toml.match(/^sandbox_mode = "([^"]{0,50})"$/m);
+        assert.ok(sandboxLine, `${label}: emitted .toml must contain a sandbox_mode line`);
+        assert.equal(
+          sandboxLine[1],
+          'read-only',
+          `${label}: a held role's sandbox_mode must stay read-only even when its frontmatter name: diverges ` +
+          `from its own filename — the hold is keyed off the file, not a self-declared field. Got: ${sandboxLine[1]}`,
+        );
+      } finally {
+        cleanup(tmpAgentsSrc);
+        cleanup(tmpDest);
+      }
+    }
+  });
+
+  test('N6 (post-fix regression check): every real agents/ role remains byte-identical in emitted sandbox_mode after the filename-identity fix', () => {
+    // #3897 rung 4 (isolated correctness review, MINOR finding 6): driven
+    // from the real roster (AGENT_ROSTER_ROLES), not the hardcoded
+    // EXPECTED_SANDBOX_BY_ROLE key set — the roster-parity test above already
+    // fails loudly if the two sets ever diverge, so `checked` here is a
+    // genuine roster count, not a fixture-pinned literal that would silently
+    // stop growing when a 36th agent lands.
+    let checked = 0;
+    for (const role of AGENT_ROSTER_ROLES) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(EXPECTED_SANDBOX_BY_ROLE, role),
+        `${role} exists in agents/ but has no EXPECTED_SANDBOX_BY_ROLE entry — see the roster-parity test above`,
+      );
+      const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+      const toml = generateCodexAgentToml(role, content);
+      const match = toml.match(/^sandbox_mode = "([^"]+)"$/m);
+      assert.ok(match, `${role} must emit a sandbox_mode line`);
+      assert.equal(
+        match[1],
+        EXPECTED_SANDBOX_BY_ROLE[role],
+        `${role}: sandbox_mode must not drift as a side effect of the #3897 filename-identity fix`,
+      );
+      checked++;
+    }
+    assert.equal(
+      checked,
+      AGENT_ROSTER_ROLES.length,
+      'N6: every real role in agents/ must be checked and byte-identical',
+    );
+  });
+});
+
+// ─── #3897 security review F1/F3/F4/F5 regressions ─────────────────────────
+//
+// Isolated security review of this rung found a fail-open: `bin/install.js`'s
+// Codex emit loop DECIDED sandbox_mode for the source filename stem but
+// APPLIED it to the emitted `.toml`'s path, which is keyed on the
+// frontmatter `name:` value instead — so a renamed file, or a sibling file
+// whose `name:` collides with a held role, could land a held role's own
+// artifact at `workspace-write`. F1(a)/F1(b) below assert on the EMITTED
+// ARTIFACT (the written `.toml`'s `sandbox_mode`), never on
+// `deriveCodexSandboxMode`'s return value directly — the whole defect is
+// that the derivation and the emitted artifact could disagree.
+describe('#3897 security review: F1 filename/name identity confusion, F3 confusables, F4/F5 totality', () => {
+  const AGENTS_DIR = path.join(__dirname, '..', 'agents');
+  const {
+    installCodexConfig,
+    deriveCodexSandboxMode: deriveCodexSandboxModeLocal,
+  } = require('../bin/install.js');
+  const {
+    normalizeSandboxIdentity,
+    isSandboxHeld,
+    extractToolsValue: extractToolsValueLocal,
+  } = require('../gsd-core/bin/lib/codex-agent-toml.cjs');
+
+  function sandboxModeOfToml(toml) {
+    const match = toml.match(/^sandbox_mode = "([^"]+)"$/m);
+    return match ? match[1] : null;
+  }
+
+  test('F1(a) rename case: a source file whose FILENAME differs from a held role, but whose frontmatter name: IS the held role, emits read-only', () => {
+    const src = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-f1a-src-'));
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-f1a-dest-'));
+    try {
+      const original = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-doc-writer.md'), 'utf8');
+      assert.ok(/^name:\s*gsd-doc-writer\s*$/m.test(original), 'sanity: fixture source declares name: gsd-doc-writer');
+      // Renamed FILE, unchanged frontmatter name: — the fileStem no longer
+      // matches the held role, but the emitted TOML is still named after
+      // `gsd-doc-writer` (the frontmatter name:).
+      fs.writeFileSync(path.join(src, 'gsd-doc-writer-v2.md'), original);
+
+      installCodexConfig(dest, src);
+
+      const emittedPath = path.join(dest, 'agents', 'gsd-doc-writer.toml');
+      assert.ok(fs.existsSync(emittedPath), `expected an emitted .toml at ${emittedPath}`);
+      const toml = fs.readFileSync(emittedPath, 'utf8');
+      assert.equal(
+        sandboxModeOfToml(toml),
+        'read-only',
+        'F1(a): a held role\'s own emitted .toml must stay read-only even when reached via a renamed source file whose filename stem is unheld',
+      );
+    } finally {
+      cleanup(src);
+      cleanup(dest);
+    }
+  });
+
+  test('F1(b) sibling-clobber case: a second, unheld source file whose frontmatter name: IS a held role must not widen the held role\'s emitted .toml', () => {
+    const src = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-f1b-src-'));
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-f1b-dest-'));
+    try {
+      const heldOriginal = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-doc-writer.md'), 'utf8');
+      fs.writeFileSync(path.join(src, 'gsd-doc-writer.md'), heldOriginal);
+      // A sibling file — different filename stem, no hold entry for IT — but
+      // its frontmatter `name:` collides with the held role. Named to sort
+      // AFTER `gsd-doc-writer.md` (readdirSync/emit-loop order is
+      // alphabetical) so this sibling's write is the LAST one to the shared
+      // `gsd-doc-writer.toml` output path — the exact ordering the pre-fix
+      // defect needed to actually clobber the held role's own artifact
+      // (a sibling sorting BEFORE it gets silently overwritten again by the
+      // legitimate file's own correct read-only write, masking the bug).
+      const sibling = [
+        '---',
+        'name: gsd-doc-writer',
+        'description: sibling file colliding on frontmatter name',
+        'tools: Read, Write, Edit',
+        '---',
+        '',
+        '<role>sibling</role>',
+      ].join('\n');
+      fs.writeFileSync(path.join(src, 'gsd-zzz-attacker-clone.md'), sibling);
+
+      installCodexConfig(dest, src);
+
+      const emittedPath = path.join(dest, 'agents', 'gsd-doc-writer.toml');
+      assert.ok(fs.existsSync(emittedPath), `expected an emitted .toml at ${emittedPath}`);
+      const toml = fs.readFileSync(emittedPath, 'utf8');
+      assert.equal(
+        sandboxModeOfToml(toml),
+        'read-only',
+        'F1(b): a sibling file whose frontmatter name: collides with a held role must not clobber that role\'s emitted .toml with workspace-write',
+      );
+    } finally {
+      cleanup(src);
+      cleanup(dest);
+    }
+  });
+
+  const F3_CONFUSABLE_VECTORS = [
+    ['Turkish dotted I (İ)', 'gsd-doc-wrİter'],
+    ['Turkish dotless i (ı)', 'gsd-doc-wrıter'],
+    ['fullwidth leading g (ｇ)', 'ｇsd-doc-writer'],
+    ['NFD combining acute on r (writeŕ)', 'gsd-doc-writeŕ'],
+    ['trailing ASCII space', 'gsd-doc-writer '],
+    ['trailing NBSP', 'gsd-doc-writer '],
+    ['trailing dot', 'gsd-doc-writer.'],
+    ['trailing newline', 'gsd-doc-writer\n'],
+    ['trailing carriage return', 'gsd-doc-writer\r'],
+    ['relative-path prefix ./', './gsd-doc-writer'],
+    ['path traversal ../agents/', '../agents/gsd-doc-writer'],
+  ];
+
+  for (const [label, vector] of F3_CONFUSABLE_VECTORS) {
+    test(`F3 confusable/whitespace/path vector — ${label} — derives read-only`, () => {
+      const mode = deriveCodexSandboxModeLocal(vector, 'Read, Write, Edit');
+      assert.equal(
+        mode,
+        'read-only',
+        `F3: identity ${JSON.stringify(vector)} (${label}) must derive read-only — either it normalizes onto the real held key, or it is unrecognizable and must fail closed`,
+      );
+    });
+  }
+
+  test('F3: isSandboxHeld flags each confusable vector as held or suspicious (never silently neither)', () => {
+    for (const [label, vector] of F3_CONFUSABLE_VECTORS) {
+      const { held, suspicious } = isSandboxHeld(vector);
+      assert.ok(held || suspicious, `${label} (${JSON.stringify(vector)}) must be held or suspicious`);
+    }
+  });
+
+  test('F5: "All tools except Write, Edit" derives read-only (negation excludes Write/Edit)', () => {
+    const mode = deriveCodexSandboxModeLocal('gsd-negation-agent', 'All tools except Write, Edit');
+    assert.equal(mode, 'read-only', 'excluding Write and Edit after "except" must derive read-only');
+  });
+
+  test('F5: "All tools except Agent" derives workspace-write (Write/Edit are not excluded)', () => {
+    const mode = deriveCodexSandboxModeLocal('gsd-negation-agent', 'All tools except Agent');
+    assert.equal(mode, 'workspace-write', 'excluding only Agent leaves Write/Edit granted, so this must still derive workspace-write');
+  });
+
+  test('totality: deriveCodexSandboxMode never throws for undefined/null/[]/[undefined] identities', () => {
+    for (const identity of [undefined, null, [], [undefined]]) {
+      assert.doesNotThrow(
+        () => deriveCodexSandboxModeLocal(identity, 'Read, Write, Edit'),
+        `deriveCodexSandboxMode must not throw for identity ${JSON.stringify(identity)}`,
+      );
+      const result = deriveCodexSandboxModeLocal(identity, 'Read, Write, Edit');
+      assert.equal(typeof result, 'string', `deriveCodexSandboxMode must return a string for identity ${JSON.stringify(identity)}`);
+    }
+  });
+
+  // #3897 rung 4 (isolated correctness review, MINOR finding 4): two exotic
+  // identity shapes more adversarial than the undefined/null/[]/[undefined]
+  // set above — an object whose OWN toString throws, and a null-prototype
+  // object (no inherited Object.prototype methods at all, so even a
+  // defensive `.toString`/`.hasOwnProperty` call site would blow up). Both
+  // must derive a string, never throw — "TOTAL for any input" per this
+  // function's own docstring is not just for well-behaved falsy/array shapes.
+  test('totality: deriveCodexSandboxMode never throws for an identity with a throwing toString', () => {
+    const hostile = { toString() { throw new Error('id-boom'); } };
+    assert.doesNotThrow(
+      () => deriveCodexSandboxModeLocal(hostile, 'Read'),
+      'deriveCodexSandboxMode must not throw for an identity whose toString throws',
+    );
+    assert.equal(typeof deriveCodexSandboxModeLocal(hostile, 'Read'), 'string');
+  });
+
+  test('totality: deriveCodexSandboxMode never throws for a null-prototype identity object', () => {
+    const nullProto = Object.create(null);
+    assert.doesNotThrow(
+      () => deriveCodexSandboxModeLocal(nullProto, 'Read'),
+      'deriveCodexSandboxMode must not throw for a null-prototype identity object',
+    );
+    assert.equal(typeof deriveCodexSandboxModeLocal(nullProto, 'Read'), 'string');
+  });
+
+  test('totality: normalizeSandboxIdentity never throws for undefined/null/non-string input', () => {
+    for (const raw of [undefined, null, 42, {}, []]) {
+      assert.doesNotThrow(() => normalizeSandboxIdentity(raw), `must not throw for ${JSON.stringify(raw)}`);
+      assert.equal(normalizeSandboxIdentity(raw), null, `non-string input ${JSON.stringify(raw)} must normalize to null`);
+    }
+  });
+
+  test('F4: extractToolsValue returns undefined (never throws) for undefined/null/Buffer input', () => {
+    for (const value of [undefined, null, Buffer.from('tools: Write')]) {
+      assert.doesNotThrow(() => extractToolsValueLocal(value), `extractToolsValue must not throw for ${String(value)}`);
+      assert.equal(extractToolsValueLocal(value), undefined, `extractToolsValue must return undefined for non-string input ${String(value)}`);
+    }
+  });
+
+  test('F4: extractToolsValue still returns the parsed value for real string content — inline form (no regression)', () => {
+    const content = ['---', 'tools: Read, Write', '---', ''].join('\n');
+    assert.equal(extractToolsValueLocal(content), 'Read, Write');
+  });
+
+  // ─── #3897 list-form parse fix: YAML block-list `tools:` ─────────────────
+  //
+  // `agents/gsd-nyquist-auditor.md` and `agents/gsd-security-auditor.md` are
+  // the only two roster files using this shape. The pre-fix single-line
+  // regex `/^tools:\s*(.+)$/m` let `\s*` swallow the newline after a bare
+  // `tools:` key and matched into the FIRST list item's own line, returning
+  // just `"- Read"` — a real Write/Edit DECLARATION read as an absence.
+
+  test('list-form: a tools: block list declaring Write derives workspace-write (FAILS before the parse fix — pre-fix reader returned "- Read")', () => {
+    const content = [
+      '---',
+      'name: gsd-list-form-writer',
+      'tools:',
+      '  - Read',
+      '  - Write',
+      '  - Edit',
+      '  - Bash',
+      '---',
+      '',
+      '<role>list-form writer</role>',
+    ].join('\n');
+    const toolsRaw = extractToolsValueLocal(content);
+    assert.equal(toolsRaw, 'Read, Write, Edit, Bash', 'list items must be joined the same way the comma-tokenizer downstream expects');
+    assert.equal(
+      deriveCodexSandboxModeLocal('zzz-list-form-probe-never-held', toolsRaw),
+      'workspace-write',
+      'a tools: block list declaring Write must derive workspace-write, not read-only from a truncated first-item read',
+    );
+  });
+
+  test('list-form: a tools: block list with NO write tool derives read-only (no over-correction)', () => {
+    const content = [
+      '---',
+      'name: gsd-list-form-reader',
+      'tools:',
+      '  - Read',
+      '  - Bash',
+      '  - Glob',
+      '---',
+      '',
+      '<role>list-form reader</role>',
+    ].join('\n');
+    const toolsRaw = extractToolsValueLocal(content);
+    assert.equal(toolsRaw, 'Read, Bash, Glob');
+    assert.equal(
+      deriveCodexSandboxModeLocal('zzz-list-form-probe-never-held', toolsRaw),
+      'read-only',
+      'a list-form tools: with no Write/Edit item must still derive read-only',
+    );
+  });
+
+  test('list-form: the list terminates at the next frontmatter key and does not swallow its value', () => {
+    const content = [
+      '---',
+      'name: gsd-list-form-terminates',
+      'tools:',
+      '  - Read',
+      '  - Write',
+      'color: blue',
+      '---',
+      '',
+      '<role>list-form terminates before a sibling key</role>',
+    ].join('\n');
+    assert.equal(extractToolsValueLocal(content), 'Read, Write');
+    // The sibling key's own value must remain independently readable — it
+    // must never have been consumed as a phantom third list item.
+    const { frontmatter } = extractFrontmatterAndBody(content);
+    assert.equal(extractFrontmatterField(frontmatter, 'color'), 'blue');
+  });
+
+  test('list-form: the list terminates at the closing --- and does not run past the frontmatter', () => {
+    const content = [
+      '---',
+      'name: gsd-list-form-eof',
+      'tools:',
+      '  - Read',
+      '  - Write',
+      '---',
+      '- this looks like a list item but is BODY text, not frontmatter',
+    ].join('\n');
+    assert.equal(extractToolsValueLocal(content), 'Read, Write');
+  });
+
+  test('roster truth: gsd-nyquist-auditor DERIVES workspace-write from its real tool contract AND is HELD, so its emitted .toml stays read-only', () => {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-nyquist-auditor.md'), 'utf8');
+    const toolsRaw = extractToolsValueLocal(content);
+    assert.ok(
+      /\bWrite\b/.test(toolsRaw) && /\bEdit\b/.test(toolsRaw),
+      `sanity: gsd-nyquist-auditor's real tools: must declare both Write and Edit, got ${JSON.stringify(toolsRaw)}`,
+    );
+    // Derivation WITHOUT the hold (an identity guaranteed never held/suspicious,
+    // same probe idiom as the rung-3 describe block's PARITY_PROBE_IDENTITY)
+    // must show the role genuinely derives workspace-write from its contract —
+    // this is what proves derive-and-hold is doing real work, not that the
+    // parser happens to agree with the pin by accident.
+    assert.equal(
+      deriveCodexSandboxModeLocal('zzz-nyquist-unheld-probe-never-a-real-role', toolsRaw),
+      'workspace-write',
+      'gsd-nyquist-auditor must genuinely derive workspace-write from its tool contract once list-form tools: parses correctly',
+    );
+    // The REAL identity IS held, so the actual emitted artifact stays read-only.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(CODEX_SANDBOX_HOLDS, 'gsd-nyquist-auditor'),
+      'gsd-nyquist-auditor must be an explicit CODEX_SANDBOX_HOLDS entry',
+    );
+    const { generateCodexAgentToml: generateCodexAgentTomlLocal } = require('../bin/install.js');
+    const toml = generateCodexAgentTomlLocal('gsd-nyquist-auditor', content);
+    assert.ok(
+      toml.includes('sandbox_mode = "read-only"'),
+      'gsd-nyquist-auditor\'s emitted .toml must stay read-only (held), even though it now derives workspace-write',
+    );
+  });
+});
+
 // ─── #3241: shared isAnthropicFlavoredModel / CLAUDE_AGENT_ALIASES surface ─────
 // Phase 2/3 need one predicate. 40-design.md's "seam decision" moves
 // CLAUDE_AGENT_ALIASES into model-catalog.cjs and defines isAnthropicFlavoredModel
@@ -1091,29 +1862,46 @@ describe('installCodexConfig sandboxTier threading seam', () => {
 // codex.sandboxTier === 'codex-agent-sandbox') confirms the real registry has
 // valid values for all 15 runtimes.
 
-// ─── CODEX_AGENT_SANDBOX mapping ────────────────────────────────────────────────
+// ─── CODEX_AGENT_SANDBOX (deleted map): derivation regression baseline ──────────
 
-describe('CODEX_AGENT_SANDBOX', () => {
-  test('has all 11 agents mapped', () => {
-    const agentNames = Object.keys(CODEX_AGENT_SANDBOX);
+describe('CODEX_AGENT_SANDBOX (deleted map, derivation regression baseline)', () => {
+  // bin/install.js's CODEX_AGENT_SANDBOX map is gone (ADR-3473 §8.3, #3897
+  // rung 3) — deriveCodexSandboxMode is the sole owner of sandbox_mode now.
+  // These tests assert the SAME underlying property the deleted map's own
+  // suite used to assert (which 11 roles get which sandbox_mode), but against
+  // the real derivation and the real agents/*.md content, sourced from the
+  // PRE_3897_CODEX_AGENT_SANDBOX baseline literal above rather than the map.
+  const AGENTS_DIR = path.join(__dirname, '..', 'agents');
+
+  function realDerivedSandboxMode(role) {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, `${role}.md`), 'utf8');
+    const { frontmatter } = extractFrontmatterAndBody(content);
+    const toolsRaw = extractFrontmatterField(frontmatter || '', 'tools') || '';
+    return deriveCodexSandboxMode(role, toolsRaw);
+  }
+
+  test('has all 11 baseline agents', () => {
+    const agentNames = Object.keys(PRE_3897_CODEX_AGENT_SANDBOX);
     assert.strictEqual(agentNames.length, 11, 'has 11 agents');
   });
 
-  test('workspace-write agents have write tools', () => {
+  test('workspace-write agents still derive workspace-write', () => {
     const writeAgents = [
       'gsd-executor', 'gsd-planner', 'gsd-phase-researcher',
       'gsd-project-researcher', 'gsd-research-synthesizer', 'gsd-verifier',
       'gsd-codebase-mapper', 'gsd-roadmapper', 'gsd-debugger',
     ];
     for (const name of writeAgents) {
-      assert.strictEqual(CODEX_AGENT_SANDBOX[name], 'workspace-write', `${name} is workspace-write`);
+      assert.strictEqual(PRE_3897_CODEX_AGENT_SANDBOX[name], 'workspace-write', `${name} baseline is workspace-write`);
+      assert.strictEqual(realDerivedSandboxMode(name), 'workspace-write', `${name} still derives workspace-write`);
     }
   });
 
-  test('read-only agents have no write tools', () => {
+  test('read-only agents still derive read-only', () => {
     const readOnlyAgents = ['gsd-plan-checker', 'gsd-integration-checker'];
     for (const name of readOnlyAgents) {
-      assert.strictEqual(CODEX_AGENT_SANDBOX[name], 'read-only', `${name} is read-only`);
+      assert.strictEqual(PRE_3897_CODEX_AGENT_SANDBOX[name], 'read-only', `${name} baseline is read-only`);
+      assert.strictEqual(realDerivedSandboxMode(name), 'read-only', `${name} still derives read-only`);
     }
   });
 });
@@ -2544,7 +3332,11 @@ test('writeNonClaudeDefaults function exists and is a no-op for Claude (#2834)',
   const src = fs.readFileSync(INSTALL_JS, 'utf8');
   const fnIdx = src.indexOf('function writeNonClaudeDefaults(');
   assert.ok(fnIdx !== -1, 'writeNonClaudeDefaults must be defined as a function');
-  const fnBody = src.slice(fnIdx, fnIdx + 1200);
+  // Bound the slice by the next top-level declaration rather than a fixed
+  // character count, so adding a comment or a guard inside the function cannot
+  // push the asserted tokens out of the window and red this test spuriously.
+  const nextFnIdx = src.indexOf('\nfunction ', fnIdx + 1);
+  const fnBody = src.slice(fnIdx, nextFnIdx === -1 ? undefined : nextFnIdx);
   assert.ok(/nativeModelAliases/.test(fnBody), 'writeNonClaudeDefaults must early-return for Claude (nativeModelAliases check)');
   assert.ok(/resolve_model_ids/.test(fnBody), 'writeNonClaudeDefaults must write resolve_model_ids');
   assert.ok(/defaults\.runtime/.test(fnBody), 'writeNonClaudeDefaults must write runtime');
@@ -5789,6 +6581,7 @@ const path = require('node:path');
 
 const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
 const { getCodexSkillAdapterHeader } = INSTALL;
+const { tokenizeHeadings } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 /**
  * Extract the "Execute mode fallback" section text from the adapter header.
@@ -5796,8 +6589,22 @@ const { getCodexSkillAdapterHeader } = INSTALL;
  * "Execute mode fallback:" label up to the next heading or </codex_skill_adapter> tag.
  */
 function extractExecuteModeFallback(header) {
-  const m = header.match(/Execute mode fallback:\s*\n([\s\S]*?)(?=\n##\s|\n<\/codex_skill_adapter>)/);
-  return m ? m[1].trim() : null;
+  const label = 'Execute mode fallback:';
+  const labelIdx = header.indexOf(label);
+  if (labelIdx === -1) return null;
+  const bodyStart = header.indexOf('\n', labelIdx + label.length);
+  if (bodyStart === -1) return null;
+
+  // End at whichever comes first: the next "## " heading (via the canonical
+  // heading tokenizer, not an ad-hoc regex) or the closing adapter tag.
+  const headings = tokenizeHeadings(header).filter((h) => h.level === 2 && h.offset > bodyStart);
+  const nextHeadingOffset = headings.length > 0 ? headings[0].offset - 1 : Infinity; // -1 for the leading \n
+  const closeTagIdx = header.indexOf('</codex_skill_adapter>', bodyStart);
+  const closeTagOffset = closeTagIdx === -1 ? Infinity : closeTagIdx - 1; // -1 for the leading \n
+  const bodyEnd = Math.min(nextHeadingOffset, closeTagOffset);
+  if (bodyEnd === Infinity) return null;
+
+  return header.slice(bodyStart + 1, bodyEnd).trim();
 }
 
 /**
@@ -8512,6 +9319,7 @@ const path = require('node:path');
 
 const INSTALL = require(path.join(__dirname, '..', 'bin', 'install.js'));
 const { getCodexSkillAdapterHeader } = INSTALL;
+const { tokenizeHeadings } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 /**
  * Extract the "Execute mode fallback" section text from the adapter header.
@@ -8519,8 +9327,22 @@ const { getCodexSkillAdapterHeader } = INSTALL;
  * "Execute mode fallback:" label up to the next heading or </codex_skill_adapter> tag.
  */
 function extractExecuteModeFallback(header) {
-  const m = header.match(/Execute mode fallback:\s*\n([\s\S]*?)(?=\n##\s|\n<\/codex_skill_adapter>)/);
-  return m ? m[1].trim() : null;
+  const label = 'Execute mode fallback:';
+  const labelIdx = header.indexOf(label);
+  if (labelIdx === -1) return null;
+  const bodyStart = header.indexOf('\n', labelIdx + label.length);
+  if (bodyStart === -1) return null;
+
+  // End at whichever comes first: the next "## " heading (via the canonical
+  // heading tokenizer, not an ad-hoc regex) or the closing adapter tag.
+  const headings = tokenizeHeadings(header).filter((h) => h.level === 2 && h.offset > bodyStart);
+  const nextHeadingOffset = headings.length > 0 ? headings[0].offset - 1 : Infinity; // -1 for the leading \n
+  const closeTagIdx = header.indexOf('</codex_skill_adapter>', bodyStart);
+  const closeTagOffset = closeTagIdx === -1 ? Infinity : closeTagIdx - 1; // -1 for the leading \n
+  const bodyEnd = Math.min(nextHeadingOffset, closeTagOffset);
+  if (bodyEnd === Infinity) return null;
+
+  return header.slice(bodyStart + 1, bodyEnd).trim();
 }
 
 /**

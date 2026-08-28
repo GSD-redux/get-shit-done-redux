@@ -27,6 +27,7 @@ const {
   FRONTMATTER_SCHEMAS,
   agentScalarNeedsDoubleQuoting,
   escapeDoubleQuotedScalar,
+  propagateCommentChannel,
 } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
 // ─── extractFrontmatter ───────────────────────────────────────────────────────
@@ -1739,5 +1740,120 @@ describe('escapeDoubleQuotedScalar: exact output strings', () => {
     const input = 'a\\b"c\nd\te\rf\u0001g\u007fh';
     const expected = 'a\\\\b\\"c\\nd\\te\\rf\\x01g\\x7fh';
     assert.equal(escapeDoubleQuotedScalar(input), expected);
+  });
+});
+
+// ─── #3742: nested (path-shaped) comment channel + merge propagation ─────────
+// Direct unit coverage for the #3742 channel extension — the mutation shard
+// for frontmatter runs THIS file, so each clause of the new code needs a
+// paired positive/negative assertion here (the #1882/#3706/#3888 trap: tests
+// living only in tests/state.test.cjs do not constrain this shard).
+describe('#3742: extractCommentChannel — indented comments attach by dotted path', () => {
+  const channelOf = (doc) => {
+    const e = extractFrontmatter(doc);
+    const sym = Object.getOwnPropertySymbols(e).find((x) => String(x).includes('fullLineComments'));
+    return sym ? e[sym] : null;
+  };
+
+  test('an indented comment above a nested key attaches to parent.key', () => {
+    const ch = channelOf(['---','a:','  # note','  b: 1','---'].join('\n'));
+    assert.ok(ch, 'channel must exist');
+    assert.deepEqual(ch.leading['a.b'], ['  # note']);
+    assert.equal(ch.leading['b'], undefined, 'no top-level key named b exists');
+  });
+
+  test('two levels deep: parent.sub.subsub path', () => {
+    const ch = channelOf(['---','a:','  b:','    # deep','    c: 1','---'].join('\n'));
+    assert.deepEqual(ch.leading['a.b.c'], ['    # deep']);
+  });
+
+  test('a MISALIGNED indent comment before a shallower key is dropped, not misattached', () => {
+    const ch = channelOf(['---','a:','  b: 1','      # misplaced','c: 2','---'].join('\n'));
+    assert.equal(ch, null, 'no comment attached to any key');
+  });
+
+  test('a comment above a LIST ITEM is dropped (list items are not keys)', () => {
+    const ch = channelOf(['---','a:','  # above item','  - one','b: 2','---'].join('\n'));
+    assert.equal(ch, null);
+  });
+
+  test('a list-item mapping line (- k: v) does not register a key', () => {
+    const ch = channelOf(['---','a:','  # n','  - k: v','---'].join('\n'));
+    assert.equal(ch, null, 'the comment must not attach to a "- k" pseudo-key');
+  });
+
+  test('column-0 semantics unchanged: attach to next top-level key, drop on non-key', () => {
+    const ch = channelOf(['---','a: 1','# c1','# c2','b: 2','---'].join('\n'));
+    assert.deepEqual(ch.leading['b'], ['# c1', '# c2']);
+  });
+
+  test('quoted top-level keys still walk orderedKeys', () => {
+    const ch = channelOf(['---','"a b": 1','# q','c: 2','---'].join('\n'));
+    assert.deepEqual(ch.leading['c'], ['# q']);
+  });
+});
+
+describe('#3742: reconstructFrontmatter — nested comments re-emit at their indent', () => {
+  test('level-1 and level-2 nested comments re-emit with matching indentation', () => {
+    const doc = ['---','a:','  # l1','  b:','    # l2','    c: 1','---'].join('\n');
+    const out = reconstructFrontmatter(extractFrontmatter(doc));
+    assert.ok(out.split('\n').includes('  # l1'), 'l1 comment re-emits at two-space indent');
+    assert.ok(out.split('\n').includes('    # l2'), 'l2 comment re-emits at four-space indent');
+    // order: l1 above b, l2 above c
+    assert.ok(out.indexOf('  # l1') < out.indexOf('  b:'), 'l1 comment precedes its key');
+    assert.ok(out.indexOf('    # l2') < out.indexOf('    c:'), 'l2 comment precedes its key');
+  });
+
+  test('round-trip is idempotent (extract→reconstruct twice is a fixpoint)', () => {
+    const doc = ['---','x:','  # keep','  y: 1','---'].join('\n');
+    const once = '---\n' + reconstructFrontmatter(extractFrontmatter(doc)) + '\n---';
+    const twice = '---\n' + reconstructFrontmatter(extractFrontmatter(once)) + '\n---';
+    assert.equal(twice, once);
+    assert.equal((twice.match(/# keep/g) || []).length, 1);
+  });
+});
+
+describe('#3742: propagateCommentChannel — merge, root filter, trailing dedupe', () => {
+  const symOf = (o) => Object.getOwnPropertySymbols(o).find((x) => String(x).includes('fullLineComments'));
+
+  test('a dotted-path key survives while its root section exists in the target', () => {
+    const src = extractFrontmatter(['---','p:','  # n','  q: 1','---'].join('\n'));
+    const target = { p: { q: 9 } };
+    propagateCommentChannel(src, target);
+    const ch = target[symOf(target)];
+    assert.deepEqual(ch.leading['p.q'], ['  # n']);
+  });
+
+  test('a dotted-path key is DROPPED when the root section is absent from the target', () => {
+    const src = extractFrontmatter(['---','p:','  # n','  q: 1','---'].join('\n'));
+    const target = { other: 1 };
+    propagateCommentChannel(src, target);
+    const ch = target[symOf(target)];
+    assert.ok(!ch || !ch.leading['p.q'], 'comment must die with its section');
+  });
+
+  test('target channel wins per key; source fills gaps (merge, not clobber)', () => {
+    const src = extractFrontmatter(['---','# from-source','a: 1','# from-source-2','b: 2','---'].join('\n'));
+    const target = extractFrontmatter(['---','# from-target','a: 1','b: 2','---'].join('\n'));
+    propagateCommentChannel(src, target);
+    const ch = target[symOf(target)];
+    assert.deepEqual(ch.leading['a'], ['# from-target'], 'target entry wins');
+    assert.deepEqual(ch.leading['b'], ['# from-source-2'], 'source fills the gap for a key the target owns but has no comment for');
+  });
+
+  test('trailing list comes from the target when it has a channel (no duplication)', () => {
+    const src = extractFrontmatter(['---','a: 1','# trail','---'].join('\n'));
+    const target = extractFrontmatter(['---','a: 1','# trail','---'].join('\n'));
+    propagateCommentChannel(src, target);
+    const ch = target[symOf(target)];
+    assert.deepEqual(ch.trailing, ['# trail'], 'exactly one trailing comment after merge');
+  });
+
+  test('a channel-less target inherits the source trailing comments', () => {
+    const src = extractFrontmatter(['---','a: 1','# trail','---'].join('\n'));
+    const target = { a: 2 };
+    propagateCommentChannel(src, target);
+    const ch = target[symOf(target)];
+    assert.deepEqual(ch.trailing, ['# trail']);
   });
 });

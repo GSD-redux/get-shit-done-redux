@@ -15,6 +15,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const CMD_PATH = path.join(ROOT, 'commands', 'gsd', 'ingest-docs.md');
@@ -22,6 +23,18 @@ const WF_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'ingest-docs.md');
 const CLASSIFIER_PATH = path.join(ROOT, 'agents', 'gsd-doc-classifier.md');
 const SYNTHESIZER_PATH = path.join(ROOT, 'agents', 'gsd-doc-synthesizer.md');
 const CONFLICT_ENGINE_PATH = path.join(ROOT, 'gsd-core', 'references', 'doc-conflict-engine.md');
+
+/** Return the raw text of every ```bash fenced block in `content`. */
+function extractBashBlocks(content) {
+  const lines = content.split(/\r?\n/);
+  const blocks = [];
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    if ((block.infoString || '').trim() !== 'bash') continue;
+    blocks.push(lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n'));
+  }
+  return blocks;
+}
 
 // ─── File Existence ────────────────────────────────────────────────────────────
 
@@ -429,12 +442,7 @@ describe('bug-2801: ingest-docs.md workflow calls gsd-tools not gsd-sdk', () => 
   test('no bash code block in ingest-docs.md calls gsd-sdk', () => {
     const content = fs.readFileSync(WORKFLOW_FILE, 'utf-8');
     // Extract bash fenced code blocks structurally.
-    const bashBlocks = [];
-    const codeBlockRe = /```bash\r?\n([\s\S]*?)```/g;
-    let m;
-    while ((m = codeBlockRe.exec(content)) !== null) {
-      bashBlocks.push(m[1]);
-    }
+    const bashBlocks = extractBashBlocks(content);
     assert.ok(bashBlocks.length > 0, 'expected bash code blocks in workflow');
 
     // Check every line in every bash block — not just lines that start with the token,
@@ -454,9 +462,8 @@ describe('bug-2801: ingest-docs.md workflow calls gsd-tools not gsd-sdk', () => 
   test('ingest-docs.md init step uses the gsd_run launcher (#637)', () => {
     const content = fs.readFileSync(WORKFLOW_FILE, 'utf-8');
     // Parse fenced bash blocks structurally — do not match raw markdown text.
-    const codeBlockRe = /```bash\r?\n([\s\S]*?)```/g;
-    const bashLines = [...content.matchAll(codeBlockRe)]
-      .flatMap((m) => m[1].split('\n'))
+    const bashLines = extractBashBlocks(content)
+      .flatMap((block) => block.split('\n'))
       .filter((l) => !/^\s*#/.test(l));
     // #637 routes ingest-docs through the resolved `gsd_run` launcher instead of
     // the hardcoded `node "$HOME/.../gsd-tools.cjs"` path (which misses global

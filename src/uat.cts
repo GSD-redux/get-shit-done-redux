@@ -2038,8 +2038,19 @@ function acknowledgeDeferredItem(content: string, targetText: string): Acknowled
   }
 
   const matchIndexInContent = sectionOffset + start;
-  const statusFieldRe = /^\s*(?:-\s+)?(\*+status:\*+|status:)/i;
-  const statusLineIdx = matchedLines.findIndex((rawLine) => statusFieldRe.test(rawLine.replace(/\r$/, '')));
+  // #3740: the search must mirror the reader exactly. extractGapEntryFields
+  // strips a bullet marker on line 0 ALONE — a later `- ` line is a nested
+  // sub-list, never a field line — so a marker-prefixed match on any
+  // continuation line would rewrite a line no reader reads and report `ok`
+  // while the entry stays outstanding. Line 0 KEEPS the marker-optional
+  // form: the reader de-bullets it, so `- status: open` as the entry line is
+  // a real field there (and first-wins means the insert branch could not
+  // outrank it). Everything else falls through to the insert branch below,
+  // which the marker-free and no-status controls already round-trip.
+  const statusFieldRe = /^\s*(\*+status:\*+|status:)/i;
+  const statusFieldReLine0 = /^\s*(?:-\s+)?(\*+status:\*+|status:)/i;
+  const statusLineIdx = matchedLines.findIndex((rawLine, idx) =>
+    (idx === 0 ? statusFieldReLine0 : statusFieldRe).test(rawLine.replace(/\r$/, '')));
 
   // No CRLF-preservation branch here (WARNING 1, #3458 follow-up review):
   // every write goes through `platformWriteSync` → `normalizeContent`, which

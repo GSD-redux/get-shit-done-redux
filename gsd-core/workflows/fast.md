@@ -59,7 +59,7 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 # fast writes no planning artifacts (its own guardrails forbid PLAN.md/SUMMARY.md); .planning/
 # is excluded from staging ONLY when commit_docs is false — otherwise this path is
 # byte-identical to an unconditional `git add -A`, unchanged from before #3585.
-COMMIT_DOCS=$(gsd_run query config-get commit_docs 2>/dev/null || echo "true")
+COMMIT_DOCS=$(gsd_run query config-get commit_docs --raw 2>/dev/null || echo "true")
 if [ "$COMMIT_DOCS" = "false" ]; then
   git add -A -- ':!.planning'
 else

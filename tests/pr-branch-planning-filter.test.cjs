@@ -211,7 +211,9 @@ describe('#2971 — pr-branch.md planning.pr_strict filter (failing-first)', () 
     });
 
     test('15: every structural file is not forbidden default, forbidden strict', () => {
-      const structuralRe = new RegExp(fixture.structuralRe);
+      // Pattern extracted verbatim from the workflow fixture — the shipped
+      // STRUCTURAL_RE pattern IS the product under test (#3951).
+      const structuralRe = new RegExp(fixture.structuralRe); // allow-adhoc-regex-escape: runtime-contract-is-the-product
       for (const name of ['STATE', 'ROADMAP', 'MILESTONES', 'PROJECT', 'REQUIREMENTS']) {
         const p = `.planning/${name}.md`;
         assert.ok(structuralRe.test(p), `fixture bug: STRUCTURAL_RE must accept ${p}`);

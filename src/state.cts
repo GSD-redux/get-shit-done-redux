@@ -3641,6 +3641,23 @@ function applyPostSyncPreservation(
   }
 
   if (preservation.mutated || authoritativeReasserted) {
+    // #3742: preservation RESTORES frontmatter keys the body-derived rebuild
+    // could not produce (e.g. `current_phase` on a layout with no body
+    // `**Current Phase:**` line) — but the comment channel was filtered
+    // against the pre-restore key set during sync, so a full-line comment
+    // attached to a restored key died with nothing to re-attach it. Propagate
+    // the channel from the PRE-WRITE snapshot here, after the restores, so a
+    // comment's survival depends on its key surviving the whole write — not
+    // on which body line happened to feed the rebuild. Merge semantics
+    // (propagateCommentChannel) keep any channel the synced content already
+    // carried. No resync gate: this is the RMW path, where `resync` is the
+    // DEFAULT (readModifyWriteStateMd derives it as `options.resync !==
+    // false`) and preservation itself runs regardless — the factory-reset
+    // semantic the #3742 review worried about lives in writeStateMd's
+    // `rebuild` transactions, which never reach this branch.
+    if (preFmSnapshot && !isUnparseableFrontmatter(preFmSnapshot)) {
+      propagateCommentChannel(preFmSnapshot as unknown as Frontmatter, preservation.postFm as unknown as Frontmatter);
+    }
     const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
     const body = stripFrontmatter(syncedContent);
     return `---\n${yamlStr}\n---\n\n${body}`;

@@ -11,16 +11,19 @@ Most quietly-imported architectural debt does not come from a missing upfront de
 The detector is a deterministic scan over the phase scope text. It strips fenced code blocks first, so a trigger word that appears only inside a code snippet does not fire. It returns a typed result: `{ detected, signals[], terms }`. Resolve it through the `assumption-delta scan` query (same phase-section resolver as `roadmap.get-phase`):
 
 ```bash
-ASSUMPTION_DELTA_JSON=$(gsd_run query assumption-delta scan "${PHASE}" --json 2>/dev/null || echo '{"detected":false,"signals":[],"terms":{}}')
+ASSUMPTION_DELTA_JSON=$(gsd_run query assumption-delta scan "${PHASE}" --json 2>/dev/null) || true
+[ -n "$ASSUMPTION_DELTA_JSON" ] || ASSUMPTION_DELTA_JSON='{"skipped":true,"reason":"probe_unavailable"}'
 ```
 
-> If the phase section cannot be resolved (no `ROADMAP.md` / unknown phase), the query emits `{ "detected": false, ... }` — the checkpoint does not fire. Do not block on it.
+> If the phase section cannot be resolved (no `ROADMAP.md` / unknown phase, or a section with no body), the query emits `{ "skipped": true, "reason": "phase_unresolved" }` — **not** `detected:false`. A probe that never had input does not get to assert that this phase changes no core assumption. The checkpoint does not fire either way; the difference is that a skip is now distinguishable from a real negative. Do not block on it.
 >
 > Optional tuning — pass `--terms <comma-list>` to replace the curated pluralization cues for this project (the `optional`/`chosen` cues keep their defaults): `gsd_run query assumption-delta scan "${PHASE}" --json --terms second,alternative,fallback`.
 
 ## Decision branch
 
 Read `ASSUMPTION_DELTA_JSON`. Act on `detected` only — do **not** pattern-match the human prose.
+
+**If `skipped` is `true`:** the detector never examined a phase section — it could not resolve one (`phase_unresolved`) or could not run at all (`probe_unavailable`). Skip the checkpoint for this run rather than asserting a verdict about input that was never examined; do not raise it with the user. **Check for `skipped` before reading `detected`** — a skipped payload carries no `detected` key, and treating its absence as `false` re-creates the fabrication this branch exists to prevent.
 
 **If `detected` is `false`:** this phase does not change a core assumption. Skip the checkpoint entirely and continue planning. Do not raise it with the user.
 

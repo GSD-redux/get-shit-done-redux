@@ -30,6 +30,7 @@ const {
 const { runHook } = require('./helpers/process-seam.cjs');
 const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { toPosixPath } = require('../gsd-core/bin/lib/shell-command-projection.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const REVIEW_MD_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'review.md');
@@ -64,12 +65,14 @@ function extractInvokeReviewersBash() {
   }
   const stepBody = afterStep.slice(0, endIdx);
 
-  const fenceRe = /```(?:bash|sh)\r?\n([\s\S]*?)```/;
-  const fenceMatch = fenceRe.exec(stepBody);
-  if (!fenceMatch) {
+  const stepBodyLines = stepBody.split(/\r?\n/);
+  const fenced = scanFencedBlocks(stepBodyLines).find(
+    (b) => b.closeLineIdx !== -1 && ['bash', 'sh'].includes((b.infoString || '').trim()),
+  );
+  if (!fenced) {
     throw new Error(`extractInvokeReviewersBash: no \`\`\`bash fence found inside invoke_reviewers step in ${REVIEW_MD_PATH}`);
   }
-  const block = fenceMatch[1];
+  const block = stepBodyLines.slice(fenced.openLineIdx + 1, fenced.closeLineIdx).join('\n');
 
   if (!block.trim()) {
     throw new Error('extractInvokeReviewersBash: extracted bash block is empty');
@@ -637,10 +640,11 @@ function extractStepBody(stepName) {
 
 /** Finds the first ```bash/```sh fence in `stepBody` whose text contains every string in `mustInclude`. */
 function extractBashFenceContaining(stepBody, mustInclude, label) {
-  const fenceRe = /```(?:bash|sh)\r?\n([\s\S]*?)```/g;
-  let m;
-  while ((m = fenceRe.exec(stepBody)) !== null) {
-    const block = m[1];
+  const stepBodyLines = stepBody.split(/\r?\n/);
+  for (const fenced of scanFencedBlocks(stepBodyLines)) {
+    if (fenced.closeLineIdx === -1) continue;
+    if (!['bash', 'sh'].includes((fenced.infoString || '').trim())) continue;
+    const block = stepBodyLines.slice(fenced.openLineIdx + 1, fenced.closeLineIdx).join('\n');
     if (mustInclude.every((s) => block.includes(s))) return block;
   }
   throw new Error(`extractBashFenceContaining: no fence matching ${label} found (looked for ${JSON.stringify(mustInclude)})`);
