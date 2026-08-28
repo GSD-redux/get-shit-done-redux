@@ -1120,6 +1120,65 @@ describe('#3906: ambient GSD_EXIT_CONTRACT/--exit-contract wiring (acceptance cr
   });
 });
 
+// ─── #3912 regression: `--exit-contract=<v>` in LEADING argv position ──────
+//
+// resolveContractVersion() scans argv non-destructively (findExitContractFlag,
+// gsd-core/bin/lib/cli-exit.cjs). Nothing previously spliced the flag out of
+// the `gsd-tools` CLI dispatcher's own argv before it fell through to command
+// dispatch — the `--json-errors` block did this splice for itself, but
+// `--exit-contract=<v>` never got the same treatment. The dispatcher treats
+// argv[0] as the command name, so:
+//   `gsd-tools --exit-contract=v2 state validate --strict` (leading) died
+//   with "Unknown command: --exit-contract=v2" (exit 64) — the flag was never
+//   consumed and squatted on the command-name slot.
+//   `gsd-tools state-snapshot --exit-contract=v2` (trailing) worked, because
+//   the flag landed after the command name and never collided with dispatch.
+describe('#3912: gsd-tools dispatcher splices --exit-contract=<v> regardless of argv position', () => {
+  const GSD_TOOLS_BIN = path.resolve(__dirname, '../gsd-core/bin/gsd-tools.cjs');
+
+  function run(args) {
+    return toLegacyResult(runNode([GSD_TOOLS_BIN, ...args], { timeoutMs: PROBE_TIMEOUT_MS }));
+  }
+
+  test('leading position dispatches (no "Unknown command", not exit 64)', () => {
+    const r = run(['--exit-contract=v2', 'state', 'validate', '--strict']);
+    assert.notEqual(r.status, 64, `must not fall into the unknown-command path; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `leading --exit-contract=v2 must not be treated as the command name; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('trailing position still dispatches (no regression)', () => {
+    const r = run(['state-snapshot', '--exit-contract=v2']);
+    assert.notEqual(r.status, 64, `must not regress into the unknown-command path; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `trailing --exit-contract=v2 must keep dispatching; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('leading and trailing position agree on the same command (identical exit code)', () => {
+    const leading = run(['--exit-contract=v2', 'state-snapshot']);
+    const trailing = run(['state-snapshot', '--exit-contract=v2']);
+    assert.equal(
+      leading.status, trailing.status,
+      `leading (${leading.status}) and trailing (${trailing.status}) invocations of the same ` +
+      `command under the same contract must produce the identical exit code; ` +
+      `leading stderr: ${leading.stderr}; trailing stderr: ${trailing.stderr}`,
+    );
+  });
+
+  test('an invalid leading value (v3) fails loudly rather than silently defaulting to v1', () => {
+    const r = run(['--exit-contract=v3', 'state-snapshot']);
+    assert.notEqual(r.status, 80, 'an invalid contract version must not silently resolve to a valid v2 exit code');
+    assert.ok(
+      /unrecognized exit-contract version/.test(r.stderr),
+      `expected the resolveContractVersion rejection message on stderr; got: ${r.stderr.slice(0, 300)}`,
+    );
+  });
+});
+
 describe('#3906: terminateNow', () => {
   function spawnTerminateNow(lines) {
     return toLegacyResult(runNode(['-e', lines.join('\n')], { timeoutMs: PROBE_TIMEOUT_MS }));

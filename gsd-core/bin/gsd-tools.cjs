@@ -258,7 +258,7 @@ try {
   process.exit(1);
 }
 
-const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { ExitError, runMain, resolveContractVersion } = require('./lib/cli-exit.cjs');
 const io = require('./lib/io.cjs');
 const { error, ERROR_REASON, setJsonErrorMode, output, formatDiagnosticToken } = io;
 const projectRoot = require('./lib/project-root.cjs');
@@ -4318,7 +4318,7 @@ function runWithTimeout(argv) {
 // this string and HOST_COMMAND_ROUTERS/SKIP_ROOT_RESOLUTION are three
 // independently hand-maintained sites and nothing previously caught them
 // drifting apart when a query command was added to only one or two.
-const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--project-dir <path>] [--ws <name>] [--json-errors]\n' +
+const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--project-dir <path>] [--ws <name>] [--json-errors] [--exit-contract=<v>]\n' +
   'Commands: agent, agent-skills, assumption-delta, audit-open, audit-uat, check, check-commit, commit, commit-docs-guard, commit-to-subrepo, pr-subrepo, ' +
   'config-ensure-section, config-get, config-new-project, config-path, config-set, migrate-config, normalize-test-command, ' +
   'context-predicates, current-timestamp, detect-custom-files, docs-init, drift-guard, effort, extract-messages, find-phase, ' +
@@ -4335,7 +4335,8 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   '  --cwd <path>       Override working directory for project-root resolution\n' +
   '  --project-dir <path>  Explicit project root; skips the ancestor walk-up entirely (must already contain .planning/)\n' +
   '  --ws <name>        Override active workstream (or set GSD_WORKSTREAM)\n' +
-  '  --json-errors      Emit structured JSON error objects on stderr (or set GSD_JSON_ERRORS=1)\n\n' +
+  '  --json-errors      Emit structured JSON error objects on stderr (or set GSD_JSON_ERRORS=1)\n' +
+  '  --exit-contract=<v>  Exit-code contract version: v1 (default) or v2 (or set GSD_EXIT_CONTRACT)\n\n' +
   'For command-specific argument requirements, invoke the command without args ' +
   '(e.g. `gsd-tools phase add`) — the resulting error lists what is required.';
 
@@ -4458,6 +4459,26 @@ async function main() {
     args.splice(jsonErrorsIdx, 1);
   } else if (process.env.GSD_JSON_ERRORS === '1') {
     setJsonErrorMode(true);
+  }
+
+  // --exit-contract=<v> / GSD_EXIT_CONTRACT: resolve FIRST, before the splice
+  // below, so an invalid value (e.g. `v3`, or an empty `--exit-contract=`)
+  // throws EARLY — matching the --json-errors block's own "detect early,
+  // before any flag parsing that can fire error()" rationale above. This also
+  // memoizes the resolved version into the shared contract-version cell so a
+  // later terminateNow()/runMain() call projects against it correctly.
+  //
+  // The argv splice must happen here too, otherwise the dispatcher below sees
+  // "--exit-contract=<v>" as an unknown command when the flag is given in
+  // LEADING position (argv[0] is what the dispatcher treats as the command
+  // name). Splice EVERY occurrence, not just the first — findExitContractFlag
+  // only consults the first match, so a stray second token would otherwise
+  // survive into the dispatcher and reproduce the same "Unknown command".
+  resolveContractVersion({ argv: process.argv, env: process.env });
+  for (let i = args.length - 1; i >= 0; i--) {
+    if (typeof args[i] === 'string' && args[i].startsWith('--exit-contract=')) {
+      args.splice(i, 1);
+    }
   }
 
   // Optional cwd override for sandboxed subagents running outside project root.
