@@ -37,6 +37,8 @@ import phaseId = require('./phase-id.cjs');
 import frontmatterMod = require('./frontmatter.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import scanPhasePlans = require('./plan-scan.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
+import coreUtilsMod = require('./core-utils.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
 import planningScopeMod = require('./planning-scope.cjs');
 import { execGit } from './shell-command-projection.cjs';
@@ -45,6 +47,7 @@ import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 const { output, error } = io;
 const { extractPhaseToken, scopeToPhase } = phaseId;
 const { extractFrontmatter } = frontmatterMod;
+const { normalizeLineEndings } = coreUtilsMod;
 const { SCOPE } = planningScopeMod;
 type Scope = planningScopeMod.Scope;
 
@@ -650,7 +653,17 @@ function readVerificationStatus(
   const filePath = path.join(phaseDir, verificationFile);
   let rawStatus: string | null = null;
   try {
-    const content = fsImpl.readFileSync(filePath, 'utf-8');
+    // #3707-CR follow-up MINOR 1: normalize line endings at this read
+    // boundary — this function's own `readFileSync` is the equivalent seam
+    // `planning.inspect`'s `buildUatRows`/`readDocument` route through for
+    // UAT/REQUIREMENTS documents, but `readVerificationStatus` had no such
+    // normalization of its own. A lone-CR VERIFICATION.md's `---\r...\r---`
+    // frontmatter fence never matched `extractFrontmatter`'s byte-0
+    // `---\n`/`---\r\n` check, so `status: passed` was read as absent and
+    // this function reported 'missing' — under-reporting a completed
+    // verification as if the step never ran, the fail-safe direction but the
+    // same root cause as the false-clean class fixed elsewhere in #3707-CR.
+    const content = normalizeLineEndings(fsImpl.readFileSync(filePath, 'utf-8'));
     const fm = extractFrontmatter(content, filePath);
     const statusVal = fm['status'];
     // status is always a scalar string in a well-formed VERIFICATION.md frontmatter;

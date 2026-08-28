@@ -1743,11 +1743,11 @@ describe('feat-3594: frontmatter parser preserves Unicode round-trip', () => {
     const content = loadFixture('unicode-keys-and-values.md');
     const fm = extractFrontmatter(content);
     assert.equal(fm.title, '日本語のタイトル');
-    // The parser's key regex is /^(\s*)([a-zA-Z0-9_-]+):.../ so non-ASCII
-    // keys (like `相:`) won't be captured. Pin that current behavior so
-    // a future broadening to allow Unicode keys is visible (and so the
-    // ASCII-only contract is asserted, not silently relied on).
-    assert.equal(fm['相'], undefined, 'parser currently only recognizes ASCII keys (regression guard)');
+    // ADR-3473 §8.1: the vendored js-yaml parser has no ASCII-only key
+    // regex — non-ASCII keys (like `相:`) are recognized like any other
+    // YAML key. Pin the broadened behavior so a future regression back to
+    // ASCII-only keys is visible.
+    assert.equal(fm['相'], '04', 'parser must recognize non-ASCII keys (js-yaml has no ASCII-only key regex)');
     // The status field has an emoji — must survive.
     assert.equal(fm.status, '🚧 in-flight');
     // Inline array with Greek letters.
@@ -2771,5 +2771,162 @@ describe('extractFrontmatter BOM tolerance (#2977)', () => {
     assert.strictEqual(actual.phase, '01');
   });
 });
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Post-#3881-review findings 3 and 4 (ADR-3473 §8.1) — prototype-chain-safe
+// bracket reads/writes, and byte-vs-equivalence stability of the escaper.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe, test } = require('node:test');
+  const assert = require('node:assert/strict');
+  const { extractFrontmatter, reconstructFrontmatter, escapeDoubleQuotedScalar } = require('../gsd-core/bin/lib/frontmatter.cjs');
+
+  describe('#3881 review finding 3: prototype-chain keys never crash extract/reconstruct', () => {
+    const hostileKeys = ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty'];
+
+    for (const key of hostileKeys) {
+      test(`a column-0-commented key named "${key}" round-trips without throwing`, () => {
+        const yaml = `---\n# comment for ${key}\n${key}: val-${key}\nz: control\n---\n`;
+        let fm;
+        assert.doesNotThrow(() => { fm = extractFrontmatter(yaml); }, `extractFrontmatter must not throw on key "${key}"`);
+        assert.strictEqual(fm[key], `val-${key}`, `key "${key}" must parse as its own value, not an inherited Object.prototype member`);
+        assert.strictEqual(fm.z, 'control');
+
+        let reconstructed;
+        assert.doesNotThrow(() => { reconstructed = reconstructFrontmatter(fm); }, `reconstructFrontmatter must not throw on key "${key}"`);
+        assert.ok(reconstructed.includes(`# comment for ${key}`), `comment above "${key}" must survive reconstruct`);
+        assert.ok(reconstructed.includes(`${key}: val-${key}`), `key "${key}" must survive reconstruct`);
+
+        const roundtrip = extractFrontmatter(`---\n${reconstructed}\n---\n`);
+        assert.strictEqual(roundtrip[key], `val-${key}`, `key "${key}" must survive a full round-trip`);
+      });
+    }
+
+    test('all five hostile keys together in one document, each with its own comment', () => {
+      let yaml = '---\n';
+      for (const k of hostileKeys) yaml += `# leading comment for ${k}\n${k}: v-${k}\n`;
+      yaml += '---\n';
+      const fm = extractFrontmatter(yaml);
+      for (const k of hostileKeys) assert.strictEqual(fm[k], `v-${k}`);
+      const reconstructed = reconstructFrontmatter(fm);
+      const roundtrip = extractFrontmatter(`---\n${reconstructed}\n---\n`);
+      for (const k of hostileKeys) {
+        assert.ok(reconstructed.includes(`# leading comment for ${k}`), `comment for ${k} lost`);
+        assert.strictEqual(roundtrip[k], `v-${k}`, `${k} lost on round-trip`);
+      }
+    });
+  });
+
+  describe('#3881 review finding 4: escapeDoubleQuotedScalar pins named-escape output, and equivalence-preserving round-trip', () => {
+    // Exact escaped-form pins: js-yaml's dump emits the YAML-named escape for each of these,
+    // not the old hand-rolled chain's hex/raw-literal form. Pinning both the exact escape AND
+    // the round-trip proves the new form is not merely "different" but semantically correct.
+    const cases = [
+      { label: 'BEL', ch: '\x07', escaped: '\\a' },
+      { label: 'NUL', ch: '\x00', escaped: '\\0' },
+      { label: 'NEL', ch: '\x85', escaped: '\\N' },
+      { label: 'NBSP', ch: ' ', escaped: '\\_' },
+      { label: 'LINE SEPARATOR', ch: ' ', escaped: '\\L' },
+      { label: 'PARAGRAPH SEPARATOR', ch: ' ', escaped: '\\P' },
+      { label: 'BOM', ch: '﻿', escaped: '\\uFEFF' },
+      { label: 'lone high surrogate', ch: '\uD800', escaped: '\\uD800' },
+    ];
+
+    for (const { label, ch, escaped } of cases) {
+      test(`${label} (U+${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}) escapes to the exact pinned form and round-trips`, () => {
+        assert.strictEqual(escapeDoubleQuotedScalar(ch), escaped, `${label} must escape to ${JSON.stringify(escaped)}`);
+
+        const reconstructed = reconstructFrontmatter({ weird: ch });
+        let roundtrip;
+        assert.doesNotThrow(() => { roundtrip = extractFrontmatter(`---\n${reconstructed}\n---\n`); },
+          `${label} must produce re-parseable YAML, not silently collapse to unparseable`);
+        assert.strictEqual(roundtrip.weird, ch, `${label} must round-trip to the exact same codepoint`);
+      });
+    }
+  });
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Post-#3881-review finding 6: relocated from a standalone
+// tests/feat-3594-parser-adversarial-frontmatter.test.cjs, created earlier on this branch
+// under the false premise that no test owned the adversarial fixture corpus (it was already
+// folded here by consolidation epic #1969, describe block 'folded:feat-3594-parser-
+// adversarial-frontmatter' above). Folded rather than left standalone, per that epic's
+// precedent — the genuinely NEW coverage this file added (fixture-ownership check, the
+// anchor-alias-bomb fixtures, and the B1/B2 block-scalar rows) is preserved below; its
+// duplicate-of-already-folded assertions (duplicate-keys/crlf/unclosed/null-byte/huge-bounded/
+// unicode) are not re-added a third time.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { test, describe: __foldDescribe2 } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { extractFrontmatter, FRONTMATTER_UNPARSEABLE } = require('../gsd-core/bin/lib/frontmatter.cjs');
+
+  const FIXTURE_DIR2 = path.join(__dirname, 'fixtures', 'adversarial', 'frontmatter');
+  function readFixture2(name) {
+    return fs.readFileSync(path.join(FIXTURE_DIR2, name), 'utf8');
+  }
+
+  __foldDescribe2('folded:feat-3594-fixture-ownership-and-block-scalar (relocated, #3881 review finding 6)', () => {
+    // Table-driven ownership: every fixture file present on disk (excluding README.md, which
+    // is documentation, not a fixture) must be exercised by at least one test in this file's
+    // adversarial-frontmatter describe blocks (this one, or the earlier folded one above).
+    // OWNED_ELSEWHERE lists fixtures the earlier fold already covers so this check does not
+    // demand a third copy of the same assertions.
+    const OWNED_ELSEWHERE = new Set([
+      'duplicate-keys.md',
+      'crlf-mixed.md',
+      'unclosed-block.md',
+      'unicode-keys-and-values.md',
+      'null-byte-value.md',
+      'huge-bounded.md',
+    ]);
+
+    test('every fixture on disk not already owned by the earlier fold has a matrix entry here', () => {
+      const onDisk = fs
+        .readdirSync(FIXTURE_DIR2)
+        .filter((name) => name.endsWith('.md') && name !== 'README.md')
+        .sort();
+      const registeredHere = ['anchor-alias-bomb.md', 'anchor-alias-bomb-quoted.md'];
+      const unowned = onDisk.filter((name) => !OWNED_ELSEWHERE.has(name) && !registeredHere.includes(name));
+      assert.deepEqual(unowned, [], `fixture(s) present on disk with no owning test anywhere: ${unowned.join(', ')}`);
+    });
+
+    test('anchor-alias-bomb.md: refused rather than expanded (ADR-3473 §8.1 consequence 6, row A8)', () => {
+      const parsed = extractFrontmatter(readFixture2('anchor-alias-bomb.md'), 'anchor-alias-bomb.md');
+      assert.equal(Object.keys(parsed).length, 0);
+      assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+      assert.ok(Buffer.byteLength(JSON.stringify(parsed), 'utf8') < 1024);
+    });
+
+    test('anchor-alias-bomb-quoted.md: refused identically, even quoted-key-spelled (#3881 review, finding 1)', () => {
+      const parsed = extractFrontmatter(readFixture2('anchor-alias-bomb-quoted.md'), 'anchor-alias-bomb-quoted.md');
+      assert.equal(Object.keys(parsed).length, 0);
+      assert.equal(parsed[FRONTMATTER_UNPARSEABLE], true);
+      assert.ok(Buffer.byteLength(JSON.stringify(parsed), 'utf8') < 1024);
+    });
+
+    const ADD_TESTS_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'add-tests.md');
+
+    test('B1 blockScalarValueIsNotTheBlockIndicator: argument-instructions is the instruction text, not "|"', () => {
+      const content = fs.readFileSync(ADD_TESTS_PATH, 'utf8');
+      const parsed = extractFrontmatter(content, ADD_TESTS_PATH);
+      const value = parsed['argument-instructions'];
+      assert.equal(typeof value, 'string');
+      assert.notEqual(value, '|');
+      assert.ok(value.length > 1, 'block scalar value must be the multi-line instruction body');
+      assert.ok(value.includes('Parse the argument as a phase number'), 'block scalar value must retain the source instruction text');
+    });
+
+    test('B2 blockScalarDoesNotInventATopLevelKey: parsing add-tests.md produces no phantom "Example" key', () => {
+      const content = fs.readFileSync(ADD_TESTS_PATH, 'utf8');
+      const parsed = extractFrontmatter(content, ADD_TESTS_PATH);
+      assert.ok(!Object.prototype.hasOwnProperty.call(parsed, 'Example'), 'parser must not scrape a top-level "Example" key out of the block scalar body');
+    });
   });
 }

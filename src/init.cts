@@ -81,10 +81,10 @@ const {
 import verifyCommandGrounding = require('./verify-command-grounding.cjs');
 const { harvestPriorVerifyCommands } = verifyCommandGrounding;
 
-const { output, error, ERROR_REASON } = io;
+const { output, error, ERROR_REASON, formatDiagnosticToken } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
-const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocator;
+const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
 const {
   getRoadmapPhaseInternal,
   getMilestoneInfo,
@@ -174,9 +174,12 @@ function guardedGetRoadmapPhase(
 // directory exists yet) identically at every synthetic-fallback call site
 // below — factored out once so the slugification formula itself cannot drift.
 function slugifyPhaseName(phaseName: string | null): string | null {
-  return phaseName
-    ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-    : null;
+  // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+  // (generateSlugInternal, core-utils.cts) rather than re-implementing it.
+  // `maxLen: null` preserves this site's pre-migration untruncated contract —
+  // the 60-char default would collapse two distinct >60-char phase names onto
+  // the same reported phase_slug.
+  return phaseName ? coreUtils.generateSlugInternal(phaseName, null) : null;
 }
 
 /**
@@ -1211,8 +1214,21 @@ function cmdInitPlanPhase(
       if (patternsFile) {
         result['patterns_path'] = toPosixPath(path.join(phaseDirFull, patternsFile));
       }
-    } catch {
-      /* intentionally empty */
+    } catch (err) {
+      // #3885 (ADR-3473 §8.5): this branch means `phaseInfo['directory']` was
+      // set (the phase was already resolved to an on-disk directory) yet
+      // `readdirSync` still failed — ENOENT here would be a genuine race
+      // (the directory vanished between resolution and this read) and stays
+      // a silent degrade like the prior behavior; any other errno
+      // (EACCES/EIO/...) is an unreadable-not-absent directory and must be
+      // named, or every conditional field this block sets (context_path,
+      // research_path, verification_path, uat_path, reviews_path,
+      // patterns_path) silently reads as "none of these exist".
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT') {
+        result['context_read_error'] =
+          `Could not read phase directory ${formatDiagnosticToken(phaseDirFull)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`;
+      }
     }
   }
 
@@ -1931,9 +1947,11 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
         directory: null,
         phase_number: roadmapPhase['phase_number'],
         phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
+        // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing
+        // it. `maxLen: null` preserves this site's pre-migration untruncated
+        // contract.
+        phase_slug: phaseName ? coreUtils.generateSlugInternal(phaseName, null) : null,
         plans: [],
         summaries: [],
         incomplete_plans: [],
@@ -1953,9 +1971,11 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
         directory: null,
         phase_number: roadmapPhase['phase_number'],
         phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
+        // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing
+        // it. `maxLen: null` preserves this site's pre-migration untruncated
+        // contract.
+        phase_slug: phaseName ? coreUtils.generateSlugInternal(phaseName, null) : null,
         plans: [],
         summaries: [],
         incomplete_plans: [],
@@ -2084,8 +2104,18 @@ function cmdInitPhaseOp(cwd: string, phase: string, raw: boolean): void {
       if (reviewsFile) {
         result['reviews_path'] = toPosixPath(path.join(phaseDirFull, reviewsFile));
       }
-    } catch {
-      /* intentionally empty */
+    } catch (err) {
+      // #3885 (ADR-3473 §8.5): see the parallel site in cmdInitPlanPhase —
+      // ENOENT here is a genuine race (directory vanished after resolution)
+      // and stays a silent degrade; any other errno (EACCES/EIO/...) means
+      // the directory exists but could not be read, and must be named rather
+      // than silently reported the same as "none of context_path/
+      // research_path/verification_path/uat_path/reviews_path exist".
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT') {
+        result['context_read_error'] =
+          `Could not read phase directory ${formatDiagnosticToken(phaseDirFull)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`;
+      }
     }
   }
 
@@ -2184,17 +2214,22 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
     const m = tok.match(/^(\d+)([A-Z]?(?:\.\d+)*)$/);
     return m ? String(parseInt(m[1], 10)) + m[2] : tok;
   };
+  // #3882 (ADR-3473 §8.2): this used to hand-roll a readdirSync over the
+  // phases directory (a heading->directory LOOKUP INDEX, same role as
+  // cmdRoadmapAnalyze's `_phaseDirNames` — `roadmapPhaseNumbers` above is
+  // already scoped/sentinel-excluded, so this map must see the PHYSICAL set
+  // to resolve each heading's phase number to its actual directory name;
+  // scoping it again would look up inside an already-scoped set for no
+  // benefit). Routed through the named "physical set, sentinels included"
+  // axis instead: every `num` looked up below came from `roadmapPhaseNumbers`
+  // (sentinels already excluded there), so a sentinel entry surviving in
+  // this map is never read — inclusion is output-invariant, this only
+  // removes the re-derivation.
   const diskPhaseDirs = new Map<string, string>();
-  try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      const m = stripProjectCodePrefix(e.name).match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`));
-      if (!m) continue;
-      diskPhaseDirs.set(canonicalizePhase(m[1]), e.name);
-    }
-  } catch {
-    /* intentionally empty */
+  for (const name of listAllPhaseDirs(phasesDir, { includeSentinels: true }).value) {
+    const m = stripProjectCodePrefix(name).match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`));
+    if (!m) continue;
+    diskPhaseDirs.set(canonicalizePhase(m[1]), name);
   }
 
   if (roadmapPhaseNumbers.length > 0) {
@@ -3106,7 +3141,11 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
       const status = 'not_started';
       const phaseInfo: Record<string, unknown> = {
         number: num,
-        name: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+        // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+        // (generateSlugInternal, core-utils.cts) rather than re-implementing
+        // it. `maxLen: null` preserves this site's pre-migration untruncated
+        // contract.
+        name: coreUtils.generateSlugInternal(name, null) ?? '',
         directory: null,
         status,
         plan_count: 0,

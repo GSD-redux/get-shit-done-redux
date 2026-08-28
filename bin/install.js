@@ -411,7 +411,7 @@ const GSD_CHANGESET_FILES = [
   'github-release-notes.cjs', 'lint.cjs', 'new.cjs',
   'README.md', // documentation only — not user-authored
 ];
-const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs', 'drift-scan.cjs', 'alias-drift-families.cjs'];
+const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs', 'drift-scan.cjs', 'alias-drift-families.cjs', 'exit-code-registry.cjs'];
 
 /**
  * Resolve a runtime's shared-hooks directory name from its descriptor.
@@ -678,6 +678,21 @@ function _kindDestDir(layout, kindName, targetDir) {
   const kind = layout.kinds.find((k) => k.kind === kindName);
   if (!kind) return null;
   return path.join(kind.home || targetDir, kind.destSubpath);
+}
+
+/**
+ * #3738: scope-aware, layout-resolving wrapper over _kindDestDir for callers
+ * that have (runtime, configDir, scope) rather than a resolved Layout — the
+ * writeManifest agents surface being the first. Never throws: a runtime whose
+ * layout cannot be resolved (unknown id, descriptor error) keeps the caller's
+ * own fallback rather than losing the manifest.
+ */
+function _kindDestDirSafe(runtime, configDir, scope, kindName) {
+  try {
+    return _kindDestDir(resolveRuntimeArtifactLayout(runtime, configDir, scope), kindName, configDir);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2331,7 +2346,8 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
 /**
  * Apply Antigravity-specific content conversion — path replacement + command name conversion.
  * Path mappings depend on install mode:
- *   Global: ~/.claude/ → ~/.gemini/antigravity/, ./.claude/ → ./.agents/
+ *   Global: ~/.claude/skills/ → ~/.gemini/config/skills/ (#3738),
+ *          ~/.claude/ → ~/.gemini/antigravity/, ./.claude/ → ./.agents/
  *   Local:  ~/.claude/ → .agents/, ./.claude/ → ./.agents/
  * Applied to ALL Antigravity content (skills, agents, engine files).
  * @param {string} content - Source content to convert
@@ -2340,6 +2356,19 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
 function convertClaudeToAntigravityContent(content, isGlobal = false) {
   let c = content;
   if (isGlobal) {
+    // #3738: global skills install under ~/.gemini/config/skills (the dir AGY
+    // scans for global discovery), so skills-path references must divert there
+    // — BEFORE the configHome rewrite below, which is correct for gsd-core
+    // runtime-file references (settings, workflows, VERSION) but wrong for the
+    // skills dir itself. Mirrors src/runtime-artifact-conversion.cts (ADR-1508
+    // keeps bin/install.js hand-authored; the two copies must stay in sync).
+    c = c.replace(/\$HOME\/\.claude\/skills\//g, '$HOME/.gemini/config/skills/');
+    c = c.replace(/~\/\.claude\/skills\//g, '~/.gemini/config/skills/');
+    // Bare skills form (no trailing slash) — must also precede the generic
+    // slash rule, which would otherwise divert it to the retired configHome
+    // path ($HOME/.gemini/antigravity/skills).
+    c = c.replace(/\$HOME\/\.claude\/skills\b/g, '$HOME/.gemini/config/skills');
+    c = c.replace(/~\/\.claude\/skills\b/g, '~/.gemini/config/skills');
     c = c.replace(/\$HOME\/\.claude\//g, '$HOME/.gemini/antigravity/');
     c = c.replace(/~\/\.claude\//g, '~/.gemini/antigravity/');
     // Bare form (no trailing slash) — must come after slash form to avoid double-replace
@@ -9636,7 +9665,14 @@ function writeManifest(configDir, runtime = DEFAULT_RUNTIME, options = {}) {
   const resolvedScope = options.scope === 'local' ? 'local' : 'global';
   const codexSkillsDir = _resolveSkillsRootDir(runtime, configDir, resolvedScope);
   const codexSkillsManifestPrefix = _hostBehaviors(runtime).skillsManifestPrefix || 'skills/';
-  const agentsDir = path.join(configDir, 'agents');
+  // #3738: resolve the ACTUAL agents-install dir honoring an agents-kind `home`
+  // override (antigravity global → $HOME/.gemini/config/agents), mirroring
+  // _resolveSkillsRootDir for skills. Hardcoding configDir/agents left the
+  // manifest blind to the whole agents surface the moment the override landed —
+  // no drift detection, no patch backup. Falls back to <configDir>/agents.
+  const agentsDir = _kindDestDirSafe(runtime, configDir, resolvedScope, 'agents')
+    || _kindDestDirSafe(runtime, configDir, resolvedScope, 'kimi-agents')
+    || path.join(configDir, 'agents');
   const manifest = {
     // Schema version of this DOCUMENT (#2872) — distinct from `version`
     // below, which is the GSD package version. Absent ⇒ a pre-#2872 (v1)

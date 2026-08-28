@@ -11,6 +11,7 @@ const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter } = 
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 /**
  * #3188: write the canonical flat planning docs so an init-query "present" test
@@ -3246,6 +3247,130 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3885 (ADR-3473 §8.5) / item 5 — cmdInitPlanPhase / cmdInitPhaseOp swallow an
+// unreadable phase directory into "none of the conditional fields resolved",
+// indistinguishable from a phase directory that genuinely has no
+// CONTEXT.md/RESEARCH.md/VERIFICATION.md/UAT.md/REVIEWS.md/PATTERNS.md.
+//
+// Mechanism (src/init.cts, both cmdInitPlanPhase and cmdInitPhaseOp):
+//   try { const files = fs.readdirSync(phaseDirFull); ... }
+//   catch { /* intentionally empty */ }
+// guarded by `if (phaseInfo?.['directory'])` — the directory was already
+// resolved to exist on disk, so a caught error here is never a genuine
+// "phase has no directory yet" absence.
+//
+// Both commands gain `context_read_error` on their result: absent (key
+// omitted, matching prior shape) when readdirSync succeeds or fails with
+// ENOENT (a genuine race — the directory vanished after resolution, and
+// stays a silent degrade like the prior behavior); a message naming the
+// phase directory on any other errno (EACCES/EIO/...).
+//
+// Neither command returns its result object (`output(result, raw)` writes
+// via `fs.writeSync(1, ...)` — see the cmdInitVerifyWork capture helper
+// above for why `process.stdout.write` cannot see it), and both are
+// exercised through the real CLI dispatcher elsewhere in this file via
+// `runGsdTools`, a real subprocess a parent-process fs monkeypatch cannot
+// reach — so these drive the exported functions directly, in-process,
+// mirroring the cmdInitVerifyWork capture pattern immediately above.
+// Injected via `t.mock.method(fs, 'readdirSync', ...)` (auto-restored) —
+// NEVER chmod 0o000, which root bypasses with zero coverage.
+describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absent phase directories', () => {
+  const initMod = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'init.cjs'));
+  let projectDir;
+
+  beforeEach(() => {
+    projectDir = createFixture();
+    seedPhase(projectDir, '03-api', {
+      '03-01-PLAN.md': '# Plan',
+    });
+    writePlanningDocs(projectDir);
+  });
+
+  afterEach(() => {
+    cleanup(projectDir);
+  });
+
+  function captureFd1(t, run) {
+    const chunks = [];
+    const origWriteSync = fs.writeSync.bind(fs);
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+      if (fd !== 1) return origWriteSync(fd, data, offset, length);
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      chunks.push(chunk);
+      return Buffer.byteLength(chunk, 'utf8');
+    });
+    run();
+    const captured = chunks.join('');
+    assert.ok(captured.length > 0, 'command produced no stdout output');
+    return JSON.parse(captured);
+  }
+
+  function injectReaddirFailure(t, targetPath, code) {
+    const resolved = path.resolve(targetPath);
+    const origReaddirSync = fs.readdirSync.bind(fs);
+    t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+      if (path.resolve(String(p)) === resolved) {
+        const err = new Error(`${code}: simulated failure, scandir '${p}'`);
+        err.code = code;
+        throw err;
+      }
+      return origReaddirSync(p, ...rest);
+    });
+  }
+
+  const phaseDirAbs = () => path.join(projectDir, '.planning', 'phases', '03-api');
+
+  describe('cmdInitPlanPhase', () => {
+    test('readablePhaseDirReportsNoReadError (MUST STAY GREEN)', (t) => {
+      const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
+      assert.strictEqual(output.context_read_error ?? null, null);
+    });
+
+    test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
+      injectReaddirFailure(t, phaseDirAbs(), 'EACCES');
+      const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
+      assert.strictEqual(typeof output.context_read_error, 'string',
+        `an unreadable phase directory must be reported, not silently absent; got: ${JSON.stringify(output.context_read_error)}`);
+      assert.ok(output.context_read_error.includes('03-api'),
+        `the reported error must name the discarded input (the phase directory); got: ${output.context_read_error}`);
+    });
+
+    test('raceConditionEnoentStaysAGenuineSilentDegrade (MUST STAY GREEN)', (t) => {
+      injectReaddirFailure(t, phaseDirAbs(), 'ENOENT');
+      const output = captureFd1(t, () => initMod.cmdInitPlanPhase(projectDir, '03', false));
+      assert.strictEqual(output.context_read_error ?? null, null,
+        `ENOENT must stay a silent degrade (genuine race), not reported as an error; got: ${output.context_read_error}`);
+    });
+  });
+
+  describe('cmdInitPhaseOp', () => {
+    test('readablePhaseDirReportsNoReadError (MUST STAY GREEN)', (t) => {
+      const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
+      assert.strictEqual(output.context_read_error ?? null, null);
+    });
+
+    test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
+      injectReaddirFailure(t, phaseDirAbs(), 'EACCES');
+      const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
+      assert.strictEqual(typeof output.context_read_error, 'string',
+        `an unreadable phase directory must be reported, not silently absent; got: ${JSON.stringify(output.context_read_error)}`);
+      assert.ok(output.context_read_error.includes('03-api'),
+        `the reported error must name the discarded input (the phase directory); got: ${output.context_read_error}`);
+    });
+
+    test('raceConditionEnoentStaysAGenuineSilentDegrade (MUST STAY GREEN)', (t) => {
+      injectReaddirFailure(t, phaseDirAbs(), 'ENOENT');
+      const output = captureFd1(t, () => initMod.cmdInitPhaseOp(projectDir, '03', false));
+      assert.strictEqual(output.context_read_error ?? null, null,
+        `ENOENT must stay a silent degrade (genuine race), not reported as an error; got: ${output.context_read_error}`);
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // roadmap analyze command
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3648,31 +3773,61 @@ describe('init section manifest', () => {
     });
 
     test('handlesMalformedWaveAssignments', (t) => {
-      // Documented handling (decision made during this dispatch): parseNamedArgs's
-      // booleanFlags check is an EXACT token match against the literal "--wave" —
-      // "--wave=" and "--wave==1" are different literal tokens, so neither activates
-      // the flag. No crash either way; this is the same exact-match discipline that
-      // keeps "--waves"/"--wave-filter" from false-activating (row 52).
+      // Corrected after the first full verification run: neither --wave= nor
+      // --wave==1 is a documented or shipped token (commands/gsd/execute-phase.md,
+      // gsd-core/workflows/execute-phase.md, and the docs tree all only ever
+      // emit the space-separated --wave N form) — each is an exact, distinct,
+      // undeclared flag token, so ADR-3473 §8.4 mandates rejecting it outright
+      // rather than silently letting it fall through unrecognized. Exit 1, and
+      // — same exact-match discipline that keeps "--waves"/"--wave-filter"
+      // from false-activating (row 52) — the rejection must name the
+      // malformed token itself, proving it was never coerced into activating
+      // --wave.
       const dir = seedSinglePhaseProject(t, 'gsd-e50-');
       for (const token of ['--wave=', '--wave==1']) {
-        const body = parseOkJson(runExecutePhase(['1', token], dir), `malformed-wave:${token}`);
-        assert.ok(!body.section_manifest.included.includes('partial-wave'), `"${token}" must not activate --wave`);
+        const result = runExecutePhase(['1', token], dir);
+        assert.equal(result.status, 1, `malformed-wave:${token}: expected exit 1, got ${result.status}`);
+        const err = JSON.parse(result.stderr);
+        assert.match(err.message, new RegExp(escapeRegex(token)), `"${token}" must be named as the unknown flag, proving it did not activate --wave`);
       }
     });
 
     test('doesNotConsumeFollowingFlagAsWaveValue', (t) => {
+      // Unit-level: --wave is an optionalValueFlags entry (#2932's `--wave N`
+      // shape) — its cursor never swallows a following flag-shaped token as
+      // its value; it advances by 1, not 2, leaving --weird for its own
+      // validation. Assert the extraction directly rather than through the
+      // full CLI, since --weird's own (correct) rejection below makes the
+      // manifest body unreachable.
+      const { parseNamedArgs } = require('../gsd-core/bin/lib/command-arg-projection.cjs');
+      const extracted = parseNamedArgs(['--wave', '--weird'], { optionalValueFlags: ['wave'], positionals: 'rest' });
+      assert.strictEqual(extracted.ok, true);
+      assert.strictEqual(extracted.data.wave, true, '--wave must resolve to present (true), not be starved by the following token');
+
+      // Integration: --weird is a genuinely undeclared flag on execute-phase,
+      // so ADR-3473 §8.4 mandates rejecting it — exit 1, not the old exit-0
+      // "ignored" shape. The rejection naming "--weird" (not "--wave") is
+      // itself proof --wave did not consume it as a value.
       const dir = seedSinglePhaseProject(t, 'gsd-e51-');
-      const body = parseOkJson(runExecutePhase(['1', '--wave', '--weird'], dir), 'wave-then-weird');
-      // Boolean-flag semantics: --wave never reads a following token as its value,
-      // so an adjacent flag-shaped token is simply ignored, not eaten or mis-parsed.
-      assert.deepStrictEqual(body.section_manifest.included, ['partial-wave']);
+      const result = runExecutePhase(['1', '--wave', '--weird'], dir);
+      assert.equal(result.status, 1, `wave-then-weird: expected exit 1, got ${result.status}`);
+      const err = JSON.parse(result.stderr);
+      assert.match(err.message, /--weird/, 'the unknown-flag rejection must name --weird, proving --wave did not consume it as its value');
     });
 
     test('nearMissFlagNamesDoNotActivateWave', (t) => {
+      // Corrected after the first full verification run: neither "--waves"
+      // nor "--wave-filter" is documented or shipped for execute-phase, so
+      // each is a genuinely undeclared flag — ADR-3473 §8.4 mandates
+      // rejecting it (exit 1), not silently ignoring it. The rejection
+      // naming the near-miss token itself is what proves it never
+      // false-activated --wave.
       const dir = seedSinglePhaseProject(t, 'gsd-e52-');
       for (const flag of ['--waves', '--wave-filter']) {
-        const body = parseOkJson(runExecutePhase(['1', flag], dir), `near-miss:${flag}`);
-        assert.ok(!body.section_manifest.included.includes('partial-wave'), `"${flag}" must not activate --wave`);
+        const result = runExecutePhase(['1', flag], dir);
+        assert.equal(result.status, 1, `near-miss:${flag}: expected exit 1, got ${result.status}`);
+        const err = JSON.parse(result.stderr);
+        assert.match(err.message, new RegExp(escapeRegex(flag)), `"${flag}" must be named as the unknown flag, proving it did not activate --wave`);
       }
     });
   });

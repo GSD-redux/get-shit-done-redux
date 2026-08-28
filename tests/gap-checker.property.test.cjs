@@ -815,3 +815,91 @@ describe('#3189 — normalizePhaseReqIds drops non-ID prose after range expansio
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3885 (ADR-3473 §8.5) / item 5 — runGapAnalysis's phase-directory readdirSync
+// swallows an unreadable directory into the same `[]` a genuinely absent one
+// produces (src/gap-checker.cts, runGapAnalysis):
+//   try { if (fs.existsSync(absPhaseDir)) phaseDirFiles = fs.readdirSync(absPhaseDir); }
+//   catch { /* unreadable */ }
+// The existsSync guard means a caught error here is NEVER ENOENT-shaped
+// absence — the directory exists, so any readdirSync failure (EACCES, EIO,
+// ...) must be named, not folded into the same result a phase with a
+// genuinely context-less/plan-less directory produces.
+//
+// `runGapAnalysis` gains `phase_dir_read_error: string | null` — null on a
+// successful read (this is the ONLY branch reachable, since an ABSENT
+// directory never reaches readdirSync at all, per the existsSync guard), and
+// a message naming the phase directory on any other readdirSync failure.
+// `runGapAnalysis` is exported directly (see decisions.test.cjs's identical
+// direct-call style for the same function), so these drive it in-process.
+// Injected via monkeypatching `fs.readdirSync` (t.mock.method, auto-restored
+// per test) — NEVER chmod 0o000, which root bypasses with zero coverage.
+describe('#3885 (ADR-3473 §8.5): runGapAnalysis distinguishes unreadable from absent (gap-checker.cts caller)', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const { createTempProject, cleanup } = require('./helpers.cjs');
+  const { runGapAnalysis } = require('../gsd-core/bin/lib/gap-checker.cjs');
+
+  let tmpDir;
+  let phaseDir;
+
+  function setup() {
+    tmpDir = createTempProject();
+    phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '# Plan\nSome plan text.\n');
+  }
+
+  function injectReaddirFailure(t, targetPath, code) {
+    const resolved = path.resolve(targetPath);
+    const origReaddirSync = fs.readdirSync.bind(fs);
+    t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+      if (path.resolve(String(p)) === resolved) {
+        const err = new Error(`${code}: simulated failure, scandir '${p}'`);
+        err.code = code;
+        throw err;
+      }
+      return origReaddirSync(p, ...rest);
+    });
+  }
+
+  test('readablePhaseDirWithoutContextReportsNoReadError (MUST STAY GREEN)', () => {
+    setup();
+    try {
+      const result = runGapAnalysis(tmpDir, phaseDir);
+      assert.strictEqual(result.phase_dir_read_error ?? null, null,
+        'a readable phase directory must report no read error');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('unreadablePhaseDirIsNotReportedAsAbsent', (t) => {
+    setup();
+    try {
+      injectReaddirFailure(t, phaseDir, 'EACCES');
+      const result = runGapAnalysis(tmpDir, phaseDir);
+      assert.strictEqual(typeof result.phase_dir_read_error, 'string',
+        `an unreadable phase directory must be reported as an error, not silently absent; got: ${JSON.stringify(result.phase_dir_read_error)}`);
+      assert.ok(result.phase_dir_read_error.includes('03-api'),
+        `the reported error must name the discarded input (the phase directory); got: ${result.phase_dir_read_error}`);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('missingPhaseDirStaysAbsentNotAnError (MUST STAY GREEN)', () => {
+    tmpDir = createTempProject();
+    const missingPhaseDir = path.join(tmpDir, '.planning', 'phases', '09-nonexistent');
+    try {
+      // Genuinely absent — never created — so `fs.existsSync` short-circuits
+      // before readdirSync is ever attempted; no patch needed.
+      const result = runGapAnalysis(tmpDir, missingPhaseDir);
+      assert.strictEqual(result.phase_dir_read_error ?? null, null,
+        `a genuinely absent phase directory must not be reported as a read error; got: ${result.phase_dir_read_error}`);
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+});
+

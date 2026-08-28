@@ -22,7 +22,7 @@ import markdownTable = require('./markdown-table.cjs');
 const { splitTableRow, isDelimiterRow } = markdownTable;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtils = require('./core-utils.cjs');
-const { toPosixPath } = coreUtils;
+const { toPosixPath, normalizeLineEndings } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
@@ -114,6 +114,25 @@ function selectPhaseUatFiles(files: string[], phaseDirName: string): string[] {
   return scopeToPhase(files.filter((f) => f.includes('-UAT') && f.endsWith('.md')), phaseDirName);
 }
 
+/**
+ * The ONE read boundary for every document `cmdAuditUat` scans off disk
+ * (#3707-CR follow-up MAJOR). Wraps `fs.readFileSync` +
+ * `normalizeLineEndings` in a single seam so a lone-CR-separated
+ * `*-UAT.md`, `*-VERIFICATION.md`, or `deferred-items.md` is normalized BY
+ * CONSTRUCTION before it reaches ANY downstream parser — current
+ * (`parseUatItemsWithStats`, `parseVerificationItems`, `parseDeferredItems`)
+ * or future. Fixing this per-parser was the original (#3707-CR) MEDIUM fix's
+ * mistake: two of the four ingresses in this function were normalized by
+ * editing their own parsers directly, and the other two (VERIFICATION,
+ * deferred-items.md) were missed precisely because nothing forced a new call
+ * site to remember the step. Routing every read through this function
+ * removes that failure mode: a parser added later needs no line-ending logic
+ * of its own, because the text it receives is already normalized.
+ */
+function readNormalizedDocument(filePath: string): string {
+  return normalizeLineEndings(fs.readFileSync(filePath, 'utf-8'));
+}
+
 function cmdAuditUat(cwd: string, raw: boolean): void {
   const phasesDir = path.join(planningDir(cwd), 'phases');
   const hasActivePhases = fs.existsSync(phasesDir);
@@ -174,7 +193,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // the reason scopeToPhase has no unfiltered fallback.
     for (const file of selectPhaseUatFiles(files, dir)) {
       const uatFilePath = path.join(phaseDir, file);
-      const content = fs.readFileSync(uatFilePath, 'utf-8');
+      const content = readNormalizedDocument(uatFilePath);
       const { items, headingsSeen } = parseUatItemsWithStats(content);
       const status = (extractFrontmatter(content, uatFilePath).status as string || 'unknown');
       // `parse_gap` means the file contained `### N.` test blocks that
@@ -235,7 +254,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // for the same reason as the UAT loop above.
     for (const file of scopeToPhase(files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md')), dir)) {
       const verificationFilePath = path.join(phaseDir, file);
-      const content = fs.readFileSync(verificationFilePath, 'utf-8');
+      const content = readNormalizedDocument(verificationFilePath);
       const status = extractFrontmatter(content, verificationFilePath).status as string || 'unknown';
       if (status === 'human_needed' || status === 'gaps_found') {
         const items = parseVerificationItems(content, status, verificationFilePath);
@@ -263,7 +282,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     // required.
     const deferredFile = 'deferred-items.md';
     if (files.includes(deferredFile)) {
-      const content = fs.readFileSync(path.join(phaseDir, deferredFile), 'utf-8');
+      const content = readNormalizedDocument(path.join(phaseDir, deferredFile));
       const items = parseDeferredItems(content);
       if (items.length > 0) {
         results.push({
@@ -364,6 +383,13 @@ function cmdRenderCheckpoint(cwd: string, options: { file?: string } = {}, raw: 
 // ─── parseCurrentTest ─────────────────────────────────────────────────────────
 
 function parseCurrentTest(content: string): CurrentTest {
+  // #3707-CR: this is the render-checkpoint path's own independent ingress
+  // into `tokenizeHeadings` (via the `parseFirstPendingTest` fallback below),
+  // separate from `parseUatItemsWithStats`'s. Normalize here too, ONCE, so a
+  // lone-CR document cannot hide its first pending row from this path either
+  // — see `normalizeLineEndings` for why.
+  content = normalizeLineEndings(content);
+
   // Use the seam to locate the ## Current Test section (ADR-1372 T5).
   // HTML-comment stripping within the section body is UAT-specific, so we keep
   // the comment removal caller-side after extracting the body.
@@ -1220,10 +1246,21 @@ function countUnattributedIndentedRows(surface: string): number {
  * Reported separately so a consumer that must decide whether to WITHHOLD a
  * derived number — as opposed to merely REPORT the gap — can tell "a row I
  * definitely could not read" from "a row I possibly mis-counted".
- * `src/planning-inspect.cts`'s `buildUatRows` is that consumer; `cmdAuditUat`
- * is not, and still gates `parse_gap` on the total.
+ *
+ * #3707-CR: `src/planning-inspect.cts`'s `buildUatRows` does NOT destructure
+ * this field (verified — it and `cmdAuditUat` both consume only `items` and
+ * `headingsSeen`), correcting an earlier stated instruction that it did.
+ * `shortfallBlocks` currently has NO production consumer outside this
+ * function's own computation. It is retained on the return value anyway,
+ * deliberately, as part of this function's published stats contract — tests
+ * assert on the full `{ items, headingsSeen, shortfallBlocks }` shape, and
+ * dropping a returned field is a wider, unrelated change than a line-ending
+ * fix warrants. A future consumer that needs to distinguish an
+ * accepted-over-report shortfall from the rest of `headingsSeen` (the
+ * original design intent above) can still do so.
  */
 function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSeen: number; shortfallBlocks: number } {
+  content = normalizeLineEndings(content);
   const items: UatItem[] = [];
   let headingsSeen = 0;
   let shortfallBlocks = 0;
@@ -1422,7 +1459,45 @@ function parseUatItemsWithStats(content: string): { items: UatItem[]; headingsSe
     // doing so previously changed `categorizeItem`'s classification for
     // shapes origin/next categorized differently (an unpinned behavior
     // change, not something the blocker required).
-    const resultLineMatch = fenceStrippedBlock.match(/^result:\s*\[?(\w+)\]?.*$/im);
+    // #3078-CR defect A fix, split-then-match scan: the previous `.match()`
+    // against `/^result:.../im` ran a MULTILINE regex anchor directly over
+    // unsplit block text. ECMA-262's LineTerminator set for `^`/`$` under
+    // `/m` includes U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, but
+    // `content.split('\n')` and this module's own heading tokenizer do NOT
+    // treat either as a boundary. A `result:`-shaped line inside an
+    // `expected: |` scalar body, sitting immediately after one of these
+    // separators instead of an ordinary character, was therefore read as a
+    // genuine line start by the regex engine even though it is not
+    // `\n`-delimited from anything — it is exactly as much "one line" to
+    // every other consumer as the ordinary-character control case.
+    // Splitting on `\n` FIRST and testing each already-split line against a
+    // single-line (`/im`-anchor-free) pattern fixes this: a line is never
+    // split by U+2028/U+2029 (`String.prototype.split` matches only its
+    // literal separator argument, never the wider ECMA-262 LineTerminator
+    // set), so a `result:`-shaped line reachable only via one of those
+    // separators can never register as its own split line — the split view
+    // and the regex view are back in agreement, by construction, exactly the
+    // way `splitLines` module is documented to be immune to the sibling `\r`
+    // bug.
+    //
+    // FIRST MATCH WINS (byte-identical to origin/next otherwise): a block
+    // with more than one column-0 `result:` line resolves to the FIRST one
+    // encountered, same as the pre-existing `.match()` behaviour without
+    // `/g` — this is deliberately NOT an ambiguity/parse-gap case (that
+    // variant was tried and reverted: its boundary-truncation heuristic
+    // mistook an indented `### N.` living inside a legitimate block scalar
+    // for a heading boundary, corrupting every scalar/indent guard in this
+    // module — see tests/uat.test.cjs's #3078 scalar guard family).
+    // Trailing text is matched with `[^]*` rather than `.*` (final review
+    // MINOR 1): `.` never matches U+2028/U+2029, so a column-0 `result:`
+    // line whose trailing text contains one of those separators would
+    // otherwise never reach `$`, and the whole line would fail to match —
+    // an unpinned regression against origin/next, which parses it.
+    const RESULT_LINE_RE = /^result:\s*\[?(\w+)\]?[^]*$/i;
+    const resultLineMatch = fenceStrippedBlock
+      .split('\n')
+      .map((line) => line.match(RESULT_LINE_RE))
+      .find((m): m is RegExpMatchArray => m !== null);
     if (!resultLineMatch) {
       headingsSeen += 1;
       continue;

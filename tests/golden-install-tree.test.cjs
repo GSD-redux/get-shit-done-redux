@@ -27,7 +27,7 @@ const { runNode } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { cleanup } = require('./helpers.cjs');
-const { RUNTIME_META, runMinimalInstall, BUILD_SCRIPT, buildInstallTree } = require('./helpers/install-shared.cjs');
+const { RUNTIME_META, runMinimalInstall, BUILD_SCRIPT, buildInstallTree, extraEmitRootsFor } = require('./helpers/install-shared.cjs');
 
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
 const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
@@ -74,7 +74,7 @@ for (const runtime of runtimes) {
     const { configDir, root } = runMinimalInstall({ runtime, scope: 'global' });
     let actual;
     try {
-      actual = buildInstallTree(configDir, root);
+      actual = buildInstallTree(configDir, root, extraEmitRootsFor(runtime, 'global', root));
     } finally {
       cleanup(root);
     }

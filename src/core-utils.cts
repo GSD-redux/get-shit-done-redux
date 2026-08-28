@@ -14,18 +14,82 @@
  *   - node:fs / node:path (stdlib)
  *   - ./phase-id.cjs       (comparePhaseNum, used by readSubdirectories)
  *   - ./planning-workspace.cjs (findContextMdIn, used by getPhaseFileStats)
+ *
+ * #3883 (ADR-3473 §8.3): two of this module's cyclic partners require
+ * generateSlugInternal, the canonical slug formula:
+ *   - phase-id.cjs requires this module directly.
+ *   - planning-workspace.cjs is a cyclic partner via a longer path:
+ *     core-utils.cjs -> planning-workspace.cjs -> active-workstream-store.cjs
+ *     -> workstream-name-policy.cjs -> core-utils.cjs.
+ * Both are genuine circular requires. They are safe ONLY because every side
+ * accesses the other's exports lazily, through the live module-namespace
+ * object (`phaseIdModule.foo(...)` / `planningWorkspace.foo(...)`) inside a
+ * function body, never via a top-level destructure — a top-level
+ * `const { foo } = require(...)` copies the binding at import time and would
+ * silently capture `undefined` whichever module loses the load-order race.
+ * This is an absolute rule with no exception in this file: every cyclic
+ * partner's export is accessed through its module-namespace object, never
+ * destructured at the top level.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdModule = require('./phase-id.cjs');
-const { comparePhaseNum, scopeToPhase } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { findContextMdIn } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import shellCommandProjection = require('./shell-command-projection.cjs');
+
+// ─── Line-ending normalization ─────────────────────────────────────────────────
+
+/**
+ * Normalize every line ending in `content` to a bare `\n`, ONCE — the shared
+ * seam every document-READ boundary in this codebase should route through
+ * (#3707-CR follow-up MAJOR).
+ *
+ * CommonMark treats a lone CR (no paired LF) as a line ending — such a
+ * document RENDERS as separate lines to a human reader — but a parser that
+ * splits/tokenizes/scans on `\n` alone treats a lone-CR-separated document as
+ * ONE unbroken line, hiding every row boundary in it. `src/uat.cts` originally
+ * carried this exact fix as a PRIVATE, unexported function applied inside two
+ * of its own parse functions (`parseUatItemsWithStats`, `parseCurrentTest`) —
+ * which is why two OTHER read sites in the same module (`cmdAuditUat`'s
+ * VERIFICATION and deferred-items.md ingresses) were missed: normalizing
+ * per-parser means every new parser must remember to call it. Promoted here,
+ * to the shared leaf module every document consumer can reach without a new
+ * dependency edge, so normalization can be applied at the READ boundary
+ * instead — every current and future parser fed from a boundary that calls
+ * this gets normalized text by construction.
+ *
+ * `/\r\n?/g` is deliberately ONE alternation, not two separate replaces: a
+ * two-pass `replace(/\r\n/g,'\n').replace(/\r/g,'\n')` is equivalent here
+ * because the first pass already consumes every CRLF pair before the second
+ * pass ever runs, but a single regex avoids relying on pass ORDER and matches
+ * greedily left-to-right in one scan, so a CRLF is always consumed as ONE
+ * unit (never left as a stray trailing `\r` after the `\n` half is matched
+ * first) and a lone CR — including one immediately followed by nothing, i.e.
+ * at EOF, or by another lone CR — is still replaced.
+ *
+ * This is deliberately NOT a length-preserving transform (CRLF, two UTF-16
+ * units, becomes LF, one), so any offsets a caller computes must be compared
+ * only against THIS normalized string, never against the original raw text.
+ *
+ * U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR (#3078-CR) are
+ * DELIBERATELY NOT folded here, unlike `\r`/`\r\n`. Folding is unnecessary:
+ * `String.prototype.split('\n')` never treats U+2028/U+2029 as a delimiter,
+ * so an exotic separator can never manufacture a fake line start for a
+ * consumer that scans lines produced by `split('\n')`, rather than anchoring
+ * a multiline (`/m`) regex directly over unsplit text. Only the latter
+ * pattern is vulnerable to the ECMA-262 LineTerminator set including these
+ * two code points. This module performs no line-anchored matching of its
+ * own; a caller that scans lines should split first and match per-line
+ * rather than anchor `/m` over unsplit text — this comment makes no claim
+ * about whether any particular caller currently does so.
+ */
+function normalizeLineEndings(content: string): string {
+  return content.replace(/\r\n?/g, '\n');
+}
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
@@ -104,14 +168,28 @@ function pathExistsInternal(cwd: string, targetPath: string): boolean {
   }
 }
 
-function generateSlugInternal(text: string | null | undefined): string | null {
+/**
+ * #3883 (ADR-3473 §8.3 remediation): `maxLen` lets a caller state its own
+ * truncation contract instead of being forced into this function's
+ * historical 60-char cap. Some call sites truncated at 60 before the #3883
+ * consolidation (commands.cts:cmdGenerateSlug) and some never truncated at
+ * all (phase-id.cts toDir/getPhaseDirFromPhaseId, the init.cts/phase-locator
+ * phase_slug sites, workstream-name-policy.cts toWorkstreamSlug) — collapsing
+ * every caller onto a single hard-coded 60 introduced two identity
+ * collisions (distinct >60-char names/phase-slugs truncating to the same
+ * value) that did not exist pre-migration. `maxLen: 60` remains the default
+ * so untouched callers keep prior behavior; pass `null` for no truncation.
+ */
+function generateSlugInternal(text: string | null | undefined, maxLen: number | null = 60): string | null {
   if (!text) return null;
   // #2849: strip leading/trailing hyphens AFTER truncation, not only before.
   // .substring(0, 60) can land on a separator, re-introducing a trailing hyphen
   // the strip step exists to prevent. Truncation cannot add a leading hyphen, so
   // running the full ^-+|-+$ pass last is equivalent for leading hyphens and
   // fixes the trailing-hyphen-after-truncation case.
-  return transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-').substring(0, 60).replace(/^-+|-+$/g, '');
+  const collapsed = transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-');
+  const truncated = maxLen === null ? collapsed : collapsed.substring(0, maxLen);
+  return truncated.replace(/^-+|-+$/g, '');
 }
 
 // ─── Transliteration (#2848) ─────────────────────────────────────────────────
@@ -234,13 +312,13 @@ function getPhaseFileStats(phaseDir: string): PhaseFileStats {
     };
   }
 
-  const scopedFiles = scopeToPhase(files, path.basename(phaseDir));
+  const scopedFiles = phaseIdModule.scopeToPhase(files, path.basename(phaseDir));
 
   return {
     plans: scan.planFiles,
     summaries: scan.summaryFiles,
     hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
-    hasContext: findContextMdIn(scopedFiles) !== null,
+    hasContext: planningWorkspace.findContextMdIn(scopedFiles) !== null,
     hasVerification: scopedFiles.some(f => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md'),
     hasReviews: scopedFiles.some(f => f.endsWith('-REVIEWS.md') || f === 'REVIEWS.md'),
     scope: scan.scope,
@@ -256,7 +334,7 @@ function readSubdirectories(dirPath: string, sort = false): string[] {
   try {
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
     const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
-    return sort ? dirs.sort((a, b) => comparePhaseNum(a, b)) : dirs;
+    return sort ? dirs.sort((a, b) => phaseIdModule.comparePhaseNum(a, b)) : dirs;
   } catch {
     return [];
   }
@@ -431,6 +509,7 @@ function findOrphanSummaries(planFiles: string[], summaryFiles: string[]): strin
 
 export = {
   toPosixPath,
+  normalizeLineEndings,
   detectSubRepos,
   extractOneLinerFromBody,
   pathExistsInternal,

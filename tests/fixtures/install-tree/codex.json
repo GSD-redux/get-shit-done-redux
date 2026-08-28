@@ -79,6 +79,7 @@
   "gsd-core/bin/gsd_run",
   "gsd-core/bin/shared/config-defaults.manifest.json",
   "gsd-core/bin/shared/config-schema.manifest.json",
+  "gsd-core/bin/shared/exit-codes.json",
   "gsd-core/bin/shared/model-catalog.json",
   "gsd-core/bin/shared/runtime-aliases.manifest.json",
   "gsd-core/bin/verify-reapply-patches.cjs",
@@ -430,5 +431,6 @@
   "scripts/lib/alias-drift-families.cjs",
   "scripts/lib/allowlist-ratchet.cjs",
   "scripts/lib/cli-exit.cjs",
-  "scripts/lib/drift-scan.cjs"
+  "scripts/lib/drift-scan.cjs",
+  "scripts/lib/exit-code-registry.cjs"
 ]

@@ -23,6 +23,9 @@ const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-frontmatter-scalar-broad-gr
 const { findBroadGrepsInBlock, extractBashBlocks, scan } = require(LINT_SCRIPT);
 const { cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
+const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
+
+const LINT_SCRIPT_REL = path.join('scripts', 'lint-frontmatter-scalar-broad-grep.cjs');
 
 describe('frontmatter-scalar-broad-grep lint: findBroadGrepsInBlock (pure)', () => {
   test('the real #586/#651 defect shape IS flagged: whole-file grep, no scope, no -m1, piped to cut|tr', () => {
@@ -142,12 +145,7 @@ describe('frontmatter-scalar-broad-grep lint: main() end-to-end wiring', () => {
         '```',
       ].join('\n'),
     );
-    const scriptCopyDir = path.join(tmpDir, 'scripts');
-    fs.mkdirSync(scriptCopyDir, { recursive: true });
-    const scriptCopy = path.join(scriptCopyDir, 'lint-frontmatter-scalar-broad-grep.cjs');
-    fs.copyFileSync(LINT_SCRIPT, scriptCopy);
-    fs.mkdirSync(path.join(scriptCopyDir, 'lib'), { recursive: true });
-    fs.copyFileSync(path.join(ROOT, 'scripts', 'lib', 'cli-exit.cjs'), path.join(scriptCopyDir, 'lib', 'cli-exit.cjs'));
+    const scriptCopy = copyScriptWithDeps(ROOT, tmpDir, LINT_SCRIPT_REL);
 
     const result = runNode([scriptCopy]);
     assert.equal(result.exitCode, 1, `expected exit 1, got ${result.exitCode}`);
@@ -168,12 +166,7 @@ describe('frontmatter-scalar-broad-grep lint: main() end-to-end wiring', () => {
         '```',
       ].join('\n'),
     );
-    const scriptCopyDir = path.join(tmpDir, 'scripts');
-    fs.mkdirSync(scriptCopyDir, { recursive: true });
-    const scriptCopy = path.join(scriptCopyDir, 'lint-frontmatter-scalar-broad-grep.cjs');
-    fs.copyFileSync(LINT_SCRIPT, scriptCopy);
-    fs.mkdirSync(path.join(scriptCopyDir, 'lib'), { recursive: true });
-    fs.copyFileSync(path.join(ROOT, 'scripts', 'lib', 'cli-exit.cjs'), path.join(scriptCopyDir, 'lib', 'cli-exit.cjs'));
+    const scriptCopy = copyScriptWithDeps(ROOT, tmpDir, LINT_SCRIPT_REL);
 
     const result = runNode([scriptCopy]);
     assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);

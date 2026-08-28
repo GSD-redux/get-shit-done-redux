@@ -58,6 +58,15 @@ assert on the exit code and (if needed) the plain-text message. The
 "parse stderr as JSON" guidance below applies only to the structured-envelope
 branch (non-`ExitError` failures).
 
+> **Which tools honor this.** Both surfaces that run `runMain` do: the compiled
+> `gsd-core/bin/lib/cli-exit.cjs` and the `scripts/lib/cli-exit.cjs` that the
+> repo's own `scripts/**` tooling requires. Before [#3904](https://github.com/open-gsd/gsd-core/issues/3904)
+> the latter was a separate hand-written copy that never gained the
+> structured-envelope branch, so a `scripts/`-side tool failing unexpectedly
+> printed a raw stack trace even under `--json-errors`. It is now generated from
+> the same source and byte-compared by `npm run lint:generated-sync`, so the two
+> cannot answer differently again.
+
 ## Degraded results vs faults — read this before writing a caller
 
 `gsd-tools` has **two** ways of telling you something went wrong, and they use **different exit
@@ -184,6 +193,13 @@ text (unstable).
 | `usage` | Version flag (`--version`, `-v`) which gsd-tools never accepts |
 | `usage` | Top-level no-args invocation (usage text) |
 
+### `--pick <field>` errors (ADR-3473 §8.4, #3884)
+
+| Code | When emitted |
+|------|-------------|
+| `pick_field_absent` | `--pick <field>` names a field that does not exist in the command's JSON output (missing key, out-of-range index, a partially-missing dotted path, or a non-object JSON root) — see [CLI-TOOLS.md's `--pick` contract](CLI-TOOLS.md#--pick-field-contract) |
+| `pick_output_not_json` | `--pick <field>` is combined with a command whose output is not JSON (including `--raw` output) |
+
 ### Config errors (`config-get`, `config-set`, `config-ensure-section`)
 
 | Code | When emitted |
@@ -199,6 +215,12 @@ text (unstable).
 |------|-------------|
 | `phase_not_found` | Phase directory lookup returns no match |
 | `summary_no_planning` | Summary operation when no `.planning/` directory exists |
+
+### Estimate errors
+
+| Code | When emitted |
+|------|-------------|
+| `estimate_phases_unreadable` | `estimate-calibrate` when `.planning/phases/` exists but could not be read (EACCES/EIO) — refused rather than silently rebuilding calibration from a phantom empty sample set (#3882, ADR-3473 §8.5) |
 
 ### Graphify errors
 

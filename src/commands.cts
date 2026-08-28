@@ -52,7 +52,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir, planningPaths } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuoted } = frontmatter;
+const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuotedScalar } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
@@ -206,11 +206,11 @@ function cmdGenerateSlug(text: string | undefined, raw: boolean): void {
     error('text required for slug generation');
   }
 
-  const slug = (text as string)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .substring(0, 60);
+  // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+  // (generateSlugInternal, core-utils.cts) instead of re-implementing it —
+  // this call site previously diverged from it (Cyrillic collapsed to "",
+  // and truncation could leave a trailing hyphen; #2848/#2849).
+  const slug = coreUtilsMod.generateSlugInternal(text) ?? '';
 
   const result = { slug };
   output(result, raw, slug);
@@ -757,9 +757,9 @@ function setFrontmatterKeyLine(content: string, key: string, value: string): str
   // Both writers of these frontmatter keys — this sync path and the
   // install-side `frontmatterScalar` in runtime-artifact-conversion.cts —
   // now share one escaping rule: quote via `agentScalarNeedsDoubleQuoting` +
-  // `escapeDoubleQuoted` (both from frontmatter.cts) rather than each
+  // `escapeDoubleQuotedScalar` (both from frontmatter.cts) rather than each
   // interpolating `value` raw/differently.
-  const renderedValue = agentScalarNeedsDoubleQuoting(value) ? `"${escapeDoubleQuoted(value)}"` : value;
+  const renderedValue = agentScalarNeedsDoubleQuoting(value) ? `"${escapeDoubleQuotedScalar(value)}"` : value;
   // EOL comes from the MATCHED BLOCK, not the start of the file. With a
   // preamble the two can disagree, and on a CRLF document that misaligns every
   // offset below by one byte and mangles the opening fence.

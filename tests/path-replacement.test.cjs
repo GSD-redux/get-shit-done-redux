@@ -650,6 +650,53 @@ describe('#3544: _restoreClaudeGlobalAtRefTilde (spec-tree @-ref restore, unit)'
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────
+// #3719 GAP 2: restoreClaudeGlobalAtRefTilde used to build the substitution
+// with a STRING passed as the 2nd arg to .replace() — `content.replace(re,
+// '@' + tildeEquivalent)`. When tildeEquivalent (derived from an
+// operator-controlled --config-dir pathPrefix) contains the literal sequence
+// `$&` or `` $` ``, the JS engine treats those as REPLACEMENT PATTERNS, not
+// literal text: `$&` re-inserts the whole match (duplicating the matched
+// `@$HOME/...` span back into the output) and `` $` `` inserts the substring
+// before the match (which is empty at position 0, silently dropping the
+// literal text that followed it). Measured pre-fix:
+//   prefix "$HOME/.cl$&ude/"  -> "@~/.cl@$HOME/.cl$&ude/ude/x" (corrupted, duplicated)
+//   prefix "$HOME/.cl$`ude/"  -> "@~/.clude/x"                 (corrupted, text dropped)
+// Fixed by passing a FUNCTION as the 2nd arg (`() => '@' + tildeEquivalent`),
+// which the engine never pattern-scans. These pathological prefixes are built
+// via string concatenation / String.fromCharCode, not template literals, so an
+// editor normalizing a literal backtick-dollar sequence can't silently defang
+// the fixture.
+// ────────────────────────────────────────────────────────────────────────
+describe('#3719 GAP 2: _restoreClaudeGlobalAtRefTilde is immune to $&/$` in pathPrefix', () => {
+  const { _restoreClaudeGlobalAtRefTilde } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+
+  test('a pathPrefix containing a literal "$&" round-trips to the plain tilde form (not duplicated)', () => {
+    const dollarAmp = '$' + '&';
+    const prefix = '$HOME/.cl' + dollarAmp + 'ude/';
+    const src = '@' + prefix + 'x';
+    const out = _restoreClaudeGlobalAtRefTilde(src, prefix);
+    assert.strictEqual(out, '@~/.cl' + dollarAmp + 'ude/x',
+      'a literal $& in pathPrefix must not re-insert the whole match into the output');
+  });
+
+  test('a pathPrefix containing a literal "$`" (backtick-dollar) round-trips to the plain tilde form (not dropped)', () => {
+    const dollarBacktick = '$' + String.fromCharCode(96);
+    const prefix = '$HOME/.cl' + dollarBacktick + 'ude/';
+    const src = '@' + prefix + 'x';
+    const out = _restoreClaudeGlobalAtRefTilde(src, prefix);
+    assert.strictEqual(out, '@~/.cl' + dollarBacktick + 'ude/x',
+      'a literal $` in pathPrefix must not be treated as a "text before match" replacement pattern');
+  });
+
+  test('an ordinary pathPrefix (no special replacement chars) is unaffected by the function-replacement fix', () => {
+    const prefix = '$HOME/.claude/';
+    const src = '@' + prefix + 'x';
+    const out = _restoreClaudeGlobalAtRefTilde(src, prefix);
+    assert.strictEqual(out, '@~/.claude/x');
+  });
+});
+
 // Verification boundary (#3544): this suite proves the emitted @-line takes
 // the `~` STRING form Claude Code documents as expanding. It cannot prove
 // the host actually resolves it — no automated test can spawn a live Claude
@@ -825,5 +872,144 @@ describe('#3544: spawned installer — gsd-core/ spec tree @-refs resolve on til
       atLines.some(({ line }) => line.startsWith('@$HOME/.cursor/')),
       `expected cursor's own $HOME-form @-refs to remain unrestored, got: ${JSON.stringify(atLines)}`,
     );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #3719: applyAgentPathRewrites (the agents/ staging pipeline's pre-converter
+// path-rewrite step, install-profiles.cts:964) does the 4 base ~/.claude/ and
+// $HOME/.claude/ substitutions but NEVER calls restoreClaudeGlobalAtRefTilde
+// — the SAME restore #3133 wired into `_applyRuntimeRewrites`'s 'claude' case
+// and #3544 wired into the gsd-core/ spec-tree emit path. Consequence: every
+// `agents/gsd-*.md` `@`-include (mandatory-initial-read.md, the
+// untrusted-input boundary, the agent-skills bootstrap, etc.) ships as
+// `@$HOME/.claude/...` in a global Claude install, which Claude Code does not
+// expand — the include silently loads nothing. Unlike #3133/#3544, this is a
+// MISSING call, not a wrong regex; fixing it must not touch the ordinary
+// $HOME/.claude/ substitutions non-@-anchored text still needs (#1284).
+// ────────────────────────────────────────────────────────────────────────
+describe('#3719: applyAgentPathRewrites must restore @-anchored $HOME refs to tilde', () => {
+  const { applyAgentPathRewrites } = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+  const globalHomePrefix = '$HOME/.claude/';
+
+  test('row 1 [RED] — an @-include through the agents path emits @~/… not @$HOME/…', () => {
+    const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, '@~/.claude/gsd-core/references/mandatory-initial-read.md\n');
+  });
+
+  // #3719 review (MINOR 3): the original control string contained no `@` at
+  // all, so `restoreClaudeGlobalAtRefTilde`'s `atRefRe` (which only matches
+  // an `@`-anchored sequence) could never match it — the row passed even
+  // with the quote-lookbehind deleted entirely, proving nothing about
+  // quote-awareness. A real control needs an `@`-anchored $HOME reference
+  // INSIDE quotes: `~` does not expand inside double-quoted shell strings
+  // (#1284), so a quoted `@~/.claude/x` must stay on `@$HOME/.claude/x`
+  // after the restore pass, not be rewritten back to `@~/`. Confirmed this
+  // row fails (asserts the wrong string) if the lookbehind
+  // `(?<!["'])` is deleted from `restoreClaudeGlobalAtRefTilde`'s `atRefRe` —
+  // without it the quoted `@$HOME/.claude/x` matches unconditionally and is
+  // rewritten to `@~/.claude/x`, breaking the assertion below.
+  test('row 2 [CONTROL] — a quoted @-reference stays on $HOME (quote-aware, #1284)', () => {
+    const src = 'echo "@~/.claude/x"\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, 'echo "@$HOME/.claude/x"\n');
+  });
+
+  test('row 7 [CONTROL] — a noPathRewrite runtime (copilot) is untouched', () => {
+    const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
+    const out = applyAgentPathRewrites(src, 'copilot', globalHomePrefix);
+    assert.strictEqual(out, src, 'noPathRewrite runtimes must be returned unchanged (no substitutions at all)');
+  });
+
+  // #3719 review (MINOR 2): row 7 (copilot) returns early at the
+  // `noPathRewrite` check and never reaches the `if (runtime === 'claude')`
+  // restore guard at all — zero coverage of the guard itself. Cursor and
+  // Kilo are NOT noPathRewrite, so they exercise the base `.claude/` ->
+  // pathPrefix substitution AND then hit the guard, which must suppress the
+  // `@~` restore because they are not `claude`.
+  test('row 10 [CONTROL] — cursor (non-claude, non-noPathRewrite) keeps @$HOME/.cursor/…, does not restore to tilde', () => {
+    const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
+    const out = applyAgentPathRewrites(src, 'cursor', '$HOME/.cursor/');
+    assert.strictEqual(out, '@$HOME/.cursor/gsd-core/references/mandatory-initial-read.md\n',
+      'cursor must keep the @$HOME/.cursor/ form — the runtime guard must suppress the claude-only tilde restore');
+  });
+
+  test('row 11 [CONTROL] — kilo (non-claude, non-noPathRewrite) keeps @$HOME/.kilo/…, does not restore to tilde', () => {
+    const src = '@~/.claude/gsd-core/references/mandatory-initial-read.md\n';
+    const out = applyAgentPathRewrites(src, 'kilo', '$HOME/.kilo/');
+    assert.strictEqual(out, '@$HOME/.kilo/gsd-core/references/mandatory-initial-read.md\n',
+      'kilo must keep the @$HOME/.kilo/ form — the runtime guard must suppress the claude-only tilde restore');
+  });
+
+  // ── boundary rows ──
+  test('boundary — leading @~/.claude/x @-include', () => {
+    const src = '@~/.claude/x\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, '@~/.claude/x\n');
+  });
+
+  test('boundary — mid-sentence @~/.claude/x @-include', () => {
+    const src = 'See @~/.claude/x for details\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, 'See @~/.claude/x for details\n');
+  });
+
+  test('boundary — ~/.claude/x with NO @ prefix must stay on $HOME (not an @-include)', () => {
+    const src = 'See ~/.claude/x for details\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, 'See $HOME/.claude/x for details\n');
+  });
+
+  test('boundary — @~/.claude with no trailing slash (word-boundary variant)', () => {
+    const src = '@~/.claude\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, '@~/.claude\n');
+  });
+
+  test('boundary — @$HOME/.claude/x already present in source is restored, not double-rewritten', () => {
+    const src = '@$HOME/.claude/x\n';
+    const out = applyAgentPathRewrites(src, 'claude', globalHomePrefix);
+    assert.strictEqual(out, '@~/.claude/x\n');
+  });
+
+  // #3719 GAP 1: `-work-work` doubling guard. The MAJOR fix changed the two
+  // `~/.claude` / `$HOME/.claude` replaces in this function from a bare `\b`
+  // to `(?![\w-])`, because `\b` is satisfied by ANY non-word character —
+  // including '-'. For a --config-dir whose name EXTENDS '.claude' (e.g.
+  // '.claude-work'), the bare-`\b` regex re-matched the '.claude' PREFIX of
+  // the already-substituted '.claude-work' path and corrupted it to
+  // '.claude-work-work'. Security measured 120 doubled paths before the fix
+  // and 0 after. Nothing else in this file installs under a config dir that
+  // extends '.claude', so without this block the fix ships unpinned.
+  describe('-work-work doubling guard (#3719 MAJOR: \\b -> (?![\\w-]))', () => {
+    const extendedPrefix = '$HOME/.claude-work/';
+
+    test('@-include: @~/.claude/x.md -> @~/.claude-work/x.md (not .claude-work-work)', () => {
+      const src = '@~/.claude/x.md';
+      const out = applyAgentPathRewrites(src, 'claude', extendedPrefix);
+      assert.strictEqual(out, '@~/.claude-work/x.md');
+    });
+
+    test('no-trailing-slash variant: @~/.claude -> @~/.claude-work', () => {
+      const src = '@~/.claude';
+      const out = applyAgentPathRewrites(src, 'claude', extendedPrefix);
+      assert.strictEqual(out, '@~/.claude-work');
+    });
+
+    test('prose (non-@-anchored): See ~/.claude/p.md -> See $HOME/.claude-work/p.md', () => {
+      const src = 'See ~/.claude/p.md';
+      const out = applyAgentPathRewrites(src, 'claude', extendedPrefix);
+      assert.strictEqual(out, 'See $HOME/.claude-work/p.md');
+    });
+
+    // Different extension character class (word char 'x' immediately after
+    // '.claude', vs. '-' above) — confirms the lookahead's `[\w-]` class
+    // covers both.
+    test('.claudex prefix (word-char extension): @~/.claude/x.md -> @~/.claudex/x.md', () => {
+      const src = '@~/.claude/x.md';
+      const out = applyAgentPathRewrites(src, 'claude', '$HOME/.claudex/');
+      assert.strictEqual(out, '@~/.claudex/x.md');
+    });
   });
 });
