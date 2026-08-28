@@ -1761,3 +1761,149 @@ describe('#3911: the --check guards for the new hooks/lib artifacts can actually
     assert.equal(restored.status, 0, `--check must pass again once the artifact is restored; stderr: ${restored.stderr}`);
   });
 });
+
+// ─── #3912 (ADR-3889 §4, P8): the pending-outcome cell ──────────────────────
+//
+// output()'s payload-carried-error detection lives in io.cts and is tested
+// there; these tests exercise the cell + runMain projection mechanics that
+// live in cli-exit.cts itself: precedence (test matrix row C5) and cross-copy
+// parity (row C6).
+
+describe('#3912: pending-outcome cell (runMain precedence + parity)', () => {
+  // E1: for every registered outcome name and version, projectOutcome is a
+  // non-negative integer, and is 0 ONLY for PASS, or for DEGRADED under v1.
+  // The existing "every projection... is a non-negative integer" test above
+  // does not pin the ZERO-ONLY-FOR half of this; this test is what makes an
+  // accidental future zero for some OTHER outcome fail loudly.
+  test('E1 (fast-check): 0 is produced only by PASS, or by DEGRADED under v1', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('PASS', 'FAIL', ...REGISTERED_NAMES),
+        fc.constantFrom(...VERSIONS),
+        (outcome, version) => {
+          const result = projectOutcome(outcome, version);
+          assert.equal(Number.isInteger(result), true);
+          assert.ok(result >= 0);
+          if (result === 0) {
+            const isPass = outcome === 'PASS';
+            const isDegradedV1 = outcome === 'DEGRADED' && version === 'v1';
+            assert.ok(
+              isPass || isDegradedV1,
+              `outcome=${outcome} version=${version} projected to 0 but is neither PASS nor DEGRADED/v1`,
+            );
+          } else {
+            assert.notEqual(outcome, 'PASS', 'PASS must always project to 0');
+          }
+        },
+      ),
+      { seed: 3912, numRuns: 300 },
+    );
+  });
+
+  // C5: an explicit main() return beats a recorded DEGRADED cell. Without
+  // this, a caller that both returns an explicit code AND had a stale
+  // DEGRADED left in the cell (e.g. from an earlier output({error}) call in
+  // the same process) would get the CELL's projection instead of its own
+  // explicit decision — exactly backwards from "the cell is a fallback for
+  // the absence of a decision".
+  test('C5: an explicit main() return wins over a pending DEGRADED cell', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.setPendingOutcome('DEGRADED');`,
+      `c.runMain(() => 'PASS');`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    // Under v2, DEGRADED alone would project to 80; PASS must win with 0.
+    const r = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
+    }));
+    assert.equal(r.status, 0, `explicit PASS return must win over the pending DEGRADED cell; stderr: ${r.stderr}`);
+  });
+
+  test('C5 (numeric arm): an explicit numeric return also wins over a pending DEGRADED cell', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.setPendingOutcome('DEGRADED');`,
+      `c.runMain(() => 42);`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    const r = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
+    }));
+    assert.equal(r.status, 42, `explicit numeric return must win over the pending DEGRADED cell; stderr: ${r.stderr}`);
+  });
+
+  test('a void return with NO pending outcome set leaves exit code untouched (v1 unchanged)', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.runMain(() => undefined);`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    const r = toLegacyResult(runNode(['-e', script], { timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  });
+
+  test('a void return WITH a pending DEGRADED cell projects it under v1 (0) and v2 (80)', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.setPendingOutcome('DEGRADED');`,
+      `c.runMain(() => undefined);`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    const v1 = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v1' },
+    }));
+    assert.equal(v1.status, 0, `stderr: ${v1.stderr}`);
+    const v2 = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
+    }));
+    assert.equal(v2.status, 80, `stderr: ${v2.stderr}`);
+  });
+
+  // C6: extends the existing three-copy parity coverage (json-error-mode cell,
+  // tested above at "both copies of the exit module share one json-error-mode
+  // cell") to the pending-outcome cell, across all THREE emitted copies —
+  // built (gsd-core/bin/lib), scripts/lib, and hooks/lib — not just two.
+  test('C6: all three emitted copies of cli-exit share ONE pending-outcome cell', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const built = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `const scripts = require(${JSON.stringify(SCRIPTS_CLI_EXIT_PATH)});`,
+      `const hooks = require(${JSON.stringify(HOOKS_CLI_EXIT_PATH)});`,
+      `if (built === scripts || built === hooks || scripts === hooks) throw new Error('expected three distinct module instances');`,
+      `built.setPendingOutcome('DEGRADED');`,
+      `process.stdout.write(JSON.stringify({`,
+      `  viaBuilt: built.getPendingOutcome(),`,
+      `  viaScripts: scripts.getPendingOutcome(),`,
+      `  viaHooks: hooks.getPendingOutcome(),`,
+      `}));`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    assert.deepStrictEqual(
+      JSON.parse(r.stdout),
+      { viaBuilt: 'DEGRADED', viaScripts: 'DEGRADED', viaHooks: 'DEGRADED' },
+      'all three copies must read one shared cell — three independent module-level flags would diverge here',
+    );
+  });
+
+  test('C6: all three copies also agree on the PROJECTED exit code via runMain', () => {
+    for (const version of VERSIONS) {
+      for (const modulePath of [BUILT_CLI_EXIT_PATH, SCRIPTS_CLI_EXIT_PATH, HOOKS_CLI_EXIT_PATH]) {
+        const r = toLegacyResult(runNode(['-e', [
+          `const c = require(${JSON.stringify(modulePath)});`,
+          `c.setPendingOutcome('DEGRADED');`,
+          `c.runMain(() => undefined);`,
+          `setImmediate(() => {});`,
+        ].join('\n')], {
+          timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: version },
+        }));
+        const expected = version === 'v1' ? 0 : 80;
+        assert.equal(
+          r.status, expected,
+          `${modulePath} under ${version} expected ${expected}, got ${r.status}; stderr: ${r.stderr}`,
+        );
+      }
+    }
+  });
+});

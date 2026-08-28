@@ -148,6 +148,29 @@ function projectOutcome(outcome, version) {
     // exitCodeFor's own contract, which this function inherits verbatim).
     return exitCodeFor(outcome);
 }
+/**
+ * Pending declared outcome (ADR-3889 §4, #3912): the outcome `output()`
+ * records when it detects a payload-carried error (`{ error }`, any key
+ * order) on a call that otherwise just returns — there is no thrown
+ * ExitError and no explicit `main()` return for `runMain` to project, so
+ * without this cell the declaration has nowhere to land. `runMain` reads it
+ * ONLY when `main()` itself returns no explicit code (void/undefined); an
+ * explicit number/string return always wins over whatever this cell holds.
+ *
+ * Held in a Symbol-keyed globalThis cell for the exact reason
+ * JSON_ERROR_MODE_KEY / CONTRACT_VERSION_KEY are (see their comments above):
+ * this module is emitted to three locations and thus loaded as independent
+ * module instances in any process that requires more than one, so a
+ * module-level variable would let those instances disagree about whether a
+ * degraded result was ever declared.
+ */
+const PENDING_OUTCOME_KEY = Symbol.for('gsd.exit.pendingOutcome');
+function setPendingOutcome(v) {
+    globalThis[PENDING_OUTCOME_KEY] = v;
+}
+function getPendingOutcome() {
+    return globalThis[PENDING_OUTCOME_KEY];
+}
 const EXIT_CONTRACT_FLAG_PREFIX = '--exit-contract=';
 /** Scan argv for the FIRST `--exit-contract=<value>` token; undefined if absent. */
 function findExitContractFlag(argv) {
@@ -221,11 +244,23 @@ class ExitError extends Error {
  * process.on('exit') cleanup still fires — this is precisely why runMain and
  * terminateNow are two different functions: drain-then-exit vs write-then-
  * terminate). main may be sync or async. Every arm below except the new
- * string one is UNCHANGED from before ADR-3889 Phase 2:
+ * string one and the void/pending-cell one is UNCHANGED from before
+ * ADR-3889 Phase 2:
  *   number return   -> process.exitCode = it (unchanged)
  *   string return   -> NEW: process.exitCode = projectOutcome(result, getContractVersion()),
  *                      UNLESS that projection is the HOOK_DENY exit code (see
  *                      the refusal below — 2 may only be produced by terminateNow).
+ *   void/undefined return -> NEW (#3912, ADR-3889 §4): an explicit return
+ *                      already handled above always wins, so this arm only
+ *                      runs when main() declared no outcome of its own. If
+ *                      the pending-outcome cell holds a value (currently only
+ *                      ever 'DEGRADED', set by io.cts's output() on a
+ *                      payload-carried error), project THAT through the
+ *                      current contract version instead of leaving
+ *                      process.exitCode untouched. DEGRADED projects to 0
+ *                      under v1 — the same value this arm produced before
+ *                      this phase by doing nothing — so v1 behavior is
+ *                      byte-identical.
  *   thrown ExitError -> process.exitCode = err.code (+ stderr err.message if hasUserMessage && code!=0) (unchanged)
  *   other throw -> when json-error mode is active, emits structured { ok:false, reason, message }
  *                  to stderr; otherwise writes raw stack trace. exit code = 1 in either case. (unchanged)
@@ -258,6 +293,12 @@ function runMain(main) {
             }
             process.exitCode = projected;
             return;
+        }
+        // result is undefined (void return): main declared no outcome itself.
+        // Fall back to the pending-outcome cell, if anything set it.
+        const pending = getPendingOutcome();
+        if (typeof pending === 'string' && pending.length > 0) {
+            process.exitCode = projectOutcome(pending, getContractVersion());
         }
     })
         .catch((err) => {
@@ -456,4 +497,6 @@ module.exports = {
     resolveContractVersion,
     getContractVersion,
     terminateNow,
+    setPendingOutcome,
+    getPendingOutcome,
 };
