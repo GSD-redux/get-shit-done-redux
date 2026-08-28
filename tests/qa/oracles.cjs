@@ -65,6 +65,12 @@
 const nodePath = require('node:path');
 const { KIND } = require('./result.cjs');
 const { resolveForCompare, isUnderProjectDir } = require('./paths.cjs');
+const {
+  LIVE_COMMAND_TOKEN_PREFIXES,
+  getLiveCommandTokens,
+  firstToken,
+  isLiveCommandToken,
+} = require('../helpers/live-command-registry.cjs');
 
 /** Severity of a failed oracle outcome. A SMELL is evidence, not a verdict — it never fails a build. */
 const SEVERITY = Object.freeze({ VIOLATION: 'violation', SMELL: 'smell' });
@@ -91,6 +97,20 @@ const SENTINEL_STRINGS = new Set(['undefined', 'null', 'NaN', '[object Object]']
  *   installed once, not per-project.
  */
 const EXTERNAL_PATH_ALLOWED_KEYS = Object.freeze(new Set(['agents_dir']));
+
+/**
+ * Strip the walk()-root prefix (`"$."`) from a `walk()`-built path, e.g.
+ * `"$.next.command"` -> `"next.command"`, `"$.actions[0].command"` ->
+ * `"actions[0].command"` — the field-naming convention `routing-validity`'s
+ * `subject.key` has always used, kept stable across the switch to a generic
+ * `walk()`-based scan (#3913 P9 SEC-2).
+ *
+ * @param {string} walkPath
+ * @returns {string}
+ */
+function stripRootPrefix(walkPath) {
+  return walkPath.startsWith('$.') ? walkPath.slice(2) : walkPath;
+}
 
 /**
  * Extract the leaf key name from a `walk()`-built path (e.g. `"$.agents_dir"`
@@ -313,8 +333,13 @@ const ORACLES = Object.freeze([
       'result.json must not contain a NaN number or a string exactly equal to a coercion-artifact sentinel ' +
       '(VIOLATION). When ctx.projectDir is supplied, an absolute-path string outside it is reported as a SMELL — ' +
       'never a violation — UNLESS its leaf key name is in EXTERNAL_PATH_ALLOWED_KEYS (a field whose contract is to ' +
-      'point outside the project, e.g. agents_dir), which is skipped entirely: not a smell, not a violation. Without ' +
-      'ctx.projectDir the path check is skipped rather than guessed.',
+      'point outside the project, e.g. agents_dir) or the string\'s FIRST WHITESPACE-DELIMITED WORD is an EXACT ' +
+      'member of getLiveCommandTokens() (e.g. `/gsd:progress`, or `/gsd-plan-phase 2` where the token carries ' +
+      'trailing arguments — see isLiveCommandToken in tests/helpers/live-command-registry.cjs, the single predicate ' +
+      'shared with routing-validity), either of which is skipped entirely: not a smell, not a violation. Exact ' +
+      'membership, never a `startsWith` prefix test with an unconstrained remainder — a string merely SHARING a ' +
+      'prefix with a real token (e.g. `/gsd-x/../../../etc/passwd`) is not exempted and still surfaces as a SMELL. ' +
+      'Without ctx.projectDir the path check is skipped rather than guessed.',
     check(ctx) {
       try {
         /** @type {{message: string, key: string, value: unknown}[]} */
@@ -327,6 +352,9 @@ const ORACLES = Object.freeze([
         // Resolved once per runOracles call (this check runs exactly once per ctx), not once
         // per candidate string below — projectDir is the same value for every leaf in the walk.
         const resolvedProjectDir = projectDir !== null ? resolveForCompare(projectDir) : null;
+        // Resolved once per check() call, not once per leaf — getLiveCommandTokens() is itself
+        // memoized, but there is no reason to re-look-up the memo per candidate string.
+        const liveTokens = getLiveCommandTokens();
         walk(json, (leaf, path) => {
           if (typeof leaf === 'number' && Number.isNaN(leaf)) {
             violations.push({ message: `NaN at ${path}`, key: path, value: leaf });
@@ -337,7 +365,8 @@ const ORACLES = Object.freeze([
             typeof leaf === 'string' &&
             nodePath.isAbsolute(leaf) &&
             !isUnderProjectDir(resolveForCompare(leaf), resolvedProjectDir) &&
-            !EXTERNAL_PATH_ALLOWED_KEYS.has(leafKeyOf(path))
+            !EXTERNAL_PATH_ALLOWED_KEYS.has(leafKeyOf(path)) &&
+            !isLiveCommandToken(leaf, liveTokens)
           ) {
             smells.push({
               message: `absolute path ${JSON.stringify(leaf)} at ${path} is outside ctx.projectDir ${JSON.stringify(projectDir)}`,
@@ -523,25 +552,44 @@ const ORACLES = Object.freeze([
   Object.freeze({
     id: 'routing-validity',
     describe:
-      'A result.json.recommended / recommended_command token must name a command present in ctx.liveCommands.',
+      'Every command token actually carried by the payload must name a command present in ctx.liveCommands. ' +
+      'Rather than enumerating fixed field paths (`actions[].command` / `next.command`), this walks the ENTIRE ' +
+      'payload for any string whose first whitespace-delimited word starts with one of LIVE_COMMAND_TOKEN_PREFIXES ' +
+      '(`/gsd-`, `/gsd:`, `$gsd-`) — catching the token wherever it is actually carried: `recommended_command`, a ' +
+      'bare-string `next`, `next` as an array of `{command}`, `actions` as an object map, `steps[].command`, ' +
+      '`actions[].next.command`, etc (#3913 P9 SEC-2 — the fixed-path version missed all of these). A candidate ' +
+      'passes only when its first word is an EXACT member of ctx.liveCommands (via the shared ' +
+      '`isLiveCommandToken` predicate, tests/helpers/live-command-registry.cjs — the SAME predicate ' +
+      'value-hygiene\'s command-token exemption uses, so the two can never drift on what a live token is); a ' +
+      'pleasing consequence is that value-hygiene therefore exempts exactly the strings routing-validity vouches ' +
+      'for. A bare `recommended` id (no `/gsd-`-style prefix — e.g. `discuss-phase`, by design ' +
+      '`src/smart-entry.cts` `actions.find(a => a.recommended)?.id`, an action id, not a command token) is never a ' +
+      'candidate. Engages only when at least one prefix-shaped string is present; a payload with no such string is ' +
+      'not engaged (ok).',
     check(ctx) {
       try {
         const json = ctx && ctx.result ? ctx.result.json : undefined;
         if (json === null || typeof json !== 'object' || Array.isArray(json)) return { ok: true };
-        const field = Object.prototype.hasOwnProperty.call(json, 'recommended')
-          ? 'recommended'
-          : Object.prototype.hasOwnProperty.call(json, 'recommended_command')
-            ? 'recommended_command'
-            : null;
-        if (field === null) return { ok: true };
-        const value = json[field];
-        if (typeof value !== 'string') return { ok: true };
         const liveCommands = ctx && Array.isArray(ctx.liveCommands) ? ctx.liveCommands : [];
-        if (!liveCommands.includes(value)) {
+        const liveTokens = new Set(liveCommands);
+        const seen = new WeakSet();
+        /** @type {{field: string, value: string} | null} */
+        let violation = null;
+        walk(json, (leaf, path) => {
+          if (violation !== null || typeof leaf !== 'string') return;
+          const word = firstToken(leaf);
+          const looksLikeCommandToken = LIVE_COMMAND_TOKEN_PREFIXES.some((prefix) => word.startsWith(prefix));
+          if (!looksLikeCommandToken) return;
+          if (!isLiveCommandToken(leaf, liveTokens)) {
+            violation = { field: stripRootPrefix(path), value: leaf };
+          }
+        }, seen, '$');
+        if (violation !== null) {
           return {
             ok: false,
             severity: SEVERITY.VIOLATION,
-            detail: `${field}=${JSON.stringify(value)} is not in ctx.liveCommands`,
+            subject: { key: violation.field, value: violation.value },
+            detail: `${violation.field}=${JSON.stringify(violation.value)} is not in ctx.liveCommands`,
           };
         }
         return { ok: true };
@@ -572,37 +620,13 @@ const ORACLES = Object.freeze([
   }),
 
   Object.freeze({
-    id: 'soft-error-exit-zero',
-    describe:
-      'SMELL, not a violation: result.kind === KIND.SOFT_ERROR means the operation reported failure through a ' +
-      'payload key ({error:...}) while exiting 0. Every shell caller\'s `if ! cmd; then` is blind to that failure. ' +
-      'This is legal today (42 call sites use output({error:...})) and is deliberately NOT changed here — the ' +
-      'blast radius of changing it is CRITICAL — but it is reported so the trade stays visible instead of invisible.',
-    check(ctx) {
-      try {
-        const result = ctx && ctx.result;
-        if (!result || result.kind !== KIND.SOFT_ERROR) return { ok: true };
-        const argv = Array.isArray(result.argv) ? result.argv : [];
-        const argvDisplay = argv.length ? argv.join(' ') : '(no argv)';
-        const errorValue = result.json && typeof result.json === 'object' ? result.json.error : undefined;
-        return {
-          ok: false,
-          severity: SEVERITY.SMELL,
-          subject: { argv },
-          detail: `command "${argvDisplay}" exited 0 but carries result.json.error = ${JSON.stringify(errorValue)}`,
-        };
-      } catch (err) {
-        return { ok: false, severity: SEVERITY.SMELL, detail: `soft-error-exit-zero threw: ${err && err.message}` };
-      }
-    },
-  }),
-
-  Object.freeze({
     id: 'untyped-success',
     describe:
-      'SMELL, not a violation: result.kind === KIND.PROSE means the command only emits rendered text with no ' +
-      'typed surface to assert on. CONTRIBUTING.md forbids asserting on rendered text, so a prose-only command is ' +
-      'permanently unassertable by this harness — the gap is in the product, not the test.',
+      'VIOLATION: result.kind === KIND.PROSE means the command only emits rendered text with no typed surface to ' +
+      'assert on. CONTRIBUTING.md forbids asserting on rendered text, so a prose-only command is permanently ' +
+      'unassertable by this harness. This is enforced, not merely tracked: the corpus PROSE count is 0 (#3913) — ' +
+      'every executed step across every scenario emits a typed surface, so this oracle can now fire without ever ' +
+      'having fired against the shipped corpus. A future prose-only step reddens the build immediately.',
     check(ctx) {
       try {
         const result = ctx && ctx.result;
@@ -611,12 +635,12 @@ const ORACLES = Object.freeze([
         const argvDisplay = argv.length ? argv.join(' ') : '(no argv)';
         return {
           ok: false,
-          severity: SEVERITY.SMELL,
+          severity: SEVERITY.VIOLATION,
           subject: { argv },
           detail: `command "${argvDisplay}" emits KIND.PROSE only; no typed surface exists to assert on`,
         };
       } catch (err) {
-        return { ok: false, severity: SEVERITY.SMELL, detail: `untyped-success threw: ${err && err.message}` };
+        return { ok: false, severity: SEVERITY.VIOLATION, detail: `untyped-success threw: ${err && err.message}` };
       }
     },
   }),

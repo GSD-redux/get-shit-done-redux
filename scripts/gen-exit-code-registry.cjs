@@ -95,6 +95,7 @@ const REASON = Object.freeze({
   RESERVED_CODE: 'fail_reserved_code',
   FORBIDDEN_OWNER: 'fail_forbidden_owner',
   MISSING_ARTIFACT: 'fail_missing_artifact',
+  INVALID_CHARACTERS: 'fail_invalid_characters',
 });
 
 const USAGE_MESSAGE = [
@@ -118,6 +119,39 @@ const NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 const REQUIRED_STRING_FIELDS = ['meaning', 'owner', 'authorizedBy'];
 
 /**
+ * Characters forbidden in any declaration string field: a literal pipe `|`
+ * (the Markdown table cell delimiter `gen-exit-code-docs.cjs`'s
+ * `renderRegisteredTable` interpolates these fields into — an unescaped `|`
+ * breaks the row and everything after it lands verbatim in the rendered
+ * page, including a forged Markdown heading), and any C0 control character
+ * (`\x00`-`\x1F`, `\x7F`) — which subsumes CR (`\r`) and LF (`\n`), both of
+ * which would otherwise let a single declaration entry inject an entire
+ * extra row (or non-table content) into the generated table.
+ *
+ * Enforced HERE, at the validator both generators share (`gen-exit-code-registry.cjs`'s
+ * `validateEntry`, called by `gen-exit-code-docs.cjs`'s `loadEntries`), not
+ * at the docs renderer — failing closed at the declaration source is
+ * correct: an escaping fix at render time would let a malformed declaration
+ * through validation and only cosmetically repair the symptom (#3913 P9
+ * SEC-3).
+ *
+ * Checked via char codes rather than a literal control-character regex
+ * range — same approach as `scripts/registry-schema.cjs`'s
+ * `hasDisallowedControlChar` — so this never trips ESLint's `no-control-regex`.
+ *
+ * @param {string} v
+ * @returns {boolean}
+ */
+function hasForbiddenDeclarationChar(v) {
+  for (let i = 0; i < v.length; i += 1) {
+    const code = v.charCodeAt(i);
+    if (code === 0x7c) return true; // '|'
+    if (code < 0x20 || code === 0x7f) return true; // C0 control chars (incl. CR/LF/tab) + DEL
+  }
+  return false;
+}
+
+/**
  * Bands, per ADR-3889 §1:
  *   0, 1                 free (not allocatable here)
  *   2                     hook-adapter only
@@ -125,26 +159,44 @@ const REQUIRED_STRING_FIELDS = ['meaning', 'owner', 'authorizedBy'];
  *   14-63, 79, 126+        outside every band
  *   64-78                 generic
  *   80-125                domain
+ *
+ * SINGLE SOURCE for every band boundary in this file: `isAllocatableCode`,
+ * `bandFor`, and (via scripts/gen-exit-code-docs.cjs's `classifyBand`) the
+ * generated "Reserved bands" table are ALL derived from this one ordered
+ * list of `{category, allocatable, test}` predicates — there is no second
+ * hand-typed range anywhere else. Widening or narrowing a band means editing
+ * a `test` function here; every consumer (validation, the docs page) picks
+ * that change up with nothing else to keep in sync.
  */
+const BANDS = Object.freeze([
+  { category: 'free', allocatable: false, test: (code) => code === 0 || code === 1 },
+  { category: 'hook-only', allocatable: true, test: (code) => code === 2 },
+  { category: 'node-reserved', allocatable: false, test: (code) => code >= 3 && code <= 13 },
+  { category: 'generic', allocatable: true, test: (code) => code >= 64 && code <= 78 },
+  { category: 'domain', allocatable: true, test: (code) => code >= 80 && code <= 125 },
+  { category: 'shell-signal', allocatable: false, test: (code) => code >= 126 },
+]);
+
+/** The band a code falls into, or `null` for the residual "outside every band" gap (14-63, 79) that no BANDS entry above claims. */
+function bandEntryFor(code) {
+  return BANDS.find((band) => band.test(code)) || null;
+}
+
 function isAllocatableCode(code) {
-  if (code === 2) return true;
-  if (code >= 64 && code <= 78) return true;
-  if (code >= 80 && code <= 125) return true;
-  return false;
+  const band = bandEntryFor(code);
+  return band !== null && band.allocatable;
 }
 
 /**
  * Label the non-allocatable band a rejected code falls into, per the same
- * range boundaries documented on isAllocatableCode/ADR-3889 §1. Only called
- * for codes that already failed isAllocatableCode, so 2 and 64-125 never
- * reach here.
+ * BANDS table isAllocatableCode reads. Only called for codes that already
+ * failed isAllocatableCode, so an allocatable band's category is never
+ * returned here.
  * @returns {string}
  */
 function bandFor(code) {
-  if (code === 0 || code === 1) return 'free';
-  if (code >= 3 && code <= 13) return 'node-reserved';
-  if (code >= 126) return 'shell-signal';
-  return 'outside-every-band'; // 14-63, 79
+  const band = bandEntryFor(code);
+  return band ? band.category : 'outside-every-band'; // 14-63, 79
 }
 
 /**
@@ -187,6 +239,15 @@ function validateEntry(entry, index) {
         ok: false,
         reason: REASON.INVALID_ENTRY,
         message: `entry[${index}] (${name}).${field} must be a non-empty string, received ${JSON.stringify(value)}`,
+        context: { field, index, code, name },
+      };
+    }
+    if (hasForbiddenDeclarationChar(value)) {
+      return {
+        ok: false,
+        reason: REASON.INVALID_CHARACTERS,
+        message: `entry[${index}] (${name}).${field} must not contain a "|", CR, LF, or other control character ` +
+          `(these are interpolated into a Markdown table cell by gen-exit-code-docs.cjs), received ${JSON.stringify(value)}`,
         context: { field, index, code, name },
       };
     }
@@ -737,6 +798,70 @@ function main() {
 
 if (require.main === module) process.exitCode = main();
 
+/**
+ * Classify a single code into one of the band categories the docs page
+ * renders a row for. Reads the SAME `bandEntryFor`/BANDS table that
+ * `isAllocatableCode`/`bandFor` are themselves derived from — there is no
+ * second, independently-typed band boundary anywhere in this classification,
+ * so widening or narrowing a band (editing a `test` in BANDS) changes what
+ * this returns too, with nothing else to keep in sync.
+ * @param {number} code
+ * @returns {'free'|'hook-only'|'node-reserved'|'outside-every-band'|'generic'|'domain'|'shell-signal'}
+ */
+function classifyBand(code) {
+  const band = bandEntryFor(code);
+  return band ? band.category : 'outside-every-band'; // 14-63, 79
+}
+
+/**
+ * Scan the code space [0, maxCode] and group it into maximal contiguous
+ * runs of the same classifyBand() category, in the order those categories
+ * first appear. The run touching `maxCode` is marked `openEnded: true` for
+ * any category whose classification never changes past that point
+ * (currently only 'shell-signal', since bandFor(code >= 126) is constant),
+ * so the docs renderer can print it as `126+` instead of a false upper
+ * bound. This is what makes the docs page's band table a DERIVED artifact:
+ * widening a band in isAllocatableCode/bandFor changes what this function
+ * returns, which changes the rendered table, with no second literal to
+ * keep in sync.
+ * @param {number} maxCode
+ * @returns {Array<{category:string, ranges:Array<{start:number,end:number,openEnded:boolean}>}>}
+ */
+function computeBandRanges(maxCode) {
+  /** @type {Map<string, Array<{start:number,end:number,openEnded:boolean}>>} */
+  const byCategory = new Map();
+  const order = [];
+
+  let runCategory = null;
+  let runStart = null;
+  for (let code = 0; code <= maxCode; code += 1) {
+    const category = classifyBand(code);
+    if (category !== runCategory) {
+      if (runCategory !== null) {
+        pushRun(byCategory, order, runCategory, runStart, code - 1, false);
+      }
+      runCategory = category;
+      runStart = code;
+    }
+  }
+  // Close the final run. It is open-ended (unbounded above) exactly when its
+  // category classification is constant for every code beyond maxCode too —
+  // true today only for 'shell-signal', since bandFor treats every code
+  // >= 126 identically with no further upper boundary.
+  const openEnded = classifyBand(maxCode) === classifyBand(maxCode + 1);
+  pushRun(byCategory, order, runCategory, runStart, maxCode, openEnded);
+
+  return order.map((category) => ({ category, ranges: byCategory.get(category) }));
+}
+
+function pushRun(byCategory, order, category, start, end, openEnded) {
+  if (!byCategory.has(category)) {
+    byCategory.set(category, []);
+    order.push(category);
+  }
+  byCategory.get(category).push({ start, end, openEnded });
+}
+
 module.exports = {
   REASON,
   USAGE_MESSAGE,
@@ -747,8 +872,13 @@ module.exports = {
   DEFAULT_DTS_OUTPUT_PATH,
   DEFAULT_SH_OUTPUT_PATH,
   ENTRY_FIELD_TYPES,
+  BANDS,
+  bandEntryFor,
   isAllocatableCode,
   bandFor,
+  classifyBand,
+  computeBandRanges,
+  hasForbiddenDeclarationChar,
   validateEntry,
   validateEntries,
   loadDeclaration,
