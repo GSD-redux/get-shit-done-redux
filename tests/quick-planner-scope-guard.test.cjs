@@ -27,7 +27,13 @@ const QUICK_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md')
 // .md reads).
 function plannerConstraints() {
   const md = fs.readFileSync(QUICK_MD, 'utf-8');
-  const start = md.indexOf('<constraints>');
+  // quick.md carries TWO <constraints> blocks (planner at ~315, executor at
+  // ~479). Anchor to the PLANNER's: the last block opening before its
+  // subagent_type declaration — step reordering can never silently redirect
+  // the guard to another agent's block.
+  const plannerDispatch = md.indexOf('subagent_type="gsd-planner"');
+  assert.ok(plannerDispatch > 0, 'quick.md must dispatch the gsd-planner agent');
+  const start = md.lastIndexOf('<constraints>', plannerDispatch);
   const end = md.indexOf('</constraints>', start);
   assert.ok(start > 0 && end > start, 'quick.md must contain the planner <constraints> block');
   return md.slice(start, end);
@@ -40,7 +46,7 @@ test('#3786: the quick planner constraints carry a mutable-scope authority rule'
     '#3786: scope derived from mutable external state must be live-observed or kept conditional',
   );
   assert.ok(
-    /investigation only/i.test(constraints) || /never.{0,20}authority/i.test(constraints),
+    /may guide investigation only/i.test(constraints),
     '#3786: historical STATE.md/recovery/cached-diff paths must be labeled investigation-only, never edit/verification authority',
   );
   assert.ok(
