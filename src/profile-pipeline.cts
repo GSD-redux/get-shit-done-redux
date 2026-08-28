@@ -19,6 +19,9 @@ import readline from 'node:readline';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioModule = require('./io.cjs');
 const { output, error, reapStaleTempFiles, ensureGsdTempDir, GSD_TEMP_DIR } = ioModule;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { ExitError } = cliExitModule;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -321,7 +324,7 @@ function cmdScanSessions(overridePath: string | null | undefined, options: { jso
       }
     }
     process.stdout.write(`\nTotal: ${projects.length} projects\n`);
-    process.exit(0);
+    throw new ExitError(0);
   }
 }
 
@@ -460,10 +463,10 @@ async function cmdExtractMessages(projectArg: string, options: { sessionId?: str
 
   if (sessionsSkipped > 0 && sessionsProcessed > 0) {
     process.stdout.write(JSON.stringify(result, null, 2));
-    process.exit(2);
+    throw new ExitError(2);
   } else if (sessionsProcessed === 0 && sessionsSkipped > 0) {
     process.stdout.write(JSON.stringify(result, null, 2));
-    process.exit(1);
+    throw new ExitError(1);
   } else {
     output(result, raw, undefined);
   }

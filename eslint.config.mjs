@@ -31,6 +31,8 @@ import noDuplicateFoldMarker from './eslint-rules/no-duplicate-fold-marker.cjs';
 import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.cjs';
 import noExternalRequireInBin from './eslint-rules/no-external-require-in-bin.cjs';
 import noPrivateBinaryResolution from './eslint-rules/no-private-binary-resolution.cjs';
+import requireRegisteredExit from './eslint-rules/require-registered-exit.cjs';
+import noExactCaseEnvAccess from './eslint-rules/no-exact-case-env-access.cjs';
 
 const localPlugin = {
   rules: {
@@ -56,6 +58,8 @@ const localPlugin = {
     'require-subprocess-timeout': requireSubprocessTimeout,
     'no-external-require-in-bin': noExternalRequireInBin,
     'no-private-binary-resolution': noPrivateBinaryResolution,
+    'require-registered-exit': requireRegisteredExit,
+    'no-exact-case-env-access': noExactCaseEnvAccess,
   },
 };
 
@@ -415,6 +419,16 @@ export default tseslint.config(
       // the platform seam (src/shell-command-projection.cts, exempt by path).
       // See .gsd/phase/chore-3619-no-bare-binary-spawn/40-design.md.
       'local/no-private-binary-resolution': 'error',
+      // #3910 (epic #3889 Phase 6): ban raw process.exit() outside
+      // terminateNow — the only sanctioned terminator (src/cli-exit.cts).
+      // Load-bearing that this is registered HERE, not only on the emitted
+      // .cjs globs: the compiled gsd-core/bin/lib/*.cjs mirrors are globally
+      // eslint-ignored (ADR-457), so a rule registered only on the emitted
+      // surface never sees the real .cts sources (#3496).
+      'local/require-registered-exit': 'error',
+      // #3624 (epic #3411 Phase 4): flag an exact-case env-var read off a
+      // non-process.env receiver. See CONTEXT.md DEFECT.WINDOWS-EXACT-CASE-ENV-ACCESS.
+      'local/no-exact-case-env-access': 'error',
     },
   },
 
@@ -533,6 +547,10 @@ export default tseslint.config(
       'local/no-external-require-in-bin': 'error',
       // #3619 (epic #3411 Phase 3): see the src/**/*.cts block above for detail.
       'local/no-private-binary-resolution': 'error',
+      // #3910 (epic #3889 Phase 6): see the src/**/*.cts block above for detail.
+      'local/require-registered-exit': 'error',
+      // #3624: see the src/**/*.cts block above for detail.
+      'local/no-exact-case-env-access': 'error',
     },
   },
 
@@ -560,6 +578,10 @@ export default tseslint.config(
     rules: {
       // #3619 (epic #3411 Phase 3): see the src/**/*.cts block above for detail.
       'local/no-private-binary-resolution': 'error',
+      // #3910 (epic #3889 Phase 6): see the src/**/*.cts block above for detail.
+      'local/require-registered-exit': 'error',
+      // #3624: see the src/**/*.cts block above for detail.
+      'local/no-exact-case-env-access': 'error',
     },
   },
 
@@ -580,26 +602,14 @@ export default tseslint.config(
       'local/no-adhoc-regex-escape': 'error',
       // #3619 (epic #3411 Phase 3): see the src/**/*.cts block above for detail.
       'local/no-private-binary-resolution': 'error',
-      // n/no-process-exit is deliberately OFF for hooks ONLY.
-      //
-      // A hook is a standalone process whose ENTIRE contract is its exit code: the
-      // harness reads exit 2 as "deny". `process.exitCode = N; return;` is not
-      // equivalent — it lets execution continue past the denial, and several exits
-      // here are load-bearing in a way that makes that a behavior change, not a
-      // refactor:
-      //   - stdin-timeout guards (e.g. hooks/gsd-read-guard.js, gsd-cursor-subagent-stop.js)
-      //     fire from a setTimeout where NOTHING else terminates the process if stdin
-      //     never closes;
-      //   - hooks/gsd-worktree-path-guard.js exits from a nested `if` whose fallthrough
-      //     would otherwise reach a different unconditional exit;
-      //   - hooks/gsd-write-guard.js:159-175 documents that pipe writes are async on
-      //     Windows, so it deliberately does fs.writeSync(1/2, ...) BEFORE process.exit(2)
-      //     to avoid truncation.
-      // ADR-0012 and ADR-0174 scope the "never calls process.exit" convention to the
-      // Command Routing Hub (src/command-routing-hub.cts), not to hooks. Rewriting 89
-      // call sites in enforcement hooks to satisfy a rule aimed at libraries would trade
-      // a real behavior risk for a cosmetic win. See .gsd/phase/chore-3059-eslint-glob-coverage-guard/40-design.md.
-      'n/no-process-exit': 'off',
+      // #3910 (epic #3889 Phase 6): Phase 7 (#3911) migrated every enforcement
+      // hook onto terminateNow's write-then-terminate seam (hooks/lib/cli-exit.js),
+      // so the raw-process.exit escape hatch this block used to grant hooks
+      // (n/no-process-exit: 'off') is now dead — see the src/**/*.cts block
+      // above for detail on the rule itself.
+      'local/require-registered-exit': 'error',
+      // #3624: see the src/**/*.cts block above for detail.
+      'local/no-exact-case-env-access': 'error',
     },
   },
 

@@ -200,7 +200,9 @@
   - ["Failure Is a Value" — Strict Argv Rejection and the `--pick` Absence Contract](#3884-failure-is-a-value--strict-argv-rejection-and-the---pick-absence-contract)
   - [No Silent Swallow, No Verdict From Dropped Data](#3885-no-silent-swallow-no-verdict-from-dropped-data)
   - [Runtime Marker Resolution, Derived Codex Sandbox, and In-Phase Short-Form Dependencies](#3897-runtime-marker-resolution-derived-codex-sandbox-and-in-phase-short-form-dependencies)
+  - [The Raw Terminator Is Banned by Construction](#3910-the-raw-terminator-is-banned-by-construction)
   - [Hooks Declare Their Crash Policy](#3911-hooks-declare-their-crash-policy)
+  - [gsd-tools Declares Outcomes, Pinned at v1](#3912-gsd-tools-declares-outcomes-pinned-at-v1)
   - [Reachable Lint Rules and a Non-Destructive Quick-Task Append](#3951-reachable-lint-rules-and-a-non-destructive-quick-task-append)
 
 ---
@@ -3921,6 +3923,56 @@ happens, matching the retired behavior exactly.
 
 ---
 
+### 3910. The Raw Terminator Is Banned by Construction
+
+**Purpose:** Make a bare `process.exit(...)` a lint error everywhere it matters, so the
+"nothing fails with success" defect class ADR-3889 exists to close cannot silently reopen
+through a new call site.
+
+**What changed (ADR-3889 Phase 6, #3910):**
+
+- New rule `local/require-registered-exit` (`eslint-rules/require-registered-exit.cjs`) flags
+  any `CallExpression` shaped exactly like `process.exit(...)`. It does **not** flag
+  `process.exitCode = N` — that assignment is the correct drain-then-exit pattern `runMain`
+  itself uses, and the two are structurally distinct (an assignment target is never a
+  `CallExpression`).
+- Registered on four globs: `src/**/*.cts`, `scripts/**/*.cjs`, `hooks/**/*.js`,
+  `gsd-core/bin/**/*.cjs` (`eslint.config.mjs:420-426,545-547,574-576,601`). Registering on
+  `src/**/*.cts` — not only the emitted `gsd-core/bin/lib/*.cjs` mirrors, which are globally
+  eslint-ignored (ADR-457) — is load-bearing: a rule registered only on the emitted surface is
+  blind to the real sources, the same way `n/no-process-exit` went invisible (#3496).
+- The dead `n/no-process-exit: 'off'` carve-out for `hooks/**` is deleted: Phase 7 (#3911)
+  migrated every enforcement hook onto `terminateNow`, so it protected nothing.
+- Exactly two allowlist entries, repo-wide:
+  1. The body of `terminateNow` in `src/cli-exit.cts` — detected **structurally** (any
+     `process.exit()` lexically nested inside a function named `terminateNow`, *and* the file's
+     basename is `cli-exit.cts`), not by path+line, so it does not rot when the function moves.
+  2. `gsd-core/bin/gsd-tools.cjs`'s `ensureRuntimeBuild` bootstrap-failure path, via an inline
+     `// eslint-disable-next-line local/require-registered-exit` with a stated reason — it runs
+     *before* `./lib/cli-exit.cjs` is even required, so the registered-exit seam does not exist
+     yet at that point in the process's lifetime.
+- The last raw terminators in `src/**/*.cts` were migrated onto the seam, most notably
+  `src/io.cts`'s `error()`: it changed from an uncatchable `process.exit(1)` to a catchable
+  `throw new ExitError(1)` (stderr output is byte-identical; `runMain` projects the exit code).
+  `terminateNow` could not serve this site — ADR-3889 §1 makes exit codes 0 and 1
+  unallocatable, so `nameForExitCode(1)` throws. That control-flow change required three
+  interceptor fixes so an `ExitError` reaches `runMain`: `command-routing-hub`'s `dispatch()`
+  now rethrows it, and the profile-pipeline router's detached `.catch()` no longer calls
+  `error()` — it writes stderr and sets `exitCode` in place.
+- **Known limits (documented and test-pinned, not endorsed):** the rule matches the literal
+  `process.exit(...)` shape only, with no scope/flow analysis. It does not catch
+  `process['exit'](0)` (computed member access), `const e = process.exit; e(1)` (aliasing to a
+  local binding before calling), or `process.exit.call(...)`/`.apply(...)` (indirect invocation).
+  Catching these needs binding/scope-aware analysis, out of scope for this issue; pinning tests
+  in `tests/eslint-rules.test.cjs` assert today's non-detection so a future widening is a visible
+  choice, not a silent one.
+
+See [Resolve a raw-terminator finding](../how-to/resolve-a-raw-terminator-finding.md) for what to
+do when this rule fires, and [ADR-3889](../adr/3889-process-exit-contract.md) for the exit-code
+registry the seam is layered over.
+
+---
+
 ### 3911. Hooks Declare Their Crash Policy
 
 **Purpose:** Give every shipped enforcement hook (`hooks/*.js`, `hooks/*.sh`) a
@@ -3974,6 +4026,69 @@ See [Declare a hook's crash policy](../how-to/declare-a-hook-crash-policy.md)
 for the full how-to, and
 [ADR-3889](../adr/3889-process-exit-contract.md) for the exit-code registry
 this vocabulary is layered over.
+
+---
+
+### 3912. gsd-tools Declares Outcomes, Pinned at v1
+
+**Purpose:** Give every `gsd-tools` terminating path a declared outcome name, and project that
+declaration through the versioned exit contract ([ADR-3889](../adr/3889-process-exit-contract.md)
+§4) — without changing a single exit code for a caller that has not opted in.
+
+**Reference — what changed (ADR-3889 Phase 8, #3912):**
+
+- `error(message, reason)` now maps its `reason` argument onto a declared outcome name (`USAGE`,
+  `NO_INPUT`, `UNAVAILABLE`, `INTERNAL`, `FAIL`) via a fixed table closed over all 25
+  `ERROR_REASON` members (`src/io.cts`'s `REASON_TO_OUTCOME`). Under the default contract version
+  `v1`, the declaration is recorded but `error()` still throws `ExitError(1)` unconditionally,
+  byte-identical to every prior release. Under `v2` (`--exit-contract=v2` /
+  `GSD_EXIT_CONTRACT=v2`), it throws `ExitError(projectOutcome(outcome, 'v2'))` instead — e.g.
+  `SDK_MISSING_ARG`/`SDK_UNKNOWN_COMMAND` project to `64` (`USAGE`), `CONFIG_KEY_NOT_FOUND` to `66`
+  (`NO_INPUT`). All 278 call sites are untouched; 226 pass no reason and default to `UNKNOWN` ->
+  `FAIL` -> exit `1` under both versions.
+- `output()` now declares `DEGRADED` whenever its payload carries a **serializable** `error` value
+  (any key order — `{found:false, error}` counts the same as `{error, found:false}`). The
+  discriminator is survives-`JSON.stringify`, not mere key presence: `{ error: undefined }` does
+  **not** declare `DEGRADED`, because `JSON.stringify` drops an `undefined`-valued property before
+  the payload reaches the wire.
+- A third `globalThis` cell (`src/cli-exit.cts`'s `PENDING_OUTCOME_KEY`) holds the pending declared
+  outcome between `output()` and `runMain`. Semantics: **last declaration wins, cleared on
+  consumption** — a later clean `output()` call in the same invocation undoes an earlier degraded
+  one, and `runMain` clears the cell on every exit so a second `runMain` in the same process never
+  inherits a stale declaration.
+- **Precedence** for the code a void-returning `main()` ends up with, highest first: (1) an explicit
+  `main()` return, (2) a non-zero `process.exitCode` `main()` already set directly, (3) the pending
+  declared outcome, (4) otherwise `0`. Projection may only ever **set** a code, never **lower** one
+  — a review pass wrongly concluded the cell was fail-closed by construction; without rule 2, `state
+  validate --strict` briefly exited `0` where it must exit `1`.
+- **`v1` is byte-identical.** `DEGRADED` projects to `0` under `v1` and to `80`
+  (`exitCodeFor('DEGRADED')`) under `v2` — that asymmetry is
+  [ADR-2980](../adr/2980-payload-carried-error-is-a-degraded-result.md)'s compatibility boundary,
+  deliberately preserved, not a bug to reconcile.
+
+**Explanation — why this is the shape it is:**
+
+ADR-2980 ratified `output({error})`'s exit-0 population on measured blast radius (`output` has 170
+direct callers) and Hyrum's Law grounds — a CLI exit code has no `/v2/` of its own, so normalizing
+it in place would have broken every caller already treating exit `0` as a soft signal. Its own
+"Revisit if" clause named the missing piece: *"a future `gsd-tools` major version provides a
+compatibility boundary that a CLI exit code otherwise lacks."* ADR-3889 §4 built exactly that
+boundary — a versioned projection selected by flag or env var, defaulting to today's behavior — and
+this phase is what wires `error()` and `output()` onto it. Declaring an outcome is unconditional and
+immediate; only its *projection* onto an integer is deferred behind the version switch, so the
+population ADR-2980 ratified keeps exiting `0` until a caller explicitly asks for something else.
+
+The count matters here too: an AST re-measure for this phase found **64** `output({error})` call
+sites across the same nine modules ADR-2980 named — not the 60 that ADR itself recorded, the drift
+concentrated in `frontmatter.cts`, `phase.cts`, and `roadmap.cts`. The `v2` projection is asserted
+over the enumerated 64, not a restated 60; see ADR-2980's amendment for the module-by-module
+breakdown.
+
+See [Adopt the v2 exit contract](../how-to/adopt-the-v2-exit-contract.md) for how to opt in and what
+it means for a CI gate, [`docs/json-errors.md`](../json-errors.md#outcome-declaration-and-the-versioned-exit-contract-adr-3889-4-3912)
+for the full reference, and
+[ADR-2980](../adr/2980-payload-carried-error-is-a-degraded-result.md) /
+[ADR-3889](../adr/3889-process-exit-contract.md) for the decisions.
 
 ---
 

@@ -19,6 +19,9 @@
  */
 
 import fs from 'node:fs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { ExitError, runMain } = cliExitModule;
 
 /** The logical SPEC sections the spec-less probe fallback cares about. */
 export type SpecSectionKey = 'edges' | 'prohibitions';
@@ -114,11 +117,13 @@ const VALID_KEYS: readonly SpecSectionKey[] = ['edges', 'prohibitions'];
 // 2 only on a usage error (missing args / bad key). `require.main === module` so it runs only when
 // the compiled `.cjs` is executed directly, never when imported by tests.
 if (require.main === module) {
-  const specFile = process.argv[2];
-  const key = process.argv[3] as SpecSectionKey | undefined;
-  if (!specFile || !key || !VALID_KEYS.includes(key)) {
-    process.stderr.write('usage: spec-section.cjs <specFile> <edges|prohibitions>\n');
-    process.exit(2);
-  }
-  process.stdout.write(JSON.stringify(specSectionStatus(specFile, key)) + '\n');
+  runMain(() => {
+    const specFile = process.argv[2];
+    const key = process.argv[3] as SpecSectionKey | undefined;
+    if (!specFile || !key || !VALID_KEYS.includes(key)) {
+      process.stderr.write('usage: spec-section.cjs <specFile> <edges|prohibitions>\n');
+      throw new ExitError(2);
+    }
+    process.stdout.write(JSON.stringify(specSectionStatus(specFile, key)) + '\n');
+  });
 }

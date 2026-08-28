@@ -258,6 +258,7 @@ These govern the system as it stands. Cite these.
 | [ADR-3473](3473-enforcement-by-construction.md) | Enforcement by Construction — One Owner per Invariant | Accepted | — |
 | [ADR-3574](3574-install-materialization-primitives.md) | Install materialization shares primitives, not one writer | Accepted | — |
 | [ADR-3625](3625-vetted-spawn-library-evaluation.md) | The platform seam keeps its own Windows binary resolution rather than adopting a spawn library | Accepted | — |
+| [ADR-3626](3626-context-md-seam-claim-gate.md) | CONTEXT.md seam claims carry a checkable enforcement pointer | Accepted | — |
 | [ADR-3660](3660-runtime-artifact-layout-module.md) | Runtime Artifact Layout Module owns per-runtime artifact placement | Accepted | [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) |
 
 ### Proposed
@@ -275,6 +276,7 @@ Decided in principle, not yet ratified. Do not cite as settled architecture.
 | [ADR-1671](1671-dynamic-context-management-platform.md) | Dynamic context management platform | Proposed | — |
 | [ADR-1953](1953-complexity-triggered-refactor.md) | Complexity-triggered refactor — the loop measures the entropy it just added | Proposed | — |
 | [ADR-3128](3128-adaptive-runtime-evidence.md) | Adaptive runtime evidence for GSD Debug | Proposed | — |
+| [ADR-3646](3646-per-task-content-resolution-seam.md) | Per-task external-tracker content-resolution seam | Proposed | — |
 | [ADR-3889](3889-process-exit-contract.md) | One exit-code registry — 0 and 1 are free, everything else is allocated | Proposed | — |
 | [ADR-3942](3942-emitted-drift-ack-commit-trailer.md) | The emitted-drift acknowledgment is PR-lifetime data — it belongs in a commit trailer, not the working tree | Proposed | — |
 
