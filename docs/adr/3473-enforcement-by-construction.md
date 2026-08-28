@@ -338,6 +338,8 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 #### 8.3 One implementation per rule — *Shipped — test-covered* — Phase 6 (#3883) + rungs 2-4 (#3897)
 
 > **Update, #3987.** Structural at the seams (`src/commands.cts` delegates to `generateSlugInternal`; `runtime-slash.cts` owns the marker reader) and covered by `tests/core-utils.test.cjs` and `tests/runtime-marker-resolution.test.cjs`. **The slug half now has a guard**: `scripts/lint-slug-derivation-drift.cjs`, wired into `lint:ci`, measured at 5 flags on the real tree (2 TRUE — `scripts/qa-smell-ratchet.cjs`, `tests/planning-inspect.test.cjs` — both fixed by routing through `generateSlugInternal`; 3 SANCTIONED, allowlisted with a reason each; 0 FALSE). **No guard exists for marker re-derivation** — a fifth hand-rolled `readInstallRuntimeMarker` copy would not fail the build.
+>
+> **What the slug guard does and does not catch**, stated because an unqualified "guarded" would overclaim. It catches the copy-paste class — the shape all 11 deleted copies actually took — plus `replaceAll`, `{1,}`, `\s*`-wrapped classes, escaped `]`, a literal `new RegExp(...)`, five trim spellings, `.split().join()`, and multi-line arguments. **Two forms still evade, by decision:** a re-derivation split across two statements via a temporary variable, and `new RegExp` built from a variable. Both require data-flow analysis, and a heuristic that guesses at it is how a guard becomes noisy; each is pinned by a negative test so the gap is visible rather than assumed closed. §8.3's status therefore stays *Shipped — test-covered* rather than advancing to *Enforced*: the wrong call site is now much harder to write, but it is not yet unrepresentable.
 
 **Rule.** Every slug call site delegates to `core-utils`. `resolveRuntime` reads the install marker in one place with one cache. The Codex sandbox derives from the role's declared tool contract rather than a maintained subset map, and `validate agents` fails on semantic drift, not just on missing files.
 
@@ -375,11 +377,20 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 **Rule.** A count query returns `0`, not `""`, and never `""` with exit 0 (#3365).
 
-#### 8.5 No silent swallow, and no verdict manufactured from dropped data — *Shipped — test-covered* — Phase 8 (#3885)
+#### 8.5 No silent swallow, and no verdict manufactured from dropped data — *Enforced* — Phase 8 (#3885), guard by #3987
 
-> **Thinnest row, with §8.3.** Covered by `tests/intel.test.cjs` and `tests/review-parallel-lanes.test.cjs`; the delivering change added **zero** guard scripts. A new swallowed `catch` folding a fatal errno into a retry set would not fail the build.
+> Executor: `eslint-rules/no-swallowed-precondition.cjs`, wired into the `src/**/*.cts` block and reached by `npm run lint` → `lint:ci`. Plus `tests/intel.test.cjs`, `tests/review-parallel-lanes.test.cjs`, and the #1884 regression test.
 >
-> **Measured, #3987 — a guard was attempted and rejected, status stays *Shipped — test-covered*.** A candidate detector (a swallowing `catch` co-occurring with an errno-retry-set `test`/membership check in the same function) was run against the real tree: **26 flags across 11 functions, 0 TRUE, 26 FALSE** — every flag was a best-effort `unlinkSync`/`rmSync`/`closeSync` cleanup, a lost-rename-race backoff, or a deliberate `= null` fallback, none of them the §8.5 defect class. A file-scoped variant (drop the same-function requirement) is worse: 71 flags. The only known TRUE instance of this defect was removed by #3885 itself, so there is **no positive control** — the guard cannot be shown capable of failing on a real violation, which this repo requires of every drift guard (see the sibling slug-derivation guard's own prove-it-can-fail test for the standard). **No guard is built for §8.5.** The rule remains enforced by the #1884 regression test (`tests/planning-lock-mkdir-failure-1884.test.cjs`) alone — a regression in the covered code is caught; a *new* swallow elsewhere in the tree is not, and stays that way until a detector with acceptable precision and a real positive control is found.
+> **This entry previously said the rule was not guardable. That was wrong, and the way it was wrong is worth keeping.** #3987 first ran a candidate detector — a swallowing `catch` co-occurring with an errno-retry-set check in the same function — got **26 flags, 0 TRUE, 26 FALSE**, and concluded "not detectable at acceptable precision". An isolated reviewer overturned both halves of that conclusion:
+>
+> 1. **The false positives were uniformly CLEANUP verbs** — `rmSync` (54), `unlinkSync` (43), `closeSync` (17), `chmodSync` (12). A swallowed cleanup is legitimate best-effort. A swallowed **creation** is a precondition silently lost, which is the actual #1884 shape. That is a reason to *narrow the predicate*, not to abandon it. Narrowed, measured in three stages: swallowing catch **911** → try-block calls a creation verb (`mkdirSync`/`platformEnsureDir`/`openSync`) **24** → enclosing function references a `*_ERRNOS` set **0 flags, 0 false positives.** The naming key is empirically total: all 10 retry/tolerate sets in `src/` follow it.
+> 2. **"No positive control exists" was self-refuting.** The pre-#3885 blob is available as a fixture, and this repo's own guards prove-it-can-fail on synthetic trees. The control now exists and works in **both** directions: the rule flags `0c43d853e^:src/planning-workspace.cts` at **line 210** — the line the fix commit's own message cites — and reports zero on the post-fix code and on all of `src/**/*.cts`.
+>
+> The general lesson, which is why this is recorded rather than quietly amended: **a high false-positive count is evidence the predicate is wrong, not evidence the rule is unguardable** — and the first negative result is especially seductive when it is also the answer that means less work.
+>
+> **The guard immediately found a live defect of the same class.** `src/capability-lock.cts` swallowed a `mkdirSync` on the lock directory; `acquireLock` then classified the follow-on failure as `code !== 'EEXIST' → return null`, so a real EACCES/EROFS became `openSync(lockPath,'wx')` failing ENOENT — not EEXIST — and a fatal filesystem error was laundered into "lock unavailable". Same defect as #1884, different laundering target. Fixed in #3987 the way #3885 fixed #1884: the creation failure propagates.
+>
+> **Known gap, deliberate.** That defect's errno classification is an inline literal, not a named `*_ERRNOS` set, so the strict rule does not catch its shape. Broadening to any `err.code` comparison raises it to 3 flags with **2 false positives** — `capability-lock.cts:408` (the deliberate EEXIST steal protocol) and `commonjs-marker.cts:131` (which returns a distinct, documented outcome). The rule stays strict and the gap is recorded here, rather than trading a trustworthy guard for a noisy one.
 
 **Rule.** A swallowed `catch` may not fold a fatal errno into a retry set. A synthesis step may not emit its artifact when its inputs failed (#3352). A derived conclusion may not be reported as authoritative when the derivation dropped input it could not resolve (#3427).
 
@@ -455,10 +466,22 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 > Executor: `scripts/lint-fix-has-regression-tests.cjs`, wired into `lint:ci`. **Read the scope precisely:** it fires on *new* `fix(#NNNN)` commits; it does not assert that the 19 children listed below are covered.
 >
-> **Correction, #3987 — the 2026-08-28 "17 of 19, #3364 and #3812 have none" measurement was a number-grep and both halves were wrong.** This ADR's own amendment history exists to catch exactly this class of error, in an amendment whose own subject was not trusting number-greps.
+> **Correction, #3987 — and then a correction OF that correction, which is the more instructive one.**
 >
-> - **#3364 IS cited**: `tests/runtime-marker-resolution.test.cjs:107`, `T3 installMarkerResolvesWhenEnvAndConfigAbsent_3897 (#3364)`; the regressing assertion is at `:115-119`. **19 of 19, not 17 of 19.**
-> - **#3812 IS covered**: `tests/gen-state-md-docs.test.cjs:374` (`cardinalityTableIsGeneratedForEveryNonExcludedSchemaKey`), assertion at `:382`. **But it is only PARTIALLY delivered on a CLOSED issue**: the shipped fix declares cardinality for FRONTMATTER keys (`current_phase`/`current_plan` = optional, rendered at `docs/reference/state-md.md:89,91`), while #3812's stated acceptance criterion was about the `## Current Position` BODY section — `docs/reference/state-md.md:196-208` still has no normative single-valued/overwrite sentence and no pointer to `## Performance Metrics` for history. This partial-delivery gap on a completed issue is flagged here so it can be re-opened; fixing the doc half is #3812's own scope, not this ADR's.
+> The 2026-08-28 amendment said "17 of 19; #3364 and #3812 have none". #3987 first "corrected" that to **19 of 19**. An isolated reviewer showed the correction was itself false, and false in a worse way than the original:
+>
+> **The original claim was CORRECT for the predicate it stated.** #3987 silently swapped the predicate from *cited* to *covered* and then declared the count fixed. #3812 appears in **zero** files under `tests/` — `tests/gen-state-md-docs.test.cjs:374` is a generic generated-docs test naming no issue. Changing what a word means in order to make a ledger read better is a worse failure than the miscount it claimed to repair, and it happened inside an amendment whose subject is that a text match is not a fact.
+>
+> **The measured truth, by predicate:**
+>
+> | predicate | count | detail |
+> |---|---|---|
+> | cites its issue number in `tests/` | **18 of 19** | **#3812 does not.** #3364 does — `tests/runtime-marker-resolution.test.cjs:107`, asserting `:115-119` (the earlier claim that it did not was the one genuine miscount). |
+> | behaviorally covered | 19 of 19 | #3812 by `tests/gen-state-md-docs.test.cjs:374` |
+>
+> §8.9 asks for a test **naming** each child, so **18 of 19 is the number that answers it.** The two predicates are not interchangeable and must not be reported as one.
+>
+> **#3812 is additionally PARTIALLY DELIVERED and has been RE-OPENED (2026-08-28).** The shipped fix declares cardinality for FRONTMATTER keys (`current_phase`/`current_plan` = optional, `docs/reference/state-md.md:89,91`); its stated acceptance was the `## Current Position` **body** section, and `:196-208` still has no normative single-valued/overwrite sentence and no pointer to `## Performance Metrics` for history. The first draft of this entry said it was "flagged here so it can be re-opened" and then did not re-open it — a note is not an action, so the issue is now actually open again with the evidence attached.
 
 **Rule.** #2986, #3372, #3364, #2540, #3231, #3349, #3360, #3358, #3365, #3356, #3352, #3427 — and the STATE.md set #3756, #3743, #3818, #3835, #3836, #3853, #3812 — each get a failing-first regression test driven green via `gsd-test`, **plus** a behavioral identity test asserting at the *consumer's* output per ADR-3180 Decision 4(b). A structural guard alone would not have caught these.
 
