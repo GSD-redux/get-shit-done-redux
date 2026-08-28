@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "count": 261,
+  "count": 263,
   "classes": {
     "ARCH": 1,
     "CI": 2,
@@ -17,7 +17,7 @@
     "PROC": 14,
     "PROHIB": 10,
     "RELEASE-NOTES": 31,
-    "RULESET": 58,
+    "RULESET": 60,
     "SESSION": 9,
     "WAVE": 5,
     "WORKSTREAM": 5,
@@ -1095,9 +1095,19 @@
       "value": "module-level const src = readFileSync(...) throws before any test() registers — wrap in try/catch in test() or use lazy load"
     },
     {
+      "id": "RULESET.TESTS.mutation-runner",
+      "klass": "RULESET",
+      "value": "Stryker executes every shard through the OFFICIAL @stryker-mutator/tap-runner (testRunner:'tap'), never the built-in 'command' runner (#3915); 'command' is the one runner Stryker excludes from coverage analysis, which forced coverageAnalysis:'off' and made cost strictly linear in (mutants x whole-shard test time) — the frontmatter shard measured 1751s on run 33021042847 vs 212s for the next slowest. tap.testFiles is injected per shard via MUTATION_TEST_FILES (mutation.yml env <- matrix.tests <- scripts/mutation-matrix.cjs buildResult); resolveMutationTestFiles is the SINGLE fail-closed reader and existence-checks every entry, because the tap runner's findTestyLookingFiles resolves the list with glob() and a non-matching pattern yields an EMPTY list SILENTLY (a fast, confident, meaningless run). tap.forceBail is FALSE by measurement, not preference: 3 of 26 shard test files spawn subprocesses (config-schema.property, core-utils, feat-3881-yaml-parser-consequences) and bail fires on every KILLED mutant, so leaving it on kills processes mid-spawnSync and orphans their children; Stryker's separate disableBail still skips remaining FILES, which is most of the win. tap.nodeArgs and top-level buildCommand stay UNSET so no rebuild lands between mutation and test (ADR-457). Coverage granularity is per FILE, not per test (\"a test is always a test file\"), so the #2790 excludeTests bans on spawn-heavy integration files remain necessary and unchanged"
+    },
+    {
       "id": "RULESET.TESTS.mutation-score",
       "klass": "RULESET",
       "value": "Stryker runs incremental (--since origin/next) on ubuntu-latest/Node24 CI leg; default threshold 80% killed/total; surviving mutants in scope block merge unless path is listed in stryker.config.mjs with documented reason; treat surviving mutant as a failing test specification"
+    },
+    {
+      "id": "RULESET.TESTS.mutation-score-denominator",
+      "klass": "RULESET",
+      "value": "the gated number is mutation-testing-metrics' mutationScore = totalDetected/totalValid, which counts NoCoverage in the denominator EXACTLY as Survived; both Stryker's own thresholds.break (core dist/src/reporters/mutation-test-report-helper.js) and scripts/check-mutation-score-ratchet.cjs read THAT field, which is what makes the #3915 coverageAnalysis 'off'->'perTest' switch score-neutral. NEVER gate on mutationScoreBasedOnCoveredCode — it EXCLUDES NoCoverage and inflates sharply under perTest (measured on a synthetic report: 8 killed/2 survived = 80 and 80; 8 killed/2 noCoverage = 80 and 100), so swapping to the better-sounding field would make every minScore floor trivially satisfiable and the gate decorative. Under the pre-#3915 coverageAnalysis:'off' the two fields were ALWAYS identical (noCoverage was structurally 0), which is why nothing had ever pinned the choice; tests/mutation-score-ratchet.test.cjs now pins it with a non-vacuity assertion that the two numbers genuinely diverge"
     },
     {
       "id": "RULESET.TESTS.no-dead-regex-in-includes",

@@ -91,6 +91,14 @@ function getControllingTtyToken(): string | null {
 }
 
 function getWorkstreamSessionKey(): string | null {
+  // #3883 (ADR-3473 §8.3): DECLARED DIFFERENT from generateSlugInternal
+  // (core-utils.cts), the canonical slug formula — deliberately, not a
+  // consolidation gap. The text slugified here is never caller-supplied: it
+  // is always one of the fixed ASCII WORKSTREAM_SESSION_ENV_KEYS identifier
+  // names above (e.g. "GSD_SESSION_KEY"), which already agree with the
+  // canonical's output byte-for-byte on this restricted input domain (no
+  // unicode, no length anywhere near the 60-char truncation boundary) — so
+  // delegating would add a require() edge for zero behavioral change.
   for (const envKey of WORKSTREAM_SESSION_ENV_KEYS) {
     const raw = process.env[envKey];
     const token = sanitizeWorkstreamSessionToken(raw);

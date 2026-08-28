@@ -792,16 +792,25 @@ All checks passed.
       const output = JSON.parse(result.output);
       assert.strictEqual(output.summary.total_items, 1,
         'total_items must reflect the frontmatter array, not the unstructured body prose');
-      // #2286 review LOW finding: extractFrontmatter's generic array-item
-      // parser has no notion of nested key/value objects — a `- test: "..."`
-      // entry is ALWAYS flattened to the raw post-"- " text, verbatim (only
-      // its own wrapping quote is stripped, and only at the string's outer
-      // edges). normalizeHumanVerificationEntry deliberately does NOT strip
-      // a leading "key:"-shaped prefix (see its doc comment) because doing
-      // so is indistinguishable from truncating a legitimate plain string
-      // that starts with a word and a colon — so this documented, slightly
-      // ugly artifact is the CORRECT (non-data-lossy) output for this shape.
-      assert.strictEqual(output.results[0].items[0].name, 'test: "Confirm the widget renders correctly');
+      // ADR-3473 §8.1 (#3881): pre-migration, extractFrontmatter's hand-rolled array-item
+      // scanner had no notion of nested key/value objects — a `- test: "..."` entry was
+      // flattened via a REGEX quote-strip (`.replace(/^["']|["']$/g, '')`) that only ever
+      // matches a quote at the very start or very end of the WHOLE post-"- " string. Since
+      // this string starts with `test:` (not a quote), only the regex's END anchor matched,
+      // stripping the trailing `"` but leaving the opening one embedded mid-string — a
+      // documented but genuinely ugly artifact (`test: "Confirm the widget renders correctly`,
+      // unbalanced quote and all).
+      //
+      // Under js-yaml (ADR-3473 §8.1), `- test: "..."` is parsed as real YAML — a proper
+      // mapping `{test: "Confirm the widget renders correctly"}` — and `flattenObjectListItem`
+      // re-joins it as `key: value` with the value's OWN quoting already resolved by the real
+      // parser, not re-derived by a second regex. The embedded quote is gone because it was
+      // never data to begin with; it was YAML's own value-delimiter syntax. This is strictly
+      // more correct (no unbalanced-quote artifact) and the `normalizeHumanVerificationEntry`
+      // consumer is unaffected — it still receives a `name` string of the same shape (still not
+      // lossy of the `test:` label prefix, which is a deliberate, documented, and unrelated
+      // decision — see normalizeHumanVerificationEntry's doc comment).
+      assert.strictEqual(output.results[0].items[0].name, 'test: Confirm the widget renders correctly');
       assert.strictEqual(output.results[0].items[0].category, 'human_uat');
     });
 
@@ -6012,5 +6021,554 @@ v1.1 - Example Milestone
     assert.strictEqual(entry.phase, '05', describeAll());
     assert.strictEqual(entry.file, '05-UAT.md', describeAll());
     assert.strictEqual(entry.archived_milestone, 'v0.5.0', describeAll());
+  });
+});
+
+// ─── #3707-CR security review MEDIUM: a lone CR is not a line boundary anywhere ──
+//
+// [FAILING-FIRST, DO NOT "FIX" src/ TO MAKE THIS PASS — see dispatch brief]
+//
+// CommonMark treats a lone CR (no paired LF) as a line ending — a document
+// using it RENDERS as separate lines to a human reader. This parser's row
+// scan (`content.split('\n')` feeding both `tokenizeHeadings` and the
+// column-0 `TEST_HEADING_LINE_RE` shortfall scan, uat.cjs:1193/869) and the
+// #3078 round-7 symmetry invariant (both sides of the shortfall comparison
+// are whole-document, uat.cjs:1137-1166) both key on `\n` alone. A lone CR
+// never becomes a boundary on EITHER side, so a `### N.` row separated from
+// its predecessor only by CR is invisible to `tokenizeHeadings` (no token),
+// to the raw-line shortfall scan (`TEST_HEADING_LINE_RE.test(line)` only
+// matches `^`, and the whole multi-row chunk is now ONE unsplit "line" whose
+// `^` sits before earlier content, not before the buried heading), AND to
+// `parseGapsItems`'s own `content.split('\n')` walk. No item, no shortfall,
+// no headingsSeen: a TOTAL false-clean, not merely a missed row.
+const CR = String.fromCharCode(13);
+const LF = String.fromCharCode(10);
+const CRLF = CR + LF;
+
+describe('#3707-CR: a lone CR line ending must not hide an outstanding UAT row', () => {
+  /**
+   * `join(sep)` on lines already containing an embedded body — used so the
+   * fixture text itself stays free of literal CR characters that an editor
+   * or a diff viewer could silently rewrite (CLAUDE.md IO-injection rule).
+   */
+  function bodyWith(sep) {
+    return [
+      '---',
+      'status: partial',
+      'phase: 01-a',
+      '---',
+      '',
+      '## Tests',
+      '',
+      '### 1. Alpha',
+      'expected: ok',
+      'result: pass',
+      '',
+      'Notes.',
+      '### 2. Beta',
+      'expected: the export works',
+      'result: blocked',
+      '',
+    ].join(sep);
+  }
+
+  test('[RED] a lone-CR document should surface the hidden `### 2. Beta` row by full identity', () => {
+    const { items, headingsSeen, shortfallBlocks } = parseUatItemsWithStats(bodyWith(CR));
+    const describeAll = () => JSON.stringify({ items, headingsSeen, shortfallBlocks }, null, 2);
+
+    const beta = items.find((i) => i.name === 'Beta');
+    assert.ok(beta, `hidden row 2 "Beta" absent from items: ${describeAll()}`);
+    assert.strictEqual(beta.test, 2, describeAll());
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+  });
+
+  test('[GREEN] CONTROL: the LF equivalent of the same body surfaces the identical row identity', () => {
+    const { items } = parseUatItemsWithStats(bodyWith(LF));
+    const describeAll = () => JSON.stringify(items, null, 2);
+
+    const beta = items.find((i) => i.name === 'Beta');
+    assert.ok(beta, `row 2 "Beta" absent from LF control: ${describeAll()}`);
+    assert.strictEqual(beta.test, 2, describeAll());
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+  });
+
+  test('[GREEN] CONTROL: CRLF still parses exactly as today — no double-count, no strip', () => {
+    const { items, headingsSeen, shortfallBlocks } = parseUatItemsWithStats(bodyWith(CRLF));
+    const describeAll = () => JSON.stringify({ items, headingsSeen, shortfallBlocks }, null, 2);
+
+    assert.strictEqual(items.length, 1, describeAll());
+    const [beta] = items;
+    assert.strictEqual(beta.test, 2, describeAll());
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+    assert.strictEqual(shortfallBlocks, 0, describeAll());
+  });
+
+  test('[GREEN] CONTROL: a literal CR inside a fenced block is not torn into extra rows', () => {
+    const content = [
+      '## Tests',
+      '',
+      '### 1. Alpha',
+      'expected: |',
+      '```',
+      `sample${CR}line`,
+      '```',
+      'result: pass',
+      '',
+      '### 2. Beta',
+      'result: blocked',
+      '',
+    ].join(LF);
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    // Row 1 ("Alpha") carries `result: pass`, which is deliberately excluded
+    // from `items` by design (a PASS token is the one case a heading yields
+    // no item without being a parse gap) — so exactly ONE item is expected
+    // here, not two. Asserting `headingsSeen === 0` is what proves Alpha's
+    // heading was still correctly SEEN and attributed, not silently dropped
+    // by the embedded CR splitting its fence/scalar content into extra rows.
+    assert.strictEqual(items.length, 1, describeAll());
+    const beta = items.find((i) => i.test === 2);
+    assert.ok(beta, `row 2 absent: ${describeAll()}`);
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[GREEN] CONTROL: a literal CR inside an `expected: |` block-scalar body is not torn into extra rows', () => {
+    const content = [
+      '## Tests',
+      '',
+      '### 1. Alpha',
+      'expected: |',
+      `  line one${CR}still the scalar`,
+      '  line two',
+      'result: pass',
+      '',
+      '### 2. Beta',
+      'result: blocked',
+      '',
+    ].join(LF);
+    const { items, headingsSeen } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    // Same PASS-exclusion rule as the fenced-CR control above: Alpha's
+    // `result: pass` yields no item by design, so exactly ONE item (Beta) is
+    // expected, and `headingsSeen === 0` proves Alpha was still attributed.
+    assert.strictEqual(items.length, 1, describeAll());
+    const beta = items.find((i) => i.test === 2);
+    assert.ok(beta, `row 2 absent: ${describeAll()}`);
+    assert.strictEqual(beta.name, 'Beta', describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[RED] boundary: a lone CR at the very start of the document also hides the very first row', () => {
+    // A second manifestation of the same defect, not a distinct one: the
+    // leading CR is not a `\n`, so `content.split('\n')` yields a single
+    // first "line" of `"\r### 1. Alpha"` — the heading text no longer sits
+    // at column 0 of that split unit, so `TEST_HEADING_LINE_RE`'s `^#{3}`
+    // anchor and the tokenizer's own column-0 check both refuse it.
+    const content = CR + [
+      '### 1. Alpha',
+      'result: blocked',
+      '',
+    ].join(LF);
+    const { items } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify(items, null, 2);
+
+    const alpha = items.find((i) => i.name === 'Alpha');
+    assert.ok(alpha, `row "Alpha" absent: ${describeAll()}`);
+    assert.strictEqual(alpha.test, 1, describeAll());
+    assert.strictEqual(alpha.result, 'blocked', describeAll());
+  });
+
+  test('[GREEN] boundary: a lone CR at the very end of the document is harmless', () => {
+    const content = [
+      '### 1. Alpha',
+      'result: blocked',
+    ].join(LF) + CR;
+    const { items } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify(items, null, 2);
+
+    const alpha = items.find((i) => i.name === 'Alpha');
+    assert.ok(alpha, `row "Alpha" absent: ${describeAll()}`);
+    assert.strictEqual(alpha.test, 1, describeAll());
+    assert.strictEqual(alpha.result, 'blocked', describeAll());
+  });
+
+  test('[RED] boundary: two consecutive lone CRs between rows still hides the row, though the whole-document shortfall scan happens to flag it', () => {
+    // With no `\n` anywhere in this fixture, `content.split('\n')` returns
+    // ONE line: the entire document text. That single line legitimately
+    // starts with `### 1. Alpha` (true string start, column 0), so the raw
+    // `TEST_HEADING_LINE_RE` shortfall scan (uat.cjs:1193) counts exactly one
+    // shaped heading line for the WHOLE document, while the tokenizer-backed
+    // `subHeadings` side finds none it can attribute — `headingsSeen`/
+    // `shortfallBlocks` land at 1, so this shape is not a TOTAL silent
+    // false-clean like the primary repro. But `items` is still empty: the
+    // "Beta" row's own identity (number, name, result) is not recovered by
+    // that shortfall count, which is why this assertion is on identity, not
+    // presence of a nonzero counter.
+    const content = [
+      '### 1. Alpha',
+      'result: pass',
+      '',
+      '### 2. Beta',
+      'result: blocked',
+      '',
+    ].join(CR + CR);
+    const { items } = parseUatItemsWithStats(content);
+    const describeAll = () => JSON.stringify(items, null, 2);
+
+    const beta = items.find((i) => i.name === 'Beta');
+    assert.ok(beta, `row 2 "Beta" absent: ${describeAll()}`);
+    assert.strictEqual(beta.test, 2, describeAll());
+    assert.strictEqual(beta.result, 'blocked', describeAll());
+  });
+});
+
+// ─── #3707-CR follow-up MAJOR: the two OTHER cmdAuditUat ingresses ─────────────
+//
+// The original #3707-CR fix normalized line endings inside two of
+// `cmdAuditUat`'s FOUR parsers (`parseUatItemsWithStats`, `parseCurrentTest`)
+// and declared the class closed. It was not: `parseVerificationItems`
+// (VERIFICATION.md) and `parseDeferredItems` (deferred-items.md) are reached
+// from the SAME function via their own, separately unnormalized
+// `fs.readFileSync` calls, so a lone-CR VERIFICATION.md or deferred-items.md
+// hit the identical total false-clean this issue exists to close. The fix
+// this time is at the READ BOUNDARY (`readNormalizedDocument` in
+// src/uat.cts), not per-parser — these tests drive the full CLI end-to-end so
+// they exercise that boundary, not a parser function directly.
+describe('#3707-CR follow-up MAJOR: VERIFICATION.md and deferred-items.md ingresses normalize at the read boundary', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function audit() {
+    const result = runGsdTools('audit-uat --raw', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  function deferredBody(eol) {
+    return [
+      '## Deferred Items',
+      '',
+      '- First deferred item, still open.',
+      '- Second deferred item, still open.',
+    ].join(eol);
+  }
+
+  test('[RED] a lone-CR deferred-items.md surfaces both items by identity', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferredBody(CR));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.file === 'deferred-items.md');
+    assert.ok(entry, `deferred-items.md entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => ({ name: i.name, result: i.result }));
+    assert.deepStrictEqual(names, [
+      { name: 'First deferred item, still open.', result: 'unresolved' },
+      { name: 'Second deferred item, still open.', result: 'unresolved' },
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  test('[GREEN] CONTROL: the LF twin of the same deferred-items.md surfaces the identical items', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferredBody(LF));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.file === 'deferred-items.md');
+    assert.ok(entry, `deferred-items.md entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => ({ name: i.name, result: i.result }));
+    assert.deepStrictEqual(names, [
+      { name: 'First deferred item, still open.', result: 'unresolved' },
+      { name: 'Second deferred item, still open.', result: 'unresolved' },
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  test('[GREEN] CONTROL: a CRLF deferred-items.md is unchanged (no double-count, no strip)', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferredBody(CRLF));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.file === 'deferred-items.md');
+    assert.ok(entry, `deferred-items.md entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => ({ name: i.name, result: i.result }));
+    assert.deepStrictEqual(names, [
+      { name: 'First deferred item, still open.', result: 'unresolved' },
+      { name: 'Second deferred item, still open.', result: 'unresolved' },
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  function verificationBody(eol) {
+    return [
+      '---',
+      'status: human_needed',
+      'phase: 02-auth',
+      '---',
+      '',
+      '## Human Verification',
+      '',
+      '1. Test SSO login with Google account',
+      '2. Test password reset flow end-to-end',
+      '',
+    ].join(eol);
+  }
+
+  test('[RED] a lone-CR VERIFICATION.md (status: human_needed) surfaces both human-verification items by identity', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '02-VERIFICATION.md'), verificationBody(CR));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.type === 'verification');
+    assert.ok(entry, `VERIFICATION entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => i.name);
+    assert.deepStrictEqual(names, [
+      'Test SSO login with Google account',
+      'Test password reset flow end-to-end',
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  test('[GREEN] CONTROL: the LF twin of the same VERIFICATION.md surfaces the identical items', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '02-VERIFICATION.md'), verificationBody(LF));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.type === 'verification');
+    assert.ok(entry, `VERIFICATION entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => i.name);
+    assert.deepStrictEqual(names, [
+      'Test SSO login with Google account',
+      'Test password reset flow end-to-end',
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  test('[GREEN] CONTROL: a CRLF VERIFICATION.md is unchanged (no double-count, no strip)', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-auth');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '02-VERIFICATION.md'), verificationBody(CRLF));
+
+    const output = audit();
+    const describeAll = () => JSON.stringify(output, null, 2);
+
+    const entry = output.results.find((r) => r.type === 'verification');
+    assert.ok(entry, `VERIFICATION entry absent: ${describeAll()}`);
+    const names = entry.items.map((i) => i.name);
+    assert.deepStrictEqual(names, [
+      'Test SSO login with Google account',
+      'Test password reset flow end-to-end',
+    ], describeAll());
+    assert.strictEqual(output.summary.total_items, 2, describeAll());
+  });
+
+  // The end-to-end phase carrying BOTH a VERIFICATION.md and a
+  // deferred-items.md, written twice from one source (LF and lone-CR),
+  // exercising ALL FOUR ingresses in one audit-uat run at once.
+  test('[RED] a phase with both VERIFICATION.md and deferred-items.md: lone-CR and LF produce identical audit output', () => {
+    function build(eol) {
+      const dir = createTempProject();
+      const phaseDir = path.join(dir, '.planning', 'phases', '03-combo');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '03-VERIFICATION.md'), verificationBody(eol));
+      fs.writeFileSync(path.join(phaseDir, 'deferred-items.md'), deferredBody(eol));
+      return dir;
+    }
+
+    const lfDir = build(LF);
+    const crDir = build(CR);
+    try {
+      const lfResult = runGsdTools('audit-uat --raw', lfDir);
+      const crResult = runGsdTools('audit-uat --raw', crDir);
+      assert.ok(lfResult.success, `LF run failed: ${lfResult.error}`);
+      assert.ok(crResult.success, `CR run failed: ${crResult.error}`);
+      const lfOutput = JSON.parse(lfResult.output);
+      const crOutput = JSON.parse(crResult.output);
+      const describeAll = () => JSON.stringify({ lf: lfOutput, cr: crOutput }, null, 2);
+
+      assert.strictEqual(lfOutput.summary.total_files, 2, describeAll());
+      assert.strictEqual(lfOutput.summary.total_items, 4, describeAll());
+      assert.strictEqual(crOutput.summary.total_files, lfOutput.summary.total_files, describeAll());
+      assert.strictEqual(crOutput.summary.total_items, lfOutput.summary.total_items, describeAll());
+      assert.strictEqual(crOutput.summary.parse_gap_files, lfOutput.summary.parse_gap_files, describeAll());
+
+      const rowIdentity = (r) => ({
+        type: r.type,
+        items: r.items.map((i) => ({ name: i.name, result: i.result })).sort((a, b) => a.name.localeCompare(b.name)),
+      });
+      assert.deepStrictEqual(
+        crOutput.results.map(rowIdentity).sort((a, b) => a.type.localeCompare(b.type)),
+        lfOutput.results.map(rowIdentity).sort((a, b) => a.type.localeCompare(b.type)),
+        describeAll(),
+      );
+    } finally {
+      cleanup(lfDir);
+      cleanup(crDir);
+    }
+  });
+});
+
+// #3078-CR: a column-0 line-terminator boundary defect in
+// `parseUatItemsWithStats`'s `result:` scan, reproduced directly against the
+// LIVE built copy (`../gsd-core/bin/lib/uat.cjs`, imported at the top of this
+// file) rather than through a rebuilt fixture, so these rows fail against the
+// ACTUAL shipped parser, not a stale mental model of it.
+//
+// DEFECT A (fixed): `/^result:.../im` treats U+2028 LINE SEPARATOR and U+2029
+// PARAGRAPH SEPARATOR as line-start boundaries (native JS `/m` behaviour),
+// but `normalizeLineEndings` (core-utils.cjs) folds only `\r`/`\r\n` and never
+// touches U+2028/U+2029, and neither does `split('\n')` or the heading
+// tokenizer. A `result:`-shaped line living INSIDE an `expected: |` scalar
+// body, immediately after one of these separators, was therefore read as a
+// real line start by the regex engine and — because `.match()` without `/g`
+// returns the LEFTMOST match in the whole string — won over a genuine
+// column-0 `result:` line appearing later, discarding it with no gap raised.
+// Fixed by testing each `split('\n')`-produced line individually instead of
+// running an `/m`-anchored regex over the whole block: `split('\n')` never
+// treats U+2028/U+2029 as a delimiter, so neither can manufacture a line
+// start.
+//
+// A "defect B" (more than one column-0 `result:` line reported as an
+// ambiguous parse gap rather than resolving to the first) was attempted and
+// REVERTED: its boundary-truncation heuristic mistook an indented `### N.`
+// living inside a legitimate block scalar for a heading boundary, which
+// broke every scalar/indent guard this module has (see the `#3078` scalar
+// guard tests elsewhere in this file). Two column-0 `result:` lines resolve
+// to the FIRST one — the pre-existing, pinned behaviour — see controls B3/B4
+// below.
+describe('parseUatItemsWithStats — result: line-scan boundary defects (#3078-CR)', () => {
+  const LINE_SEPARATOR = String.fromCharCode(0x2028);
+  const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
+
+  // Row 1 ("### 1. Alpha") by IDENTITY: test number AND name AND result.
+  // A bare count or a bare `result` check both pass for the wrong reason —
+  // e.g. a phantom row from the scalar's OWN `result: pass` clause matching
+  // `items.length === 1` just as readily as the real blocked row would.
+  function findAlphaBlocked(items) {
+    return items.find((i) => i.test === 1 && i.name === 'Alpha' && i.result === 'blocked');
+  }
+  function findAnyPassItem(items) {
+    return items.find((i) => i.result === 'pass' || i.result === 'passed');
+  }
+
+  function defectADoc(marker) {
+    // An `expected: |` scalar body whose text ends in "...x<marker>result:
+    // pass", followed by the block's REAL column-0 "result: blocked" line.
+    return '## Tests\n\n### 1. Alpha\nexpected: |\n  x' + marker + 'result: pass\nresult: blocked\n';
+  }
+
+  test('[RED] A1: U+2028 inside an expected scalar must not swallow the column-0 blocked row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(defectADoc(LINE_SEPARATOR));
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(findAlphaBlocked(items), `expected outstanding row 1/Alpha/blocked absent: ${describeAll()}`);
+    assert.strictEqual(findAnyPassItem(items), undefined, `a phantom pass item must not be emitted: ${describeAll()}`);
+  });
+
+  test('[RED] A2: U+2029 inside an expected scalar must not swallow the column-0 blocked row', () => {
+    const { items, headingsSeen } = parseUatItemsWithStats(defectADoc(PARAGRAPH_SEPARATOR));
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(findAlphaBlocked(items), `expected outstanding row 1/Alpha/blocked absent: ${describeAll()}`);
+    assert.strictEqual(findAnyPassItem(items), undefined, `a phantom pass item must not be emitted: ${describeAll()}`);
+  });
+
+  test('[CONTROL] A3: an ordinary (non-line-terminator) marker in the same position still yields the blocked row', () => {
+    // Proves A1/A2 are a SEPARATOR defect, not a content defect: swap the
+    // exotic separator for two literal "@@" characters, which JS never
+    // treats as a line terminator under any regex flag.
+    const { items, headingsSeen } = parseUatItemsWithStats(defectADoc('@@'));
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(findAlphaBlocked(items), `control document must still surface 1/Alpha/blocked: ${describeAll()}`);
+    assert.strictEqual(findAnyPassItem(items), undefined, describeAll());
+  });
+
+  test('[CONTROL] A4: U+2028 living in ordinary prose (not faking a line start) parses unaffected', () => {
+    // The separator sits between two prose words, never immediately before a
+    // "result:"-shaped token, so it cannot fake a line start that matters —
+    // this must parse exactly as it does today, both before and after any
+    // future fix to the boundary handling.
+    const doc = '## Tests\n\n### 1. Alpha\nexpected: |\n  some prose' + LINE_SEPARATOR + 'continues here\nresult: blocked\n';
+    const { items, headingsSeen } = parseUatItemsWithStats(doc);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.ok(findAlphaBlocked(items), `legitimate U+2028 content must not perturb parsing: ${describeAll()}`);
+    assert.strictEqual(items.length, 1, `no extra/phantom item may appear: ${describeAll()}`);
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[CONTROL] B3: a block with exactly one result: line is unchanged', () => {
+    const doc = '### 1. Alpha\nexpected: ok\nresult: blocked\n';
+    const { items, headingsSeen } = parseUatItemsWithStats(doc);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.ok(findAlphaBlocked(items), `unambiguous single-result block must still surface 1/Alpha/blocked: ${describeAll()}`);
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[CONTROL] B4: a result: line inside a fenced code sample does not count as a second column-0 occurrence', () => {
+    // The fenced "result: pass" sample line is document content (a fenced
+    // code block is stripped before the result-line scan runs), not a
+    // second real result declaration — only the genuine column-0
+    // "result: blocked" line below the fence is the row's outcome.
+    const doc = '### 1. Alpha\nexpected: ok\n```\nresult: pass\n```\nresult: blocked\n';
+    const { items, headingsSeen } = parseUatItemsWithStats(doc);
+    const describeAll = () => JSON.stringify({ items, headingsSeen }, null, 2);
+
+    assert.strictEqual(items.length, 1, describeAll());
+    assert.ok(findAlphaBlocked(items), `fenced sample result: line must not compete with the real row: ${describeAll()}`);
+    assert.strictEqual(findAnyPassItem(items), undefined, describeAll());
+    assert.strictEqual(headingsSeen, 0, describeAll());
+  });
+
+  test('[REGRESSION] a column-0 result: line whose trailing text contains U+2028 parses identically to its plain-LF twin', () => {
+    // Final review MINOR 1: the per-line pattern kept `.*$` after the fix
+    // above dropped `/m`, and `.` never matches U+2028/U+2029, so `$` was
+    // unreachable on a line whose TRAILING text (after the token) contained
+    // one of these separators — the line failed to match at all. Compare by
+    // IDENTITY (test number AND name AND result) against the plain-LF
+    // equivalent, not just presence/count, per this suite's own convention.
+    const withSeparator = '### 1. Alpha\nexpected: ok\nresult: blocked' + LINE_SEPARATOR + 'trailing note\n';
+    const plainLf = '### 1. Alpha\nexpected: ok\nresult: blocked trailing note\n';
+
+    const withSeparatorResult = parseUatItemsWithStats(withSeparator);
+    const plainLfResult = parseUatItemsWithStats(plainLf);
+    const describeAll = () => JSON.stringify({ withSeparatorResult, plainLfResult }, null, 2);
+
+    assert.ok(findAlphaBlocked(withSeparatorResult.items), `expected outstanding row 1/Alpha/blocked absent: ${describeAll()}`);
+    assert.deepStrictEqual(withSeparatorResult.items, plainLfResult.items, `must match the plain-LF twin by identity: ${describeAll()}`);
+    assert.strictEqual(withSeparatorResult.headingsSeen, plainLfResult.headingsSeen, describeAll());
   });
 });

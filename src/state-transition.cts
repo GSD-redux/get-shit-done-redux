@@ -27,7 +27,76 @@ import stateMdSchemaMod = require('./state-md-schema.cjs');
 const { STATE_FIELD_SCHEMA } = stateMdSchemaMod;
 type StateFieldSchema = stateMdSchemaMod.StateFieldSchema;
 
-const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontmatter;
+const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter, FRONTMATTER_UNPARSEABLE } = frontmatter;
+
+/**
+ * ADR-3473 §8.1 (#3881, consequence 2 wiring): does `existingFm` carry the
+ * `FRONTMATTER_UNPARSEABLE` marker `extractFrontmatter` sets when a
+ * frontmatter-fenced region exists but failed to parse (malformed YAML, or a
+ * refused anchor/alias/merge key)? A plain `Object.keys(existingFm).length >
+ * 0` check cannot distinguish that case from "no frontmatter block at all" —
+ * both parse to `{}` — so every `hasFrontmatter`-gated reassemble below would
+ * silently drop the raw frontmatter block on the next write. The marker is a
+ * non-enumerable-to-Object.keys Symbol key, so this check is additive and
+ * never fires for the genuinely-empty case.
+ */
+function isUnparseableFrontmatter(existingFm: Record<string, unknown>): boolean {
+  return (existingFm as unknown as Record<symbol, unknown>)[FRONTMATTER_UNPARSEABLE] === true;
+}
+
+/**
+ * ADR-3473 §8.1 (#3881): the exact bytes `stripFrontmatter` removed from the
+ * front of `content` to produce `strippedBody` — i.e. `content`'s raw
+ * frontmatter-fenced prefix, verbatim, whether or not it parsed. Reassembling
+ * with this prefix (instead of dropping it under `hasFrontmatter === false`)
+ * is what preserves an UNPARSEABLE frontmatter block across a write; it is a
+ * no-op difference from `content` itself when `strippedBody === content`
+ * (nothing was stripped).
+ */
+function rawFrontmatterPrefix(content: string, strippedBody: string): string {
+  return content.slice(0, content.length - strippedBody.length);
+}
+
+/**
+ * Shared frontmatter-strip-and-reassemble preamble (#3881 review, finding 5): the
+ * `existingFm` / `hasFrontmatter` / `stripFrontmatter` / `fmPrefix` / `unparseableFm` /
+ * `reassemble` block above was copy-pasted at every `*Core` transition below (and, before
+ * this change, hand-inlined a sixth time in `state.cts`'s `cmdStateCompletePhase` instead of
+ * importing `isUnparseableFrontmatter`/`rawFrontmatterPrefix`). One helper, one place to fix
+ * the frontmatter-preservation contract. `reassemble` is parameterized on the (possibly
+ * further-mutated) body rather than closing over it, matching every call site's existing
+ * usage — several reassign `body` after this preamble runs and reassemble the FINAL body,
+ * not the one captured here.
+ */
+export type FrontmatterReassembly = {
+  existingFm: Record<string, unknown>;
+  hasFrontmatter: boolean;
+  body: string;
+  fmPrefix: string;
+  unparseableFm: boolean;
+  reassemble: (b: string) => string;
+};
+
+export function beginFrontmatterReassembly(
+  content: string,
+  sourcePath?: string,
+): FrontmatterReassembly {
+  const existingFm = extractFrontmatter(content, sourcePath) as Record<string, unknown>;
+  const hasFrontmatter = Object.keys(existingFm).length > 0;
+  const body = stripFrontmatter(content);
+  // ADR-3473 §8.1 (#3881): computed from the ORIGINAL content/body pair, before any caller
+  // reassigns `body` further — the captured prefix is always the exact bytes stripped from
+  // the ORIGINAL content, regardless of what the caller does with `body` afterward.
+  const fmPrefix = rawFrontmatterPrefix(content, body);
+  const unparseableFm = isUnparseableFrontmatter(existingFm);
+  const reassemble = (b: string): string =>
+    hasFrontmatter
+      ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
+      : unparseableFm
+        ? `${fmPrefix}${b}`
+        : b;
+  return { existingFm, hasFrontmatter, body, fmPrefix, unparseableFm, reassemble };
+}
 
 // Stop predicate for section-body slicing: a level-2+ heading ends the section.
 const STOP_H2_PLUS = (lv: number): boolean => lv >= 2;
@@ -958,14 +1027,14 @@ function beginPhaseCore(
   // #1255: body-field replacements operate on body only (frontmatter stripped),
   // not on the full content. The YAML `status:` key matches `^Status:\s*`
   // before the body pipe-table row if full content is passed.
-  const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
-  const hasFrontmatter = Object.keys(existingFm).length > 0;
+  const { reassemble } = beginFrontmatterReassembly(content, deps.sourcePath);
+  // #3881 review, finding 5: `body` is deliberately a LITERAL `stripFrontmatter(content)`
+  // assignment here rather than the helper's own `body` (which the destructure above skips) —
+  // scripts/lint-state-write-path-drift.cjs's Axis 3 backward scan is a single-hop textual
+  // pattern match, not real dataflow, and only recognizes `body = stripFrontmatter(...)` written
+  // out at the call site. `stripFrontmatter` is pure and idempotent, so computing it here (in
+  // addition to the helper's own internal call) changes nothing observable.
   let body = stripFrontmatter(content);
-
-  const reassemble = (b: string): string =>
-    hasFrontmatter
-      ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
 
   const today = deps.clock.localToday();
 
@@ -1310,13 +1379,8 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   // not on the full content. The YAML `status:` key matches `^Status:\s*`
   // before the body field if full content is passed (codex Phase 2 review:
   // HIGH blocking finding — same pattern beginPhaseCore already handles).
-  const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
-  const hasFrontmatter = Object.keys(existingFm).length > 0;
-  let body = stripFrontmatter(content);
-  const reassemble = (b: string): string =>
-    hasFrontmatter
-      ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+  const { body: initialBody, reassemble } = beginFrontmatterReassembly(content, deps.sourcePath);
+  let body = initialBody;
 
   // Parse plan number — legacy first, then compound.
   const legacyPlan = stateExtractField(content, 'Current Plan');
@@ -1458,13 +1522,8 @@ function completePhaseCore(
 
   // #1255: body-field replacements operate on body only (frontmatter stripped),
   // so the YAML `status:` / `current_phase:` keys cannot shadow the body fields.
-  const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
-  const hasFrontmatter = Object.keys(existingFm).length > 0;
-  let body = stripFrontmatter(content);
-  const reassemble = (b: string): string =>
-    hasFrontmatter
-      ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+  const { body: initialBody, reassemble } = beginFrontmatterReassembly(content, deps.sourcePath);
+  let body = initialBody;
 
   // Current Phase — preserve the existing `of <total>` shape and the phase name
   // in parens (mirrors phase.cts:1675-1697 byte-for-behaviour).
@@ -1655,13 +1714,8 @@ function plannedPhaseCore(
   }
 
   // #1255: body-field replacements operate on body only.
-  const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
-  const hasFrontmatter = Object.keys(existingFm).length > 0;
-  let body = stripFrontmatter(content);
-  const reassemble = (b: string): string =>
-    hasFrontmatter
-      ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+  const { existingFm, hasFrontmatter, body: initialBody, reassemble } = beginFrontmatterReassembly(content, deps.sourcePath);
+  let body = initialBody;
 
   const statusDefaults = KNOWN_TEMPLATE_DEFAULTS['Status'];
   const lastActivityDefaults = KNOWN_TEMPLATE_DEFAULTS['Last Activity'];
@@ -1940,13 +1994,8 @@ function milestoneCompleteCore(
   }
 
   // #1255: body-field replacements operate on body only.
-  const existingFm = extractFrontmatter(content, deps.sourcePath) as Record<string, unknown>;
-  const hasFrontmatter = Object.keys(existingFm).length > 0;
-  let body = stripFrontmatter(content);
-  const reassemble = (b: string): string =>
-    hasFrontmatter
-      ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${b}`
-      : b;
+  const { body: initialBody, reassemble } = beginFrontmatterReassembly(content, deps.sourcePath);
+  let body = initialBody;
 
   // Status — `<version> milestone complete`.
   const statusAfter = stateReplaceFieldWithFallback(body, 'Status', null, `${version} milestone complete`);
@@ -2071,8 +2120,10 @@ function patchCore(
   content: string,
   intent: { kind: 'patch'; patches: Record<string, string> },
 ): StateTransitionResult {
-  const existingFm = extractFrontmatter(content) as Record<string, unknown>;
-  const hasFrontmatter = Object.keys(existingFm).length > 0;
+  const { existingFm, hasFrontmatter, fmPrefix, unparseableFm } = beginFrontmatterReassembly(content);
+  // #3881 review, finding 5: see beginPhaseCore's identical comment above — `body` stays a
+  // literal `stripFrontmatter(content)` assignment here for scripts/lint-state-write-path-drift.cjs's
+  // Axis 3 single-hop backward scan.
   let body = stripFrontmatter(content);
   const fm: Record<string, unknown> = { ...existingFm };
 
@@ -2124,7 +2175,9 @@ function patchCore(
 
   const result = hasFrontmatter
     ? `---\n${reconstructFrontmatter(fm as unknown as Frontmatter)}\n---\n\n${body}`
-    : body;
+    : unparseableFm
+      ? `${fmPrefix}${body}`
+      : body;
 
   return { content: result, updated, data: { updated, failed } };
 }
@@ -2145,8 +2198,10 @@ function updateCore(
   content: string,
   intent: { kind: 'update'; field: string; value: string },
 ): StateTransitionResult {
-  const existingFm = extractFrontmatter(content) as Record<string, unknown>;
-  const hasFrontmatter = Object.keys(existingFm).length > 0;
+  const { existingFm, hasFrontmatter, reassemble } = beginFrontmatterReassembly(content);
+  // #3881 review, finding 5: see beginPhaseCore's identical comment above — `body` stays a
+  // literal `stripFrontmatter(content)` assignment here for scripts/lint-state-write-path-drift.cjs's
+  // Axis 3 single-hop backward scan.
   const body = stripFrontmatter(content);
   // #3699 review: session-scoped fields are written through the session-scoped
   // writer. A whole-body `stateReplaceField` matches the FIRST occurrence
@@ -2213,9 +2268,7 @@ function updateCore(
     }
     return { content, updated: [], data: { updated: false } };
   }
-  const reassembled = hasFrontmatter
-    ? `---\n${reconstructFrontmatter(existingFm as unknown as Frontmatter)}\n---\n\n${result}`
-    : result;
+  const reassembled = reassemble(result);
   return { content: reassembled, updated: [intent.field], data: { updated: true } };
 }
 

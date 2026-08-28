@@ -62,11 +62,22 @@
  * outstanding WORK wants the live set"): a LOOKUP, DIAGNOSTIC or ARCHIVAL
  * pass wants the physical set; only "which phases belong to this milestone"
  * wants the scoped set.
- *   - `src/roadmap.cts` `cmdRoadmapAnalyze`: builds `_phaseDirNames` as a
- *     heading->directory LOOKUP INDEX, not a milestone enumeration. It must
- *     see the PHYSICAL set so a heading already scoped by
- *     `extractCurrentMilestoneScoped` can find its directory; filtering it
- *     through the owner would scope the same set twice.
+ *   - `src/roadmap.cts` `cmdRoadmapAnalyze` — MIGRATED (#3882, ADR-3473 §8.2):
+ *     `_phaseDirNames`, a heading->directory LOOKUP INDEX (not a milestone
+ *     enumeration; must see the PHYSICAL set so a heading already scoped by
+ *     `extractCurrentMilestoneScoped` can find its directory), now calls
+ *     `listAllPhaseDirs(phasesDir, { includeSentinels: true })` instead of a
+ *     hand-rolled `readdirSync` — no longer exempted, since there is nothing
+ *     left in this function for either detector to catch.
+ *   - `src/init.cts` `cmdInitMilestoneOp`'s `diskPhaseDirs` — MIGRATED (#3882,
+ *     ADR-3473 §8.2): the same heading->directory LOOKUP INDEX shape as
+ *     `cmdRoadmapAnalyze`'s `_phaseDirNames` above, now calls
+ *     `listAllPhaseDirs(phasesDir, { includeSentinels: true })`. Its sibling
+ *     readdirSync (the no-ROADMAP-headings-found fallback) was already routed
+ *     through `listMilestonePhaseDirs` before this phase and remains so — no
+ *     longer exempted; the function's other former exemption reason
+ *     (`detectHasPriorPhases`/`detectUiPhaseActive`, unrelated call sites in
+ *     the same file) is unaffected.
  *   - `src/verify.cts` `cmdValidateHealth`: a project-wide HEALTH-CHECK sweep
  *     (config drift, phase-directory naming, duplicate-directory collisions,
  *     unsummarized-plan detection) — same "sweep everything, report gaps"
@@ -280,9 +291,8 @@ const OWNER_FILES = new Set([
 // `lint-milestone-window-drift.cjs`'s FUNCTION_SCOPED_EXEMPTIONS mechanism.
 // See the header comment for the full written reason behind each entry.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
-  [path.join('src', 'roadmap.cts'), new Set(['cmdRoadmapAnalyze'])],
   [path.join('src', 'verify.cts'), new Set(['cmdValidateHealth', 'cmdVerifySchemaDrift'])],
-  [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive', 'cmdInitMilestoneOp'])],
+  [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive'])],
   [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories', 'cmdMilestoneComplete', 'cmdPhasesClear'])],
   [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases'])],
   [path.join('src', 'audit.cts'), new Set(['listAuditPhaseTargets'])],

@@ -266,7 +266,12 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
       directory: toPosixPath(path.join(relBase, match)),
       phase_number: phaseNumber,
       phase_name: phaseName,
-      phase_slug: phaseName ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : null,
+      // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+      // (generateSlugInternal, core-utils.cts) rather than re-implementing
+      // it. `maxLen: null` preserves this site's pre-migration untruncated
+      // contract — the 60-char default would drop an on-disk phase slug's
+      // reported value out of sync with the real directory name.
+      phase_slug: phaseName ? coreUtilsModule.generateSlugInternal(phaseName, null) : null,
       plans,
       summaries,
       incomplete_plans: incompletePlans,
@@ -409,6 +414,55 @@ function listMilestonePhaseDirs(
   return { value, scope };
 }
 
+/**
+ * #3882 (ADR-3473 §8.2, issue #3882): the single owner of "the PHYSICAL set
+ * of phase directories on disk, entirely un-windowed" — the OTHER axis
+ * `listMilestonePhaseDirs` above deliberately does not offer. That owner
+ * refuses sentinels UNCONDITIONALLY (see its own doc comment); it has no way
+ * to say "physical set, sentinels included". That is exactly what an
+ * archival, lookup-index, or health-sweep caller needs — e.g. a heading ->
+ * directory lookup index that must resolve a directory regardless of
+ * milestone window (`cmdRoadmapAnalyze`'s `_phaseDirNames`,
+ * `cmdInitMilestoneOp`'s `diskPhaseDirs`) — which is why those callers used
+ * to hand-roll a `readdirSync` instead of calling either owner.
+ *
+ * `includeSentinels` is REQUIRED, with no default value. #3882/ADR-3473 §8.2:
+ * "a caller that wants sentinels asks for them explicitly" — obtaining
+ * sentinel-inclusion by silent omission is exactly the defect class this
+ * axis exists to close, so the call site is refused at COMPILE TIME without
+ * it, not merely documented against it here.
+ *
+ * Mirrors `listMilestonePhaseDirs`'s own absent/unreadable handling
+ * (ADR-3180 Decision 2): an ABSENT `phasesDir` is a real empty (a project
+ * with no phase directories yet), `scope: SCOPE.COMPLETE`; a `phasesDir`
+ * that EXISTS but cannot be read is a NON-answer, `scope: SCOPE.UNREADABLE`
+ * — a caller must not treat that empty list as "this project has no
+ * phases."
+ */
+function listAllPhaseDirs(
+  phasesDir: string,
+  opts: { includeSentinels: boolean; phaseIdConvention?: string | null },
+): { value: string[]; scope: Scope } {
+  const { includeSentinels, phaseIdConvention = null } = opts;
+
+  if (!fs.existsSync(phasesDir)) return { value: [], scope: SCOPE.COMPLETE };
+
+  let names: string[];
+  try {
+    names = fs.readdirSync(phasesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return { value: [], scope: SCOPE.UNREADABLE };
+  }
+
+  const value = names
+    .filter((name) => includeSentinels || !isSentinelPhaseId(name, phaseIdConvention ?? undefined))
+    .sort((a, b) => comparePhaseNum(a, b));
+
+  return { value, scope: SCOPE.COMPLETE };
+}
+
 function getArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
   // #2855: same workstream-scoped resolution as findPhaseInternal above, via
   // the shared listArchiveVersionDirs helper. `phase.list --include-archived`
@@ -437,4 +491,5 @@ export = {
   findPhaseInternal,
   getArchivedPhaseDirs,
   listMilestonePhaseDirs,
+  listAllPhaseDirs,
 };

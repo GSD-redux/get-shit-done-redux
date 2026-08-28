@@ -1527,8 +1527,16 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
     );
     seedPhaseDirs(tmpDir, [1]);
 
+    // ADR-3473 §8.4 / #3358: a bare positional phase ("state begin-phase 2")
+    // is now a rejected, undeclared token — see
+    // tests/state.test.cjs positionalPlannedPhaseLeavesStateMdUntouched_3358,
+    // the sibling regression for "planned-phase" that locks in exactly this
+    // rejection. Use the documented "--phase N" flag form (see
+    // CLI-TOOLS.md line 116 in the docs directory) instead; this test's own
+    // assertions were never about the bare-positional shape itself, only
+    // about total_phases surviving the resync.
     const rec = runNode(
-      [TOOLS_PATH, 'state', 'begin-phase', '2'],
+      [TOOLS_PATH, 'state', 'begin-phase', '--phase', '2'],
       { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
     );
     assert.ok(rec.exitCode === 0, `state begin-phase failed: ${rec.stderr}`);
@@ -1587,8 +1595,16 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
     );
     seedPhaseDirs(tmpDir, [1]);
 
+    // ADR-3473 §8.4 / #3358: a bare positional phase ("state planned-phase 2")
+    // is now a rejected, undeclared token — see
+    // tests/state.test.cjs positionalPlannedPhaseLeavesStateMdUntouched_3358,
+    // the regression test that locks in exactly this rejection for this same
+    // subcommand. Use the documented "--phase N" flag form (see
+    // COMMANDS.md line 2192 in the docs directory) instead; this test's own
+    // assertions were never about the bare-positional shape itself, only
+    // about total_phases surviving the resync.
     const rec = runNode(
-      [TOOLS_PATH, 'state', 'planned-phase', '2', '--name', 'Core'],
+      [TOOLS_PATH, 'state', 'planned-phase', '--phase', '2', '--name', 'Core'],
       { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
     );
     assert.ok(rec.exitCode === 0, `state planned-phase failed: ${rec.stderr}`);

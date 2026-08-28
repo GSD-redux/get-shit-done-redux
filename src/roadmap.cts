@@ -13,13 +13,13 @@ import { escapeRegex } from './pattern.cjs';
 import { splitLines, detectEol, joinLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output, error } = ioMod;
+const { output, error, formatDiagnosticToken } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
+const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
@@ -58,6 +58,15 @@ interface PhasePlansAndSummaries {
   summaryCount: number;
   hasContext: boolean;
   hasResearch: boolean;
+  /**
+   * #3885 (ADR-3473 §8.5): null when the phase directory's readdirSync
+   * succeeded OR was genuinely absent (ENOENT — a real "not built yet"
+   * answer, not an error). A message naming the phase directory when
+   * readdirSync failed for any other reason (EACCES/EIO/...), so an
+   * unreadable directory is never silently reported the same as one that was
+   * successfully read and genuinely has no CONTEXT.md.
+   */
+  contextReadError: string | null;
 }
 
 interface PhaseSearchResult {
@@ -118,7 +127,20 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
   // hasContext and hasResearch are not plan-scan concerns — read the directory
   // once and share the listing for all non-plan metadata that cmdRoadmapAnalyze needs.
   let phaseFiles: string[] = [];
-  try { phaseFiles = fs.readdirSync(phaseDir); } catch { /* empty */ }
+  // #3885 (ADR-3473 §8.5): distinguish "genuinely absent" (ENOENT) from
+  // "could not read" (EACCES/EIO/...) — the collapse of both to an empty
+  // listing is exactly the defect class this item closes. Mirrors
+  // core-utils.cts's getPhaseFileStats / phase-locator.cts's
+  // listMilestonePhaseDirs SCOPE.UNREADABLE discriminator.
+  let contextReadError: string | null = null;
+  try {
+    phaseFiles = fs.readdirSync(phaseDir);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      contextReadError = `Could not read phase directory ${formatDiagnosticToken(phaseDir)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`;
+    }
+  }
   // #3511: scope the raw listing to this phase dir before the
   // phase-numbered-artifact predicates (hasContext/hasResearch) — planCount/
   // summaryCount above stay on scanPhasePlans's own unscoped listing since a
@@ -130,6 +152,7 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
     summaryCount,
     hasContext: findContextMdIn(scopedFiles) !== null,
     hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
+    contextReadError,
   };
 }
 
@@ -364,6 +387,8 @@ type AnalyzePhase = {
   has_research: boolean;
   disk_status: string;
   roadmap_complete: boolean;
+  /** #3885 (ADR-3473 §8.5): see PhasePlansAndSummaries.contextReadError. */
+  context_read_error: string | null;
 };
 
 /**
@@ -417,6 +442,10 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
     let summaryCount = 0;
     let hasContext = false;
     let hasResearch = false;
+    // #3885 (ADR-3473 §8.5): null unless dirMatch resolves and its readdirSync
+    // hit a non-ENOENT error — no directory at all is `disk_status:
+    // 'no_directory'`, a real (if uninteresting) answer, not a read error.
+    let contextReadError: string | null = null;
 
     // DEAD catch removed (#2245 audit): matchPhaseDirs(...) is a pure
     // array lookup on an already-resolved string array, and
@@ -432,6 +461,7 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
       summaryCount = counts.summaryCount;
       hasContext = counts.hasContext;
       hasResearch = counts.hasResearch;
+      contextReadError = counts.contextReadError;
 
       // ADR-3180 §7.4 (issue #3186, disk-strict, #3168 fix): route "is this
       // phase complete" through the canonical owner (`isPhaseComplete`),
@@ -478,6 +508,7 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
       has_research: hasResearch,
       disk_status: diskStatus,
       roadmap_complete: roadmapComplete,
+      context_read_error: contextReadError,
     });
   }
 
@@ -494,12 +525,18 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
     let tSummaryCount = 0;
     let tHasContext = false;
     let tHasResearch = false;
+    let tContextReadError: string | null = null;
     if (dirMatchA) {
       const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatchA));
       tPlanCount = counts.planCount;
       tSummaryCount = counts.summaryCount;
       tHasContext = fs.existsSync(path.join(phasesDir, dirMatchA, 'CONTEXT.md'));
       tHasResearch = fs.existsSync(path.join(phasesDir, dirMatchA, 'RESEARCH.md'));
+      // #3885 (ADR-3473 §8.5): reuse the SAME countPhasePlansAndSummaries call's
+      // discriminator — this row's hasContext/hasResearch are read via a direct
+      // existsSync (which cannot itself distinguish EACCES from absent), but
+      // an unreadable phase directory is still surfaced via the sibling call.
+      tContextReadError = counts.contextReadError;
     }
     phases.push({
       number: tr.id,
@@ -513,6 +550,7 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
       has_research: tHasResearch,
       disk_status: dirMatchA ? 'ok' : 'no_directory',
       roadmap_complete: false,
+      context_read_error: tContextReadError,
     });
   }
   return phases;
@@ -534,18 +572,17 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
 
   // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
-  // #3185 exemption (documented reason, not a file allowlist — ADR-3180
-  // Decision 4a): this is a heading->directory LOOKUP INDEX, not a milestone
-  // enumeration. It must see the PHYSICAL set so a heading already scoped by
-  // extractCurrentMilestoneScoped above can find its directory; filtering it
-  // through listMilestonePhaseDirs would scope the same set twice.
-  const _phaseDirNames = (() => {
-    try {
-      return fs.readdirSync(phasesDir, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name);
-    } catch { return []; }
-  })();
+  // #3185 exemption reason (ADR-3180 Decision 4a): this is a heading->directory
+  // LOOKUP INDEX, not a milestone enumeration. It must see the PHYSICAL set so
+  // a heading already scoped by extractCurrentMilestoneScoped above can find
+  // its directory; filtering it through listMilestonePhaseDirs would scope
+  // the same set twice. #3882 (ADR-3473 §8.2): routed through the named
+  // "physical set, sentinels included" axis instead of a hand-rolled
+  // readdirSync — every heading matched below already excludes sentinel
+  // phase numbers via isSentinelPhaseId before it ever consults this list
+  // (collectAnalyzePhases), so a sentinel directory's presence here is
+  // output-invariant; this only removes the re-derivation, not the reason.
+  const _phaseDirNames = listAllPhaseDirs(phasesDir, { includeSentinels: true }).value;
 
   // Scan the scoped milestone window for phase-detail headings and enrich each
   // with its on-disk status. Extracted into `collectAnalyzePhases` (#3165) so

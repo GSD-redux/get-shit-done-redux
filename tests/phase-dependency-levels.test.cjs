@@ -151,3 +151,92 @@ describe('computeDependencyLevels — behavior tests', () => {
   });
 
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3885 (ADR-3473 §8.5) / #3427 — unresolved depends_on tokens must be named,
+// not silently dropped.
+//
+// resolveDependencyId returns null for a depends_on token that resolves via
+// neither planMap nor canonicalToId; computeDependencyLevels's own
+// `if (!resolvedDep) continue;` (test (i) above) silently ignores that edge.
+// The dropped edge makes the dependent plan a DAG root, and cmdPhasePlanIndex
+// (tests/phase.test.cjs) derives a manufactured "declared wave" mismatch
+// warning from the damaged graph — blaming the plan author for a dropped
+// edge, not a real authoring mistake.
+//
+// DESIGN DECISION (chosen by this test file, not yet implemented):
+// computeDependencyLevels gains a fourth return field,
+// `unresolved: Array<{ plan: string, token: string }>` — one entry per
+// (plan.id, raw depends_on token) pair that resolves via neither planMap nor
+// canonicalToId. Additive: existing callers destructuring only
+// {level, visited, order} are unaffected.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('computeDependencyLevels — unresolved dependency reporting (#3427, ADR-3473 §8.5)', () => {
+
+  // T23 — RED today: `unresolved` does not exist on the return value at all,
+  // so the dropped (plan, token) pair is currently invisible.
+  test('T23: unresolvedDependsOnTokenIsNamed_3427', () => {
+    const { rawPlans, planMap, canonicalToId } = buildInputs([
+      { id: 'A', dependsOn: [] },
+      { id: 'B', dependsOn: ['totally-bogus-token'] },
+    ]);
+    const result = computeDependencyLevels(rawPlans, planMap, canonicalToId);
+    const unresolved = result.unresolved ?? [];
+    assert.strictEqual(unresolved.length, 1, 'exactly one unresolved (plan, token) pair');
+    assert.deepStrictEqual(unresolved[0], { plan: 'B', token: 'totally-bogus-token' });
+  });
+
+  // T25 (unit-level companion to N3) — MUST STAY GREEN both before and after:
+  // a fully-resolvable DAG must report ZERO unresolved tokens, which is the
+  // necessary condition for cmdPhasePlanIndex's wave-mismatch warning to keep
+  // firing unsuppressed on a genuinely wrong declared wave. The full
+  // end-to-end pin (real CLI, real warning text) is
+  // tests/phase.test.cjs's `genuineWaveMismatchStillWarns`. `?? []` makes this
+  // pass both before `unresolved` exists and after.
+  test('T25 (unit companion): fullyResolvedDagReportsZeroUnresolvedTokens', () => {
+    const { rawPlans, planMap, canonicalToId } = buildInputs([
+      { id: 'A', dependsOn: [] },
+      { id: 'B', dependsOn: ['A'] },
+    ]);
+    const result = computeDependencyLevels(rawPlans, planMap, canonicalToId);
+    assert.strictEqual((result.unresolved ?? []).length, 0, 'every dep resolves — nothing should be reported unresolved');
+  });
+
+  // T30 — RED today (1- and 2-token cases): boundary coverage on unresolved
+  // token count per plan.
+  test('T30: unresolvedTokenCountBoundary', () => {
+    // 0 unresolved
+    {
+      const { rawPlans, planMap, canonicalToId } = buildInputs([
+        { id: 'A', dependsOn: [] },
+        { id: 'B', dependsOn: ['A'] },
+      ]);
+      const result = computeDependencyLevels(rawPlans, planMap, canonicalToId);
+      assert.strictEqual((result.unresolved ?? []).length, 0, '0 unresolved tokens');
+    }
+    // 1 unresolved
+    {
+      const { rawPlans, planMap, canonicalToId } = buildInputs([
+        { id: 'A', dependsOn: [] },
+        { id: 'B', dependsOn: ['A', 'ghost-1'] },
+      ]);
+      const result = computeDependencyLevels(rawPlans, planMap, canonicalToId);
+      const unresolved = result.unresolved ?? [];
+      assert.strictEqual(unresolved.length, 1, '1 unresolved token');
+      assert.deepStrictEqual(unresolved.map((u) => u.token).sort(), ['ghost-1']);
+    }
+    // 2 unresolved
+    {
+      const { rawPlans, planMap, canonicalToId } = buildInputs([
+        { id: 'A', dependsOn: [] },
+        { id: 'B', dependsOn: ['A', 'ghost-1', 'ghost-2'] },
+      ]);
+      const result = computeDependencyLevels(rawPlans, planMap, canonicalToId);
+      const unresolved = result.unresolved ?? [];
+      assert.strictEqual(unresolved.length, 2, '2 unresolved tokens');
+      assert.deepStrictEqual(unresolved.map((u) => u.token).sort(), ['ghost-1', 'ghost-2']);
+    }
+  });
+
+});

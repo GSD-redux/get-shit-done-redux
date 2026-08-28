@@ -165,6 +165,115 @@ describe('dispatcher error paths', () => {
   });
 });
 
+// ─── --project-dir (#3881) ────────────────────────────────────────────────────
+//
+// docs/CONFIGURATION.md's "Project-Root Resolution in Multi-Repo Workspaces"
+// section documents an explicit `--project-dir /path/to/workspace` flag that
+// is "idempotent under this resolution" — i.e. it names the project root
+// directly and skips findProjectRoot's ancestor walk-up entirely. Before this
+// fix the flag was documented but wired nowhere: `state json --project-dir
+// <abs>` run from an unrelated cwd silently resolved from cwd instead and
+// returned `{"error":"STATE.md not found"}`.
+
+const MARKER_3881 = 'PROJECT-B-MARKER-3881';
+
+function writeMarkedState3881(projectDir, marker) {
+  fs.writeFileSync(
+    path.join(projectDir, '.planning', 'STATE.md'),
+    `---
+gsd_state_version: 1.0
+current_phase: 01
+status: paused
+stopped_at: ${marker}
+---
+
+# Project State
+
+**Current Phase:** 01
+**Status:** Paused
+`
+  );
+}
+
+describe('#3881: --project-dir honors the documented explicit override', () => {
+  test('absolute --project-dir from an unrelated cwd operates on the named project', () => {
+    const projectA = createTempProject('fix-3881-a-'); // unrelated cwd; no STATE.md
+    const projectB = createTempProject('fix-3881-b-');
+    writeMarkedState3881(projectB, MARKER_3881);
+
+    try {
+      const result = runGsdTools(['state', 'json', '--project-dir', projectB], projectA);
+      assert.ok(result.success, `expected success, got: ${result.error || result.output}`);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(
+        output.stopped_at,
+        MARKER_3881,
+        "must read STATE.md from --project-dir's project, not from cwd (projectA has no STATE.md at all)"
+      );
+    } finally {
+      cleanup(projectA);
+      cleanup(projectB);
+    }
+  });
+
+  test('relative --project-dir resolves against cwd', () => {
+    const projectA = createTempProject('fix-3881-a-');
+    // createTempProject mkdtemps under os.tmpdir(), so projectA and projectB
+    // are siblings — a relative path from A to B is well-formed.
+    const projectB = createTempProject('fix-3881-b-');
+    writeMarkedState3881(projectB, MARKER_3881);
+
+    try {
+      const relative = path.relative(projectA, projectB);
+      const result = runGsdTools(['state', 'json', '--project-dir', relative], projectA);
+      assert.ok(result.success, `expected success, got: ${result.error || result.output}`);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.stopped_at, MARKER_3881, 'relative --project-dir must resolve against cwd (projectA)');
+    } finally {
+      cleanup(projectA);
+      cleanup(projectB);
+    }
+  });
+
+  test('nonexistent --project-dir path errors with non-zero exit', () => {
+    const projectA = createTempProject('fix-3881-a-');
+    try {
+      const nonexistent = path.join(projectA, 'does-not-exist-3881');
+      const result = runGsdTools(['state', 'json', '--project-dir', nonexistent], projectA);
+      assert.strictEqual(result.success, false, 'a nonexistent --project-dir must be a non-zero exit, not a silent fallback');
+      assert.match(result.error || '', /Invalid --project-dir/, 'error must name the invalid flag/path');
+    } finally {
+      cleanup(projectA);
+    }
+  });
+
+  test('--project-dir path with no .planning/ errors with non-zero exit', () => {
+    const projectA = createTempProject('fix-3881-a-');
+    const bareDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'fix-3881-bare-'));
+    try {
+      const result = runGsdTools(['state', 'json', '--project-dir', bareDir], projectA);
+      assert.strictEqual(result.success, false, 'a --project-dir with no .planning/ must be a non-zero exit, not a silent wrong-project resolve');
+      assert.match(result.error || '', /Invalid --project-dir/, 'error must name the invalid flag/path');
+    } finally {
+      cleanup(projectA);
+      cleanup(bareDir);
+    }
+  });
+
+  test('without --project-dir, behavior is unchanged (cwd-relative resolution still applies)', () => {
+    const projectB = createTempProject('fix-3881-b-');
+    writeMarkedState3881(projectB, MARKER_3881);
+    try {
+      const result = runGsdTools(['state', 'json'], projectB);
+      assert.ok(result.success, `expected success, got: ${result.error || result.output}`);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(output.stopped_at, MARKER_3881, 'no-flag invocation must still resolve from cwd exactly as before');
+    } finally {
+      cleanup(projectB);
+    }
+  });
+});
+
 // ─── Dispatcher Routing Branches ─────────────────────────────────────────────
 
 describe('dispatcher routing branches', () => {
