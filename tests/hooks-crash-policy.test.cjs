@@ -499,14 +499,13 @@ describe('hooks-crash-policy: #3911 git-probe timeout forced via a stub git -> a
 
   before(() => {
     stubDir = tempDir('hooks-crash-git-stub-');
-    const isWin = process.platform === 'win32';
-    if (isWin) {
-      // cmd.exe has no builtin millisecond sleep; PowerShell's Start-Sleep does.
-      fs.writeFileSync(
-        path.join(stubDir, 'git.cmd'),
-        `@echo off\r\npowershell -NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds ${GIT_STUB_SLEEP_MS}"\r\nexit /b 0\r\n`
-      );
-    } else {
+    // Not built on win32: the affected hooks spawn `git` via spawnSync with
+    // no `shell: true` (see hooks/gsd-worktree-path-guard.js's SPAWNOPT-based
+    // `spawnSync('git', args, { ...SPAWNOPT, cwd })` call), so Windows'
+    // CreateProcess resolves `git.exe` only and never a PATH `.cmd`/`.bat`
+    // shim — a stub written here could never be exercised. See the
+    // win32-only t.skip() on each case below.
+    if (process.platform !== 'win32') {
       const shPath = path.join(stubDir, 'git');
       fs.writeFileSync(shPath, `#!/bin/sh\nsleep ${(GIT_STUB_SLEEP_MS / 1000).toFixed(3)}\nexit 0\n`);
       fs.chmodSync(shPath, 0o755);
@@ -550,7 +549,17 @@ describe('hooks-crash-policy: #3911 git-probe timeout forced via a stub git -> a
   ];
 
   for (const c of CASES) {
-    test(`${c.file}: git timing out still allows, WITH a stderr diagnostic naming the probe (not silent)`, () => {
+    test(`${c.file}: git timing out still allows, WITH a stderr diagnostic naming the probe (not silent)`, (t) => {
+      if (process.platform === 'win32') {
+        // See hooks/gsd-worktree-path-guard.js's spawnSync('git', args, { ...SPAWNOPT, cwd })
+        // call (no `shell: true`): CreateProcess resolves git.exe only.
+        t.skip(
+          'win32: the hooks spawn git via spawnSync without shell:true, so CreateProcess ' +
+          'resolves git.exe only and never a PATH .cmd shim — the probe cannot be intercepted ' +
+          'here. Covered on linux and darwin.'
+        );
+        return;
+      }
       const { payload, cwd } = c.build();
       const r = runHook(c.file, {
         payload,
