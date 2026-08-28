@@ -30,13 +30,13 @@ const LEGACY_PKG_SIGNAL = 'get-shit-done-cc';
 function seedLegacySkill(configDir) {
   // configDir is a CONFIG DIR root (like ~/.claude): artifacts live at
   // <configDir>/skills/gsd-*/SKILL.md. The scan's content signal is a stale
-  // '/get-shit-done/' PATH reference (legacy-cleanup.cjs
+  // '/get-shit-done/' PATH reference (legacy-cleanup.cjs  // gsd-allow-legacy-name
   // LEGACY_SKILL_PATH_SIGNAL), not the bare package name.
   const skillDir = path.join(configDir, 'skills', 'gsd-add-tests');
   fs.mkdirSync(skillDir, { recursive: true });
   fs.writeFileSync(
     path.join(skillDir, 'SKILL.md'),
-    `<!-- installed via ${LEGACY_PKG_SIGNAL} -->\nSee ~/.claude/get-shit-done/skills/gsd-add-tests/SKILL.md\n`,
+    `<!-- installed via ${LEGACY_PKG_SIGNAL} -->\nSee ~/.claude/get-shit-done/skills/gsd-add-tests/SKILL.md\n`, // gsd-allow-legacy-name
   );
   return path.join(skillDir, 'SKILL.md');
 }
