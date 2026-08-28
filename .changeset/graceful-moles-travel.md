@@ -1,5 +1,5 @@
 ---
 type: Changed
-pr: 0
+pr: 3980
 ---
-**Fixed an unhandled-rejection crash trace on profile-pipeline CLI failures** — extract-messages and profile-sample could dump a raw Node stack trace on top of the clean error line when a non-terminator failure occurred, because the async pipeline's rejection handler threw from inside a detached promise .catch(). Errors now print once and exit 1 as before. (#3910)
+**`milestone complete` blocks again when the roadmap still lists unstarted phases** — that guard had been silently swallowed, so milestones could be archived with work outstanding and nothing said so. Two more guards that inspected an error's message before deciding whether to re-raise were failing the same way and are fixed with it, and `extract-messages`/`profile-sample` no longer dump a raw Node stack trace on top of their error line. A new lint rule now rejects a raw `process.exit()` outside the sanctioned terminator, so a guard cannot quietly stop guarding this way again. (#3910)
