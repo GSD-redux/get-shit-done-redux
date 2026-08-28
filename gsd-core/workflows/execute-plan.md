@@ -155,11 +155,14 @@ Fresh context per subagent preserves peak quality. Main context stays lean.
 if [ ! -f .planning/agent-history.json ]; then
   echo '{"version":"1.0","max_entries":50,"entries":[]}' > .planning/agent-history.json
 fi
-rm -f .planning/current-agent-id.txt
+# #3795: read a SURVIVING id before clearing it — the clear used to run
+# first, so the check below was always false and the resume prompt at this
+# step's tail was never offered.
 if [ -f .planning/current-agent-id.txt ]; then
   INTERRUPTED_ID=$(cat .planning/current-agent-id.txt)
   echo "Found interrupted agent: $INTERRUPTED_ID"
 fi
+rm -f .planning/current-agent-id.txt
 ```
 
 If interrupted: ask user to resume (Task `resume` parameter) or start fresh.
