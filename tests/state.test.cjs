@@ -1938,7 +1938,9 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
     }
     // The body-only `Plan` field has no schema row (buildStateFrontmatter never
     // reads it into frontmatter), so it is named explicitly.
-    assert.ok(output.error.includes('Plan: N of M'), `error should name the Plan field shape; got: ${output.error}`);
+    for (const planShape of ['`Plan: N of M`', '`Plan: N` with `Total Plans in Phase: M`']) {
+      assert.ok(output.error.includes(planShape), `error should name ${planShape}; got: ${output.error}`);
+    }
   });
 
   test('advances plan in compound "Plan: X of Y" format', () => {

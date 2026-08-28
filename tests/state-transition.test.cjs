@@ -802,6 +802,100 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     assert.ok(!/04 of 06/.test(result.content), 'no site may be left behind');
   });
 
+  // Review round 4, Blocker 1. The section fallback was guarded by the
+  // FUNCTION-wide `mutated`, which the status/lastActivity arms had already set.
+  // The discriminating shape needs BOTH a header `Status:` (to absorb the
+  // body-level status write, so the section's own status is still a template
+  // default when the section arm runs) AND a bold section plan line (so the
+  // plain-line arm misses and only the fallback can write it). Without the
+  // header Status this passes even on the broken build.
+  test('B1: a bold section plan line advances when an unrelated field was also refreshed', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 04 of 06',
+      '**Status:** Ready to plan',
+      '',
+      '## Current Position',
+      '',
+      '**Current Plan:** 01 of 06',
+      'Status: Ready to plan',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    const section = result.content.slice(result.content.indexOf('## Current Position'));
+    assert.match(section, /\*\*Current Plan:\*\* 05 of 06/, 'the bold section line must advance');
+    assert.ok(!/01 of 06/.test(result.content), 'no site may be left behind');
+  });
+
+  // Review round 4, Blocker 2. In the legacy shape BOTH plan values are
+  // populated, so a fallback that picked one name by ternary always chose
+  // `Current Plan` and never wrote a `**Plan:**` section line — which base did
+  // write. The header `**Plan:**` absorbs the body-level write, so only the
+  // section arm can advance the section copy.
+  test('B2: a bold **Plan:** section line advances in the legacy pair shape', () => {
+    const input = [
+      '# Project State',
+      '',
+      '**Current Plan:** 3',
+      '**Total Plans in Phase:** 5',
+      '**Plan:** 3 of 5',
+      '**Status:** Ready to plan',
+      '',
+      '## Current Position',
+      '',
+      '**Plan:** 3 of 5',
+      'Status: Ready to plan',
+      '',
+    ].join('\n');
+    const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+    const section = result.content.slice(result.content.indexOf('## Current Position'));
+    assert.match(section, /\*\*Plan:\*\* 4 of 5/, 'the section Plan line must advance');
+    assert.ok(!/3 of 5/.test(result.content), 'no site may be left behind');
+  });
+
+  // Review round 4, Blocker 3. `PLAN_SHAPE_N` was anchored harder than
+  // `PLAN_SHAPE_N_OF_M`, so annotated values base parsed via `parseInt` began to
+  // hard-error. Narrowing what the transition ACCEPTS is out of scope for #3784.
+  test('B3: annotated legacy values still parse, and keep their annotation', () => {
+    const drive = (plan, total) => transitionCore([
+      '# Project State', '',
+      `**Current Plan:** ${plan}`,
+      `**Total Plans in Phase:** ${total}`,
+      '**Status:** Executing', '',
+    ].join('\n'), { kind: 'advancePlan' }, deps);
+
+    const annotatedTotal = drive('3', '5 phases');
+    assert.strictEqual(annotatedTotal.data.advanced, true, '"5 phases" must still supply a total');
+    assert.strictEqual(annotatedTotal.data.total_plans, 5);
+
+    const annotatedPlan = drive('3 (blocked)', '5');
+    assert.strictEqual(annotatedPlan.data.advanced, true, '"3 (blocked)" must still advance');
+    assert.strictEqual(
+      stateExtractField(annotatedPlan.content, 'Current Plan'), '4 (blocked)',
+      'the annotation is the author\'s text and survives the advance',
+    );
+
+    // The prose case stays refused: the START anchor is what closes it, not the
+    // absence of a suffix.
+    const prose = transitionCore([
+      '# Project State', '', '**Current Plan:** 4 — blocked on review of 2 PRs',
+      '**Status:** Executing', '',
+    ].join('\n'), { kind: 'advancePlan' }, deps);
+    assert.strictEqual(prose.data.error, true, 'a total must never be read out of prose');
+  });
+
+  // Minor 1: the Number.isSafeInteger bound this PR introduces.
+  test('boundary: the safe-integer limit', () => {
+    const drive = (v) => transitionCore([
+      '# Project State', '', `**Current Plan:** ${v}`, '**Status:** Executing', '',
+    ].join('\n'), { kind: 'advancePlan' }, deps).data;
+    const MAX = Number.MAX_SAFE_INTEGER; // 9007199254740991
+    assert.strictEqual(drive(`${MAX - 1} of ${MAX}`).advanced, true, 'limit-1 advances');
+    assert.strictEqual(drive(`${MAX} of ${MAX}`).reason, 'last_plan', 'limit itself is readable');
+    assert.strictEqual(drive(`${MAX} of 9007199254740992`).error, true, 'limit+1 is refused, not rounded');
+  });
+
   // Boundary coverage (RULESET.TESTS.boundary-coverage) around the
   // `currentPlan >= totalPlans` limit, on the newly readable hybrid shape.
   // limit itself ("6 of 6") is covered by the phase-complete test above.

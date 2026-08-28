@@ -849,7 +849,14 @@ function advancePlanShapeError(): string {
       ? '`Current Plan: N` with `Total Plans in Phase: M`'
       : `\`Current Plan: ${shape}\``
   ));
-  spellings.push('`Plan: N of M`');
+  // The body-only `Plan` field accepts the same shapes, but has no schema row to
+  // derive them from: `buildStateFrontmatter` never reads it into frontmatter,
+  // so there is no `current_*` key to hang a row on. Both of its spellings are
+  // named here — an earlier revision listed only `Plan: N of M` and omitted the
+  // sibling-paired form the parser also accepts, which is precisely the
+  // "message advertises a different set than the parser accepts" drift this
+  // function exists to close.
+  spellings.push('`Plan: N of M`', '`Plan: N` with `Total Plans in Phase: M`');
   return `Cannot read the plan position from STATE.md. Expected one of: ${spellings.join(', ')}.`;
 }
 

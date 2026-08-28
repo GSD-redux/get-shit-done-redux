@@ -1311,14 +1311,29 @@ function mutateCurrentPositionResume(
  * `4 — blocked on review of 2 PRs` what follows `4` is ` — blocked`, so there
  * is nothing for the total to be read from.
  *
- * `(?:\s.*)?$` rather than `\s*$` also absorbs a CRLF file's trailing `\r`
- * (JS treats it as whitespace, and `$` without `m` does not match before it),
- * so tightening the grammar does not reject every CRLF STATE.md.
+ * BOTH grammars carry the same trailing tolerance, deliberately. An earlier
+ * revision anchored `N` hard (`/^(\d+)\s*$/`) while leaving `N of M` open,
+ * which hard-errored on values base parsed happily via `parseInt`:
+ * `Total Plans in Phase: 5 phases` and `Current Plan: 3 (blocked)`. #3784's own
+ * brief puts "validating or normalizing plan numbers beyond this transition's
+ * read/write" out of scope, so refusing an annotation nobody complained about
+ * was a narrowing this issue does not license. The prose defect is closed by
+ * the START anchor, not by forbidding suffixes: with a `Total Plans in Phase`
+ * sibling present the total never comes from the value's text at all, and
+ * without one `4 — blocked on review of 2 PRs` still fails `N of M` because
+ * ` — blocked` does not follow the leading number with `of`.
+ *
+ * CRLF survives, but state the mechanism accurately: `stateExtractField`'s own
+ * `(.+)` capture stops before the `\r` — JS `.` excludes CR as a
+ * LineTerminator — so the value these grammars receive is already CR-free on
+ * the common path. The trailing group is what covers the case where a CR does
+ * reach here, and `\s` matching CR is why it works. It is belt-and-braces, not
+ * the primary defence.
  */
 /** The two body field names a plan position is ever written under. */
 type PlanFieldName = 'Plan' | 'Current Plan';
 
-const PLAN_SHAPE_N = /^(\d+)\s*$/;
+const PLAN_SHAPE_N = /^(\d+)(?:\s.*)?$/;
 const PLAN_SHAPE_N_OF_M = /^(\d+)\s+of\s+(\d+)(?:\s.*)?$/;
 
 /**
@@ -1440,26 +1455,50 @@ function mutateCurrentPositionForAdvance(
     // carrying `Current Plan: 04 of 06 $&` would splice part of itself into the
     // document. `stateReplaceField` already uses a function for this reason;
     // these arms now agree with it.
-    if (fields.currentPlan && /^Current Plan:/m.test(sectionBody)) {
-      const value = fields.currentPlan;
-      sectionBody = sectionBody.replace(/^Current Plan:.*$/m, () => `Current Plan: ${value}`);
-      mutated = true;
-    }
-    if (fields.plan && /^Plan:/m.test(sectionBody)) {
-      const value = fields.plan;
-      sectionBody = sectionBody.replace(/^Plan:.*$/m, () => `Plan: ${value}`);
-      mutated = true;
-    }
-    if (!mutated) {
-      // No plain `Name:` line in the section — fall back to the shared writer,
-      // which also understands the bold and pipe-table spellings.
-      const fallbackName: PlanFieldName = fields.currentPlan ? 'Current Plan' : 'Plan';
-      const fallbackValue = (fields.currentPlan ?? fields.plan) as string;
-      const replaced = fallbackName === 'Current Plan'
-        ? stateReplaceField(sectionBody, 'Current Plan', fallbackValue)
-        : stateReplaceField(sectionBody, 'Plan', fallbackValue);
-      if (replaced !== null) { sectionBody = replaced; mutated = true; }
-    }
+    // Each name is written INDEPENDENTLY, and each falls back on its own.
+    //
+    // Two defects lived in the previous shape, both of which produced the
+    // split-brain document this arm exists to prevent:
+    //
+    //   - The fallback was guarded by `!mutated`, and `mutated` is FUNCTION-wide
+    //     — already set by the `phase`/`status`/`lastActivity` arms above, which
+    //     `advancePlanCore` always populates. A section spelled `**Current
+    //     Plan:**` (bold) or as a pipe-table row therefore skipped its fallback
+    //     because an UNRELATED field had been refreshed, and the section stayed a
+    //     plan behind the header.
+    //   - The fallback then picked ONE name by ternary. In the legacy shape both
+    //     values are populated, so it always chose `Current Plan` and a
+    //     `**Plan:**` section line — which base did write — got nothing.
+    //
+    // `planWritten` is local, so nothing outside this arm can satisfy its guard.
+    let planWritten = false;
+    const writePlanField = (name: PlanFieldName, value: string | undefined): void => {
+      if (!value) return;
+      // Plain `Name:` line first. Title-Case LITERALS reach both the regex and
+      // stateReplaceField (ADR-3408 §8.3(b)), and the replacement goes through a
+      // replacer FUNCTION so a `$&` / `` $` `` / `$'` in the author's text is not
+      // expanded into the document.
+      if (name === 'Current Plan') {
+        if (/^Current Plan:/m.test(sectionBody)) {
+          sectionBody = sectionBody.replace(/^Current Plan:.*$/m, () => `Current Plan: ${value}`);
+          planWritten = true;
+          return;
+        }
+        const replaced = stateReplaceField(sectionBody, 'Current Plan', value);
+        if (replaced !== null) { sectionBody = replaced; planWritten = true; }
+        return;
+      }
+      if (/^Plan:/m.test(sectionBody)) {
+        sectionBody = sectionBody.replace(/^Plan:.*$/m, () => `Plan: ${value}`);
+        planWritten = true;
+        return;
+      }
+      const replaced = stateReplaceField(sectionBody, 'Plan', value);
+      if (replaced !== null) { sectionBody = replaced; planWritten = true; }
+    };
+    writePlanField('Current Plan', fields.currentPlan);
+    writePlanField('Plan', fields.plan);
+    if (planWritten) mutated = true;
   }
 
   if (!mutated) return content;
@@ -1655,7 +1694,15 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   if (currentPlanDisplayValue !== undefined) {
     body = stateReplaceField(body, 'Current Plan', currentPlanDisplayValue) || body;
   }
-  body = stateReplaceField(body, 'Plan', planDisplayValue) || body;
+  // Only touch `Plan` when the document actually declares one. Writing it
+  // unconditionally meant a `stateReplaceField` whose first match could be any
+  // `Plan:` line anywhere in the body — including prose outside
+  // `## Current Position` that was never a field. `planField` is the read of
+  // that same field from the top of this function, so the write is scoped to a
+  // document that has one.
+  if (planField !== null) {
+    body = stateReplaceField(body, 'Plan', planDisplayValue) || body;
+  }
   body = stateReplaceFieldIfTemplate(body, 'Status', statusDefaults, 'Ready to execute') || body;
   body = stateReplaceFieldIfTemplate(body, 'Last Activity', lastActivityDefaults, today) || body;
   body = stateReplaceFieldIfTemplate(body, 'Last activity', lastActivityDefaults, today) || body;
