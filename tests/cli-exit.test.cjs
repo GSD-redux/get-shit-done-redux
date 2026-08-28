@@ -1136,8 +1136,27 @@ describe('#3906: ambient GSD_EXIT_CONTRACT/--exit-contract wiring (acceptance cr
 describe('#3912: gsd-tools dispatcher splices --exit-contract=<v> regardless of argv position', () => {
   const GSD_TOOLS_BIN = path.resolve(__dirname, '../gsd-core/bin/gsd-tools.cjs');
 
-  function run(args) {
-    return toLegacyResult(runNode([GSD_TOOLS_BIN, ...args], { timeoutMs: PROBE_TIMEOUT_MS }));
+  function run(args, options = {}) {
+    return toLegacyResult(runNode([GSD_TOOLS_BIN, ...args], { timeoutMs: PROBE_TIMEOUT_MS, ...options }));
+  }
+
+  // Fixture: a temp dir with a `.planning/` directory but no `STATE.md`, so
+  // `state-snapshot` takes the "STATE.md not found" branch — which the
+  // outcome cell resolves to exit 80 under v2 and exit 0 under v1. Pinning
+  // these exact numbers (rather than "not 64" / "leading == trailing")
+  // catches the case where both positions dispatch but land on the SAME
+  // wrong contract.
+  let fixtureDir;
+  afterEach(() => {
+    if (fixtureDir) {
+      cleanup(fixtureDir);
+      fixtureDir = undefined;
+    }
+  });
+  function makeFixture() {
+    fixtureDir = createTempDir();
+    fs.mkdirSync(path.join(fixtureDir, '.planning'), { recursive: true });
+    return fixtureDir;
   }
 
   test('leading position dispatches (no "Unknown command", not exit 64)', () => {
@@ -1158,15 +1177,16 @@ describe('#3912: gsd-tools dispatcher splices --exit-contract=<v> regardless of 
     );
   });
 
-  test('leading and trailing position agree on the same command (identical exit code)', () => {
-    const leading = run(['--exit-contract=v2', 'state-snapshot']);
-    const trailing = run(['state-snapshot', '--exit-contract=v2']);
-    assert.equal(
-      leading.status, trailing.status,
-      `leading (${leading.status}) and trailing (${trailing.status}) invocations of the same ` +
-      `command under the same contract must produce the identical exit code; ` +
-      `leading stderr: ${leading.stderr}; trailing stderr: ${trailing.stderr}`,
-    );
+  test('leading and trailing position agree on the SAME pinned exit code, per contract version', () => {
+    const dir = makeFixture();
+    const leadingV2 = run(['--exit-contract=v2', 'state-snapshot', `--cwd=${dir}`]);
+    const trailingV2 = run(['state-snapshot', `--cwd=${dir}`, '--exit-contract=v2']);
+    const leadingV1 = run(['--exit-contract=v1', 'state-snapshot', `--cwd=${dir}`]);
+    const trailingV1 = run(['state-snapshot', `--cwd=${dir}`, '--exit-contract=v1']);
+    assert.equal(leadingV2.status, 80, `leading v2 must exit 80; stderr: ${leadingV2.stderr}`);
+    assert.equal(trailingV2.status, 80, `trailing v2 must exit 80; stderr: ${trailingV2.stderr}`);
+    assert.equal(leadingV1.status, 0, `leading v1 must exit 0; stderr: ${leadingV1.stderr}`);
+    assert.equal(trailingV1.status, 0, `trailing v1 must exit 0; stderr: ${trailingV1.stderr}`);
   });
 
   test('an invalid leading value (v3) fails loudly rather than silently defaulting to v1', () => {
@@ -1175,6 +1195,44 @@ describe('#3912: gsd-tools dispatcher splices --exit-contract=<v> regardless of 
     assert.ok(
       /unrecognized exit-contract version/.test(r.stderr),
       `expected the resolveContractVersion rejection message on stderr; got: ${r.stderr.slice(0, 300)}`,
+    );
+    // Distinguishes this from the PRE-FIX build, where the leading flag was
+    // never spliced: pre-fix stderr contains BOTH "Unknown command:
+    // --exit-contract=v3" (from the dispatcher rejecting the leading token)
+    // AND the resolve error (raised lazily via error() -> getContractVersion
+    // later in the same run). Post-fix, the flag is spliced before dispatch,
+    // so only the resolve error appears.
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `leading --exit-contract=v3 must be spliced before dispatch, not treated as the command name; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('multiple --exit-contract= tokens: first match wins, no leftover token reaches the dispatcher', () => {
+    const dir = makeFixture();
+    const r = run(['--exit-contract=v2', '--exit-contract=v1', 'state-snapshot', `--cwd=${dir}`]);
+    assert.equal(r.status, 80, `first-match (v2) must win; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `every --exit-contract= token must be spliced, not just the first; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('leading --exit-contract=v2 does not break run-with-timeout dispatch (#3912 P1 regression)', () => {
+    const r = run(['--exit-contract=v2', 'run-with-timeout', '5', '--', 'node', '-e', 'process.exit(0)']);
+    assert.equal(r.status, 0, `child must run and exit 0, not die with Unknown command; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `leading --exit-contract=v2 must not intercept run-with-timeout's own dispatch; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('leading --json-errors does not break run-with-timeout dispatch (#3912 P1 regression)', () => {
+    const r = run(['--json-errors', 'run-with-timeout', '5', '--', 'node', '-e', 'process.exit(0)']);
+    assert.equal(r.status, 0, `child must run and exit 0, not die with Unknown command; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `leading --json-errors must not intercept run-with-timeout's own dispatch; stderr: ${r.stderr}`,
     );
   });
 });

@@ -4430,18 +4430,19 @@ function resolveMainWorktreeCwd(cwd, deps = {}) {
 async function main() {
   let args = process.argv.slice(2);
 
-  // #2351: run-with-timeout bounds a spawned command's wall clock portably
-  // (coreutils-independent). It MUST intercept HERE, before the global-flag
-  // parsing below — the wrapped command's argv is opaque and may itself contain
-  // --raw / --cwd / --pick that this dispatcher would otherwise consume.
-  {
-    let rwt = args;
-    if (rwt[0] === 'query') rwt = rwt.slice(1);
-    if (rwt[0] === 'run-with-timeout') {
-      // Return the child's exit code; runMain() maps it to process.exitCode.
-      return runWithTimeout(rwt.slice(1));
-    }
-  }
+  // These two global-flag blocks (--json-errors, --exit-contract) MUST run
+  // BEFORE the run-with-timeout interception below. run-with-timeout treats
+  // args[0] (post `query` stripping) as the sentinel and otherwise passes the
+  // remaining argv straight to the wrapped child — it never reaches the
+  // dispatcher's "Unknown command" fallback, but a global flag left in LEADING
+  // position (e.g. `--exit-contract=v2 run-with-timeout ...`) would be spliced
+  // out too late if these ran after, since neither block currently exists
+  // below this point to consume it. Splicing here, before run-with-timeout's
+  // own argv slicing, is what keeps both flags position-independent for every
+  // command, run-with-timeout included. Do not move these back below the
+  // run-with-timeout block (#confirmed regression: leading --exit-contract=v2
+  // and leading --json-errors both broke run-with-timeout when these blocks
+  // sat after it).
 
   // --json-errors / GSD_JSON_ERRORS=1: when active, error() emits structured
   // JSON ({ ok: false, reason: <ERROR_REASON code>, message }) to stderr
@@ -4478,6 +4479,21 @@ async function main() {
   for (let i = args.length - 1; i >= 0; i--) {
     if (typeof args[i] === 'string' && args[i].startsWith('--exit-contract=')) {
       args.splice(i, 1);
+    }
+  }
+
+  // #2351: run-with-timeout bounds a spawned command's wall clock portably
+  // (coreutils-independent). It MUST intercept HERE, before the remaining
+  // flag parsing below — the wrapped command's argv is opaque and may itself
+  // contain --raw / --cwd / --pick that this dispatcher would otherwise
+  // consume. (--json-errors / --exit-contract are handled above this block,
+  // not below, precisely so they keep working with run-with-timeout.)
+  {
+    let rwt = args;
+    if (rwt[0] === 'query') rwt = rwt.slice(1);
+    if (rwt[0] === 'run-with-timeout') {
+      // Return the child's exit code; runMain() maps it to process.exitCode.
+      return runWithTimeout(rwt.slice(1));
     }
   }
 
