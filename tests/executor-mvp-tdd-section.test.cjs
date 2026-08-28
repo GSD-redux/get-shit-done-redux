@@ -446,4 +446,40 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       'the outside-in arm must keep its second conjunct — without it, any declaration whose ' +
       'expected class happens to match slips through. Dropped twice already. See #3770.');
   });
+
+  test("the predicate's four shared conjuncts are active above the arms", () => {
+    const lines = soleFencedBlock(contract, 'RED Predicate').split('\n');
+    const leadingOf = (line) => line.slice(0, line.length - line.trimStart().length);
+
+    const opener = lines.findIndex((line) => line.trim().endsWith('('));
+    assert.ok(opener > -1, 'the predicate must open a parenthesised group');
+    const anchor = lines.findIndex((line) => line.trim() === 'exit_status != 0');
+    assert.ok(anchor > -1, 'the predicate must carry `exit_status != 0` as its first conjunct');
+    const sharedIndent = leadingOf(lines[anchor]);
+
+    // Trimmed-form equality, so a `# `-prefixed line can never satisfy it: a
+    // conjunct commented back out reads as absent, exactly like a deleted one.
+    for (const conjunct of [
+      'AND trailer.expected == plan.expected_failure',
+      'AND actual.phase == expected.phase',
+      'AND actual.class_or_mode == expected.class_or_mode',
+      'AND trailer.target_test == plan.target_test',
+    ]) {
+      const i = lines.findIndex((line) => line.trim() === conjunct);
+      assert.ok(i > -1,
+        `the shared conjunct \`${conjunct}\` is missing or commented out. All four shared ` +
+        'conjuncts are unconditional: two pin the trailer\'s `expected` and `target_test` ' +
+        'echoes to the plan declaration, and the other two only carry meaning once that ' +
+        'pinning holds. This assertion IS the mutation test — deleting the line turns the ' +
+        'suite red, which is what nothing did before. See #3770.');
+      assert.ok(i < opener,
+        `the shared conjunct \`${conjunct}\` sits on predicate line ${i + 1}, at or below the ` +
+        `parenthesised group opener on line ${opener + 1}. A shared conjunct pushed into the ` +
+        'group stops guarding the arm it is not in. See #3770.');
+      assert.strictEqual(leadingOf(lines[i]), sharedIndent,
+        `the shared conjunct \`${conjunct}\` is indented ${leadingOf(lines[i]).length} spaces, ` +
+        `not the ${sharedIndent.length} of \`exit_status != 0\`. Depth is the only thing ` +
+        'distinguishing a shared conjunct from an arm conjunct in this block. See #3770.');
+    }
+  });
 });
