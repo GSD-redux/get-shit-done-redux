@@ -235,8 +235,10 @@ describe('RunResult classification', () => {
 });
 
 describe('oracle self-tests', () => {
-  test('ORACLES has exactly 10 entries (7 violation-severity + 3 smell-severity)', () => {
-    assert.strictEqual(ORACLES.length, 10);
+  test('ORACLES has exactly 9 entries (8 violation-severity + 1 smell-severity) (#3913)', () => {
+    // #3913: soft-error-exit-zero deleted (inert SMELL; the exit contract now
+    // models the same condition), untyped-success promoted SMELL -> VIOLATION.
+    assert.strictEqual(ORACLES.length, 9);
   });
 
   test('exit-contract passes on a clean context', () => {
@@ -378,6 +380,38 @@ describe('oracle self-tests', () => {
     const outcome = getOracle('value-hygiene').check({ result: { json: { p: siblingPath } }, projectDir });
     assert.strictEqual(outcome.ok, false);
     assert.strictEqual(outcome.severity, SEVERITY.SMELL);
+  });
+
+  test('value-hygiene has no finding for a live-command TOKEN under actions[].command (regression guard — passes both before and after the shape-based fix)', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-command-token-');
+    t.after(() => cleanup(projectDir));
+    const outcome = getOracle('value-hygiene').check({
+      result: { json: { actions: [{ id: 'a', command: '/gsd:progress' }] } },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, true);
+  });
+
+  test('value-hygiene SMELLs on a genuine absolute-path leak stored under a key named "command" (the key-based exemption used to silently swallow this)', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-command-path-leak-');
+    t.after(() => cleanup(projectDir));
+    const outcome = getOracle('value-hygiene').check({
+      result: { json: { actions: [{ id: 'a', command: '/Users/someone/elsewhere/bin/tool' }] } },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
+    assert.strictEqual(outcome.subject.key, '$.actions[0].command');
+  });
+
+  test('value-hygiene is unaffected by a "command" value that is neither a live-command token nor an absolute path', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-command-plain-');
+    t.after(() => cleanup(projectDir));
+    const outcome = getOracle('value-hygiene').check({
+      result: { json: { actions: [{ id: 'a', command: 'progress' }] } },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, true);
   });
 
   test('value-hygiene does not crash on a cyclic json object', () => {
@@ -548,22 +582,63 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.subject.to, 2);
   });
 
-  test('routing-validity passes on a clean context', () => {
+  // #3913 P9 matrix "A" — routing-validity was rescoped to validate the fields
+  // that actually carry command tokens (actions[].command, next.command)
+  // instead of demanding a token from the bare `recommended` action id, which
+  // is an id by design (src/smart-entry.cts:766) and never a command token.
+
+  test('A1: a bare-id recommended paired with a matching actions[].command PASSES', () => {
+    // Failing-first: against the pre-#3913 oracles.cjs this fails because the
+    // old check demanded ctx.liveCommands.includes(json.recommended) directly
+    // ("discuss-phase" is not a command token). Red/green captured manually
+    // (see PR evidence); this is the permanent regression test.
     const outcome = getOracle('routing-validity').check({
-      result: { json: { recommended: '/gsd-plan-phase' } },
-      liveCommands: ['/gsd-plan-phase'],
+      result: {
+        json: {
+          recommended: 'discuss-phase',
+          actions: [{ id: 'discuss-phase', label: 'Discuss', command: '/gsd:discuss-phase', recommended: true }],
+        },
+      },
+      liveCommands: ['/gsd:discuss-phase'],
     });
     assert.strictEqual(outcome.ok, true);
   });
 
-  test('routing-validity fails on a broken context (token not in liveCommands)', () => {
+  test('A2 (positive control): actions[].command naming a NON-live command still FAILS', () => {
+    // Without this, deleting the routing-validity check entirely would also
+    // satisfy A1 — this proves the oracle can still produce a VIOLATION.
     const outcome = getOracle('routing-validity').check({
-      result: { json: { recommended: '/gsd-plan-phase' } },
-      liveCommands: ['/gsd-something-else'],
+      result: {
+        json: {
+          recommended: 'discuss-phase',
+          actions: [{ id: 'discuss-phase', label: 'Discuss', command: '/gsd:not-a-live-command', recommended: true }],
+        },
+      },
+      liveCommands: ['/gsd:discuss-phase'],
     });
     assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
     assert.strictEqual(typeof outcome.detail, 'string');
     assert.ok(outcome.detail.length > 0);
+    assert.strictEqual(outcome.subject.value, '/gsd:not-a-live-command');
+  });
+
+  test('A4: a payload with no recommended and no actions/next.command is not engaged (ok)', () => {
+    const outcome = getOracle('routing-validity').check({
+      result: { json: { situation: 'complete', summary: 'done' } },
+      liveCommands: ['/gsd:discuss-phase'],
+    });
+    assert.strictEqual(outcome.ok, true);
+  });
+
+  test('routing-validity also validates next.command (state-contract shape)', () => {
+    const outcome = getOracle('routing-validity').check({
+      result: { json: { next: { command: '/gsd:not-live', label: 'x', reason: 'y' } } },
+      liveCommands: ['/gsd:discuss-phase'],
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.key, 'next.command');
   });
 
   test('determinism passes on a clean context', () => {
@@ -584,40 +659,52 @@ describe('oracle self-tests', () => {
     assert.ok(outcome.detail.length > 0);
   });
 
-  test('soft-error-exit-zero passes on a clean context', () => {
-    const outcome = getOracle('soft-error-exit-zero').check({ result: { kind: KIND.JSON, argv: ['progress'] } });
-    assert.strictEqual(outcome.ok, true);
+  // #3913 D1/D2 — soft-error-exit-zero was deleted outright: it was an inert
+  // SMELL (never reaches `failed`) restating a condition the exit contract
+  // now models directly (v1 exit 0 / v2 exit 80 for an output({error}) path).
+
+  test('D1: soft-error-exit-zero appears in no oracle in ORACLES', () => {
+    assert.strictEqual(ORACLES.some((o) => o.id === 'soft-error-exit-zero'), false);
   });
 
-  test('soft-error-exit-zero SMELLs (not a violation) on a SOFT_ERROR result', () => {
+  test('D2: runOracles over a KIND.SOFT_ERROR result produces no finding with id soft-error-exit-zero', () => {
     const ctx = { result: { kind: KIND.SOFT_ERROR, argv: ['progress'], json: { error: 'no phases found' } } };
-    const outcome = getOracle('soft-error-exit-zero').check(ctx);
-    assert.strictEqual(outcome.ok, false);
-    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
-    assert.strictEqual(typeof outcome.detail, 'string');
-    assert.ok(outcome.detail.length > 0);
-    assert.deepEqual(outcome.subject.argv, ['progress'], 'subject.argv must name the offending command');
-    const { violations, smells } = runOracles(ctx);
-    assert.strictEqual(violations.some((v) => v.id === 'soft-error-exit-zero'), false);
-    assert.strictEqual(smells.some((s) => s.id === 'soft-error-exit-zero'), true);
+    const { violations, smells, failed } = runOracles(ctx);
+    assert.strictEqual(violations.some((f) => f.id === 'soft-error-exit-zero'), false);
+    assert.strictEqual(smells.some((f) => f.id === 'soft-error-exit-zero'), false);
+    assert.strictEqual(failed.some((f) => f.id === 'soft-error-exit-zero'), false);
   });
 
-  test('untyped-success passes on a clean context', () => {
+  // #3913 C — untyped-success promoted SEVERITY.SMELL -> SEVERITY.VIOLATION.
+  // Nothing else in the repo asserts "the recommended token matches a live
+  // command" for a PROSE-only surface, so this stays a real, enforced guard
+  // rather than being deleted alongside soft-error-exit-zero.
+
+  test('C3: untyped-success passes (is not engaged) on a non-PROSE context', () => {
     const outcome = getOracle('untyped-success').check({ result: { kind: KIND.JSON, argv: ['progress'] } });
     assert.strictEqual(outcome.ok, true);
   });
 
-  test('untyped-success SMELLs (not a violation) on a PROSE result', () => {
+  test('C1 + C2: untyped-success is a VIOLATION on a PROSE result, and reaches runOracles(...).failed', () => {
+    // C1: severity is VIOLATION, not SMELL.
     const ctx = { result: { kind: KIND.PROSE, argv: ['init'] } };
     const outcome = getOracle('untyped-success').check(ctx);
     assert.strictEqual(outcome.ok, false);
-    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
     assert.strictEqual(typeof outcome.detail, 'string');
     assert.ok(outcome.detail.length > 0);
     assert.deepEqual(outcome.subject.argv, ['init'], 'subject.argv must name the offending command');
-    const { violations, smells } = runOracles(ctx);
-    assert.strictEqual(violations.some((v) => v.id === 'untyped-success'), false);
-    assert.strictEqual(smells.some((s) => s.id === 'untyped-success'), true);
+
+    // C2 — the anti-vacuity test for the whole phase: a promotion that is
+    // cosmetic would still route this finding to `smells`, where it can never
+    // redden a build. Failing-first: against the pre-#3913 oracles.cjs this
+    // fails because the finding lands in `smells`, not `failed` (red/green
+    // captured manually; see PR evidence). This is the permanent regression
+    // test for that identity.
+    const { violations, smells, failed } = runOracles(ctx);
+    assert.strictEqual(smells.some((s) => s.id === 'untyped-success'), false);
+    assert.strictEqual(violations.some((v) => v.id === 'untyped-success'), true);
+    assert.strictEqual(failed.some((f) => f.id === 'untyped-success'), true);
   });
 
   test('contract-conflict passes on a clean context', () => {
@@ -644,16 +731,20 @@ describe('oracle self-tests', () => {
 
 describe('severity model', () => {
   test('a smell must never appear in failed (the contract that keeps smells from breaking builds)', () => {
-    const ctx = { result: { kind: KIND.PROSE, argv: ['init'] } };
+    // #3913: untyped-success was promoted to a VIOLATION and can no longer
+    // serve as the SMELL example here — contract-conflict is now the sole
+    // remaining SMELL-severity oracle.
+    const ctx = { jsonErrorMode: true, result: { kind: KIND.UNSTRUCTURED_ERROR, argv: ['bad-usage'] } };
     const { failed, smells } = runOracles(ctx);
-    assert.ok(smells.some((s) => s.id === 'untyped-success'));
-    assert.strictEqual(failed.some((f) => f.id === 'untyped-success'), false);
+    assert.ok(smells.some((s) => s.id === 'contract-conflict'));
+    assert.strictEqual(failed.some((f) => f.id === 'contract-conflict'), false);
   });
 
   test('failed.length === violations.length for a context producing both a violation and a smell', () => {
-    // value-hygiene fires a VIOLATION on the NaN leaf; untyped-success fires a
-    // SMELL on the PROSE kind. Both fire from the same ctx.
-    const ctx = { result: { kind: KIND.PROSE, argv: ['init'], json: { a: Number.NaN } } };
+    // value-hygiene fires a VIOLATION on the NaN leaf; contract-conflict fires
+    // a SMELL on the UNSTRUCTURED_ERROR kind under jsonErrorMode. Both fire
+    // from the same ctx.
+    const ctx = { jsonErrorMode: true, result: { kind: KIND.UNSTRUCTURED_ERROR, argv: ['bad-usage'], json: { a: Number.NaN } } };
     const { failed, violations, smells } = runOracles(ctx);
     assert.ok(violations.length > 0);
     assert.ok(smells.length > 0);
@@ -1026,11 +1117,13 @@ describe('greenfield walk (end-to-end)', () => {
     // tests/helpers/live-command-registry.cjs's real API: getLiveCommandTokens()
     // returns a memoized Set<string> of every live slash-command token derived
     // from commands/gsd/*.md frontmatter (e.g. "/gsd-plan-phase"). The
-    // routing-validity oracle checks result.json.recommended against this set.
+    // routing-validity oracle (#3913) checks command tokens carried by
+    // result.json.actions[].command / result.json.next.command against this
+    // set — never the bare result.json.recommended action id.
     liveCommands = [...getLiveCommandTokens()];
   });
 
-  test('runs every step of the greenfield-happy-path scenario clean', () => {
+  test('runs every step of the greenfield-happy-path scenario clean (A3: the real smart-entry --json payload passes routing-validity)', () => {
     const scenarioPath = path.join(__dirname, 'qa', 'scenarios', 'greenfield-happy-path.json');
     const scenario = loadScenario(scenarioPath);
     const report = runScenario(scenario, { LoopWalk, runOracles, liveCommands });
@@ -1042,19 +1135,19 @@ describe('greenfield walk (end-to-end)', () => {
     }
     assert.strictEqual(report.ok, true);
 
-    // Anti-vacuity: a QA harness that reports NOTHING on a first real walk
-    // against the actual CLI is far more likely to be mis-specified (oracles
-    // that never fire, a wiring bug that drops ctx fields, a scenario that
-    // never exercises the paths that produce smells) than the engine is
-    // genuinely flawless. "Found nothing" is itself a failure signal for a
-    // harness whose whole job is to keep known trade-offs visible, so the
-    // walk must be able to speak at least once. Deliberately NOT asserting an
-    // exact smell count or exact oracle ids here — that would pin today's
-    // engine behavior into the test and defeat the point of a smell channel
-    // that is allowed to evolve without becoming a build break.
+    // #3913: this scenario's corpus previously carried exactly two firing
+    // smells — soft-error-exit-zero on state-snapshot, and untyped-success on
+    // smart-entry (before it gained a --json surface). Both are now fixed:
+    // soft-error-exit-zero is deleted outright, and adding --json to
+    // smart-entry gives it a typed surface so untyped-success (now a
+    // VIOLATION) never fires against it. So this corpus is genuinely
+    // smell-free — asserting `totalSmells === 0` is the honest anti-vacuity
+    // check here. The harness's ability to actually SPEAK a finding (not just
+    // report nothing) is exercised elsewhere: every oracle's own pass/fail
+    // self-test above, the C1/C2 promoted-violation tests, and the wiring
+    // self-test below.
     const totalSmells = report.steps.reduce((sum, step) => sum + step.smells.length, 0);
-    assert.ok(totalSmells > 0, 'expected the greenfield walk to surface at least one smell');
-    assert.ok(report.smellSummary.length > 0, 'expected a non-empty smellSummary');
+    assert.strictEqual(totalSmells, 0, 'expected the greenfield walk to be smell-free after #3913');
   });
 });
 
@@ -1157,6 +1250,29 @@ describe('scenario discovery (mutations wired for real)', () => {
       'no perturbation scenario produced an observable mutation against its probed surface — '
         + 'every corruption was silently absorbed',
     );
+  });
+
+  test('B2: across every discovered scenario, the count of steps classified KIND.PROSE is exactly 0 (#3913)', () => {
+    // Asserted over the ENUMERATED corpus, not sampled — the promoted
+    // untyped-success oracle is only safe to run as a VIOLATION because no
+    // executed step anywhere in the corpus emits KIND.PROSE today. A future
+    // prose-only step reddens the build via untyped-success, which is the
+    // intended behavior (see oracles.cjs's describe text for that oracle).
+    const liveCommands = [...getLiveCommandTokens()];
+    const allFiles = discoverScenarioFiles();
+    assert.ok(allFiles.length > 0, 'expected at least one scenario file — otherwise this count is vacuous');
+    let proseSteps = 0;
+    let totalSteps = 0;
+    for (const file of allFiles) {
+      const scenario = loadScenario(file);
+      const report = runScenario(scenario, { LoopWalk, runOracles, liveCommands });
+      for (const step of report.steps) {
+        totalSteps += 1;
+        if (step.kind === KIND.PROSE) proseSteps += 1;
+      }
+    }
+    assert.ok(totalSteps > 0, 'expected at least one executed step across the corpus');
+    assert.strictEqual(proseSteps, 0, `expected 0 KIND.PROSE steps across ${totalSteps} executed steps`);
   });
 });
 
@@ -1681,5 +1797,43 @@ describe('qa-smell-ratchet gate (#3597)', () => {
     assert.deepStrictEqual(found.violations, []);
     assert.deepStrictEqual(found.expectationFailures, []);
     assert.deepStrictEqual(found.smells, []);
+  });
+});
+
+describe('smell-baseline.json pruning (#3913 matrix E)', () => {
+  const BASELINE_PATH = path.join(__dirname, 'qa', 'smell-baseline.json');
+
+  /** @returns {{version: number, smells: Array<{key:string,id:string,scenario:string,issue:unknown,reason?:string}>}} */
+  function readBaseline() {
+    return JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
+  }
+
+  test('E1: smell-baseline.json contains zero entries with id soft-error-exit-zero or untyped-success', () => {
+    const baseline = readBaseline();
+    const stale = baseline.smells.filter(
+      (s) => s.id === 'soft-error-exit-zero' || s.id === 'untyped-success',
+    );
+    assert.deepStrictEqual(
+      stale,
+      [],
+      `expected zero soft-error-exit-zero/untyped-success entries, found: ${JSON.stringify(stale)}`,
+    );
+  });
+
+  test('E3: every surviving baseline entry still cites a positive-integer issue', () => {
+    const baseline = readBaseline();
+    for (const entry of baseline.smells) {
+      assert.strictEqual(
+        Number.isInteger(entry.issue) && entry.issue > 0,
+        true,
+        `entry ${JSON.stringify(entry.key)} has a non-positive-integer issue: ${JSON.stringify(entry.issue)}`,
+      );
+    }
+  });
+
+  test('smell-baseline.json remains valid JSON with the frozen version:1 shape', () => {
+    const baseline = readBaseline();
+    assert.strictEqual(baseline.version, 1);
+    assert.ok(Array.isArray(baseline.smells));
   });
 });

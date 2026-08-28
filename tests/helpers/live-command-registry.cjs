@@ -37,6 +37,17 @@ const COMMANDS_DIR = path.join(__dirname, '..', '..', 'commands', 'gsd');
 let _cache = null;
 
 /**
+ * The exhaustive set of prefixes `getLiveCommandTokens()` ever emits — kept
+ * here, alongside the token-emission logic itself, as the single source of
+ * truth so a shape-based "does this string look like a live-command token"
+ * check (see `tests/qa/oracles.cjs` value-hygiene) never drifts from what
+ * this file actually generates. Every token this module produces is exactly
+ * `${prefix}${slug}` for one of these three prefixes — see the `tokens.add`
+ * calls in `getLiveCommandTokens()` below, which is the sole producer.
+ */
+const LIVE_COMMAND_TOKEN_PREFIXES = Object.freeze(['/gsd-', '/gsd:', '$gsd-']);
+
+/**
  * Parse the YAML frontmatter `name:` field from a command file's content.
  * Returns the slug (e.g. "help", "plan-phase", "context") or null if the
  * field is absent or the file has no frontmatter.
@@ -129,4 +140,4 @@ function getLiveCommandTokens() {
   return _cache;
 }
 
-module.exports = { getLiveCommandTokens };
+module.exports = { getLiveCommandTokens, LIVE_COMMAND_TOKEN_PREFIXES };
