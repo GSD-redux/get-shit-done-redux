@@ -196,6 +196,10 @@ Phase-completion verbs never write `Milestone complete` (the overloaded bare val
 | `Last activity:` | 핸들러가 기록할 때 ISO 날짜(`YYYY-MM-DD`); 실행기가 작성할 때 서술형 산문 |
 | `Progress:` | 시각적 막대, 예: `[████░░░░░░] 40%` |
 
+**이 섹션의 모든 필드는 단일 값이며, 이 섹션은 추가되는 것이 아니라 덮어써집니다.** 두 번째 `Phase:` 줄은 두 번째 위치가 아니며 이력도 아닙니다 — 이는 잘못된 형식의 입력입니다. 리더는 중복된 필드를 **첫 번째** 항목으로 해석하므로, 선의로 추가된 이후의 줄은 우선하지 않고 조용히 무시됩니다. 아무런 경고도 표시되지 않습니다. 이 섹션을 작성할 때는 줄을 추가하지 말고 교체하세요.
+
+진행 *이력*은 여기에 속하지 않습니다. 이는 아래의 [`## Performance Metrics`](#performance-metrics)에 누적되며, 이 섹션이 바로 계속 늘어나도록 설계된 곳입니다.
+
 이 섹션의 `Status:` 및 `Last activity:` 필드는 기존 값이 알려진 템플릿 기본값인 경우 GSD 핸들러에 의해 업데이트됩니다(크누스 불변량: 실행기가 작성한 값은 보존됩니다). 알려진 핸들러 기본값의 전체 목록은 `gsd-core/bin/lib/state-document.cjs`의 `KNOWN_TEMPLATE_DEFAULTS`에 있습니다.
 
 ### Performance Metrics

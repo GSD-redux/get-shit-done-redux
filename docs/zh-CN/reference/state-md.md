@@ -196,6 +196,10 @@ Phase-completion verbs never write `Milestone complete` (the overloaded bare val
 | `Last activity:` | 处理器写入时为 ISO 日期（`YYYY-MM-DD`）；执行器编写时为叙述性文本 |
 | `Progress:` | 可视化进度条，如 `[████░░░░░░] 40%` |
 
+**本节中的每个字段都是单值的，本节会被覆盖而不是追加。** 第二个 `Phase:` 行并不是第二个位置，也不是历史记录——它是格式错误的输入。读取器通过取**第一个**出现来解析重复字段，因此善意追加的后续行会被静默忽略而不是生效；不会有任何警告。写入本节时应替换它，而不是新增一行。
+
+进度*历史*不属于这里。它会累积到下方的 [`## Performance Metrics`](#performance-metrics) 中，那才是设计用于增长的部分。
+
 当现有值为已知模板默认值时，该章节中的 `Status:` 和 `Last activity:` 字段由 GSD 处理器更新（Knuth 不变式：执行器编写的值被保留）。已知处理器默认值的完整列表位于 `gsd-core/bin/lib/state-document.cjs` 中的 `KNOWN_TEMPLATE_DEFAULTS`。
 
 ### 性能指标

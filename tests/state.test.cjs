@@ -1,4 +1,4 @@
-// docs-guard-exempt: docs/CONFIGURATION.md is cited only in a comment; never read.
+// docs-guard-exempt: docs/CONFIGURATION.md and docs/reference/state-md.md are cited only in comments; never read.
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
@@ -1199,6 +1199,81 @@ describe('stateExtractField and stateReplaceField helpers', () => {
     const content = '# State\n\n**status:** Active\n';
     const result = stateExtractField(content, 'Status');
     assert.strictEqual(result, 'Active', 'should match field name case-insensitively');
+  });
+
+  // (#3812) docs/reference/state-md.md's "### Current Position" section now
+  // promises: every field there is single-valued, and a duplicated field
+  // resolves to the FIRST occurrence with no warning. These three rows pin
+  // that reader behavior so the doc can't silently drift from the code.
+  // T1 is load-bearing; T2/T3 exist so T1 can't pass for the wrong reason
+  // (e.g. a reader that returns the first line of the SECTION rather than
+  // the first matching FIELD). See
+  // .gsd/phase/docs-3812-current-position-cardinality/50-test-matrix.md.
+
+  test('T1: duplicated Phase field resolves to the first occurrence (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '### Current Position',
+      '',
+      'Phase: 1 of 5 (First)',
+      'Plan: 1 of 3',
+      '',
+      '## Somewhere else',
+      'Phase: 9 of 9 (Appended later)',
+    ].join('\n');
+
+    const result = stateExtractField(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '1 of 5 (First)',
+      'a duplicated Phase field must resolve to the first occurrence, per docs/reference/state-md.md'
+    );
+  });
+
+  test('T2: a single, non-duplicated Phase field still resolves normally (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '### Current Position',
+      '',
+      'Phase: 2 of 5 (Only occurrence)',
+      'Plan: 1 of 3',
+    ].join('\n');
+
+    const result = stateExtractField(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '2 of 5 (Only occurrence)',
+      'the ordinary, non-duplicated case must still resolve correctly'
+    );
+  });
+
+  test('T3: a sibling field between duplicated Phase lines resolves to its own value (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '### Current Position',
+      '',
+      'Phase: 1 of 5 (First)',
+      'Plan: 2 of 3',
+      '',
+      '## Somewhere else',
+      'Phase: 9 of 9 (Appended later)',
+    ].join('\n');
+
+    const phase = stateExtractField(content, 'Phase');
+    const plan = stateExtractField(content, 'Plan');
+    assert.strictEqual(
+      phase,
+      '1 of 5 (First)',
+      'Phase must still resolve to the first occurrence with a sibling field in between'
+    );
+    assert.strictEqual(
+      plan,
+      '2 of 3',
+      'Plan must resolve to its own value, not be affected by the duplicated Phase field'
+    );
   });
 
   // stateReplaceField tests

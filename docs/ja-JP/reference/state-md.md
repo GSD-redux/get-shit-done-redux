@@ -196,6 +196,10 @@ Phase-completion verbs never write `Milestone complete` (the overloaded bare val
 | `Last activity:` | ハンドラー書き込み時は ISO 日付（`YYYY-MM-DD`）; エグゼキューター作成時はナラティブ文章 |
 | `Progress:` | ビジュアルバー。例: `[████░░░░░░] 40%` |
 
+**このセクションのすべてのフィールドは単一値であり、このセクションは追記されるのではなく上書きされます。** 2つ目の `Phase:` 行は2つ目の位置ではなく、履歴でもありません — それは不正な入力です。リーダーは重複したフィールドを**最初の**出現で解決するため、善意で追記された後続の行は勝つのではなく黙って無視されます。警告は一切表示されません。このセクションを書き込む際は、行を追加するのではなく、置き換えてください。
+
+進捗の*履歴*はここには属しません。それは以下の [`## Performance Metrics`](#performance-metrics) に蓄積されます。このセクションは増えていくように設計されています。
+
 このセクションの `Status:` および `Last activity:` フィールドは、既存の値が既知のテンプレートデフォルト値の場合に GSD ハンドラーによって更新されます（クヌース不変式: エグゼキューター作成値は保存されます）。既知のハンドラーデフォルト値の完全なリストは `gsd-core/bin/lib/state-document.cjs` の `KNOWN_TEMPLATE_DEFAULTS` に記載されています。
 
 ### Performance Metrics

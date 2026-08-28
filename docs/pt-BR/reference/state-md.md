@@ -196,6 +196,10 @@ Onde o projeto está agora:
 | `Last activity:` | Data ISO (`YYYY-MM-DD`) quando escrito por handler; prosa narrativa quando elaborado pelo executor |
 | `Progress:` | Barra visual, ex.: `[████░░░░░░] 40%` |
 
+**Todos os campos nesta seção têm valor único, e a seção é sobrescrita em vez de receber conteúdo anexado.** Uma segunda linha `Phase:` não representa uma segunda posição nem um histórico — é uma entrada malformada. Os leitores resolvem um campo duplicado considerando a **primeira** ocorrência, de modo que uma linha posterior anexada de boa fé é silenciosamente ignorada em vez de prevalecer; nada emite um aviso. Escreva a seção substituindo-a, nunca adicionando uma linha.
+
+O *histórico* de progresso não pertence aqui. Ele se acumula em [`## Performance Metrics`](#performance-metrics) logo abaixo, que é a seção projetada para crescer.
+
 Os campos `Status:` e `Last activity:` nesta seção são atualizados pelos handlers do GSD quando o valor existente é um padrão de template conhecido (invariante de Knuth: valores elaborados pelo executor são preservados). A lista completa de padrões de handler conhecidos está em `KNOWN_TEMPLATE_DEFAULTS` dentro de `gsd-core/bin/lib/state-document.cjs`.
 
 ### Métricas de Desempenho

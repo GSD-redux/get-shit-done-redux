@@ -205,6 +205,10 @@ Where the project stands right now:
 | `Last activity:` | ISO date (`YYYY-MM-DD`) when handler-written; narrative prose when executor-authored |
 | `Progress:` | Visual bar, e.g. `[████░░░░░░] 40%` |
 
+**Every field in this section is single-valued, and the section is overwritten rather than appended to.** A second `Phase:` line is not a second position and is not history — it is malformed input. Readers resolve a duplicated field by taking the **first** occurrence, so a later line appended in good faith is silently ignored rather than winning; nothing warns. Write the section by replacing it, never by adding a line.
+
+Progress *history* does not belong here. It accumulates in [`## Performance Metrics`](#performance-metrics) below, which is the section designed to grow.
+
 The `Status:` and `Last activity:` fields in this section are updated by GSD handlers when the existing value is a known template default (Knuth invariant: executor-authored values are preserved). The full list of known handler defaults is in `KNOWN_TEMPLATE_DEFAULTS` inside `gsd-core/bin/lib/state-document.cjs`.
 
 ### Performance Metrics
