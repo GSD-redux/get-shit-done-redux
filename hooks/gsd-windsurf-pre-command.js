@@ -47,6 +47,16 @@
 
 'use strict';
 
+const { allow, deny } = require('./lib/hook-exit.js');
+
+// #3911 (ADR-3889 Phase 7): the exit(2) call site (block(), below) is
+// migrated to hook-exit.js's deny(undefined, reason) now that
+// hooks/lib/cli-exit.js's terminateNow emits fd 1 and fd 2 (stderrPayload)
+// in INDEPENDENT try/catch blocks — `payload=undefined` cleanly skips the
+// fd 1 write (preserving "nothing written to stdout") instead of throwing
+// into a shared catch that used to also swallow the fd 2 write, which is
+// what silently dropped the deny reason before this fix.
+
 // No realistic destructive command comes anywhere close to this length.
 const MAX_COMMAND_LENGTH = 4096;
 
@@ -244,16 +254,11 @@ function destructiveReason(cmd) {
 }
 
 function block(reason) {
-  process.stderr.write(`GSD windsurf pre_run_command guard: ${reason}\n`);
-  process.exit(2);
-}
-
-function allow() {
-  process.exit(0);
+  deny(undefined, `GSD windsurf pre_run_command guard: ${reason}\n`);
 }
 
 let input = '';
-const stdinTimeout = setTimeout(() => process.exit(0), 10000);
+const stdinTimeout = setTimeout(() => allow(undefined), 10000);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
@@ -262,14 +267,14 @@ process.stdin.on('end', () => {
     const data = JSON.parse(input || '{}');
     const toolInfo = (data && typeof data.tool_info === 'object' && data.tool_info) || {};
     const commandLine = typeof toolInfo.command_line === 'string' ? toolInfo.command_line : '';
-    if (!commandLine) { allow(); return; }
-    if (commandLine.length > MAX_COMMAND_LENGTH) { allow(); return; }
+    if (!commandLine) { allow(undefined); return; }
+    if (commandLine.length > MAX_COMMAND_LENGTH) { allow(undefined); return; }
 
     const reason = destructiveReason(commandLine);
     if (reason) { block(reason); return; }
-    allow();
+    allow(undefined);
   } catch {
     // Silent fail-open — never block a valid tool call due to a hook bug.
-    allow();
+    allow(undefined);
   }
 });

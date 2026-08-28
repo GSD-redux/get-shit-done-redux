@@ -1,39 +1,53 @@
 #!/usr/bin/env node
 /**
- * gen-exit-code-registry.cjs — generates THREE byte-identical/derived
+ * gen-exit-code-registry.cjs — generates FIVE byte-identical/derived
  * artifacts from the declaration at gsd-core/bin/shared/exit-codes.json:
  *   - gsd-core/bin/lib/exit-code-registry.cjs   (tsc-adjacent build tree)
  *   - scripts/lib/exit-code-registry.cjs        (committed, for scripts/
  *     consumers that must work on an unbuilt clone — same reason
  *     scripts/lib/cli-exit.cjs exists alongside gsd-core/bin/lib/cli-exit.cjs;
  *     see scripts/gen-scripts-cli-exit.cjs).
+ *   - hooks/lib/exit-code-registry.js            (committed, for hooks/
+ *     consumers that must work on a raw, unbuilt clone — same reason as the
+ *     scripts/ copy above; see scripts/gen-hooks-cli-exit.cjs, which emits
+ *     hooks/lib/cli-exit.js's sibling `require('./exit-code-registry.js')`.
+ *     `.js`, not `.cjs`, to match the hooks/lib/*.js convention — ADR-3889
+ *     Phase 7, #3911).
  *   - src/exit-code-registry.d.cts               (the ambient type declaration
  *     tsc uses to typecheck src/cli-exit.cts's `require('./exit-code-registry.cjs')`
  *     against the shape the .cjs artifacts above actually export — generated
  *     from the SAME ENTRY_FIELD_TYPES table serializeRegistry() uses, so the
  *     two can never independently drift).
+ *   - gsd-core/bin/shared/exit-codes.sh          (POSIX sh, safe under
+ *     `set -u`: one `export EXIT_<NAME>=<code>` per entry, sourced by the
+ *     bash scanners under scripts/ so a shell caller never re-invents a
+ *     literal exit-code integer — ADR-3889 Phase 4, #3908).
  *
  * ADR-3889 ("One exit-code registry — 0 and 1 are free, everything else is
  * allocated") Phase 1 (#3905) built the single-output allocator; Phase 2
  * (#3906) added the second .cjs emission so scripts/ has its own committed
- * copy instead of reaching into gitignored build output, and a follow-up
- * closed the review finding that the .d.cts was hand-maintained with no gate
- * by generating it here too.
+ * copy instead of reaching into gitignored build output; a follow-up closed
+ * the review finding that the .d.cts was hand-maintained with no gate by
+ * generating it here too; Phase 4 (#3908) added the shell fragment so the
+ * three bash scanners can source symbolic names instead of hardcoding
+ * integers; Phase 7 (#3911) added the hooks/lib/ copy so a shipped hook can
+ * terminate through `terminateNow` without depending on any build artifact.
  *
- * The two .cjs artifacts are byte-identical: serializeRegistry() only encodes
- * the DECLARATION path (for the banner comment), never the output path, so
- * one generated string is written to both locations unchanged. The .d.cts is
- * a separate, smaller derivation (a structural type, not a per-entry table)
- * but is generated and --check-gated exactly the same way.
+ * The three .cjs/.js artifacts (primary, scripts, hooks) are byte-identical:
+ * serializeRegistry() only encodes the DECLARATION path (for the banner
+ * comment), never the output path, so one generated string is written to all
+ * three locations unchanged. The .d.cts and .sh artifacts are separate,
+ * smaller derivations but are generated and --check-gated exactly the same
+ * way.
  *
  * Nothing in this script emits a registered exit code itself; wiring
  * consumers onto the registry is separate work.
  *
  * Usage:
  *   node scripts/gen-exit-code-registry.cjs                # same as --write
- *   node scripts/gen-exit-code-registry.cjs --write         # write all three artifacts
+ *   node scripts/gen-exit-code-registry.cjs --write         # write all five artifacts
  *   node scripts/gen-exit-code-registry.cjs --check         # exit 1 if ANY committed artifact is stale
- *   node scripts/gen-exit-code-registry.cjs --declaration <path> --out <path> --scripts-out <path> --dts-out <path>   # override for tests
+ *   node scripts/gen-exit-code-registry.cjs --declaration <path> --out <path> --scripts-out <path> --hooks-out <path> --dts-out <path> --sh-out <path>   # override for tests
  *   node scripts/gen-exit-code-registry.cjs --json          # emit ONE JSON report on stdout instead of human prose
  */
 
@@ -46,7 +60,9 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_DECLARATION_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared', 'exit-codes.json');
 const DEFAULT_OUTPUT_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib', 'exit-code-registry.cjs');
 const DEFAULT_SCRIPTS_OUTPUT_PATH = path.join(REPO_ROOT, 'scripts', 'lib', 'exit-code-registry.cjs');
+const DEFAULT_HOOKS_OUTPUT_PATH = path.join(REPO_ROOT, 'hooks', 'lib', 'exit-code-registry.js');
 const DEFAULT_DTS_OUTPUT_PATH = path.join(REPO_ROOT, 'src', 'exit-code-registry.d.cts');
+const DEFAULT_SH_OUTPUT_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared', 'exit-codes.sh');
 
 /**
  * Single source of the entry field list (name -> TS type), in emission order.
@@ -82,14 +98,16 @@ const REASON = Object.freeze({
 });
 
 const USAGE_MESSAGE = [
-  'Usage: node scripts/gen-exit-code-registry.cjs [--write|--check] [--declaration <path>] [--out <path>] [--scripts-out <path>] [--dts-out <path>] [--json]',
+  'Usage: node scripts/gen-exit-code-registry.cjs [--write|--check] [--declaration <path>] [--out <path>] [--scripts-out <path>] [--hooks-out <path>] [--dts-out <path>] [--sh-out <path>] [--json]',
   '  (no flag)        same as --write',
-  '  --write          write all three generated registry artifacts',
+  '  --write          write all five generated registry artifacts',
   '  --check          exit 1 if ANY committed artifact is stale',
   '  --declaration    override the declaration path (default: gsd-core/bin/shared/exit-codes.json)',
   '  --out            override the primary output artifact path (default: gsd-core/bin/lib/exit-code-registry.cjs)',
   '  --scripts-out    override the secondary output artifact path (default: scripts/lib/exit-code-registry.cjs)',
+  '  --hooks-out      override the hooks output artifact path (default: hooks/lib/exit-code-registry.js)',
   '  --dts-out        override the ambient type declaration path (default: src/exit-code-registry.d.cts)',
+  '  --sh-out         override the shell-sourceable fragment path (default: gsd-core/bin/shared/exit-codes.sh)',
   '  --json           emit ONE JSON report ({ok, reason, context, detail?}) on stdout instead of human-readable prose',
 ].join('\n');
 
@@ -310,10 +328,11 @@ function serializeRegistry(entries, declarationPath) {
     '// GENERATED FILE — DO NOT EDIT BY HAND.',
     `// Source of truth: ${relDeclaration}. Regenerate with:`,
     '//   node scripts/gen-exit-code-registry.cjs --write',
-    '// This exact content is emitted to TWO locations — gsd-core/bin/lib/exit-code-registry.cjs',
-    '// and scripts/lib/exit-code-registry.cjs (the latter committed so scripts/',
-    '// consumers work on an unbuilt clone) — both byte-compared by',
-    '// `npm run lint:generated-sync` (#3905 ADR-3889 Phase 1; #3906 Phase 2 added the second copy).',
+    '// This exact content is emitted to THREE locations — gsd-core/bin/lib/exit-code-registry.cjs,',
+    '// scripts/lib/exit-code-registry.cjs, and hooks/lib/exit-code-registry.js (the latter two',
+    '// committed so scripts/ and hooks/ consumers work on an unbuilt clone) — all byte-compared by',
+    '// `npm run lint:generated-sync` (#3905 ADR-3889 Phase 1; #3906 Phase 2 added the second copy;',
+    '// #3911 ADR-3889 Phase 7 added the hooks/lib/ copy).',
     '//',
     '// exitCodeFor(name) / nameForExitCode(code) are pure and total over this',
     '// closed table — each throws for anything not registered here.',
@@ -436,6 +455,42 @@ function serializeDts(declarationPath) {
 }
 
 /**
+ * Generate the shell-sourceable fragment: one `export EXIT_<NAME>=<code>`
+ * line per declared entry, POSIX sh, safe under `set -u` (a sourced file that
+ * only ever ASSIGNS variables can never trip an unset-variable check,
+ * regardless of what the caller's shell had in scope beforehand).
+ *
+ * Consumed by the bash scanners under scripts/ via `. gsd-core/bin/shared/
+ * exit-codes.sh` (ADR-3889 Phase 4, #3908) so a shell caller resolves a
+ * symbolic name instead of hardcoding a literal integer that can silently
+ * drift from the registry.
+ */
+function serializeSh(entries, declarationPath) {
+  const relDeclaration = path.relative(REPO_ROOT, declarationPath).split(path.sep).join('/');
+  const banner = [
+    '#!/bin/sh',
+    '# GENERATED FILE — DO NOT EDIT BY HAND.',
+    `# Source of truth: ${relDeclaration}. Regenerate with:`,
+    '#   node scripts/gen-exit-code-registry.cjs --write',
+    '#',
+    '# One `export EXIT_<NAME>=<code>` per gsd-core/bin/shared/exit-codes.json',
+    '# entry (ADR-3889 §2, #3905/#3906/#3908). POSIX sh, safe under `set -u`:',
+    '# sourcing this file only ever ASSIGNS variables, never reads one, so it',
+    '# cannot trip an unset-variable check regardless of the caller\'s existing',
+    '# environment.',
+    '#',
+    '# Usage (from a scanner under scripts/):',
+    '#   . "$(dirname "$0")/../gsd-core/bin/shared/exit-codes.sh"',
+    '#   exit "$EXIT_UNAVAILABLE"',
+    '',
+  ].join('\n');
+
+  const lines = entries.map((e) => `export EXIT_${e.name}=${e.code}`);
+
+  return banner + lines.join('\n') + '\n';
+}
+
+/**
  * Load, validate, and serialize the declaration in one step.
  * @returns {{ok:true,content:string}|{ok:false,reason:string,message:string}}
  */
@@ -446,7 +501,7 @@ function buildRegistryContent(declarationPath) {
   const validated = validateEntries(loaded.entries);
   if (!validated.ok) return validated;
 
-  return { ok: true, content: serializeRegistry(loaded.entries, declarationPath) };
+  return { ok: true, content: serializeRegistry(loaded.entries, declarationPath), entries: loaded.entries };
 }
 
 function printFail(result) {
@@ -487,26 +542,30 @@ function emitOk(reason, humanMessage, json) {
   console.log(humanMessage);
 }
 
-function doWrite(declarationPath, outPath, scriptsOutPath, dtsPath, json) {
+function doWrite(declarationPath, outPath, scriptsOutPath, hooksOutPath, dtsPath, shPath, json) {
   const result = buildRegistryContent(declarationPath);
   if (!result.ok) {
     emitFail(result, json);
     return 1;
   }
-  // The two .cjs artifacts are byte-identical copies of the same generated
-  // content (serializeRegistry never encodes the output path), so the same
-  // string is written to both locations unchanged.
-  for (const target of [outPath, scriptsOutPath]) {
+  // The three .cjs/.js artifacts are byte-identical copies of the same
+  // generated content (serializeRegistry never encodes the output path), so
+  // the same string is written to all three locations unchanged.
+  for (const target of [outPath, scriptsOutPath, hooksOutPath]) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, result.content, 'utf8');
   }
   const dtsContent = serializeDts(declarationPath);
   fs.mkdirSync(path.dirname(dtsPath), { recursive: true });
   fs.writeFileSync(dtsPath, dtsContent, 'utf8');
+  const shContent = serializeSh(result.entries, declarationPath);
+  fs.mkdirSync(path.dirname(shPath), { recursive: true });
+  fs.writeFileSync(shPath, shContent, 'utf8');
   emitOk(
     REASON.OK,
     `ok gen-exit-code-registry: wrote ${outPath}\nok gen-exit-code-registry: wrote ${scriptsOutPath}\n`
-    + `ok gen-exit-code-registry: wrote ${dtsPath}`,
+    + `ok gen-exit-code-registry: wrote ${hooksOutPath}\n`
+    + `ok gen-exit-code-registry: wrote ${dtsPath}\nok gen-exit-code-registry: wrote ${shPath}`,
     json,
   );
   return 0;
@@ -542,23 +601,26 @@ function checkOneArtifact(artifactLabel, artifactPath, content) {
 }
 
 /**
- * --check verifies ALL THREE committed artifacts against the same freshly
+ * --check verifies ALL FIVE committed artifacts against the same freshly
  * generated content and fails naming which one drifted (or is missing) if
- * any does. Checked in a fixed order (primary, secondary, dts) so a
- * single-artifact failure is always reported deterministically.
+ * any does. Checked in a fixed order (primary, secondary, hooks, dts, sh) so
+ * a single-artifact failure is always reported deterministically.
  */
-function doCheck(declarationPath, outPath, scriptsOutPath, dtsPath, json) {
+function doCheck(declarationPath, outPath, scriptsOutPath, hooksOutPath, dtsPath, shPath, json) {
   const result = buildRegistryContent(declarationPath);
   if (!result.ok) {
     emitFail(result, json);
     return 1;
   }
   const dtsContent = serializeDts(declarationPath);
+  const shContent = serializeSh(result.entries, declarationPath);
 
   const artifacts = [
     ['primary', outPath, result.content],
     ['secondary', scriptsOutPath, result.content],
+    ['hooks', hooksOutPath, result.content],
     ['dts', dtsPath, dtsContent],
+    ['sh', shPath, shContent],
   ];
   for (const [artifactLabel, artifactPath, content] of artifacts) {
     const checked = checkOneArtifact(artifactLabel, artifactPath, content);
@@ -572,21 +634,25 @@ function doCheck(declarationPath, outPath, scriptsOutPath, dtsPath, json) {
     REASON.OK,
     `ok gen-exit-code-registry: ${outPath} matches ${declarationPath}\n`
     + `ok gen-exit-code-registry: ${scriptsOutPath} matches ${declarationPath}\n`
-    + `ok gen-exit-code-registry: ${dtsPath} matches ${declarationPath}`,
+    + `ok gen-exit-code-registry: ${hooksOutPath} matches ${declarationPath}\n`
+    + `ok gen-exit-code-registry: ${dtsPath} matches ${declarationPath}\n`
+    + `ok gen-exit-code-registry: ${shPath} matches ${declarationPath}`,
     json,
   );
   return 0;
 }
 
 /**
- * @returns {{mode:'write'|'check', declarationPath:?string, outPath:?string, scriptsOutPath:?string, dtsPath:?string, json:boolean}}
+ * @returns {{mode:'write'|'check', declarationPath:?string, outPath:?string, scriptsOutPath:?string, hooksOutPath:?string, dtsPath:?string, shPath:?string, json:boolean}}
  */
 function parseArgs(argv) {
   let mode = null;
   let declarationPath = null;
   let outPath = null;
   let scriptsOutPath = null;
+  let hooksOutPath = null;
   let dtsPath = null;
+  let shPath = null;
   let json = false;
 
   for (let i = 0; i < argv.length; i++) {
@@ -616,18 +682,30 @@ function parseArgs(argv) {
       scriptsOutPath = value;
     } else if (arg.startsWith('--scripts-out=')) {
       scriptsOutPath = arg.slice('--scripts-out='.length);
+    } else if (arg === '--hooks-out') {
+      const value = argv[++i];
+      if (value === undefined) throw new Error('--hooks-out requires a value');
+      hooksOutPath = value;
+    } else if (arg.startsWith('--hooks-out=')) {
+      hooksOutPath = arg.slice('--hooks-out='.length);
     } else if (arg === '--dts-out') {
       const value = argv[++i];
       if (value === undefined) throw new Error('--dts-out requires a value');
       dtsPath = value;
     } else if (arg.startsWith('--dts-out=')) {
       dtsPath = arg.slice('--dts-out='.length);
+    } else if (arg === '--sh-out') {
+      const value = argv[++i];
+      if (value === undefined) throw new Error('--sh-out requires a value');
+      shPath = value;
+    } else if (arg.startsWith('--sh-out=')) {
+      shPath = arg.slice('--sh-out='.length);
     } else {
       throw new Error(`unrecognized argument: ${arg}`);
     }
   }
 
-  return { mode: mode || 'write', declarationPath, outPath, scriptsOutPath, dtsPath, json };
+  return { mode: mode || 'write', declarationPath, outPath, scriptsOutPath, hooksOutPath, dtsPath, shPath, json };
 }
 
 function main() {
@@ -648,11 +726,13 @@ function main() {
   const declarationPath = args.declarationPath || DEFAULT_DECLARATION_PATH;
   const outPath = args.outPath || DEFAULT_OUTPUT_PATH;
   const scriptsOutPath = args.scriptsOutPath || DEFAULT_SCRIPTS_OUTPUT_PATH;
+  const hooksOutPath = args.hooksOutPath || DEFAULT_HOOKS_OUTPUT_PATH;
   const dtsPath = args.dtsPath || DEFAULT_DTS_OUTPUT_PATH;
+  const shPath = args.shPath || DEFAULT_SH_OUTPUT_PATH;
 
   return args.mode === 'check'
-    ? doCheck(declarationPath, outPath, scriptsOutPath, dtsPath, args.json)
-    : doWrite(declarationPath, outPath, scriptsOutPath, dtsPath, args.json);
+    ? doCheck(declarationPath, outPath, scriptsOutPath, hooksOutPath, dtsPath, shPath, args.json)
+    : doWrite(declarationPath, outPath, scriptsOutPath, hooksOutPath, dtsPath, shPath, args.json);
 }
 
 if (require.main === module) process.exitCode = main();
@@ -663,7 +743,9 @@ module.exports = {
   DEFAULT_DECLARATION_PATH,
   DEFAULT_OUTPUT_PATH,
   DEFAULT_SCRIPTS_OUTPUT_PATH,
+  DEFAULT_HOOKS_OUTPUT_PATH,
   DEFAULT_DTS_OUTPUT_PATH,
+  DEFAULT_SH_OUTPUT_PATH,
   ENTRY_FIELD_TYPES,
   isAllocatableCode,
   bandFor,
@@ -672,6 +754,7 @@ module.exports = {
   loadDeclaration,
   serializeRegistry,
   serializeDts,
+  serializeSh,
   buildRegistryContent,
   parseArgs,
   main,

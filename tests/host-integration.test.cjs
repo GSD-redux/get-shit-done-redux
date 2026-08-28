@@ -36,6 +36,7 @@ const {
   validateCapability,
 } = require('../gsd-core/bin/lib/capability-validator.cjs');
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -3135,8 +3136,12 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
    */
   function bashBlockContaining(file, marker) {
     const text = readFileNormalized(file);
-    for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
-      if (m[1].includes(marker)) return m[1];
+    const lines = text.split('\n');
+    for (const block of scanFencedBlocks(lines)) {
+      if (block.closeLineIdx === -1) continue;
+      if ((block.infoString || '').trim() !== 'bash') continue;
+      const body = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+      if (body.includes(marker)) return body;
     }
     assert.fail(`no \`\`\`bash block containing ${JSON.stringify(marker)} in ${file}`);
   }
@@ -3297,12 +3302,14 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
       const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
       if (DELEGATED_TO_PER_PLAN_GATE.has(rel)) continue;
       const text = readFileNormalized(file);
-      for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
-        const block = m[1];
+      const lines = text.split('\n');
+      for (const fenced of scanFencedBlocks(lines)) {
+        if (fenced.closeLineIdx === -1) continue;
+        if ((fenced.infoString || '').trim() !== 'bash') continue;
+        const block = lines.slice(fenced.openLineIdx + 1, fenced.closeLineIdx).join('\n');
         if (!/^\s*ISOLATION=none\s*$/m.test(block)) continue;
         if (!block.includes('--force-isolation')) {
-          const line = text.slice(0, m.index).split(/\r?\n/).length;
-          offenders.push(`${rel}:${line}`);
+          offenders.push(`${rel}:${fenced.openLineIdx + 1}`);
         }
       }
     }

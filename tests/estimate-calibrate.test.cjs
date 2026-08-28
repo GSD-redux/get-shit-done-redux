@@ -486,6 +486,39 @@ describe('sentinel phases must not skew calibration (#3882)', () => {
       'the two genuine phases must still contribute their own, unchanged samples',
     );
   });
+
+  // A1a-A3 above only assert against the `collectCalibrationSamples` helper's
+  // return value. Per ADR-3180 Decision 4(b) / epic #3473 B7, a behavioral
+  // identity test must assert at the CONSUMER's output — the real `query
+  // estimate-calibrate` CLI JSON and the persisted calibration document it
+  // writes, not the internal sample array. #3372 named this exact surface
+  // (`src/estimate-cli.cts`) as one of four candidate sentinel-enumeration
+  // gaps; #3882 confirmed and fixed it. This closes the CLI-level gap.
+  test('CLI (#3372, #3882): query estimate-calibrate excludes sentinel phase directories from the emitted sample_count and the persisted document', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    writePhase(tmpDir, '01-alpha', { estTokens: 1000, actTokens: 1000 });
+    writePhase(tmpDir, '02-beta', { estTokens: 2000, actTokens: 4000 });
+    // milestone 999 — reserved icebox sentinel range (SENTINEL_RANGES).
+    writePhase(tmpDir, '999-icebox', { estTokens: 1000, actTokens: 50000 });
+
+    const r = runGsdTools('query estimate-calibrate', tmpDir);
+    assert.ok(r.success, `estimate-calibrate should succeed: ${r.error}`);
+
+    const out = JSON.parse(r.output);
+    assert.equal(
+      out.sample_count, 2,
+      `the sentinel phase directory must not be counted in the CLI's emitted sample_count; got ${JSON.stringify(out)}`,
+    );
+
+    const docPath = path.join(tmpDir, '.planning', 'estimation-calibration.json');
+    const persisted = est.parseCalibrationDocument(fs.readFileSync(docPath, 'utf8'));
+    assert.equal(
+      persisted.length, 2,
+      `the persisted calibration document must not carry the sentinel phase's sample; got ${JSON.stringify(persisted)}`,
+    );
+  });
 });
 
 // ─── PhasesUnreadableError / estimate_phases_unreadable (#3882, ADR-3473 §8.5,

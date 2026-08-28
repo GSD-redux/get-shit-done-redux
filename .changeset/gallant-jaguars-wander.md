@@ -1,0 +1,5 @@
+---
+type: Changed
+pr: 3965
+---
+**Two lint rules that could not reach the code they govern now do, and `quick-tasks-append` stops overwriting curated progress values.** `local/no-adhoc-markdown-parsing` self-gated on its own filename, so it silently skipped every `.cts` file in a `src/` subdirectory and could not be widened by configuration alone; it now also covers `tests/` and `scripts/`, and the 80 hand-rolled markdown parses it surfaced are routed through the existing sectionizer and table seams — including one test that asserted against the wrong table column and so could never fail. `local/no-adhoc-regex-escape` examined only bare identifiers, missing the property-access shape runtime data actually arrives in, which is why it never caught a known ReDoS. Separately, `quick-tasks-append` gained optional `--quick-id`/`--slug`/`--directory` so a caller with a real quick task emits the canonical row, and a body-only append no longer forces a re-derive of disk-derived progress frontmatter that replaced curated values. (#3951)

@@ -100,8 +100,8 @@ Read runtime/worktree config and fail closed before any executor dispatch:
 ```bash
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
-EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes 2>/dev/null || echo "5")
-EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes 2>/dev/null || echo "10")
+EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes --raw 2>/dev/null || echo "5")
+EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes --raw 2>/dev/null || echo "10")
 
 # Resolve ISOLATION + apply its guards: read and execute the "Resolve ISOLATION"
 # section of execute-phase/steps/executor-isolation-dispatch.md. It sets
@@ -133,7 +133,7 @@ When `USE_WORKTREES` is `false`, `ISOLATION` is forced to `none`: executors run 
 Read context window size for adaptive prompt enrichment:
 
 ```bash
-CONTEXT_WINDOW=$(gsd_run query config-get context_window 2>/dev/null || echo "200000")
+CONTEXT_WINDOW=$(gsd_run query config-get context_window --raw 2>/dev/null || echo "200000")
 ```
 
 When `CONTEXT_WINDOW >= 500000` (1M-class models), subagent prompts include richer context:
@@ -423,9 +423,9 @@ executor skips them.
    `workflow.cross_ai_execution` is `true`. Plans matching both conditions are marked for cross-AI.
 
 ```bash
-CROSS_AI_ENABLED=$(gsd_run query config-get workflow.cross_ai_execution 2>/dev/null || echo "false")
-CROSS_AI_CMD=$(gsd_run query config-get workflow.cross_ai_command 2>/dev/null || echo "")
-CROSS_AI_TIMEOUT=$(gsd_run query config-get workflow.cross_ai_timeout 2>/dev/null || echo "300")
+CROSS_AI_ENABLED=$(gsd_run query config-get workflow.cross_ai_execution --raw 2>/dev/null || echo "false")
+CROSS_AI_CMD=$(gsd_run query config-get workflow.cross_ai_command --raw 2>/dev/null || echo "")
+CROSS_AI_TIMEOUT=$(gsd_run query config-get workflow.cross_ai_timeout --raw 2>/dev/null || echo "300")
 ```
 
 **If no plans are marked for cross-AI:** Skip to execute_waves.
@@ -867,7 +867,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
 5. **Post-wave hook validation (parallel mode only):** Hooks run on every executor commit by default (#2924); this post-wave run only fires when `workflow.worktree_skip_hooks=true` opted out of per-commit hooks:
    ```bash
-   SKIP_HOOKS=$(gsd_run query config-get workflow.worktree_skip_hooks 2>/dev/null || echo "false")
+   SKIP_HOOKS=$(gsd_run query config-get workflow.worktree_skip_hooks --raw 2>/dev/null || echo "false")
    if [ "$SKIP_HOOKS" = "true" ]; then
      # Stash uncommitted changes under a named ref so we always pop (bare `git stash` strands them on hook/script failure). #3542: `refs/stash` is shared across worktrees, so this helper runs ONLY in the orchestrator's main checkout after all wave worktrees have been merged + removed; executors are forbidden from running any `git stash` subcommand (see `<destructive_git_prohibition>` in `agents/gsd-executor.md`).
      STASHED=false

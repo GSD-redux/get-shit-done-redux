@@ -318,8 +318,11 @@ describe('gen-state-md-docs.cjs generated template validity (#3873 row 27)', () 
     // the first ```markdown ... ``` fence by raw regex and assert directly on
     // its content, exactly as an external consumer (an AI agent creating
     // .planning/STATE.md, or gsd-tools reading the shipped template) would.
+    // Deliberately independent of markdown-sectionizer — this guards the #3873
+    // regression class (a defect IN the generator's own fence-handling), so it
+    // must not share the same seam the generator uses.
     // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own state.md template, fixed-size author-controlled content
-    const fenced = templateText.match(/```markdown\r?\n([\s\S]*?)```/);
+    const fenced = templateText.match(/```markdown\r?\n([\s\S]*?)```/); // allow-adhoc-markdown: deliberately independent of the generator's own fence-handling — regresses #3873
     assert.ok(fenced, 'the File Template section must contain a ```markdown fenced block');
     const body = fenced[1];
 

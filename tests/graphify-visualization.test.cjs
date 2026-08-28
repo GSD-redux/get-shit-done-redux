@@ -16,6 +16,7 @@ const { createTempProject, createTempGitProject, cleanup } = require('./helpers.
 const {
   graphifyStatus,
 } = require('../gsd-core/bin/lib/graphify.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const {
   enableGraphify,
@@ -636,10 +637,16 @@ const GRAPHIFY_MD = path.join(__dirname, '..', 'commands', 'gsd', 'graphify.md')
  */
 function extractStep3Block() {
   const content = readFileNormalized(GRAPHIFY_MD);
-  // Capture the full body of the ```bash fence that CONTAINS `graphify update .`
-  // (including any leading preamble line), without crossing into other fences.
-  const match = content.match(/```bash\r?\n((?:(?!```)[\s\S])*?graphify update \.(?:(?!```)[\s\S])*?)\r?\n```/);
-  return match ? match[1].trim() : null;
+  // Find the ```bash fence that CONTAINS `graphify update .` (including any
+  // leading preamble line), without crossing into other fences.
+  const lines = content.split('\n');
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    if ((block.infoString || '').trim() !== 'bash') continue;
+    const body = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+    if (body.includes('graphify update .')) return body.trim();
+  }
+  return null;
 }
 
 // ─── shared sandbox dirs ──────────────────────────────────────────────────────

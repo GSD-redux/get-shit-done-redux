@@ -359,7 +359,9 @@ test('#2684: ship.md validates capability-supplied ref.agent before it reaches a
       'assignment IS the injection point (#2684 isolated review).',
   );
 
-  const shape = new RegExp(gate[1]);
+  // Pattern extracted verbatim from ship.md's validation gate — the shipped
+  // regex IS the product under test (#3951).
+  const shape = new RegExp(gate[1]); // allow-adhoc-regex-escape: runtime-contract-is-the-product
 
   // Legitimate agent names the capability system actually dispatches.
   for (const ok of ['gsd-mempalace-curator', 'gsd-code-reviewer', 'my.agent_v2', 'a']) {

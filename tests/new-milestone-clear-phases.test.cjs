@@ -16,6 +16,19 @@ const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runGsdTools, createTempProject, createTempGitProject, cleanup, readFileNormalized } = require('./helpers.cjs');
 const { writeState } = require('./fixtures/index.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+
+/** Return the raw text of every ```bash fenced block in `content`. */
+function extractBashBlocks(content) {
+  const lines = content.split(/\r?\n/);
+  const blocks = [];
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    if ((block.infoString || '').trim() !== 'bash') continue;
+    blocks.push(lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n'));
+  }
+  return blocks;
+}
 
 describe('phases clear command', () => {
   let tmpDir;
@@ -635,9 +648,9 @@ describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
     assert.ok(endIdx !== -1, `heading not found: ${endHeading}`);
     assert.ok(startIdx < endIdx, `${startHeading} must precede ${endHeading}`);
     const section = markdown.slice(startIdx, endIdx);
-    const match = section.match(/```bash\r?\n([\s\S]*?)```/);
-    assert.ok(match, `no bash fence found between "${startHeading}" and "${endHeading}"`);
-    return match[1];
+    const bashBlocks = extractBashBlocks(section);
+    assert.ok(bashBlocks.length > 0, `no bash fence found between "${startHeading}" and "${endHeading}"`);
+    return bashBlocks[0];
   }
 
   // Step 6 has multiple ```bash fences; locate the one containing `marker`.
@@ -646,10 +659,8 @@ describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
     const endIdx = markdown.indexOf(endHeading);
     assert.ok(startIdx !== -1 && endIdx !== -1 && startIdx < endIdx, 'headings not found in order');
     const section = markdown.slice(startIdx, endIdx);
-    const fenceRe = /```bash\r?\n([\s\S]*?)```/g;
-    let m;
-    while ((m = fenceRe.exec(section)) !== null) {
-      if (m[1].includes(marker)) return m[1];
+    for (const block of extractBashBlocks(section)) {
+      if (block.includes(marker)) return block;
     }
     assert.fail(`no bash fence containing "${marker}" found between "${startHeading}" and "${endHeading}"`);
     return null;

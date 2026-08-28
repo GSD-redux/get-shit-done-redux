@@ -41,7 +41,7 @@ PLANNER_MODEL=$(gsd_run query resolve-model gsd-eval-planner --pick model 2>/dev
 
 Check config:
 ```bash
-AI_PHASE_ENABLED=$(gsd_run query config-get workflow.ai_integration_phase 2>/dev/null || echo "true")
+AI_PHASE_ENABLED=$(gsd_run query config-get workflow.ai_integration_phase --raw 2>/dev/null || echo "true")
 ```
 
 **If `AI_PHASE_ENABLED` is `false`:**

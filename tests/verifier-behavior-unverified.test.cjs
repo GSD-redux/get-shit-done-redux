@@ -147,6 +147,8 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+const { findTableWithColumns } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const VERIFIER_AGENT = path.join(REPO_ROOT, 'agents', 'gsd-verifier.md');
@@ -158,16 +160,23 @@ function verifierProbeContract(content) {
   assert.notEqual(sectionEnd, -1, 'verifier must close Step 7c before Step 8');
 
   const section = content.slice(sectionStart, sectionEnd);
-  const codeBlocks = [...section.matchAll(/```bash\r?\n([\s\S]*?)\r?\n```/g)].map((match) => match[1].split(/\r?\n/).join('\n'));
+  const sectionLines = section.split(/\r?\n/);
+  const codeBlocks = scanFencedBlocks(sectionLines)
+    .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash')
+    .map((b) => sectionLines.slice(b.openLineIdx + 1, b.closeLineIdx).join('\n'));
   const executionSteps = [...section.matchAll(/^\d+\.\s+(.+)$/gm)].map((match) => match[1]);
+  const probeTable = findTableWithColumns(section, ['Probe', 'Command', 'Result', 'Status']);
   return {
     title: 'Step 7c: Probe Execution',
     conventionalDiscoveryCommand: codeBlocks[0]?.split('\n').find((line) => line.startsWith('find scripts')) || null,
     declaredDiscoveryCommand: codeBlocks[0]?.split('\n').find((line) => line.startsWith('grep -R')) || null,
     executionCommand: codeBlocks[1] || '',
     executionSteps,
-    statusRows: [...section.matchAll(/^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|[^|]+\|\s*([^|]+)\|$/gm)]
-      .map((match) => ({ probe: match[1], command: match[2], statuses: match[3].trim() })),
+    statusRows: (probeTable ? probeTable.rows : []).map((row) => ({
+      probe: row.Probe.replace(/^`|`$/g, ''),
+      command: row.Command.replace(/^`|`$/g, ''),
+      statuses: row.Status.trim(),
+    })),
     summaryClaimsRejected: section.includes('SUMMARY.md probe pass claims are not evidence'),
   };
 }

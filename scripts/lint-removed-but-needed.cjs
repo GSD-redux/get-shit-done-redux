@@ -21,8 +21,9 @@
  * For every file deleted (`git diff --name-status <base>...HEAD`, status
  * `D`), grep the post-diff tree for the deleted file's basename:
  *
- * - `.github/workflows/`, `gsd-core/`, `docs/`, `package.json` — ANY
- *   surviving reference fails (the original rule).
+ * - `.github/workflows/`, `gsd-core/`, `docs/` (excluding `docs/adr/**` and
+ *   `docs/research/**` — see "Historical-record exemption" below),
+ *   `package.json` — ANY surviving reference fails (the original rule).
  * - `tests/` — scanned with a discriminator (#3565): a reference that PINS
  *   existence (`fs.existsSync(path)`, `readFileSync`, `require`, or the
  *   basename as a quoted object key) fails; a reference that ASSERTS
@@ -46,6 +47,52 @@
  * A common basename (`index.js`, `config.json`) can coincidentally match an
  * unrelated file, and this only catches LITERAL string references — not a
  * variable holding the filename or a glob that happened to match it.
+ *
+ * ## Basename-collision refinement (#3907)
+ *
+ * #3907 deleted `bin/lib/ui-safety-gate.cjs` while the SEPARATE, still-live
+ * `gsd-core/bin/lib/ui-safety-gate.cjs` survives — every reference to the
+ * survivor (including it referencing itself) was misattributed to the
+ * deletion, 14 false violations on a correct tree. This epic is about
+ * de-duplicating modules, so "delete one of two files sharing a basename"
+ * recurs by construction.
+ *
+ * The fix is precision, not suppression: for each deleted file, if its
+ * basename is ALSO the basename of a file that still exists in the
+ * post-diff tree — `git ls-files` (tracked files) UNIONED with the
+ * already filesystem-walked corpus/testsCorpus file lists, because
+ * `git ls-files` alone misses gitignored BUILD ARTIFACTS such as
+ * `gsd-core/bin/lib/*.cjs` (compiled from `.cts`, never committed) —
+ * matching switches from the bare basename to the deleted file's full
+ * repo-relative path. Because the deletion is already committed on this
+ * branch, none of these sources can list the deleted file itself, so any
+ * hit is necessarily a DIFFERENT file. A genuine
+ * full-path reference to the deleted file is still caught (strictly more
+ * precise, not weaker); a bare-basename reference becomes correctly
+ * unattributable to the deleted file specifically and is no longer
+ * blamed on it. When no surviving file shares the basename, nothing
+ * changes — the original basename rule still applies exactly as before.
+ *
+ * Residual known limit: a bare-basename reference to a deleted file whose
+ * basename survives elsewhere is now invisible to this guard (it cannot
+ * tell whether the bare mention meant the deleted file or its
+ * basename-twin). Same trade the docstring already makes for prose
+ * mentions above — a false violation reds a correct tree; a missed
+ * ambiguous mention only loses one detection channel.
+ *
+ * ## Historical-record exemption (#3942)
+ *
+ * `docs/adr/**` and `docs/research/**` are excluded from the `docs/` scan.
+ * An ADR's or a post-mortem's entire job is to record what was retired —
+ * naming the deleted file IS the point of the document, not a defect — so
+ * without this exemption a PR could never write the ADR that explains its
+ * own deletion in the same PR that performs it (it would have to land in a
+ * follow-up, after the fact, which is backwards for a decision record).
+ * The exemption is narrow and applies only to these two directories: every
+ * other document under `docs/` (guides, `TESTING-SUITES.md`, generated
+ * indexes, etc.) still enforces "ANY surviving reference fails" exactly as
+ * before. `.github/workflows/`, `gsd-core/`, and `package.json` are
+ * likewise unaffected — none of those are historical-record surfaces.
  */
 
 const fs = require('node:fs');
@@ -76,6 +123,40 @@ const SKIP_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff', '.wo
 function referencesBasename(content, basename) {
   const re = new RegExp(`(^|[^\\w.-])${escapeRegex(basename)}($|[^\\w.-])`);
   return re.test(content);
+}
+
+/**
+ * Pure: does `content` contain a literal reference to the FULL
+ * repo-relative path `relPath` (used instead of {@link referencesBasename}
+ * when the deleted file's basename collides with a surviving file — #3907)?
+ *
+ * Same delimited-match idea as `referencesBasename`, but the left boundary
+ * additionally excludes `/` — a `/` immediately to the left would mean the
+ * matched text is really a SUFFIX of a longer path (e.g. content contains
+ * `gsd-core/bin/lib/x.cjs` and `relPath` is `bin/lib/x.cjs`: without this,
+ * the survivor's own path would be mistaken for a reference to the
+ * deleted file it merely shares a basename with).
+ * @param {string} content
+ * @param {string} relPath - repo-relative path, forward-slash separated
+ * @returns {boolean}
+ */
+function referencesPath(content, relPath) {
+  const re = new RegExp(`(^|[^\\w./-])${escapeRegex(relPath)}($|[^\\w.-])`);
+  return re.test(content);
+}
+
+/**
+ * Pure: given the post-diff tree's file list (repo-relative paths), build
+ * the set of basenames that still exist. Used to decide, per deleted file,
+ * whether basename matching would be ambiguous (#3907).
+ * @param {string[]} survivingFiles - repo-relative paths of files present
+ *   in the post-diff tree (must NOT include the deleted files themselves)
+ * @returns {Set<string>}
+ */
+function buildSurvivingBasenames(survivingFiles) {
+  const set = new Set();
+  for (const f of survivingFiles) set.add(path.basename(f));
+  return set;
 }
 
 /**
@@ -110,15 +191,26 @@ function walk(dir) {
  * of the post-diff tree, find every surviving reference.
  * @param {string[]} deletedFiles - repo-relative deleted paths
  * @param {{ file: string, content: string }[]} corpus
+ * @param {Set<string>} [survivingBasenames] - basenames still present in the
+ *   post-diff tree (#3907); when a deleted file's basename is in this set,
+ *   matching switches from basename to the deleted file's full path
  * @returns {{ deletedFile: string, referencedIn: string, reason: string }[]}
  */
-function findSurvivingReferences(deletedFiles, corpus) {
+function findSurvivingReferences(deletedFiles, corpus, survivingBasenames = new Set()) {
   const violations = [];
   for (const deletedFile of deletedFiles) {
     const basename = path.basename(deletedFile);
+    const collides = survivingBasenames.has(basename);
     for (const { file, content } of corpus) {
-      if (referencesBasename(content, basename)) {
-        violations.push({ deletedFile, referencedIn: file, reason: `basename '${basename}' still referenced` });
+      const matched = collides ? referencesPath(content, deletedFile) : referencesBasename(content, basename);
+      if (matched) {
+        violations.push({
+          deletedFile,
+          referencedIn: file,
+          reason: collides
+            ? `full path '${deletedFile}' still referenced (basename '${basename}' also belongs to a surviving file, so matched by path — #3907)`
+            : `basename '${basename}' still referenced`,
+        });
       }
     }
     if (basename === 'package-lock.json') {
@@ -154,9 +246,12 @@ function findSurvivingReferences(deletedFiles, corpus) {
  *
  * @param {string} line
  * @param {string} basename
+ * @param {string} [matchTarget] - text to look for as a quoted object key
+ *   (#3907: the deleted file's full path when its basename collides with a
+ *   surviving file; defaults to `basename`, the original behaviour)
  * @returns {'asserts-absence'|'pins-existence'|null}
  */
-function classifyTestReference(line, basename) {
+function classifyTestReference(line, basename, matchTarget = basename) {
   const negatedCheck =
     /!\s*[A-Za-z_$][\w.$]*\.(includes|indexOf|search|startsWith|endsWith|match)\s*\(/.test(line) ||
     /!\s*(fs\.)?(existsSync|statSync)\s*\(/.test(line) ||
@@ -170,7 +265,7 @@ function classifyTestReference(line, basename) {
   // Template literal needs \\s so the RegExp constructor receives \s — a
   // bare \s in a template literal collapses to 's' and silently matches a
   // literal 's' instead of whitespace.
-  if (new RegExp(`['"\`]${escapeRegex(basename)}['"\`]\\s*:`).test(line)) return 'pins-existence';
+  if (new RegExp(`['"\`]${escapeRegex(matchTarget)}['"\`]\\s*:`).test(line)) return 'pins-existence';
   return null;
 }
 
@@ -183,24 +278,38 @@ function classifyTestReference(line, basename) {
  *
  * @param {string[]} deletedFiles - repo-relative deleted paths
  * @param {{ file: string, content: string }[]} testsCorpus
+ * @param {Set<string>} [survivingBasenames] - basenames still present in the
+ *   post-diff tree (#3907); when a deleted file's basename is in this set,
+ *   matching switches from basename to the deleted file's full path, same
+ *   refinement as {@link findSurvivingReferences} so the two scanners
+ *   cannot disagree about what "a reference" means
  * @returns {{ deletedFile: string, referencedIn: string, reason: string }[]}
  */
-function findSurvivingTestReferences(deletedFiles, testsCorpus) {
+function findSurvivingTestReferences(deletedFiles, testsCorpus, survivingBasenames = new Set()) {
   const violations = [];
   for (const deletedFile of deletedFiles) {
     const basename = path.basename(deletedFile);
-    const refRe = new RegExp(`(^|[^\\w.-])${escapeRegex(basename)}($|[^\\w.-])`);
+    const collides = survivingBasenames.has(basename);
+    const matchTarget = collides ? deletedFile : basename;
+    // The left-boundary class matches referencesPath's when collides
+    // (excludes '/' so a survivor's own longer path isn't mistaken for a
+    // reference to the deleted file it merely shares a basename with).
+    const refRe = collides
+      ? new RegExp(`(^|[^\\w./-])${escapeRegex(matchTarget)}($|[^\\w.-])`)
+      : new RegExp(`(^|[^\\w.-])${escapeRegex(matchTarget)}($|[^\\w.-])`);
     for (const { file, content } of testsCorpus) {
       for (const line of content.split(/\r?\n/)) {
         if (!refRe.test(line)) continue;
-        const kind = classifyTestReference(line, basename);
+        const kind = classifyTestReference(line, basename, matchTarget);
         if (kind === 'pins-existence') {
           violations.push({
             deletedFile,
             referencedIn: file,
             // control-char-stripped + capped: this text is echoed into lint
             // output that AI agents read as trusted instructions
-            reason: `pins-existence: test depends on deleted basename '${basename}' — ${sanitizeEcho(line.trim())}`,
+            reason: collides
+              ? `pins-existence: test depends on deleted path '${matchTarget}' — ${sanitizeEcho(line.trim())}`
+              : `pins-existence: test depends on deleted basename '${basename}' — ${sanitizeEcho(line.trim())}`,
           });
         }
         // 'asserts-absence' is correct post-deletion state; null is a
@@ -231,12 +340,53 @@ function getDeletedFiles(root, baseRef) {
     .map((line) => line.slice(2));
 }
 
+/**
+ * All tracked files at the current tree state (the post-diff tree, since
+ * this scan runs against a branch where the deletion is already committed —
+ * `git ls-files` therefore CANNOT list a deleted file, so any hit for a
+ * deleted file's basename is necessarily a different, surviving file).
+ * Used to build `survivingBasenames` for the #3907 collision refinement.
+ * @param {string} root
+ * @returns {string[]} repo-relative paths, forward-slash separated
+ */
+function getSurvivingFiles(root) {
+  const out = cp.execFileSync('git', ['ls-files'], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+  return out
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((f) => f.replace(/\\/g, '/'));
+}
+
+// #3942: docs/adr/** and docs/research/** are historical records — an ADR's
+// or a post-mortem's whole job is to narrate what was retired, so naming a
+// file this same PR deletes is the point, not DEFECT.REMOVED-BUT-NEEDED.
+// Narrow and explicit: only these two `docs/` subtrees are exempt; every
+// other document under `docs/` still enforces the original rule unchanged.
+const DOCS_HISTORICAL_RECORD_PREFIXES = ['docs/adr/', 'docs/research/'];
+
+/**
+ * Pure: is `relFile` (repo-relative, forward-slash separated) inside one of
+ * the exempt historical-record directories (#3942)?
+ * @param {string} relFile
+ * @returns {boolean}
+ */
+function isDocsHistoricalRecord(relFile) {
+  return DOCS_HISTORICAL_RECORD_PREFIXES.some((prefix) => relFile.startsWith(prefix));
+}
+
 function buildCorpus(root) {
   const corpus = [];
   for (const rel of SCAN_ROOTS) {
     for (const abs of walk(path.join(root, rel))) {
+      const relFile = path.relative(root, abs).replace(/\\/g, '/');
+      if (rel === 'docs' && isDocsHistoricalRecord(relFile)) continue;
       try {
-        corpus.push({ file: path.relative(root, abs).replace(/\\/g, '/'), content: fs.readFileSync(abs, 'utf8') });
+        corpus.push({ file: relFile, content: fs.readFileSync(abs, 'utf8') });
       } catch {
         // unreadable (broken symlink, binary that slipped past SKIP_EXT) — skip
       }
@@ -257,7 +407,6 @@ function scan(root, baseRef) {
   const deletedFiles = getDeletedFiles(root, baseRef);
   if (deletedFiles.length === 0) return [];
   const corpus = buildCorpus(root);
-  const violations = findSurvivingReferences(deletedFiles, corpus);
   // tests/ arm (#3565): same deletions, discriminated references. A bare
   // mention that pins nothing is skipped; an absence assertion is the
   // correct post-deletion state; only a pin on a deleted file fails.
@@ -272,7 +421,21 @@ function scan(root, baseRef) {
       // unreadable (broken symlink, binary that slipped past SKIP_EXT) — skip
     }
   }
-  violations.push(...findSurvivingTestReferences(deletedFiles, testsCorpus));
+  // #3907: per-deletion basename-collision detection — if a surviving file
+  // shares the basename, matching switches from basename to full path (see
+  // the header's "Basename-collision refinement" section) for BOTH arms.
+  // `git ls-files` alone misses gitignored BUILD ARTIFACTS (e.g.
+  // gsd-core/bin/lib/*.cjs, compiled from .cts and never committed) —
+  // exactly the #3907 collision partner — so it is unioned with the
+  // already filesystem-walked corpus/testsCorpus file lists, which do see
+  // them.
+  const survivingBasenames = buildSurvivingBasenames([
+    ...getSurvivingFiles(root),
+    ...corpus.map((c) => c.file),
+    ...testsCorpus.map((t) => t.file),
+  ]);
+  const violations = findSurvivingReferences(deletedFiles, corpus, survivingBasenames);
+  violations.push(...findSurvivingTestReferences(deletedFiles, testsCorpus, survivingBasenames));
   return violations;
 }
 
@@ -305,16 +468,21 @@ function main() {
 
 module.exports = {
   referencesBasename,
+  referencesPath,
+  buildSurvivingBasenames,
   referencesNpmLockfileDependency,
   findSurvivingReferences,
   classifyTestReference,
   findSurvivingTestReferences,
   getDeletedFiles,
+  getSurvivingFiles,
   buildCorpus,
+  isDocsHistoricalRecord,
   scan,
   SCAN_ROOTS,
   EXTRA_FILES,
   TESTS_ROOT,
+  DOCS_HISTORICAL_RECORD_PREFIXES,
 };
 
 if (require.main === module) runMain(main);

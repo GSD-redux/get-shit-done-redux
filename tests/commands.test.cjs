@@ -1805,6 +1805,81 @@ describe('commit command', () => {
       `second commit must not re-warn once on the phase branch; got stderr=${secondStderr}`
     );
   });
+
+  // #3734 — the phase arm of `query commit` must not treat a backlog sentinel
+  // phase id as a real phase. /gsd-capture --backlog commits the sentinel phase
+  // directory via add-backlog.md; pre-fix each capture created AND switched to a
+  // gsd/phase-999.<n>-<slug> branch, scattering backlog items across branches
+  // and leaving the operator's branch at the base commit.
+  test('#3734: 999.x backlog sentinel commits on the current branch and creates no phase branch', () => {
+    const startBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '999.42-first-idea'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '999.42-first-idea', '.gitkeep'), '# backlog marker\n'
+    );
+
+    const result = runGsdTools(
+      'commit "docs: add backlog item 999.42 — first idea" --files .planning/phases/999.42-first-idea/.gitkeep',
+      tmpDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.committed, true, 'sentinel capture must still commit');
+
+    const endBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(endBranch, startBranch, '#3734: sentinel capture must not switch branches');
+    const sentinelBranches = gitOrThrow(
+      ['branch', '--list', 'gsd/phase-999*'], { cwd: tmpDir }
+    ).trim();
+    assert.strictEqual(sentinelBranches, '', '#3734: no gsd/phase-999.* branch may be created');
+    // The "lost work" mode from the issue: the commit must be reachable on the
+    // branch the operator was actually on. gitOrThrow throws if the path is
+    // absent from startBranch, so reaching the content assertion proves it.
+    const onStartBranch = gitOrThrow(
+      ['show', `${startBranch}:.planning/phases/999.42-first-idea/.gitkeep`], { cwd: tmpDir }
+    );
+    assert.ok(onStartBranch.includes('# backlog marker'), 'sentinel commit must land on the starting branch');
+  });
+
+  test('#3734: 0.x backlog sentinel also never creates a phase branch', () => {
+    const startBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '0.3-icebox-idea'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '0.3-icebox-idea', '.gitkeep'), '# icebox marker\n');
+
+    const result = runGsdTools(
+      'commit "docs: add backlog item 0.3 — icebox idea" --files .planning/phases/0.3-icebox-idea/.gitkeep',
+      tmpDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).committed, true, '0.x capture must still commit');
+
+    const endBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(endBranch, startBranch, '#3734: 0.x sentinel must not switch branches');
+    const sentinelBranches = gitOrThrow(
+      ['branch', '--list', 'gsd/phase-0*'], { cwd: tmpDir }
+    ).trim();
+    assert.strictEqual(sentinelBranches, '', '#3734: no gsd/phase-0.* branch may be created');
+    const onStartBranch = gitOrThrow(
+      ['show', `${startBranch}:.planning/phases/0.3-icebox-idea/.gitkeep`], { cwd: tmpDir }
+    );
+    assert.ok(onStartBranch.includes('# icebox marker'), '0.x sentinel commit must land on the starting branch');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

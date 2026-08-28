@@ -40,6 +40,7 @@ const path = require('node:path');
 
 const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -586,21 +587,21 @@ describe('GROUP C: bundle-directory-name-agnostic hook scripts', () => {
     t.after(() => cleanup(tmpRoot));
 
     const bundleDir = path.join(tmpRoot, 'gsd-hooks');
-    fs.mkdirSync(bundleDir, { recursive: true });
+    // Stage via copyScriptWithDeps (walks the real require graph — see its doc
+    // comment / CLAUDE.md "no new copyFileSync line") into a throwaway staging
+    // root, then relocate the staged hooks/ subtree onto `gsd-hooks` — a
+    // NON-"hooks"-named directory is exactly the condition this test exists to
+    // exercise (#3023), so the staged tree cannot simply be used at its
+    // repo-relative `hooks/` location. A hand-copied dependency list is what
+    // caused this exact fixture to miss the scanner's #3911 `./lib/hook-exit.js`
+    // require (which itself pulls in cli-exit.js + exit-code-registry.js) —
+    // deriving the list instead of re-declaring it means a future require added
+    // to the scanner (or any of its deps) cannot be silently omitted here again.
+    const stageRoot = createTempDir('fix-3023-scanner-stage-');
+    t.after(() => cleanup(stageRoot));
+    copyScriptWithDeps(REPO_ROOT, stageRoot, 'hooks/gsd-read-injection-scanner.js');
+    fs.cpSync(path.join(stageRoot, 'hooks'), bundleDir, { recursive: true });
     const scannerPath = path.join(bundleDir, 'gsd-read-injection-scanner.js');
-    fs.copyFileSync(path.join(REPO_ROOT, 'hooks', 'gsd-read-injection-scanner.js'), scannerPath);
-    // #3504: the scanner now requires hooks/lib/injection-patterns.js. Every
-    // real staging surface ships lib/ alongside the hook (installSharedHooksBundle
-    // copies dist recursively AND stages hooks/lib from the GSD_HOOK_LIB_FILES
-    // allowlist into the same shared dir), so this lone-file emulation must
-    // stage the dependency the same way — a missing lib file is a packaging
-    // bug that fails loud at hook load (#2587), which is exactly what the
-    // un-staged version of this fixture now demonstrates.
-    fs.mkdirSync(path.join(bundleDir, 'lib'), { recursive: true });
-    fs.copyFileSync(
-      path.join(REPO_ROOT, 'hooks', 'lib', 'injection-patterns.js'),
-      path.join(bundleDir, 'lib', 'injection-patterns.js'),
-    );
 
     // Node canonicalizes a module's __dirname via the REAL (symlink-resolved)
     // path, so a payload path must be built from the same realpath — on macOS

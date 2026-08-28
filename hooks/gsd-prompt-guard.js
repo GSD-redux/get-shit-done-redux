@@ -12,6 +12,13 @@
 // not to create false-positive deadlocks.
 
 const path = require('path');
+const { HOOK_ON_CRASH, allow, crash } = require('./lib/hook-exit.js');
+
+// This guard is advisory-only by design (see header) — it never blocks the
+// Write/Edit it scans, only adds context about it. A crash here must not
+// start blocking now, which is strictly worse than the advisory it exists
+// to add on top of an already-permitted operation (#3911).
+const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 
 // Prompt injection patterns — shared with gsd-read-injection-scanner.js via
 // hooks/lib/injection-patterns.js so the two surfaces cannot drift (#3504).
@@ -115,7 +122,7 @@ function normalizeKimiPayload(data) {
 }
 
 let input = '';
-const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+const stdinTimeout = setTimeout(() => allow(undefined), 3000);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
@@ -126,7 +133,7 @@ process.stdin.on('end', () => {
 
     // Only scan Write and Edit operations
     if (toolName !== 'Write' && toolName !== 'Edit') {
-      process.exit(0);
+      allow(undefined);
     }
 
     // #2595 (review Major 3, sibling sweep): typed read. A non-string
@@ -138,7 +145,7 @@ process.stdin.on('end', () => {
 
     // Only scan files going into .planning/ (agent context files)
     if (!filePath.includes('.planning/') && !filePath.includes('.planning\\')) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Get the content being written. #3504 (isolated review finding 3): the
@@ -157,7 +164,7 @@ process.stdin.on('end', () => {
       }
     }
     if (!content) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Scan for injection patterns
@@ -174,7 +181,7 @@ process.stdin.on('end', () => {
     }
 
     if (findings.length === 0) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Advisory warning — does not block the operation
@@ -191,7 +198,9 @@ process.stdin.on('end', () => {
 
     process.stdout.write(JSON.stringify(output));
   } catch {
-    // Silent fail — never block tool execution
-    process.exit(0);
+    // Silent fail — never block tool execution.
+    // ON_CRASH is declared ALLOW at module top: this preserves today's
+    // exit(0) fail-open behavior exactly (#3911).
+    crash(ON_CRASH, undefined);
   }
 });

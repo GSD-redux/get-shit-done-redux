@@ -34,7 +34,7 @@ import { extractTaggedBlocks } from './markdown-sectionizer.cjs';
 import { compileUserPattern, MAX_USER_PATTERN_LEN } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- agent-install-check.cjs is an export= CommonJS module
 import agentInstallCheck = require('./agent-install-check.cjs');
-const { checkAgentsInstalled, checkCodexModelPosture } = agentInstallCheck;
+const { checkAgentsInstalled, checkCodexModelPosture, checkCodexSandboxPosture } = agentInstallCheck;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
@@ -55,7 +55,7 @@ type HealthDiagnostic = healthDiagnosticMod.Diagnostic;
 import planningSnapshotMod = require('./planning-snapshot.cjs');
 const { buildPlanningSnapshot } = planningSnapshotMod;
 
-const { planningDir, planningRoot } = planningWorkspace;
+const { planningDir } = planningWorkspace;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
 const { readStateHeadFreshness } = stateMod;
 
@@ -1604,8 +1604,10 @@ function cmdValidateHealth(
     return;
   }
 
-  // rootBase always resolves to .planning/ (shared root — PROJECT.md, config.json live here)
-  const rootBase = planningRoot(cwd);
+  // rootBase resolves to the PROJECT-scoped planning root (`.planning[/<project>]`
+  // — PROJECT.md, config.json live here; #3749). Workstream-free by construction:
+  // planningDir(cwd, null) honors GSD_PROJECT and suppresses GSD_WORKSTREAM.
+  const rootBase = planningDir(cwd, null);
   const _slashRuntime = resolveRuntime(cwd);
   const slash = (name: string) => formatGsdSlash(name, _slashRuntime) as string;
 
@@ -1736,6 +1738,21 @@ function cmdValidateAgents(cwd: string, raw: boolean): void {
   // model or an orphaned reasoning-effort pin in a Codex agent .toml), not just
   // presence. checkAgentsInstalled above is untouched.
   const codexPosture = checkCodexModelPosture(runtime, cwd);
+  // #3897 rung 3 (ADR-3473 §8.3 criterion 3) — sibling posture check, additive
+  // alongside codex_posture (never nested inside it, never replacing it): a
+  // TOML's `sandbox_mode` disagreeing with its role's derived expectation is a
+  // different defect class than an Anthropic-flavored model. Same short-circuits,
+  // same read-only posture as checkCodexModelPosture above; checkAgentsInstalled
+  // and codex_posture are both left untouched.
+  //
+  // Failure semantics: matches the checkCodexModelPosture precedent exactly.
+  // Neither posture check makes `validate agents` exit non-zero on its own —
+  // both are report-only fields inspected by the caller (or a human) via the
+  // JSON payload. A `validate` verb whose two posture checks disagreed on
+  // fatality would be its own defect (#3897 dispatch note); this keeps them
+  // consistent rather than inventing new exit-code behavior for only one of
+  // the two siblings.
+  const sandboxPosture = checkCodexSandboxPosture(runtime, cwd);
 
   output(
     {
@@ -1746,6 +1763,7 @@ function cmdValidateAgents(cwd: string, raw: boolean): void {
       incomplete: agentStatus.incomplete_agents,
       expected,
       codex_posture: codexPosture,
+      sandbox_posture: sandboxPosture,
     },
     raw,
   );

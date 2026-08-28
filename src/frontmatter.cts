@@ -357,32 +357,72 @@ function normalizeParsedValue(value: unknown, inArray: boolean): unknown {
  */
 function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCommentChannel | undefined {
   const lines = splitLines(yaml);
-  let pending: string[] = [];
+  // #3742: pending full-line comments carry their indentation so an INDENTED
+  // comment (`  # note` above a nested key) can attach to the nested key that
+  // follows it — recorded under a dotted path key (`progress.total_phases`)
+  // that reconstructFrontmatter re-emits at the same nesting depth. Column-0
+  // comments keep the exact pre-#3742 behavior (top-level key attachment).
+  let pending: Array<{ indent: number; line: string }> = [];
   let channel: FullLineCommentChannel | undefined;
   let keyIdx = 0;
+  // Stack of enclosing mapping keys with their indentation, for dotted-path
+  // construction on nested key lines. Only indented keys push here.
+  const pathStack: Array<{ indent: number; key: string }> = [];
+
+  const attach = (pathKey: string, comments: Array<{ indent: number; line: string }>): void => {
+    if (!channel) channel = { leading: Object.create(null) as Record<string, string[]>, trailing: [] };
+    // Null-prototype `leading` (post-#3881-review, finding 3): the path key is
+    // derived from arbitrary user-authored YAML keys — `constructor`,
+    // `__proto__`, `toString`, `valueOf`, `hasOwnProperty` all round-trip
+    // through here. On an ordinary `{}` those resolve to inherited
+    // Object.prototype members; the null prototype makes every lookup an
+    // own-property-or-undefined read.
+    channel.leading[pathKey] = comments.map((c) => c.line);
+  };
 
   for (const line of lines) {
     if (line.trim() === '') continue;
-    if (/^#/.test(line)) {
-      pending.push(line);
+    const commentMatch = /^(\s*)#/.exec(line);
+    if (commentMatch) {
+      pending.push({ indent: commentMatch[1].length, line });
       continue;
     }
-    if (!/^\s/.test(line) && keyIdx < orderedKeys.length) {
-      const key = orderedKeys[keyIdx];
-      if (line.startsWith(`${key}:`) || line.startsWith(`"${key}"`) || line.startsWith(`'${key}'`)) {
-        if (pending.length) {
-          // Null-prototype `leading` (post-#3881-review, finding 3): `key` is an arbitrary
-          // user-authored YAML key — `constructor`, `__proto__`, `toString`, `valueOf`,
-          // `hasOwnProperty` all round-trip through here. On an ordinary `{}` those resolve
-          // to inherited Object.prototype members, and `reconstructFrontmatter`'s
-          // `commentChannel?.leading[key]` read then finds e.g. the `Object.prototype.toString`
-          // FUNCTION instead of `undefined`, throwing when it is iterated as if it were an
-          // array of comment strings.
-          if (!channel) channel = { leading: Object.create(null) as Record<string, string[]>, trailing: [] };
-          channel.leading[key] = pending;
+    // A list item (`- foo: bar`) is not a mapping key: its `- ` prefix would
+    // otherwise register as a key named `- foo` and corrupt the path stack
+    // (#3742 review). List items fall through to the pending-drop below.
+    const isListItem = /^\s*-\s/.test(line);
+    const keyLineMatch = isListItem
+      ? null
+      : /^(\s*)(?:"([^"]+)"|'([^']+)'|([^:\s][^:]*)):(?:\s|$)/.exec(line);
+    if (keyLineMatch) {
+      const indent = keyLineMatch[1].length;
+      const key = keyLineMatch[2] ?? keyLineMatch[3] ?? keyLineMatch[4];
+      if (indent === 0) {
+        // Top-level: keep the pre-#3742 orderedKeys walk — the comment
+        // attaches only to the next EXPECTED top-level key.
+        if (keyIdx < orderedKeys.length && key === orderedKeys[keyIdx]) {
+          const col0 = pending.filter((c) => c.indent === 0);
+          if (col0.length) attach(key, col0);
+          keyIdx++;
+          // A top-level mapping key opens a nesting context for the indented
+          // keys that follow it (#3742 dotted-path attachment).
+          pathStack.length = 0;
+          pathStack.push({ indent: 0, key });
           pending = [];
+          continue;
         }
-        keyIdx++;
+      } else {
+        // Nested key line: a pending comment at the SAME indentation attaches
+        // to this key under its dotted path. Deeper/misaligned pending
+        // comments were not leading this key — drop them, matching the
+        // top-level rule's "attach only when a key follows" discipline.
+        while (pathStack.length > 0 && pathStack[pathStack.length - 1].indent >= indent) pathStack.pop();
+        const sameIndent = pending.filter((c) => c.indent === indent);
+        if (sameIndent.length && key.length > 0) {
+          attach([...pathStack.map((e) => e.key), key].join('.'), sameIndent);
+        }
+        pathStack.push({ indent, key });
+        pending = [];
         continue;
       }
     }
@@ -392,9 +432,10 @@ function extractCommentChannel(yaml: string, orderedKeys: string[]): FullLineCom
     pending = [];
   }
 
-  if (pending.length) {
+  const col0Trailing = pending.filter((c) => c.indent === 0);
+  if (col0Trailing.length) {
     if (!channel) channel = { leading: Object.create(null) as Record<string, string[]>, trailing: [] };
-    channel.trailing = pending;
+    channel.trailing = col0Trailing.map((c) => c.line);
   }
   return channel;
 }
@@ -806,6 +847,10 @@ function reconstructFrontmatter(obj: Frontmatter): string {
       lines.push(`${key}:`);
       for (const [subkey, subval] of Object.entries(value)) {
         if (subval === null || subval === undefined) continue;
+        // #3742: re-emit a nested key's leading full-line comments (channel
+        // path key `parent.subkey`) at the subkey's own indentation.
+        const nestedLeading = commentChannel?.leading[`${key}.${subkey}`];
+        if (nestedLeading) for (const c of nestedLeading) lines.push(`  ${c.trimStart()}`);
         if (Array.isArray(subval)) {
           if (subval.length === 0) {
             lines.push(`  ${subkey}: []`);
@@ -821,6 +866,10 @@ function reconstructFrontmatter(obj: Frontmatter): string {
           lines.push(`  ${subkey}:`);
           for (const [subsubkey, subsubval] of Object.entries(subval as Record<string, unknown>)) {
             if (subsubval === null || subsubval === undefined) continue;
+            // #3742: same nested-comment re-emission one level deeper
+            // (`parent.sub.subsub`).
+            const deepLeading = commentChannel?.leading[`${key}.${subkey}.${subsubkey}`];
+            if (deepLeading) for (const c of deepLeading) lines.push(`    ${c.trimStart()}`);
             if (Array.isArray(subsubval)) {
               if (subsubval.length === 0) {
                 lines.push(`    ${subsubkey}: []`);
@@ -869,18 +918,49 @@ function reconstructFrontmatter(obj: Frontmatter): string {
 function propagateCommentChannel(source: Frontmatter, target: Frontmatter): void {
   const channel = (source as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] as FullLineCommentChannel | undefined;
   if (!channel) return;
+  // #3742: two changes, both about a target that is a PARTIAL rebuild.
+  //
+  // (a) Root-segment membership: a comment keyed by a dotted path
+  //     (`progress.total_plans`) survives while its root section survives —
+  //     requiring the full path to resolve inside `target` would drop every
+  //     nested comment the moment the rebuild reconstructed the section
+  //     object (a fresh object with the same leaf keys still matches at
+  //     EMIT time; membership is about the section existing at all).
+  // (b) Merge, not clobber: `target` may already carry its own channel
+  //     (extracted from content that kept some comments). Target entries win
+  //     for the same key; source entries fill the gaps; trailing lists
+  //     concatenate (source first, mirroring document order when the source
+  //     is the earlier snapshot).
+  const hasOwn = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+  const rootAlive = (k: string): boolean => {
+    const root = k.split('.')[0];
+    return hasOwn(target, root);
+  };
   // Null-prototype `leading` (post-#3881-review, finding 3) — same rationale as
   // `extractCommentChannel`. `target` may be a plain `{}` built by a caller outside this
-  // module (e.g. `buildStateFrontmatter`), so `key in target` is checked via
+  // module (e.g. `buildStateFrontmatter`), so membership is checked via
   // `hasOwnProperty`, not the `in` operator: `in` walks target's OWN prototype chain too,
   // and a target key named `constructor`/`toString`/etc. would otherwise read as "present"
   // even when it was never actually set.
-  const filtered: FullLineCommentChannel = { leading: Object.create(null) as Record<string, string[]>, trailing: channel.trailing };
-  for (const [key, comments] of Object.entries(channel.leading)) {
-    if (Object.prototype.hasOwnProperty.call(target, key)) filtered.leading[key] = comments;
+  const existingChannel = (target as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] as FullLineCommentChannel | undefined;
+  // Trailing: when the target already carries a channel, its trailing list is
+  // the SAME comments re-parsed from content this lineage already emitted —
+  // concatenating would duplicate them on every write (unbounded growth,
+  // #3742 review). Take the target's list; only a channel-less target
+  // (a fresh rebuild, e.g. buildStateFrontmatter output) inherits the
+  // source's trailing comments.
+  const merged: FullLineCommentChannel = {
+    leading: Object.create(null) as Record<string, string[]>,
+    trailing: existingChannel ? existingChannel.trailing : channel.trailing,
+  };
+  for (const [key, comments] of Object.entries(existingChannel?.leading ?? {})) {
+    merged.leading[key] = comments;
   }
-  if (filtered.trailing.length || Object.keys(filtered.leading).length) {
-    (target as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = filtered;
+  for (const [key, comments] of Object.entries(channel.leading)) {
+    if (!hasOwn(merged.leading, key) && rootAlive(key)) merged.leading[key] = comments;
+  }
+  if (merged.trailing.length || Object.keys(merged.leading).length) {
+    (target as Record<symbol, unknown>)[FULL_LINE_COMMENTS as unknown as symbol] = merged;
   }
 }
 

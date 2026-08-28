@@ -300,9 +300,21 @@ function runMain(main) {
  * it.
  *
  * @param outcome - declared outcome name, projected via projectOutcome.
- * @param payload - JSON-serializable value written to fd 1 (and, on a deny,
- *   fd 2 too — Kimi's native hook bus feeds stderr, not stdout, back to the
- *   model on exit 2, per hooks/gsd-write-guard.js's emitBlock).
+ * @param payload - JSON-serializable value written to fd 1 (and, on a deny
+ *   for which no `stderrPayload` is given, fd 2 too — this is the
+ *   backward-compatible default every existing caller relies on).
+ * @param stderrPayload - optional, deny-only. When omitted (the default),
+ *   fd 2 gets the SAME serialized `payload` fd 1 got — unchanged behavior.
+ *   When provided, fd 2 gets THIS instead: a string is written raw
+ *   (verbatim, not JSON-stringified), anything else is JSON-stringified
+ *   like `payload`. This exists because `hooks/gsd-write-guard.js`'s
+ *   emitBlock does NOT write the same bytes to both streams today — it
+ *   writes the full JSON `output` to stdout but only the plain-text
+ *   `output.reason` STRING to stderr, because Kimi's native hook bus reads
+ *   stderr verbatim back to the model on exit 2. Migrating that call site
+ *   onto terminateNow requires a way to say "fd 2 gets this different,
+ *   plain-text value" — `stderrPayload` is that seam. Ignored entirely for
+ *   a non-deny outcome: stderr is a deny-only channel.
  *
  * PAYLOAD-SIZE CONSTRAINT FOR CALLERS (measured for #3906, relevant to P7/
  * #3911 wiring 19 enforcement hooks onto this function): the write-until-
@@ -325,7 +337,7 @@ function runMain(main) {
  * arrives whole" test, which hit exactly this constructing its own fixture
  * before being rewritten to build the payload inside the child instead.
  */
-function terminateNow(outcome, payload) {
+function terminateNow(outcome, payload, stderrPayload) {
     // terminateNow is total by construction: its callers are enforcement hooks
     // (P7/#3911, 19 of them) whose OWN outer catch may fail open (some end in
     // `process.exit(0)`). If resolving the contract version, projecting the
@@ -353,6 +365,17 @@ function terminateNow(outcome, payload) {
         // outcome the fail-closed branches this function serves exist to prevent.
         // The decision to terminate with `projected` stands regardless of whether
         // the payload could be delivered.
+        //
+        // The two streams are emitted in TWO SEPARATE try/catch blocks, not one
+        // shared block (the pre-#3911 defect): fd 1 and fd 2 (deny-only) are
+        // independent channels with independent failure modes, and a shared try
+        // meant a serialization failure on fd 1 (e.g. `payload` throwing on
+        // JSON.stringify) aborted the block before fd 2 ever ran — silently
+        // dropping a deny's reason. `deny(undefined, 'some reason')` used to exit
+        // 2 with EMPTY stderr because of exactly this. Each block independently
+        // treats an `undefined` value for ITS OWN stream as "nothing to write"
+        // and skips the write cleanly, rather than serializing `undefined` (which
+        // is not valid JSON text) and throwing into the catch.
         try {
             // fs.writeSync, never process.stdout.write: pipe writes via
             // process.stdout/stderr are async on Windows, and process.exit() below
@@ -361,20 +384,36 @@ function terminateNow(outcome, payload) {
             // payload larger than the destination pipe's buffer — where a single
             // write() syscall can legitimately return fewer bytes written than
             // requested — still arrives whole rather than truncated.
-            const buf = Buffer.from(JSON.stringify(payload), 'utf8');
-            let offset = 0;
-            while (offset < buf.length) {
-                offset += node_fs_1.default.writeSync(1, buf, offset, buf.length - offset);
-            }
-            if (projected === HOOK_DENY_CODE) {
-                let stderrOffset = 0;
-                while (stderrOffset < buf.length) {
-                    stderrOffset += node_fs_1.default.writeSync(2, buf, stderrOffset, buf.length - stderrOffset);
+            if (payload !== undefined) {
+                const buf = Buffer.from(JSON.stringify(payload), 'utf8');
+                let offset = 0;
+                while (offset < buf.length) {
+                    offset += node_fs_1.default.writeSync(1, buf, offset, buf.length - offset);
                 }
             }
         }
         catch {
-            // Emission failed; the exit code decision still stands (see above).
+            // fd 1 emission failed; the exit code decision still stands (see
+            // above), and fd 2 below is unaffected — it has its own try/catch.
+        }
+        if (projected === HOOK_DENY_CODE) {
+            try {
+                // Backward-compatible default: when no `stderrPayload` is given, fd 2
+                // gets the SAME value fd 1 got (still subject to fd 2's own
+                // undefined-skips-the-write and string-vs-JSON rules below).
+                const resolvedStderr = stderrPayload === undefined ? payload : stderrPayload;
+                if (resolvedStderr !== undefined) {
+                    const stderrBuf = Buffer.from(typeof resolvedStderr === 'string' ? resolvedStderr : JSON.stringify(resolvedStderr), 'utf8');
+                    let stderrOffset = 0;
+                    while (stderrOffset < stderrBuf.length) {
+                        stderrOffset += node_fs_1.default.writeSync(2, stderrBuf, stderrOffset, stderrBuf.length - stderrOffset);
+                    }
+                }
+            }
+            catch {
+                // fd 2 emission failed; independent of fd 1 above, and the exit code
+                // decision still stands regardless.
+            }
         }
         // n/no-process-exit is not registered for src/**/*.cts (see the ADR-3889
         // reference note in the module header) and both compiled .cjs copies of

@@ -40,6 +40,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -180,7 +181,9 @@ describe('#1955: coincidental-reliance advisory — the invariants', () => {
     // substring still hits. A bare `(coincidental-reliance)` verdict cell, or
     // any form that puts the qualifier before the token, is a break.
     for (const source of [verifier, template]) {
-      const verdictCells = source.match(/\|\s*[^|\n]*coincidental-reliance[^|\n]*\|/g) || [];
+      const verdictCells = source.split(/\r?\n/)
+        .filter((line) => line.includes('|') && line.includes('coincidental-reliance'))
+        .flatMap((line) => splitTableRow(line).filter((cell) => cell.includes('coincidental-reliance')));
       for (const cell of verdictCells) {
         assert.ok(
           cell.includes(QUALIFIER),

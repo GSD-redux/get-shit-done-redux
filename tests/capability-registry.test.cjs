@@ -16,6 +16,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { cleanup } = require('./helpers.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const {
   validateCapability,
@@ -7240,12 +7241,14 @@ const MANIFEST_REQUIRED_KEYS = new Set([
  */
 function extractManifests(mdContent) {
   const manifests = [];
-  const fenceRe = /```json\s*\r?\n([\s\S]*?)```/g;
-  let match;
-  while ((match = fenceRe.exec(mdContent)) !== null) {
+  const lines = mdContent.split(/\r?\n/);
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    if ((block.infoString || '').trim().toLowerCase() !== 'json') continue;
+    const body = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
     let parsed;
     try {
-      parsed = JSON.parse(match[1]);
+      parsed = JSON.parse(body);
     } catch {
       continue;
     }

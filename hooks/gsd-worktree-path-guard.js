@@ -17,6 +17,16 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { HOOK_ON_CRASH, allow, deny, crash } = require('./lib/hook-exit.js');
+const { reportIfUndetermined } = require('./lib/git-probe.js');
+
+// This guard's outer catch has always exited 0 (fail open): a path guard that
+// cannot resolve the worktree must not block the user's edit — its whole job
+// is a targeted containment check, not a general-purpose file-write blocker,
+// and an unresolved worktree root gives it nothing to check against. Declared
+// ONCE here so the outer catch's crash() call states its policy explicitly
+// rather than inheriting a default (#3911).
+const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 
 const SPAWNOPT = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, windowsHide: true };
 
@@ -132,7 +142,7 @@ function normalizeKimiPayload(data) {
 }
 
 let input = '';
-const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+const stdinTimeout = setTimeout(() => allow(undefined), 3000);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
@@ -143,7 +153,7 @@ process.stdin.on('end', () => {
 
     // Only guard Edit, Write, and MultiEdit tool calls
     if (toolName !== 'Edit' && toolName !== 'Write' && toolName !== 'MultiEdit') {
-      process.exit(0);
+      allow(undefined);
     }
 
     const cwd = data.cwd || process.cwd();
@@ -154,15 +164,20 @@ process.stdin.on('end', () => {
     // In the main repo or a submodule it returns .git (or a path without /worktrees/).
     // This approach works even when cwd is a subdirectory of the worktree.
     const gitDirResult = git(['rev-parse', '--git-dir'], cwd);
+    // #3911: a timeout/spawn-failure result is indistinguishable from a clean
+    // "not a git repo" answer by status/stdout alone — reportIfUndetermined
+    // is a no-op on a genuine negative and only fires the diagnostic when the
+    // probe itself could not run. The allow() below is UNCHANGED either way.
+    reportIfUndetermined('gsd-worktree-path-guard', 'git rev-parse --git-dir', gitDirResult);
     if (gitDirResult.status !== 0 || !gitDirResult.stdout) {
-      process.exit(0); // not a git repo — pass through
+      allow(undefined); // not a git repo — pass through
     }
 
     const gitDir = gitDirResult.stdout.trim();
     // A linked worktree's --git-dir contains .git/worktrees/ as a path component
     const isLinkedWorktree = /[/\\]\.git[/\\]worktrees[/\\]/.test(gitDir);
     if (!isLinkedWorktree) {
-      process.exit(0); // main repo, submodule, or separate-git-dir — no-op
+      allow(undefined); // main repo, submodule, or separate-git-dir — no-op
     }
 
     // #1342: Only enforce inside a GSD-managed isolated executor worktree. Those
@@ -172,18 +187,20 @@ process.stdin.on('end', () => {
     // on the user's own branch, so the guard must be a no-op there. Detached HEAD
     // / error → not GSD-managed → no-op.
     const branchResult = git(['symbolic-ref', '--short', 'HEAD'], cwd);
+    reportIfUndetermined('gsd-worktree-path-guard', 'git symbolic-ref --short HEAD', branchResult);
     const branch = branchResult.status === 0 && branchResult.stdout ? branchResult.stdout.trim() : '';
     // #3021: accept worktree-wf_<runid>-<n> branches (Workflow backend's naming).
     if (!/^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$/.test(branch)) {
-      process.exit(0); // not a GSD-managed executor worktree — no-op
+      allow(undefined); // not a GSD-managed executor worktree — no-op
     }
 
     // Get the raw --show-toplevel output for the worktree (cwd).
     // We keep it raw (not path.resolve'd) to compare directly with the
     // file's toplevel — same git binary, same format, no normalization needed.
     const wtTopResult = git(['rev-parse', '--show-toplevel'], cwd);
+    reportIfUndetermined('gsd-worktree-path-guard', 'git rev-parse --show-toplevel (worktree cwd)', wtTopResult);
     if (wtTopResult.status !== 0 || !wtTopResult.stdout) {
-      process.exit(0); // can't determine root — fail open
+      allow(undefined); // can't determine root — fail open
     }
     const wtTopRaw = wtTopResult.stdout.trim();
 
@@ -201,7 +218,7 @@ process.stdin.on('end', () => {
       ? data.tool_input.file_path
       : '';
     if (!rawFilePath) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Relative paths resolve against the tool's CWD, which is inside the worktree
@@ -219,7 +236,7 @@ process.stdin.on('end', () => {
     // `../`-laden path exits 0 at this line and escapes the worktree. Stating a
     // mechanism and an unverified premise — not asserting a live bypass.
     if (!path.isAbsolute(rawFilePath)) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Normalise .. traversal so /worktree/src/../../../main/file
@@ -244,7 +261,7 @@ process.stdin.on('end', () => {
       // Walked to root without finding any directory — path is synthetic.
       // A path with no existing ancestor is not the #260 main-repo vector;
       // #260 is caught by the different-git-root branch below. Fail open. (#1342)
-      process.exit(0);
+      allow(undefined);
     }
 
     // Ask git for the toplevel of the file's location.
@@ -254,6 +271,7 @@ process.stdin.on('end', () => {
     // back-slash inconsistencies) — both values come from the same git binary
     // in the same format by definition.
     const fileTopResult = git(['rev-parse', '--show-toplevel'], checkDir);
+    reportIfUndetermined('gsd-worktree-path-guard', 'git rev-parse --show-toplevel (file location)', fileTopResult);
 
     if (fileTopResult.status !== 0 || !fileTopResult.stdout) {
       // The target's location is not a git work tree. Two sub-cases:
@@ -263,6 +281,7 @@ process.stdin.on('end', () => {
       //  - Truly outside all git repositories (e.g. ~/.claude/plans/) → not the
       //    main-repo vector → fail open. (#1342)
       const insideGitDir = git(['rev-parse', '--is-inside-git-dir'], checkDir);
+      reportIfUndetermined('gsd-worktree-path-guard', 'git rev-parse --is-inside-git-dir', insideGitDir);
       if (insideGitDir.status === 0 && insideGitDir.stdout && insideGitDir.stdout.trim() === 'true') {
         const output = {
           decision: 'block',
@@ -271,20 +290,17 @@ process.stdin.on('end', () => {
             `not the active worktree at '${wtTopRaw}'. Writing to repository internals via an ` +
             `absolute path is not permitted from an isolated executor worktree. Use a relative path.`,
         };
-        process.stdout.write(JSON.stringify(output));
-        // Kimi feeds stderr (not stdout) back to the model on exit 2.
-        process.stderr.write(output.reason);
-        process.exit(2);
+        deny(output, output.reason);
       }
       // Outside all git repositories — fail open (#1342).
-      process.exit(0);
+      allow(undefined);
     }
 
     const fileTopRaw = fileTopResult.stdout.trim();
 
     // Same git toplevel → file is inside the worktree → allow
     if (fileTopRaw === wtTopRaw) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // BLOCK: file resolves to a different git root than the active worktree
@@ -299,12 +315,11 @@ process.stdin.on('end', () => {
         `(hook cwd: '${cwd}').`,
     };
 
-    process.stdout.write(JSON.stringify(output));
-    // Kimi feeds stderr (not stdout) back to the model on exit 2.
-    process.stderr.write(output.reason);
-    process.exit(2);
+    deny(output, output.reason);
   } catch {
-    // Silent fail — never block valid tool calls due to hook errors
-    process.exit(0);
+    // Silent fail — never block valid tool calls due to hook errors.
+    // ON_CRASH is declared ALLOW at module top: this preserves today's
+    // exit(0) fail-open behavior exactly (#3911).
+    crash(ON_CRASH, undefined);
   }
 });

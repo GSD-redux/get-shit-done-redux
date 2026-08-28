@@ -34,6 +34,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { allow } = require('./lib/hook-exit.js');
 
 // Immutable, bundled subdirectories that the canonical path must expose. These
 // are the directories `@~/.claude/gsd-core/<subdir>/...` includes point into.
@@ -301,5 +302,5 @@ if (require.main === module) {
   } catch (_) {
     // Best-effort: a canonical-path failure must never abort a session.
   }
-  process.exit(0);
+  allow(undefined);
 }
