@@ -4826,6 +4826,41 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
       '#3964: the root planning dir must not gain a manifest under GSD_PROJECT');
   });
 
+  test('#3964: existing_maps/has_maps read the scoped codebase dir (same payload agreement)', (t) => {
+    const tmpDir = createTempDir('gsd-3964-maps-');
+    t.after(() => cleanup(tmpDir));
+    const scoped = writeScopedScaffolding(tmpDir, 'second-product');
+    fs.mkdirSync(path.join(scoped, 'codebase'), { recursive: true });
+    fs.writeFileSync(path.join(scoped, 'codebase', 'STRUCTURE.md'), '# Structure\n');
+
+    const r = runGsdTools(['query', 'init', 'map-codebase'], tmpDir, { GSD_PROJECT: 'second-product' });
+    assert.ok(r.success, r.error);
+    const out = JSON.parse(r.output);
+    assert.equal(out['codebase_dir_exists'], true);
+    assert.equal(out['has_maps'], true,
+      '#3964: has_maps must agree with codebase_dir_exists — the scoped dir holds STRUCTURE.md');
+    assert.ok((out['existing_maps'] || []).includes('STRUCTURE.md'),
+      `#3964: existing_maps must list the scoped maps, got ${JSON.stringify(out['existing_maps'])}`);
+  });
+
+  test('#3964: init.new-project has_codebase_map is project-scoped (onboard projection)', (t) => {
+    const tmpDir = createTempDir('gsd-3964-onboard-');
+    t.after(() => cleanup(tmpDir));
+    const scoped = writeScopedScaffolding(tmpDir, 'second-product');
+    fs.mkdirSync(path.join(scoped, 'codebase'), { recursive: true });
+    // has_codebase_map requires the COMPLETE map set (onboard-projection's
+    // REQUIRED_CODEBASE_MAP_FILES), not just STRUCTURE.md.
+    for (const f of ['STACK.md', 'ARCHITECTURE.md', 'STRUCTURE.md', 'CONVENTIONS.md', 'TESTING.md', 'INTEGRATIONS.md', 'CONCERNS.md']) {
+      fs.writeFileSync(path.join(scoped, 'codebase', f), '# Map\n');
+    }
+
+    const r = runGsdTools(['query', 'init.new-project'], tmpDir, { GSD_PROJECT: 'second-product' });
+    assert.ok(r.success, r.error);
+    const out = JSON.parse(r.output);
+    assert.equal(out['has_codebase_map'], true,
+      `#3964: has_codebase_map must answer for the scoped project, got ${out['has_codebase_map']}`);
+  });
+
   test('#3964 control: unscoped behavior unchanged (root paths)', (t) => {
     const tmpDir = createTempDir('gsd-3964-unscoped-');
     t.after(() => cleanup(tmpDir));
