@@ -230,3 +230,141 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// RED contract — gsd-core/references/tdd.md (#3770)
+//
+// #3770: the RED step said only "run (MUST fail)". Any non-zero exit was
+// accepted as RED, so a collection error, a crashed fixture, or an unrelated
+// failing test all authorized GREEN — while a legitimate outside-in RED that
+// never reaches the test body looked identical. The fix is a declared contract
+// plus observed evidence, both defined in gsd-core/references/tdd.md.
+// ────────────────────────────────────────────────────────────────────────
+
+const cp = require('node:child_process');
+
+const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+const TDD_REF = path.join(__dirname, '..', 'gsd-core', 'references', 'tdd.md');
+
+/** The h2 whose body carries the whole contract. */
+const CONTRACT_HEADING = 'RED Contract';
+
+/**
+ * Slice a markdown h2 section: the heading line through the line before the
+ * next h2 (or EOF). Throws when the heading is absent, so a deleted or renamed
+ * section fails loudly instead of silently yielding an empty slice.
+ * Shared by every contract test below.
+ */
+function sliceH2(markdown, heading) {
+  const lines = markdown.split('\n');
+  const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
+  if (start === -1) throw new Error(`h2 "## ${heading}" not found in tdd.md`);
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (lines[i].startsWith('## ')) { end = i; break; }
+  }
+  return lines.slice(start, end).join('\n');
+}
+
+/** Slice an h3 subsection out of an already-sliced h2 section. */
+function sliceH3(sectionText, heading) {
+  const lines = sectionText.split('\n');
+  const start = lines.findIndex((line) => line.trim() === `### ${heading}`);
+  if (start === -1) throw new Error(`h3 "### ${heading}" not found in the RED Contract section`);
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (lines[i].startsWith('## ') || lines[i].startsWith('### ')) { end = i; break; }
+  }
+  return lines.slice(start, end).join('\n');
+}
+
+/** Every fenced block body in a slice, fences excluded. */
+function fencedBlocks(text) {
+  const blocks = [];
+  let open = false;
+  let buf = [];
+  for (const line of text.split('\n')) {
+    if (line.trimStart().startsWith('```')) {
+      if (open) { blocks.push(buf.join('\n')); buf = []; }
+      open = !open;
+      continue;
+    }
+    if (open) buf.push(line);
+  }
+  return blocks;
+}
+
+/** The one fenced block a subsection is specified to carry. */
+function soleFencedBlock(sectionText, h3) {
+  const blocks = fencedBlocks(sliceH3(sectionText, h3));
+  assert.strictEqual(blocks.length, 1, `### ${h3} must carry exactly one fenced block`);
+  return blocks[0];
+}
+
+function runIsBehaviorAdding(taskContent) {
+  const result = cp.spawnSync(
+    process.execPath,
+    [GSD_TOOLS, 'query', 'task.is-behavior-adding', '--task-content', taskContent],
+    { encoding: 'utf-8' },
+  );
+  assert.strictEqual(result.status, 0, `gsd-tools exited ${result.status}: ${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+const CONTRACT_TASK_LINES = [
+  '<task type="auto" tdd="true">',
+  '  <files>src/pricing.py, tests/test_pricing.py</files>',
+  '  <behavior>Applying a discount reduces the order total.</behavior>',
+  '  <red_contract>',
+  '    <target_test>tests/test_pricing.py::test_discount_reduces_total</target_test>',
+  '    <implementation_target>pricing.apply_discount</implementation_target>',
+  '    <expected_failure>',
+  '      <phase>call</phase>',
+  '      <class_or_mode>AssertionError</class_or_mode>',
+  '      <subject>tests/test_pricing.py::test_discount_reduces_total</subject>',
+  '    </expected_failure>',
+  '  </red_contract>',
+  '</task>',
+];
+
+describe('RED contract — router still classifies a red_contract-carrying task (#3770)', () => {
+  test('a tdd task carrying both <behavior> and <red_contract> is behavior-adding', () => {
+    const parsed = runIsBehaviorAdding(CONTRACT_TASK_LINES.join('\n'));
+    assert.strictEqual(parsed.is_behavior_adding, true,
+      'adding a <red_contract> sibling must not un-gate the MVP+TDD router');
+    assert.strictEqual(parsed.checks.has_behavior_block, true,
+      '<behavior> must still be seen alongside <red_contract>');
+  });
+
+  test('the same task without <behavior> is not behavior-adding (guard is non-vacuous)', () => {
+    const withoutBehavior = CONTRACT_TASK_LINES
+      .filter((line) => !line.includes('<behavior>'))
+      .join('\n');
+    const parsed = runIsBehaviorAdding(withoutBehavior);
+    assert.strictEqual(parsed.is_behavior_adding, false,
+      '<red_contract> alone must not satisfy the behavior-adding predicate');
+    assert.strictEqual(parsed.checks.has_behavior_block, false,
+      'has_behavior_block must be false when <behavior> is absent');
+  });
+});
+
+// allow-test-rule: source-text-is-the-product (see #3770)
+// tdd.md is runtime-loaded instruction text embedded verbatim into every
+// executor dispatch — its text IS the deployed contract, so reading the file
+// is testing the product, not grepping an implementation.
+describe('RED contract — gsd-core/references/tdd.md declaration (#3770)', () => {
+  const contract = sliceH2(fs.readFileSync(TDD_REF, 'utf-8'), CONTRACT_HEADING);
+
+  test('### Declaration names exactly the seven contract tags', () => {
+    const block = soleFencedBlock(contract, 'Declaration');
+    const found = new Set();
+    for (const match of block.matchAll(/<\/?([a-z][a-z_]{0,60})[\s>]/g)) found.add(match[1]);
+    assert.deepStrictEqual(
+      [...found].sort(),
+      ['class_or_mode', 'expected_failure', 'implementation_target', 'phase',
+        'red_contract', 'subject', 'target_test'],
+      'the declaration example must carry exactly the seven contract tags — ' +
+      'a stray, renamed or dropped field is a schema change. See #3770.',
+    );
+  });
+});
