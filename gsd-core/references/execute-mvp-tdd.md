@@ -16,7 +16,7 @@ If any of these is false, the gate is inactive — execution proceeds normally.
 For each task gated by MVP+TDD, the executor MUST verify (before running the implementation step):
 
 1. **A failing-test commit exists.** Search git log on the current branch for a commit matching `test({phase}-{plan})` whose subject mentions the same plan as the current task. The commit must touch a test file (`*.test.*`, `*.spec.*`, `tests/**`).
-2. **The test was actually red.** The commit carries a `red-evidence:` trailer whose recorded run satisfies the RED predicate in `~/.claude/gsd-core/references/tdd.md`.
+2. **The failing-test commit carries its evidence.** The commit carries a `red-evidence:` trailer; the executor reads that trailer and reports it. A matching commit whose trailer value comes back empty is `missing_red_evidence` — the commit exists but was made without evidence. Judging the recorded run against the RED predicate in `~/.claude/gsd-core/references/tdd.md` is not yet mechanised; that coded gate is Phase 3's.
 3. **No implementation commit yet.** No `feat({phase}-{plan})` commit may exist for the same plan ID before the failing-test commit.
 
 If any check fails, the gate trips.
@@ -40,7 +40,7 @@ The executor MUST:
    ```
 ### MVP+TDD GATE TRIPPED — Plan {plan_id}, Task {task_id}
 
-   Reason: {missing_red_commit | red_commit_not_failing | feat_before_test}
+   Reason: {missing_red_commit | missing_red_evidence | red_commit_not_failing | feat_before_test}
 
    Behavior expected to be tested:
    - {first behavior bullet}

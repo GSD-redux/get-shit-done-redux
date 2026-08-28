@@ -380,23 +380,23 @@ Framework setup is a one-time cost included in the first TDD plan's RED phase.
 TDD plans produce 2-3 atomic commits (one per phase):
 
 ```
-test(08-02): add failing test for email validation
+test(08-02): add failing test for discount reducing order total
 
-- Tests valid email formats accepted
-- Tests invalid formats rejected
-- Tests empty input handling
+- Tests a percentage discount reduces the total
+- Tests a discount larger than the total floors at zero
+- Tests an absent discount leaves the total unchanged
 
 red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"}}
 
-feat(08-02): implement email validation
+feat(08-02): implement discount reduction on order total
 
-- Regex pattern matches RFC 5322
-- Returns boolean for validity
-- Handles edge cases (empty, null)
+- Applies the discount rate to the order subtotal
+- Returns the reduced total, floored at zero
+- Handles edge cases (zero rate, discount exceeding total)
 
-refactor(08-02): extract regex to constant (optional)
+refactor(08-02): extract the discount rate to a constant (optional)
 
-- Moved pattern to EMAIL_REGEX constant
+- Moved the rate to a DEFAULT_DISCOUNT_RATE constant
 - No behavior changes
 - Tests still pass
 ```
