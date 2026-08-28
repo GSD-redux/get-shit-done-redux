@@ -8485,8 +8485,10 @@ human_verification:
 ---
 `, 'human_needed');
       const names = items.map((i) => i.name).join(' | ');
-      assert.match(names, /"B/, `open entry "B" must survive; got ${JSON.stringify(names)}`);
-      assert.ok(!/"C/.test(names), `closed entry "C" must be skipped; got ${JSON.stringify(names)}`);
+      // The display rendering comes from `flattenObjectListItem`, which emits
+      // `test: B` — unquoted — where the pre-#3881 flattener emitted `test: "B`.
+      assert.match(names, /\btest: B\b/, `open entry "B" must survive; got ${JSON.stringify(names)}`);
+      assert.ok(!/\btest: C\b/.test(names), `closed entry "C" must be skipped; got ${JSON.stringify(names)}`);
     });
 
     test('B2: a bare bullet does not skew the entry list', () => {
@@ -8499,7 +8501,7 @@ human_verification:
 ---
 `, 'human_needed');
       const names = items.map((i) => i.name).join(' | ');
-      assert.match(names, /"B/, `the entry after a bare bullet must still surface; got ${JSON.stringify(names)}`);
+      assert.match(names, /\btest: B\b/, `the entry after a bare bullet must still surface; got ${JSON.stringify(names)}`);
     });
 
     test('B1: a BOM does not make a gaps_found report vanish', () => {

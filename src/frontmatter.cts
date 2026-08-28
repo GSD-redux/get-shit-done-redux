@@ -666,29 +666,55 @@ function countTopLevelKeyShapedLines(region: string): number {
  *   hold only an in-memory string; those dedup on a content digest instead.
  */
 /**
- * The frontmatter YAML region of a document, or `null` when there is none
- * (#3850).
+ * The entries of a top-level frontmatter ARRAY key, as the objects YAML
+ * actually describes rather than the display-flattened strings
+ * `extractFrontmatter` returns (#3850).
  *
- * This is `extractFrontmatter`'s own fence logic, factored out so a caller that
- * needs the RAW region — rather than the parsed object — shares one fence
- * parser with it instead of hand-rolling a second regex. A second fence parser
- * is the `DEFECT.GENERATIVE-FIX` shape, and it reliably re-loses whatever the
- * first one learned: the obvious `/^---\r?\n([\s\S]+?)\r?\n---/` re-introduces
- * exactly the byte-0 assumption #2977 removed, so a BOM'd file parses as having
- * no frontmatter at all.
+ * `extractFrontmatter` renders each object entry for HUMANS —
+ * `normalizeParsedValue` maps `{test, resolution}` to `"test: …, resolution: …"`
+ * via `flattenObjectListItem`. That is the right contract for a reader printing
+ * a list, and the wrong one for a reader that needs to branch on a specific
+ * field: `status`, `resolution` and `reason` are recoverable from that string
+ * only by re-parsing prose, which cannot distinguish a real `resolution:` field
+ * from the same text inside a quoted `truth:`.
  *
- * Returns the region WITHOUT the enclosing fences and with the BOM already
- * stripped. Unterminated frontmatter returns `null` (the diagnostic for that
- * case stays with `extractFrontmatter`, which owns the reporting).
+ * This returns the same entries BEFORE that display step, off the same
+ * `extractFrontmatter` parse path — same BOM strip (#2977), same byte-0 fence
+ * rule, same anchor/alias and sentinel guards, same ambiguous-colon repair. It
+ * is deliberately NOT a second parser: a hand-rolled fence regex or entry
+ * slicer re-loses whatever the real one learned, which is the
+ * `DEFECT.GENERATIVE-FIX` shape.
+ *
+ * Returns `null` when the document has no frontmatter, the key is absent, or
+ * the key is not an array — three different "nothing to iterate" cases the
+ * caller should not have to tell apart. Non-object entries in an otherwise
+ * valid array are skipped.
  */
-function frontmatterRegion(content: string): string | null {
+function frontmatterObjectListEntries(content: string, key: string): Array<Record<string, unknown>> | null {
   if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
   const headerEnd = content.startsWith('---\r\n') ? 5 : content.startsWith('---\n') ? 4 : -1;
   if (headerEnd === -1) return null;
   const closingLineStart = content.indexOf('\n---', headerEnd);
   if (closingLineStart === -1) return null;
   const yamlEnd = content[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
-  return content.slice(headerEnd, yamlEnd);
+  const region = content.slice(headerEnd, yamlEnd);
+
+  let raw: unknown;
+  try {
+    refuseAnchorsAndAliases(region);
+    refuseIfSentinelPresent(region);
+    raw = restoreNullBytesDeep(loadWithAmbiguousColonRepair(escapeNullBytesForParse(region)));
+  } catch {
+    // Same posture as `extractFrontmatter`: an unparseable region is "no
+    // frontmatter", never a throw into a caller that was only reading a field.
+    return null;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = (raw as Record<string, unknown>)[key];
+  if (!Array.isArray(value)) return null;
+  return value.filter(
+    (entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object' && !Array.isArray(entry),
+  );
 }
 
 function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
@@ -993,22 +1019,10 @@ function propagateCommentChannel(source: Frontmatter, target: Frontmatter): void
 /**
  * Slice a frontmatter YAML body into per-top-level-key raw text segments. Each segment
  * runs from a column-0 `key:` line through the line before the next column-0 key (or the
- * end), capturing all nested indented content.
- *
- * Two consumers, and the segment boundary rule is now a CROSS-MODULE contract
- * rather than a private detail — change it and both break:
- *
- *   - `spliceFrontmatter`, per-key identity preservation (#1572): a
- *     structurally-unchanged key keeps its original raw text, so the lossy
- *     `reconstructFrontmatter` never touches object-lists the caller did not
- *     modify (e.g. must_haves.artifacts / .prohibitions).
- *   - `src/uat.cts`'s `sliceFrontmatterArrayEntries` (#3850): reads an array
- *     key's entries BEFORE `parseYamlRegion` flattens each one to its first
- *     line, which is the only way a caller can see an entry's `status:` /
- *     `resolution:` siblings at all.
- *
- * The column-0 anchoring is what both rely on: a nested key that happens to
- * share a top-level key's name must never open a segment.
+ * end), capturing all nested indented content. Used by `spliceFrontmatter` for per-key
+ * identity preservation (#1572): a structurally-unchanged key keeps its original raw
+ * text, so the lossy `reconstructFrontmatter` never touches object-lists the caller did
+ * not modify (e.g. must_haves.artifacts / .prohibitions).
  */
 function sliceTopLevelFrontmatterSegments(yaml: string): Array<{ key: string; raw: string }> {
   const lines = splitLines(yaml);
@@ -1506,23 +1520,13 @@ export = {
   stripFrontmatter,
   noOpObjectListSetError,
   parseMustHavesBlock,
-  // #3850: the BOM+fence seam, shared so no caller hand-rolls a second fence
-  // regex (and re-loses #2977's BOM tolerance doing it).
-  frontmatterRegion,
-  // #3850: the array-item scalar rule. `parseYamlRegion` builds each `- ` entry
-  // as `parseQuotedScalar(line.trim().slice(2))`; a caller deriving an entry's
-  // display name from the RAW slice must apply the identical rule, or the two
-  // readers disagree about the same entry.
-  parseQuotedScalar,
-  // #3850: the per-top-level-key RAW text slicer, exposed so a caller that
-  // needs an array entry's SIBLING fields can read them before the lossy
-  // flattening in `parseYamlRegion` discards them. `extractFrontmatter` keeps
-  // only each `- ` entry's FIRST line (and strips a wrapping quote), so a
-  // multi-key entry's `status:`/`resolution:`/`reason:` siblings are simply
-  // absent from its output — unreachable downstream at any cost. Slicing the
-  // raw segment is how a caller gets underneath that, without this module
-  // having to grow a second, competing object-list parser.
-  sliceTopLevelFrontmatterSegments,
+  // #3850: an array key's entries as parsed OBJECTS, for a caller that must
+  // branch on an entry's `status:`/`resolution:` rather than print it. Off the
+  // same parse path as `extractFrontmatter`, minus only the display flattening.
+  frontmatterObjectListEntries,
+  // #3850: the display rendering itself, so a caller deriving a name from those
+  // objects produces the byte-identical string `extractFrontmatter` would have.
+  flattenObjectListItem,
   FRONTMATTER_SCHEMAS,
   cmdFrontmatterGet,
   cmdFrontmatterSet,

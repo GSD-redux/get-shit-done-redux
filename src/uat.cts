@@ -28,7 +28,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, sliceTopLevelFrontmatterSegments, frontmatterRegion, parseQuotedScalar } = frontmatter;
+const { extractFrontmatter, frontmatterObjectListEntries, flattenObjectListItem } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
@@ -3451,110 +3451,66 @@ function rawGapEntryText(
 // ─── parseVerificationItems ───────────────────────────────────────────────────
 
 /**
- * Slice one top-level frontmatter ARRAY key into per-entry line groups (#3850).
- *
- * `extractFrontmatter` cannot serve this: its array-item parser keeps only each
- * `- ` entry's FIRST line (with one layer of wrapping quotes stripped) and has
- * no notion of nested key/value objects, so an entry's `status:`,
- * `resolution:`, `reason:` and `test:` siblings never reach its output at all.
- * A resolved entry is therefore INDISTINGUISHABLE from an open one downstream
- * of it — no amount of post-processing can recover the difference.
- *
- * Rather than grow a competing object-list parser (or change
- * `extractFrontmatter`, whose blast radius is every frontmatter consumer in the
- * repo), this reads the RAW segment BEFORE the flattening and hands it to the
- * `## Gaps` machinery that already parses exactly this shape — a `- `-opened,
- * indentation-continued entry list. `sliceTopLevelFrontmatterSegments` supplies
- * the anchored boundary: a segment runs from a COLUMN-0 `key:` line to the line
- * before the next column-0 key, so nested indented content is captured and a
- * same-named nested key can never open a segment.
- */
-function sliceFrontmatterArrayEntries(content: string, key: string): string[][] {
-  // #3850 review B1: the region comes from `frontmatterRegion`, the same seam
-  // `extractFrontmatter` uses. A hand-rolled `/^---\r?\n…/` here would re-assert
-  // the byte-0 fence rule that #2977 removed, so a BOM'd file — PowerShell 5.1
-  // `>`/`Out-File` writes one by default — would slice nothing, and a
-  // `gaps_found` report would vanish from the audit exactly as it did before
-  // this fix. One fence parser, not two.
-  const region = frontmatterRegion(content);
-  if (region === null) return [];
-  // Last wins, matching `parseYamlRegion`: a duplicated top-level key assigns
-  // twice, so the LAST block is the one `extractFrontmatter` describes. Taking
-  // the first would make the two readers disagree about which block they mean.
-  const segments = sliceTopLevelFrontmatterSegments(region).filter((seg) => seg.key === key);
-  const segment = segments.length > 0 ? segments[segments.length - 1] : undefined;
-  if (!segment) return [];
-  // Drop the `key:` header line; the remainder is the entry list body.
-  const body = segment.raw.split('\n').slice(1).join('\n');
-  return splitGapsEntries(body);
-}
-
-/**
- * The display name for a frontmatter array entry, derived from its RAW lines
- * (#3850 review B2).
- *
- * `parseYamlRegion` builds each `- ` entry as
- * `parseQuotedScalar(line.trim().slice(2))`, so applying that identical rule to
- * the raw entry's first line reproduces the string `extractFrontmatter` would
- * have produced — without needing to pair the two readers by ordinal position.
- *
- * That pairing was the defect: `parseYamlRegion` is indent-BLIND (it pushes any
- * `- ` line into whatever array context the stack currently holds) while the
- * raw slicer is indent-ANCHORED (a deeper bullet folds into the current entry).
- * A block sequence written at the same indent as its key — ordinary, legal YAML
- * — makes the two disagree about how many entries exist, and from that point on
- * every index names a different entry. An OPEN entry then inherits a CLOSED
- * one's resolution and is silently dropped: the exact defect this PR fixes.
- */
-function frontmatterEntryDisplayName(entryLines: string[]): string {
-  const first = (entryLines[0] ?? '').trim();
-  return parseQuotedScalar(first.startsWith('- ') ? first.slice(2) : first);
-}
-
-/**
- * One entry -> one `UatItem`, shared by both frontmatter array readers
- * (#3850 review M3).
- *
- * `parseVerificationGapsItems` and the `human_verification` reader had
- * independent copies of this mapping — same field vocabulary, same
- * `rawGapEntryText` fallback, same `'unknown'` fail-safe, same `/^\d+$/` test
- * guard — differing only in which `result` they report. That is the
- * `DEFECT.GENERATIVE-FIX` shape CONTEXT.md names, and the repo rule is to share
- * the parser rather than add a parity test over two copies.
- */
-function frontmatterEntryToUatItem(entryLines: string[], opts: { forcedResult?: string } = {}): UatItem {
-  const fields = extractGapEntryFields(entryLines);
-  // Fail-safe, as in parseGapsItems: a missing/garbled status surfaces as
-  // 'unknown' rather than being dropped.
-  const status = opts.forcedResult ?? fields.status ?? 'unknown';
-  const item: UatItem = {
-    name: fields.truth || frontmatterEntryDisplayName(entryLines) || rawGapEntryText(entryLines),
-    result: status,
-    category: categorizeItem(status, fields.reason, undefined),
-  };
-  if (fields.test && /^\d+$/.test(fields.test)) item.test = parseInt(fields.test, 10);
-  if (fields.reason) item.reason = fields.reason;
-  return item;
-}
-
-/**
  * Is this frontmatter entry already closed? (#3850)
  *
  * Two markers occur in the wild and neither is universal: verifier-written
  * `human_verification:` entries record closure as a `resolution:` field with no
  * `status:` at all, while `gaps:` entries follow the `## Gaps` convention of
- * `status: resolved`. Both are accepted here.
+ * `status: resolved`. Both are accepted.
+ *
+ * The entry is a PARSED OBJECT, so this reads named fields rather than matching
+ * prose. That distinction is the whole point: against the display-flattened
+ * string, a `truth:` whose text mentions "resolution:" is indistinguishable
+ * from an entry that carries the field.
  *
  * Deliberately NOT folded into `parseGapsItems`, which keeps its narrower
  * `status: resolved` rule: widening THAT would newly drop a `## Gaps` entry
  * carrying `resolution:` alongside `status: failed` — a `*-UAT.md` behavior
- * change outside this fix's scope, and one nobody asked for.
+ * change outside this fix's scope.
  */
-function isFrontmatterEntryResolved(entryLines: string[] | undefined): boolean {
-  if (!entryLines) return false;
-  const fields = extractGapEntryFields(entryLines);
-  if (fields.resolution) return true;
-  return (fields.status || '').toLowerCase() === 'resolved';
+function isFrontmatterEntryResolved(entry: Record<string, unknown> | undefined): boolean {
+  if (!entry) return false;
+  const resolution = entry['resolution'];
+  if (typeof resolution === 'string' && resolution.trim() !== '') return true;
+  const status = entry['status'];
+  return typeof status === 'string' && status.trim().toLowerCase() === 'resolved';
+}
+
+/**
+ * A named string field of a parsed entry, or undefined when absent/non-scalar.
+ *
+ * A whitespace-only value counts as absent, but a present value is returned
+ * VERBATIM — trimming it here would silently rewrite an author's `truth:` on
+ * its way to becoming the item's display name, which is a different string from
+ * the one in the file.
+ */
+function entryField(entry: Record<string, unknown>, key: string): string | undefined {
+  const v = entry[key];
+  if (typeof v === 'string') return v.trim() === '' ? undefined : v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return undefined;
+}
+
+/**
+ * One parsed entry -> one `UatItem`, shared by both frontmatter array readers
+ * (#3850 review M3).
+ *
+ * The display name falls back to `flattenObjectListItem` — the SAME renderer
+ * `extractFrontmatter` applies — so an entry with no `truth:` reads exactly as
+ * it always did, byte for byte.
+ */
+function frontmatterEntryToUatItem(entry: Record<string, unknown>, opts: { forcedResult?: string } = {}): UatItem {
+  const status = opts.forcedResult ?? entryField(entry, 'status') ?? 'unknown';
+  const reason = entryField(entry, 'reason');
+  const item: UatItem = {
+    name: entryField(entry, 'truth') || flattenObjectListItem(entry),
+    result: status,
+    category: categorizeItem(status, reason, undefined),
+  };
+  const test = entryField(entry, 'test');
+  if (test && /^\d+$/.test(test)) item.test = parseInt(test, 10);
+  if (reason) item.reason = reason;
+  return item;
 }
 
 /**
@@ -3566,9 +3522,9 @@ function isFrontmatterEntryResolved(entryLines: string[] | undefined): boolean {
  * template puts gaps in frontmatter, so no existing reader covers this shape.
  */
 function parseVerificationGapsItems(content: string): UatItem[] {
-  return sliceFrontmatterArrayEntries(content, 'gaps')
-    .filter((entryLines) => !isFrontmatterEntryResolved(entryLines))
-    .map((entryLines) => frontmatterEntryToUatItem(entryLines));
+  return (frontmatterObjectListEntries(content, 'gaps') ?? [])
+    .filter((entry) => !isFrontmatterEntryResolved(entry))
+    .map((entry) => frontmatterEntryToUatItem(entry));
 }
 
 /**
@@ -3626,34 +3582,34 @@ function parseHumanVerificationItems(content: string, sourcePath?: string): UatI
   const frontmatter = extractFrontmatter(content, sourcePath);
   const humanVerification = frontmatter.human_verification;
   if (Array.isArray(humanVerification) && humanVerification.length > 0) {
-    // #3850 review B2: ONE parse, not two paired by ordinal position.
+    // #3850: ONE source for both the display name and the sibling fields.
     //
-    // The display name and the sibling fields now both come from the raw
-    // slice, so there is no index to desynchronise. Pairing
-    // `extractFrontmatter`'s flattened array against the raw entries by
-    // index was wrong because the two readers disagree about entry COUNT on
-    // legal YAML: `parseYamlRegion` is indent-blind, the slicer is
-    // indent-anchored, and a nested block sequence at key indent pops the
-    // one and folds into the other. From the first disagreement onward every
-    // index names a different entry, and an OPEN entry inherits a CLOSED
-    // one's resolution and vanishes.
+    // `extractFrontmatter` renders each object entry for humans
+    // (`flattenObjectListItem`), which is right for printing and wrong for
+    // branching: `resolution:` is recoverable from that string only by matching
+    // prose, and prose cannot tell a real field from the same text quoted
+    // inside `truth:`. `frontmatterObjectListEntries` returns the same entries
+    // one step earlier, off the same parse.
     //
-    // The flattened array stays the GATE (#2286: a non-empty
-    // `human_verification:` array fully bypasses the body-shape scan below),
-    // but no longer the source of the items.
-    const rawEntries = sliceFrontmatterArrayEntries(content, 'human_verification');
-    // Fall back to the flattened array when the slice yields nothing, so a
-    // shape the slicer cannot see still reports rather than disappearing —
-    // the failure mode this whole issue is about.
-    const entrySource: Array<string[] | string> = rawEntries.length > 0 ? rawEntries : humanVerification.map(String);
-    entrySource.forEach((rawEntry, idx) => {
-      const entryLines = Array.isArray(rawEntry) ? rawEntry : [`- ${rawEntry}`];
-      if (skipResolved && isFrontmatterEntryResolved(entryLines)) return;
+    // The flattened array stays the #2286 GATE — a non-empty
+    // `human_verification:` fully bypasses the body-shape scan below — but the
+    // objects are the source of the items, so there is no second reader to
+    // desynchronise against.
+    //
+    // A scalar (non-object) entry list yields no objects; those fall back to
+    // the flattened strings rather than disappearing, which is the failure mode
+    // this whole issue is about.
+    const objectEntries = frontmatterObjectListEntries(content, 'human_verification');
+    const entries: Array<Record<string, unknown> | string> =
+      objectEntries && objectEntries.length > 0 ? objectEntries : humanVerification.map(String);
+    entries.forEach((entry, idx) => {
+      const isObject = typeof entry === 'object';
+      if (skipResolved && isObject && isFrontmatterEntryResolved(entry)) return;
       items.push({
         // The entry's ORIGINAL 1-based position, so a surfaced item still
         // names its row in the file when a closed sibling was skipped.
         test: idx + 1,
-        name: normalizeHumanVerificationEntry(frontmatterEntryDisplayName(entryLines)),
+        name: normalizeHumanVerificationEntry(isObject ? flattenObjectListItem(entry) : entry),
         result: 'human_needed',
         category: 'human_uat',
       });
