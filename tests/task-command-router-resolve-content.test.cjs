@@ -59,6 +59,36 @@ function captureStdout(fn) {
   return chunks.join('');
 }
 
+/**
+ * `io.cjs`'s `error()` (ADR-3889) writes its human-readable message to fd 2
+ * via `writeAllSync`, then throws a bare `new ExitError(1)` with NO message
+ * — the stderr write already happened, so the thrown Error's own `.message`
+ * defaults to `"process exit ${code}"` (see `cli-exit.cjs`'s `ExitError`
+ * constructor) and never carries the diagnostic text. Asserting against
+ * `err.message` therefore can never see the "outside project scope" text;
+ * the diagnostic must be read off the captured fd-2 bytes instead. Mirrors
+ * the same fd-mock idiom `captureStdout` above uses for fd 1, and the
+ * established repo pattern in `tests/estimate-calibrate.test.cjs`'s
+ * `runCalibrateExpectError`.
+ */
+function captureStderr(fn) {
+  const chunks = [];
+  const origWriteSync = fs.writeSync.bind(fs);
+  const writeMock = mock.method(fs, 'writeSync', (fd, buffer, ...rest) => {
+    if (fd === 2) {
+      chunks.push(Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer));
+      return Buffer.isBuffer(buffer) ? buffer.length : Buffer.byteLength(String(buffer));
+    }
+    return origWriteSync(fd, buffer, ...rest);
+  });
+  try {
+    fn();
+  } finally {
+    writeMock.mock.restore();
+  }
+  return chunks.join('');
+}
+
 const RESOLVABLE_TASK = '<task type="auto" tracker-id="test:1"><name>x</name><action>do the thing</action></task>';
 
 describe('task resolve-content (rows 17-19)', () => {
@@ -208,22 +238,23 @@ describe('task resolve-content (rows 17-19)', () => {
     t.after(() => cleanup(dir));
 
     const escapingPath = '../../../etc/passwit';
-    assert.throws(
-      () =>
+    let thrown = null;
+    const stderr = captureStderr(() => {
+      try {
         routeResolveContent({
           args: ['task', 'resolve-content', '--plan', escapingPath, '--task-id', 'test:1'],
           cwd: dir,
           raw: false,
-        }),
-      (err) => {
-        assert.ok(err instanceof ExitError, `expected ExitError, got ${err}`);
-        assert.strictEqual(err.code, 1);
-        assert.ok(
-          err.message.includes('outside project scope') && err.message.includes(escapingPath),
-          `expected an outside-project-scope rejection naming the path, got: ${err.message}`,
-        );
-        return true;
-      },
+        });
+      } catch (err) {
+        thrown = err;
+      }
+    });
+    assert.ok(thrown instanceof ExitError, `expected ExitError, got ${thrown}`);
+    assert.strictEqual(thrown.code, 1);
+    assert.ok(
+      stderr.includes('outside project scope') && stderr.includes(escapingPath),
+      `expected an outside-project-scope rejection naming the path on stderr, got: ${stderr}`,
     );
   });
 
