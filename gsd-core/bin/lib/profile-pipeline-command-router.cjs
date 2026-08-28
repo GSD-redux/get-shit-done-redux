@@ -27,22 +27,40 @@
  * "process exit N" constructor default rather than the (already emitted, or
  * intentionally absent) stderr output the throwing call site controls.
  */
-const { ERROR_REASON } = require('./io.cjs');
+const { ERROR_REASON, getJsonErrorMode } = require('./io.cjs');
 const { ExitError } = require('./cli-exit.cjs');
 
 /**
  * Interpret a rejection from a fire-and-forget async pipeline call: an
  * ExitError sets process.exitCode (and, for a non-zero code carrying a user
- * message, writes it to stderr) exactly like runMain does; anything else is
- * handed to the router's injected `error()` callback unchanged.
+ * message, writes it to stderr) exactly like runMain does; anything else
+ * reproduces io.cjs's error() stderr output byte-for-byte and sets
+ * process.exitCode directly instead of calling error() itself.
+ *
+ * error() (src/io.cts) is `never`-typed: it always throws ExitError(1) after
+ * writing to stderr. Calling it from inside this `.catch()` callback would
+ * throw from a detached promise chain that nothing awaits or re-catches —
+ * an unhandled promise rejection that Node (>=15, this repo's
+ * engines.node >= 24 default is --unhandled-rejections=throw) dumps as a
+ * raw stack trace on top of the clean line error() already wrote. Writing
+ * the same bytes directly and setting process.exitCode = 1 in place gets
+ * the identical observable stderr + exit code without ever throwing here.
  */
 function _handlePipelineRejection(e, error) {
+  void error;
   if (e instanceof ExitError) {
     if (e.hasUserMessage && e.code !== 0) process.stderr.write(`${e.message}\n`);
     process.exitCode = e.code;
     return;
   }
-  error(e && e.message ? e.message : String(e));
+  const message = e && e.message ? e.message : String(e);
+  if (getJsonErrorMode()) {
+    const payload = JSON.stringify({ ok: false, reason: ERROR_REASON.UNKNOWN, message }) + '\n';
+    process.stderr.write(payload);
+  } else {
+    process.stderr.write('Error: ' + message + '\n');
+  }
+  process.exitCode = 1;
 }
 
 // ─── Pipeline phase commands ───────────────────────────────────────────────────

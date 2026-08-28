@@ -3374,4 +3374,115 @@ describe('require-registered-exit rule', () => {
       invalid: [],
     });
   });
+
+  // ── Finding 5: KNOWN LIMITS, pinned — the rule does NOT catch these evasions
+  // today. These tests do not endorse the patterns; they pin the CURRENT
+  // behavior so that a future change which starts catching one of them is a
+  // visible, deliberate diff (an intentionally-failing pinning test) rather
+  // than a silent behavior change discovered later. See the rule's header
+  // doc comment for the same limits documented for a human reader.
+
+  test('KNOWN LIMIT (pinned, not endorsed): aliasing process.exit to a local binding evades detection', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        {
+          code: `const e = process.exit; e(1);`,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('KNOWN LIMIT (pinned, not endorsed): process.exit.call(...) evades detection', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        {
+          code: `process.exit.call(null, 1);`,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('KNOWN LIMIT (pinned, not endorsed): process.exit.apply(...) evades detection', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        {
+          code: `process.exit.apply(null, [1]);`,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // ── Allowlist is basename-AND-name gated, not name-only (finding: any file
+  // named terminateNow would otherwise inherit the allowlist for free) ───────
+
+  test('invalid: a function named terminateNow in a file that is NOT cli-exit.cts is still flagged', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            function terminateNow(outcome, payload) {
+              process.exit(0);
+            }
+          `,
+          filename: 'src/some-other-module.cts',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: a function named terminateNow in gsd-core/bin/gsd-tools.cjs (not cli-exit.cts) is still flagged', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            function terminateNow(outcome, payload) {
+              process.exit(0);
+            }
+          `,
+          filename: 'gsd-core/bin/gsd-tools.cjs',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
+      ],
+    });
+  });
+
+  // ── Finding 4: registration proof, not just filename-agnostic rule logic ──
+  //
+  // The RuleTester cases above vary `filename` directly, which RuleTester
+  // never resolves against eslint.config.mjs — they prove the rule's AST
+  // logic, not that it is actually WIRED to the four globs. This proves
+  // wiring: it resolves the real config for one representative path per
+  // glob and asserts the rule is enabled there. This test fails if a glob
+  // registration is ever removed from eslint.config.mjs (verified live:
+  // temporarily deleting the gsd-core/bin/**/*.cjs registration flipped
+  // this test red before it was restored).
+  test('the rule is registered at error for one representative path per glob in the real config', async () => {
+    const REPO_ROOT = path.join(__dirname, '..');
+    const eslint = new ESLint({ cwd: REPO_ROOT });
+    const representativePaths = [
+      path.join(REPO_ROOT, 'src', 'cli-exit.cts'),
+      path.join(REPO_ROOT, 'scripts', 'affected-tests-lib.cjs'),
+      path.join(REPO_ROOT, 'hooks', 'gsd-check-update.js'),
+      path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs'),
+    ];
+    for (const p of representativePaths) {
+      // Sequential config resolution (not a hot loop) — no-await-in-loop is
+      // not registered on this glob, so no disable directive is needed here.
+      const config = await eslint.calculateConfigForFile(p);
+      assert.deepStrictEqual(
+        config.rules['local/require-registered-exit'],
+        [2],
+        `expected local/require-registered-exit to be registered at error for ${path.relative(REPO_ROOT, p)}`,
+      );
+    }
+  });
 });

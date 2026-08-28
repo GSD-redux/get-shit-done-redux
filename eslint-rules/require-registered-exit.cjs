@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('node:path');
+
 /**
  * require-registered-exit
  *
@@ -28,8 +30,13 @@
  *    terminator (ADR-3889 §3: write-then-terminate, the only place exit code
  *    2 — the hook-protocol deny — may be produced). Detected STRUCTURALLY
  *    below (any process.exit() call lexically nested inside a function
- *    declaration/expression named `terminateNow`), not by a path+line number,
- *    which rots the instant the function grows or moves.
+ *    declaration/expression named `terminateNow`, AND the file's basename is
+ *    `cli-exit.cts`), not by a path+line number, which rots the instant the
+ *    function grows or moves. The basename constraint is required in
+ *    addition to the name check: without it, any function named
+ *    `terminateNow` anywhere in the repo would silently inherit the
+ *    allowlist, widening the rule's trust boundary to a name that can be
+ *    typo'd or copy-pasted into an unrelated module.
  *
  * 2. gsd-core/bin/gsd-tools.cjs's `ensureRuntimeBuild` bootstrap-failure path
  *    (see its own inline `// eslint-disable-next-line local/require-registered-exit`
@@ -43,6 +50,32 @@
  *    moment its bootstrap code moved, while an inline directive travels with
  *    the call site and fails loudly (an unused-disable lint error) if the
  *    surrounding code changes such that it is no longer needed.
+ *
+ * ── Known limits (documented, deliberately out of scope) ────────────────────
+ *
+ * The rule matches a literal `CallExpression` shaped exactly like
+ * `process.exit(...)` (a non-computed MemberExpression on an Identifier
+ * named `process` with a property named `exit`). It does NOT do scope/flow
+ * analysis, so it cannot catch:
+ *
+ *   - `process['exit'](0)` — computed member access (same identifier, but
+ *     `callee.computed` is true so the property-name check never runs).
+ *   - `const e = process.exit; e(1);` — aliasing the function reference to a
+ *     local binding before calling it; by the time the alias is called, the
+ *     callee is a plain Identifier, not a MemberExpression on `process`.
+ *   - `process.exit.call(null, 1)` / `process.exit.apply(null, [1])` —
+ *     invoking `process.exit` indirectly via Function.prototype.call/apply;
+ *     the outer CallExpression's callee is `process.exit.call`, not
+ *     `process.exit` itself.
+ *
+ * Catching these would require binding/scope-aware analysis (tracking that a
+ * local variable or a `.call`/`.apply` receiver resolves back to
+ * `process.exit`), which is a materially different and more expensive class
+ * of rule. Out of scope for this issue. See the pinning tests in
+ * tests/eslint-rules.test.cjs ("KNOWN LIMIT (pinned, not endorsed)") that
+ * assert these are NOT flagged today — if a future change starts catching
+ * one of them, those tests will fail loudly instead of the change silently
+ * altering the rule's reach.
  */
 
 /**
@@ -93,7 +126,8 @@ const rule = {
         if (callee.object.type !== 'Identifier' || callee.object.name !== 'process') return;
         if (callee.property.type !== 'Identifier' || callee.property.name !== 'exit') return;
 
-        if (isInsideFunctionNamed(node, 'terminateNow')) return;
+        const filename = context.filename ?? context.getFilename();
+        if (path.basename(filename) === 'cli-exit.cts' && isInsideFunctionNamed(node, 'terminateNow')) return;
 
         context.report({ node, messageId: 'rawProcessExit' });
       },
