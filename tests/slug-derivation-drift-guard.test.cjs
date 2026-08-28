@@ -27,9 +27,14 @@ const {
   findSlugDerivationDrift,
   scanRepo,
   buildLogicalStatements,
+  stripComments,
+  SCAN_EXT,
 } = require(path.join(ROOT, 'scripts', 'lint-slug-derivation-drift.cjs'));
 const { generateSlugInternal } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'core-utils.cjs'));
+const { getPhaseDirFromPhaseId } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'phase-id.cjs'));
+const { slugify: qaSmellRatchetSlugify } = require(path.join(ROOT, 'scripts', 'qa-smell-ratchet.cjs'));
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { splitLines } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'text-lines.cjs'));
 
 // ─── T1: the real deleted #3883 shape (POSITIVE) ──────────────────────────
 
@@ -116,6 +121,40 @@ describe('findSlugDerivationDrift — T3-T5: sanctioned sites are exempted BY th
   }
 });
 
+// ─── MAJOR-1 (security review, #3987): exemption scoping does not bleed past
+// the exempted function's own closing brace ────────────────────────────────
+
+describe('findSlugDerivationDrift — MAJOR-1: allowlist exemption is scoped to the REAL function body, not "until the next top-level function"', () => {
+  const sanctionedRealEndLines = [
+    { file: path.join('src', 'core-utils.cts'), fn: 'generateSlugInternal', realEndLine: 193 },
+    { file: path.join('src', 'gsd2-import.cts'), fn: 'slugify', realEndLine: 103 },
+    { file: path.join('src', 'runtime-artifact-conversion.cts'), fn: 'normalizeKimiSkillName', realEndLine: 616 },
+    { file: path.join('scripts', 'generate-package-identity.cjs'), fn: 'slugifyPackageName', realEndLine: 42 },
+  ];
+
+  for (const { file, fn, realEndLine } of sanctionedRealEndLines) {
+    test(`a re-derivation planted immediately AFTER ${fn}'s (${file}) real closing brace IS flagged — the pre-fix bug exempted up to 50 lines past the function's own 11-line body`, () => {
+      const lines = splitLines(fs.readFileSync(path.join(ROOT, file), 'utf8'));
+      const evilSlug = "const evilSlug = (t) => t.replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');";
+      lines.splice(realEndLine, 0, evilSlug); // insert right after the function's REAL closing brace
+      const text = lines.join('\n');
+
+      const v = findSlugDerivationDrift(text, file);
+      assert.equal(v.length, 1, `expected the planted violation right after ${fn}'s real body to be flagged`);
+      assert.equal(v[0].line, realEndLine + 1);
+    });
+
+    test(`a re-derivation planted INSIDE ${fn}'s (${file}) own real body remains exempt`, () => {
+      const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+      // The real bodies here are single-collapse-clause shapes (never both
+      // clauses in one statement) by construction, so this only re-confirms
+      // the existing "exempted at its real path" T3-T5 assertion holds with
+      // the new extent-based exemption mechanism, not the old bleed-through one.
+      assert.deepEqual(findSlugDerivationDrift(text, file), []);
+    });
+  }
+});
+
 // ─── T6: the rejected loose [^A-Za-z0-9._-] line-level shape is NOT flagged ─
 
 describe('findSlugDerivationDrift — T6: the rejected loose line-level false-positive shape', () => {
@@ -137,6 +176,86 @@ describe('findSlugDerivationDrift — T6: the rejected loose line-level false-po
   test('clause (b) alone (no charclass-replace anywhere) is not flagged', () => {
     const line = "const p = raw.replace(/^-+|-+$/g, '');";
     assert.deepEqual(findSlugDerivationDrift(line, 'src/unrelated.cts'), []);
+  });
+});
+
+// ─── MAJOR-3 (security review, #3987): widened detector shapes ───────────
+
+describe('findSlugDerivationDrift — MAJOR-3: widened detection (each of these evaded the pre-fix detector)', () => {
+  const positives = [
+    ['replaceAll alongside replace', "function f(t){return t.toLowerCase().replaceAll(/[^a-z0-9]+/g,'-').replaceAll(/^-+|-+$/g,'');}"],
+    ['{1,} as an equivalent of +', "function f(t){return t.toLowerCase().replace(/[^a-z0-9]{1,}/g,'-').replace(/^-+|-+$/g,'');}"],
+    ['\\s* prefixed into the collapse class', "function f(t){return t.toLowerCase().replace(/\\s*[^a-z0-9]+\\s*/g,'-').replace(/^-+|-+$/g,'');}"],
+    ['escaped ] inside the negated class', "function f(t){return t.toLowerCase().replace(/[^a-z0-9\\]]+/g,'-').replace(/^-+|-+$/g,'');}"],
+    ['literal new RegExp(...) form', "function f(t){return t.toLowerCase().replace(new RegExp('[^a-z0-9]+','g'),'-').replace(/^-+|-+$/g,'');}"],
+    ['trim spelled /^[-]+|[-]+$/', "function f(t){return t.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^[-]+|[-]+$/g,'');}"],
+    ['trim spelled /(^-+)|(-+$)/', "function f(t){return t.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-+)|(-+$)/g,'');}"],
+    ['trim spelled /^-*|-*$/', "function f(t){return t.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-*|-*$/g,'');}"],
+    ['trim spelled /^\\-+|\\-+$/', "function f(t){return t.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^\\-+|\\-+$/g,'');}"],
+    ['trim spelled /-+$|^-+/ (swapped order)', "function f(t){return t.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/-+$|^-+/g,'');}"],
+    ['.split(<negated class>).join(\'-\') as a collapse form', "function f(t){return t.toLowerCase().split(/[^a-z0-9]+/g).join('-').replace(/^-+|-+$/g,'');}"],
+    [
+      'arguments to .replace( spanning multiple physical lines (no leading "." continuation)',
+      ['function f(t){', '  return t.toLowerCase().replace(', '    /[^a-z0-9]+/g,', "    '-'", "  ).replace(/^-+|-+$/g, '');", '}'].join('\n'),
+    ],
+  ];
+
+  for (const [name, src] of positives) {
+    test(`${name} is flagged`, () => {
+      const v = findSlugDerivationDrift(src, 'ZZZ-not-exempt.cts');
+      assert.ok(v.length >= 1, `expected "${name}" to be detected after the MAJOR-3 widening`);
+    });
+  }
+
+  test('the two-statement/temp-var form is a DOCUMENTED, deliberate gap (needs data flow, not textual matching) — still evades', () => {
+    const src = ['function f(t){', "  const a = t.toLowerCase().replace(/[^a-z0-9]+/g,'-');", "  return a.replace(/^-+|-+$/g,'');", '}'].join('\n');
+    assert.deepEqual(findSlugDerivationDrift(src, 'ZZZ-not-exempt.cts'), []);
+  });
+
+  test('new RegExp built from a variable is a DOCUMENTED, deliberate gap — still evades', () => {
+    const src = "function f(t,p){return t.toLowerCase().replace(new RegExp(p,'g'),'-').replace(/^-+|-+$/g,'');}";
+    assert.deepEqual(findSlugDerivationDrift(src, 'ZZZ-not-exempt.cts'), []);
+  });
+});
+
+// ─── MAJOR-2 (security review, #3987): bounded regex-literal extraction ──
+
+describe('findSlugDerivationDrift — MAJOR-2: no quadratic blowup on a pathological regex-literal-shaped line', () => {
+  test('a 1.28MB line built from many unterminated "[^"-shaped fragments scans in well under a second (was 54.3s pre-fix)', () => {
+    const k = 40000; // '.replace(/[^'.repeat(k) + 'x'.repeat(20k) ~= 1.28MB, matching the review's measured repro
+    const line = '.replace(/[^'.repeat(k) + 'x'.repeat(20 * k);
+    assert.equal(Buffer.byteLength(line, 'utf8'), 1_280_000);
+
+    const start = Date.now();
+    const v = findSlugDerivationDrift(line, 'ZZZ-not-exempt.cts');
+    const elapsedMs = Date.now() - start;
+
+    assert.deepEqual(v, [], 'a giant unterminated fragment run is not a real re-derivation');
+    assert.ok(elapsedMs < 5000, `expected well under 5s (pre-fix measured 54.3s at this size), got ${elapsedMs}ms`);
+  });
+});
+
+// ─── MINOR fixes (security review, #3987) ────────────────────────────────
+
+describe('MINOR fixes', () => {
+  test('stripComments does not cut at a "//" inside a string literal (e.g. a URL)', () => {
+    const line = "const u = 'http://x'; return t.replace(/[^a-z0-9]+/g, '-');";
+    const stripped = stripComments(line);
+    assert.ok(stripped.includes("'http://x'"), 'the URL string must survive comment-stripping intact');
+    assert.ok(stripped.includes(".replace(/[^a-z0-9]+/g, '-')"), 'code after the string must survive too');
+  });
+
+  test('a top-level statement split on ";" does not fire on a ";" embedded inside a regex character class', () => {
+    const line = "a.replace(/[^a-z0-9;]+/g, '-'); b.replace(/^-+|-+$/g, '');";
+    const stmts = buildLogicalStatements([line]);
+    assert.equal(stmts.length, 2, 'the embedded ";" inside the class must not split the first statement in two');
+    assert.equal(stmts[0].text, "a.replace(/[^a-z0-9;]+/g, '-')");
+  });
+
+  test('SCAN_EXT includes .mjs, .tsx, .jsx alongside the original extensions', () => {
+    for (const ext of ['.mjs', '.tsx', '.jsx', '.cts', '.ts', '.mts', '.cjs', '.js']) {
+      assert.ok(SCAN_EXT.has(ext), `expected SCAN_EXT to include ${ext}`);
+    }
   });
 });
 
@@ -243,6 +362,88 @@ test('T8: scanRepo(repoRoot) against the real repo returns EMPTY after the Task-
   assert.deepEqual(violations, []);
 });
 
+// ─── PROVE-IT-CAN-FAIL, the CLI (main()) surface ──────────────────────────
+//
+// The `scanRepo` PROVE-IT-CAN-FAIL row above only exercises the pure
+// function; `main()`'s `process.exitCode = 1`, its stderr banner text, and
+// both `sanitizeForReport` call sites (on `d.file` AND `d.found`) are a
+// SEPARATE, uncovered surface — dropping the `process.exitCode = 1` line
+// entirely would leave every row above green. `main()` is not exported and
+// hardcodes its scan root to `path.join(__dirname, '..')` (the real repo,
+// which is clean — see T8), so the only way to drive the exit-1 branch is to
+// run the CLI as a REAL subprocess against a throwaway copy of the script
+// (plus its `scripts/lib/drift-scan.cjs` dependency, which has no other
+// requires) rooted at a synthetic tree carrying a real violation.
+describe('CLI (main()) — the process.exitCode/stderr surface scanRepo alone does not cover', () => {
+  test('a violation drives exit code 1, a stderr banner, and a sanitized file:line report line', (t) => {
+    const { spawnSync } = require('node:child_process');
+    const tmpRoot = createTempDir('gsd-slug-derivation-drift-cli-');
+    t.after(() => cleanup(tmpRoot));
+
+    fs.mkdirSync(path.join(tmpRoot, 'scripts', 'lib'), { recursive: true });
+    fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+    fs.copyFileSync(
+      path.join(ROOT, 'scripts', 'lint-slug-derivation-drift.cjs'),
+      path.join(tmpRoot, 'scripts', 'lint-slug-derivation-drift.cjs'),
+    );
+    fs.copyFileSync(
+      path.join(ROOT, 'scripts', 'lib', 'drift-scan.cjs'),
+      path.join(tmpRoot, 'scripts', 'lib', 'drift-scan.cjs'),
+    );
+    // `d.file` gets a zero-width space (a valid filename character on every
+    // OS — a raw control byte in a filename is REJECTED as ENOENT on
+    // Windows, so it cannot be used here without breaking that lane); `d.found`
+    // gets an actual control byte (\x07) embedded in the flagged statement's
+    // own text, which is disk file CONTENT, not a path, so it is safe on every
+    // platform. Both are exactly what sanitizeForReport exists to neutralize.
+    const evilFileName = `fa${'​'}ke.cts`;
+    fs.writeFileSync(
+      path.join(tmpRoot, 'src', evilFileName),
+      `function slugify(name${'\x07'}) { return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }\n`,
+    );
+
+    const res = spawnSync(process.execPath, [path.join(tmpRoot, 'scripts', 'lint-slug-derivation-drift.cjs')], {
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+
+    assert.equal(res.status, 1, 'main() must set a non-zero process.exitCode when a violation is found');
+    assert.match(res.stderr, /slug-derivation-drift: independent re-derivation\(s\)/, 'expected the stderr banner text');
+    assert.match(res.stderr, /generateSlugInternal\(text, maxLen\)/, 'expected the fix-forward guidance line');
+    assert.match(res.stderr, /fa\\u200bke\.cts/, 'sanitizeForReport must have escaped the zero-width space in d.file');
+    assert.match(res.stderr, /name\\x07/, 'sanitizeForReport must have escaped the control byte in d.found');
+    assert.ok(!res.stderr.includes('​'), 'the raw zero-width space must not reach stderr unescaped');
+    assert.ok(!res.stderr.includes('\x07'), 'the raw control byte must not reach stderr unescaped');
+  });
+
+  test('a clean tree exits 0 with the "ok" stdout line, not the violation banner', (t) => {
+    const { spawnSync } = require('node:child_process');
+    const tmpRoot = createTempDir('gsd-slug-derivation-drift-cli-clean-');
+    t.after(() => cleanup(tmpRoot));
+
+    fs.mkdirSync(path.join(tmpRoot, 'scripts', 'lib'), { recursive: true });
+    fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+    fs.copyFileSync(
+      path.join(ROOT, 'scripts', 'lint-slug-derivation-drift.cjs'),
+      path.join(tmpRoot, 'scripts', 'lint-slug-derivation-drift.cjs'),
+    );
+    fs.copyFileSync(
+      path.join(ROOT, 'scripts', 'lib', 'drift-scan.cjs'),
+      path.join(tmpRoot, 'scripts', 'lib', 'drift-scan.cjs'),
+    );
+    fs.writeFileSync(path.join(tmpRoot, 'src', 'clean.cts'), 'const x = 1;\n');
+
+    const res = spawnSync(process.execPath, [path.join(tmpRoot, 'scripts', 'lint-slug-derivation-drift.cjs')], {
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /^ok slug-derivation-drift:/);
+    assert.equal(res.stderr, '');
+  });
+});
+
 // ─── T9-T11: scripts/qa-smell-ratchet.cjs slugify, routed through the seam ─
 
 describe('scripts/qa-smell-ratchet.cjs slugify — routed through generateSlugInternal (#2849/#2848 fixes)', () => {
@@ -250,13 +451,34 @@ describe('scripts/qa-smell-ratchet.cjs slugify — routed through generateSlugIn
   // these rows assert the SEAM behaves as the routed call site now expects
   // (parity is guaranteed by construction: the call site is `generateSlugInternal(value, 60) ?? ''`).
 
-  test('T9: a >60-char input whose 60th char lands mid-word does not leave a trailing hyphen (the live #2849 bug)', () => {
-    // 58 'a's + "-bcdef": char 60 lands inside "bcdef", right after the
-    // separator hyphen — the exact #2849 trigger shape.
-    const input = 'a'.repeat(58) + '-bcdef';
+  test('T9: a >60-char input whose 60th char is the separator hyphen itself does not leave a trailing hyphen (the live #2849 bug)', () => {
+    // 59 'a's + "-bcd": char 60 (1-based) is EXACTLY the separator hyphen at
+    // index 59. The pre-#2849 formula trimmed leading/trailing hyphens BEFORE
+    // truncating to 60 — a no-op here, since the hyphen sits in the middle,
+    // not at either end — then truncated with substring(0, 60), which lands
+    // exactly ON that hyphen and leaves it as the new trailing character:
+    // 59 'a's + trailing '-'. The fixed formula truncates FIRST (same 60-char
+    // cut), THEN trims trailing hyphens, removing it. This input is
+    // discriminating (old -> trailing '-', new -> none); the previous fixture
+    // ('a'.repeat(58) + '-bcdef') truncated to "...a-b", which both the old
+    // and new formulas produce identically — it never reached #2849's bug at
+    // all (verified: both formulas agree on that input).
+    const input = 'a'.repeat(59) + '-bcd';
     const slug = generateSlugInternal(input, 60) ?? '';
     assert.ok(!slug.endsWith('-'), `expected no trailing hyphen after truncation, got ${JSON.stringify(slug)}`);
     assert.equal(slug.length <= 60, true);
+    assert.equal(slug, 'a'.repeat(59), 'the separator hyphen itself must be trimmed after truncation');
+  });
+
+  test('T9b (call-site): scripts/qa-smell-ratchet.cjs\'s slugify(), routed through generateSlugInternal, does not leave a trailing hyphen either', () => {
+    // Asserts through the CALL SITE, not generateSlugInternal directly — if
+    // qa-smell-ratchet.cjs's slugify() were reverted to its pre-#3987
+    // hand-rolled (trim-before-truncate) copy, this reds even though T9
+    // above (which only calls generateSlugInternal) would not notice.
+    const input = 'a'.repeat(59) + '-bcd';
+    const slug = qaSmellRatchetSlugify(input);
+    assert.ok(!slug.endsWith('-'), `expected no trailing hyphen from the routed call site, got ${JSON.stringify(slug)}`);
+    assert.equal(slug, 'a'.repeat(59));
   });
 
   test('T10: non-Latin (Cyrillic) input transliterates to a non-empty slug', () => {
@@ -270,20 +492,50 @@ describe('scripts/qa-smell-ratchet.cjs slugify — routed through generateSlugIn
     assert.equal(generateSlugInternal('', 60) ?? '', '');
     assert.equal(generateSlugInternal(undefined, 60) ?? '', '');
   });
+
+  test('T11b: an entirely non-alphanumeric input collapses to the EMPTY STRING, not null', () => {
+    // Distinguishes "the input produced nothing after slugification" (a
+    // non-null, empty string — the collapse/trim clauses ran and consumed
+    // every character) from "no input was supplied at all" (T11's null/undefined
+    // -> null case). Previously untested.
+    assert.equal(generateSlugInternal('!!!', 60), '');
+    assert.notEqual(generateSlugInternal('!!!', 60), null);
+  });
+
+  test('T9c: maxLen boundary at 59/60/61 (limit-1, limit, limit+1) truncates to exactly maxLen characters', () => {
+    const input = 'a'.repeat(65);
+    assert.equal(generateSlugInternal(input, 59), 'a'.repeat(59));
+    assert.equal(generateSlugInternal(input, 60), 'a'.repeat(60));
+    assert.equal(generateSlugInternal(input, 61), 'a'.repeat(61));
+  });
 });
 
 // ─── T12: tests/planning-inspect.test.cjs slugify helper parity ──────────
 
 describe('tests/planning-inspect.test.cjs slugify helper — parity with getPhaseDirFromPhaseId (#3987)', () => {
-  test('T12: a name that both transliterates AND would need no truncation matches the real seam with maxLen: null (no truncation, matching getPhaseDirFromPhaseId\'s own contract)', () => {
-    const name = 'Привет Мир Feature';
-    const helperShape = generateSlugInternal(name, null) ?? '';
-    assert.notEqual(helperShape, '');
-    assert.match(helperShape, /^[a-z0-9-]+$/);
-    // getPhaseDirFromPhaseId never truncates (per src/core-utils.cts's own
-    // maxLen doc comment) — this asserts the helper's contract (maxLen:
-    // null) is the one that actually matches, not the 60-char default.
-    const truncatedShape = generateSlugInternal(name, 60);
-    assert.equal(helperShape, truncatedShape, 'this short fixture does not exercise truncation, so both must still agree');
+  // A name long enough that its slug EXCEEDS 60 chars, so maxLen: null and
+  // maxLen: 60 genuinely disagree — the previous 18-char fixture never
+  // exercised truncation at all, so the two arguments trivially matched
+  // regardless of which one getPhaseDirFromPhaseId actually passes.
+  const LONG_NAME = 'This Is A Genuinely Long Phase Name That Exceeds Sixty Characters For Sure';
+
+  test('T12: maxLen: null and maxLen: 60 genuinely DISAGREE on a >60-char slug (fixture is discriminating)', () => {
+    const untruncated = generateSlugInternal(LONG_NAME, null) ?? '';
+    const truncated = generateSlugInternal(LONG_NAME, 60) ?? '';
+    assert.ok(untruncated.length > 60, `fixture must produce a >60-char slug to be discriminating, got length ${untruncated.length}`);
+    assert.equal(truncated.length, 60);
+    assert.notEqual(untruncated, truncated, 'maxLen: null and maxLen: 60 must produce DIFFERENT slugs for this fixture');
+  });
+
+  test('T12b (call site): getPhaseDirFromPhaseId embeds the UNTRUNCATED (maxLen: null) slug, never the 60-char-truncated one', () => {
+    // Asserts through the CALL SITE (src/phase-id.cts's getPhaseDirFromPhaseId),
+    // not generateSlugInternal directly — if that call site were reverted to
+    // pass the 60-char default instead of maxLen: null, this reds even
+    // though a generateSlugInternal-only assertion would not notice.
+    const dir = getPhaseDirFromPhaseId('01-01', LONG_NAME, null);
+    const untruncated = generateSlugInternal(LONG_NAME, null) ?? '';
+    const truncated = generateSlugInternal(LONG_NAME, 60) ?? '';
+    assert.ok(dir.endsWith(untruncated), `expected the phase dir to embed the untruncated slug, got ${JSON.stringify(dir)}`);
+    assert.ok(!dir.endsWith(truncated) || truncated === untruncated, 'the phase dir must not embed the 60-char-truncated slug');
   });
 });

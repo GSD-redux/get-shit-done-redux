@@ -67,7 +67,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { generateSlugInternal } = require('../gsd-core/bin/lib/core-utils.cjs');
 const { runAllScenarios } = require('../tests/qa/run-report.cjs');
 const { buildReport } = require('../tests/qa/report.cjs');
 const { fingerprint } = require('../tests/qa/smell-fingerprint.cjs');
@@ -404,8 +403,30 @@ function collectFindings(reportObject) {
  * it never transliterated non-Latin scripts (#2848). `generateSlugInternal`
  * returns `null` for empty/nullish input; a fragment-filename skeleton needs a
  * string, so `?? ''` preserves this function's prior never-null contract.
+ *
+ * `gsd-core/bin/lib/core-utils.cjs` is required LAZILY, here, rather than at
+ * module load — it is `src/core-utils.cts`'s gitignored `build:lib` output,
+ * so a top-level `require` made this ENTIRE script (including `--help`, which
+ * never calls `slugify`) hard-fail `MODULE_NOT_FOUND` on a fresh clone before
+ * any build ran. Deferring the require to the one call site that actually
+ * needs it means every other code path (in particular `--help`) still works
+ * with `gsd-core/bin/lib/` absent, and a genuinely missing build only surfaces
+ * as an error when a NEW smell finding is rendered (the only caller of this
+ * function).
  */
 function slugify(value) {
+  let generateSlugInternal;
+  try {
+    ({ generateSlugInternal } = require('../gsd-core/bin/lib/core-utils.cjs'));
+  } catch (err) {
+    if (err && err.code === 'MODULE_NOT_FOUND') {
+      throw new ExitError(
+        1,
+        'qa-smell-ratchet: gsd-core/bin/lib/core-utils.cjs is missing — run `npm run build:lib` first.',
+      );
+    }
+    throw err;
+  }
   return generateSlugInternal(value, 60) ?? '';
 }
 

@@ -32,6 +32,7 @@ import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.
 import noExternalRequireInBin from './eslint-rules/no-external-require-in-bin.cjs';
 import noPrivateBinaryResolution from './eslint-rules/no-private-binary-resolution.cjs';
 import requireRegisteredExit from './eslint-rules/require-registered-exit.cjs';
+import noSwallowedPrecondition from './eslint-rules/no-swallowed-precondition.cjs';
 
 const localPlugin = {
   rules: {
@@ -58,6 +59,7 @@ const localPlugin = {
     'no-external-require-in-bin': noExternalRequireInBin,
     'no-private-binary-resolution': noPrivateBinaryResolution,
     'require-registered-exit': requireRegisteredExit,
+    'no-swallowed-precondition': noSwallowedPrecondition,
   },
 };
 
@@ -424,6 +426,14 @@ export default tseslint.config(
       // eslint-ignored (ADR-457), so a rule registered only on the emitted
       // surface never sees the real .cts sources (#3496).
       'local/require-registered-exit': 'error',
+      // #3987 (issue #1884 class): flag a swallowed mkdirSync/openSync/
+      // platformEnsureDir failure inside a function that also references a
+      // *_ERRNOS retry/tolerate set — a fatal EACCES/ENOSPC/EROFS creating a
+      // precondition can be laundered into a retryable errno downstream. See
+      // eslint-rules/no-swallowed-precondition.cjs for the measured predicate
+      // and its known gap (inline-literal errno classification is not caught;
+      // fixed directly at the call site instead — capability-lock.cts).
+      'local/no-swallowed-precondition': 'error',
     },
   },
 
