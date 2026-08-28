@@ -382,6 +382,8 @@ test(08-02): add failing test for email validation
 - Tests invalid formats rejected
 - Tests empty input handling
 
+red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"}}
+
 feat(08-02): implement email validation
 
 - Regex pattern matches RFC 5322
@@ -417,7 +419,7 @@ When `workflow.tdd_mode` is enabled in config, the RED/GREEN/REFACTOR gate seque
 
 | Gate | Required | Commit Pattern | Validation |
 |------|----------|---------------|------------|
-| RED | Yes | `test({phase}-{plan}): ...` | Test exists AND fails before implementation |
+| RED | Yes | `test({phase}-{plan}): ...` | The commit carries a `red-evidence:` trailer satisfying the RED Predicate — see **RED Contract** |
 | GREEN | Yes | `feat({phase}-{plan}): ...` | Test passes after implementation |
 | REFACTOR | No | `refactor({phase}-{plan}): ...` | Tests still pass after cleanup |
 
@@ -431,13 +433,16 @@ When `workflow.tdd_mode` is enabled in config, the RED/GREEN/REFACTOR gate seque
 
 After completing a `type: tdd` plan, the executor validates the git log:
 ```bash
-# Check for RED gate commit
-git log --oneline --grep="^test(${PHASE}-${PLAN})" | head -1
+# Check for RED gate commit, then read its red-evidence: trailer
+RED_SHA=$(git log --format=%H --grep="^test(${PHASE}-${PLAN})" | head -1)
+git log -1 --format='%(trailers:key=red-evidence,valueonly)' "${RED_SHA}"
 # Check for GREEN gate commit  
 git log --oneline --grep="^feat(${PHASE}-${PLAN})" | head -1
 # Check for optional REFACTOR gate commit
 git log --oneline --grep="^refactor(${PHASE}-${PLAN})" | head -1
 ```
+
+An empty trailer value is a missing RED gate. Judging the trailer's contents against the RED Predicate is not yet mechanised — the coded gate is Phase 3's; until then the executor reads the trailer and reports it. The predicate is in **RED Contract** above.
 
 If RED or GREEN gate commits are missing, add a `## TDD Gate Compliance` section to SUMMARY.md with the violation details.
 </gate_enforcement>
