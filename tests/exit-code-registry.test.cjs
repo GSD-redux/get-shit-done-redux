@@ -668,6 +668,94 @@ describe('gen-exit-code-registry: CLI positive controls for the ten guard rows',
   });
 });
 
+// ── gen-exit-code-docs.cjs: docs/reference/exit-codes.md (P9, #3913, matrix F) ──
+describe('gen-exit-code-docs: generated exit-code reference page (matrix F1-F4)', () => {
+  const DOCS_GEN_SCRIPT = path.join(REPO_ROOT, 'scripts', 'gen-exit-code-docs.cjs');
+  const REAL_DOC_PATH = path.join(REPO_ROOT, 'docs', 'reference', 'exit-codes.md');
+  const README_PATH = path.join(REPO_ROOT, 'docs', 'README.md');
+  const docsGenerator = require(DOCS_GEN_SCRIPT);
+
+  function runDocsGen(args, opts = {}) {
+    return runNode([DOCS_GEN_SCRIPT, ...args], { timeoutMs: PROBE_TIMEOUT_MS, ...opts });
+  }
+
+  // F1: every code in the registry appears in the generated page with its
+  // name — asserted over the ENUMERATED registry, so a newly allocated code
+  // fails until documented.
+  test('F1: every registered code appears in the generated page with its name', () => {
+    const md = fs.readFileSync(REAL_DOC_PATH, 'utf8');
+    assert.ok(registry.EXIT_CODES.length > 0, 'precondition: the registry is non-empty');
+    for (const entry of registry.EXIT_CODES) {
+      const row = md.split(/\r?\n/).find((l) => l.startsWith(`| ${entry.code} |`));
+      assert.ok(row, `code ${entry.code} (${entry.name}) must appear as a row in the generated page`);
+      assert.ok(row.includes(`\`${entry.name}\``), `code ${entry.code}'s row must carry its name ${entry.name}`);
+    }
+  });
+
+  // F2: `--check` exits non-zero when the committed page diverges from a
+  // fresh render. Proven by mutating a COPY (via --declaration/--out
+  // redirection to a tmpdir, never the real committed file — test files in
+  // this repo run in parallel) and observing the non-zero exit — not by
+  // reading the code.
+  describe('F2: --check catches drift (mutate-then-observe, not read-the-code)', () => {
+    let tmpDir;
+    before(() => {
+      tmpDir = createTempDir('gsd-exit-code-docs-f2-');
+    });
+    after(() => {
+      cleanup(tmpDir);
+    });
+
+    test('a freshly generated copy of the real committed page passes --check', () => {
+      const decl = path.join(tmpDir, 'decl.json');
+      fs.copyFileSync(REAL_DECLARATION_PATH, decl);
+      const out = path.join(tmpDir, 'exit-codes.md');
+      const write = runDocsGen(['--write', '--declaration', decl, '--out', out]);
+      assert.equal(write.exitCode, 0, write.stderr);
+      const check = runDocsGen(['--check', '--declaration', decl, '--out', out]);
+      assert.equal(check.exitCode, 0, check.stderr);
+    });
+
+    test('mutating the generated page then running --check exits non-zero', () => {
+      const decl = path.join(tmpDir, 'decl-mutate.json');
+      fs.copyFileSync(REAL_DECLARATION_PATH, decl);
+      const out = path.join(tmpDir, 'exit-codes-mutate.md');
+      assert.equal(runDocsGen(['--write', '--declaration', decl, '--out', out]).exitCode, 0);
+
+      // Mutate the generated copy — e.g. a hand-edit drifting from the
+      // generator's own output — then observe the ACTUAL exit code.
+      fs.appendFileSync(out, '\n<!-- hand-edited, drifts from generated content -->\n');
+      const check = runDocsGen(['--check', '--declaration', decl, '--out', out]);
+      assert.notEqual(check.exitCode, 0, 'a drifted page must fail --check, not pass it');
+    });
+  });
+
+  // F3: `--check` exits 0 on the committed tree (the generator is idempotent).
+  test('F3: --check exits 0 against the real committed page', () => {
+    const result = runDocsGen(['--check']);
+    assert.equal(result.exitCode, 0, result.stderr);
+  });
+
+  // F4: the page is reachable from docs/README.md.
+  test('F4: docs/README.md links to the generated exit-code reference page', () => {
+    const readme = fs.readFileSync(README_PATH, 'utf8');
+    assert.ok(readme.includes('reference/exit-codes.md'), 'docs/README.md must index docs/reference/exit-codes.md');
+  });
+
+  test('content invariant: the reserved-bands section documents the free (0, 1) and Node-reserved (3-13) bands', () => {
+    const md = fs.readFileSync(REAL_DOC_PATH, 'utf8');
+    assert.ok(md.includes('`0`, `1`'), 'must document that 0 and 1 are unallocatable');
+    assert.ok(md.includes('Node-reserved'), 'must document the Node-reserved band');
+    assert.ok(md.includes('3') && md.includes('13'), 'must document the 3-13 Node-reserved range');
+  });
+
+  test('buildDoc is pure: same entries produce byte-identical content twice', () => {
+    const once = docsGenerator.buildDoc(registry.EXIT_CODES);
+    const twice = docsGenerator.buildDoc(registry.EXIT_CODES);
+    assert.equal(once, twice);
+  });
+});
+
 // ── fast-check properties ─────────────────────────────────────────────────────
 describe('exit-code-registry: fast-check properties', () => {
   test('nameForExitCode(exitCodeFor(name)) round-trips for every registered name', () => {

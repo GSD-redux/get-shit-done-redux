@@ -273,6 +273,39 @@ and it is the property ADR-2980's declined Option 3 lacked.
 `n/no-process-exit: 'off'` exemption block, and the duplicated `scripts/lib/cli-exit.cjs`;
 **added** one rule (`local/require-registered-exit`) plus the registry's own `--check`. Net **−2**.
 
+> **Amendment — 2026-08-28: the ledger above is superseded (#3913).**
+>
+> Three of its terms did not survive contact with the code, and the net it states was never
+> achievable. It is left in place unedited so the drift is legible; the measured ledger is below.
+>
+> 1. **`scripts/lib/cli-exit.cjs` was not deleted.** Phase 0 changed it from a duplicated module
+>    into a *generated* one, so the line retires a copy that still exists. The epic body was
+>    corrected to net **−1** at the time; this ADR's line was not.
+> 2. **"their four baseline entries" was five** — four `soft-error-exit-zero` and one
+>    `untyped-success`, counted directly off `tests/qa/smell-baseline.json`. Issue #3913 repeated
+>    the figure of four, and so did the first recon pass of this phase. This is the second
+>    documented count in this epic to drift, after [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md)'s
+>    60-versus-64 `output({error})` sites.
+> 3. **Only one of the two oracles was retired.** `soft-error-exit-zero` is deleted: its condition
+>    is now *declared* by the exit contract (`output({error})` → `DEGRADED`, 0 under v1 and 80
+>    under v2), so an inert SMELL restating it is ledger inflation. `untyped-success` is **not**
+>    deleted — it asserts that a `KIND.PROSE` command exposes no typed surface, which has nothing
+>    to do with exit codes, and neither the registry nor `local/require-registered-exit` replaces
+>    it. The clause this ADR and #3913 both rely on — *"the registry and the ESLint rule enforce
+>    the same property by construction"* — is simply false for it. Rather than drop the property,
+>    it was **promoted from SMELL to VIOLATION**, so it can now fail a build, which it never could
+>    before (`runOracles`'s `get failed()` returns `violations` only).
+>
+> **Measured ledger for the epic as delivered:** −1 oracle (`soft-error-exit-zero`), −5 baseline
+> entries (the file is now empty), −1 `n/no-process-exit: 'off'` exemption block, +1 rule
+> (`local/require-registered-exit`), +1 registry `--check`, +1 generated-docs `--check`
+> (`docs/reference/exit-codes.md`). One further guard changed strength rather than count:
+> `untyped-success` SMELL → VIOLATION. Two mis-scoped oracles were corrected in passing
+> (`routing-validity`, `value-hygiene`) — see #3913.
+>
+> **Net −4 by count, and stronger than the count shows**, since the one oracle retained is the one
+> that started enforcing something.
+
 ## Revisit if
 
 - Domain allocations exceed roughly a dozen. That means the generic four are wrong, not that the

@@ -1,0 +1,193 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * gen-exit-code-docs.cjs — ADR-3889 (#3913), the terminal phase of the exit-
+ * code-registry epic.
+ *
+ * Generates docs/reference/exit-codes.md FROM the exit-code declaration
+ * (gsd-core/bin/shared/exit-codes.json), so the human-facing reference page
+ * can never drift from the actual registered codes — the same allocator-less
+ * failure mode this epic exists to close, now closed for the doc surface too.
+ * Modelled directly on scripts/gen-capability-matrix.cjs ->
+ * docs/reference/capability-matrix.md: same --check/--write/stdout modes,
+ * same "generated, do not edit" banner convention, same normalize-then-
+ * byte-compare drift check.
+ *
+ * The declaration JSON is read directly (not the compiled
+ * gsd-core/bin/lib/exit-code-registry.cjs artifact, which is gitignored tsc
+ * output) so this generator — like scripts/gen-exit-code-registry.cjs itself —
+ * works on an unbuilt clone. Band membership (`isAllocatableCode`/`bandFor`)
+ * is imported from scripts/gen-exit-code-registry.cjs rather than
+ * re-implemented, so the two generators cannot independently drift on what a
+ * "reserved" code even means.
+ *
+ * Usage:
+ *   node scripts/gen-exit-code-docs.cjs            # print to stdout
+ *   node scripts/gen-exit-code-docs.cjs --write     # write the committed file
+ *   node scripts/gen-exit-code-docs.cjs --check     # exit 1 if the committed file is stale
+ *   node scripts/gen-exit-code-docs.cjs --declaration <path> --out <path>  # override for tests
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const {
+  DEFAULT_DECLARATION_PATH,
+  loadDeclaration,
+  validateEntries,
+} = require('./gen-exit-code-registry.cjs');
+
+const ROOT = path.resolve(__dirname, '..');
+const DOC_PATH = path.join(ROOT, 'docs', 'reference', 'exit-codes.md');
+
+/** Load + validate the declaration, throwing (loud) on anything malformed — mirrors gen-exit-code-registry.cjs's own gate. */
+function loadEntries(declarationPath) {
+  const loaded = loadDeclaration(declarationPath);
+  if (!loaded.ok) {
+    throw new ExitError(1, `${loaded.reason}: ${loaded.message}`);
+  }
+  const validated = validateEntries(loaded.entries);
+  if (!validated.ok) {
+    throw new ExitError(1, `${validated.reason}: ${validated.message}`);
+  }
+  return loaded.entries;
+}
+
+function renderRegisteredTable(entries) {
+  const rows = [...entries]
+    .sort((a, b) => a.code - b.code)
+    .map((e) => `| ${e.code} | \`${e.name}\` | ${e.meaning} | \`${e.owner}\` | ${e.authorizedBy} |`);
+  return [
+    '| code | name | meaning | owning module | authorized by |',
+    '|---|---|---|---|---|',
+    ...rows,
+  ].join('\n');
+}
+
+function buildDoc(entries) {
+  const registeredTable = renderRegisteredTable(entries);
+  const registeredCount = entries.length;
+
+  return `# Exit code reference
+
+> **Generated file — do not edit by hand.**
+> This page is generated from the exit-code declaration
+> (\`gsd-core/bin/shared/exit-codes.json\`) by \`scripts/gen-exit-code-docs.cjs\`
+> and kept honest by a drift guard in \`npm run lint:generated-sync\` (which runs
+> \`node scripts/gen-exit-code-docs.cjs --check\`). Any manual edit is overwritten
+> on the next generation run. To register a new code, add an entry to the
+> declaration and run \`node scripts/gen-exit-code-registry.cjs --write && node
+> scripts/gen-exit-code-docs.cjs --write\`.
+
+See also: [ADR-3889 — one exit-code registry](../adr/3889-process-exit-contract.md) —
+[Adopt the v2 exit contract](../how-to/adopt-the-v2-exit-contract.md) —
+[JSON error mode](../json-errors.md)
+
+---
+
+## Registered codes (${registeredCount})
+
+Every process-level exit code \`gsd-tools\`, its hooks, and its scripts may terminate
+with, by name, meaning, and the module that owns it.
+
+${registeredTable}
+
+---
+
+## Reserved bands
+
+The registered codes above are not chosen freely — each falls inside one of a
+fixed set of allocatable bands (ADR-3889 §1). A code outside these bands can
+never be registered; validation rejects it before it reaches the tables above.
+This is what makes an unfamiliar number in a CI log actionable: look up its
+band first, then its registered name if it has one.
+
+| Band | Meaning |
+|---|---|
+| \`0\`, \`1\` | **Free — never allocatable.** \`0\` is the universal "succeeded" convention and \`1\` is the universal "failed, no further detail" convention across nearly every CLI ecosystem. Registering either here would collide with that universal meaning instead of adding a distinct, named signal — so the registry leaves both permanently unallocated. |
+| \`2\` | Reserved exclusively to the Claude Code hook-protocol deny (\`HOOK_DENY\`) — owned by \`hook-adapter\` and no other module. |
+| \`3\`–\`13\` | **Node-reserved.** Node.js itself assigns meaning to this range (e.g. internal JavaScript errors, fatal exceptions, invalid argument errors) before a GSD process ever gets a chance to project its own outcome. Allocating one of these would be indistinguishable from a Node-level failure the process never intended to report. |
+| \`14\`–\`63\`, \`79\`, \`126+\` | Outside every allocatable band — not Node-reserved, but also not opened for GSD use. \`126\`+ additionally collides with the shell convention for "command not executable" / "signal N" (\`128+N\`), which a process exit code must never impersonate. |
+| \`64\`–\`78\` | **Generic band.** Codes any module may use for caller-facing, non-domain-specific outcomes (bad argv, no input in scope, a missing prerequisite, an internal crash). |
+| \`80\`–\`125\` | **Domain band.** Codes reserved for a specific product surface's own vocabulary — currently only \`gsd-tools\`' \`DEGRADED\` (a completed run reporting a condition through its payload rather than as a process failure). |
+
+## The v1/v2 exit contract
+
+ADR-3889 §4 adds a **version projection** on top of this registry, not a second
+registry: every registered name above projects to the *same* code under both
+contract versions, with one deliberate exception — \`DEGRADED\`. Under the
+default, backward-compatible \`v1\` contract, a payload-carried error
+(\`output({error})\`) still exits \`0\`, exactly as ADR-2980 ratified for the ~60
+pre-existing call sites that already depended on that behavior. Under the
+opt-in \`v2\` contract, the same outcome exits \`80\` (\`DEGRADED\`) instead, so a
+caller that wants to branch on the exit code alone — without parsing stdout —
+can opt in without breaking every existing consumer. See
+[Adopt the v2 exit contract](../how-to/adopt-the-v2-exit-contract.md) for how to
+turn this on, and [JSON error mode](../json-errors.md) for the full fault vs.
+degraded-result channel taxonomy this registry sits underneath.
+`;
+}
+
+/** Normalize CRLF→LF + ensure a single trailing newline, for cross-platform compare. */
+function normalize(s) {
+  return s.replace(/\r\n/g, '\n').replace(/\n+$/, '\n');
+}
+
+/**
+ * Parse the small flag set this CLI accepts. `--declaration`/`--out` exist
+ * only so tests can redirect both the source and the target to a tmpdir
+ * without ever touching the real committed declaration or doc page — the
+ * same reason scripts/gen-exit-code-registry.cjs and
+ * scripts/gen-capability-matrix.cjs's sibling generators take path overrides.
+ */
+function parseArgs(argv) {
+  let mode = null;
+  let declarationPath = null;
+  let outPath = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--check' || arg === '--write') {
+      mode = arg.slice(2);
+    } else if (arg === '--declaration') {
+      declarationPath = argv[++i];
+    } else if (arg === '--out') {
+      outPath = argv[++i];
+    } else {
+      throw new ExitError(1, `unrecognized argument: ${arg}`);
+    }
+  }
+  return { mode, declarationPath, outPath };
+}
+
+function main() {
+  const { mode, declarationPath, outPath } = parseArgs(process.argv.slice(2));
+  const docPath = outPath || DOC_PATH;
+  const entries = loadEntries(declarationPath || DEFAULT_DECLARATION_PATH);
+  const content = buildDoc(entries);
+
+  if (mode === 'check') {
+    let committed;
+    try {
+      committed = fs.readFileSync(docPath, 'utf8');
+    } catch {
+      throw new ExitError(1, `${path.relative(ROOT, docPath)} is missing. Run:\n  node scripts/gen-exit-code-docs.cjs --write`);
+    }
+    if (normalize(committed) !== normalize(content)) {
+      throw new ExitError(1, `${path.relative(ROOT, docPath)} is stale. Run:\n  node scripts/gen-exit-code-docs.cjs --write`);
+    }
+    console.log(`${path.relative(ROOT, docPath)} is up to date.`);
+    return;
+  }
+  if (mode === 'write') {
+    fs.mkdirSync(path.dirname(docPath), { recursive: true });
+    fs.writeFileSync(docPath, content, 'utf8');
+    console.log(`Wrote ${path.relative(ROOT, docPath)}`);
+    return;
+  }
+  process.stdout.write(content);
+}
+
+if (require.main === module) runMain(main);
+
+module.exports = { buildDoc, loadEntries, DOC_PATH };
