@@ -67,6 +67,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { generateSlugInternal } = require('../gsd-core/bin/lib/core-utils.cjs');
 const { runAllScenarios } = require('../tests/qa/run-report.cjs');
 const { buildReport } = require('../tests/qa/report.cjs');
 const { fingerprint } = require('../tests/qa/smell-fingerprint.cjs');
@@ -391,13 +392,21 @@ function collectFindings(reportObject) {
   return { smells, violations, expectationFailures };
 }
 
-/** Lowercase, hyphenate, and strip anything that isn't `[a-z0-9-]`, for a fragment-filename skeleton. */
+/**
+ * Lowercase, transliterate, hyphenate, and strip anything that isn't
+ * `[a-z0-9-]`, for a fragment-filename skeleton.
+ *
+ * Routed through the canonical `generateSlugInternal` seam (`src/core-utils.cts`,
+ * issue #3987) instead of hand-rolling the same collapse/strip/truncate shape:
+ * this local copy trimmed leading/trailing hyphens BEFORE truncating to 60
+ * chars, which is the live #2849 bug (`.slice(0, 60)` can land on a separator,
+ * re-introducing a trailing hyphen the strip step was meant to prevent), and
+ * it never transliterated non-Latin scripts (#2848). `generateSlugInternal`
+ * returns `null` for empty/nullish input; a fragment-filename skeleton needs a
+ * string, so `?? ''` preserves this function's prior never-null contract.
+ */
 function slugify(value) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60);
+  return generateSlugInternal(value, 60) ?? '';
 }
 
 /**

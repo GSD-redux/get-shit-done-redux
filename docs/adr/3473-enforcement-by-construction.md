@@ -147,7 +147,7 @@ Decisions 1–7 answer *how* this epic is organized. This section says *what the
 > | ***Enforced (structural)*** | the wrong call site is unrepresentable: the only way to do the thing is through the single seam. |
 > | ***Shipped — test-covered*** | delivered, with regression and identity tests, but **no standing guard**. A regression in covered code is caught; a *new* wrong call site elsewhere is not. |
 >
-> The third value is not a euphemism for "done". It names precisely where this epic's own thesis — make the wrong call site unrepresentable — is **not yet achieved**, so the gap is visible instead of implied by a green suite. §8.3 and §8.5 are the thinnest rows: neither has any guard, and nothing today prevents a twelfth inline slug copy or a second silent swallow.
+> The third value is not a euphemism for "done". It names precisely where this epic's own thesis — make the wrong call site unrepresentable — is **not yet achieved**, so the gap is visible instead of implied by a green suite. §8.3 and §8.5 were the thinnest rows at the time this was written: neither had any guard, and nothing then prevented a twelfth inline slug copy or a second silent swallow. **Update, #3987:** §8.3's slug half now has a guard (`scripts/lint-slug-derivation-drift.cjs`); its marker half remains unguarded. §8.5's candidate guard was measured and rejected — see its own status block for the 26/0/no-positive-control finding — so it stays *Shipped — test-covered*, enforced instead by the #1884 regression test.
 
 #### 8.1 One YAML parser — *Enforced* — Phase 4 (#3881)
 
@@ -337,7 +337,7 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 #### 8.3 One implementation per rule — *Shipped — test-covered* — Phase 6 (#3883) + rungs 2-4 (#3897)
 
-> **Thinnest row, with §8.5.** Structural at the seams (`src/commands.cts` delegates to `generateSlugInternal`; `runtime-slash.cts` owns the marker reader) and covered by `tests/core-utils.test.cjs` and `tests/runtime-marker-resolution.test.cjs` — but **no guard exists** for slug or marker re-derivation. Nothing today stops a twelfth inline copy from landing.
+> **Update, #3987.** Structural at the seams (`src/commands.cts` delegates to `generateSlugInternal`; `runtime-slash.cts` owns the marker reader) and covered by `tests/core-utils.test.cjs` and `tests/runtime-marker-resolution.test.cjs`. **The slug half now has a guard**: `scripts/lint-slug-derivation-drift.cjs`, wired into `lint:ci`, measured at 5 flags on the real tree (2 TRUE — `scripts/qa-smell-ratchet.cjs`, `tests/planning-inspect.test.cjs` — both fixed by routing through `generateSlugInternal`; 3 SANCTIONED, allowlisted with a reason each; 0 FALSE). **No guard exists for marker re-derivation** — a fifth hand-rolled `readInstallRuntimeMarker` copy would not fail the build.
 
 **Rule.** Every slug call site delegates to `core-utils`. `resolveRuntime` reads the install marker in one place with one cache. The Codex sandbox derives from the role's declared tool contract rather than a maintained subset map, and `validate agents` fails on semantic drift, not just on missing files.
 
@@ -378,6 +378,8 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 #### 8.5 No silent swallow, and no verdict manufactured from dropped data — *Shipped — test-covered* — Phase 8 (#3885)
 
 > **Thinnest row, with §8.3.** Covered by `tests/intel.test.cjs` and `tests/review-parallel-lanes.test.cjs`; the delivering change added **zero** guard scripts. A new swallowed `catch` folding a fatal errno into a retry set would not fail the build.
+>
+> **Measured, #3987 — a guard was attempted and rejected, status stays *Shipped — test-covered*.** A candidate detector (a swallowing `catch` co-occurring with an errno-retry-set `test`/membership check in the same function) was run against the real tree: **26 flags across 11 functions, 0 TRUE, 26 FALSE** — every flag was a best-effort `unlinkSync`/`rmSync`/`closeSync` cleanup, a lost-rename-race backoff, or a deliberate `= null` fallback, none of them the §8.5 defect class. A file-scoped variant (drop the same-function requirement) is worse: 71 flags. The only known TRUE instance of this defect was removed by #3885 itself, so there is **no positive control** — the guard cannot be shown capable of failing on a real violation, which this repo requires of every drift guard (see the sibling slug-derivation guard's own prove-it-can-fail test for the standard). **No guard is built for §8.5.** The rule remains enforced by the #1884 regression test (`tests/planning-lock-mkdir-failure-1884.test.cjs`) alone — a regression in the covered code is caught; a *new* swallow elsewhere in the tree is not, and stays that way until a detector with acceptable precision and a real positive control is found.
 
 **Rule.** A swallowed `catch` may not fold a fatal errno into a retry set. A synthesis step may not emit its artifact when its inputs failed (#3352). A derived conclusion may not be reported as authoritative when the derivation dropped input it could not resolve (#3427).
 
@@ -451,7 +453,12 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 #### 8.9 Each subsumed child is driven fail-first — *Enforced (prospective)* — every phase, ledger completed by #3951
 
-> Executor: `scripts/lint-fix-has-regression-tests.cjs`, wired into `lint:ci`. **Read the scope precisely:** it fires on *new* `fix(#NNNN)` commits; it does not assert that the 19 children listed below are covered. Measured 2026-08-28, 17 of 19 have a test citing their issue number; **#3364 and #3812 have none.** That is a text match, not proof the behavior is uncovered — but it is also not evidence that it is covered.
+> Executor: `scripts/lint-fix-has-regression-tests.cjs`, wired into `lint:ci`. **Read the scope precisely:** it fires on *new* `fix(#NNNN)` commits; it does not assert that the 19 children listed below are covered.
+>
+> **Correction, #3987 — the 2026-08-28 "17 of 19, #3364 and #3812 have none" measurement was a number-grep and both halves were wrong.** This ADR's own amendment history exists to catch exactly this class of error, in an amendment whose own subject was not trusting number-greps.
+>
+> - **#3364 IS cited**: `tests/runtime-marker-resolution.test.cjs:107`, `T3 installMarkerResolvesWhenEnvAndConfigAbsent_3897 (#3364)`; the regressing assertion is at `:115-119`. **19 of 19, not 17 of 19.**
+> - **#3812 IS covered**: `tests/gen-state-md-docs.test.cjs:374` (`cardinalityTableIsGeneratedForEveryNonExcludedSchemaKey`), assertion at `:382`. **But it is only PARTIALLY delivered on a CLOSED issue**: the shipped fix declares cardinality for FRONTMATTER keys (`current_phase`/`current_plan` = optional, rendered at `docs/reference/state-md.md:89,91`), while #3812's stated acceptance criterion was about the `## Current Position` BODY section — `docs/reference/state-md.md:196-208` still has no normative single-valued/overwrite sentence and no pointer to `## Performance Metrics` for history. This partial-delivery gap on a completed issue is flagged here so it can be re-opened; fixing the doc half is #3812's own scope, not this ADR's.
 
 **Rule.** #2986, #3372, #3364, #2540, #3231, #3349, #3360, #3358, #3365, #3356, #3352, #3427 — and the STATE.md set #3756, #3743, #3818, #3835, #3836, #3853, #3812 — each get a failing-first regression test driven green via `gsd-test`, **plus** a behavioral identity test asserting at the *consumer's* output per ADR-3180 Decision 4(b). A structural guard alone would not have caught these.
 
