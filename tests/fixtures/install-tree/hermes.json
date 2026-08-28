@@ -408,6 +408,7 @@
   "hooks/lib/cursor-workspace.js",
   "hooks/lib/exit-code-registry.js",
   "hooks/lib/git-cmd.js",
+  "hooks/lib/git-probe.js",
   "hooks/lib/gsd-graphify-rebuild.sh",
   "hooks/lib/hook-exit.js",
   "hooks/lib/injection-patterns.js",

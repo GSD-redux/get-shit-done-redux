@@ -31,6 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { allow, deny } = require('./lib/hook-exit.js');
+const { reportIfUndetermined } = require('./lib/git-probe.js');
 
 // #3911 (ADR-3889 Phase 7): the exit(2) call site (block(), below) is
 // migrated to hook-exit.js's deny(undefined, reason) — see
@@ -80,6 +81,11 @@ process.stdin.on('end', () => {
     // Determine the active project's git root. No git root at all -> nothing
     // to enforce a boundary against -> fail open.
     const cwdTopResult = git(['rev-parse', '--show-toplevel'], cwd);
+    // #3911: a timeout/spawn-failure result is indistinguishable from a clean
+    // "no git root here" answer by status/stdout alone — reportIfUndetermined
+    // is a no-op on a genuine negative and only fires when the probe itself
+    // could not run. The allow() below is UNCHANGED either way.
+    reportIfUndetermined('gsd-windsurf-pre-write', 'git rev-parse --show-toplevel (cwd)', cwdTopResult);
     if (cwdTopResult.status !== 0 || !cwdTopResult.stdout) { allow(undefined); return; }
     const cwdTopRaw = cwdTopResult.stdout.trim();
 
@@ -99,11 +105,13 @@ process.stdin.on('end', () => {
     if (!checkDir) { allow(undefined); return; } // synthetic path with no existing ancestor — fail open
 
     const fileTopResult = git(['rev-parse', '--show-toplevel'], checkDir);
+    reportIfUndetermined('gsd-windsurf-pre-write', 'git rev-parse --show-toplevel (file location)', fileTopResult);
     if (fileTopResult.status !== 0 || !fileTopResult.stdout) {
       // Not inside any git worktree. Distinguish "inside a .git/ internals
       // directory" (dangerous — BLOCK) from "outside all git repos entirely"
       // (not the escape vector this guard targets — fail open).
       const insideGitDir = git(['rev-parse', '--is-inside-git-dir'], checkDir);
+      reportIfUndetermined('gsd-windsurf-pre-write', 'git rev-parse --is-inside-git-dir', insideGitDir);
       if (insideGitDir.status === 0 && insideGitDir.stdout && insideGitDir.stdout.trim() === 'true') {
         block(
           `'${filePath}' is inside a git internal (.git) directory, not the active project at ` +

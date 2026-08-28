@@ -22,6 +22,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { tokenize, skipToSubcommand } = require('./lib/git-cmd.js');
 const { HOOK_ON_CRASH, allow, deny, crash } = require('./lib/hook-exit.js');
+const { reportIfUndetermined } = require('./lib/git-probe.js');
 
 // This guard is almost entirely advisory (fail open — a broken advisory must
 // never wedge every tool call), with ONE hard block (#3504 force-add-on-
@@ -93,6 +94,12 @@ function currentBranch(cwd) {
     timeout: 2000,
     killSignal: 'SIGTERM',
   });
+  // #3911: a timeout/spawn-failure here previously degraded to '' exactly
+  // like a clean "not on a branch" answer — indistinguishable from the
+  // caller's point of view. reportIfUndetermined is a no-op on a genuine
+  // negative and only emits a diagnostic when the probe itself could not
+  // run; the '' fallback (and therefore this hook's exit code) is unchanged.
+  reportIfUndetermined('gsd-workflow-guard', 'git branch --show-current', result);
   if (result.status !== 0) return '';
   return result.stdout.trim();
 }

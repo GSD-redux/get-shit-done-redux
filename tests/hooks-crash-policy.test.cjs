@@ -153,6 +153,12 @@ const TABLE = [
     file: 'gsd-worktree-path-guard.js',
     stdinTimeoutMs: 3000,
     declaredOnCrash: 'allow',
+    // #3911: this hook's deny path depends on several bounded (2000ms)
+    // spawnSync(git, ...) probes. Under load, a probe can time out before it
+    // answers — the hook still allows (exit 0, unchanged), but now with a
+    // stderr diagnostic instead of the pre-#3911 silent allow. See the C2
+    // loop below and the dedicated stub-git regression suite.
+    gitProbeMayRace: true,
     allow: () => ({ payload: { tool_name: 'Read' } }),
     deny: () => ({
       payload: { tool_name: 'Write', tool_input: { file_path: path.join(fixtures.mainRepo, 'README.md') } },
@@ -186,6 +192,10 @@ const TABLE = [
     file: 'gsd-workflow-guard.js',
     stdinTimeoutMs: 3000,
     declaredOnCrash: 'allow',
+    // #3911: the force-add block depends on a bounded (2000ms) spawnSync(git
+    // branch --show-current) probe — see gitProbeMayRace note on the
+    // gsd-worktree-path-guard.js row above.
+    gitProbeMayRace: true,
     allow: () => ({ payload: { tool_name: 'Read' } }),
     deny: () => ({
       payload: { tool_name: 'Bash', cwd: fixtures.wfRepo, tool_input: { command: 'git add -f secret.txt' } },
@@ -265,6 +275,9 @@ const TABLE = [
     file: 'gsd-windsurf-pre-write.js',
     stdinTimeoutMs: 10000,
     declaredOnCrash: null, // catch calls allow(undefined) directly — no HOOK_ON_CRASH declared
+    // #3911: this hook's deny path depends on bounded (2000ms) spawnSync(git,
+    // ...) probes, same shape as gsd-worktree-path-guard.js above.
+    gitProbeMayRace: true,
     allow: () => ({ payload: { tool_info: { file_path: 'nonexistent.txt' } }, cwd: os.tmpdir() }),
     deny: () => ({
       payload: { tool_info: { file_path: path.join(fixtures.mainRepo, 'README.md') } },
@@ -358,12 +371,45 @@ describe('hooks-crash-policy: C2 normal deny -> exit 2, correct stream(s)', () =
   });
 
   for (const row of denyRows) {
-    test(`${row.file}: deny input -> exit 2`, () => {
+    test(`${row.file}: deny input -> exit 2` + (row.gitProbeMayRace ? ' (or an undetermined-probe allow with a diagnostic, #3911)' : ''), () => {
       const { payload, cwd, env } = row.deny();
       const r = runHook(row.file, { payload, cwd, env });
       assert.equal(r.outcome, OUTCOME.EXITED, `expected a clean exit; got ${r.outcome} stderr=${r.stderr}`);
-      assert.equal(r.exitCode, 2, `stdout=${r.stdout} stderr=${r.stderr}`);
-      row.assertDeny(r);
+
+      if (!row.gitProbeMayRace) {
+        assert.equal(r.exitCode, 2, `stdout=${r.stdout} stderr=${r.stderr}`);
+        row.assertDeny(r);
+        return;
+      }
+
+      // #3911: this row's deny path depends on a bounded spawnSync(git, ...)
+      // probe that can, under load, time out before it answers — the ORIGINAL
+      // real-race defect this test used to have (asserting exit 2 unconditionally
+      // even though a slow git legitimately yields exit 0). A clean deny is
+      // still the expected common case and is asserted identically to every
+      // other row. The ONLY other acceptable outcome is an allow that carries a
+      // non-empty stderr diagnostic naming the probe that could not run — a
+      // SILENT allow (exit 0 with EMPTY stdout AND EMPTY stderr) is the actual
+      // #3911 defect and MUST still fail this test.
+      if (r.exitCode === 2) {
+        row.assertDeny(r);
+        return;
+      }
+      assert.equal(
+        r.exitCode, 0,
+        `expected either a clean deny (exit 2) or an undetermined-probe allow (exit 0); ` +
+        `got exitCode=${r.exitCode}. stdout=${r.stdout} stderr=${r.stderr}`
+      );
+      assert.notEqual(
+        r.stderr, '',
+        `a git-probe timeout must emit a stderr diagnostic naming the probe (#3911) — got a ` +
+        `SILENT allow (empty stdout AND empty stderr), which is the exact defect this test exists ` +
+        `to catch. stdout=${r.stdout}`
+      );
+      assert.match(
+        r.stderr, /git probe/,
+        `stderr diagnostic must name the git probe that could not run; got: ${r.stderr}`
+      );
     });
   }
 });
@@ -424,6 +470,114 @@ describe('hooks-crash-policy: C4 stdin never closes -> bounded termination, not 
         `the hook hung on stdin instead of self-terminating). stderr=${r.stderr}`
       );
       assert.equal(r.exitCode, 0, `expected the stdin-timeout's allow() fallback (exit 0); stdout=${r.stdout} stderr=${r.stderr}`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #3911 regression — deterministic git-probe timeout (no load required).
+//
+// The C2 loop above tolerates a raced timeout but cannot FORCE one: on a
+// quiet machine the git probes in gsd-worktree-path-guard.js,
+// gsd-workflow-guard.js, and gsd-windsurf-pre-write.js always answer well
+// inside their 2000ms budget, so C2 alone would never actually exercise the
+// undetermined-probe branch. This suite forces the timeout deterministically
+// by putting a stub `git` on PATH that sleeps past every affected hook's own
+// spawnSync timeout (2000ms) before exiting — the hook's own bounded budget,
+// not real system load, is what triggers ETIMEDOUT, so this is reproducible
+// on any machine. Never asserts on elapsed time — only on exit code and the
+// stderr diagnostic's presence/content.
+// ---------------------------------------------------------------------------
+
+describe('hooks-crash-policy: #3911 git-probe timeout forced via a stub git -> allow WITH a diagnostic', () => {
+  // Exceeds every affected hook's own spawnSync(git, ...) timeout (2000ms) —
+  // the hook's timeout fires and kills the stub first, so this value only
+  // needs to outlast 2000ms; it is never itself asserted on.
+  const GIT_STUB_SLEEP_MS = 3000;
+
+  let stubDir;
+
+  before(() => {
+    stubDir = tempDir('hooks-crash-git-stub-');
+    const isWin = process.platform === 'win32';
+    if (isWin) {
+      // cmd.exe has no builtin millisecond sleep; PowerShell's Start-Sleep does.
+      fs.writeFileSync(
+        path.join(stubDir, 'git.cmd'),
+        `@echo off\r\npowershell -NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds ${GIT_STUB_SLEEP_MS}"\r\nexit /b 0\r\n`
+      );
+    } else {
+      const shPath = path.join(stubDir, 'git');
+      fs.writeFileSync(shPath, `#!/bin/sh\nsleep ${(GIT_STUB_SLEEP_MS / 1000).toFixed(3)}\nexit 0\n`);
+      fs.chmodSync(shPath, 0o755);
+    }
+  });
+
+  // Every affected hook resolves 'git' with NO explicit `env` override on its
+  // own spawnSync call (see hooks/*.js's `SPAWNOPT`/`currentBranch`), so it
+  // inherits the HOOK PROCESS's own `process.env.PATH` — which is exactly the
+  // `env` this test hands the hook via runHook()/baseEnv(). Setting PATH to
+  // ONLY the stub dir guarantees the hook's internal git spawn resolves to
+  // the stub, not a real git binary that might legitimately be fast.
+  const CASES = [
+    {
+      file: 'gsd-worktree-path-guard.js',
+      build: () => ({
+        payload: { tool_name: 'Write', tool_input: { file_path: path.join(os.tmpdir(), 'gsd-3911-stub-target.txt') } },
+      }),
+    },
+    {
+      file: 'gsd-workflow-guard.js',
+      build: () => {
+        const wfProject = tempDir('hooks-crash-wf-stub-');
+        fs.mkdirSync(path.join(wfProject, '.planning'), { recursive: true });
+        fs.writeFileSync(
+          path.join(wfProject, '.planning', 'config.json'),
+          JSON.stringify({ hooks: { workflow_guard: true } })
+        );
+        return {
+          payload: { tool_name: 'Bash', cwd: wfProject, tool_input: { command: 'git add -f secret.txt' } },
+        };
+      },
+    },
+    {
+      file: 'gsd-windsurf-pre-write.js',
+      build: () => ({
+        payload: { tool_info: { file_path: 'gsd-3911-stub-target.txt' } },
+        cwd: os.tmpdir(),
+      }),
+    },
+  ];
+
+  for (const c of CASES) {
+    test(`${c.file}: git timing out still allows, WITH a stderr diagnostic naming the probe (not silent)`, () => {
+      const { payload, cwd } = c.build();
+      const r = runHook(c.file, {
+        payload,
+        cwd,
+        // The stub dir must resolve FIRST (git() calls carry no explicit `env`
+        // override, so they inherit this exact PATH) — but the stub script
+        // itself still needs a working `sh`/`sleep`, so the real PATH is
+        // appended after it, never before (a real `git` earlier in PATH would
+        // defeat the stub entirely).
+        env: { PATH: [stubDir, process.env.PATH].filter(Boolean).join(path.delimiter) },
+        timeoutMs: GIT_STUB_SLEEP_MS + 15000,
+      });
+      assert.equal(r.outcome, OUTCOME.EXITED, `expected a clean exit; got ${r.outcome} stderr=${r.stderr}`);
+      assert.equal(
+        r.exitCode, 0,
+        `a git-probe timeout must still ALLOW (exit code unchanged — #3911 requires no hook's ` +
+        `effective default changes); stdout=${r.stdout} stderr=${r.stderr}`
+      );
+      assert.notEqual(
+        r.stderr, '',
+        `a git-probe timeout must emit a stderr diagnostic instead of the pre-#3911 SILENT allow ` +
+        `(empty stdout AND empty stderr). stdout=${r.stdout}`
+      );
+      assert.match(
+        r.stderr, /git probe/,
+        `stderr diagnostic must name the git probe that could not run; got: ${r.stderr}`
+      );
     });
   }
 });

@@ -375,6 +375,7 @@
   "gsd-hooks/lib/cursor-workspace.js",
   "gsd-hooks/lib/exit-code-registry.js",
   "gsd-hooks/lib/git-cmd.js",
+  "gsd-hooks/lib/git-probe.js",
   "gsd-hooks/lib/gsd-graphify-rebuild.sh",
   "gsd-hooks/lib/hook-exit.js",
   "gsd-hooks/lib/injection-patterns.js",
