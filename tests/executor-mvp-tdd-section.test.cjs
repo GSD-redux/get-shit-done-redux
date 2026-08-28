@@ -352,8 +352,16 @@ describe('RED contract — router still classifies a red_contract-carrying task 
 // tdd.md is runtime-loaded instruction text embedded verbatim into every
 // executor dispatch — its text IS the deployed contract, so reading the file
 // is testing the product, not grepping an implementation.
-describe('RED contract — gsd-core/references/tdd.md declaration (#3770)', () => {
+describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
   const contract = sliceH2(fs.readFileSync(TDD_REF, 'utf-8'), CONTRACT_HEADING);
+
+  /** The `### Evidence` fixture, as the single trailer line it must be. */
+  function trailerLine() {
+    const lines = soleFencedBlock(contract, 'Evidence')
+      .split('\n').map((line) => line.trim()).filter(Boolean);
+    assert.strictEqual(lines.length, 1, '### Evidence must carry the trailer as exactly one line');
+    return lines[0];
+  }
 
   test('### Declaration names exactly the seven contract tags', () => {
     const block = soleFencedBlock(contract, 'Declaration');
@@ -366,5 +374,79 @@ describe('RED contract — gsd-core/references/tdd.md declaration (#3770)', () =
       'the declaration example must carry exactly the seven contract tags — ' +
       'a stray, renamed or dropped field is a schema change. See #3770.',
     );
+  });
+
+  test('### Evidence names exactly the seven trailer fields', () => {
+    const line = trailerLine();
+    const parsed = JSON.parse(line.slice(line.indexOf(':') + 1));
+    assert.deepStrictEqual(
+      Object.keys(parsed).sort(),
+      ['actual', 'command', 'exit_status', 'expected', 'selected_count',
+        'target_executed', 'target_test'],
+      'the trailer must carry exactly the seven evidence fields — the exact-seven ' +
+      'key set is itself the fail-closed mechanism: a foreign or future schema ' +
+      'fails equality rather than being partially honoured. See #3770.',
+    );
+    for (const side of ['expected', 'actual']) {
+      assert.deepStrictEqual(
+        Object.keys(parsed[side]).sort(),
+        ['class_or_mode', 'phase', 'subject'],
+        `${side} must hold exactly phase, class_or_mode and subject`,
+      );
+    }
+  });
+
+  test('the evidence fixture survives git interpret-trailers as one JSON trailer', () => {
+    // Non-vacuity is git's own charset rule: an underscored token (red_evidence)
+    // is silently dropped by interpret-trailers and by %(trailers:key=...), which
+    // would make the whole gate inert. Verified against git 2.55.0.
+    const line = trailerLine();
+    const key = line.slice(0, line.indexOf(':'));
+    const message = `test(0-00): add failing test\n\nBody paragraph.\n\n${line}\n`;
+    const result = cp.spawnSync('git', ['interpret-trailers', '--parse'],
+      { input: message, encoding: 'utf-8' });
+    assert.strictEqual(result.status, 0, `git interpret-trailers failed: ${result.stderr}`);
+    const parsedLines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
+    assert.strictEqual(parsedLines.length, 1,
+      `git parsed ${parsedLines.length} trailers from the fixture, expected exactly 1 — ` +
+      'an underscore or other invalid token character makes the trailer inert. See #3770.');
+    const sep = parsedLines[0].indexOf(':');
+    assert.strictEqual(parsedLines[0].slice(0, sep), key,
+      'git must round-trip the documented trailer token unchanged');
+    JSON.parse(parsedLines[0].slice(sep + 1));
+  });
+
+  test('the predicate scopes selection and execution to the target-test arm', () => {
+    const lines = soleFencedBlock(contract, 'RED Predicate').split('\n');
+    const openers = [];
+    const disjunctions = [];
+    lines.forEach((line, i) => {
+      const trimmed = line.trim();
+      if (trimmed.endsWith('(')) openers.push(i);
+      if (trimmed === 'OR') disjunctions.push(i);
+    });
+    assert.strictEqual(openers.length, 1, 'the predicate must open exactly one parenthesised group');
+    assert.strictEqual(disjunctions.length, 1, 'the parenthesised group must have exactly two arms');
+    assert.ok(openers[0] < disjunctions[0], 'the group must open before the disjunction keyword');
+
+    for (const field of ['selected_count', 'target_executed']) {
+      const hits = [];
+      lines.forEach((line, i) => { if (line.includes(field)) hits.push(i); });
+      assert.ok(hits.length > 0, `${field} must appear in the predicate at all`);
+      for (const i of hits) {
+        assert.ok(i > openers[0] && i < disjunctions[0],
+          `${field} on predicate line ${i + 1} sits outside the target-test arm. ` +
+          'Hoisted above the group it blocks every outside-in RED (which reports 0 and ' +
+          'false by construction); pushed below the keyword it stops guarding the target ' +
+          'arm. It belongs strictly between the opener and the disjunction. See #3770.');
+      }
+    }
+
+    const outsideInArm = lines.slice(disjunctions[0] + 1).join('\n');
+    assert.match(outsideInArm, /plan\.implementation_target/,
+      'the outside-in arm must anchor the observed subject to the declared implementation target');
+    assert.match(outsideInArm, /outside-in missing-target mode/,
+      'the outside-in arm must keep its second conjunct — without it, any declaration whose ' +
+      'expected class happens to match slips through. Dropped twice already. See #3770.');
   });
 });
