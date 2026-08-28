@@ -1242,6 +1242,79 @@ describe('no-elapsed-assertion rule', () => {
       ],
     });
   });
+
+  // ─── #3987: camelCase/suffixed evasion (elapsedMs escaped the exact-name
+  // regex; CI caught the resulting flake instead of lint catching the
+  // anti-pattern) ───────────────────────────────────────────────────────
+
+  test('invalid: assert on .elapsedMs property (the exact identifier that evaded the pre-widening exact-name regex)', () => {
+    ruleTester.run('no-elapsed-assertion', noElapsedAssertion, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            const assert = require('node:assert/strict');
+            const result = { elapsedMs: 150 };
+            assert.ok(result.elapsedMs < 200);
+          `,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noElapsedAssertion' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: assert on tookMs/durationMs/msElapsed/elapsedTime/startMs/endMs — camelCase family the widened rule must catch', () => {
+    ruleTester.run('no-elapsed-assertion', noElapsedAssertion, {
+      valid: [],
+      invalid: [
+        {
+          code: `assert.ok(x.tookMs < 500);`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noElapsedAssertion' }],
+        },
+        {
+          code: `assert.ok(x.durationMs > 0);`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noElapsedAssertion' }],
+        },
+        {
+          code: `assert.ok(x.msElapsed > 0);`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noElapsedAssertion' }],
+        },
+        {
+          code: `assert.ok(x.elapsedTime < 1000);`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noElapsedAssertion' }],
+        },
+        {
+          code: `assert.ok(x.endMs - x.startMs < 100);`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'noElapsedAssertion' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: non-timing camelCase identifiers containing "ms" as a plain substring do not flag (params/items/forms/terms/dirnames — and a configured-bound timeoutMs)', () => {
+    ruleTester.run('no-elapsed-assertion', noElapsedAssertion, {
+      valid: [
+        { code: `assert.equal(params.length, 2);`, filename: 'tests/foo.test.cjs' },
+        { code: `assert.equal(items.length, 0);`, filename: 'tests/foo.test.cjs' },
+        { code: `assert.ok(forms.valid);`, filename: 'tests/foo.test.cjs' },
+        { code: `assert.equal(terms.length, 3);`, filename: 'tests/foo.test.cjs' },
+        { code: `assert.equal(dirnames.length, 1);`, filename: 'tests/foo.test.cjs' },
+        {
+          // A configured bound (deterministic pass-through), not a measured
+          // wall-clock elapsed value — must not be caught by the widening.
+          code: `assert.equal(seen[0].timeoutMs, HOOK_FANOUT_TIMEOUT_MS);`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
 });
 
 // ─── no-raw-rmsync-in-tests ──────────────────────────────────────────────────

@@ -35,6 +35,7 @@ const { getPhaseDirFromPhaseId } = require(path.join(ROOT, 'gsd-core', 'bin', 'l
 const { slugify: qaSmellRatchetSlugify } = require(path.join(ROOT, 'scripts', 'qa-smell-ratchet.cjs'));
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { splitLines } = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'text-lines.cjs'));
+const { MAX_REGEX_LITERAL_LEN, resetRegexScanStats, getRegexScanStats } = require(path.join(ROOT, 'scripts', 'lib', 'drift-scan.cjs'));
 
 // ─── T1: the real deleted #3883 shape (POSITIVE) ──────────────────────────
 
@@ -221,17 +222,51 @@ describe('findSlugDerivationDrift — MAJOR-3: widened detection (each of these 
 // ─── MAJOR-2 (security review, #3987): bounded regex-literal extraction ──
 
 describe('findSlugDerivationDrift — MAJOR-2: no quadratic blowup on a pathological regex-literal-shaped line', () => {
-  test('a 1.28MB line built from many unterminated "[^"-shaped fragments scans in well under a second (was 54.3s pre-fix)', () => {
+  test('a 1.28MB line built from many unterminated "[^"-shaped fragments is scanned in bounded, LINEAR work — not the pre-fix quadratic blowup (54.3s at this size)', () => {
+    // Deterministic replacement for a wall-clock assertion (CLAUDE.md "Clock
+    // Seams: Do not assert on wall-clock time" — the original elapsedMs<5000
+    // row flaked on a slow shared CI runner at 7368ms while passing locally
+    // at ~200ms). Instead of timing, this pins the actual MAJOR-2 invariant:
+    // every attempt to read a regex literal is capped at MAX_REGEX_LITERAL_LEN
+    // characters (`readRegexLiteralAt`'s own `limit`), so total scan work
+    // across all `k` unterminated `.replace(/[^` fragments is bounded by
+    // `calls * MAX_REGEX_LITERAL_LEN` — a small linear multiple of the input,
+    // never a multiple of the input's OWN LENGTH (which is what made the
+    // pre-fix unbounded scan quadratic: each of the k attempts re-scanned
+    // however much of the remaining 1.28MB line was left).
     const k = 40000; // '.replace(/[^'.repeat(k) + 'x'.repeat(20k) ~= 1.28MB, matching the review's measured repro
     const line = '.replace(/[^'.repeat(k) + 'x'.repeat(20 * k);
     assert.equal(Buffer.byteLength(line, 'utf8'), 1_280_000);
 
-    const start = Date.now();
+    resetRegexScanStats();
     const v = findSlugDerivationDrift(line, 'ZZZ-not-exempt.cts');
-    const elapsedMs = Date.now() - start;
+    const { calls, charsExamined } = getRegexScanStats();
 
     assert.deepEqual(v, [], 'a giant unterminated fragment run is not a real re-derivation');
-    assert.ok(elapsedMs < 5000, `expected well under 5s (pre-fix measured 54.3s at this size), got ${elapsedMs}ms`);
+    // Every attempt is capped at MAX_REGEX_LITERAL_LEN by construction — this
+    // holds even under the (hypothetical) unbounded pre-fix shape only if the
+    // cap itself is honored; a bound expressed against `calls`, not against
+    // `line.length`, is what makes this assertion mean something.
+    assert.ok(calls > 0, 'expected at least one regex-literal-read attempt on this fragment run');
+    assert.ok(
+      charsExamined <= calls * MAX_REGEX_LITERAL_LEN,
+      `expected charsExamined (${charsExamined}) to never exceed calls (${calls}) * MAX_REGEX_LITERAL_LEN (${MAX_REGEX_LITERAL_LEN})`,
+    );
+    // The real discriminator: an ABSOLUTE ceiling, independent of whatever
+    // MAX_REGEX_LITERAL_LEN happens to be configured to (the prior assertion
+    // is tautological w.r.t. that constant and would not catch the constant
+    // itself being blown out). Measured on the current bounded implementation
+    // this line drives ~120k bounded attempts (`calls`) totalling
+    // ~4.8e7 examined characters — comfortably under 1e8. An unbounded scan
+    // (each attempt re-reading however much of the 1.28MB line remains, the
+    // exact pre-fix shape) is quadratic: ~line.length^2/2 ≈ 8e11 characters —
+    // over four orders of magnitude past this ceiling. Confirmed live: a
+    // reverted "no cap" simulation of this same fixture did not finish within
+    // 120s, versus ~0.3s bounded.
+    assert.ok(
+      charsExamined < 1e8,
+      `expected charsExamined (${charsExamined}) to stay under a fixed absolute ceiling, not scale toward line.length^2 (~8e11) as the pre-fix unbounded scan would`,
+    );
   });
 });
 
