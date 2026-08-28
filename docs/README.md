@@ -35,6 +35,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Resolve a skipped capability probe](how-to/resolve-a-skipped-capability-probe.md) — act on a coverage gate that held your phase for an unestablished scope, or a planning checkpoint that reported `skipped` instead of a verdict
 - [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) — tell this package's tool apart from the predecessor's colliding binary and from a gsd-core too old to identify itself
 - [Resolve an ESLint glob-coverage finding](how-to/resolve-eslint-coverage-findings.md) — bring a source file that matches no lint rule under coverage, or record a reasoned exemption
+- [Resolve a raw-terminator finding](how-to/resolve-a-raw-terminator-finding.md) — pick `runMain`/`ExitError`, `terminateNow`, or `process.exitCode` for a `local/require-registered-exit` finding, and know the two allowlist entries and the rule's documented evasions
 - [Read the statusline freshness marker](how-to/read-the-statusline-freshness-marker.md) — turn on `state ~N commits back`, and tell "STATE.md is fresh" apart from "freshness could not be established"
 - [Consume the planning snapshot](how-to/consume-the-planning-snapshot.md) — read `planning inspect` from a dashboard or harness, and tell "nothing to report" apart from "could not look"
 - [Consume the state contract](how-to/consume-the-state-contract.md) — read `.planning/state.json` from a workbench or editor extension, gate on the contract version, and tell "nothing to show" apart from "could not look"

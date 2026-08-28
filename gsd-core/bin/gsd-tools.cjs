@@ -249,7 +249,12 @@ try {
   process.stderr.write((bootErr && bootErr.message ? bootErr.message : String(bootErr)) + '\n');
   // Fatal bootstrap failure before the CLI's ExitError/runMain machinery (which
   // lives in ./lib) is available to load, so a direct exit is the only option.
-  // eslint-disable-next-line n/no-process-exit
+  // #3910: this call runs BEFORE ./lib/cli-exit.cjs is even required, so the
+  // registered-exit seam (runMain/ExitError/terminateNow) does not exist yet
+  // at this point in the process's lifetime — there is nothing to route
+  // through. This is the second (and only other) sanctioned allowlist entry
+  // for local/require-registered-exit, alongside terminateNow's own body.
+  // eslint-disable-next-line n/no-process-exit, local/require-registered-exit
   process.exit(1);
 }
 
@@ -2773,9 +2778,17 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         );
       }
     } catch (e) {
+      // ADR-3889: error() now throws ExitError instead of calling
+      // process.exit(1) directly, so an ExitError raised by error() INSIDE
+      // this try (e.g. the "Unknown windows subcommand" call above, or one
+      // inside cmdWindowsStatus/Append/Waive/MarkFixed) lands HERE instead of
+      // terminating uncatchably. It must be re-thrown unconditionally, before
+      // the WindowsError name check below, or it falls through to the
+      // generic branch and gets re-wrapped with a wrong message/reason,
+      // discarding the original exit code.
+      if (e instanceof ExitError) throw e;
       // WindowsError carries a REASON code; surface it through the structured
-      // error path so tests can assert on the typed reason. `error()` calls
-      // process.exit(1) internally so we never reach the fall-through.
+      // error path so tests can assert on the typed reason.
       if (e && e.name === 'WindowsError' && typeof e.reason === 'string') {
         error(e.message || 'broken-windows error', e.reason);
       }

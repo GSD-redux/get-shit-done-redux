@@ -13,6 +13,9 @@ import { escapeRegex } from './pattern.cjs';
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { ExitError } = cliExitModule;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateContract = require('./state-contract.cjs');
 const { publishStateContract } = stateContract;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -541,7 +544,7 @@ function cmdStateLoad(cwd: string, raw: boolean): void {
       `state_exists=${stateExists}`,
     ];
     process.stdout.write(lines.join('\n'));
-    process.exit(0);
+    throw new ExitError(0);
   }
 
   output(result, false, undefined);
