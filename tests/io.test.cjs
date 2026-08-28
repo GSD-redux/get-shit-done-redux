@@ -19,7 +19,7 @@ const fs = require('node:fs');
 
 const io = require('../gsd-core/bin/lib/io.cjs');
 const {
-  ExitError, resolveContractVersion, setPendingOutcome,
+  ExitError, resolveContractVersion, setPendingOutcome, getPendingOutcome, runMain,
 } = require('../gsd-core/bin/lib/cli-exit.cjs');
 const { EXIT_CODES } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
@@ -704,13 +704,20 @@ describe('#3912 A3-A5: output({error}) records DEGRADED — shape-exhaustive plu
   // A3/A4 — shape exhaustive: both key orders, and varying the error value's
   // own type/truthiness (irrelevant to detection — presence of the key is
   // what counts).
+  // The discriminator is a SERIALIZABLE error value, not mere key presence:
+  // every row here embeds its payload via `JSON.stringify(payload)` to build
+  // the child script's literal, and `JSON.stringify` drops any key whose
+  // value is `undefined` — so an `{ error: undefined }` row would silently
+  // arrive at `output()` with NO `error` key at all, making the row pass for
+  // the wrong reason (or, as originally written, fail outright: see the
+  // dedicated `{error: undefined}` case below, which constructs the object
+  // as source text instead so the key survives).
   const shapes = [
     ['error first', { error: 'boom', found: false }],
     ['error last (A4)', { found: false, error: 'boom' }],
     ['error in the middle', { a: 1, error: 'boom', b: 2 }],
     ['error value is falsy (0)', { found: false, error: 0 }],
     ['error value is null', { found: false, error: null }],
-    ['error value is undefined but the key is present', { found: false, error: undefined }],
     ['error value is an object', { error: { code: 'X' }, found: false }],
   ];
   for (const [label, payload] of shapes) {
@@ -726,6 +733,30 @@ describe('#3912 A3-A5: output({error}) records DEGRADED — shape-exhaustive plu
       assert.ok(result.stdout.includes('|PENDING=DEGRADED'), `expected DEGRADED recorded; got: ${result.stdout}`);
     });
   }
+
+  // A3/A4 pin — `{ error: undefined }` is NOT degraded. The object literal is
+  // written as SOURCE TEXT here (not round-tripped through
+  // `JSON.stringify(payload)`), so the `error` key genuinely reaches
+  // `output()` with an `undefined` value. `JSON.stringify` (the serializer
+  // `output()` itself uses to build the payload the user actually receives)
+  // drops a key whose value is `undefined`, so the wire payload is
+  // `{"found":false}` — no error at all. Recording DEGRADED here would be a
+  // false verdict: exit 80 under v2 for output the user sees as clean. The
+  // discriminator is a SERIALIZABLE error value, not key presence.
+  test('A3/A4 pin: {error: undefined} is NOT recorded as DEGRADED (JSON.stringify drops it)', () => {
+    const script = `
+      const io = require(${JSON.stringify(IO_PATH_3912)});
+      const c = require(${JSON.stringify(CLI_EXIT_PATH_3912)});
+      io.output({ found: false, error: undefined }, false);
+      process.stdout.write('|PENDING=' + c.getPendingOutcome());
+    `;
+    const result = toLegacyResult(runNode(['-e', script], { timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.strictEqual(result.status, 0, `stderr: ${result.stderr}`);
+    assert.ok(
+      !result.stdout.includes('|PENDING=DEGRADED'),
+      `{error: undefined} carries no serializable error and must not be degraded; got: ${result.stdout}`,
+    );
+  });
 
   // A5 — negative space: no `error` key at all must NOT be recorded as degraded.
   test('A5: output() with no error key exits 0 and records NOTHING', () => {
@@ -850,6 +881,95 @@ describe('#3912 C5/D: output({error}) DEGRADED reaches process.exitCode only thr
       timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
     }));
     assert.strictEqual(r.status, 0, `an explicit 0 return must win over the DEGRADED cell; stderr: ${r.stderr}`);
+  });
+});
+
+describe('review fix: pending-outcome cell lifetime (last-write-wins, cleared on consumption)', () => {
+  // These drive runMain/output IN-PROCESS (not via a subprocess), which is
+  // exactly the gap that let the leak through: every other #3912 test above
+  // spawns a fresh process per case, so a cell that is never cleared was
+  // unobservable. runMain mutates process.exitCode as a side effect, so each
+  // test saves/restores it to avoid corrupting the real node:test run's own
+  // exit code.
+  function waitForRunMain() {
+    // runMain resolves its outcome via a Promise.resolve().then().then()
+    // chain (microtasks); a macrotask tick guarantees both have drained.
+    return new Promise((resolve) => { setImmediate(resolve); });
+  }
+
+  afterEach(() => {
+    // Harmless test hygiene now that production also clears the cell on
+    // every runMain call and on every clean output() — this scrub is a
+    // belt-and-suspenders reset between test cases, not the mechanism that
+    // prevents the leak (that mechanism now lives in cli-exit.cts/io.cts).
+    setPendingOutcome(undefined);
+    resolveContractVersion({ argv: ['node', 'x'], env: {} });
+  });
+
+  test('leak regression: output({error}) then a second void-returning runMain must NOT inherit stale DEGRADED', async () => {
+    resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
+    const savedExitCode = process.exitCode;
+    try {
+      // First invocation declares DEGRADED via a payload-carried error and
+      // returns nothing — runMain projects it to 80 under v2.
+      runMain(() => {
+        io.output({ found: false, error: 'not found' }, false);
+        return undefined;
+      });
+      await waitForRunMain();
+      assert.strictEqual(process.exitCode, 80, 'first runMain should have projected the DEGRADED cell to 80');
+
+      // Second, unrelated invocation in the SAME process declares nothing
+      // and returns nothing. Before the fix, the cell was never cleared by
+      // runMain, so this would inherit the first call's stale DEGRADED and
+      // also exit 80 — the exact bug the reviewers found.
+      process.exitCode = undefined;
+      runMain(() => undefined);
+      await waitForRunMain();
+      assert.strictEqual(
+        process.exitCode,
+        undefined,
+        'a later void-returning runMain must not inherit a prior invocation\'s stale DEGRADED declaration',
+      );
+    } finally {
+      process.exitCode = savedExitCode;
+    }
+  });
+
+  test('last-write-wins: output({error}) then output({ok:true}) in the SAME invocation is not degraded', async () => {
+    resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
+    const savedExitCode = process.exitCode;
+    try {
+      runMain(() => {
+        io.output({ found: false, error: 'not found' }, false);
+        io.output({ ok: true }, false);
+        return undefined;
+      });
+      await waitForRunMain();
+      assert.strictEqual(
+        process.exitCode,
+        undefined,
+        'a later clean output() must undo an earlier degraded one — exit code must stay untouched, not 80',
+      );
+    } finally {
+      process.exitCode = savedExitCode;
+    }
+  });
+
+  test('consumption clears: after runMain consumes a pending outcome, the cell reads unset', async () => {
+    resolveContractVersion({ argv: ['node', 'x', '--exit-contract=v2'], env: {} });
+    const savedExitCode = process.exitCode;
+    try {
+      runMain(() => {
+        io.output({ error: 'x' }, false);
+        return undefined;
+      });
+      await waitForRunMain();
+      assert.strictEqual(process.exitCode, 80);
+      assert.strictEqual(getPendingOutcome(), undefined, 'the cell must be cleared once runMain has consumed it');
+    } finally {
+      process.exitCode = savedExitCode;
+    }
   });
 });
 

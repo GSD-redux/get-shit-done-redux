@@ -1862,6 +1862,32 @@ describe('#3912: pending-outcome cell (runMain precedence + parity)', () => {
     assert.equal(v2.status, 80, `stderr: ${v2.stderr}`);
   });
 
+  // Regression (fail-open, found live in `state validate --strict` on a
+  // missing STATE.md): a void-returning main() that ALREADY set
+  // process.exitCode to a non-zero value itself (e.g. `emit()` setting 1
+  // directly on the STATE.md-not-found early return) must have that value
+  // survive a pending DEGRADED cell — the cell must never LOWER an exit
+  // code main() itself already raised. Before the fix, this arm
+  // unconditionally overwrote process.exitCode with the cell's projection,
+  // clobbering an already-set 1 down to DEGRADED's v1 projection (0) — a
+  // real declared failure silently turned into success.
+  test('a void return with an ALREADY-SET non-zero exitCode beats a pending DEGRADED cell (regression)', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.setPendingOutcome('DEGRADED');`,
+      `c.runMain(() => { process.exitCode = 1; });`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    const v1 = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v1' },
+    }));
+    assert.equal(v1.status, 1, `an already-set non-zero exitCode must not be clobbered down to DEGRADED's v1 projection (0); stderr: ${v1.stderr}`);
+    const v2 = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
+    }));
+    assert.equal(v2.status, 1, `an already-set non-zero exitCode must not be clobbered by DEGRADED's v2 projection (80) either; stderr: ${v2.stderr}`);
+  });
+
   // C6: extends the existing three-copy parity coverage (json-error-mode cell,
   // tested above at "both copies of the exit module share one json-error-mode
   // cell") to the pending-outcome cell, across all THREE emitted copies —

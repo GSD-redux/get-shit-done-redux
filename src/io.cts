@@ -149,16 +149,26 @@ function serializeForOutput(result: unknown): string {
 
 /**
  * A payload-carried error, per ADR-2980's own definition (#3912, ADR-3889
- * §4): `result` is an object carrying an `error` property, in ANY key
- * order — `{ found: false, error }` counts exactly the same as
- * `{ error, found: false }`. This is a shape check only; the `error`
- * value's own truthiness is irrelevant, and neither is `result`'s
+ * §4): `result` is an object carrying a SERIALIZABLE `error` property, in
+ * ANY key order — `{ found: false, error }` counts exactly the same as
+ * `{ error, found: false }`. The discriminator is a serializable error
+ * value, NOT mere key presence: `result.error`'s own truthiness is
+ * irrelevant (falsy `0`/`null`/`''` all count), and neither is `result`'s
  * prototype (a plain object literal is all any call site here ever
- * passes) — `hasOwnProperty` is enough to answer "does this payload
- * declare an error".
+ * passes) — but `error: undefined` does NOT count, because
+ * `JSON.stringify` (the exact serializer `serializeForOutput` uses to
+ * build the payload the caller actually receives) drops an object
+ * property whose value is `undefined` entirely. A payload built as
+ * `{ found: false, error: undefined }` therefore reaches the wire as
+ * `{"found":false}` — no error at all — and recording DEGRADED for it
+ * would be a false verdict: exit 80 under v2 for output the user sees as
+ * clean. `hasOwnProperty` alone is not enough to answer "does this payload
+ * declare an error"; it must also survive `JSON.stringify`.
  */
 function isPayloadCarriedError(result: unknown): boolean {
-  return typeof result === 'object' && result !== null && Object.prototype.hasOwnProperty.call(result, 'error');
+  return typeof result === 'object' && result !== null
+    && Object.prototype.hasOwnProperty.call(result, 'error')
+    && (result as { error?: unknown }).error !== undefined;
 }
 
 function output(result: unknown, raw: boolean, rawValue?: unknown): void {
@@ -167,8 +177,17 @@ function output(result: unknown, raw: boolean, rawValue?: unknown): void {
   // does — it still just writes fd 1 and returns; the exit code stays
   // whatever it already was under v1 (DEGRADED projects to 0), and nothing
   // here touches process.exitCode directly.
+  //
+  // LAST-WRITE-WINS (review fix): a clean (non-error-shaped) payload CLEARS
+  // the cell rather than leaving a prior degraded declaration in place. A
+  // handler that calls output() more than once per invocation — a
+  // diagnostic error payload followed by a clean final payload — must have
+  // its LATEST declaration win, not its first: the cell reflects "is a
+  // degraded outcome pending right now", not "was one ever declared".
   if (isPayloadCarriedError(result)) {
     setPendingOutcome('DEGRADED');
+  } else {
+    setPendingOutcome(undefined);
   }
   let data: string;
   if (raw && rawValue !== undefined) {
