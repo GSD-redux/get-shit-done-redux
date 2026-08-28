@@ -396,6 +396,11 @@ function validateCapability(cap, folderId) {
     errors.push(...validateRuntimeBody(cap));
     // A host that is ALSO a reviewer keeps exactly one manifest (ADR-2782 D1).
     errors.push(...validateReviewerBody(cap));
+    // ADR-3646: a runtime capability installs a host CLI, it does not resolve
+    // task content — taskContentResolver is feature-only.
+    if (cap.taskContentResolver !== undefined) {
+      errors.push('role:runtime capability must not have a "taskContentResolver" body (feature-only field)');
+    }
   } else if (cap.role === 'reviewer') {
     // ADR-2782 D3 — a lane that is not an install target. No runtime body, no
     // install surface, no runtimeCompat (it surfaces through no host runtime).
@@ -718,6 +723,98 @@ function validateFeatureBody(cap) {
     }
   }
 
+  // ADR-3646: optional per-task external-tracker content-resolution seam.
+  errors.push(...validateTaskContentResolver(cap));
+
+  return errors;
+}
+
+/**
+ * ADR-3646 — validate an OPTIONAL `taskContentResolver` body on a `role:
+ * "feature"` capability. Absence is never an error (most manifests won't
+ * have one); presence is strictly validated.
+ *
+ * Wrapped in try/catch to degrade any unexpected throw (a hostile Proxy, a
+ * throwing getter, etc.) to a single validation error rather than crashing
+ * every consumer of loadRegistry, per the #1461 OVL-1 discipline that
+ * `validateReviewerBody` follows.
+ *
+ * @param {object} cap  The parsed capability manifest.
+ * @returns {string[]}  Array of error strings; empty = valid or absent.
+ */
+function validateTaskContentResolver(cap) {
+  try {
+    return validateTaskContentResolverFields(cap);
+  } catch (err) {
+    return ['capability taskContentResolver body could not be validated: ' + safeErrorMessage(err)];
+  }
+}
+
+function validateTaskContentResolverFields(cap) {
+  const errors = [];
+  if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return errors;
+
+  const tcr = cap.taskContentResolver;
+  if (tcr === undefined) return errors; // optional — never an error to omit
+
+  const ctx = 'capability "' + (typeof cap.id === 'string' ? cap.id : '(unknown)') + '"';
+
+  if (typeof tcr !== 'object' || tcr === null || Array.isArray(tcr)) {
+    const got = tcr === null ? 'null' : Array.isArray(tcr) ? 'array' : typeof tcr;
+    errors.push(
+      ctx + ' taskContentResolver must be an object (got: ' + got + '). ' +
+      'Omit the key entirely to declare no resolver — an explicit null is not an omission.',
+    );
+    return errors; // cannot validate fields of a non-object
+  }
+
+  // ── trackerPrefix — same grammar as a capability id ─────────────────────
+  if (typeof tcr.trackerPrefix !== 'string' || tcr.trackerPrefix.length === 0 || !KEBAB_RE.test(tcr.trackerPrefix)) {
+    errors.push(
+      ctx + ' taskContentResolver.trackerPrefix must be a non-empty kebab-case string matching ' +
+      String(KEBAB_RE) + ' (got: ' + describeValue(tcr.trackerPrefix) + ')',
+    );
+  }
+
+  // ── invoke ────────────────────────────────────────────────────────────
+  const inv = tcr.invoke;
+  if (typeof inv !== 'object' || inv === null || Array.isArray(inv)) {
+    const got = inv === null ? 'null' : Array.isArray(inv) ? 'array' : typeof inv;
+    errors.push(ctx + ' taskContentResolver.invoke must be an object (got: ' + got + ')');
+    return errors; // cannot validate sub-fields of a non-object
+  }
+
+  if (typeof inv.binary !== 'string' || inv.binary.length === 0) {
+    errors.push(ctx + ' taskContentResolver.invoke.binary must be a non-empty string');
+  }
+
+  if (!Array.isArray(inv.args)) {
+    errors.push(ctx + ' taskContentResolver.invoke.args must be an array of strings');
+  } else {
+    let hasPlaceholder = false;
+    for (const a of inv.args) {
+      if (typeof a !== 'string') {
+        errors.push(ctx + ' taskContentResolver.invoke.args entries must be strings (got: ' + describeValue(a) + ')');
+      } else if (a === '{{id}}') {
+        hasPlaceholder = true;
+      }
+    }
+    if (!hasPlaceholder) {
+      errors.push(
+        ctx + ' taskContentResolver.invoke.args must contain a "{{id}}" placeholder — ' +
+        'without it the resolved tracker id could never reach the resolver subprocess',
+      );
+    }
+  }
+
+  if (!isPositiveIntegerMs(inv.timeoutMs)) {
+    errors.push(
+      ctx + ' taskContentResolver.invoke.timeoutMs must be a positive integer of milliseconds — ' +
+      'an unbounded resolver call could hang task execution indefinitely ' +
+      '(got: ' + describeValue(inv.timeoutMs) + ')',
+    );
+  }
+
   return errors;
 }
 
@@ -943,7 +1040,7 @@ const HTTP_ONLY_INVOKE_FIELDS  = ['hostConfigKey', 'defaultHost', 'path', 'model
 
 // Feature-only fields are as forbidden on a lane-only capability as on a runtime
 // one; a `role: "reviewer"` capability owns no artefacts and wires no loop point.
-const FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER = ['skills', 'agents', 'steps', 'contributions', 'gates', 'hooks', 'activationKey'];
+const FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER = ['skills', 'agents', 'steps', 'contributions', 'gates', 'hooks', 'activationKey', 'taskContentResolver'];
 
 // GATE A: installSurface → allowed hooksSurface values (DEFECT.GENERATIVE-FIX: parity invariant)
 // Derived from the actual pairings in the 16 real runtime descriptors.
@@ -3184,6 +3281,11 @@ function validateCrossCapability(capMap, centralKeys, centralPatterns = []) {
   const laneSlugClaims = new Map();     // slug           → capId[]
   const laneFlagClaims = new Map();     // flag           → capId[]
   const laneSectionClaims = new Map();  // reviewsSection → capId[]
+  // ADR-3646: task-content resolver tracker-prefix uniqueness across the
+  // MERGED first-party ∪ overlay set, mirroring the reviewer-lane collision
+  // pattern above — two resolvers claiming the same prefix would make
+  // `execute:task` dispatch ambiguous (which capability's resolver runs?).
+  const trackerPrefixClaims = new Map(); // trackerPrefix  → capId[]
 
   // Claims are ACCUMULATED and reported after the sweep, never reported on the
   // second claimant. Reporting pairwise-on-collision looks equivalent and is not:
@@ -3204,6 +3306,15 @@ function validateCrossCapability(capMap, centralKeys, centralPatterns = []) {
   };
 
   for (const [capId, cap] of capMap) {
+    // ADR-3646: a MALFORMED taskContentResolver body was already reported by
+    // validateCapability — do not double-report; only claim well-shaped
+    // bodies. Independent of the reviewer-lane checks below, so it runs even
+    // for capabilities that carry no `reviewer` body at all.
+    const tcr = cap.taskContentResolver;
+    if (typeof tcr === 'object' && tcr !== null && !Array.isArray(tcr)) {
+      claim(trackerPrefixClaims, tcr.trackerPrefix, capId);
+    }
+
     const r = cap.reviewer;
     // A capability with no lane contributes to no uniqueness set. A MALFORMED
     // body was already reported by validateCapability — do not double-report.
@@ -3225,6 +3336,7 @@ function validateCrossCapability(capMap, centralKeys, centralPatterns = []) {
     [laneSlugClaims, 'slug'],
     [laneFlagClaims, 'flag'],
     [laneSectionClaims, 'reviewsSection'],
+    [trackerPrefixClaims, 'taskContentResolver.trackerPrefix'],
   ]) {
     for (const [key, claimants] of claims) {
       if (claimants.length < 2) continue;
@@ -3734,6 +3846,7 @@ module.exports = {
   validateCommandEntry,
   validateRuntimeCompat,
   validateFeatureBody,
+  validateTaskContentResolver,
   validateConfigHome,
   validateArtifactKindEntry,
   validateArtifactLayout,

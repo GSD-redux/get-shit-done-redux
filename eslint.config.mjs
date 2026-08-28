@@ -345,6 +345,11 @@ export default tseslint.config(
       // src/pattern.cts — module resolution for a .cts source is relative to
       // src/, not the output dir). Same verbatim-third-party exemption.
       'src/vendor/**',
+      // #3970 (ADR-3646 Phase 1): tsc-generated runtime artifact — the
+      // default `import childProcess from 'node:child_process'` import emits
+      // tsc's `__importDefault` helper (uses `var`), same class as 007/009/010
+      // above. Lint the src/task-content-resolution.cts source, not this.
+      'gsd-core/bin/lib/task-content-resolution.cjs',
       // #3904 (ADR-3889 Phase 0): tsc-generated runtime artifact — generated
       // by scripts/gen-scripts-cli-exit.cjs from a fresh compile of
       // src/cli-exit.cts, and byte-guarded by `npm run lint:generated-sync`

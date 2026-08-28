@@ -646,7 +646,8 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `state-document.cjs` | Pure STATE.md field extraction, replacement, status normalization, and progress calculation transforms |
 | `milestone-lock.cjs` | Milestone lock (compiled from `src/milestone-lock.cts`, gitignored) — advisory (phase, session id) claim over STATE.md's single Current Position slot: `.planning/milestone.lock` claim IO, liveness (TTL + heartbeat), conflict detection, and the shared stderr warning; consumed by `state.begin-phase` / `state.advance-plan` / `phase.complete` so parallel phases in one working tree get a visible conflict instead of silently overwriting each other (#3311) |
 | `surface.cjs` | Runtime surface module — manages the runtime enable/disable surface state independently of the install-time profile marker (ADR-0011 Phase 2) |
-| `task-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools task` |
+| `task-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools task`; `resolve-content` subcommand resolves a task's `tracker-id` via `task-content-resolution.cjs` (ADR-3646, #3970) |
+| `task-content-resolution.cjs` | Resolves a task's `tracker-id` to external-tracker content via a capability-declared `taskContentResolver` and a bounded subprocess call; hard-halts on ambiguous/failed/timeout/malformed resolution (compiled from `src/task-content-resolution.cts`, gitignored) (ADR-3646, #3970) |
 | `teams-status.cjs` | Detects agent-teams status from environment and runtime; pure core (#1355) |
 | `template.cjs` | Template selection and filling with variable substitution |
 | `text-lines.cjs` | Line-terminator handling seam — `splitLines`/`normalizeEol`/`detectEol`/`joinLines`, the sole owner of `\r?\n` splitting and CRLF normalization; closes #3360's split-then-match fix in `frontmatter.cjs` (ADR-3212 §3, epic #3212 Phase 2, #3413) |
