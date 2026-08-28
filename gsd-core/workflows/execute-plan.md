@@ -298,7 +298,7 @@ For `type: tdd` plans — RED-GREEN-REFACTOR:
 
 Errors: RED doesn't fail → investigate test/existing feature. GREEN doesn't pass → debug, iterate. REFACTOR breaks → undo.
 
-See `gsd-core/references/tdd.md` for structure.
+See `~/.claude/gsd-core/references/tdd.md` for structure.
 </tdd_plan_execution>
 
 <precommit_failure_handling>

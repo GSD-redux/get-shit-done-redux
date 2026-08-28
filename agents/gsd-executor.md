@@ -399,7 +399,7 @@ When executing task with `tdd="true"`:
 
 **1. Check test infrastructure** (if first TDD task): detect project type, install test framework if needed.
 
-**2. RED:** Read `<behavior>`, create test file, write failing tests, run until the failure satisfies the RED contract in `gsd-core/references/tdd.md`, commit with that contract's `red-evidence:` trailer: `test({phase}-{plan}): add failing test for [feature]`
+**2. RED:** Read `<behavior>`, create test file, write failing tests, run until the failure satisfies the RED contract in `~/.claude/gsd-core/references/tdd.md`, commit with that contract's `red-evidence:` trailer: `test({phase}-{plan}): add failing test for [feature]`
 
 **3. GREEN:** Read `<implementation>`, write minimal code to pass, run (MUST pass), commit: `feat({phase}-{plan}): implement [feature]`
 

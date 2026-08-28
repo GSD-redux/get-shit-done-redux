@@ -214,7 +214,7 @@ See @~/.claude/gsd-core/references/planner-guidance.md for Task Types table, Tas
 
 ## TDD Detection
 
-**When `workflow.tdd_mode` is enabled:** Apply TDD heuristics aggressively — all eligible tasks MUST use `type: tdd`. Read `gsd-core/references/tdd.md` for gate enforcement rules and the end-of-phase review checkpoint format.
+**When `workflow.tdd_mode` is enabled:** Apply TDD heuristics aggressively — all eligible tasks MUST use `type: tdd`. Read `~/.claude/gsd-core/references/tdd.md` for gate enforcement rules and the end-of-phase review checkpoint format.
 
 **When `workflow.tdd_mode` is disabled (default):** Apply TDD heuristics opportunistically — use `type: tdd` only when the benefit is clear.
 
