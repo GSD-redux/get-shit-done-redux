@@ -1616,7 +1616,11 @@ describe('worktreesOptedOut — ladder unit semantics (#3972)', () => {
     assert.equal(worktreesOptedOut(dir), true, 'root false inherited under the ws gate');
 
     delete process.env['GSD_WORKSTREAM'];
-    assert.equal(worktreesOptedOut(dir), false, 'no root inheritance without the ws env (GSD_PROJECT-alone contract)');
+    // Without a workstream, planningDir IS the flat root — the root's own key
+    // is the scoped read (the plain-project opt-out), so this answers true.
+    // The no-cross-inheritance contract (a GSD_PROJECT-scoped dir ignoring the
+    // flat root) is pinned by the resolver-level #3963 boundary test.
+    assert.equal(worktreesOptedOut(dir), true, 'no ws: the root config IS the effective config');
 
     fs.writeFileSync(ws, JSON.stringify({ workflow: { use_worktrees: 'false' } }));
     process.env['GSD_WORKSTREAM'] = 'alpha';
