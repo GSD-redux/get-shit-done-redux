@@ -299,18 +299,40 @@ function resolveRegistryIsolation(cwd, configPath) {
 
   if (isolation === 'harness-worktree') {
     let useWorktrees = true;
+    // #3972: the opt-out read shares the ONE owner every other
+    // isolation-deciding surface uses — planning-workspace's
+    // worktreesOptedOut ladder (scoped own-key wins; root inherited under
+    // the GSD_WORKSTREAM gate; strict === false). A flat single-file read
+    // here made a workstream-LOCAL opt-out invisible, so the sentinel-absent
+    // fallback denied a sequential dispatch the config explicitly allowed.
+    // Reached through ensureRuntimeBuild() like every other compiled-lib
+    // require in this file (scripts/lint-hooks-runtime-build-seam.cjs); if
+    // the library is unreachable the flat-root read below remains as the
+    // degraded fallback — today's behavior, never worse.
+    let ladderAnswered = false;
     try {
-      const raw = fs.readFileSync(configPath, 'utf-8');
-      const parsedCfg = JSON.parse(raw);
-      if (parsedCfg && typeof parsedCfg === 'object' && parsedCfg.workflow &&
-          typeof parsedCfg.workflow === 'object' && parsedCfg.workflow.use_worktrees === false) {
-        useWorktrees = false;
-      }
+      ensureRuntimeBuild();
+      const { worktreesOptedOut } = require('../gsd-core/bin/lib/planning-workspace.cjs');
+      useWorktrees = !worktreesOptedOut(cwd);
+      ladderAnswered = true;
     } catch {
-      // Unreadable config already propagated to the outer caller's catch
-      // before this point in practice (resolveRuntimeIdentity reads it
-      // first); tolerate defensively and keep the conservative (enforce)
-      // default rather than silently disabling the guard.
+      // Unbuilt runtime library or a ladder failure — fall through to the
+      // legacy flat-root read (conservative: keep enforcing).
+    }
+    if (!ladderAnswered) {
+      try {
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const parsedCfg = JSON.parse(raw);
+        if (parsedCfg && typeof parsedCfg === 'object' && parsedCfg.workflow &&
+            typeof parsedCfg.workflow === 'object' && parsedCfg.workflow.use_worktrees === false) {
+          useWorktrees = false;
+        }
+      } catch {
+        // Unreadable config already propagated to the outer caller's catch
+        // before this point in practice (resolveRuntimeIdentity reads it
+        // first); tolerate defensively and keep the conservative (enforce)
+        // default rather than silently disabling the guard.
+      }
     }
     if (!useWorktrees) isolation = 'none';
   }

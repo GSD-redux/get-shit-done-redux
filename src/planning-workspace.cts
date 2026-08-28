@@ -144,6 +144,46 @@ function planningRoot(cwd: string): string {
   return path.join(cwd, '.planning');
 }
 
+/**
+ * #3972: the ONE owner of "is this planning scope opted out of worktrees?" —
+ * the effective `workflow.use_worktrees === false` read every
+ * isolation-deciding surface must share (config-get's merged view is the
+ * contract). Ladder: the scoped config's OWN key wins (planningDir is
+ * project- and workstream-aware); otherwise the flat root's key, but only
+ * under the GSD_WORKSTREAM env gate — config-get deliberately does NOT
+ * inherit root under GSD_PROJECT alone, and this read must not diverge
+ * (#3963). Strict `=== false` (never coerced); any read failure degrades to
+ * "not opted out" (worktrees on — the fail-safe direction: the guard keeps
+ * enforcing). Direct file reads only — never loadConfig, which normalizes
+ * and rewrites config on paths that back sentinel writes.
+ */
+function worktreesOptedOut(cwd: string): boolean {
+  type MaybeConfig = { workflow?: unknown } | null;
+  const readCfg = (p: string): MaybeConfig => {
+    try {
+      return JSON.parse(String(fs.readFileSync(p, 'utf8'))) as MaybeConfig;
+    } catch {
+      return null;
+    }
+  };
+  const ownKey = (cfg: MaybeConfig): { present: boolean; value: unknown } => {
+    if (cfg === null || typeof cfg !== 'object') return { present: false, value: undefined };
+    const wf = cfg.workflow;
+    if (wf === null || typeof wf !== 'object' || Array.isArray(wf)) return { present: false, value: undefined };
+    const wfRec = wf as Record<string, unknown>;
+    return Object.prototype.hasOwnProperty.call(wfRec, 'use_worktrees')
+      ? { present: true, value: wfRec['use_worktrees'] }
+      : { present: false, value: undefined };
+  };
+  const scoped = ownKey(readCfg(path.join(planningDir(cwd), 'config.json')));
+  if (scoped.present) return scoped.value === false;
+  if (process.env['GSD_WORKSTREAM']) {
+    const root = ownKey(readCfg(path.join(planningRoot(cwd), 'config.json')));
+    if (root.present) return root.value === false;
+  }
+  return false;
+}
+
 // Sorted list of workstream directory names under `<root>/.planning/workstreams`,
 // or `[]` when the project is flat (no workstreams dir). Single source of truth
 // for the "workstream mode" detection shared by the #1912/#2028 fail-safe guards
@@ -469,6 +509,7 @@ function findContextMdIn(absDirOrFiles: string | string[]): string | null {
 }
 
 export = {
+  worktreesOptedOut,
   createPlanningWorkspace,
   createSharedPointerAdapter,
   createSessionScopedPointerAdapter,
