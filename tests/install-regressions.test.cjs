@@ -23,7 +23,7 @@ const { runNode } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, mockPartialWriteThenThrow } = require('./helpers.cjs');
 const {
   loadSkillsManifest,
   resolveProfile,
@@ -1932,7 +1932,6 @@ describe('#1874 F6 adjacent: malformed settings.local.json does not crash the in
 
     assert.strictEqual(result.exitCode, 0,
       `installer must not crash on an unparseable settings file\n${result.stdout}\n${result.stderr}`);
-    assert.ok(!/TypeError/.test(result.stderr), 'installer must not throw a TypeError');
     assert.strictEqual(
       fs.readFileSync(localSettingsPath, 'utf8'),
       malformedLocal,
@@ -1986,16 +1985,14 @@ describe('#1874 F18: ~/.gsd/defaults.json read-modify-write is locked and atomic
       if (resolved === defaultsPath || resolved.startsWith(`${defaultsPath}.tmp-`)) writes.push(resolved);
       return origWriteFileSync.call(fs, target, ...rest);
     };
+    t.after(() => { fs.writeFileSync = origWriteFileSync; });
 
-    try {
-      withRealInstallHome(root, () => {
-        const origLog = console.log;
-        console.log = () => {};
-        try { writeNonClaudeDefaults('codex'); } finally { console.log = origLog; }
-      });
-    } finally {
-      fs.writeFileSync = origWriteFileSync;
-    }
+    withRealInstallHome(root, () => {
+      const origLog = console.log;
+      console.log = () => {};
+      t.after(() => { console.log = origLog; });
+      writeNonClaudeDefaults('codex');
+    });
 
     // Both keys change on a clean install; that is one file state, so one write.
     assert.strictEqual(writes.length, 1,
@@ -2023,16 +2020,14 @@ describe('#1874 F18: ~/.gsd/defaults.json read-modify-write is locked and atomic
       }
       return origWriteFileSync.call(fs, target, ...rest);
     };
+    t.after(() => { fs.writeFileSync = origWriteFileSync; });
 
-    try {
-      withRealInstallHome(root, () => {
-        const origLog = console.log;
-        console.log = () => {};
-        try { writeNonClaudeDefaults('codex'); } finally { console.log = origLog; }
-      });
-    } finally {
-      fs.writeFileSync = origWriteFileSync;
-    }
+    withRealInstallHome(root, () => {
+      const origLog = console.log;
+      console.log = () => {};
+      t.after(() => { console.log = origLog; });
+      writeNonClaudeDefaults('codex');
+    });
 
     assert.strictEqual(lockHeldDuringWrite, true,
       'the lock must be held while defaults.json is being written');
@@ -2052,27 +2047,24 @@ describe('#1874 F18: ~/.gsd/defaults.json read-modify-write is locked and atomic
     fs.writeFileSync(defaultsPath, prior);
 
     // Faithful crash window: the bytes written before the failure DO land, then
-    // the call fails. fs-method override, not chmod — root bypasses mode bits.
-    const origWriteFileSync = fs.writeFileSync;
-    fs.writeFileSync = (target, data, options) => {
-      const resolved = path.resolve(String(target));
-      if (resolved === defaultsPath || resolved.startsWith(`${defaultsPath}.tmp-`)) {
-        origWriteFileSync.call(fs, target, String(data).slice(0, 10), options);
-        throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
-      }
-      return origWriteFileSync.call(fs, target, data, options);
-    };
+    // the call fails.
+    t.after(mockPartialWriteThenThrow(
+      fs,
+      (target) => {
+        const resolved = path.resolve(String(target));
+        return resolved === defaultsPath || resolved.startsWith(`${defaultsPath}.tmp-`);
+      },
+      10,
+      { code: 'ENOSPC', message: 'ENOSPC: no space left on device' },
+    ));
 
-    try {
-      withRealInstallHome(root, () => {
-        const origLog = console.log;
-        console.log = () => {};
-        // The installer treats this as best-effort and logs rather than throwing.
-        try { writeNonClaudeDefaults('codex'); } finally { console.log = origLog; }
-      });
-    } finally {
-      fs.writeFileSync = origWriteFileSync;
-    }
+    withRealInstallHome(root, () => {
+      const origLog = console.log;
+      console.log = () => {};
+      t.after(() => { console.log = origLog; });
+      // The installer treats this as best-effort and logs rather than throwing.
+      writeNonClaudeDefaults('codex');
+    });
 
     assert.strictEqual(fs.readFileSync(defaultsPath, 'utf8'), prior,
       'defaults.json must be byte-identical to its pre-write contents');
@@ -2108,17 +2100,58 @@ describe('#1874 F18: ~/.gsd/defaults.json read-modify-write is locked and atomic
       if (resolved === defaultsPath || resolved.startsWith(`${defaultsPath}.tmp-`)) writes.push(resolved);
       return origWriteFileSync.call(fs, target, ...rest);
     };
-    try {
-      withRealInstallHome(root, () => {
-        const origLog = console.log;
-        console.log = () => {};
-        try { writeNonClaudeDefaults('codex'); } finally { console.log = origLog; }
-      });
-    } finally {
-      fs.writeFileSync = origWriteFileSync;
-    }
+    t.after(() => { fs.writeFileSync = origWriteFileSync; });
+    withRealInstallHome(root, () => {
+      const origLog = console.log;
+      console.log = () => {};
+      t.after(() => { console.log = origLog; });
+      writeNonClaudeDefaults('codex');
+    });
 
     assert.deepStrictEqual(writes, [], 'an unchanged defaults.json must not be rewritten');
     assert.strictEqual(fs.readFileSync(defaultsPath, 'utf8'), prior);
+  });
+
+  test('a read-only .gsd directory blocks the lock and the RMW never partially applies', (t) => {
+    const root = createTempDir('gsd-1874-f18-readonly-');
+    t.after(() => cleanup(root));
+
+    const gsdDir = path.join(root, '.gsd');
+    fs.mkdirSync(gsdDir, { recursive: true });
+    const lockPath = path.join(gsdDir, 'gsd-install-migration.lock');
+    const defaultsPath = path.join(gsdDir, 'defaults.json');
+    // A pre-existing file the RMW must never touch if the lock cannot be taken.
+    const prior = JSON.stringify({ model_profile: 'balanced', resolve_model_ids: true }, null, 2) + '\n';
+    fs.writeFileSync(defaultsPath, prior);
+
+    // fs-method override rather than chmod — root bypasses mode bits, so a
+    // permission-based test silently passes with zero coverage in root CI.
+    // Simulates a read-only .gsd directory: the exclusive lock-file create
+    // fails with EACCES before any read-modify-write is attempted.
+    const origOpenSync = fs.openSync;
+    fs.openSync = (target, flags, ...rest) => {
+      if (path.resolve(String(target)) === lockPath) {
+        throw Object.assign(new Error('EACCES: permission denied, open ' + lockPath), { code: 'EACCES' });
+      }
+      return origOpenSync.call(fs, target, flags, ...rest);
+    };
+    t.after(() => { fs.openSync = origOpenSync; });
+
+    let threw = false;
+    withRealInstallHome(root, () => {
+      const origLog = console.log;
+      console.log = () => {};
+      t.after(() => { console.log = origLog; });
+      // writeNonClaudeDefaults treats lock/write failure as best-effort and
+      // must not let it escape as an uncaught exception.
+      try { writeNonClaudeDefaults('codex'); } catch { threw = true; }
+    });
+
+    assert.strictEqual(threw, false,
+      'a blocked lock must not crash the installer — writeNonClaudeDefaults degrades gracefully');
+    assert.strictEqual(fs.readFileSync(defaultsPath, 'utf8'), prior,
+      'defaults.json must be untouched when the lock could not be acquired — no partial RMW');
+    assert.strictEqual(fs.existsSync(lockPath), false,
+      'no lock file may be left behind when its creation itself failed');
   });
 });

@@ -19,7 +19,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, mockPartialWriteThenThrow } = require('./helpers.cjs');
 
 // ─── load real install.js exports once ───────────────────────────────────────
 //
@@ -288,7 +288,7 @@ describe('writeSettings durability (#1874 F5)', () => {
     try { return fn(dir); } finally { cleanup(dir); }
   }
 
-  test('a failure mid-write leaves the previous settings file intact', () => {
+  test('a failure mid-write leaves the previous settings file intact', (t) => {
     withTmpDir((dir) => {
       const settingsPath = path.join(dir, 'settings.json');
       fs.writeFileSync(settingsPath, PRIOR);
@@ -296,22 +296,16 @@ describe('writeSettings durability (#1874 F5)', () => {
       // Simulate the crash window faithfully: the bytes that were written
       // before the failure DO land on disk, then the call fails. A mock that
       // merely throws would pass against a non-atomic writer, proving nothing.
-      // fs-method override rather than chmod — root bypasses mode bits, so a
-      // permission-based test silently passes with zero coverage in root CI.
-      const origWriteFileSync = fs.writeFileSync;
-      fs.writeFileSync = (target, data, options) => {
-        const partial = String(data).slice(0, 12);
-        origWriteFileSync(target, partial, options);
-        throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
-      };
+      t.after(mockPartialWriteThenThrow(fs, undefined, 12, {
+        code: 'ENOSPC',
+        message: 'ENOSPC: no space left on device',
+      }));
 
       let threw = false;
       try {
         writeSettings(settingsPath, { hooks: { SessionStart: [] } });
       } catch {
         threw = true;
-      } finally {
-        fs.writeFileSync = origWriteFileSync;
       }
 
       assert.ok(threw, 'the write failure must propagate, not be swallowed');
@@ -328,21 +322,18 @@ describe('writeSettings durability (#1874 F5)', () => {
     });
   });
 
-  test('a failure mid-write leaves no temp file behind', () => {
+  test('a failure mid-write leaves no temp file behind', (t) => {
     withTmpDir((dir) => {
       const settingsPath = path.join(dir, 'settings.json');
       fs.writeFileSync(settingsPath, PRIOR);
 
-      const origWriteFileSync = fs.writeFileSync;
-      fs.writeFileSync = (target, data, options) => {
-        origWriteFileSync(target, String(data).slice(0, 12), options);
-        throw new Error('simulated mid-write failure');
-      };
+      t.after(mockPartialWriteThenThrow(fs, undefined, 12, {
+        code: 'EIO',
+        message: 'simulated mid-write failure',
+      }));
       try {
         writeSettings(settingsPath, { hooks: {} });
-      } catch { /* expected */ } finally {
-        fs.writeFileSync = origWriteFileSync;
-      }
+      } catch { /* expected */ }
 
       assert.deepStrictEqual(
         fs.readdirSync(dir).sort(),
@@ -395,7 +386,7 @@ describe('writeSettings durability (#1874 F5)', () => {
     });
   });
 
-  test('the temp file is created exclusively — a pre-planted symlink is not followed', { skip: process.platform === 'win32' }, () => {
+  test('the temp file is created exclusively — a pre-planted symlink is not followed', { skip: process.platform === 'win32' }, (t) => {
     withTmpDir((dir) => {
       const settingsPath = path.join(dir, 'settings.json');
       fs.writeFileSync(settingsPath, PRIOR);
@@ -417,15 +408,12 @@ describe('writeSettings durability (#1874 F5)', () => {
         }
         return origWriteFileSync(target, data, options);
       };
-      try {
-        assert.throws(
-          () => writeSettings(settingsPath, { hooks: {} }),
-          (e) => e.code === 'EEXIST',
-          'an exclusive create must refuse every squatted temp path'
-        );
-      } finally {
-        fs.writeFileSync = origWriteFileSync;
-      }
+      t.after(() => { fs.writeFileSync = origWriteFileSync; });
+      assert.throws(
+        () => writeSettings(settingsPath, { hooks: {} }),
+        (e) => e.code === 'EEXIST',
+        'an exclusive create must refuse every squatted temp path'
+      );
 
       assert.strictEqual(fs.readFileSync(victimPath, 'utf8'), 'victim-bytes',
         'the symlink target must never receive the settings payload');

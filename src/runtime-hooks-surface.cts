@@ -194,6 +194,8 @@ function _capabilityTitle(runtime: string): string {
 let __atomicWriteCounter = 0;
 // Set<string> — absolute paths of .tmp-<pid>-<n> files this process created.
 const __atomicWrittenTmps: Set<string> = new Set();
+// Retry budget for the EEXIST (squatted temp path) branch in atomicWriteFileSync.
+const MAX_TEMP_FILE_ATTEMPTS = 4;
 
 function atomicWriteFileSync(target: string, data: string, options: fs.WriteFileOptions): void {
   // A pre-existing target's permission bits must survive the rewrite:
@@ -223,7 +225,7 @@ function atomicWriteFileSync(target: string, data: string, options: fs.WriteFile
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
         // The file at tmp is not ours — never rmSync it.
-        if (attempt < 4) continue;
+        if (attempt < MAX_TEMP_FILE_ATTEMPTS) continue;
         throw e;
       }
       try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }

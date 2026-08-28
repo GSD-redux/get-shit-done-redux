@@ -544,6 +544,41 @@ function readFileNormalized(filePath) {
 }
 
 /**
+ * Fault-injection helper for durable-write tests (#1874): monkeypatches
+ * `fsModule.writeFileSync` so any call matching `matches(target)` writes
+ * only the first `bytesBeforeThrow` bytes of `data` (a faithful crash
+ * window — the partial bytes DO land on disk, mirroring a real ENOSPC/EIO
+ * mid-write) and then throws. Calls not matching `matches` pass through to
+ * the real implementation unchanged.
+ *
+ * fs-method override rather than chmod: root bypasses mode bits, so a
+ * permission-based fault injection silently passes with zero coverage in
+ * root CI (CLAUDE.md §4 / CONTRIBUTING.md).
+ *
+ * Returns a restore function — call it via `t.after(...)`, never a manual
+ * try/finally in the test body.
+ *
+ * @param {typeof import('fs')} fsModule
+ * @param {(target: unknown) => boolean} matches - defaults to matching every write
+ * @param {number} bytesBeforeThrow - byte count of `data` that lands before the throw
+ * @param {{code?: string, message?: string}} [options]
+ * @returns {() => void} restore function
+ */
+function mockPartialWriteThenThrow(fsModule, matches, bytesBeforeThrow, options = {}) {
+  const { code = 'ENOSPC', message = `${code}: simulated partial write failure` } = options;
+  const shouldMatch = typeof matches === 'function' ? matches : () => true;
+  const origWriteFileSync = fsModule.writeFileSync;
+  fsModule.writeFileSync = (target, data, writeOptions) => {
+    if (!shouldMatch(target)) {
+      return origWriteFileSync.call(fsModule, target, data, writeOptions);
+    }
+    origWriteFileSync.call(fsModule, target, String(data).slice(0, bytesBeforeThrow), writeOptions);
+    throw Object.assign(new Error(message), { code });
+  };
+  return () => { fsModule.writeFileSync = origWriteFileSync; };
+}
+
+/**
  * Read a workflow .md file plus every .md file under its sibling
  * `<workflow-basename>/steps/` directory, concatenated in document order
  * (host file first, then step files sorted by filename).
@@ -1076,7 +1111,7 @@ function sandboxHome(t, dir) {
   });
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, TEST_HOME_SANDBOX_MARKER };
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, isolateWorkstreamEnv, restoreWorkstreamEnv, TOOLS_PATH, SESSION_IDENTITY_ENV_KEYS, scrubConfigLocationEnv, installSpawnEnv, installSpawnHome, sandboxHome, TEST_HOME_SANDBOX_MARKER, mockPartialWriteThenThrow };
 
 // Lazy, for the reason builtLib() is lazy: reading either of these is what
 // forces the built-lib require, so a test file that needs neither can still
