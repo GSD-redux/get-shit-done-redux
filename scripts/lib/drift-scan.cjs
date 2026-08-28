@@ -65,7 +65,7 @@ const SKIP_DIR_NAMES = new Set(['node_modules', 'dist', '.git']);
 // counter of how many characters this tokenizer has actually examined, so a
 // test can assert the bound HOLDS (total work stays a small linear multiple
 // of the number of scan attempts × MAX_REGEX_LITERAL_LEN) without resorting
-// to a wall-clock elapsed-time assertion, which this repo's CLAUDE.md bans
+// to a wall-clock elapsed-time assertion, which this repo's test rules ban
 // ("Clock Seams: Do not assert on wall-clock time.") and which is exactly
 // what flaked on a slow shared CI runner. `resetRegexScanStats`/
 // `getRegexScanStats` are read-modify-reset around a single scan under test;
