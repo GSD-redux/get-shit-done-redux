@@ -1206,6 +1206,15 @@ describe('#2289 context-monitor: side effects still fire on silent events (no ou
 describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
   const HOOK = path.join(__dirname, '..', 'hooks', 'gsd-context-monitor.js');
   const UNLINK_EPERM_PRELOAD = path.join(__dirname, 'helpers', 'context-monitor-unlink-eperm-preload.cjs');
+  // Same clock-pinning seam the threshold trios below use, available here so a
+  // row whose CLAIM is about timing can drive the real sequence with exact
+  // arithmetic rather than a future-stamped bridge (round 4, Major 1).
+  const NOW_PRELOAD = path.join(__dirname, 'helpers', 'context-monitor-fixed-now-preload.cjs');
+  // A fixed instant for the rows that drive the compaction sequence by exact
+  // arithmetic. Any stable value works; this one is far from any real clock so
+  // an unpinned child cannot accidentally satisfy the assertions.
+  const SEQ_NOW_MS = 1_800_000_000_000;
+  const SEQ_NOW_S = Math.floor(SEQ_NOW_MS / 1000);
 
   function makeSession(t, { gsdActive = false, contextWarnings = null } = {}) {
     const dir = os.tmpdir();
@@ -1256,7 +1265,27 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       // REGULAR FILE for matching paths — the lstat→open substitution-race
       // shape, so the O_NOFOLLOW backstop is the guard actually exercised
       // (review of #3808, round 3, Minor 3).
-      call(event, remaining, { metrics = true, failUnlinkMatching = null, lstatClaimsFileMatching = null } = {}) {
+      // `nowMs` pins the CHILD's Date.now via the same --require seam the
+      // STALE trio uses, and `bridgeTimestamp` stamps the bridge explicitly.
+      // Together they let a row drive the real production sequence with exact
+      // arithmetic instead of a future-stamped reading (review of #3808,
+      // round 4, Major 1).
+      //
+      // `env` overrides the child's environment. Without it the child
+      // inherited process.env wholesale, so two rows silently depended on
+      // ambient GEMINI_API_KEY and failed outright on any machine or CI lane
+      // that set it (review of #3808, round 4, Major 2). The sibling
+      // `runMonitor` helper in this file has taken an explicit env for exactly
+      // this reason all along. A key set to `undefined` is UNSET in the child,
+      // which is what pinning an ambient variable requires.
+      call(event, remaining, {
+        metrics = true,
+        failUnlinkMatching = null,
+        lstatClaimsFileMatching = null,
+        nowMs = null,
+        bridgeTimestamp = null,
+        env: envOverrides = null,
+      } = {}) {
         if (metrics === 'keep') {
           // leave the bridge exactly as the previous call left it
         } else if (metrics) {
@@ -1264,7 +1293,7 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
             session_id: id,
             remaining_percentage: remaining,
             used_pct: 100 - remaining,
-            // +62s: deliberately beyond the compaction grace window
+            // Default +62s: deliberately beyond the compaction grace window
             // (COMPACT_GRACE_SECONDS=60, +2 for the same-second start). These
             // tests run PreCompact and the next PostToolUse inside one second,
             // while a real post-compaction WARNING arrives minutes later when
@@ -1273,7 +1302,15 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
             // indistinguishable from it). Future-stamping models "a reading
             // from after the window" without touching the staleness math (a
             // negative age is never > 60).
-            timestamp: Math.floor(Date.now() / 1000) + 62,
+            //
+            // It is a MODELLING SHORTCUT, not a shape the real writer emits:
+            // hooks/gsd-statusline.js always stamps Math.floor(Date.now()/1000)
+            // on the same clock. Rows whose CLAIM is about the timing itself
+            // must not rest on it — they pass `nowMs` + `bridgeTimestamp` and
+            // drive the real sequence instead (round 4, Major 1).
+            timestamp: bridgeTimestamp == null
+              ? Math.floor(Date.now() / 1000) + 62
+              : bridgeTimestamp,
           }));
         } else {
           try { fs.unlinkSync(metricsPath); } catch { /* already absent */ }
@@ -1281,14 +1318,18 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
         let stdout = '';
         let exitCode = 0;
         const usePreload = failUnlinkMatching || lstatClaimsFileMatching;
-        const argv = usePreload ? ['--require', UNLINK_EPERM_PRELOAD, HOOK] : [HOOK];
-        const env = usePreload
-          ? {
-              ...process.env,
-              ...(failUnlinkMatching ? { GSD_TEST_UNLINK_EPERM_MATCH: failUnlinkMatching } : {}),
-              ...(lstatClaimsFileMatching ? { GSD_TEST_LSTAT_CLAIMS_FILE_MATCH: lstatClaimsFileMatching } : {}),
-            }
-          : process.env;
+        const preloads = [];
+        if (usePreload) preloads.push('--require', UNLINK_EPERM_PRELOAD);
+        if (nowMs != null) preloads.push('--require', NOW_PRELOAD);
+        const argv = [...preloads, HOOK];
+        const env = {
+          ...process.env,
+          ...(failUnlinkMatching ? { GSD_TEST_UNLINK_EPERM_MATCH: failUnlinkMatching } : {}),
+          ...(lstatClaimsFileMatching ? { GSD_TEST_LSTAT_CLAIMS_FILE_MATCH: lstatClaimsFileMatching } : {}),
+          ...(nowMs != null ? { GSD_TEST_NOW_MS: String(nowMs) } : {}),
+          ...(envOverrides || {}),
+        };
+        for (const k of Object.keys(env)) { if (env[k] === undefined) delete env[k]; }
         try {
           stdout = execFileSync(process.execPath, argv, {
             input: JSON.stringify({ session_id: id, cwd, hook_event_name: event }),
@@ -1391,11 +1432,31 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
       + 'should not outlive it merely because warnings are switched off for now');
   });
 
+  // AC2 and AC3 drive the REAL post-compaction sequence, on a pinned clock,
+  // with the bridge stamped the way hooks/gsd-statusline.js stamps it
+  // (Math.floor(Date.now()/1000), never ahead of the reader).
+  //
+  // An earlier cut drove them through call()'s default bridge, stamped 62
+  // seconds in the FUTURE — a shape the real writer cannot produce on the same
+  // machine and clock. That proved only "the sentinel was cleared" while the
+  // assertion messages claimed the documented immediate-warning behaviour,
+  // which in production is gated behind the grace window and went unexercised;
+  // a future hardening that rejected future-stamped readings would have redded
+  // both rows with no real regression behind it (review of #3808, round 4,
+  // Major 1). The clock-pinning seam already existed for the STALE trio and is
+  // simply reused here, so the timing these rows CLAIM is the timing they RUN.
   test('AC2: after a compaction the first WARNING fires immediately, not debounced', (t) => {
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
-    s.call('PreCompact', 20);
-    const { stdout } = s.call('PostToolUse', 30);
+    // A real PreCompact carries no fresh bridge reading.
+    assert.strictEqual(s.call('PreCompact', 20, { metrics: false, nowMs: SEQ_NOW_MS }).exitCode, 0);
+    assert.strictEqual(s.watermark().at, SEQ_NOW_S,
+      'the watermark is stamped on the pinned clock — the arithmetic below is exact, not a race');
+    // The statusline's first render after the compaction completes and the
+    // context has re-climbed: current reading, current stamp, one second past
+    // the grace window.
+    s.writeBridge({ remaining_percentage: 30, used_pct: 70, timestamp: SEQ_NOW_S + 61 });
+    const { stdout } = s.call('PostToolUse', 30, { metrics: 'keep', nowMs: SEQ_NOW_MS + 61_000 });
     assert.match(stdout, /CONTEXT WARNING/,
       'The context-monitor reference states "First warning always fires immediately". Before the fix '
       + 'this was silently debounced: the surviving sentinel made it look like a repeat warning');
@@ -1404,10 +1465,12 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
   test('AC3: after a compaction a WARNING -> CRITICAL escalation bypasses debounce', (t) => {
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
-    s.call('PreCompact', 20);
-    s.call('PostToolUse', 30);
+    assert.strictEqual(s.call('PreCompact', 20, { metrics: false, nowMs: SEQ_NOW_MS }).exitCode, 0);
+    s.writeBridge({ remaining_percentage: 30, used_pct: 70, timestamp: SEQ_NOW_S + 61 });
+    s.call('PostToolUse', 30, { metrics: 'keep', nowMs: SEQ_NOW_MS + 61_000 });
     assert.strictEqual(s.warn().lastLevel, 'warning', 'the fresh cycle recorded a WARNING');
-    const { stdout } = s.call('PostToolUse', 20);
+    s.writeBridge({ remaining_percentage: 20, used_pct: 80, timestamp: SEQ_NOW_S + 62 });
+    const { stdout } = s.call('PostToolUse', 20, { metrics: 'keep', nowMs: SEQ_NOW_MS + 62_000 });
     assert.match(stdout, /CONTEXT CRITICAL/,
       'The context-monitor reference states "Severity escalation (WARNING -> CRITICAL) bypasses '
       + 'debounce". That bypass is `lastLevel === "warning"`, unreachable while a stale sentinel lives');
@@ -1718,12 +1781,22 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     // as 'PreCompact' — running the RESET off a malformed payload — while a
     // hostile toString still throws. typeof does neither: every non-string is
     // "no event".
+    //
+    // GEMINI_API_KEY is pinned UNSET (round 4, Major 2). The preserved Gemini
+    // fallback is `eventName === "" && !!process.env.GEMINI_API_KEY`, and
+    // readEventName returns "" for every malformed name — so with the key set
+    // in the ambient environment this row's `stdout === ''` assertion failed
+    // outright: injection becomes supported and a 30%-remaining reading emits
+    // a CONTEXT WARNING. Reproduced by running this row under
+    // `GEMINI_API_KEY=x`. The row is about readEventName's typing, so the
+    // dialect variable is fixed rather than inherited.
     const s = makeSession(t);
+    const noGemini = { GEMINI_API_KEY: undefined };
     for (const [label, badEvent] of [
       ['number', 42],
       ['object', { toString: 'not-callable' }],
     ]) {
-      const { stdout, exitCode } = s.call(badEvent, 30);
+      const { stdout, exitCode } = s.call(badEvent, 30, { env: noGemini });
       assert.strictEqual(exitCode, 0, `${label}: a malformed event name must never fail the hook`);
       assert.strictEqual(stdout, '', `${label}: unknown events emit nothing (#2289 allowlist)`);
       assert.ok(s.warn(), `${label}: the debounce side effect must still have run (#2289 contract)`);
@@ -1734,9 +1807,14 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     // ['PreCompact'] under String() coercion reads as 'PreCompact' — a
     // malformed payload triggering a state-clearing branch. Strict typeof
     // treats it as no event: the sentinel survives.
+    // GEMINI_API_KEY pinned unset for the same reason as the row above: this
+    // row's `stdout === ''` also rests on injection being unsupported. It
+    // happens to survive an ambient key today only because remaining=20 with
+    // callsSinceWarn=0 is debounced — an incidental rescue, not independence,
+    // so the variable is pinned here too (round 4, Major 2).
     const s = makeSession(t);
     s.seed({ callsSinceWarn: 0, lastLevel: 'critical', criticalRecorded: true });
-    const { stdout, exitCode } = s.call(['PreCompact'], 20);
+    const { stdout, exitCode } = s.call(['PreCompact'], 20, { env: { GEMINI_API_KEY: undefined } });
     assert.strictEqual(exitCode, 0);
     assert.strictEqual(stdout, '', 'a malformed event emits nothing');
     assert.ok(s.warn(), 'the reset must NOT run off a non-string event name — the sentinel survives '
@@ -1760,14 +1838,18 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
   const NOW_MS = 1_800_000_000_000;
   const NOW_S = Math.floor(NOW_MS / 1000);
 
-  function drive({ remaining = 30, warnData = null, timestamp = NOW_S }) {
+  function drive({
+    remaining = 30, warnData = null, timestamp = NOW_S, watermarkAt = null, nowMs = NOW_MS,
+  }) {
     const id = `fix-3709-trio-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const metricsPath = path.join(os.tmpdir(), `claude-ctx-${id}.json`);
     const warnPath = path.join(os.tmpdir(), `claude-ctx-${id}-warned.json`);
+    const watermarkPath = path.join(os.tmpdir(), `claude-ctx-${id}-compacted.json`);
     fs.writeFileSync(metricsPath, JSON.stringify({
       session_id: id, remaining_percentage: remaining, used_pct: 100 - remaining, timestamp,
     }));
     if (warnData) fs.writeFileSync(warnPath, JSON.stringify(warnData));
+    if (watermarkAt !== null) fs.writeFileSync(watermarkPath, JSON.stringify({ at: watermarkAt }));
     let stdout = '';
     let exitCode = 0;
     try {
@@ -1775,11 +1857,13 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
         input: JSON.stringify({ session_id: id, cwd: os.tmpdir(), hook_event_name: 'PostToolUse' }),
         encoding: 'utf8',
         timeout: 8000,
-        env: { ...process.env, GSD_TEST_NOW_MS: String(NOW_MS) },
+        env: { ...process.env, GSD_TEST_NOW_MS: String(nowMs) },
       });
     } catch (e) { stdout = e.stdout || ''; exitCode = e.status ?? 1; }
     finally {
-      for (const p of [metricsPath, warnPath]) { try { fs.unlinkSync(p); } catch { /* absent */ } }
+      for (const p of [metricsPath, warnPath, watermarkPath]) {
+        try { fs.unlinkSync(p); } catch { /* absent */ }
+      }
     }
     return { stdout, exitCode };
   }
@@ -1829,4 +1913,42 @@ describe('#3709 round 3: DEBOUNCE_CALLS and STALE_SECONDS at their limits', () =
     assert.match(stdout, /CONTEXT WARNING/,
       'an unstamped reading skips the age check (falsy guard) — current, characterized behaviour');
   });
+
+  // COMPACT_GRACE_SECONDS is the ONE constant this PR introduces, and it was
+  // the only threshold here without a limit-1/limit/limit+1 trio while the PR
+  // added full trios for four PRE-EXISTING ones (review of #3808, round 4,
+  // Major 3). The seeded values were at+0, at+1 and at+61 — the boundary
+  // itself (at+60, must be dropped) and limit-1 (at+59, must be dropped) went
+  // untested, so mutating `>` to `>=`, or moving the constant by one, left the
+  // suite green while the window shifted.
+  //
+  // The gate is `!(metrics.timestamp > watermark.at + COMPACT_GRACE_SECONDS)`:
+  // a reading at at+60 is still covered, at+61 is the first one that is not.
+  // The clock is pinned so every reading is also unambiguously FRESH
+  // (now - timestamp is 0..60 here), which isolates the grace gate from the
+  // staleness gate — a row that failed for the wrong gate would prove nothing.
+  for (const [offset, emits] of [[59, false], [60, false], [61, true]]) {
+    test(`COMPACT_GRACE_SECONDS trio: reading at watermark+${offset}s -> ${emits ? 'warns' : 'covered by the window'}`, () => {
+      const { stdout, exitCode } = drive({
+        remaining: 30,
+        watermarkAt: NOW_S,
+        // The reader's clock ADVANCES to the moment of the render; the reading
+        // is stamped `now`, exactly as hooks/gsd-statusline.js stamps it. The
+        // reading is therefore never ahead of the reader — the future-stamped
+        // shortcut is what round 4 rejected — and its age is 0, so only the
+        // grace gate can drop it.
+        nowMs: NOW_MS + offset * 1000,
+        timestamp: NOW_S + offset,
+      });
+      assert.strictEqual(exitCode, 0);
+      if (emits) {
+        assert.match(stdout, /CONTEXT WARNING/,
+          `watermark+${offset}s is past the grace window — the new cycle must warn`);
+      } else {
+        assert.strictEqual(stdout, '',
+          `watermark+${offset}s is still inside the grace window — a mid-compaction render is `
+          + 'indistinguishable from a real reading and must be dropped');
+      }
+    });
+  }
 });
