@@ -245,6 +245,7 @@ const { runNode, runGit } = require('./helpers/process-seam.cjs');
 
 const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const TDD_REF = path.join(__dirname, '..', 'gsd-core', 'references', 'tdd.md');
+const PLANNER = path.join(__dirname, '..', 'agents', 'gsd-planner.md');
 
 /** The h2 whose body carries the whole contract. */
 const CONTRACT_HEADING = 'RED Contract';
@@ -301,6 +302,18 @@ function soleFencedBlock(sectionText, h3) {
   return blocks[0];
 }
 
+/** tdd.md exactly as shipped, and the `## RED Contract` h2 it carries. */
+const TDD_SOURCE = fs.readFileSync(TDD_REF, 'utf-8');
+const CONTRACT = sliceH2(TDD_SOURCE, CONTRACT_HEADING);
+
+/** The `### Evidence` fixture, as the single trailer line it must be. */
+function trailerLine() {
+  const lines = soleFencedBlock(CONTRACT, 'Evidence')
+    .split('\n').map((line) => line.trim()).filter(Boolean);
+  assert.strictEqual(lines.length, 1, '### Evidence must carry the trailer as exactly one line');
+  return lines[0];
+}
+
 function runIsBehaviorAdding(taskContent) {
   const result = runNode(
     [GSD_TOOLS, 'query', 'task.is-behavior-adding', '--task-content', taskContent],
@@ -351,18 +364,8 @@ describe('RED contract — router still classifies a red_contract-carrying task 
 // executor dispatch — its text IS the deployed contract, so reading the file
 // is testing the product, not grepping an implementation.
 describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
-  const contract = sliceH2(fs.readFileSync(TDD_REF, 'utf-8'), CONTRACT_HEADING);
-
-  /** The `### Evidence` fixture, as the single trailer line it must be. */
-  function trailerLine() {
-    const lines = soleFencedBlock(contract, 'Evidence')
-      .split('\n').map((line) => line.trim()).filter(Boolean);
-    assert.strictEqual(lines.length, 1, '### Evidence must carry the trailer as exactly one line');
-    return lines[0];
-  }
-
   test('### Declaration names exactly the seven contract tags', () => {
-    const block = soleFencedBlock(contract, 'Declaration');
+    const block = soleFencedBlock(CONTRACT, 'Declaration');
     const found = new Set();
     for (const match of block.matchAll(/<\/?([a-z][a-z_]{0,60})[\s>]/g)) found.add(match[1]);
     assert.deepStrictEqual(
@@ -414,7 +417,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
   });
 
   test('the predicate scopes selection and execution to the target-test arm', () => {
-    const lines = soleFencedBlock(contract, 'RED Predicate').split('\n');
+    const lines = soleFencedBlock(CONTRACT, 'RED Predicate').split('\n');
     const openers = [];
     const disjunctions = [];
     lines.forEach((line, i) => {
@@ -448,7 +451,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
   });
 
   test("the predicate's four shared conjuncts are active above the arms", () => {
-    const lines = soleFencedBlock(contract, 'RED Predicate').split('\n');
+    const lines = soleFencedBlock(CONTRACT, 'RED Predicate').split('\n');
     const leadingOf = (line) => line.slice(0, line.length - line.trimStart().length);
 
     const opener = lines.findIndex((line) => line.trim().endsWith('('));
@@ -481,5 +484,66 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         `not the ${sharedIndent.length} of \`exit_status != 0\`. Depth is the only thing ` +
         'distinguishing a shared conjunct from an arm conjunct in this block. See #3770.');
     }
+  });
+});
+
+/**
+ * `<red_contract>` is a SIBLING of `<behavior>`, never an attribute on it:
+ * src/task-command-router.cts's literal `<behavior>` regex tolerates no
+ * attributes, so an attributed element would silently exempt the task from the
+ * MVP+TDD gate. Equal leading whitespace on the two opening lines is that proof.
+ */
+function assertSiblingRedContract(block, where) {
+  const lines = block.split('\n');
+  const opener = (tag) => {
+    const i = lines.findIndex((line) => line.trimStart().startsWith(`<${tag}>`));
+    assert.ok(i > -1, `${where} must show <${tag}> — a worked example that omits it teaches the ` +
+      'pre-#3770 shape, which is what a reader copies. See #3770.');
+    return lines[i];
+  };
+  const behavior = opener('behavior');
+  const redContract = opener('red_contract');
+  const indentOf = (line) => line.slice(0, line.length - line.trimStart().length);
+  assert.strictEqual(indentOf(redContract), indentOf(behavior),
+    `${where} must place <red_contract> as a SIBLING of <behavior>, at the same depth. ` +
+    'Nested inside <behavior>, or hung off it as an attribute, it stops being the element ' +
+    'the contract mandates. See #3770.');
+}
+
+// allow-test-rule: source-text-is-the-product (see #3770)
+// The worked examples in tdd.md and gsd-planner.md are the shapes a planner
+// copies; their shipped text IS the instruction, so reading it is the test.
+describe('RED contract — worked examples carry <red_contract> (#3770)', () => {
+  test('the TDD Plan Structure template carries <red_contract> beside <behavior>', () => {
+    const blocks = fencedBlocks(sliceH2(TDD_SOURCE, 'TDD Plan Structure'));
+    assert.strictEqual(blocks.length, 1, '## TDD Plan Structure must carry one fenced template');
+    assertSiblingRedContract(blocks[0], 'the TDD Plan Structure template');
+
+    for (const tag of ['target_test', 'implementation_target', 'phase', 'class_or_mode', 'subject']) {
+      assert.ok(blocks[0].includes(`<${tag}>`),
+        `the TDD Plan Structure template must show the <${tag}> leaf — a <red_contract> with ` +
+        'missing leaves declares nothing the predicate can pin against. See #3770.');
+    }
+  });
+
+  test('the Red-Green-Refactor RED step points at the RED contract', () => {
+    const cycle = sliceH2(TDD_SOURCE, 'Red-Green-Refactor Cycle');
+    assert.ok(cycle.includes('**RED - Write failing test:**'),
+      'the cycle must still carry its RED step — this guards the two assertions below ' +
+      'from passing vacuously against a deleted section');
+    assert.ok(cycle.includes('tdd="true"'),
+      'the RED step must say which tasks the extra obligation binds');
+    assert.ok(cycle.includes('red_contract_spec'),
+      'the RED step must point forward at <red_contract_spec>. Left as bare "it MUST fail" it ' +
+      'restates the exact pre-#3770 rule this contract replaces, 17 lines above the replacement. ' +
+      'See #3770.');
+  });
+
+  test("the planner's task-level TDD example carries <red_contract> beside <behavior>", () => {
+    const tddBlocks = fencedBlocks(fs.readFileSync(PLANNER, 'utf-8'))
+      .filter((block) => block.includes('tdd="true"'));
+    assert.strictEqual(tddBlocks.length, 1,
+      'gsd-planner.md must carry exactly one tdd="true" worked example to guard');
+    assertSiblingRedContract(tddBlocks[0], "the planner's task-level TDD example");
   });
 });
