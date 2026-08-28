@@ -241,7 +241,7 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
 // plus observed evidence, both defined in gsd-core/references/tdd.md.
 // ────────────────────────────────────────────────────────────────────────
 
-const cp = require('node:child_process');
+const { runNode, runGit } = require('./helpers/process-seam.cjs');
 
 const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const TDD_REF = path.join(__dirname, '..', 'gsd-core', 'references', 'tdd.md');
@@ -302,12 +302,10 @@ function soleFencedBlock(sectionText, h3) {
 }
 
 function runIsBehaviorAdding(taskContent) {
-  const result = cp.spawnSync(
-    process.execPath,
+  const result = runNode(
     [GSD_TOOLS, 'query', 'task.is-behavior-adding', '--task-content', taskContent],
-    { encoding: 'utf-8' },
   );
-  assert.strictEqual(result.status, 0, `gsd-tools exited ${result.status}: ${result.stderr}`);
+  assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
   return JSON.parse(result.stdout);
 }
 
@@ -403,9 +401,8 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     const line = trailerLine();
     const key = line.slice(0, line.indexOf(':'));
     const message = `test(0-00): add failing test\n\nBody paragraph.\n\n${line}\n`;
-    const result = cp.spawnSync('git', ['interpret-trailers', '--parse'],
-      { input: message, encoding: 'utf-8' });
-    assert.strictEqual(result.status, 0, `git interpret-trailers failed: ${result.stderr}`);
+    const result = runGit(['interpret-trailers', '--parse'], { input: message });
+    assert.strictEqual(result.exitCode, 0, `git interpret-trailers failed: ${result.stderr}`);
     const parsedLines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
     assert.strictEqual(parsedLines.length, 1,
       `git parsed ${parsedLines.length} trailers from the fixture, expected exactly 1 — ` +
