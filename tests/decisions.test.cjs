@@ -28,6 +28,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const fc = require('./helpers/fast-check-setup.cjs');
+
 const { parseDecisions, extractDecisions } = require('../gsd-core/bin/lib/decisions.cjs');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
@@ -1658,6 +1660,142 @@ describe('#3939: decision bullet with a wrapped bold lead-in parses as one logic
       `The nested bullet is elaboration, not a second entry. Got: ${JSON.stringify(result.decisions.map((d) => d.id))}`);
     assert.ok(result.decisions[0].text.includes("D-06's fix does not close this"),
       `The nested bullet must still fold into D-15's text. Got: ${JSON.stringify(result.decisions[0].text)}`);
+  });
+});
+
+// ─── #3939 properties: wrapping is markdown-insignificant ────────────────────
+//
+// RULESET.TESTS.property-based-testing (CONTEXT.md): a parsing/transformation
+// contract needs at least one fast-check property asserting a domain invariant.
+// The invariant this fix rests on is a round-trip one — where a bold lead-in
+// happens to wrap is not information, so a wrapped bullet must parse to exactly
+// what the same bullet written on one physical line parses to, for EVERY grammar,
+// every tag/category combination, and every wrap column. The example-based tests
+// above pin four hand-picked wrap points; this generalizes over all of them.
+
+// Word corpus deliberately free of markdown metacharacters: `:` and `*` change
+// which grammar matches (the `[^:*]*` discipline of #1639), and a generated
+// token opening a block construct (`-`, `#`, `>`, `|`, …) would legitimately
+// terminate the join. Those are separate, example-tested behaviors — this
+// property isolates the wrap-position dimension.
+const PROSE_WORDS = [
+  'persist', 'raw', 'delivery', 'headers', 'resumable', 'backfill', 'inline',
+  'sync', 'column', 'migration', 'denylisted', 'triage', 'payload', 'budget',
+  'structural', 'fixture', 'corpus', 'resolver', 'idempotent', 'verbatim',
+];
+
+const proseArb = (minWords, maxWords) =>
+  fc.array(fc.constantFrom(...PROSE_WORDS), { minLength: minWords, maxLength: maxWords })
+    .map((words) => words.join(' '));
+
+const decisionIdArb = fc.oneof(
+  fc.integer({ min: 1, max: 99 }).map((n) => `D-${String(n).padStart(2, '0')}`),
+  fc.constantFrom('D-INFRA-01', 'D-CARRY-2', 'D-7'),
+);
+
+const tagsArb = fc.constantFrom('', ' [informational]', ' [deferred]', ' [folded]');
+
+/** The three declaration grammars, each rendered on ONE physical line. */
+const BULLET_FORMS = {
+  colonImmediate: (id, tags, title, body) => `- **${id}${tags} ${title}:** ${body}`,
+  titledColon: (id, tags, title, body) => `- **${id}${tags}: ${title}.** ${body}`,
+  emDash: (id, tags, title, body) => `- **${id}${tags} — ${title}** ${body}`,
+};
+
+/**
+ * Re-render a one-line bullet with its bold lead-in wrapped at the space
+ * selected by `seed`, continuation indented like discuss-phase writes it.
+ * Returns null when the lead-in holds no interior space to wrap at.
+ */
+function wrapBoldLeadIn(line, seed) {
+  const open = line.indexOf('**');
+  const close = line.indexOf('**', open + 2);
+  const spaces = [];
+  for (let i = open + 2; i < close; i += 1) {
+    if (line[i] === ' ') spaces.push(i);
+  }
+  if (spaces.length === 0) return null;
+  const at = spaces[seed % spaces.length];
+  return `${line.slice(0, at)}\n  ${line.slice(at + 1)}`;
+}
+
+const inBlock = (body) => ['<decisions>', body, '</decisions>'].join('\n');
+
+describe('#3939 properties: a wrapped bold lead-in parses like the one-line bullet', () => {
+  test('property: wrapping a bold lead-in anywhere is indistinguishable from not wrapping it', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...Object.keys(BULLET_FORMS)),
+        decisionIdArb,
+        tagsArb,
+        proseArb(2, 8),
+        proseArb(1, 6),
+        fc.nat(),
+        fc.boolean(),
+        (form, id, tags, title, body, seed, withCategory) => {
+          const line = BULLET_FORMS[form](id, tags, title, body);
+          const wrappedLine = wrapBoldLeadIn(line, seed);
+          if (wrappedLine === null) return true;
+
+          const heading = withCategory ? '### Implementation\n' : '';
+          const oneLine = extractDecisions(inBlock(heading + line));
+          const wrapped = extractDecisions(inBlock(heading + wrappedLine));
+
+          assert.deepStrictEqual(wrapped, oneLine,
+            `Wrap position must carry no information. form=${form} id=${id} tags=${JSON.stringify(tags)}\nONE-LINE: ${JSON.stringify(line)} → ${JSON.stringify(oneLine)}\nWRAPPED:  ${JSON.stringify(wrappedLine)} → ${JSON.stringify(wrapped)}`);
+          return true;
+        },
+      ),
+    );
+  });
+
+  test('property: a wrapped declaration is never a parse-miss (outcome parsed, id preserved)', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...Object.keys(BULLET_FORMS)),
+        decisionIdArb,
+        tagsArb,
+        proseArb(2, 8),
+        proseArb(1, 6),
+        fc.nat(),
+        (form, id, tags, title, body, seed) => {
+          const wrappedLine = wrapBoldLeadIn(BULLET_FORMS[form](id, tags, title, body), seed);
+          if (wrappedLine === null) return true;
+
+          const result = extractDecisions(inBlock(wrappedLine));
+          assert.strictEqual(result.outcome, 'parsed',
+            `A well-formed wrapped declaration must never reach the parse-miss guard. form=${form} line=${JSON.stringify(wrappedLine)} → ${JSON.stringify(result)}`);
+          assert.deepStrictEqual(result.decisions.map((d) => d.id), [id],
+            `The declared id must survive the join. form=${form} line=${JSON.stringify(wrappedLine)} → ${JSON.stringify(result.decisions)}`);
+          return true;
+        },
+      ),
+    );
+  });
+
+  test('property: a lead-in that never closes still fails loud, however long the run', (t) => {
+    // The join must not manufacture a decision out of an unterminated bold run,
+    // no matter how many lines it would have to absorb before giving up.
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    t.after(() => { console.warn = originalWarn; });
+
+    fc.assert(
+      fc.property(
+        decisionIdArb,
+        proseArb(2, 8),
+        fc.array(proseArb(1, 6), { minLength: 0, maxLength: 12 }),
+        (id, title, trailing) => {
+          const lines = [`- **${id}: ${title}`, ...trailing.map((t2) => `  ${t2}`)];
+          const result = extractDecisions(inBlock(lines.join('\n')));
+          assert.strictEqual(result.outcome, 'could-not-parse',
+            `An unterminated bold run must stay fail-loud. lines=${JSON.stringify(lines)} → ${JSON.stringify(result)}`);
+          assert.deepStrictEqual(result.decisions, [],
+            `No decision may be manufactured from an unterminated run. → ${JSON.stringify(result.decisions)}`);
+          return true;
+        },
+      ),
+    );
   });
 });
 
