@@ -32,6 +32,7 @@ import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.
 import noExternalRequireInBin from './eslint-rules/no-external-require-in-bin.cjs';
 import noPrivateBinaryResolution from './eslint-rules/no-private-binary-resolution.cjs';
 import requireRegisteredExit from './eslint-rules/require-registered-exit.cjs';
+import noExactCaseEnvAccess from './eslint-rules/no-exact-case-env-access.cjs';
 
 const localPlugin = {
   rules: {
@@ -58,6 +59,7 @@ const localPlugin = {
     'no-external-require-in-bin': noExternalRequireInBin,
     'no-private-binary-resolution': noPrivateBinaryResolution,
     'require-registered-exit': requireRegisteredExit,
+    'no-exact-case-env-access': noExactCaseEnvAccess,
   },
 };
 
@@ -424,6 +426,9 @@ export default tseslint.config(
       // eslint-ignored (ADR-457), so a rule registered only on the emitted
       // surface never sees the real .cts sources (#3496).
       'local/require-registered-exit': 'error',
+      // #3624 (epic #3411 Phase 4): flag an exact-case env-var read off a
+      // non-process.env receiver. See CONTEXT.md DEFECT.WINDOWS-EXACT-CASE-ENV-ACCESS.
+      'local/no-exact-case-env-access': 'error',
     },
   },
 
@@ -544,6 +549,8 @@ export default tseslint.config(
       'local/no-private-binary-resolution': 'error',
       // #3910 (epic #3889 Phase 6): see the src/**/*.cts block above for detail.
       'local/require-registered-exit': 'error',
+      // #3624: see the src/**/*.cts block above for detail.
+      'local/no-exact-case-env-access': 'error',
     },
   },
 
@@ -573,6 +580,8 @@ export default tseslint.config(
       'local/no-private-binary-resolution': 'error',
       // #3910 (epic #3889 Phase 6): see the src/**/*.cts block above for detail.
       'local/require-registered-exit': 'error',
+      // #3624: see the src/**/*.cts block above for detail.
+      'local/no-exact-case-env-access': 'error',
     },
   },
 
@@ -599,6 +608,8 @@ export default tseslint.config(
       // (n/no-process-exit: 'off') is now dead — see the src/**/*.cts block
       // above for detail on the rule itself.
       'local/require-registered-exit': 'error',
+      // #3624: see the src/**/*.cts block above for detail.
+      'local/no-exact-case-env-access': 'error',
     },
   },
 
