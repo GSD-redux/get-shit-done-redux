@@ -631,10 +631,18 @@ describe('#3912 A1/B1: error() declares from ERROR_REASON, exhaustive over the 2
 
   // A1 — the acceptance criterion: EVERY member of ERROR_REASON, iterated
   // from the enum itself (not a hand-picked subset), exits 1 under v1. A
-  // 26th member added without a mapping still exits 1 here (v1 never
-  // consults the mapping at all) but WOULD fail A1-under-v2 below via the
-  // `?? 'FAIL'` fallback resolving to 1 where a real mapping might not.
-  assert.equal(Object.keys(EXPECTED_REASON_OUTCOME_3912).length, 25, 'this table must cover all 25 ERROR_REASON members');
+  // 26th member added to the enum without a table entry still exits 1
+  // under v1 (v1 never consults the table at all); under v2, the table
+  // lookup for that member yields `undefined`, `CODE_FOR_3912.get(undefined)`
+  // yields `undefined`, and `err.code === expected` fails against the real
+  // code (1) for that reason. With the set-equality assertion below in
+  // place, that drift is caught first, with a message naming the specific
+  // missing/extra reason instead of a confusing "must exit undefined".
+  assert.deepEqual(
+    Object.keys(EXPECTED_REASON_OUTCOME_3912).sort(),
+    Object.values(io.ERROR_REASON).slice().sort(),
+    'this table must cover exactly the ERROR_REASON enum values, no more, no less',
+  );
   for (const [key, reasonValue] of Object.entries(io.ERROR_REASON)) {
     test(`v1: ERROR_REASON.${key} (${reasonValue}) exits 1`, () => {
       resolveContractVersion({ argv: ['node', 'x'], env: {} }); // v1
