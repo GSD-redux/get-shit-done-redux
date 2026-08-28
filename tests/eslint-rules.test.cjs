@@ -3485,4 +3485,83 @@ describe('require-registered-exit rule', () => {
       );
     }
   });
+
+  // ── #3914 (epic #3889 criterion 5): predecessor guard must not be left
+  // standing where the successor now covers the same surface ──────────────
+  //
+  // n/no-process-exit resolves to a bare string OR an array whose first
+  // element is severity (possibly numeric 0/1/2) depending on how ESLint
+  // merges the flat config; normalize before asserting.
+  function normalizeSeverity(entry) {
+    const raw = Array.isArray(entry) ? entry[0] : entry;
+    if (raw === 'off' || raw === 0) return 'off';
+    if (raw === 'warn' || raw === 1) return 'warn';
+    if (raw === 'error' || raw === 2) return 'error';
+    return raw;
+  }
+
+  test('n/no-process-exit is off (superseded) on the two globs shared with local/require-registered-exit', async () => {
+    const REPO_ROOT = path.join(__dirname, '..');
+    const eslint = new ESLint({ cwd: REPO_ROOT });
+    const sharedPaths = [
+      path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs'),
+      path.join(REPO_ROOT, 'scripts', 'affected-tests-lib.cjs'),
+    ];
+    for (const p of sharedPaths) {
+      const config = await eslint.calculateConfigForFile(p);
+      assert.strictEqual(
+        normalizeSeverity(config.rules['local/require-registered-exit']),
+        'error',
+        `expected local/require-registered-exit to be error for ${path.relative(REPO_ROOT, p)}`,
+      );
+      assert.strictEqual(
+        normalizeSeverity(config.rules['n/no-process-exit']),
+        'off',
+        `expected n/no-process-exit to be off (superseded) for ${path.relative(REPO_ROOT, p)}`,
+      );
+    }
+  });
+
+  // Positive control: the predecessor must still be 'error' on every glob
+  // that has NO successor registration, so this fix does not become a
+  // blanket disable of n/no-process-exit. bin/lib/**/*.cjs has no real file
+  // in this checkout (the directory does not exist), so it is intentionally
+  // omitted from this list — see PR notes.
+  test('n/no-process-exit remains error on the successor-less globs (positive control)', async () => {
+    const REPO_ROOT = path.join(__dirname, '..');
+    const eslint = new ESLint({ cwd: REPO_ROOT });
+    const controlPaths = [
+      path.join(REPO_ROOT, 'eslint-rules', 'no-source-grep.cjs'),
+      path.join(REPO_ROOT, 'pi', 'gsd.cjs'),
+      path.join(REPO_ROOT, 'examples', 'dynamic-context-management', 'demo.cjs'),
+      path.join(REPO_ROOT, 'vscode', 'extension.js'),
+      path.join(REPO_ROOT, '.kilo', 'plugins', 'gsd-core.js'),
+      path.join(REPO_ROOT, '.opencode', 'plugins', 'gsd-core.js'),
+    ];
+    for (const p of controlPaths) {
+      const config = await eslint.calculateConfigForFile(p);
+      assert.strictEqual(
+        normalizeSeverity(config.rules['n/no-process-exit']),
+        'error',
+        `expected n/no-process-exit to remain error for ${path.relative(REPO_ROOT, p)}`,
+      );
+    }
+  });
+
+  test('local/require-registered-exit remains error on src/**/*.cts and hooks/**/*.js (unchanged by the n/no-process-exit narrowing)', async () => {
+    const REPO_ROOT = path.join(__dirname, '..');
+    const eslint = new ESLint({ cwd: REPO_ROOT });
+    const unchangedPaths = [
+      path.join(REPO_ROOT, 'src', 'cli-exit.cts'),
+      path.join(REPO_ROOT, 'hooks', 'gsd-check-update.js'),
+    ];
+    for (const p of unchangedPaths) {
+      const config = await eslint.calculateConfigForFile(p);
+      assert.strictEqual(
+        normalizeSeverity(config.rules['local/require-registered-exit']),
+        'error',
+        `expected local/require-registered-exit to remain error for ${path.relative(REPO_ROOT, p)}`,
+      );
+    }
+  });
 });

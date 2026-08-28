@@ -554,6 +554,15 @@ export default tseslint.config(
       'local/no-private-binary-resolution': 'error',
       // #3910 (epic #3889 Phase 6): see the src/**/*.cts block above for detail.
       'local/require-registered-exit': 'error',
+      // #3914 (epic #3889 criterion 5): the successor supersedes n/no-process-exit
+      // on this glob — it permits process.exit only inside terminateNow in
+      // cli-exit.cts, the single sanctioned terminator (ADR-3889 §3), whereas
+      // n/no-process-exit permits none and would flag terminateNow's own
+      // generated copy here. n/no-process-exit deliberately REMAINS 'error' on
+      // the seven successor-less globs (eslint-rules/**, bin/lib/**, pi/**,
+      // examples/**, vscode/*.js, .kilo/plugins/*.js, .opencode/plugins/*.js)
+      // registered at :476-486 above, which this rule does not reach.
+      'n/no-process-exit': 'off',
       // #3624: see the src/**/*.cts block above for detail.
       'local/no-exact-case-env-access': 'error',
     },
@@ -585,6 +594,15 @@ export default tseslint.config(
       'local/no-private-binary-resolution': 'error',
       // #3910 (epic #3889 Phase 6): see the src/**/*.cts block above for detail.
       'local/require-registered-exit': 'error',
+      // #3914 (epic #3889 criterion 5): the successor supersedes n/no-process-exit
+      // on this glob — it permits process.exit only inside terminateNow in
+      // cli-exit.cts, the single sanctioned terminator (ADR-3889 §3), whereas
+      // n/no-process-exit permits none and would flag terminateNow's own
+      // generated copy here. n/no-process-exit deliberately REMAINS 'error' on
+      // the seven successor-less globs (eslint-rules/**, bin/lib/**, pi/**,
+      // examples/**, vscode/*.js, .kilo/plugins/*.js, .opencode/plugins/*.js)
+      // registered at :476-486 above, which this rule does not reach.
+      'n/no-process-exit': 'off',
       // #3624: see the src/**/*.cts block above for detail.
       'local/no-exact-case-env-access': 'error',
     },

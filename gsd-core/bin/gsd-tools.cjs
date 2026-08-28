@@ -254,7 +254,10 @@ try {
   // at this point in the process's lifetime — there is nothing to route
   // through. This is the second (and only other) sanctioned allowlist entry
   // for local/require-registered-exit, alongside terminateNow's own body.
-  // eslint-disable-next-line n/no-process-exit, local/require-registered-exit
+  // #3914: n/no-process-exit is now 'off' on this glob (superseded by
+  // local/require-registered-exit — see eslint.config.mjs), so only the
+  // latter needs a disable directive here.
+  // eslint-disable-next-line local/require-registered-exit
   process.exit(1);
 }
 
