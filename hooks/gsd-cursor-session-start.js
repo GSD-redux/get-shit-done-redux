@@ -23,6 +23,7 @@
 'use strict';
 
 const fs = require('fs');
+const { allow } = require('./lib/hook-exit.js');
 
 const MSG_PRESENT =
   'GSD: .planning/STATE.md is present — review the current phase and any blockers before acting.';
@@ -37,7 +38,7 @@ const { resolveStatePath } = require('./lib/cursor-workspace.js');
 let raw = '';
 const stdinTimeout = setTimeout(() => {
   // Timeout guard: exit silently rather than hanging.
-  process.exit(0);
+  allow(undefined);
 }, 10000);
 
 process.stdin.setEncoding('utf8');

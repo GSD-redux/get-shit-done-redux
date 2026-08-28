@@ -20,11 +20,17 @@
 
 const fs = require('fs');
 const path = require('path');
+const { HOOK_ON_CRASH, allow, crash } = require('./lib/hook-exit.js');
+
+// This hook only injects an advisory config-reload summary; a crash mid-parse
+// must not block the session or the FileChanged event that triggered it — the
+// agent simply keeps using the config context it already had (#3911).
+const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 
 let input = '';
 // Timeout guard: if stdin does not close within 8s exit silently rather than
 // hanging until Claude Code kills the process and reports "hook error".
-const stdinTimeout = setTimeout(() => process.exit(0), 8000);
+const stdinTimeout = setTimeout(() => allow(undefined), 8000);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => (input += chunk));
 process.stdin.on('end', () => {
@@ -42,24 +48,23 @@ process.stdin.on('end', () => {
     // inject spurious additionalContext.
     const basename = path.basename(filePath);
     if (basename !== 'config.json') {
-      process.exit(0);
+      allow(undefined);
     }
     const expectedPath = path.resolve(cwd, '.planning', 'config.json');
     if (path.resolve(filePath) !== expectedPath) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // On unlink (deletion) emit a brief notice and exit
     if (event === 'unlink') {
-      process.stdout.write(JSON.stringify({
+      allow({
         hookSpecificOutput: {
           hookEventName: 'FileChanged',
           additionalContext:
             'GSD config (.planning/config.json) was deleted. ' +
             'Falling back to built-in defaults for this session.',
         },
-      }));
-      process.exit(0);
+      });
     }
 
     // Read the updated config file
@@ -68,17 +73,16 @@ process.stdin.on('end', () => {
       const raw = fs.readFileSync(filePath, 'utf8');
       config = JSON.parse(raw);
     } catch (e) {
-      if (e && e.code === 'ENOENT') process.exit(0);
+      if (e && e.code === 'ENOENT') allow(undefined);
       // Malformed JSON — inform the agent without crashing
-      process.stdout.write(JSON.stringify({
+      allow({
         hookSpecificOutput: {
           hookEventName: 'FileChanged',
           additionalContext:
             'GSD config (.planning/config.json) was modified but could not be parsed. ' +
             'Check the file for JSON syntax errors.',
         },
-      }));
-      process.exit(0);
+      });
     }
 
     // Build a concise summary of key config fields the agent cares about
@@ -127,7 +131,9 @@ process.stdin.on('end', () => {
       },
     }));
   } catch (e) {
-    // Silent fail — never block the session on a config reload error
-    process.exit(0);
+    // Silent fail — never block the session on a config reload error.
+    // ON_CRASH is declared ALLOW at module top: this preserves today's
+    // exit(0) fail-open behavior exactly (#3911).
+    crash(ON_CRASH, undefined);
   }
 });

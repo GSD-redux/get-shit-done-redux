@@ -91,7 +91,7 @@ PLAN_START_EPOCH=$(date +%s)
 ```bash
 # Count tasks — match <task tag at any indentation level
 TASK_COUNT=$(grep -cE '^\s*<task[[:space:]>]' .planning/phases/XX-name/{phase}-{plan}-PLAN.md 2>/dev/null || echo "0")
-INLINE_THRESHOLD=$(gsd_run query config-get workflow.inline_plan_threshold 2>/dev/null || echo "2")
+INLINE_THRESHOLD=$(gsd_run query config-get workflow.inline_plan_threshold --raw 2>/dev/null || echo "2")
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
 HUMAN_VERIFY_MODE=$(gsd_run query config-get workflow.human_verify_mode --default end-of-phase --raw 2>/dev/null || echo "end-of-phase")
@@ -359,7 +359,7 @@ If verification fails:
 
 **Check if node repair is enabled** (default: on):
 ```bash
-NODE_REPAIR=$(gsd_run query config-get workflow.node_repair 2>/dev/null || echo "true")
+NODE_REPAIR=$(gsd_run query config-get workflow.node_repair --raw 2>/dev/null || echo "true")
 ```
 
 If `NODE_REPAIR` is `true`: invoke `@./.claude/gsd-core/workflows/node-repair.md` with:

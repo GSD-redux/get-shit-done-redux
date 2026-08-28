@@ -559,3 +559,52 @@ describe('applyRepairs — REAL diagnostics (rows 15-16)', () => {
     assert.ok(detail.error, 'the details row must carry the thrown error message');
   });
 });
+
+// ─── #3749: repair paths must be project-aware under GSD_PROJECT ────────────
+describe('health repair — GSD_PROJECT scoping (#3749)', () => {
+  test('createConfig writes config.json beside the SCOPED planning dir, not the root', (t) => {
+    const tmpDir = createTempDir('gsd-3749-repair-');
+    t.after(() => cleanup(tmpDir));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'second-product'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'second-product', 'PROJECT.md'), '# Second Product\n');
+
+    const diagnostics = [
+      fakeDiagnostic('W003', REMEDY_ACTION.CREATE_CONFIG, REMEDY_RISK.NONE),
+    ];
+    const prevProject = process.env['GSD_PROJECT'];
+    process.env['GSD_PROJECT'] = 'second-product';
+    t.after(() => {
+      if (prevProject === undefined) delete process.env['GSD_PROJECT'];
+      else process.env['GSD_PROJECT'] = prevProject;
+    });
+    const result = applyRepairs(tmpDir, diagnostics, true, false);
+    t.after(() => { delete process.env['GSD_PROJECT']; if (prevProject !== undefined) process.env['GSD_PROJECT'] = prevProject; });
+
+    assert.deepEqual(result.applied, ['W003']);
+    const scopedConfig = path.join(tmpDir, '.planning', 'second-product', 'config.json');
+    assert.ok(fs.existsSync(scopedConfig), '#3749: config.json must be created inside the scoped project');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'config.json')),
+      '#3749: the repair must not create a root config.json under GSD_PROJECT');
+  });
+
+  test('under GSD_WORKSTREAM (no project) config stays OUT of the workstream dir', (t) => {
+    const tmpDir = createTempDir('gsd-3749-repair-ws-');
+    t.after(() => cleanup(tmpDir));
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'workstreams', 'alpha'), { recursive: true });
+
+    const diagnostics = [
+      fakeDiagnostic('W003', REMEDY_ACTION.CREATE_CONFIG, REMEDY_RISK.NONE),
+    ];
+    const prev = process.env['GSD_WORKSTREAM'];
+    process.env['GSD_WORKSTREAM'] = 'alpha';
+    const result = applyRepairs(tmpDir, diagnostics, true, false);
+    if (prev === undefined) delete process.env['GSD_WORKSTREAM'];
+    else process.env['GSD_WORKSTREAM'] = prev;
+
+    assert.deepEqual(result.applied, ['W003']);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'config.json')),
+      'the documented root-vs-workstream split keeps config.json at the workstream PARENT');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'workstreams', 'alpha', 'config.json')),
+      'config.json must not move into the workstream dir');
+  });
+});

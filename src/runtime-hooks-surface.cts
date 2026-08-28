@@ -1507,27 +1507,41 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
     }
   }
 
-  // Stage the hooks/lib/ helpers the staged scripts require (#2587). Cursor sets
-  // hostBehaviors.skipSharedHooksInstall, so it never reaches the installer's
-  // bulk hooks/lib copy — without this, a script requiring './lib/…' would throw
-  // MODULE_NOT_FOUND at load, BEFORE its own try/catch, and wedge every Cursor
-  // session on the one runtime these hooks exist for. Driven off what the staged
-  // scripts actually require so a future helper cannot be silently omitted.
+  // Stage the hooks/lib/ helpers the staged scripts require (#2587), TRANSITIVELY
+  // (#3911 review): a lib helper can itself require a sibling under lib/ (e.g.
+  // hooks/lib/hook-exit.js requires './cli-exit.js', which requires
+  // './exit-code-registry.js') — a require with NO './lib/' prefix, because from
+  // inside lib/ the sibling is already local. The original single-pass scan only
+  // ever matched the "./lib/…" spelling used FROM a hook script, so it staged
+  // hook-exit.js but never walked hook-exit.js's own requires, and an installed
+  // Cursor hook wedged on MODULE_NOT_FOUND for './cli-exit.js' at load — before
+  // its own try/catch. This walks a worklist: hook scripts seed it with their
+  // "./lib/X" requires, and every lib file staged is itself scanned for further
+  // "./lib/X" OR bare "./X" (sibling-within-lib) requires, so the requirement
+  // graph is derived to a fixed point instead of one hand-tuned level deep.
   const requiredLibFiles = new Set<string>();
-  for (const script of installedScripts) {
-    const staged = fs.readFileSync(path.join(hooksDir, script), 'utf8');
-    // Tolerant of interior whitespace and either quote style: a hook author
-    // writing `require( "./lib/x.js" )` must still get its helper staged, since
-    // a miss here surfaces as MODULE_NOT_FOUND at hook load, not at install.
-    const re = /require\(\s*['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\s*\)/g;
+  const scannedLibFiles = new Set<string>();
+  const libRequireRe = /require\(\s*['"]\.\/(?:lib\/)?([A-Za-z0-9._-]+)['"]\s*\)/g;
+
+  function scanForLibRequires(source: string): void {
+    libRequireRe.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(staged)) !== null) requiredLibFiles.add(m[1]);
+    while ((m = libRequireRe.exec(source)) !== null) requiredLibFiles.add(m[1]);
   }
+
+  for (const script of installedScripts) {
+    scanForLibRequires(fs.readFileSync(path.join(hooksDir, script), 'utf8'));
+  }
+
   if (requiredLibFiles.size > 0) {
     const srcLibDir = path.join(srcHooksDir, 'lib');
     const destLibDir = path.join(hooksDir, 'lib');
     fs.mkdirSync(destLibDir, { recursive: true });
-    for (const libFile of requiredLibFiles) {
+    // Iterate to a fixed point: staging a lib file can add MORE required lib
+    // files (its own requires), which must themselves be staged and scanned.
+    let libFile: string | undefined = [...requiredLibFiles].find((f) => !scannedLibFiles.has(f));
+    while (libFile !== undefined) {
+      scannedLibFiles.add(libFile);
       const libSrc = path.join(srcLibDir, libFile);
       if (!fs.existsSync(libSrc)) {
         // FAIL LOUD. Skipping here would ship hook scripts whose top-level
@@ -1542,6 +1556,8 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
       let libContent = fs.readFileSync(libSrc, 'utf8');
       libContent = libContent.replace(/gsd:/gi, 'gsd-');
       fs.writeFileSync(path.join(destLibDir, libFile), libContent);
+      scanForLibRequires(libContent);
+      libFile = [...requiredLibFiles].find((f) => !scannedLibFiles.has(f));
     }
   }
 

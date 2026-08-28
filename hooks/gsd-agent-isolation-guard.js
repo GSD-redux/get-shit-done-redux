@@ -65,6 +65,23 @@ const path = require('path');
 const os = require('os');
 const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
 const { REASON_CODE } = require('./lib/isolation-deny-reason.js');
+const { HOOK_ON_CRASH, allow, deny, crash } = require('./lib/hook-exit.js');
+
+// Required at module top, alongside the other ./lib requires — NOT behind
+// ensureRuntimeBuild() below. Terminating on a parse/timeout failure must
+// never depend on the gitignored build artifacts this hook self-heals for
+// its own registry lookups (#3911).
+//
+// This guard's outer catch (main(), below) has always exited 0 (fail open):
+// that outer catch only covers payload PARSING failing before applicability
+// could even be determined (malformed stdin JSON, etc.) — the guard's real
+// fail-closed logic (a GSD project whose dispatch-isolation configuration
+// cannot be verified) is handled separately, inside evaluateDispatch/
+// resolveIsolationState, and already returns a 'block' decision through the
+// normal exit-2 path rather than through this catch. So an unparseable
+// payload has nothing to enforce; allowing it preserves today's behavior
+// exactly.
+const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 // #3582: gsd-core/bin/lib/*.cjs (runtime-name-policy.cjs, capability-registry.cjs
 // below) are tsc build artifacts (ADR-457), gitignored and absent on a raw
 // plugin-marketplace / git-clone install that never ran `npm run build:lib`.
@@ -476,7 +493,7 @@ function evaluateDispatch(data, { clock = Date } = {}) {
 /* istanbul ignore next -- stdin adapter, exercised via spawnSync in tests */
 function main() {
   let input = '';
-  const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+  const stdinTimeout = setTimeout(() => allow(undefined), 3000);
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => { input += chunk; });
   process.stdin.on('end', () => {
@@ -486,18 +503,18 @@ function main() {
       const decision = evaluateDispatch(data);
       if (decision.action === 'block') {
         const out = { decision: 'block', reason: decision.reason, reason_code: decision.reasonCode };
-        process.stdout.write(JSON.stringify(out));
         // Kimi feeds stderr (not stdout) back to the model on exit 2.
-        process.stderr.write(decision.reason);
-        process.exit(2);
+        deny(out, decision.reason);
       }
-      process.exit(0);
+      allow(undefined);
     } catch {
       // Silent fail — never block valid tool calls due to hook errors
       // (malformed payload, etc.). This is distinct from resolveIsolationState's
       // internal error handling, which DOES deny — this outer catch only
       // covers payload parsing before applicability could even be determined.
-      process.exit(0);
+      // ON_CRASH is declared ALLOW at module top: this preserves today's
+      // exit(0) fail-open behavior exactly (#3911).
+      crash(ON_CRASH, undefined);
     }
   });
 }

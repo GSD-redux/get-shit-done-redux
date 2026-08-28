@@ -21,8 +21,9 @@
  * For every file deleted (`git diff --name-status <base>...HEAD`, status
  * `D`), grep the post-diff tree for the deleted file's basename:
  *
- * - `.github/workflows/`, `gsd-core/`, `docs/`, `package.json` — ANY
- *   surviving reference fails (the original rule).
+ * - `.github/workflows/`, `gsd-core/`, `docs/` (excluding `docs/adr/**` and
+ *   `docs/research/**` — see "Historical-record exemption" below),
+ *   `package.json` — ANY surviving reference fails (the original rule).
  * - `tests/` — scanned with a discriminator (#3565): a reference that PINS
  *   existence (`fs.existsSync(path)`, `readFileSync`, `require`, or the
  *   basename as a quoted object key) fails; a reference that ASSERTS
@@ -78,6 +79,20 @@
  * basename-twin). Same trade the docstring already makes for prose
  * mentions above — a false violation reds a correct tree; a missed
  * ambiguous mention only loses one detection channel.
+ *
+ * ## Historical-record exemption (#3942)
+ *
+ * `docs/adr/**` and `docs/research/**` are excluded from the `docs/` scan.
+ * An ADR's or a post-mortem's entire job is to record what was retired —
+ * naming the deleted file IS the point of the document, not a defect — so
+ * without this exemption a PR could never write the ADR that explains its
+ * own deletion in the same PR that performs it (it would have to land in a
+ * follow-up, after the fact, which is backwards for a decision record).
+ * The exemption is narrow and applies only to these two directories: every
+ * other document under `docs/` (guides, `TESTING-SUITES.md`, generated
+ * indexes, etc.) still enforces "ANY surviving reference fails" exactly as
+ * before. `.github/workflows/`, `gsd-core/`, and `package.json` are
+ * likewise unaffected — none of those are historical-record surfaces.
  */
 
 const fs = require('node:fs');
@@ -347,12 +362,31 @@ function getSurvivingFiles(root) {
     .map((f) => f.replace(/\\/g, '/'));
 }
 
+// #3942: docs/adr/** and docs/research/** are historical records — an ADR's
+// or a post-mortem's whole job is to narrate what was retired, so naming a
+// file this same PR deletes is the point, not DEFECT.REMOVED-BUT-NEEDED.
+// Narrow and explicit: only these two `docs/` subtrees are exempt; every
+// other document under `docs/` still enforces the original rule unchanged.
+const DOCS_HISTORICAL_RECORD_PREFIXES = ['docs/adr/', 'docs/research/'];
+
+/**
+ * Pure: is `relFile` (repo-relative, forward-slash separated) inside one of
+ * the exempt historical-record directories (#3942)?
+ * @param {string} relFile
+ * @returns {boolean}
+ */
+function isDocsHistoricalRecord(relFile) {
+  return DOCS_HISTORICAL_RECORD_PREFIXES.some((prefix) => relFile.startsWith(prefix));
+}
+
 function buildCorpus(root) {
   const corpus = [];
   for (const rel of SCAN_ROOTS) {
     for (const abs of walk(path.join(root, rel))) {
+      const relFile = path.relative(root, abs).replace(/\\/g, '/');
+      if (rel === 'docs' && isDocsHistoricalRecord(relFile)) continue;
       try {
-        corpus.push({ file: path.relative(root, abs).replace(/\\/g, '/'), content: fs.readFileSync(abs, 'utf8') });
+        corpus.push({ file: relFile, content: fs.readFileSync(abs, 'utf8') });
       } catch {
         // unreadable (broken symlink, binary that slipped past SKIP_EXT) — skip
       }
@@ -443,10 +477,12 @@ module.exports = {
   getDeletedFiles,
   getSurvivingFiles,
   buildCorpus,
+  isDocsHistoricalRecord,
   scan,
   SCAN_ROOTS,
   EXTRA_FILES,
   TESTS_ROOT,
+  DOCS_HISTORICAL_RECORD_PREFIXES,
 };
 
 if (require.main === module) runMain(main);

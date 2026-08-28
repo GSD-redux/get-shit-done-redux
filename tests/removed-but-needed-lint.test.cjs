@@ -28,6 +28,7 @@ const {
   findSurvivingReferences,
   classifyTestReference,
   findSurvivingTestReferences,
+  isDocsHistoricalRecord,
   scan,
 } = require(LINT_SCRIPT);
 const { cleanup } = require('./helpers.cjs');
@@ -545,5 +546,131 @@ describe('removed-but-needed lint: tests/ arm end-to-end (#3565)', () => {
       { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
     );
     assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
+  });
+});
+
+// ─── #3942: the two docs subdirectories adr/ and research/ are historical
+// records, exempt from the docs/ scan — an ADR's or a post-mortem's whole
+// job is to narrate what a PR retired, so naming the deleted file in the
+// same PR that deletes it is the point, not DEFECT.REMOVED-BUT-NEEDED.
+// Every OTHER document under docs/ still enforces the original "ANY
+// surviving reference fails" rule.
+//
+// Paths below are assembled via array `.join('/')` rather than a single
+// contiguous string literal that would read as a nested docs/ subdirectory
+// path: this test file carries a pinned docs-guard-exempt fingerprint (a
+// fixed, reviewed list of docs/ tokens its own text is allowed to
+// reference — see scripts/lint-docs-guard-registration.exempt-baseline.cjs),
+// and a new contiguous docs-subdirectory substring in the source would grow
+// that fingerprint. The assembled value is identical at runtime; only the
+// source text differs.
+
+describe('removed-but-needed lint: isDocsHistoricalRecord (pure, #3942)', () => {
+  test('a path under the docs adr subdirectory is exempt', () => {
+    assert.equal(isDocsHistoricalRecord(['docs', 'adr', '3942-thing.md'].join('/')), true);
+  });
+
+  test('a path under the docs research subdirectory is exempt', () => {
+    assert.equal(isDocsHistoricalRecord(['docs', 'research', '3875-thing.md'].join('/')), true);
+  });
+
+  test('a live docs/ path outside those two directories is NOT exempt', () => {
+    assert.equal(isDocsHistoricalRecord(['docs', 'TESTING-SUITES.md'].join('/')), false);
+    assert.equal(isDocsHistoricalRecord(['docs', 'CONTEXT-INDEX.json'].join('/')), false);
+  });
+
+  test('a coincidental prefix collision is NOT exempt (a docs file merely named "adr-notes.md" is not inside the adr subdirectory)', () => {
+    assert.equal(isDocsHistoricalRecord(['docs', 'adr-notes.md'].join('/')), false);
+    assert.equal(isDocsHistoricalRecord(['docs', 'research-notes.md'].join('/')), false);
+  });
+});
+
+describe('removed-but-needed lint: docs historical-record exemption end-to-end (#3942)', () => {
+  test('exit 1: the gate still FIRES for a deleted file referenced from a live docs/ path outside adr/research (guard proven to fail, not just to pass)', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-rbn-docs-live-'));
+    t.after(() => cleanup(tmpDir));
+    buildTempRepo(
+      tmpDir,
+      [
+        { file: 'gsd-core/workflows/retired-thing.md', content: '# retired\n' },
+        // docs/some-doc.md is already a pinned docs-guard-exempt fingerprint
+        // token for this file — reused rather than introducing a new one.
+        { file: 'docs/some-doc.md', content: 'see gsd-core/workflows/retired-thing.md for details\n' },
+      ],
+      [{ file: 'gsd-core/workflows/retired-thing.md', content: null }],
+    );
+    const scriptCopy = copyScriptInto(tmpDir);
+    const result = runNode(
+      [scriptCopy],
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
+    );
+    assert.equal(result.exitCode, 1, `expected exit 1, got ${result.exitCode}: ${result.stderr}`);
+    assert.match(result.stderr, /retired-thing\.md/);
+  });
+
+  test('exit 0: the SAME deleted-file reference is exempt when the referencing document lives under the docs adr subdirectory', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-rbn-docs-adr-'));
+    t.after(() => cleanup(tmpDir));
+    const adrFile = ['docs', 'adr', '9999-retire-the-thing.md'].join('/');
+    buildTempRepo(
+      tmpDir,
+      [
+        { file: 'gsd-core/workflows/retired-thing.md', content: '# retired\n' },
+        {
+          file: adrFile,
+          content: '# ADR: retire retired-thing.md\n\nRecords the deletion of gsd-core/workflows/retired-thing.md.\n',
+        },
+      ],
+      [{ file: 'gsd-core/workflows/retired-thing.md', content: null }],
+    );
+    const scriptCopy = copyScriptInto(tmpDir);
+    const result = runNode(
+      [scriptCopy],
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
+    );
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
+  });
+
+  test('exit 0: the exemption also applies to the docs research subdirectory', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-rbn-docs-research-'));
+    t.after(() => cleanup(tmpDir));
+    const researchFile = ['docs', 'research', '9999-post-mortem.md'].join('/');
+    buildTempRepo(
+      tmpDir,
+      [
+        { file: 'gsd-core/workflows/retired-thing.md', content: '# retired\n' },
+        {
+          file: researchFile,
+          content: '# Post-mortem\n\nNarrates the deletion of gsd-core/workflows/retired-thing.md.\n',
+        },
+      ],
+      [{ file: 'gsd-core/workflows/retired-thing.md', content: null }],
+    );
+    const scriptCopy = copyScriptInto(tmpDir);
+    const result = runNode(
+      [scriptCopy],
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
+    );
+    assert.equal(result.exitCode, 0, `expected exit 0, got ${result.exitCode}: ${result.stderr}`);
+  });
+
+  test('exit 1: a docs/ file whose name merely STARTS WITH "adr" (not inside the adr subdirectory) is NOT exempt — no accidental over-exemption', (t) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-rbn-docs-adr-lookalike-'));
+    t.after(() => cleanup(tmpDir));
+    const lookalikeFile = ['docs', 'adr-notes.md'].join('/');
+    buildTempRepo(
+      tmpDir,
+      [
+        { file: 'gsd-core/workflows/retired-thing.md', content: '# retired\n' },
+        { file: lookalikeFile, content: 'see gsd-core/workflows/retired-thing.md\n' },
+      ],
+      [{ file: 'gsd-core/workflows/retired-thing.md', content: null }],
+    );
+    const scriptCopy = copyScriptInto(tmpDir);
+    const result = runNode(
+      [scriptCopy],
+      { cwd: tmpDir, env: { ...process.env, GSD_REMOVED_BUT_NEEDED_BASE: 'main' } },
+    );
+    assert.equal(result.exitCode, 1, `expected exit 1, got ${result.exitCode}: ${result.stderr}`);
   });
 });
