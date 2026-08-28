@@ -636,6 +636,89 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
     }
   });
 
+  test('validate-commit resolves only git\'s FIRST message argument (round-4 Codex BLOCKER)', () => {
+    // The `-m` capture is a SEARCH over the whole command and the double-quoted
+    // arm is tried first, so it could select a `-m` that is not git's subject.
+    // git CONCATENATES multiple -m arguments and the SUBJECT is the first one —
+    // verified against real commits, not the man page: for
+    // `-m 'WIP first' -m "$(cat …)"` git records `WIP first`.
+    //
+    // Every row below measured base=2 -> head=0 before this guard. Non-vacuous
+    // by construction: each heredoc body is conforming, so a hook that resolves
+    // the wrong -m returns 0 on all four. The counterpart row above
+    // ("leaves every non-heredoc form exactly as it was") covers these same
+    // positions with a plain `WIP`, which never activates the resolver — which
+    // is exactly why this interaction went unnoticed.
+    const body = "$(cat <<'EOF'\nfeat: accepted body\nEOF\n)";
+    for (const [label, cmd] of [
+      ['an earlier single-quoted -m', `git commit --allow-empty -m 'WIP first' -m "${body}"`],
+      ['an earlier unquoted -m', `git commit -m WIP -m "${body}"`],
+      ['after -- it is a pathspec, not a message', `git commit -m WIP -- -m "${body}"`],
+      ['it belongs to a later command', `git commit -m WIP && echo -m "${body}"`],
+    ]) {
+      const result = runHookCmd(cmd);
+      assert.strictEqual(result.status, 2,
+        `${label}: git's real subject is the FIRST message, which is non-conforming — resolving `
+        + 'the later heredoc validates text git never uses as the subject');
+      assert.strictEqual(JSON.parse(result.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+    }
+  });
+
+  test('validate-commit refuses to resolve under a non-default cleanup mode (round-4 Codex BLOCKER)', () => {
+    // The resolver strips trailing whitespace and skips leading blank lines
+    // because git's DEFAULT cleanup=whitespace does. Under `--cleanup=verbatim`
+    // git does neither, so this subject is committed at 75 bytes while the hook
+    // measured the stripped 72 — COMMIT_SUBJECT_TOO_LONG dodged (base=2 ->
+    // head=0). Confirmed by reading the RAW commit object: `git log --pretty=%s`
+    // strips trailing whitespace in its own output and hides the difference.
+    const subject72 = `feat: ${'x'.repeat(66)}`;
+    assert.strictEqual(subject72.length, 72, 'fixture built wrong');
+    const heredocBody = `"$(cat <<'EOF'\n${subject72}   \nEOF\n)"`;
+
+    for (const [label, cmd] of [
+      ['--cleanup=verbatim', `git commit --allow-empty --cleanup=verbatim -m ${heredocBody}`],
+      ['-c commit.cleanup=verbatim', `git -c commit.cleanup=verbatim commit --allow-empty -m ${heredocBody}`],
+    ]) {
+      assert.strictEqual(runHookCmd(cmd).status, 2,
+        `${label}: git preserves the trailing whitespace, so the real subject is 75 chars — the `
+        + 'hook must not measure the stripped form');
+    }
+
+    // Non-vacuity: the DEFAULT mode is the case the fix exists for, and it must
+    // still resolve and allow. Without these the rows above would pass for a
+    // hook that simply stopped resolving everything.
+    for (const [label, cmd] of [
+      ['--cleanup=whitespace', `git commit --allow-empty --cleanup=whitespace -m ${heredocBody}`],
+      ['no cleanup flag', `git commit --allow-empty -m ${heredocBody}`],
+    ]) {
+      assert.strictEqual(runHookCmd(cmd).status, 0,
+        `${label}: git strips the trailing whitespace here, so the real subject is a conforming 72`);
+    }
+  });
+
+  test('validate-commit does not trust a relative path ending in cat (round-4 Codex MAJOR)', () => {
+    // Recognition accepted any path ending in `/cat`, so a planted `./cat` or
+    // `../evil/cat` was trusted to echo its stdin. With such an executable
+    // printing `WIP injected`, the resolver validated the heredoc body while
+    // git's real subject was `WIP injected` (measured base=2 -> head=0 against
+    // a real commit). Only an absolute path or a bare `cat` is recognised now.
+    //
+    // RESIDUAL, and not fixable from a string: a bare `cat` shadowed earlier on
+    // PATH behaves identically and is indistinguishable here. It is also not a
+    // meaningful boundary — anyone able to plant an executable on PATH can run
+    // `git commit` directly.
+    const body = "<<'EOF'\nfeat: accepted body\nEOF\n)";
+    for (const [label, prog] of [['./cat', './cat'], ['../evil/cat', '../evil/cat'], ['x/cat', 'x/cat']]) {
+      assert.strictEqual(runHookCmd(`git commit -m "$(${prog} ${body}"`).status, 2,
+        `${label}: a relative executable merely ENDING in cat is not known to echo its stdin`);
+    }
+    // Non-vacuity: the legitimate absolute and bare forms still resolve.
+    assert.strictEqual(runHookCmd(`git commit -m "$(/bin/cat ${body}"`).status, 0,
+      'an absolute /bin/cat is the same canonical form and must still resolve');
+    assert.strictEqual(runHookCmd(`git commit -m "$(cat ${body}"`).status, 0,
+      'a bare cat is the canonical idiom #3802 is about');
+  });
+
   test('validate-commit allows non-commit commands', () => {
     const hookPath = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
     const input = JSON.stringify({

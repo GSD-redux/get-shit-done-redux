@@ -37,12 +37,15 @@ if GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" node -e "
   # gate (review of #3816, round 4).
   MSG=""
   MSG_QUOTE=""
+  MSG_MATCH=""
   if [[ "$CMD" =~ -m[[:space:]]+\"([^\"]+)\" ]]; then
     MSG="${BASH_REMATCH[1]}"
     MSG_QUOTE=dq
+    MSG_MATCH="${BASH_REMATCH[0]}"
   elif [[ "$CMD" =~ -m[[:space:]]+\'([^\']+)\' ]]; then
     MSG="${BASH_REMATCH[1]}"
     MSG_QUOTE=sq
+    MSG_MATCH="${BASH_REMATCH[0]}"
   fi
 
   if [ -n "$MSG" ]; then
@@ -87,7 +90,60 @@ if GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" node -e "
     # mentions a glued single-quoted token (`-m "... -m 'foo'bar ..."`) trip
     # the sq arm and lose the fix for a message that never had a prefix
     # problem (review of #3816, round 4, Minor 1).
-    if [ "$MSG_QUOTE" = dq ] && ! [[ "$CMD" =~ -m[[:space:]]+\"[^\"]+\"[^[:space:]] ]]; then
+    # RESOLVER PRECONDITIONS. The resolver may run only where the captured text
+    # is provably the subject git receives. Each guard names an input where it
+    # is not; every refusal falls back to `head -1`, the pre-fix subject, which
+    # fails the format gate exactly as this whole form did before the fix.
+    RESOLVE=0
+    if [ "$MSG_QUOTE" = dq ]; then
+      RESOLVE=1
+      # Text before the message we matched. The heredoc BODY always sits after
+      # the match, so this window cannot be contaminated by message content —
+      # which is what lets the two guards below scan for tokens that would also
+      # be legal inside a commit message.
+      MSG_PREFIX="${CMD%%"$MSG_MATCH"*}"
+
+      # ADJACENCY GUARD (review of #3816): text glued to the CLOSING quote —
+      # `-m "$(cat <<'EOF' ... )"suffix` — is concatenated by bash into the SAME
+      # argument, so the capture holds only a PREFIX of the real message, and
+      # the length gate would measure a fraction of the real subject.
+      if [[ "$CMD" =~ -m[[:space:]]+\"[^\"]+\"[^[:space:]] ]]; then RESOLVE=0; fi
+
+      # FIRST-MESSAGE GUARD (Codex review of #3816, round 4 — BLOCKER). The
+      # capture is a SEARCH over the whole command and the double-quoted arm is
+      # tried first, so it can select a `-m` that is not git's subject at all:
+      #
+      #   git commit -m 'WIP first' -m "$(cat <<'EOF'  -> git concatenates; the
+      #   git commit -m WIP        -m "$(cat <<'EOF'      subject is `WIP first`
+      #   git commit -m WIP --     -m "$(cat <<'EOF'  -> after --, not a message
+      #   git commit -m WIP && echo -m "$(cat <<'EOF' -> belongs to `echo`
+      #
+      # All four measured base=2 -> head=0, with git recording the FIRST message
+      # as the subject (verified against real commits, not the man page). The
+      # mis-selection is pre-existing; resolving it is what turned it into an
+      # enforcement bypass. Resolve only when nothing before the match could
+      # have been an earlier message, an end-of-options marker, or another
+      # command.
+      if [[ "$MSG_PREFIX" =~ (^|[[:space:]])(-m|--message)([[:space:]]|=) ]] \
+        || [[ "$MSG_PREFIX" =~ (^|[[:space:]])--([[:space:]]|$) ]] \
+        || [[ "$MSG_PREFIX" =~ [\;\&\|] ]]; then RESOLVE=0; fi
+
+      # CLEANUP-MODE GUARD (Codex review of #3816, round 4 — BLOCKER). The
+      # resolver skips leading blank lines and strips trailing whitespace
+      # because git's DEFAULT cleanup=whitespace does. Under
+      # `--cleanup=verbatim` git does neither, so a 72-char subject plus three
+      # trailing spaces is committed as a 75-byte subject while the hook
+      # measured 72 — COMMIT_SUBJECT_TOO_LONG dodged (measured base=2 -> head=0;
+      # confirmed by reading the raw commit object, since `git log --pretty=%s`
+      # strips trailing whitespace in its own output and hides it).
+      # Any named mode other than `whitespace` refuses. A mode set persistently
+      # in git config is invisible here and stays a documented residual limit.
+      if [[ "$CMD" =~ (--cleanup|commit\.cleanup)[=[:space:]]+([^[:space:]]+) ]]; then
+        if [ "${BASH_REMATCH[2]}" != "whitespace" ]; then RESOLVE=0; fi
+      fi
+    fi
+
+    if [ "$RESOLVE" = 1 ]; then
       SUBJECT=$(GIT_CMD_LIB="$HOOK_DIR/lib/git-cmd.js" MSG="$MSG" node -e "
         const {resolveCommitSubject}=require(process.env.GIT_CMD_LIB);
         process.stdout.write(resolveCommitSubject(process.env.MSG));

@@ -235,8 +235,13 @@ function isGitSubcommand(cmd, sub) {
  * false positive on one rare spelling), and widening the bash capture to span
  * inner quotes would change what is captured for EVERY message containing one —
  * a regression class this fix deliberately does not touch (Codex review of
- * #3816). The same capture truncation blocks a `"` anywhere in the MESSAGE
- * itself, subject line included. Two more legal-but-unrecognized spellings
+ * #3816). The same capture truncation blocks a `"` in the SUBJECT LINE itself,
+ * where it lands inside the line being measured. It does NOT block a `"` on a
+ * later body line: the subject is already complete before the truncation point,
+ * so that message resolves and is allowed (measured; an earlier revision of this
+ * comment and of the changeset claimed a `"` ANYWHERE blocked, which is false —
+ * Codex review of #3816, round 4). The truncation guard below is what keeps the
+ * unmeasurable half fail-closed. Two more legal-but-unrecognized spellings
  * stay blocked the same fail-closed way: an env-prefixed cat
  * (`$(A=1 cat <<'EOF'`) and an option-terminated cat (`$(cat -- <<'EOF'`) —
  * recognizing either would mean modelling bash prefix words here, cost with
@@ -270,11 +275,25 @@ function resolveCommitSubject(messageArg) {
   // #3816, round 3), and recognizing it costs nothing — the token before `<<`
   // is still literally `cat`.
   //
+  // The path prefix must be ABSOLUTE (Codex review of #3816, round 4). The old
+  // `[\w./-]*\/` also accepted `./cat` and `../evil/cat`, so a relative
+  // executable that merely ENDS in `cat` was trusted to echo its stdin: with a
+  // planted `../evil/cat` printing `WIP injected`, the resolver validated the
+  // heredoc body while git's real subject was `WIP injected` (measured
+  // base=2 -> head=0 against a real commit). Requiring `/` up front costs
+  // nothing real — `/bin/cat` and a bare `cat` both still resolve.
+  //
+  // RESIDUAL, not fixable from a string: a bare `cat` shadowed earlier on PATH
+  // has the same effect and is indistinguishable here. It is also not a
+  // meaningful boundary — anyone who can plant an executable on PATH can run
+  // `git commit` directly — so this hook stays an authoring guard, not a
+  // security control.
+  //
   // The delimiter alternatives are split so the BARE spelling is its own group:
   // `\\(...)` (backslash-quoted) and `(...)` (bare) were one `\\?(...)` branch,
   // which conflated the only two spellings that differ in bash. See the
   // expansion guard below.
-  const opener = /^\$\([ \t]*(?:[\w./-]*\/)?cat[ \t]*<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\([^\s'"();|&<>\\]+)|([^\s'"();|&<>\\]+))[ \t]*$/
+  const opener = /^\$\([ \t]*(?:\/[\w.-]+(?:\/[\w.-]+)*\/)?cat[ \t]*<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\([^\s'"();|&<>\\]+)|([^\s'"();|&<>\\]+))[ \t]*$/
     .exec(lines[0]);
   if (!opener) return lines[0];
 

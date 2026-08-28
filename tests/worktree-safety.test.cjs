@@ -4496,6 +4496,20 @@ describe('git-cmd.js resolveCommitSubject', () => {
       'fix: hyphen tag');
   });
 
+  test('round 4: a RELATIVE path ending in cat is not recognised', () => {
+    // Codex review of #3816, round 4. The path class accepted `./cat` and
+    // `../evil/cat`, so any relative executable merely ENDING in `cat` was
+    // trusted to echo its stdin. With a planted one printing `WIP injected`,
+    // the resolver validated the heredoc body while git's real subject was
+    // `WIP injected` (measured base=2 -> head=0 against a real commit).
+    // Non-vacuous: each body below is conforming, so a resolver that still
+    // recognised these returns the body.
+    for (const prog of ['./cat', '../evil/cat', 'x/cat']) {
+      assert.strictEqual(resolveCommitSubject(`$(${prog} <<'EOF'\nfix: body\nEOF\n)`),
+        `$(${prog} <<'EOF'`, `${prog}: a relative path is not a known cat`);
+    }
+  });
+
   test('a path-qualified cat is still the same form', () => {
     assert.strictEqual(resolveCommitSubject("$(/bin/cat <<'EOF'\nfix: pathed cat\nEOF\n)"),
       'fix: pathed cat');
