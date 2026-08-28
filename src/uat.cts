@@ -1948,14 +1948,25 @@ interface AcknowledgeDeferredItemResult {
  * `status:` away from `acknowledged` (or delete the field) and it resurfaces
  * with no separate cleanup step, exactly like every other category's marker.
  *
- * Deliberately refuses (`unsupported_heading_shape`) rather than guess when
- * the section uses the heading-delimited (#3457) entry shape: reliably
- * mapping a `splitDeferredHeadingEntries` entry back to its EXACT source line
- * span is not safely derivable without re-deriving that function's
- * leaf/container walk against a document that may also mix in headless
- * (`splitGapsEntries`-derived) entries between headings — attempting it risks
- * writing into the WRONG entry. The bullet-only (headless) shape below is the
- * primary, documented SCOPE BOUNDARY convention and is handled precisely.
+ * #3781: the heading-delimited (#3457) entry shape is SUPPORTED, via
+ * `splitDeferredHeadingEntriesWithSpans` — a span-carrying sibling of the
+ * reader's walk that records each entry's (start, end) character span in the
+ * SAME pass that groups its lines (the identical technique
+ * `splitGapsEntriesWithSpans` uses for the headless shape). Leaf entries keep
+ * their RAW heading line as `lines[0]` so `sectionBody.slice(start, end)` is
+ * byte-verbatim; pending (preamble / container-direct) regions are contiguous
+ * slices handed to `splitGapsEntriesWithSpans` with a baseOffset translation.
+ * Two write rules differ from the headless path on this shape: the status
+ * search runs over the READER-form lines (what the reader actually parses —
+ * including the leaf line-0 corner where the heading text itself parses as a
+ * status field, whose raw line is rewritten with its ATX prefix preserved),
+ * and the insert branch inserts after the entry's LAST NON-BLANK line — a
+ * heading entry's body is frequently a soft-wrapped sentence, and splicing
+ * after line 0 would split it in half (#3781's sentence-split trap).
+ * Entries whose span embeds a GFM table row are non-contiguous (table lines
+ * are excluded from entries) and still refuse (`unsupported_heading_shape`)
+ * rather than risk a wrong-entry write; the fully-headless shape below is
+ * byte-for-byte the pre-#3781 path.
  *
  * Also refuses `ambiguous` (2+ entries share the exact same text — status must
  * be unique to identify one) and `not_found`, and is a no-op
@@ -2002,8 +2013,11 @@ function acknowledgeDeferredItem(content: string, targetText: string): Acknowled
   );
   const sectionBody = deferredSection ? deferredSection.body : content;
 
-  if (splitDeferredHeadingEntries(sectionBody) !== null) {
-    return { content, status: 'unsupported_heading_shape' };
+  // #3781: the heading-delimited shape carries its own span walk; the
+  // headless path below is unchanged.
+  const headingEntries = splitDeferredHeadingEntriesWithSpans(sectionBody);
+  if (headingEntries !== null) {
+    return acknowledgeHeadingShapedEntry({ content, sectionBody, deferredSection, headingEntries, targetText });
   }
 
   const entries = splitGapsEntriesWithSpans(sectionBody);
@@ -2102,6 +2116,280 @@ function acknowledgeDeferredItem(content: string, targetText: string): Acknowled
   }
 
   const newContent = content.slice(0, matchIndexInContent) + newMatchedLines.join('\n') + content.slice(matchIndexInContent + (end - start));
+  return { content: newContent, status: 'ok' };
+}
+
+/**
+ * #3781 — one entry of the heading-delimited deferred shape, carrying the
+ * exact character span it occupies within the `sectionBody` it was derived
+ * from. `lines[0]` of a LEAF entry is the RAW heading line (hashes intact) so
+ * `sectionBody.slice(start, end)` is byte-verbatim; `readerLines` is the
+ * reader-form of the same lines (ATX-stripped line 0, bullet-stripped body)
+ * the identity text and field extraction are computed over. `embeddedTable`
+ * marks entries whose span contains a GFM table line — table lines are
+ * excluded from entries, so such a span is non-contiguous and its entries
+ * refuse rather than risk a wrong write.
+ */
+interface DeferredHeadingEntrySpan {
+  kind: 'leaf' | 'pending';
+  lines: string[];
+  readerLines: string[];
+  text: string;
+  fields: Record<string, string>;
+  start: number;
+  end: number;
+  embeddedTable: boolean;
+}
+
+/**
+ * #3781 — strip an ATX heading prefix, mirroring `tokenizeHeadings`' own ATX
+ * regex (≤3 leading spaces, 1–6 `#`, space/tab separator, optional closing
+ * `#` sequence) so the raw heading line reconciles byte-exactly with the
+ * hash-stripped `text` the reader exposes. Returns null when the line is not
+ * an ATX heading line.
+ */
+function stripAtxPrefix(line: string): string | null {
+  const m = /^( {0,3})(#{1,6})([ \t]+.*|[ \t]*)?$/.exec(line.replace(/\r$/, ''));
+  if (!m) return null;
+  return m[3] === undefined
+    ? ''
+    : m[3].replace(/^[ \t]+/, '').replace(/[ \t]+#+[ \t]*$/, '').replace(/^#+[ \t]*$/, '').trim();
+}
+
+/**
+ * #3781 — span-carrying sibling of `splitDeferredHeadingEntries`: ONE walk,
+ * identical grouping rules (leaf = childless heading whose body carries a
+ * bullet; container = next heading deeper; preamble/container-direct lines →
+ * headless entries; table lines excluded), additionally recording each
+ * entry's (start, end) character span within `sectionBody`. Returns null when
+ * the body contains no heading at all — the caller then takes the unchanged
+ * fully-headless path.
+ */
+function splitDeferredHeadingEntriesWithSpans(sectionBody: string): DeferredHeadingEntrySpan[] | null {
+  const headings = tokenizeHeadings(sectionBody);
+  if (headings.length === 0) return null;
+
+  const lines = sectionBody.split('\n');
+  const lineStarts: number[] = [];
+  const lineEnds: number[] = [];
+  let cursor = 0;
+  for (const rawLine of lines) {
+    lineStarts.push(cursor);
+    cursor += rawLine.length;
+    lineEnds.push(cursor);
+    cursor += 1;
+  }
+
+  const headingByLine = new Map<number, { text: string; isContainer: boolean }>();
+  for (let i = 0; i < headings.length; i++) {
+    const isContainer = i + 1 < headings.length && headings[i + 1].level > headings[i].level;
+    headingByLine.set(headings[i].line, { text: headings[i].text, isContainer });
+  }
+
+  const isTableLine = (l: string): boolean => /^\s*\|/.test(l.replace(/\r$/, ''));
+  const isBulletLine = (l: string): boolean => /^\s*-\s/.test(l.replace(/\r$/, ''));
+
+  const entries: DeferredHeadingEntrySpan[] = [];
+  let current: string[] | null = null;
+  let currentReaderLine0: string | null = null;
+  let currentStartLine = -1;
+  let currentEndLine = -1;
+  let currentHasBullet = false;
+  let currentTable = false;
+  let pendingStartLine = -1;
+  let pendingEndLine = -1;
+
+  const flushCurrent = (): void => {
+    if (current !== null && currentHasBullet && currentReaderLine0 !== null) {
+      const bodyReader = current.slice(1).map(stripLeadingBulletMarker);
+      entries.push({
+        kind: 'leaf',
+        lines: current,
+        readerLines: [currentReaderLine0, ...bodyReader],
+        text: rawGapEntryText([currentReaderLine0, ...current.slice(1)]),
+        fields: extractGapEntryFields([currentReaderLine0, ...bodyReader]),
+        start: lineStarts[currentStartLine],
+        end: lineEnds[currentEndLine],
+        embeddedTable: currentTable,
+      });
+    }
+    current = null;
+    currentReaderLine0 = null;
+    currentStartLine = -1;
+    currentEndLine = -1;
+    currentHasBullet = false;
+    currentTable = false;
+  };
+  const flushPending = (): void => {
+    if (pendingStartLine === -1) return;
+    // The pending region is contiguous (a heading flushes it), but table lines
+    // inside it were skipped by the walk: the reader's identity for this
+    // region is computed over the table-FILTERED join, which may merge
+    // entries across the gap, so spans cannot be translated faithfully —
+    // mark the region's entries as refusing instead.
+    let regionTable = false;
+    for (let i = pendingStartLine; i <= pendingEndLine; i++) {
+      if (isTableLine(lines[i])) regionTable = true;
+    }
+    const base = lineStarts[pendingStartLine];
+    const regionText = sectionBody.slice(lineStarts[pendingStartLine], lineEnds[pendingEndLine]);
+    for (const e of splitGapsEntriesWithSpans(regionText)) {
+      entries.push({
+        kind: 'pending',
+        lines: e.lines,
+        readerLines: e.lines,
+        text: rawGapEntryText(e.lines),
+        fields: extractGapEntryFields(e.lines),
+        start: base + e.start,
+        end: base + e.end,
+        embeddedTable: regionTable,
+      });
+    }
+    pendingStartLine = -1;
+    pendingEndLine = -1;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const heading = headingByLine.get(i + 1);
+    if (heading !== undefined) {
+      flushCurrent();
+      flushPending();
+      if (!heading.isContainer) {
+        current = [lines[i]];
+        currentReaderLine0 = heading.text;
+        currentStartLine = i;
+        currentEndLine = i;
+        currentHasBullet = false;
+        currentTable = false;
+      }
+      continue;
+    }
+    if (isTableLine(lines[i])) {
+      if (current !== null) currentTable = true;
+      continue;
+    }
+    if (current !== null) {
+      current.push(lines[i]);
+      currentEndLine = i;
+      if (isBulletLine(lines[i])) currentHasBullet = true;
+    } else {
+      if (pendingStartLine === -1) pendingStartLine = i;
+      pendingEndLine = i;
+    }
+  }
+  flushCurrent();
+  flushPending();
+
+  return entries;
+}
+
+/**
+ * #3781 — the heading-shaped half of `acknowledgeDeferredItem`, sharing the
+ * headless path's guards (not_found / ambiguous / already_resolved /
+ * match_verification_failed) and its rewrite/insert machinery, with the two
+ * shape-specific rules documented on `acknowledgeDeferredItem` (reader-form
+ * status search incl. the leaf line-0 ATX corner; insert after the entry's
+ * last non-blank line). Extracted so the headless path stays byte-identical.
+ */
+function acknowledgeHeadingShapedEntry({ content, sectionBody, deferredSection, headingEntries, targetText }: {
+  content: string;
+  sectionBody: string;
+  deferredSection: { body: string; bodyStart: number } | null;
+  headingEntries: DeferredHeadingEntrySpan[];
+  targetText: string;
+}): AcknowledgeDeferredItemResult {
+  const matches = headingEntries.filter((e) => e.text === targetText);
+  if (matches.length === 0) return { content, status: 'not_found' };
+  if (matches.length > 1) return { content, status: 'ambiguous' };
+  const entry = matches[0];
+  if (entry.embeddedTable) return { content, status: 'unsupported_heading_shape' };
+  if (entry.fields.status && entry.fields.status.toLowerCase() === 'resolved') {
+    return { content, status: 'already_resolved' };
+  }
+
+  const sectionOffset = deferredSection ? deferredSection.bodyStart : 0;
+  const rawSlice = sectionBody.slice(entry.start, entry.end);
+  const rawSliceLines = rawSlice.split('\n');
+
+  // Genuine invariant re-verification: re-derive the entry's identity from
+  // the span's own bytes and compare against the targetText that selected it
+  // — the span was recorded by an offset bookkeeping independent of the
+  // identity comparison above.
+  const verifyText = entry.kind === 'leaf'
+    ? (() => {
+        const stripped = stripAtxPrefix(rawSliceLines[0]);
+        return stripped === null ? null : rawGapEntryText([stripped, ...rawSliceLines.slice(1)]);
+      })()
+    : rawGapEntryText(rawSliceLines.map((l) => l.replace(/\r$/, '')));
+  if (verifyText !== targetText) {
+    return { content, status: 'match_verification_failed' };
+  }
+
+  // Status search over the READER-form lines — the exact set the reader
+  // parses (bolded any case + bare lowercase, per #3775; line-0 forms per
+  // #3740). Reader lines are index-aligned 1:1 with the raw lines.
+  const statusFieldBoldedRe = /^\s*\*+status:\*+/i;
+  const statusFieldBareRe = /^\s*status:/;
+  const statusFieldBoldedReLine0 = /^\s*(?:-\s+)?\*+status:\*+/i;
+  const statusFieldBareReLine0 = /^\s*(?:-\s+)?status:/;
+  const readerLines = entry.kind === 'leaf'
+    ? [
+        stripAtxPrefix(rawSliceLines[0]) ?? rawSliceLines[0].replace(/\r$/, ''),
+        ...rawSliceLines.slice(1).map((l) => stripLeadingBulletMarker(l.replace(/\r$/, ''))),
+      ]
+    : rawSliceLines.map((l) => l.replace(/\r$/, ''));
+  const statusLineIdx = readerLines.findIndex((line, idx) =>
+    idx === 0
+      ? (statusFieldBoldedReLine0.test(line) || statusFieldBareReLine0.test(line))
+      : (statusFieldBoldedRe.test(line) || statusFieldBareRe.test(line)));
+
+  let newRawLines: string[];
+  if (statusLineIdx === -1) {
+    // Insert branch: after the entry's LAST NON-BLANK line — a heading
+    // entry's body is frequently a soft-wrapped sentence, and splicing after
+    // line 0 would split it in half (#3781's sentence trap). The headless
+    // (no-heading-anywhere) path keeps its own splice-after-line-0 shape.
+    let lastNonBlank = rawSliceLines.length - 1;
+    while (lastNonBlank > 0 && rawSliceLines[lastNonBlank].replace(/\r$/, '').trim() === '') {
+      lastNonBlank--;
+    }
+    const indent = entry.kind === 'pending'
+      ? (() => {
+          const bulletIndentMatch = rawSliceLines[0].match(/^(\s*)-\s+/);
+          return ' '.repeat((bulletIndentMatch ? bulletIndentMatch[1].length : 0) + 2);
+        })()
+      : '  ';
+    newRawLines = [
+      ...rawSliceLines.slice(0, lastNonBlank + 1),
+      `${indent}status: acknowledged`,
+      ...rawSliceLines.slice(lastNonBlank + 1),
+    ];
+  } else {
+    newRawLines = rawSliceLines.slice();
+    if (entry.kind === 'leaf' && statusLineIdx === 0) {
+      // Leaf line 0 is the RAW heading line — rewrite the heading-text portion
+      // the reader treats as a field, with the ATX prefix preserved.
+      const replacedReader = readerLines[statusLineIdx].replace(
+        /^(\s*(?:-\s+)?)(\*+status:\*+|status:)(\s*).*$/i,
+        (_m, indent: string, key: string, ws: string) => `${indent}${key}${ws}acknowledged`,
+      );
+      const atxMatch = /^(\s*#+[ \t]*)(.*)$/.exec(rawSliceLines[0].replace(/\r$/, ''));
+      newRawLines[0] = atxMatch ? atxMatch[1] + replacedReader : replacedReader;
+    } else {
+      // Every other status line is rewritten on its RAW line, so the bullet
+      // marker and indent survive the write (the reader-form line has the
+      // marker stripped — writing it back would mangle the markdown shape and
+      // change the entry's identity text). Same replacement regex as the
+      // headless path.
+      newRawLines[statusLineIdx] = rawSliceLines[statusLineIdx].replace(
+        /^(\s*(?:-\s+)?)(\*+status:\*+|status:)(\s*).*$/i,
+        (_m, indent: string, key: string, ws: string) => `${indent}${key}${ws}acknowledged`,
+      );
+    }
+  }
+
+  const matchIndexInContent = sectionOffset + entry.start;
+  const newContent = content.slice(0, matchIndexInContent) + newRawLines.join('\n') + content.slice(matchIndexInContent + (entry.end - entry.start));
   return { content: newContent, status: 'ok' };
 }
 
