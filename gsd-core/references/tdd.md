@@ -143,6 +143,115 @@ run, and the RED commit records what was actually observed.
 | `expected_failure.subject` | What the failure is reported against: normally `target_test`; for an outside-in missing target, `implementation_target`. The predicate compares it against the plan's declared values and never routes on it — an echo may not choose the arm that judges it. There is no separate mode flag and no mode taxonomy. |
 
 `<red_contract>` is a **sibling** of `<behavior>`, never an attribute on it.
+
+### Evidence
+
+The RED commit carries what was observed as a Git trailer — one line of JSON with exactly seven
+top-level fields:
+
+```text
+red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"}}
+```
+
+| Field | Meaning |
+|---|---|
+| `command` | The exact command whose run this is. |
+| `exit_status` | That command's process exit status. |
+| `target_test` | The runner-native id the run was asked to produce. |
+| `selected_count` | How many tests the run selected. |
+| `target_executed` | Whether the declared target test was executed and reported — defined below. |
+| `expected` | The declared `expected_failure`, echoed back: `phase`, `class_or_mode`, `subject`. |
+| `actual` | What was observed, in the same three fields. |
+
+> `target_executed` is true when some member of the run's executed-and-reported set `id_matches`
+> the declared `target_test`. It does **not** mean "the test function's body ran," and it is not a
+> literal membership test — a parameterized run reports only bracket-suffixed variants, and a
+> literal check would block the legitimate RED that `id_matches` exists to admit.
+
+`false` means no member of the reported set matches at all.
+
+> `id_matches(observed, declared)` is true when `observed === declared`, or when `observed` is
+> `declared` followed **immediately** by a runner-native variant delimiter opening a parametrization
+> case — pytest's `[`, as in `[100-10-90]`. A bare prefix with no delimiter is not a match, so
+> `test_discount` never matches `test_discount_v2`.
+
+`id_matches` applies to the target-test arm only; the implementation-target arm keeps exact
+equality, because a symbol name is never a near-miss.
+
+Two further obligations:
+
+- **`command` lands in permanent published Git history.** Record no credential value in any
+  position — environment prefix, flag argument, URL, header — substituting the variable's
+  placeholder name. This is an obligation, not a pattern list, so no unlisted position leaks by
+  omission.
+- **`expected` is recorded but never compared against the declaration by the predicate.** It is the
+  executor's echo; comparing the predicate's inputs against that echo would let a mis-copied
+  trailer approve itself. The trailer's `target_test` is the same kind of echo and gets the same
+  treatment — the predicate anchors on `plan.target_test`, the declared value, so a self-reported
+  id cannot be bent to fit whatever the run produced.
+
+No `version` field. The top-level key set must equal exactly these seven, and that equality is
+itself the fail-closed mechanism: a foreign or future schema fails it instead of being partly
+honoured.
+
+### RED Predicate
+
+`plan.target_test`, `plan.implementation_target` and `plan.expected_failure` are the
+**plan-declared** values from `<red_contract>`; every other symbol is a field of the trailer.
+`AND` binds tighter than `OR`, so the parenthesised group is exactly two arms.
+
+```text
+valid_red =
+  exit_status != 0
+# AND trailer.expected == plan.expected_failure          -- Phase 3, see below
+  AND actual.phase == expected.phase
+  AND actual.class_or_mode == expected.class_or_mode
+# AND trailer.target_test == plan.target_test            -- Phase 3, see below
+  AND (
+    selected_count > 0
+    AND target_executed
+    AND id_matches(actual.subject, plan.target_test)
+    OR
+    actual.subject == plan.implementation_target
+    AND plan.expected_failure is an outside-in missing-target mode
+  )
+```
+
+This file is the block's only source. Reproduce it character-for-character wherever it is quoted:
+every paraphrase of it so far has silently dropped a conjunct.
+
+**The two commented conjuncts** bind the trailer's `expected` and `target_test` echoes to the
+declaration. Nothing holds a plan object at predicate time yet, so they ship commented rather than
+deleted, keeping the deferral visible in the artifact an executor reads.
+
+**Two refinements**, neither narrowing the shape: `actual == expected` is written out as its two
+field comparisons, omitting `subject` because the arms bind `actual.subject` to plan-declared
+values instead — strictly stronger; and the target arm's `actual.subject == plan.target_test`
+becomes `id_matches(...)`.
+
+`selected_count` and `target_executed` are conditions of the target-test arm **only**: an
+outside-in RED fails before its target test is ever collected, so it reports 0 and false by
+construction, and hoisting those two above the disjunction blocks exactly the case the outside-in
+arm exists to admit.
+
+One rule sits outside the predicate: `exit_status == 0` is an unexpected pass. It fails the first
+conjunct, and it is neither valid RED nor an invalid RED to retry — halt the cycle. Every other way
+of failing the predicate blocks GREEN.
+
+### Outcomes
+
+Each row is a consequence of the predicate, and each names the field that decides it.
+
+| Outcome | Decided by | Verdict |
+|---|---|---|
+| Zero tests selected | the target-test arm's `selected_count` is 0, and no failure is anchored to `plan.implementation_target` | block |
+| Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target — and the target-test arm's `selected_count` is 0 | block |
+| Fixture or setup crashed before the target assertion | `actual.phase` differs from `expected.phase` | block |
+| A different test failed | neither arm holds — `actual.subject` does not `id_matches` `plan.target_test`, nor equal `plan.implementation_target` | block |
+| Genuine target-behavior failure | the shared comparisons hold and the target-test arm holds | authorize |
+| Outside-in: the declared implementation target is missing | `actual.subject` equals `plan.implementation_target` and `plan.expected_failure` is a missing-target mode, with no selection or execution condition applied | authorize |
+| Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and the target-test arm holds | authorize |
+| Unexpected pass | `exit_status` is 0 | halt |
 </red_contract_spec>
 
 <test_quality>
