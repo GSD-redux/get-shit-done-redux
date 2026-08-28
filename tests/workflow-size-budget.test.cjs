@@ -576,6 +576,40 @@ describe('workflow progressive disclosure — MVP bodies lazy-loaded (#720)', ()
       'Do not delete the reference — only remove the leading @ sigil. See #720.'
     );
   });
+
+  // The four surfaces that consume the RED contract (#3770). tdd.md carries the
+  // contract's declaration, evidence schema, predicate and outcomes; it is the
+  // one canonical copy, so each surface cites it lazily rather than restating it.
+  const TDD_CONSUMERS = [
+    path.join(AGENTS_DIR, 'gsd-executor.md'),
+    path.join(AGENTS_DIR, 'gsd-planner.md'),
+    path.join(__dirname, '..', 'gsd-core', 'references', 'execute-mvp-tdd.md'),
+    path.join(WORKFLOWS_DIR, 'execute-plan.md'),
+  ];
+
+  test('no RED-contract consumer eagerly @-imports tdd.md (#3770)', () => {
+    for (const file of TDD_CONSUMERS) {
+      const content = fs.readFileSync(file, 'utf-8');
+      assert.ok(
+        !/@[~./\w-]*\/tdd\.md/.test(content),
+        `${path.basename(file)} contains an eager @-import of tdd.md — the RED contract is ` +
+        'expanded into context on every dispatch whether or not the task is TDD. ' +
+        'Replace with a plain backtick path. See #720, #3770.'
+      );
+    }
+  });
+
+  test('every RED-contract consumer still cites the canonical tdd.md path (#3770)', () => {
+    for (const file of TDD_CONSUMERS) {
+      const content = fs.readFileSync(file, 'utf-8');
+      assert.ok(
+        content.includes('`gsd-core/references/tdd.md`'),
+        `${path.basename(file)} must cite \`gsd-core/references/tdd.md\` as a lazy backtick ` +
+        'path. Deleting the reference is not how the @-sigil test is satisfied, and a ' +
+        '~/.claude-prefixed form is not the canonical citation. See #720, #3770.'
+      );
+    }
+  });
 });
 
 describe('SIZE: byteCount is line-ending independent (#683 regression)', () => {
