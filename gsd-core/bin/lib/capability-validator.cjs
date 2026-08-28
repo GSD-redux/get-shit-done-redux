@@ -750,6 +750,17 @@ function validateTaskContentResolver(cap) {
   }
 }
 
+/**
+ * Upper bound for `taskContentResolver.invoke.timeoutMs`, specific to this
+ * field only. `isPositiveIntegerMs()` has no ceiling and stays that way — it
+ * is shared with the reviewer lane's `timeoutFloorMs` and probe `timeoutMs`,
+ * which may legitimately need a longer or unbounded value. Without a ceiling
+ * here, a manifest could declare `Number.MAX_SAFE_INTEGER` and let
+ * `resolve-content` hang near-indefinitely on a stuck/malicious resolver,
+ * defeating the feature's "bounded subprocess" design intent.
+ */
+const TASK_CONTENT_RESOLVER_TIMEOUT_CEILING_MS = 120000;
+
 function validateTaskContentResolverFields(cap) {
   const errors = [];
   if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return errors;
@@ -812,6 +823,15 @@ function validateTaskContentResolverFields(cap) {
       ctx + ' taskContentResolver.invoke.timeoutMs must be a positive integer of milliseconds — ' +
       'an unbounded resolver call could hang task execution indefinitely ' +
       '(got: ' + describeValue(inv.timeoutMs) + ')',
+    );
+  } else if (inv.timeoutMs > TASK_CONTENT_RESOLVER_TIMEOUT_CEILING_MS) {
+    // Ceiling specific to this field — `isPositiveIntegerMs()` itself stays
+    // unbounded because it is shared with the reviewer lane's
+    // `timeoutFloorMs`/probe `timeoutMs`, which have no such ceiling.
+    errors.push(
+      ctx + ' taskContentResolver.invoke.timeoutMs must not exceed ' +
+      TASK_CONTENT_RESOLVER_TIMEOUT_CEILING_MS + 'ms — an unbounded-in-practice value defeats the ' +
+      '"bounded subprocess" design intent (got: ' + inv.timeoutMs + ')',
     );
   }
 

@@ -296,3 +296,48 @@ test('property: any valid-JSON-but-not-an-object stdout always throws ResolverMa
     { numRuns: 100 },
   );
 });
+
+// ─── stderr/stdout sanitization in .message (security review, #3970) ───────
+// `stderrTail`/`stdoutSample` are UNTRUSTED subprocess-sourced text (the
+// resolver binary and its argv `{{id}}` token come from a PLAN.md
+// `tracker-id` attribute, which is often LLM/agent-authored). Embedding them
+// raw into `.message` would let a hostile or buggy resolver smuggle its own
+// `\n` and forge a second `Error: ` line when a caller (task-command-
+// router.cts's routeResolveContent) writes `.message` to stderr via
+// io.cjs's error(). `formatDiagnosticToken()` (io.cts) is `JSON.stringify`
+// under the hood: it wraps the value in quotes and escapes control
+// characters, including `\n` -> the two-character sequence `\n`, so the
+// result can never span more than one line.
+
+test('ResolverFailedError.message has no raw literal newline even when stderrTail smuggles one', () => {
+  const hostileStderr = 'real failure text\nError: fake message forged by a hostile resolver';
+  const err = new ResolverFailedError('bd', 1, hostileStderr);
+  assert.ok(
+    !err.message.includes('\n'),
+    `expected no raw newline in .message, got: ${JSON.stringify(err.message)}`,
+  );
+  // The raw field is left untouched for programmatic callers — only the
+  // rendered .message is sanitized.
+  assert.strictEqual(err.stderrTail, hostileStderr);
+  // formatDiagnosticToken === JSON.stringify: the escaped '\n' (backslash-n,
+  // two characters) survives inside the JSON-quoted substring.
+  assert.ok(err.message.includes('\\n'));
+  assert.ok(err.message.includes(JSON.stringify(hostileStderr)));
+});
+
+test('ResolverMalformedOutputError.message has no raw literal newline even when stdoutSample smuggles one', () => {
+  const hostileStdout = '{"description":"x"\nError: fake message forged by a hostile resolver';
+  const err = new ResolverMalformedOutputError('bd', 'stdout is not valid JSON', hostileStdout);
+  assert.ok(
+    !err.message.includes('\n'),
+    `expected no raw newline in .message, got: ${JSON.stringify(err.message)}`,
+  );
+  assert.strictEqual(err.stdoutSample, hostileStdout);
+  assert.ok(err.message.includes('\\n'));
+  assert.ok(err.message.includes(JSON.stringify(hostileStdout)));
+});
+
+test('ResolverFailedError.message with an empty stderrTail omits the trailing colon segment', () => {
+  const err = new ResolverFailedError('bd', 1, '');
+  assert.strictEqual(err.message, "resolver command 'bd' exited 1");
+});

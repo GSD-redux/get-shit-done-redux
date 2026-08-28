@@ -224,6 +224,47 @@ describe('row 23 — invoke.timeoutMs must be a positive integer', () => {
   });
 });
 
+// ─── invoke.timeoutMs upper ceiling (security review finding, #3970) ───────
+// A manifest declaring an unbounded-in-practice timeoutMs (e.g.
+// Number.MAX_SAFE_INTEGER) would let resolve-content hang near-indefinitely
+// on a stuck/malicious resolver, defeating the "bounded subprocess" design
+// intent. Boundary-inclusive per CLAUDE.md's limit-1/limit/limit+1 rule.
+
+describe('invoke.timeoutMs upper ceiling (120000ms)', () => {
+  test('timeoutMs 120000 (exactly at the ceiling) is accepted', () => {
+    const resolver = validResolver();
+    resolver.invoke = { ...resolver.invoke, timeoutMs: 120000 };
+    const cap = featureCap({ taskContentResolver: resolver });
+    const errs = validateTaskContentResolver(cap);
+    assert.ok(
+      !errs.some((e) => e.includes('timeoutMs')),
+      `expected no timeoutMs error at the boundary, got: ${JSON.stringify(errs)}`,
+    );
+  });
+
+  test('timeoutMs 120001 (one past the ceiling) is rejected', () => {
+    const resolver = validResolver();
+    resolver.invoke = { ...resolver.invoke, timeoutMs: 120001 };
+    const cap = featureCap({ taskContentResolver: resolver });
+    const errs = validateTaskContentResolver(cap);
+    assert.ok(
+      errs.some((e) => e.includes('timeoutMs') && e.includes('120000')),
+      `expected a ceiling timeoutMs error, got: ${JSON.stringify(errs)}`,
+    );
+  });
+
+  test('an unbounded-in-practice timeoutMs (Number.MAX_SAFE_INTEGER) is rejected', () => {
+    const resolver = validResolver();
+    resolver.invoke = { ...resolver.invoke, timeoutMs: Number.MAX_SAFE_INTEGER };
+    const cap = featureCap({ taskContentResolver: resolver });
+    const errs = validateTaskContentResolver(cap);
+    assert.ok(
+      errs.some((e) => e.includes('timeoutMs')),
+      `expected a timeoutMs error, got: ${JSON.stringify(errs)}`,
+    );
+  });
+});
+
 // ─── invoke.args must carry the {{id}} placeholder ─────────────────────────
 
 describe('invoke.args without {{id}} placeholder', () => {

@@ -37,6 +37,9 @@
 // capture references at load time and become un-mockable (matches the
 // convention documented in shell-command-projection.cts).
 import childProcess from 'node:child_process';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import ioMod = require('./io.cjs');
+const { formatDiagnosticToken } = ioMod;
 
 // ─── Result taxonomy ──────────────────────────────────────────────────────────
 
@@ -95,14 +98,27 @@ class ResolverAmbiguousError extends Error {
   }
 }
 
-/** The resolver subprocess exited non-zero (or failed to spawn at all). */
+/**
+ * The resolver subprocess exited non-zero (or failed to spawn at all).
+ *
+ * `stderrTail` is UNTRUSTED subprocess-sourced text (the resolver binary is
+ * declared by a capability manifest and invoked with an argv token derived
+ * from a PLAN.md `tracker-id` attribute, which is often LLM/agent-authored —
+ * a hostile or buggy resolver could echo attacker-influenced text back on
+ * its own stderr). `.message` embeds it through `io.cjs`'s
+ * `formatDiagnosticToken()` so every caller of `resolveTaskContent` gets a
+ * `.message` that is already safe to write verbatim to a plain-text
+ * diagnostic — see that function's docstring for why this must happen here,
+ * at the point the untrusted substring is embedded, rather than at each
+ * call site.
+ */
 class ResolverFailedError extends Error {
   exitCode: number | null;
   stderrTail: string;
   constructor(binary: string, exitCode: number | null, stderrTail: string) {
     super(
       `resolver command '${binary}' exited ${exitCode === null ? 'with no exit code (spawn failure)' : exitCode}` +
-        (stderrTail ? `: ${stderrTail}` : ''),
+        (stderrTail ? `: ${formatDiagnosticToken(stderrTail)}` : ''),
     );
     this.name = 'ResolverFailedError';
     this.exitCode = exitCode;
@@ -129,7 +145,10 @@ class ResolverTimeoutError extends Error {
 class ResolverMalformedOutputError extends Error {
   stdoutSample: string;
   constructor(binary: string, reason: string, stdoutSample: string) {
-    super(`resolver command '${binary}' produced malformed output: ${reason}`);
+    super(
+      `resolver command '${binary}' produced malformed output: ${reason}` +
+        (stdoutSample ? ` (stdout sample: ${formatDiagnosticToken(stdoutSample)})` : ''),
+    );
     this.name = 'ResolverMalformedOutputError';
     this.stdoutSample = stdoutSample;
   }
