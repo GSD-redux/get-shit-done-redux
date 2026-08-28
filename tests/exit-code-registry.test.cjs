@@ -29,6 +29,7 @@ const { runNode } = require('./helpers/process-seam.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
+const { ensureScriptsOut } = require('./helpers/exit-code-artifact-flags.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const GEN_SCRIPT = path.join(REPO_ROOT, 'scripts', 'gen-exit-code-registry.cjs');
@@ -74,19 +75,11 @@ function makeEntry(overrides) {
  * the test already supplies, whenever the caller has not already supplied
  * its own `--scripts-out`/`--hooks-out`/`--dts-out`/`--sh-out`. Calls with
  * no explicit `--out` (the "real committed set" checks) are left untouched.
+ *
+ * `ensureScriptsOut` itself now lives in
+ * ./helpers/exit-code-artifact-flags.cjs so tests/cli-exit.test.cjs can
+ * reuse the exact same derivation rather than hand-rolling a second copy.
  */
-function ensureScriptsOut(args) {
-  const outIdx = args.indexOf('--out');
-  if (outIdx === -1) return args;
-  const outValue = args[outIdx + 1];
-  const extra = [];
-  if (!args.includes('--scripts-out')) extra.push('--scripts-out', `${outValue}.secondary.cjs`);
-  if (!args.includes('--hooks-out')) extra.push('--hooks-out', `${outValue}.hooks.js`);
-  if (!args.includes('--dts-out')) extra.push('--dts-out', `${outValue}.d.cts`);
-  if (!args.includes('--sh-out')) extra.push('--sh-out', `${outValue}.sh`);
-  return extra.length === 0 ? args : [...args, ...extra];
-}
-
 function runGen(args, opts = {}) {
   return runNode([GEN_SCRIPT, ...ensureScriptsOut(args)], { timeoutMs: PROBE_TIMEOUT_MS, ...opts });
 }
