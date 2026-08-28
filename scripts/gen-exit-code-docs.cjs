@@ -17,10 +17,14 @@
  * The declaration JSON is read directly (not the compiled
  * gsd-core/bin/lib/exit-code-registry.cjs artifact, which is gitignored tsc
  * output) so this generator — like scripts/gen-exit-code-registry.cjs itself —
- * works on an unbuilt clone. Band membership (`isAllocatableCode`/`bandFor`)
- * is imported from scripts/gen-exit-code-registry.cjs rather than
- * re-implemented, so the two generators cannot independently drift on what a
- * "reserved" code even means.
+ * works on an unbuilt clone. The "Reserved bands" table below is DERIVED,
+ * not retyped: its ranges and allocatable/reserved status come from
+ * `classifyBand`/`computeBandRanges`, which are themselves composed
+ * entirely from `isAllocatableCode`/`bandFor` in
+ * scripts/gen-exit-code-registry.cjs (all four imported below). Only the
+ * per-band RATIONALE prose (BAND_PROSE) is hand-authored; widening or
+ * narrowing a band in gen-exit-code-registry.cjs changes the ranges this
+ * page renders, with no second literal to keep in sync.
  *
  * Usage:
  *   node scripts/gen-exit-code-docs.cjs            # print to stdout
@@ -36,10 +40,70 @@ const {
   DEFAULT_DECLARATION_PATH,
   loadDeclaration,
   validateEntries,
+  computeBandRanges,
 } = require('./gen-exit-code-registry.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const DOC_PATH = path.join(ROOT, 'docs', 'reference', 'exit-codes.md');
+
+/**
+ * How far above the highest defined band (125, the top of 'domain') to scan
+ * when deriving band ranges. Large enough to prove the 'shell-signal'
+ * (126+) run is genuinely open-ended (classifyBand is constant well past
+ * it), not just an artifact of stopping the scan too early.
+ */
+const BAND_SCAN_MAX = 500;
+
+/** Hand-authored rationale prose per band category — the only part of the
+ * "Reserved bands" table that stays authored; the ranges themselves are
+ * derived by computeBandRanges from isAllocatableCode/bandFor. */
+const BAND_PROSE = Object.freeze({
+  free: '**Free — never allocatable.** `0` is the universal "succeeded" convention and `1` is the universal "failed, no further detail" convention across nearly every CLI ecosystem. Registering either here would collide with that universal meaning instead of adding a distinct, named signal — so the registry leaves both permanently unallocated.',
+  'hook-only': 'Reserved exclusively to the Claude Code hook-protocol deny (`HOOK_DENY`) — owned by `hook-adapter` and no other module.',
+  'node-reserved': '**Node-reserved.** Node.js itself assigns meaning to this range (e.g. internal JavaScript errors, fatal exceptions, invalid argument errors) before a GSD process ever gets a chance to project its own outcome. Allocating one of these would be indistinguishable from a Node-level failure the process never intended to report.',
+  'outside-every-band': 'Outside every allocatable band — not Node-reserved, but also not opened for GSD use. `126`+ additionally collides with the shell convention for "command not executable" / "signal N" (`128+N`), which a process exit code must never impersonate.',
+  generic: '**Generic band.** Codes any module may use for caller-facing, non-domain-specific outcomes (bad argv, no input in scope, a missing prerequisite, an internal crash).',
+  domain: '**Domain band.** Codes reserved for a specific product surface\'s own vocabulary — currently only `gsd-tools`\' `DEGRADED` (a completed run reporting a condition through its payload rather than as a process failure).',
+});
+
+/**
+ * The 'shell-signal' category (126+) is folded into the SAME rendered row
+ * as 'outside-every-band' (both read "not opened for GSD use" to a reader —
+ * the original hand-authored table merged them into one row, and the prose
+ * above documents the 126+ collision inline). Every other category gets its
+ * own row, in this fixed display order.
+ */
+const CATEGORY_ROW_ORDER = ['free', 'hook-only', 'node-reserved', 'outside-every-band', 'generic', 'domain'];
+const CATEGORY_MERGE_INTO = Object.freeze({ 'shell-signal': 'outside-every-band' });
+
+/** Format one contiguous range as a Markdown-table-cell token. */
+function formatRange(range) {
+  if (range.openEnded) return `\`${range.start}+\``;
+  if (range.start === range.end) return `\`${range.start}\``;
+  return `\`${range.start}\`–\`${range.end}\``;
+}
+
+/**
+ * Render the "Reserved bands" table. Ranges come from computeBandRanges
+ * (itself derived from isAllocatableCode/bandFor); only BAND_PROSE and the
+ * row grouping/order above are authored.
+ */
+function renderBandTable() {
+  const byCategory = new Map();
+  for (const { category, ranges } of computeBandRanges(BAND_SCAN_MAX)) {
+    const rowCategory = CATEGORY_MERGE_INTO[category] || category;
+    if (!byCategory.has(rowCategory)) byCategory.set(rowCategory, []);
+    byCategory.get(rowCategory).push(...ranges);
+  }
+
+  const rows = CATEGORY_ROW_ORDER.map((category) => {
+    const ranges = byCategory.get(category) || [];
+    const label = ranges.map(formatRange).join(', ');
+    return `| ${label} | ${BAND_PROSE[category]} |`;
+  });
+
+  return ['| Band | Meaning |', '|---|---|', ...rows].join('\n');
+}
 
 /** Load + validate the declaration, throwing (loud) on anything malformed — mirrors gen-exit-code-registry.cjs's own gate. */
 function loadEntries(declarationPath) {
@@ -68,6 +132,7 @@ function renderRegisteredTable(entries) {
 function buildDoc(entries) {
   const registeredTable = renderRegisteredTable(entries);
   const registeredCount = entries.length;
+  const bandTable = renderBandTable();
 
   return `# Exit code reference
 
@@ -103,14 +168,7 @@ never be registered; validation rejects it before it reaches the tables above.
 This is what makes an unfamiliar number in a CI log actionable: look up its
 band first, then its registered name if it has one.
 
-| Band | Meaning |
-|---|---|
-| \`0\`, \`1\` | **Free — never allocatable.** \`0\` is the universal "succeeded" convention and \`1\` is the universal "failed, no further detail" convention across nearly every CLI ecosystem. Registering either here would collide with that universal meaning instead of adding a distinct, named signal — so the registry leaves both permanently unallocated. |
-| \`2\` | Reserved exclusively to the Claude Code hook-protocol deny (\`HOOK_DENY\`) — owned by \`hook-adapter\` and no other module. |
-| \`3\`–\`13\` | **Node-reserved.** Node.js itself assigns meaning to this range (e.g. internal JavaScript errors, fatal exceptions, invalid argument errors) before a GSD process ever gets a chance to project its own outcome. Allocating one of these would be indistinguishable from a Node-level failure the process never intended to report. |
-| \`14\`–\`63\`, \`79\`, \`126+\` | Outside every allocatable band — not Node-reserved, but also not opened for GSD use. \`126\`+ additionally collides with the shell convention for "command not executable" / "signal N" (\`128+N\`), which a process exit code must never impersonate. |
-| \`64\`–\`78\` | **Generic band.** Codes any module may use for caller-facing, non-domain-specific outcomes (bad argv, no input in scope, a missing prerequisite, an internal crash). |
-| \`80\`–\`125\` | **Domain band.** Codes reserved for a specific product surface's own vocabulary — currently only \`gsd-tools\`' \`DEGRADED\` (a completed run reporting a condition through its payload rather than as a process failure). |
+${bandTable}
 
 ## The v1/v2 exit contract
 
@@ -118,8 +176,11 @@ ADR-3889 §4 adds a **version projection** on top of this registry, not a second
 registry: every registered name above projects to the *same* code under both
 contract versions, with one deliberate exception — \`DEGRADED\`. Under the
 default, backward-compatible \`v1\` contract, a payload-carried error
-(\`output({error})\`) still exits \`0\`, exactly as ADR-2980 ratified for the ~60
-pre-existing call sites that already depended on that behavior. Under the
+(\`output({error})\`) still exits \`0\`, exactly as
+[ADR-2980](../adr/2980-payload-carried-error-is-a-degraded-result.md) ratified
+for the pre-existing call sites that already depended on that behavior — **64**
+call sites across 9 modules per that ADR's own amendment (its original text
+said ~60). Under the
 opt-in \`v2\` contract, the same outcome exits \`80\` (\`DEGRADED\`) instead, so a
 caller that wants to branch on the exit code alone — without parsing stdout —
 can opt in without breaking every existing consumer. See

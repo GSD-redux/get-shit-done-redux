@@ -65,7 +65,12 @@
 const nodePath = require('node:path');
 const { KIND } = require('./result.cjs');
 const { resolveForCompare, isUnderProjectDir } = require('./paths.cjs');
-const { LIVE_COMMAND_TOKEN_PREFIXES } = require('../helpers/live-command-registry.cjs');
+const {
+  LIVE_COMMAND_TOKEN_PREFIXES,
+  getLiveCommandTokens,
+  firstToken,
+  isLiveCommandToken,
+} = require('../helpers/live-command-registry.cjs');
 
 /** Severity of a failed oracle outcome. A SMELL is evidence, not a verdict — it never fails a build. */
 const SEVERITY = Object.freeze({ VIOLATION: 'violation', SMELL: 'smell' });
@@ -94,36 +99,17 @@ const SENTINEL_STRINGS = new Set(['undefined', 'null', 'NaN', '[object Object]']
 const EXTERNAL_PATH_ALLOWED_KEYS = Object.freeze(new Set(['agents_dir']));
 
 /**
- * Detects whether a string VALUE looks like a live-command TOKEN
- * (e.g. `/gsd:discuss-phase`) — never a filesystem path — even though the
- * leading `/` makes `nodePath.isAbsolute` report `true`. This is a
- * value-shape check, deliberately NOT a key-name allowlist: an earlier
- * version of this exemption keyed on the leaf name `command` (the field
- * `routing-validity` validates via `actions[].command` / `next.command` —
- * see that oracle and #3913), but `command` can ALSO legitimately hold a
- * genuine absolute filesystem path leak (e.g. `"command":
- * "/Users/someone/checkout/bin/tool"`), and a key-based allowlist would
- * silently swallow that finding forever — the exact "allowlist subtracts by
- * key and inverts the failure direction" failure class this exemption must
- * not become. Exempting by shape instead means only a string that actually
- * starts with a real command-token prefix is skipped; a path merely stored
- * under a key named `command` still surfaces as a SMELL.
+ * Strip the walk()-root prefix (`"$."`) from a `walk()`-built path, e.g.
+ * `"$.next.command"` -> `"next.command"`, `"$.actions[0].command"` ->
+ * `"actions[0].command"` — the field-naming convention `routing-validity`'s
+ * `subject.key` has always used, kept stable across the switch to a generic
+ * `walk()`-based scan (#3913 P9 SEC-2).
  *
- * The three prefixes come from `LIVE_COMMAND_TOKEN_PREFIXES`
- * (`tests/helpers/live-command-registry.cjs`), the single source
- * `getLiveCommandTokens()` itself emits from — kept there so this check and
- * `routing-validity` (which consumes `getLiveCommandTokens()` directly) can
- * never drift apart on what a live command token looks like.
- *
- * Discovered live when `greenfield-happy-path`'s `plan:post` step started
- * emitting a typed `smart-entry --json` payload (#3913) and the absolute-path
- * false positive fired for the first time.
- *
- * @param {unknown} value
- * @returns {boolean}
+ * @param {string} walkPath
+ * @returns {string}
  */
-function isLiveCommandToken(value) {
-  return typeof value === 'string' && LIVE_COMMAND_TOKEN_PREFIXES.some((prefix) => value.startsWith(prefix));
+function stripRootPrefix(walkPath) {
+  return walkPath.startsWith('$.') ? walkPath.slice(2) : walkPath;
 }
 
 /**
@@ -347,12 +333,13 @@ const ORACLES = Object.freeze([
       'result.json must not contain a NaN number or a string exactly equal to a coercion-artifact sentinel ' +
       '(VIOLATION). When ctx.projectDir is supplied, an absolute-path string outside it is reported as a SMELL — ' +
       'never a violation — UNLESS its leaf key name is in EXTERNAL_PATH_ALLOWED_KEYS (a field whose contract is to ' +
-      'point outside the project, e.g. agents_dir) or the VALUE ITSELF looks like a live-command TOKEN (starts with ' +
-      'one of LIVE_COMMAND_TOKEN_PREFIXES — `/gsd:`, `/gsd-`, `$gsd-` — e.g. `/gsd:progress`, never a path, as seen ' +
-      'in actions[].command / next.command — see routing-validity), either of which is skipped entirely: not a ' +
-      'smell, not a violation. The command-token exemption is shape-based, not key-based, so a genuine absolute-path ' +
-      'leak stored under a key named `command` still surfaces as a SMELL. Without ctx.projectDir the path check is ' +
-      'skipped rather than guessed.',
+      'point outside the project, e.g. agents_dir) or the string\'s FIRST WHITESPACE-DELIMITED WORD is an EXACT ' +
+      'member of getLiveCommandTokens() (e.g. `/gsd:progress`, or `/gsd-plan-phase 2` where the token carries ' +
+      'trailing arguments — see isLiveCommandToken in tests/helpers/live-command-registry.cjs, the single predicate ' +
+      'shared with routing-validity), either of which is skipped entirely: not a smell, not a violation. Exact ' +
+      'membership, never a `startsWith` prefix test with an unconstrained remainder — a string merely SHARING a ' +
+      'prefix with a real token (e.g. `/gsd-x/../../../etc/passwd`) is not exempted and still surfaces as a SMELL. ' +
+      'Without ctx.projectDir the path check is skipped rather than guessed.',
     check(ctx) {
       try {
         /** @type {{message: string, key: string, value: unknown}[]} */
@@ -365,6 +352,9 @@ const ORACLES = Object.freeze([
         // Resolved once per runOracles call (this check runs exactly once per ctx), not once
         // per candidate string below — projectDir is the same value for every leaf in the walk.
         const resolvedProjectDir = projectDir !== null ? resolveForCompare(projectDir) : null;
+        // Resolved once per check() call, not once per leaf — getLiveCommandTokens() is itself
+        // memoized, but there is no reason to re-look-up the memo per candidate string.
+        const liveTokens = getLiveCommandTokens();
         walk(json, (leaf, path) => {
           if (typeof leaf === 'number' && Number.isNaN(leaf)) {
             violations.push({ message: `NaN at ${path}`, key: path, value: leaf });
@@ -376,7 +366,7 @@ const ORACLES = Object.freeze([
             nodePath.isAbsolute(leaf) &&
             !isUnderProjectDir(resolveForCompare(leaf), resolvedProjectDir) &&
             !EXTERNAL_PATH_ALLOWED_KEYS.has(leafKeyOf(path)) &&
-            !isLiveCommandToken(leaf)
+            !isLiveCommandToken(leaf, liveTokens)
           ) {
             smells.push({
               message: `absolute path ${JSON.stringify(leaf)} at ${path} is outside ctx.projectDir ${JSON.stringify(projectDir)}`,
@@ -563,38 +553,44 @@ const ORACLES = Object.freeze([
     id: 'routing-validity',
     describe:
       'Every command token actually carried by the payload must name a command present in ctx.liveCommands. ' +
-      'Tokens live in `actions[].command` (the house pattern — see smart-entry, init) and `next.command` (the ' +
-      'state-contract shape) — NEVER in a bare `recommended` id, which by design (`src/smart-entry.cts` ' +
-      '`actions.find(a => a.recommended)?.id`) is an action id, not a command token, and is resolved to a ' +
-      'command by two real consumers via `actions.find(a => a.id === recommended)`. Engages only when at least ' +
-      'one such token field is present; a payload with no actions and no next.command is not engaged (ok).',
+      'Rather than enumerating fixed field paths (`actions[].command` / `next.command`), this walks the ENTIRE ' +
+      'payload for any string whose first whitespace-delimited word starts with one of LIVE_COMMAND_TOKEN_PREFIXES ' +
+      '(`/gsd-`, `/gsd:`, `$gsd-`) — catching the token wherever it is actually carried: `recommended_command`, a ' +
+      'bare-string `next`, `next` as an array of `{command}`, `actions` as an object map, `steps[].command`, ' +
+      '`actions[].next.command`, etc (#3913 P9 SEC-2 — the fixed-path version missed all of these). A candidate ' +
+      'passes only when its first word is an EXACT member of ctx.liveCommands (via the shared ' +
+      '`isLiveCommandToken` predicate, tests/helpers/live-command-registry.cjs — the SAME predicate ' +
+      'value-hygiene\'s command-token exemption uses, so the two can never drift on what a live token is); a ' +
+      'pleasing consequence is that value-hygiene therefore exempts exactly the strings routing-validity vouches ' +
+      'for. A bare `recommended` id (no `/gsd-`-style prefix — e.g. `discuss-phase`, by design ' +
+      '`src/smart-entry.cts` `actions.find(a => a.recommended)?.id`, an action id, not a command token) is never a ' +
+      'candidate. Engages only when at least one prefix-shaped string is present; a payload with no such string is ' +
+      'not engaged (ok).',
     check(ctx) {
       try {
         const json = ctx && ctx.result ? ctx.result.json : undefined;
         if (json === null || typeof json !== 'object' || Array.isArray(json)) return { ok: true };
         const liveCommands = ctx && Array.isArray(ctx.liveCommands) ? ctx.liveCommands : [];
-        /** @type {{field: string, value: string}[]} */
-        const candidates = [];
-        if (Array.isArray(json.actions)) {
-          json.actions.forEach((action, i) => {
-            if (action && typeof action === 'object' && typeof action.command === 'string') {
-              candidates.push({ field: `actions[${i}].command`, value: action.command });
-            }
-          });
-        }
-        if (json.next && typeof json.next === 'object' && !Array.isArray(json.next) && typeof json.next.command === 'string') {
-          candidates.push({ field: 'next.command', value: json.next.command });
-        }
-        if (!candidates.length) return { ok: true };
-        for (const candidate of candidates) {
-          if (!liveCommands.includes(candidate.value)) {
-            return {
-              ok: false,
-              severity: SEVERITY.VIOLATION,
-              subject: { key: candidate.field, value: candidate.value },
-              detail: `${candidate.field}=${JSON.stringify(candidate.value)} is not in ctx.liveCommands`,
-            };
+        const liveTokens = new Set(liveCommands);
+        const seen = new WeakSet();
+        /** @type {{field: string, value: string} | null} */
+        let violation = null;
+        walk(json, (leaf, path) => {
+          if (violation !== null || typeof leaf !== 'string') return;
+          const word = firstToken(leaf);
+          const looksLikeCommandToken = LIVE_COMMAND_TOKEN_PREFIXES.some((prefix) => word.startsWith(prefix));
+          if (!looksLikeCommandToken) return;
+          if (!isLiveCommandToken(leaf, liveTokens)) {
+            violation = { field: stripRootPrefix(path), value: leaf };
           }
+        }, seen, '$');
+        if (violation !== null) {
+          return {
+            ok: false,
+            severity: SEVERITY.VIOLATION,
+            subject: { key: violation.field, value: violation.value },
+            detail: `${violation.field}=${JSON.stringify(violation.value)} is not in ctx.liveCommands`,
+          };
         }
         return { ok: true };
       } catch (err) {

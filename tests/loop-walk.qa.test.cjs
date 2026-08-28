@@ -382,7 +382,7 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.severity, SEVERITY.SMELL);
   });
 
-  test('value-hygiene has no finding for a live-command TOKEN under actions[].command (regression guard — passes both before and after the shape-based fix)', (t) => {
+  test('value-hygiene has no finding for a live-command TOKEN under actions[].command (regression guard — FAILS pre-fix, measured)', (t) => {
     const projectDir = createTempDir('gsd-hygiene-command-token-');
     t.after(() => cleanup(projectDir));
     const outcome = getOracle('value-hygiene').check({
@@ -392,7 +392,7 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.ok, true);
   });
 
-  test('value-hygiene SMELLs on a genuine absolute-path leak stored under a key named "command" (the key-based exemption used to silently swallow this)', (t) => {
+  test('value-hygiene SMELLs on a genuine absolute-path leak stored under a key named "command"', (t) => {
     const projectDir = createTempDir('gsd-hygiene-command-path-leak-');
     t.after(() => cleanup(projectDir));
     const outcome = getOracle('value-hygiene').check({
@@ -404,7 +404,61 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.subject.key, '$.actions[0].command');
   });
 
-  test('value-hygiene is unaffected by a "command" value that is neither a live-command token nor an absolute path', (t) => {
+  // #3913 P9 SEC-1: the shape-based exemption was too loose — `String.startsWith`
+  // against a live-command prefix with NO constraint on the remainder let a
+  // leaked path through as long as its first bytes happened to match a real
+  // token prefix. Fixed by requiring the string's first whitespace-delimited
+  // word to be an EXACT member of getLiveCommandTokens().
+
+  test('F1a: a leaked path sharing a prefix with a real token ("/gsd-x/../../../Users/someone/.ssh/id_rsa") IS a SMELL (failing-first against the pre-fix startsWith exemption)', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-sec1-traversal-');
+    t.after(() => cleanup(projectDir));
+    const outcome = getOracle('value-hygiene').check({
+      result: { json: { command: '/gsd-x/../../../Users/someone/.ssh/id_rsa' } },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
+  });
+
+  test('F1b: a leaked path sharing a colon-style prefix ("/gsd:/etc/passwd") IS a SMELL', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-sec1-colon-');
+    t.after(() => cleanup(projectDir));
+    const outcome = getOracle('value-hygiene').check({
+      result: { json: { command: '/gsd:/etc/passwd' } },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
+  });
+
+  test('F1c: an exact live-command token ("/gsd-progress") is exempt (regression guard)', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-sec1-exact-');
+    t.after(() => cleanup(projectDir));
+    const outcome = getOracle('value-hygiene').check({
+      result: { json: { command: '/gsd-progress' } },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, true);
+  });
+
+  test('F1d: a live-command token carrying trailing arguments ("/gsd-plan-phase 2") is exempt (the case a naive exact-match-on-the-whole-string breaks)', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-sec1-args-');
+    t.after(() => cleanup(projectDir));
+    const outcome = getOracle('value-hygiene').check({
+      result: { json: { command: '/gsd-plan-phase 2' } },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, true);
+  });
+
+  // Forward guard, not a regression test: 'progress' matches neither the
+  // live-command-token exemption nor the path-leak detection under either
+  // the pre-#3913-SEC-1 (startsWith) or post-fix (exact-token) shape, so
+  // this cannot currently fail against either — it exists to catch a FUTURE
+  // change that starts false-positiving on ordinary non-path, non-token
+  // command values.
+  test('forward guard: value-hygiene is unaffected by a "command" value that is neither a live-command token nor an absolute path', (t) => {
     const projectDir = createTempDir('gsd-hygiene-command-plain-');
     t.after(() => cleanup(projectDir));
     const outcome = getOracle('value-hygiene').check({
@@ -623,7 +677,11 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.subject.value, '/gsd:not-a-live-command');
   });
 
-  test('A4: a payload with no recommended and no actions/next.command is not engaged (ok)', () => {
+  // Forward guard, not a regression test: a payload with nothing for the
+  // oracle to inspect returns ok under both the old and new oracle shape
+  // (the old oracle also returned ok for this input) — it exists to catch a
+  // FUTURE change that starts engaging on an empty/no-routing payload.
+  test('forward guard — A4: a payload with no recommended and no actions/next.command is not engaged (ok)', () => {
     const outcome = getOracle('routing-validity').check({
       result: { json: { situation: 'complete', summary: 'done' } },
       liveCommands: ['/gsd:discuss-phase'],
@@ -639,6 +697,98 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.ok, false);
     assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
     assert.strictEqual(outcome.subject.key, 'next.command');
+  });
+
+  // #3913 P9 SEC-2: routing-validity enumerated only actions[].command and
+  // next.command, so a non-live token in ANY other field-shape was invisible
+  // to the oracle. Fixed by walking the entire payload for any string whose
+  // first word matches the live-command prefix set. Each F2a case is
+  // failing-first against the pre-fix two-field-path version.
+
+  const F2A_LIVE_COMMANDS = ['/gsd-progress'];
+
+  test('F2a: a non-live token in recommended_command is a VIOLATION', () => {
+    const outcome = getOracle('routing-validity').check({
+      result: { json: { recommended_command: '/gsd-nope' } },
+      liveCommands: F2A_LIVE_COMMANDS,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.value, '/gsd-nope');
+  });
+
+  test('F2a: a non-live token as a bare STRING next is a VIOLATION', () => {
+    const outcome = getOracle('routing-validity').check({
+      result: { json: { next: '/gsd-nope' } },
+      liveCommands: F2A_LIVE_COMMANDS,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.value, '/gsd-nope');
+  });
+
+  test('F2a: a non-live token in steps[].command is a VIOLATION', () => {
+    const outcome = getOracle('routing-validity').check({
+      result: { json: { steps: [{ command: '/gsd-nope' }] } },
+      liveCommands: F2A_LIVE_COMMANDS,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.key, 'steps[0].command');
+    assert.strictEqual(outcome.subject.value, '/gsd-nope');
+  });
+
+  test('F2b: a LIVE token in recommended_command, string next, and steps[].command each PASS', () => {
+    for (const json of [
+      { recommended_command: '/gsd-progress' },
+      { next: '/gsd-progress' },
+      { steps: [{ command: '/gsd-progress' }] },
+    ]) {
+      const outcome = getOracle('routing-validity').check({ result: { json }, liveCommands: F2A_LIVE_COMMANDS });
+      assert.strictEqual(outcome.ok, true, `expected ok for ${JSON.stringify(json)}`);
+    }
+  });
+
+  test('F2: a non-live token surfaces through next as an array of {command} entries', () => {
+    const outcome = getOracle('routing-validity').check({
+      result: { json: { next: [{ command: '/gsd-nope' }] } },
+      liveCommands: F2A_LIVE_COMMANDS,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+  });
+
+  test('F2: a non-live token surfaces when actions is an object map instead of an array', () => {
+    const outcome = getOracle('routing-validity').check({
+      result: { json: { actions: { a: { command: '/gsd-nope' } } } },
+      liveCommands: F2A_LIVE_COMMANDS,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+  });
+
+  test('F2: a non-live token surfaces via actions[].next.command', () => {
+    const outcome = getOracle('routing-validity').check({
+      result: { json: { actions: [{ next: { command: '/gsd-nope' } }] } },
+      liveCommands: F2A_LIVE_COMMANDS,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+  });
+
+  test('shared predicate: a live token routing-validity vouches for is exactly what value-hygiene exempts', (t) => {
+    const projectDir = createTempDir('gsd-shared-predicate-');
+    t.after(() => cleanup(projectDir));
+    const routing = getOracle('routing-validity').check({
+      result: { json: { recommended_command: '/gsd-progress' } },
+      liveCommands: F2A_LIVE_COMMANDS,
+    });
+    assert.strictEqual(routing.ok, true);
+    const hygiene = getOracle('value-hygiene').check({
+      result: { json: { command: '/gsd-progress' } },
+      projectDir,
+    });
+    assert.strictEqual(hygiene.ok, true);
   });
 
   test('determinism passes on a clean context', () => {
@@ -1820,18 +1970,60 @@ describe('smell-baseline.json pruning (#3913 matrix E)', () => {
     );
   });
 
-  test('E3: every surviving baseline entry still cites a positive-integer issue', () => {
+  // The real post-condition phase 8 drove toward: the baseline is EMPTY, not
+  // merely "every entry (if any) is well-formed". Asserting emptiness
+  // directly is what actually pins today's state — a loop over `[]` below
+  // would trivially pass regardless of whether the fix ever shipped.
+  test('E3a: smell-baseline.json currently carries zero entries', () => {
+    const baseline = readBaseline();
+    assert.deepStrictEqual(baseline.smells, [], `expected an empty baseline, found: ${JSON.stringify(baseline.smells)}`);
+  });
+
+  /** The same predicate the baseline-entry check enforces, isolated so a synthetic fixture can actually drive it (the real baseline has no entries to iterate today). */
+  function isPositiveIntegerIssue(entry) {
+    return Number.isInteger(entry.issue) && entry.issue > 0;
+  }
+
+  // E3b: drives isPositiveIntegerIssue over a SYNTHETIC fixture, since the
+  // real baseline's `smells` array is empty and a loop over it never
+  // executes its body — a bare `for (const entry of baseline.smells)` test
+  // against the live file is vacuous by construction. This is what actually
+  // proves the invariant can fail.
+  test('E3b: a baseline entry with a non-positive or non-integer issue fails the check (synthetic fixture)', () => {
+    assert.strictEqual(isPositiveIntegerIssue({ key: 'k', issue: 3913 }), true);
+    for (const bad of [
+      { key: 'zero', issue: 0 },
+      { key: 'negative', issue: -1 },
+      { key: 'float', issue: 3.5 },
+      { key: 'string', issue: '3913' },
+      { key: 'missing', issue: undefined },
+    ]) {
+      assert.strictEqual(isPositiveIntegerIssue(bad), false, `entry ${JSON.stringify(bad)} must fail the positive-integer-issue check`);
+    }
+  });
+
+  // Forward guard, not a regression test: if a future PR re-adds baseline
+  // entries, EVERY one of them must still satisfy isPositiveIntegerIssue.
+  // Currently vacuous (smells is []) — it exists to catch a future
+  // regression, not today's state (see E3a/E3b for the tests that can
+  // actually fail right now).
+  test('forward guard: every surviving baseline entry (if any are ever re-added) must cite a positive-integer issue', () => {
     const baseline = readBaseline();
     for (const entry of baseline.smells) {
       assert.strictEqual(
-        Number.isInteger(entry.issue) && entry.issue > 0,
+        isPositiveIntegerIssue(entry),
         true,
         `entry ${JSON.stringify(entry.key)} has a non-positive-integer issue: ${JSON.stringify(entry.issue)}`,
       );
     }
   });
 
-  test('smell-baseline.json remains valid JSON with the frozen version:1 shape', () => {
+  // Forward guard, not a regression test: `version` and `smells` are set
+  // once by hand in this committed fixture and nothing in this suite
+  // mutates them, so this cannot fail today — it exists to catch a FUTURE
+  // change that corrupts the file's shape (e.g. a hand-edit that drops
+  // `version` or turns `smells` into an object).
+  test('forward guard: smell-baseline.json keeps its version:1 / smells-array shape', () => {
     const baseline = readBaseline();
     assert.strictEqual(baseline.version, 1);
     assert.ok(Array.isArray(baseline.smells));

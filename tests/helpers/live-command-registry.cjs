@@ -48,6 +48,51 @@ let _cache = null;
 const LIVE_COMMAND_TOKEN_PREFIXES = Object.freeze(['/gsd-', '/gsd:', '$gsd-']);
 
 /**
+ * Extract the first whitespace-delimited "word" of a string, e.g.
+ * `"/gsd-plan-phase 2"` -> `"/gsd-plan-phase"`. Real command-token payloads
+ * carry trailing arguments (`init`'s `recommended_actions[].command` is
+ * literally `/gsd-plan-phase 2`), so an exact-match test against the WHOLE
+ * string would reject every argument-carrying token — the token itself is
+ * always the first word.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function firstToken(value) {
+  const match = value.match(/^\S+/);
+  return match ? match[0] : value;
+}
+
+/**
+ * Is `value`'s first whitespace-delimited word an EXACT member of
+ * `liveTokens` (a `Set<string>`, normally `getLiveCommandTokens()`)?
+ *
+ * This is the SOLE shared predicate behind every "is this string a live
+ * command token" check in the QA harness — `tests/qa/oracles.cjs`'s
+ * `value-hygiene` command-token exemption and its `routing-validity` check —
+ * so the two can never independently drift on what counts as a live command
+ * token (#3913 P9 security review: this is the THIRD iteration of that
+ * exemption. First it was keyed on the leaf name `command`; then on a bare
+ * `String.startsWith` prefix test with an unconstrained remainder, which
+ * exempted any string merely SHARING A PREFIX with a real token — e.g.
+ * `/gsd-x/../../../Users/someone/.ssh/id_rsa` or `/gsd:/etc/passwd` both
+ * satisfied `startsWith('/gsd-')`/`startsWith('/gsd:')`).
+ *
+ * Deliberately NOT a `startsWith` fast path over `LIVE_COMMAND_TOKEN_PREFIXES`
+ * short-circuiting this check: exact membership of the first word is the
+ * WHOLE predicate, so a leaked path can never pass merely by sharing a
+ * token's first few bytes.
+ *
+ * @param {unknown} value
+ * @param {Set<string>} liveTokens
+ * @returns {boolean}
+ */
+function isLiveCommandToken(value, liveTokens) {
+  if (typeof value !== 'string') return false;
+  return liveTokens.has(firstToken(value));
+}
+
+/**
  * Parse the YAML frontmatter `name:` field from a command file's content.
  * Returns the slug (e.g. "help", "plan-phase", "context") or null if the
  * field is absent or the file has no frontmatter.
@@ -140,4 +185,4 @@ function getLiveCommandTokens() {
   return _cache;
 }
 
-module.exports = { getLiveCommandTokens, LIVE_COMMAND_TOKEN_PREFIXES };
+module.exports = { getLiveCommandTokens, LIVE_COMMAND_TOKEN_PREFIXES, firstToken, isLiveCommandToken };

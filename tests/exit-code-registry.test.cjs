@@ -205,6 +205,7 @@ describe('gen-exit-code-registry: REASON', () => {
     'OK', 'DRIFTED', 'USAGE', 'MISSING_DECLARATION', 'MALFORMED_DECLARATION',
     'NOT_AN_ARRAY', 'EMPTY_DECLARATION', 'INVALID_ENTRY', 'DUPLICATE_CODE',
     'DUPLICATE_NAME', 'RESERVED_CODE', 'FORBIDDEN_OWNER', 'MISSING_ARTIFACT',
+    'INVALID_CHARACTERS',
   ];
 
   test('is frozen', () => {
@@ -299,6 +300,49 @@ describe('gen-exit-code-registry: required string fields', () => {
     const result = generator.validateEntry(makeEntry({ name: '' }), 0);
     assert.equal(result.ok, false);
     assert.equal(result.reason, generator.REASON.INVALID_ENTRY);
+  });
+});
+
+// #3913 P9 SEC-3: a declaration string field carrying a `|`, CR, LF, or other
+// control character breaks the Markdown table gen-exit-code-docs.cjs
+// interpolates it into (a `|` splits the row; a `\n` can forge an entire
+// extra row, including a fake Markdown heading). Rejected at the shared
+// validator (validateEntry), not the renderer, so both generators inherit
+// the fix.
+describe('gen-exit-code-registry: forbidden characters in declaration string fields (#3913 P9 SEC-3)', () => {
+  const fields = ['meaning', 'owner', 'authorizedBy'];
+  const badValues = [
+    ['a literal pipe', 'contains | a pipe'],
+    ['a CR', 'contains\ra CR'],
+    ['a LF', 'contains\na LF'],
+    ['a CRLF', 'contains\r\na CRLF'],
+    ['a NUL byte', 'contains\x00a NUL'],
+    ['a DEL byte', 'contains\x7fa DEL'],
+  ];
+
+  for (const field of fields) {
+    for (const [label, bad] of badValues) {
+      test(`"${field}" containing ${label} -> INVALID_CHARACTERS`, () => {
+        // F3a: failing-first against the pre-fix validator, this entry would
+        // have passed validateEntry entirely (no character check existed).
+        const entry = makeEntry({ [field]: bad });
+        const result = generator.validateEntry(entry, 0);
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, generator.REASON.INVALID_CHARACTERS);
+      });
+    }
+  }
+
+  test('a clean value with none of the forbidden characters is accepted', () => {
+    const result = generator.validateEntry(makeEntry({ meaning: 'a perfectly normal meaning, with commas' }), 0);
+    assert.deepEqual(result, { ok: true });
+  });
+
+  test('hasForbiddenDeclarationChar is the exact predicate validateEntry uses (no drift)', () => {
+    assert.equal(generator.hasForbiddenDeclarationChar('clean'), false);
+    assert.equal(generator.hasForbiddenDeclarationChar('a | pipe'), true);
+    assert.equal(generator.hasForbiddenDeclarationChar('a\nnewline'), true);
+    assert.equal(generator.hasForbiddenDeclarationChar('a\rreturn'), true);
   });
 });
 
@@ -639,6 +683,10 @@ describe('gen-exit-code-registry: CLI positive controls for the ten guard rows',
     ['code "64" (string)', () => [{ ...validBase(), code: '64', name: 'STRCODE' }], 'INVALID_ENTRY'],
     ['missing meaning', () => [{ code: 64, name: 'NO_MEANING', owner: 'generic', authorizedBy: 'ADR-3889' }], 'INVALID_ENTRY'],
     ['[] empty declaration', () => [], 'EMPTY_DECLARATION'],
+    // F3a: a `meaning` carrying a `|` or a newline must be REJECTED with a non-zero exit —
+    // failing-first against the pre-fix validator (#3913 P9 SEC-3).
+    ['meaning with a pipe', () => [{ ...validBase(), code: 64, name: 'PIPE_MEANING', meaning: 'a | pipe breaks the table' }], 'INVALID_CHARACTERS'],
+    ['meaning with a newline', () => [{ ...validBase(), code: 64, name: 'NEWLINE_MEANING', meaning: 'a\nforged heading' }], 'INVALID_CHARACTERS'],
   ];
 
   for (const [label, buildEntries, expectedReasonKey] of rows) {
@@ -742,14 +790,77 @@ describe('gen-exit-code-docs: generated exit-code reference page (matrix F1-F4)'
     assert.ok(readme.includes('reference/exit-codes.md'), 'docs/README.md must index docs/reference/exit-codes.md');
   });
 
-  test('content invariant: the reserved-bands section documents the free (0, 1) and Node-reserved (3-13) bands', () => {
+  // Real parity assertion (replaces a near-tautological pair of `.includes()`
+  // checks — `md.includes('3')` matches "ADR-3889", not the Node-reserved
+  // band). Enumerates the FULL scanned code space and asserts the rendered
+  // "Reserved bands" table's ranges and row grouping are exactly what
+  // computeBandRanges/classifyBand — themselves composed only from
+  // isAllocatableCode/bandFor — return today. This fails the moment the
+  // generator's band table is re-hardcoded as a literal that stops tracking
+  // gen-exit-code-registry.cjs's own band logic.
+  test('parity: every rendered band range and status is DERIVED from isAllocatableCode/bandFor, not retyped', () => {
     const md = fs.readFileSync(REAL_DOC_PATH, 'utf8');
-    assert.ok(md.includes('`0`, `1`'), 'must document that 0 and 1 are unallocatable');
-    assert.ok(md.includes('Node-reserved'), 'must document the Node-reserved band');
-    assert.ok(md.includes('3') && md.includes('13'), 'must document the 3-13 Node-reserved range');
+    const ranges = generator.computeBandRanges(500);
+    for (const { category, ranges: subRanges } of ranges) {
+      for (const range of subRanges) {
+        // Every individual code in every derived range must actually
+        // classify into that category right now — i.e. the derivation is
+        // self-consistent over the enumerated space, not just internally
+        // coherent by construction.
+        for (let code = range.start; code <= range.end; code += 1) {
+          assert.equal(generator.classifyBand(code), category, `code ${code} must classify as ${category}`);
+        }
+        // And the rendered page must actually contain a band-table token
+        // for this range's boundary (its start or its formatted label),
+        // so a hand-edited/stale table (the #1 defect: a literal that
+        // never changed when the band logic did) is caught here too.
+        const label = range.openEnded ? `${range.start}+` : (range.start === range.end ? `${range.start}` : `${range.start}\`–\`${range.end}`);
+        assert.ok(md.includes(`\`${label}\``), `rendered page must contain the derived band label for ${category}: \`${label}\``);
+      }
+    }
   });
 
-  test('buildDoc is pure: same entries produce byte-identical content twice', () => {
+  // Regression for #1: proves the band table is genuinely DERIVED from
+  // isAllocatableCode/bandFor rather than a second hand-typed literal. Widens
+  // the band logic in a SCRATCH COPY of both generator scripts (never the
+  // real committed files) so that 14-63 becomes allocatable, then runs
+  // `--check` against the REAL committed page with that widened logic. If
+  // the band table were still hand-typed (the pre-fix defect), --check would
+  // stay green because the template string never changed; with the fix, the
+  // freshly-rendered table for the widened logic diverges from the committed
+  // page's band table and --check must exit non-zero.
+  test('band table is DERIVED: widening isAllocatableCode without regenerating fails --check (regression, #1)', () => {
+    const tmp = createTempDir('gsd-exit-code-docs-band-parity-');
+    try {
+      const registrySrc = fs.readFileSync(GEN_SCRIPT, 'utf8');
+      // Widen the SAME BANDS table isAllocatableCode/bandFor/classifyBand are
+      // all derived from — this is the realistic "someone widens a band"
+      // edit the reviewer demonstrated, not a change to a derived function.
+      const NEEDLE = "{ category: 'generic', allocatable: true, test: (code) => code >= 64 && code <= 78 }";
+      assert.ok(registrySrc.includes(NEEDLE), 'precondition: gen-exit-code-registry.cjs must still contain the BANDS entry this test widens');
+      const widened = registrySrc.replace(
+        NEEDLE,
+        "{ category: 'generic', allocatable: true, test: (code) => (code >= 64 && code <= 78) || (code >= 14 && code <= 63) }",
+      );
+      assert.notEqual(widened, registrySrc, 'precondition: the widen replacement must actually change the source');
+      fs.writeFileSync(path.join(tmp, 'gen-exit-code-registry.cjs'), widened, 'utf8');
+
+      const docsSrc = fs.readFileSync(DOCS_GEN_SCRIPT, 'utf8');
+      fs.writeFileSync(path.join(tmp, 'gen-exit-code-docs.cjs'), docsSrc, 'utf8');
+      fs.mkdirSync(path.join(tmp, 'lib'), { recursive: true });
+      fs.copyFileSync(path.join(REPO_ROOT, 'scripts', 'lib', 'cli-exit.cjs'), path.join(tmp, 'lib', 'cli-exit.cjs'));
+
+      const check = runNode([path.join(tmp, 'gen-exit-code-docs.cjs'), '--check'], { timeoutMs: PROBE_TIMEOUT_MS });
+      assert.notEqual(check.exitCode, 0, 'a widened band (14-63 admitted) must invalidate the committed page — if this passes, the band table is a hand-typed literal again, not derived from isAllocatableCode/bandFor');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  // Forward guard, not a regression test: buildDoc has no source of
+  // non-determinism (no Date.now/Math.random/env read), so this cannot
+  // currently fail — it exists to catch a FUTURE change that introduces one.
+  test('forward guard: buildDoc stays pure if a future change adds a non-deterministic input', () => {
     const once = docsGenerator.buildDoc(registry.EXIT_CODES);
     const twice = docsGenerator.buildDoc(registry.EXIT_CODES);
     assert.equal(once, twice);

@@ -296,15 +296,32 @@ and it is the property ADR-2980's declined Option 3 lacked.
 >    it was **promoted from SMELL to VIOLATION**, so it can now fail a build, which it never could
 >    before (`runOracles`'s `get failed()` returns `violations` only).
 >
-> **Measured ledger for the epic as delivered:** −1 oracle (`soft-error-exit-zero`), −5 baseline
-> entries (the file is now empty), −1 `n/no-process-exit: 'off'` exemption block, +1 rule
-> (`local/require-registered-exit`), +1 registry `--check`, +1 generated-docs `--check`
-> (`docs/reference/exit-codes.md`). One further guard changed strength rather than count:
-> `untyped-success` SMELL → VIOLATION. Two mis-scoped oracles were corrected in passing
-> (`routing-validity`, `value-hygiene`) — see #3913.
+> **Measured ledger for the epic as delivered:** −1 oracle (`soft-error-exit-zero`), −1
+> `n/no-process-exit: 'off'` exemption block, +1 rule (`local/require-registered-exit`), +1 registry
+> `--check`, +1 generated-docs `--check` (`docs/reference/exit-codes.md`). One further guard changed
+> strength rather than count: `untyped-success` SMELL → VIOLATION. Two mis-scoped oracles were
+> corrected in passing (`routing-validity`, `value-hygiene`) — see #3913.
 >
-> **Net −4 by count, and stronger than the count shows**, since the one oracle retained is the one
-> that started enforcing something.
+> **Net −1 by count**, not −4.
+>
+> The −4 first written here counted the five pruned `smell-baseline.json` entries in the same units
+> as oracles and lint rules. They are not guards — they are *acknowledgements* that a guard fired.
+> Removing them strengthens the surface rather than removing anything from it, and folding them into
+> the count inflates the negative by five. An ADR about honest accounting should not pad its own
+> ledger, so the entries are recorded as what they are and excluded from the count.
+>
+> **Two limits on how strong this is, stated rather than implied:**
+>
+> - **`soft-error-exit-zero`'s condition is now declared, not enforced.** No oracle references
+>   `KIND.SOFT_ERROR` after its deletion, and the corpus still contains four soft-error steps that
+>   nothing observes. Under `v1` — the default — those sites still exit `0`. The condition is
+>   modelled in the contract and projects to `80` only under the opt-in `v2`. That is a deliberate
+>   trade, not an equivalent replacement, and "the registry enforces the same property" would be too
+>   strong a claim for it.
+> - **`untyped-success` is promoted against a corpus that no longer exercises the case.** Its
+>   `KIND.PROSE` count reached 0 because the sole prose-producing step was changed to
+>   `smart-entry --json`. The promotion is real and the guard now fails a build — but what it
+>   currently guards is that no *new* prose-only step appears, not that an existing one is caught.
 
 ## Revisit if
 

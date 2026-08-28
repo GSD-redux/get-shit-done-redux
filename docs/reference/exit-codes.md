@@ -41,7 +41,7 @@ band first, then its registered name if it has one.
 
 | Band | Meaning |
 |---|---|
-| `0`, `1` | **Free — never allocatable.** `0` is the universal "succeeded" convention and `1` is the universal "failed, no further detail" convention across nearly every CLI ecosystem. Registering either here would collide with that universal meaning instead of adding a distinct, named signal — so the registry leaves both permanently unallocated. |
+| `0`–`1` | **Free — never allocatable.** `0` is the universal "succeeded" convention and `1` is the universal "failed, no further detail" convention across nearly every CLI ecosystem. Registering either here would collide with that universal meaning instead of adding a distinct, named signal — so the registry leaves both permanently unallocated. |
 | `2` | Reserved exclusively to the Claude Code hook-protocol deny (`HOOK_DENY`) — owned by `hook-adapter` and no other module. |
 | `3`–`13` | **Node-reserved.** Node.js itself assigns meaning to this range (e.g. internal JavaScript errors, fatal exceptions, invalid argument errors) before a GSD process ever gets a chance to project its own outcome. Allocating one of these would be indistinguishable from a Node-level failure the process never intended to report. |
 | `14`–`63`, `79`, `126+` | Outside every allocatable band — not Node-reserved, but also not opened for GSD use. `126`+ additionally collides with the shell convention for "command not executable" / "signal N" (`128+N`), which a process exit code must never impersonate. |
@@ -54,8 +54,11 @@ ADR-3889 §4 adds a **version projection** on top of this registry, not a second
 registry: every registered name above projects to the *same* code under both
 contract versions, with one deliberate exception — `DEGRADED`. Under the
 default, backward-compatible `v1` contract, a payload-carried error
-(`output({error})`) still exits `0`, exactly as ADR-2980 ratified for the ~60
-pre-existing call sites that already depended on that behavior. Under the
+(`output({error})`) still exits `0`, exactly as
+[ADR-2980](../adr/2980-payload-carried-error-is-a-degraded-result.md) ratified
+for the pre-existing call sites that already depended on that behavior — **64**
+call sites across 9 modules per that ADR's own amendment (its original text
+said ~60). Under the
 opt-in `v2` contract, the same outcome exits `80` (`DEGRADED`) instead, so a
 caller that wants to branch on the exit code alone — without parsing stdout —
 can opt in without breaking every existing consumer. See
