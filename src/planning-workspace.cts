@@ -158,6 +158,18 @@ function planningRoot(cwd: string): string {
  * and rewrites config on paths that back sentinel writes.
  */
 function worktreesOptedOut(cwd: string): boolean {
+  // #3972 review: the WHOLE body is guarded — planningDir/planningRoot
+  // themselves throw on a GSD_PROJECT/GSD_WORKSTREAM value containing path
+  // separators or `..`, and this contract ("any failure degrades to not
+  // opted out — worktrees on, keep enforcing") must hold for that shape too.
+  try {
+    return worktreesOptedOutUnguarded(cwd);
+  } catch {
+    return false;
+  }
+}
+
+function worktreesOptedOutUnguarded(cwd: string): boolean {
   type MaybeConfig = { workflow?: unknown } | null;
   const readCfg = (p: string): MaybeConfig => {
     try {
