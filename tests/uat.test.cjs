@@ -6779,6 +6779,59 @@ describe('#3781: acknowledge supports the heading-delimited entry shape', () => 
     assert.equal(ack.content, doc, 'file unchanged');
   });
 
+  test('leaf line-0 corner: a heading whose text parses as a status field', () => {
+    const doc = '## Deferred Items\n\n### status: open\n- did a thing\n';
+    const before = parseDeferredItemsWithStatus(doc);
+    assert.equal(before.length, 1);
+    assert.equal(before[0].status, 'open', 'fixture self-check: the reader reads the heading text itself as the field');
+
+    const ack = acknowledgeDeferredItem(doc, before[0].name);
+    assert.equal(ack.status, 'ok');
+    assert.ok(ack.content.includes('### status: acknowledged'),
+      'the ATX prefix must be preserved on the rewritten heading line');
+    const after = parseDeferredItemsWithStatus(ack.content);
+    assert.equal(after[0].status, 'acknowledged', 'first-wins must read the rewritten heading text');
+  });
+
+  test('CRLF pending entry verifies and acks (review finding)', () => {
+    const doc = '## Deferred Items\r\n\r\n- alpha\r\n  continuation line\r\n\r\n### Finding one\r\n- did a thing\r\n';
+    const before = parseDeferredItemsWithStatus(doc);
+    assert.equal(before.length, 2, 'fixture self-check: preamble pending + leaf');
+
+    const ack = acknowledgeDeferredItem(doc, before[0].name);
+    assert.equal(ack.status, 'ok', 'a CRLF pending entry must not false-refuse match_verification_failed');
+    const after = parseDeferredItemsWithStatus(ack.content);
+    assert.equal(after[0].status, 'acknowledged');
+  });
+
+  test('flat and mixed heading-depth files ack their leaf entries', () => {
+    const flat = '# Notes\n\n# Finding A\n- item one\n\n# Finding B\n- item two\n';
+    const flatSection = '## Deferred Items\n\n' + flat;
+    let items = parseDeferredItemsWithStatus(flatSection);
+    assert.equal(items.length, 3, 'container title + two leaves');
+    const ackA = acknowledgeDeferredItem(flatSection, 'Finding A - item one');
+    assert.equal(ackA.status, 'ok');
+    assert.equal(parseDeferredItemsWithStatus(ackA.content).map((e) => e.status).filter(Boolean).length, 1,
+      'exactly one entry acknowledged');
+
+    const mixed = '## Deferred Items\n\n## Childless group\n- solo item\n\n## Parent group\n### Child one\n- child item\n';
+    items = parseDeferredItemsWithStatus(mixed);
+    assert.ok(items.length >= 2, 'fixture self-check: mixed depths parse');
+    const ackSolo = acknowledgeDeferredItem(mixed, 'Childless group - solo item');
+    assert.equal(ackSolo.status, 'ok', 'a childless ## leaf alongside a ## container acks');
+  });
+
+  test('leaf body status line keeps its bullet marker and indent on rewrite', () => {
+    const doc = '## Deferred Items\n\n### Finding one\n- did a thing\n  - **Status:** open\n';
+    const before = parseDeferredItemsWithStatus(doc);
+    assert.equal(before[0].status, 'open');
+
+    const ack = acknowledgeDeferredItem(doc, before[0].name);
+    assert.equal(ack.status, 'ok');
+    assert.ok(ack.content.includes('  - **Status:** acknowledged'),
+      `the raw line's bullet marker and indent must survive the rewrite; got:\n${ack.content}`);
+  });
+
   test('fully-headless file is byte-for-byte unchanged by this feature', () => {
     const doc = '## Deferred Items\n\n- alpha\n  status: open\n';
     const before = parseDeferredItemsWithStatus(doc);
