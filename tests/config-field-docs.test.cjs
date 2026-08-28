@@ -13,9 +13,22 @@ const { describe, test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const REFERENCE_PATH = path.join(__dirname, '..', 'gsd-core', 'references', 'planning-config.md');
 const CORE_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'config-loader.cjs');
+
+/** Find the markdown table row whose first cell is `` `key` `` and return its cells. */
+function tableRowForKey(content, key) {
+  const target = `\`${key}\``;
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) continue;
+    const cells = splitTableRow(line);
+    if (cells[0] === target) return cells;
+  }
+  return null;
+}
 
 describe('config-field-docs', () => {
   let content;
@@ -340,16 +353,22 @@ describe('CONFIGURATION.md parity (#1216)', () => {
       docsContent.includes('millisecond') || docsContent.includes('milliseconds'),
       'CONFIGURATION.md workflow.subagent_timeout must use the word "millisecond(s)"'
     );
-    assert.ok(
-      !docsContent.match(/\|\s*`workflow\.subagent_timeout`[^|]*\|\s*`?600`?\s*\|/),
-      'CONFIGURATION.md workflow.subagent_timeout must NOT have default 600 (that was the seconds default)'
+    const row = tableRowForKey(docsContent, 'workflow.subagent_timeout');
+    assert.ok(row, 'CONFIGURATION.md must have a table row for workflow.subagent_timeout');
+    assert.notEqual(
+      row[2].replace(/`/g, ''),
+      '600',
+      'CONFIGURATION.md workflow.subagent_timeout default must not be 600 (that was the seconds default)'
     );
   });
 
   test('CONFIGURATION.md workflow.subagent_timeout default is 300000 (#1216)', () => {
     // Row-scoped: the actual table row for workflow.subagent_timeout must contain 300000
-    assert.ok(
-      /\|\s*`workflow\.subagent_timeout`\s*\|[^|]*\|\s*`?300000`?\s*\|/.test(docsContent),
+    const row = tableRowForKey(docsContent, 'workflow.subagent_timeout');
+    assert.ok(row, 'CONFIGURATION.md must have a table row for workflow.subagent_timeout');
+    assert.equal(
+      row[2].replace(/`/g, ''),
+      '300000',
       'CONFIGURATION.md workflow.subagent_timeout table row must have default 300000'
     );
   });

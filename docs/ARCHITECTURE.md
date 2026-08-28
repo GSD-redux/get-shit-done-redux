@@ -301,6 +301,18 @@ Runtime hooks that integrate with the host AI agent:
 
 See [`docs/INVENTORY.md`](INVENTORY.md#hooks) for the authoritative hook roster.
 
+**Crash policy (ADR-3889 Phase 7, #3911).** Every enforcement hook terminates
+through `hooks/lib/hook-exit.js`'s `allow(payload)` (exit 0), `deny(payload,
+stderrPayload?)` (exit 2), or `crash(onCrash, payload)` — the last dispatching
+per a `HOOK_ON_CRASH` policy the hook must declare explicitly (`ALLOW` or
+`DENY`, no default), so a hook's fail-open/fail-closed stance is a visible
+declaration rather than an inference from a bare `process.exit(N)`. Two hooks
+are deliberate exceptions — `gsd-read-injection-scanner.js` (PostToolUse) and
+`gsd-cursor-subagent-start.js` (Cursor) — whose harnesses read the block
+decision from the JSON response body at exit 0, not from the exit code, so
+they never call `deny()`. See
+[Declare a hook's crash policy](how-to/declare-a-hook-crash-policy.md).
+
 ### Command Routing Hub (`gsd-core/bin/lib/command-routing-hub.cjs`)
 
 CJS command family routers dispatch through `CommandRoutingHub`. The hub owns the no-throw pure-result contract (`hub.dispatch()` catches internal exceptions and returns `{ ok: false, kind, ...typedPayload }`) and the closed runtime error taxonomy (`UnknownCommand`, `InvalidArgs`, `HandlerRefusal`, `HandlerFailure`). Router adapters remain thin CLI translators — they build the hub, call `dispatch`, then map the Result to `output()`/`error()` calls. The runtime is single-path (no dual-runtime mode selection). See `docs/adr/0174-retire-gsd-sdk-package-boundary.md`.

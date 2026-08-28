@@ -24,6 +24,19 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+
+/** Return the raw text of every ```bash fenced block in `content`. */
+function extractBashBlocks(content) {
+  const lines = content.split(/\r?\n/);
+  const blocks = [];
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    if ((block.infoString || '').trim().toLowerCase() !== 'bash') continue;
+    blocks.push(lines.slice(block.openLineIdx, block.closeLineIdx + 1).join('\n'));
+  }
+  return blocks;
+}
 const os = require('os');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
@@ -419,8 +432,7 @@ describe('CR-WORKFLOW: code review workflow structure', () => {
     const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review.md'), 'utf-8');
     // mapfile is bash 4+ only; macOS ships bash 3.2. Dedup must use portable while-read.
     // Note: 'mapfile' may appear in platform_notes documentation — check bash code blocks only
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
-    const codeBlocks = content.match(/```bash[\s\S]*?```/g) || [];
+    const codeBlocks = extractBashBlocks(content);
     const hasMapfileInCode = codeBlocks.some(block => block.includes('mapfile -t'));
     assert.ok(!hasMapfileInCode,
       'code-review.md bash code blocks use mapfile which is bash 4+ only — breaks macOS default bash 3.2');
@@ -430,8 +442,7 @@ describe('CR-WORKFLOW: code review workflow structure', () => {
 
   test('code-review-fix.md uses portable while-read loop for array construction (not mapfile)', () => {
     const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'code-review-fix.md'), 'utf-8');
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses this repo's own workflow .md content, fixed-size author-controlled content
-    const codeBlocks = content.match(/```bash[\s\S]*?```/g) || [];
+    const codeBlocks = extractBashBlocks(content);
     const hasMapfileInCode = codeBlocks.some(block => block.includes('mapfile -t'));
     assert.ok(!hasMapfileInCode,
       'code-review-fix.md bash code blocks use mapfile which is bash 4+ only — breaks macOS default bash 3.2');

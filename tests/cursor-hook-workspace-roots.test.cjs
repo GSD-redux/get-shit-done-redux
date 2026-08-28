@@ -301,9 +301,17 @@ describe('#2587: cursor hooks resolve the workspace from workspace_roots, not cw
       for (const hook of RESOLVING_HOOKS) {
         fs.copyFileSync(hook, path.join(srcHooks, path.basename(hook)));
       }
+      // Any one of the RESOLVING_HOOKS' required lib/ helpers is a valid trip
+      // wire here — this fixture supplies NONE of them, so whichever helper the
+      // scan discovers first is reported missing. Coupling this assertion to one
+      // specific filename (formerly 'cursor-workspace.js') breaks every time the
+      // discovery order shifts, e.g. #3911 adding an earlier './lib/hook-exit.js'
+      // require to these same hook scripts. The invariant under test is "some
+      // required lib helper missing from hooks/lib -> the install aborts", not
+      // "this exact helper is named first".
       assert.throws(
         () => hooksSurface.writeCursorHooksJson(target, fakeSrc, {}),
-        /cursor-workspace\.js.*missing|missing.*cursor-workspace\.js/s,
+        /hooks\/lib\/[A-Za-z0-9._-]+\.js is required by a staged Cursor hook but is missing/,
         'a missing lib source must abort the install, not ship a broken hook',
       );
     } finally {

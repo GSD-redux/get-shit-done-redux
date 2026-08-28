@@ -47,7 +47,7 @@ UI_CHECKER_MODEL=$(gsd_run query resolve-model gsd-ui-checker --raw)
 Check config:
 
 ```bash
-UI_ENABLED=$(gsd_run query config-get workflow.ui_phase 2>/dev/null || echo "true")
+UI_ENABLED=$(gsd_run query config-get workflow.ui_phase --raw 2>/dev/null || echo "true")
 ```
 
 **If `UI_ENABLED` is `false`:**

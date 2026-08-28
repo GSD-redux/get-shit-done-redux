@@ -25,6 +25,7 @@ const {
 } = require('./helpers.cjs');
 const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const DRIFT_PATH = path.join(
   __dirname,
@@ -843,10 +844,13 @@ function readGate() {
 
 // Extract the Nth (0-based) ```bash fenced block body from the file.
 function bashBlock(content, n) {
+  const lines = content.split(/\r?\n/);
   const blocks = [];
-  const re = /```bash\r?\n([\s\S]*?)```/g;
-  let m;
-  while ((m = re.exec(content)) !== null) blocks.push(m[1]);
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    if ((block.infoString || '').trim().toLowerCase() !== 'bash') continue;
+    blocks.push(lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n'));
+  }
   assert.ok(blocks.length > n, `expected at least ${n + 1} bash blocks, found ${blocks.length}`);
   return blocks[n];
 }

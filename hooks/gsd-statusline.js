@@ -9,6 +9,14 @@ const os = require('os');
 // Namespace (not destructured) so tests can inject spawn failures by
 // monkeypatching childProcess.execFileSync.
 const childProcess = require('child_process');
+const { HOOK_ON_CRASH, allow, crash } = require('./lib/hook-exit.js');
+
+// This hook's build-seam outer catch (require.main guard just below) has
+// always exited 0 (fail open — the statusline renders on EVERY prompt, so a
+// build failure must degrade to a blank line rather than break Claude Code's
+// per-render hook). Declared ONCE so that catch's crash() call states its
+// policy explicitly rather than inheriting a default (#3911).
+const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 // #3582: gsd-core/bin/lib/*.cjs (semver-compare.cjs, state-document.cjs,
 // active-workstream-store.cjs, planning-workspace.cjs — required below) and
 // package-identity.cjs are tsc build artifacts (ADR-457), gitignored and
@@ -23,8 +31,12 @@ if (require.main === module) {
     const { ensureRuntimeBuild } = require('../gsd-core/bin/ensure-runtime-build.cjs');
     ensureRuntimeBuild();
   } catch (e) {
-    process.stdout.write('');
-    process.exit(0);
+    // #3911: crash(ON_CRASH, ...) with an undefined payload preserves the
+    // pre-migration `process.stdout.write(''); process.exit(0);` byte-for-
+    // byte — undefined makes terminateNow's stdout JSON.stringify throw
+    // internally (swallowed there), so fd 1 stays untouched, same as writing
+    // an explicit empty string did.
+    crash(ON_CRASH, undefined);
   }
 }
 const { isSemverNewer } = require('../gsd-core/bin/lib/semver-compare.cjs');
@@ -748,7 +760,7 @@ function runStatusline() {
   let input = '';
   // Timeout guard: if stdin doesn't close within 3s (e.g. pipe issues on
   // Windows/Git Bash), exit silently instead of hanging. See #775.
-  const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+  const stdinTimeout = setTimeout(() => allow(undefined), 3000);
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', chunk => input += chunk);
   process.stdin.on('end', () => {

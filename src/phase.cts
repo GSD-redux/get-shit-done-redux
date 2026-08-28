@@ -607,21 +607,75 @@ interface RawPlan {
 
 /**
  * Resolve a raw `depends_on` token to the `RawPlan.id` it refers to
- * (case-folded exact match, falling back to canonical-id matching). Returns
+ * (case-folded exact match, falling back to canonical-id matching, falling
+ * back to the in-phase short-form plan number — #3897 rung 4). Returns
  * `null` when the token does not resolve to any plan in this phase (a typo
  * or a cross-phase reference) — every call site treats that as "ignore this
  * edge", never a throw. Shared by `computeDependencyLevels`'s DAG-edge
- * resolution, the `depends_on` display mapping, and (#2830) the
- * halt-propagation node resolution, so the three can never disagree about
- * which token resolves to which plan.
+ * resolution and (#2830) the halt-propagation node resolution, so the two can
+ * never disagree about which token resolves to which plan. NOT used by the
+ * `depends_on` display mapping (#3785/N3) — that stays a passthrough by
+ * design; see the comment at its call site.
+ *
+ * `shortFormToId` (#3897 rung 4, ADR-3473 §8.9) is the third tier, consulted
+ * only when neither `planMap` nor `canonicalToId` resolves the token. It is
+ * optional so any caller that has not been threaded through yet (there are
+ * none left in this file) degrades to the pre-#3897 two-tier behavior rather
+ * than throwing on a missing argument.
  */
 function resolveDependencyId(
   dep: string,
   planMap: Map<string, RawPlan>,
   canonicalToId: Map<string, string>,
+  shortFormToId?: Map<string, string>,
 ): string | null {
   const lower = dep.toLowerCase();
-  return planMap.has(lower) ? (planMap.get(lower) as RawPlan).id : (canonicalToId.get(lower) ?? null);
+  if (planMap.has(lower)) return (planMap.get(lower) as RawPlan).id;
+  if (canonicalToId.has(lower)) return canonicalToId.get(lower) as string;
+  return shortFormToId?.get(lower) ?? null;
+}
+
+// #3897 rung 4 (ADR-3473 §8.9) — builds the third depends_on resolution tier:
+// a map from an in-phase BARE PLAN NUMBER (e.g. "01") to the plan id whose
+// canonical id ends with that number. Recovered from the retired SDK lineage
+// (sdk/src/query/phase.ts at 11918dcc3^) with ONE deliberate narrowing: the
+// lost implementation indexed ANY trailing dash-segment of a canonical id,
+// with no constraint that the segment be a plan NUMBER — so a phase
+// containing both `09-FIX-auth-PLAN.md` and `09-GAP-auth-PLAN.md` (canonical
+// id `09-FIX-auth`, trailing segment "auth") would silently bind
+// `depends_on: ["auth"]` to whichever sorted first, fabricating a
+// wave-affecting DAG edge with ZERO warning — a mis-resolved edge, which is
+// worse than a dropped one (found in isolated correctness review, #3897).
+// `docs/reference/plan-md.md` already documents this tier as resolving "the
+// bare plan number", so requiring `/^\d+$/` on the trailing segment is a
+// strict narrowing onto the tier's OWN documented contract, not a behavior
+// change for any legitimate input. Do NOT restore the unconstrained
+// lastDash-slice "to match the recovered original" — the original was wrong
+// here; this rung deliberately departs from it in this one respect, and only
+// this one. Everything else — the `lastDash` bound, first-write-wins,
+// lowercasing — is kept exactly as recovered:
+//   - first write wins, deterministic because rawPlans is passed in sorted
+//     plan-file order (D4/T44) and this loop iterates in that same order;
+//   - a canonical id with no dash (`lastDash === -1` or `lastDash === 0`,
+//     e.g. "24" or "-01") or a trailing dash (`lastDash === canonical.length
+//     - 1`, e.g. "09-") is never indexed (D5).
+// Exported so callers can build this map once and so tests assert against
+// this REAL implementation rather than a hand-rolled copy that could
+// silently disagree with it after a future change here (CLAUDE.md's
+// generative-fix-divergence rule).
+function buildShortFormToId(rawPlans: RawPlan[]): Map<string, string> {
+  const shortFormToId = new Map<string, string>();
+  for (const p of rawPlans) {
+    const canonical = extractCanonicalPlanId(p.id);
+    const lastDash = canonical.lastIndexOf('-');
+    if (lastDash > 0 && lastDash < canonical.length - 1) {
+      const shortForm = canonical.slice(lastDash + 1).toLowerCase();
+      if (/^\d+$/.test(shortForm) && !shortFormToId.has(shortForm)) {
+        shortFormToId.set(shortForm, p.id);
+      }
+    }
+  }
+  return shortFormToId;
 }
 
 // O(V + E). Assigns each in-phase plan its longest-path topological level over the
@@ -630,26 +684,32 @@ function resolveDependencyId(
 // the exact dequeue order this pass already produces — a valid topological order — passed to
 // computeHaltPropagation as `precomputedOrder` so halt propagation does not re-run Kahn's
 // algorithm a second time over the same graph.
+//
+// `shortFormToId` (#3897 rung 4, optional — see resolveDependencyId) is threaded through so a
+// bare in-phase plan-number token (`depends_on: ["01"]`) resolves as a real DAG edge instead of
+// being dropped and silently collapsing the dependent plan to wave 1 (D3).
 function computeDependencyLevels(
   rawPlans: RawPlan[],
   planMap: Map<string, RawPlan>,
   canonicalToId: Map<string, string>,
+  shortFormToId?: Map<string, string>,
 ): { level: Map<string, number>; visited: number; order: string[]; unresolved: Array<{ plan: string; token: string }> } {
   const level = new Map<string, number>();
   const inDeg = new Map<string, number>();
   const adj = new Map<string, string[]>();
-  // #3427 / ADR-3473 §8.5: a depends_on token that resolves via neither
-  // planMap nor canonicalToId is a dropped edge. Naming it here (rather than
-  // silently `continue`-ing past it) lets cmdPhasePlanIndex surface the
-  // token's own warning instead of manufacturing a wave-mismatch verdict from
-  // the resulting damaged graph (#3427).
+  // #3427 / ADR-3473 §8.5: a depends_on token that resolves via NONE of the
+  // three tiers (planMap, canonicalToId, shortFormToId) is a dropped edge.
+  // Naming it here (rather than silently `continue`-ing past it) lets
+  // cmdPhasePlanIndex surface the token's own warning instead of
+  // manufacturing a wave-mismatch verdict from the resulting damaged graph
+  // (#3427).
   const unresolved: Array<{ plan: string; token: string }> = [];
 
   for (const p of rawPlans) {
     if (!inDeg.has(p.id)) inDeg.set(p.id, 0);
     if (!adj.has(p.id)) adj.set(p.id, []);
     for (const dep of p.dependsOn) {
-      const resolvedDep = resolveDependencyId(dep, planMap, canonicalToId);
+      const resolvedDep = resolveDependencyId(dep, planMap, canonicalToId, shortFormToId);
       if (!resolvedDep) {
         unresolved.push({ plan: p.id, token: String(dep) });
         continue;
@@ -866,8 +926,16 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   const canonicalToId = new Map(
     rawPlans.map((p) => [extractCanonicalPlanId(p.id).toLowerCase(), p.id]),
   );
+  // #3897 rung 4 (ADR-3473 §8.9) — the third depends_on resolution tier.
+  // Resolves a bare in-phase plan-number short form (e.g. "01") to its owning
+  // plan id. In-phase only by construction (T49): the map is built from THIS
+  // phase's rawPlans alone, so a short form colliding with a different
+  // phase's plan can never be a candidate. See {@link buildShortFormToId}'s
+  // own comment for the numeric-only narrowing this rung applies on top of
+  // the recovered SDK-lineage algorithm.
+  const shortFormToId = buildShortFormToId(rawPlans);
 
-  const { level, visited, order, unresolved } = computeDependencyLevels(rawPlans, planMap, canonicalToId);
+  const { level, visited, order, unresolved } = computeDependencyLevels(rawPlans, planMap, canonicalToId, shortFormToId);
 
   if (visited < rawPlans.length) {
     const cycleNodes = rawPlans.filter((p) => !level.has(p.id)).map((p) => p.id);
@@ -885,7 +953,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   const haltNodes = rawPlans.map((p) => ({
     id: p.id,
     resolvedDependsOn: p.dependsOn
-      .map((dep) => resolveDependencyId(String(dep), planMap, canonicalToId))
+      .map((dep) => resolveDependencyId(String(dep), planMap, canonicalToId, shortFormToId))
       .filter((id): id is string => id !== null),
     halted: p.halted,
   }));
@@ -3556,4 +3624,5 @@ export = {
   cmdPhaseUatPassed,
   cmdPhaseListPlans,
   computeDependencyLevels,
+  buildShortFormToId,
 };

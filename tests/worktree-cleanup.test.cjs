@@ -26,6 +26,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -1550,19 +1551,18 @@ function extractCwdGuardBash() {
 
   const afterDrift = afterStep.slice(driftIdx + driftMarker.length);
 
-  // Fence delimiter match. `content` is already LF-only from
-  // readFileNormalized() above, so `\r?\n` here is redundant, not load-bearing
-  // — kept anyway (harmless on already-normalized input) because a bare `\n`
-  // in a markdown-fence-shaped regex trips the local/no-crlf-fragile-split
-  // ESLint rule (it flags the pattern shape statically and cannot see that
-  // this call site's data already passed through the normalizing read).
-  const fenceRe = /```(?:bash|sh)\r?\n([\s\S]*?)```/;
-  const fenceMatch = fenceRe.exec(afterDrift);
-  if (!fenceMatch) {
+  // Fence delimiter match via the canonical seam. `content` is already LF-only
+  // from readFileNormalized() above, so `\r?\n` here is redundant, not
+  // load-bearing — kept anyway for robustness against un-normalized input.
+  const afterDriftLines = afterDrift.split(/\r?\n/);
+  const guardFence = scanFencedBlocks(afterDriftLines).find(
+    (b) => b.closeLineIdx !== -1 && ['bash', 'sh'].includes((b.infoString || '').trim()),
+  );
+  if (!guardFence) {
     throw new Error(`extractCwdGuardBash: could not find \`\`\`bash fence after cwd-drift guard heading in ${EXECUTE_PHASE_PATH}`);
   }
 
-  const guardBash = fenceMatch[1];
+  const guardBash = afterDriftLines.slice(guardFence.openLineIdx + 1, guardFence.closeLineIdx).join('\n');
 
   if (!guardBash.trim()) {
     throw new Error('extractCwdGuardBash: extracted bash block is empty');

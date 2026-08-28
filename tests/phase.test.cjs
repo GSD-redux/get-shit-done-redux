@@ -25,6 +25,7 @@ const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 // above, and `run()` below at 15000ms for a lighter query-only call).
 const PHASE_COMPLETE_TIMEOUT_MS = 60000;
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const GSD_TOOLS_BIN = path.resolve(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
@@ -1340,6 +1341,149 @@ describe('#3885 (ADR-3473 §8.5): phase-plan-index names a dropped depends_on to
       `escaped token must still be named in the warning; got: ${JSON.stringify(warning)}`,
     );
     assert.ok(warning.includes('03-02'), 'warning must name the owning plan');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3897 rung 4 (ADR-3473 §8.9) — shortFormToId, the recovered third
+// depends_on resolution tier (D3). Today `resolveDependencyId`
+// (gsd-core/bin/lib/phase.cjs) has exactly two tiers — planMap (full id) and
+// canonicalToId (canonical prefix, e.g. `24-01`) — so a bare plan-number
+// short form (`depends_on: ["01"]`) resolves via NEITHER and is silently
+// dropped: the dependent plan collapses to a DAG root (wave 1) instead of its
+// declared wave.
+//
+// T43 is the CONSUMER-OUTPUT identity row (ADR-3180 Decision 4(b)): it
+// asserts on `phase-plan-index`'s emitted `waves` map through the REAL CLI,
+// never on `resolveDependencyId`/`computeDependencyLevels` in isolation — a
+// unit assertion on the resolver alone would have passed throughout this
+// defect's entire life, since nothing forces a unit test to reflect what the
+// consumer (execute-phase.md, partial-wave.md) actually reads.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#3897 rung 4 (ADR-3473 §8.9): shortFormToId, the bare plan-number depends_on tier', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // T43 — RED today: the CONSUMER-OUTPUT identity row. 26-02 depends on the
+  // bare short form '01'; today that edge is dropped, so 26-02 collapses into
+  // wave 1 alongside 26-01 instead of its own, later wave.
+  test('T43 shortFormDependencyProducesRealWaves_3427: a bare plan-number depends_on produces REAL waves, not one collapsed wave 1', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '26-shortform');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '26-01-auth-hardening-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    // Bare plan-number short form — NOT a full id, NOT a canonical prefix.
+    fs.writeFileSync(
+      path.join(phaseDir, '26-02-followup-PLAN.md'),
+      "---\nwave: 2\nautonomous: true\ndepends_on:\n  - '01'\n---\n<objective>Plan B.</objective>\n",
+    );
+
+    const result = runGsdTools('phase-plan-index 26', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const waves = output.waves;
+
+    const wave01 = Object.keys(waves).find((w) => waves[w].some((id) => id.startsWith('26-01')));
+    const wave02 = Object.keys(waves).find((w) => waves[w].some((id) => id.startsWith('26-02')));
+    assert.ok(wave01 !== undefined, '26-01-auth-hardening should appear in waves');
+    assert.ok(wave02 !== undefined, '26-02-followup should appear in waves');
+    assert.ok(
+      Number(wave01) < Number(wave02),
+      `the bare short form '01' must resolve to 26-01-auth-hardening and place 26-02-followup in a LATER wave — today the edge is dropped and both plans collapse into the same wave (got wave01=${wave01}, wave02=${wave02})`,
+    );
+    // Today's defect also manufactures a wave-mismatch warning from the
+    // dropped edge (declared wave: 2 but DAG places it in wave 1) — once the
+    // short form resolves, that warning must be gone too.
+    const warnings = output.warnings ?? [];
+    assert.ok(
+      !warnings.some((w) => /declared wave:/.test(w) && w.includes('26-02')),
+      `no manufactured wave-mismatch warning should remain once the short form resolves; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T49 — the short form must resolve IN-PHASE ONLY. A plan '01' living in a
+  // DIFFERENT phase must never satisfy a same-named short-form dependency in
+  // this phase — resolution is scoped per phase-plan-index invocation, never
+  // global across the project.
+  //
+  // #3897 rung 4 (isolated correctness review, MINOR finding 5): the
+  // ORIGINAL version of this test gave the target phase its OWN plan '01'
+  // (27-01-real) alongside the decoy (99-01-decoy). That construction cannot
+  // actually falsify a globally-scoped map: sorted plan-file order always
+  // resolves '01' to whichever phase's own plan sorts first among ALL
+  // candidates, and phase 27 sorts before phase 99 either way — so a
+  // GLOBALLY-scoped shortFormToId would have produced the exact same
+  // wave01 < wave02 result this test asserted, passing for the wrong reason.
+  // Verified empirically (see the isolated review's probe): building
+  // shortFormToId from the phase-scoped rawPlans vs. from the UNION of both
+  // phases' rawPlans produces byte-identical `unresolved`/`level` results for
+  // the original fixture shape.
+  //
+  // Fixed per the reviewer's own working construction: the TARGET phase has
+  // NO plan of its own numbered '01' at all (only '27-05-followup'), and the
+  // decoy phase's plan IS numbered '01' (11-01-decoy). Correct (per-phase)
+  // behavior is that '01' does NOT resolve — the edge is dropped with the
+  // existing #3427 unresolved-token warning, and 27-05 collapses to wave 1.
+  // A globally-scoped map would instead let '01' resolve to 11-01-decoy, a
+  // node outside this phase's rawPlans — which computeDependencyLevels can
+  // never satisfy, so it manufactures a false depends_on CYCLE report
+  // instead of a clean wave assignment. This construction was confirmed,
+  // by direct unit probe against the real exported `buildShortFormToId` and
+  // `computeDependencyLevels`, to distinguish the correct from the buggy
+  // scoping — the ORIGINAL fixture shape above did not.
+  test('T49 shortFormDoesNotReachAcrossPhases: a phase with NO plan of its own numbered "01" must NOT resolve depends_on: ["01"] via a same-numbered plan in a different phase', () => {
+    // A decoy phase whose OWN plan is numbered '01' — the only '01' anywhere
+    // in the project is in THIS phase, not phase 27.
+    const decoyPhaseDir = path.join(tmpDir, '.planning', 'phases', '11-decoy');
+    fs.mkdirSync(decoyPhaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(decoyPhaseDir, '11-01-decoy-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Decoy plan in a different phase.</objective>\n',
+    );
+
+    // Target phase has NO plan of its own numbered '01' — only '05'.
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '27-inphase-only');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '27-05-followup-PLAN.md'),
+      "---\nwave: 2\nautonomous: true\ndepends_on:\n  - '01'\n---\n<objective>Plan with a dangling short-form dependency.</objective>\n",
+    );
+
+    const result = runGsdTools('phase-plan-index 27', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    // The decoy phase's plan must never even appear in THIS phase's output.
+    assert.ok(
+      !output.plans.some((p) => p.id.startsWith('11-')),
+      'a different phase\'s plan must never appear in this phase\'s plan-index output at all',
+    );
+
+    // Correct behavior: the token does not resolve in-phase, so the edge is
+    // DROPPED — the #3427 unresolved-token warning fires by name, and
+    // 27-05-followup collapses to wave 1 rather than being scheduled behind
+    // a cross-phase phantom edge (which, per the probe above, would instead
+    // surface as a manufactured depends_on cycle error, not a clean pass).
+    const warnings = output.warnings ?? [];
+    assert.ok(
+      warnings.some((w) => /does not resolve to any plan in this phase/.test(w) && w.includes('27-05')),
+      `expected an unresolved-token warning naming 27-05-followup's dangling '01' dependency; got: ${JSON.stringify(warnings)}`,
+    );
+    const wave05 = Object.keys(output.waves).find((w) => output.waves[w].some((id) => id.startsWith('27-05')));
+    assert.strictEqual(
+      wave05,
+      '1',
+      `27-05-followup must collapse to wave 1 (dropped edge, no valid in-phase '01') — the short form must NOT reach the decoy in phase 11; got wave ${wave05}`,
+    );
   });
 });
 
@@ -9485,6 +9629,7 @@ const { cleanup, runGsdTools } = require('./helpers.cjs');
 // CJS implementation directly since that is where the bug lives.
 const phaseModule = require('../gsd-core/bin/lib/phase.cjs');
 const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 const { cmdPhaseComplete } = phaseModule;
 
 function writePassedVerificationFile(phaseDir, phase = '01') {
@@ -9609,15 +9754,19 @@ function roadmapCompletionSnapshot(roadmapContent) {
       continue;
     }
 
-    match = line.match(/^\|\s*(\d+[A-Z]?(?:\.\d+)*)\.?\s*([^|]*)\|\s*([^|]*)\|\s*([^|]*)\|\s*([^|]*)\|$/i);
-    if (match) {
-      snapshot.progressRows.push({
-        phase: match[1].trim(),
-        title: match[2].trim(),
-        plans: match[3].trim(),
-        status: match[4].trim(),
-        completed: match[5].trim(),
-      });
+    if (line.trim().startsWith('|')) {
+      const cells = splitTableRow(line);
+      const phaseTitleMatch = cells.length === 4
+        && /^(\d+[A-Z]?(?:\.\d+)*)\.?\s*(.*)$/i.exec((cells[0] || '').trim());
+      if (phaseTitleMatch) {
+        snapshot.progressRows.push({
+          phase: phaseTitleMatch[1].trim(),
+          title: phaseTitleMatch[2].trim(),
+          plans: cells[1].trim(),
+          status: cells[2].trim(),
+          completed: cells[3].trim(),
+        });
+      }
     }
   }
 
@@ -10055,16 +10204,15 @@ describe('#3511: cmdPhaseComplete — advisory pre-scan warnings are phase-scope
  * 4-col (Phase | Plans | Status | Completed) or 5-col (Phase | Milestone | Plans | Status | Completed).
  */
 function extractCompletedCell(roadmapContent, phaseNum) {
-  // Match the full progress table row whose first cell starts with the phase number.
-  // Use [^|\n] to avoid crossing line boundaries. Capture everything up to the final '|'.
-  const re = new RegExp(`^(\\|\\s*${phaseNum}[^|\\n]*(?:\\|[^|\\n]*)*)\\|\\s*$`, 'm');
-  const m = roadmapContent.match(re);
-  if (!m) return null;
-  // m[1] = '| 01. Foundation | 1/1 | Complete    | 2026-01-01 '
-  // Split on '|' → ['', ' 01. Foundation ', ' 1/1 ', ' Complete    ', ' 2026-01-01 ']
-  // Drop the leading empty string and take the last element.
-  const cells = m[1].split('|').slice(1); // drop leading ''
-  return cells[cells.length - 1].trim();
+  // Find the progress table row whose first cell starts with the phase number.
+  for (const line of roadmapContent.split(/\r?\n/)) {
+    if (!line.trim().startsWith('|')) continue;
+    const cells = splitTableRow(line);
+    if (cells.length > 0 && cells[0].startsWith(String(phaseNum))) {
+      return cells[cells.length - 1].trim();
+    }
+  }
+  return null;
 }
 
 /**
@@ -11382,9 +11530,12 @@ describe('issue #2334: ghost-REQ-ID classification must probe write surfaces, no
           /-\s*\[x\]\s*\*\*KNOWN-01\*\*/i.test(reqContent),
           `#2334 HIGH 2b FAILED (fixture invariant): checkbox must have been ticked.\n${reqContent}`,
         );
+        const traceabilityRow = reqContent.split(/\r?\n/)
+          .filter((l) => l.trim().startsWith('|'))
+          .map((l) => splitTableRow(l))
+          .find((cells) => cells[0] && cells[0].trim().toLowerCase() === 'known-01');
         assert.ok(
-          // eslint-disable-next-line local/no-unbounded-quantifier -- parses REQUIREMENTS.md the test itself wrote via build2334GhostSurfaceFixture, bounded fixed-size fixture, not adversarial input
-          /\|\s*KNOWN-01\s*\|[^|]*\|\s*Complete\s*\|/i.test(reqContent),
+          traceabilityRow && /^Complete$/i.test(traceabilityRow[traceabilityRow.length - 1].trim()),
           `#2334 HIGH 2b FAILED (fixture invariant): Traceability row must have flipped to Complete.\n${reqContent}`,
         );
         assert.strictEqual(parsed.requirements_updated, true, '#2334 HIGH 2b FAILED: requirements_updated must be true');

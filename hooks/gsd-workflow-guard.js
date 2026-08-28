@@ -21,6 +21,18 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { tokenize, skipToSubcommand } = require('./lib/git-cmd.js');
+const { HOOK_ON_CRASH, allow, deny, crash } = require('./lib/hook-exit.js');
+const { reportIfUndetermined } = require('./lib/git-probe.js');
+
+// This guard is almost entirely advisory (fail open — a broken advisory must
+// never wedge every tool call), with ONE hard block (#3504 force-add-on-
+// agent-branch) that fails CLOSED on internal error instead. That split is
+// re-derived dynamically inside the outer catch (failClosedBlockContext), not
+// a fixed per-hook policy, so ON_CRASH names only the FINAL, unconditional
+// fallback reached when the fail-closed context does not apply — i.e. the
+// historical exit(0). Declared ONCE here so that fallback states its policy
+// explicitly rather than inheriting a default (#3911).
+const ON_CRASH = HOOK_ON_CRASH.ALLOW;
 
 function forceGitAddCwds(command, defaultCwd) {
   const tokens = tokenize(command || '');
@@ -82,6 +94,12 @@ function currentBranch(cwd) {
     timeout: 2000,
     killSignal: 'SIGTERM',
   });
+  // #3911: a timeout/spawn-failure here previously degraded to '' exactly
+  // like a clean "not on a branch" answer — indistinguishable from the
+  // caller's point of view. reportIfUndetermined is a no-op on a genuine
+  // negative and only emits a diagnostic when the probe itself could not
+  // run; the '' fallback (and therefore this hook's exit code) is unchanged.
+  reportIfUndetermined('gsd-workflow-guard', 'git branch --show-current', result);
   if (result.status !== 0) return '';
   return result.stdout.trim();
 }
@@ -114,9 +132,10 @@ function emitForceAddBlock(origin) {
     origin: failClosed ? 'fail-closed' : 'force-add-detected',
     reason,
   };
-  process.stdout.write(JSON.stringify(output));
-  // Kimi CLI's exit-2 protocol feeds stderr back to the model (#2304)
-  process.stderr.write(output.reason);
+  // Kimi CLI's exit-2 protocol feeds stderr back to the model (#2304) — deny's
+  // stderrPayload keeps fd 2 to the plain reason string, matching the
+  // pre-migration two-write byte-for-byte.
+  deny(output, output.reason);
 }
 
 // #3504 fail-closed context re-derivation. Runs INSIDE the outer catch, after
@@ -260,7 +279,7 @@ function normalizeKimiPayload(data) {
 }
 
 let input = '';
-const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+const stdinTimeout = setTimeout(() => allow(undefined), 3000);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
@@ -282,29 +301,28 @@ process.stdin.on('end', () => {
 
     if (toolName === 'Bash') {
       if (!isWorkflowGuardEnabled) {
-        process.exit(0);
+        allow(undefined);
       }
       const command = data.tool_input?.command || '';
       for (const gitCwd of forceGitAddCwds(command, cwd)) {
         const branch = currentBranch(gitCwd);
         if (/^(worktree-)?agent-/.test(branch)) {
           emitForceAddBlock();
-          process.exit(2);
         }
       }
-      process.exit(0);
+      allow(undefined);
     }
 
     // Only guard Write, Edit, and MultiEdit tool calls
     if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Check if we're inside a GSD workflow (Task subagent or /gsd- skill)
     // Subagents have a session_id that differs from the parent
     // and typically have a description field set by the orchestrator
     if (data.tool_input?.is_subagent || data.session_type === 'task') {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Check the file being edited
@@ -319,7 +337,7 @@ process.stdin.on('end', () => {
 
     // Allow edits to .planning/ files (GSD state management)
     if (filePath.includes('.planning/') || filePath.includes('.planning\\')) {
-      process.exit(0);
+      allow(undefined);
     }
 
     // Allow edits to common config/docs files that don't need GSD tracking
@@ -332,11 +350,11 @@ process.stdin.on('end', () => {
       /settings\.json$/,
     ];
     if (allowedPatterns.some(p => p.test(filePath))) {
-      process.exit(0);
+      allow(undefined);
     }
 
     if (!isWorkflowGuardEnabled) {
-      process.exit(0); // Guard disabled (default) or no GSD project
+      allow(undefined); // Guard disabled (default) or no GSD project
     }
 
     // If we get here: GSD project, guard enabled, file edit outside .planning/,
@@ -357,13 +375,13 @@ process.stdin.on('end', () => {
     // #3504: split posture on internal error. The ONE hard block in this hook
     // (force-add on agent branches) fails CLOSED — if the blocking context can
     // be re-derived from the payload (Bash tool + guard enabled + determinably
-    // an agent branch), exit 2 rather than silently allowing. Everything else
+    // an agent branch), deny rather than silently allowing. Everything else
     // keeps the historical fail-open posture: a broken advisory guard must
-    // never wedge the session's tool calls.
+    // never wedge the session's tool calls. ON_CRASH is declared ALLOW at
+    // module top for exactly that unconditional fallback (#3911).
     if (failClosedBlockContext(input)) {
       emitForceAddBlock('fail-closed');
-      process.exit(2);
     }
-    process.exit(0);
+    crash(ON_CRASH, undefined);
   }
 });

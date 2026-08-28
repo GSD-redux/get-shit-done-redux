@@ -460,19 +460,32 @@ function resolveSharedHooksDirName(runtime) {
   return name;
 }
 
-const CODEX_AGENT_SANDBOX = {
-  'gsd-executor': 'workspace-write',
-  'gsd-planner': 'workspace-write',
-  'gsd-phase-researcher': 'workspace-write',
-  'gsd-project-researcher': 'workspace-write',
-  'gsd-research-synthesizer': 'workspace-write',
-  'gsd-verifier': 'workspace-write',
-  'gsd-codebase-mapper': 'workspace-write',
-  'gsd-roadmapper': 'workspace-write',
-  'gsd-debugger': 'workspace-write',
-  'gsd-plan-checker': 'read-only',
-  'gsd-integration-checker': 'read-only',
-};
+// #3897 rung 3 — sandbox_mode derivation, the hold list, and the hold-roster
+// validator now live in `src/codex-agent-toml.cts` (compiled to
+// `gsd-core/bin/lib/codex-agent-toml.cjs`), NOT here. This module used to be
+// the sole owner, and `agent-install-check.cts`'s `checkCodexSandboxPosture`
+// lazily `require()`d THIS FILE to reach `deriveCodexSandboxMode` — but
+// requiring `bin/install.js` runs its whole top-level script, including the
+// CLI's ASCII banner print to stdout, which corrupted every stdout-JSON
+// caller downstream of that posture check (`gsd-tools validate agents`).
+// `codex-agent-toml.cjs` is a genuine leaf (no top-level side effects), so
+// both this file and `agent-install-check.cts` import the derivation from
+// there — ONE owner, no second predicate. See that module's header for the
+// full rationale, and CAUSE B (below, `installCodexConfig`) for the removal
+// of `validateCodexSandboxHolds`'s call from the install runtime path.
+const {
+  CODEX_SANDBOX_HOLDS,
+  deriveCodexSandboxMode,
+  validateCodexSandboxHolds,
+  // #3897 list-form parse fix, Fix 3 (generative-fix-divergence): this
+  // file's own `generateCodexAgentToml` used to pull `tools:` via its
+  // private `extractFrontmatterField` (single-line only) instead of this
+  // shared reader — the two sandbox-feeding paths (this emitter and
+  // `agent-install-check.cts`'s `checkCodexSandboxPosture`) silently
+  // disagreed on YAML block-list `tools:` form. Both now route through this
+  // ONE extractor.
+  extractToolsValue,
+} = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'codex-agent-toml.cjs'));
 
 // Copilot tool name mapping — Claude Code tools to GitHub Copilot tools
 // Tool mapping applies ONLY to agents, NOT to skills (per CONTEXT.md decision)
@@ -763,6 +776,7 @@ function _runtimeAdapter(runtime) {
   }
 }
 const {
+  acquireInstallMigrationLock,
   applyInstallerMigrationPlan,
   discoverInstallerMigrations,
   MANIFEST_SCHEMA_VERSION,
@@ -1470,10 +1484,18 @@ function readSettings(settingsPath) {
 }
 
 /**
- * Write settings.json with proper formatting
+ * Write settings.json with proper formatting.
+ *
+ * Atomic (temp+rename) because hosts discard the ENTIRE settings file on any
+ * parse failure, so a truncated write costs the user every hook, permission,
+ * and statusline they have — not just GSD's entries. This is the sole writer
+ * of that surface for six runtimes.
+ *
+ * `atomicWriteFileSync` is declared further down this file; it is dereferenced
+ * at call time, after module evaluation, so the ordering is safe.
  */
 function writeSettings(settingsPath, settings) {
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
 }
 
 // #2875 Part 2 (J8): model-override resolution (readGsdGlobalModelOverrides /
@@ -4010,10 +4032,39 @@ function _resetCodexWarningDedupeForTests() {
  * @param {object|null} effortCfg        — #443: merged effort config from readGsdEffectiveEffortConfig
  */
 function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, runtimeResolver = null, effortCfg = null, sandboxTier = 'codex-agent-sandbox') {
-  const sandboxMode = CODEX_AGENT_SANDBOX[agentName] || 'read-only';
   const { frontmatter, body } = extractFrontmatterAndBody(agentContent);
   const frontmatterText = frontmatter || '';
+  // #3897 list-form parse fix, Fix 3: `toolsRaw` MUST come from the same
+  // shared `extractToolsValue` reader `checkCodexSandboxPosture` uses, not
+  // this file's own `extractFrontmatterField` — the two used to disagree on
+  // YAML block-list `tools:` form (`extractFrontmatterField`'s single-line
+  // regex read only the first list item), which is exactly the generative-
+  // fix-divergence shape CLAUDE.md warns about for two paths feeding one
+  // derivation. `extractToolsValue` does its own `---`-delimited frontmatter
+  // scan of the full `agentContent`, so it is not re-derived from
+  // `frontmatterText` here.
+  const toolsRaw = extractToolsValue(agentContent) ?? '';
   const resolvedName = extractFrontmatterField(frontmatterText, 'name') || agentName;
+  // #3897 rung 3 — derived from the role's own tool contract (HALT.md option
+  // 2). The former hand-maintained CODEX_AGENT_SANDBOX map is deleted (ADR-3473
+  // §8.3): it was fully redundant with this derivation, zero disagreements
+  // across all 11 entries. Never a silent `|| 'read-only'` fallback either.
+  // Derivation itself lives in codex-agent-toml.cjs, which does no frontmatter
+  // parsing of its own (no third copy of that extraction) — it takes the
+  // already-resolved `tools:` value, extracted via the shared reader above.
+  //
+  // #3897 security review F1 (blocker): pass BOTH candidate identities —
+  // `agentName` (the caller's filename-stem identity) AND `resolvedName`
+  // (the frontmatter `name:` this function's OWN emitted `name = ...` line
+  // uses, and what `installCodexConfig`'s caller keys the output PATH on) —
+  // never just one. Deciding the sandbox for `agentName` alone and applying
+  // it to an artifact that a DIFFERENT identity (`resolvedName`) names is
+  // exactly how a held role's own `.toml` could end up `workspace-write`
+  // (rename the source file, or plant a sibling whose `name:` collides with
+  // a held role). `deriveCodexSandboxMode` takes the most restrictive result
+  // across every candidate — see its doc and `isSandboxHeld` in
+  // codex-agent-toml.cjs.
+  const sandboxMode = deriveCodexSandboxMode([agentName, resolvedName], toolsRaw);
   const resolvedDescription = toSingleLine(
     extractFrontmatterField(frontmatterText, 'description') || `GSD agent ${resolvedName}`
   );
@@ -6879,29 +6930,50 @@ function writeNonClaudeDefaults(runtime) {
   if (_hostBehaviors(runtime).nativeModelAliases || process.env.GSD_TEST_MODE) return;
   const gsdDir = path.join(os.homedir(), '.gsd');
   const defaultsPath = path.join(gsdDir, 'defaults.json');
+  let releaseLock = null;
   try {
     fs.mkdirSync(gsdDir, { recursive: true });
+    // defaults.json is machine-global — every runtime and project on the box
+    // reads it. Serialize the read-modify-write so two concurrent installs
+    // cannot lose each other's key, and apply both mutations in ONE atomic
+    // write so a crash cannot leave the file truncated (the read path swallows
+    // parse errors and treats a corrupt file as absent, which would silently
+    // degrade model resolution everywhere until repaired by hand).
+    releaseLock = acquireInstallMigrationLock(gsdDir);
     let defaults = {};
     try { defaults = JSON.parse(fs.readFileSync(defaultsPath, 'utf8')); } catch { /* new file */ }
     if (defaults === null || typeof defaults !== 'object' || Array.isArray(defaults)) {
       defaults = {};
     }
+    const applied = [];
     // Three-valued domain: false/absent → aliases; true → full IDs; "omit" → ''.
     const existing = defaults.resolve_model_ids;
     const shouldDefaultToOmit = existing !== true && existing !== 'omit';
     if (shouldDefaultToOmit) {
       defaults.resolve_model_ids = 'omit';
-      fs.writeFileSync(defaultsPath, JSON.stringify(defaults, null, 2) + '\n');
-      console.log(`  ${green}✓${reset} Set resolve_model_ids: "omit" in ~/.gsd/defaults.json`);
+      applied.push(`Set resolve_model_ids: "omit" in ~/.gsd/defaults.json`);
     }
     // #2395: persist runtime for non-Claude runtimes.
     if (defaults.runtime === undefined || defaults.runtime === null || defaults.runtime === '') {
       defaults.runtime = runtime;
-      fs.writeFileSync(defaultsPath, JSON.stringify(defaults, null, 2) + '\n');
-      console.log(`  ${green}✓${reset} Set runtime: "${runtime}" in ~/.gsd/defaults.json`);
+      applied.push(`Set runtime: "${runtime}" in ~/.gsd/defaults.json`);
+    }
+    if (applied.length > 0) {
+      atomicWriteFileSync(defaultsPath, JSON.stringify(defaults, null, 2) + '\n', 'utf8');
+      for (const message of applied) console.log(`  ${green}✓${reset} ${message}`);
     }
   } catch (e) {
     console.log(`  ${yellow}⚠${reset} Could not write ~/.gsd/defaults.json: ${e.message}`);
+  } finally {
+    if (releaseLock) {
+      try {
+        releaseLock();
+      } catch (releaseError) {
+        // A leaked lock blocks the next install, so surface it rather than
+        // swallowing; the stale-lock reaper clears it once this pid exits.
+        console.log(`  ${yellow}⚠${reset} Could not release the ~/.gsd install lock: ${releaseError.message}`);
+      }
+    }
   }
 }
 
@@ -6924,6 +6996,36 @@ function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-san
     );
   }
   fs.mkdirSync(agentsTomlDir, { recursive: true });
+
+  // #3897 rung 3 (CAUSE B fix) — validateCodexSandboxHolds is deliberately
+  // NOT called here. The "no stale holds" invariant is a REPO invariant about
+  // the canonical roster in `agents/`, not a property of whatever directory
+  // an install happens to read from: a partial or synthetic `agentsSrc` (a
+  // test fixture, a `--config-dir` subset) legitimately contains only a few
+  // agents, and a held role simply absent from THIS source dir must be
+  // inert, not fatal. Throwing here also masked unrelated failures further
+  // down this same loop (e.g. the name-injection/path-escape guard on
+  // `agentTomlPath` below), since this check ran first and unconditionally.
+  // The invariant is still enforced — as a test over the real `agents/`
+  // roster (tests/codex-config.test.cjs T24/T25) — just never on this
+  // runtime path. See src/codex-agent-toml.cts's `validateCodexSandboxHolds`
+  // docblock for the full rationale.
+  //
+  // #3897 security review F2 (assessed post-F1-fix, verified by execution —
+  // not asserted): before F1's fix, the "runtime detector removed" gap here
+  // was real — a rename (case a) or a sibling `name:` clobber (case b) could
+  // reach this loop and land a held role's `.toml` at `workspace-write` with
+  // nothing here to catch it. After F1 (`deriveCodexSandboxMode` now decides
+  // over BOTH the filename stem and the resolved frontmatter `name:`, most
+  // restrictive wins), both cases were re-run end-to-end through this exact
+  // function and the EMITTED ARTIFACT for both is `read-only` — the
+  // dangerous condition no longer produces a wrong artifact, it produces the
+  // SAFE one. A detector guarding a now-fail-safe condition is not
+  // load-bearing, and restoring a throw here would re-break the legitimate
+  // partial-source-dir case CAUSE B removed it for (see above). Regression
+  // coverage for both cases lives in `tests/codex-config.test.cjs` (F1(a)
+  // rename / F1(b) sibling-clobber rows), asserted on the emitted `.toml`'s
+  // `sandbox_mode`, not on the derivation's return value.
 
   const agentEntries = fs.readdirSync(agentsSrc).filter(f => f.startsWith('gsd-') && f.endsWith('.md'));
   const agents = [];
@@ -6953,7 +7055,20 @@ function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-san
     // CLAUDE.md neutralization via neutralizeAgentReferences(..., 'AGENTS.md').
     content = convertClaudeToCodexMarkdown(content);
     const { frontmatter } = extractFrontmatterAndBody(content);
-    const name = extractFrontmatterField(frontmatter, 'name') || file.replace('.md', '');
+    // #3897 security review F1 (blocker, post-merge): this loop used to key
+    // the sandbox/hold decision off ONLY the filename stem while the emitted
+    // `.toml`'s OUTPUT PATH below is keyed off `name` (frontmatter-derived,
+    // attacker-editable) — so a renamed source file, or a sibling file whose
+    // `name:` collides with a held role, could make the decided identity and
+    // the landed artifact disagree, widening a held role's own file to
+    // `workspace-write`. `generateCodexAgentToml` (below) now derives
+    // `sandbox_mode` over BOTH the filename stem it is given AND the
+    // frontmatter `name:` it resolves internally, taking the most
+    // restrictive result — this loop no longer needs to choose one identity
+    // for that call; see `deriveCodexSandboxMode`'s doc in
+    // `codex-agent-toml.cts` for the resolution.
+    const fileStem = file.replace(/\.md$/, '');
+    const name = extractFrontmatterField(frontmatter, 'name') || fileStem;
     const description = extractFrontmatterField(frontmatter, 'description') || '';
 
     agents.push({ name, description: toSingleLine(description) });
@@ -6975,7 +7090,10 @@ function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-san
     // #443 — pass unified effort config so model_reasoning_effort in the .toml
     // follows the same config-driven precedence as the Claude .md effort key.
     const effortCfg = readGsdEffectiveEffortConfig(targetDir);
-    const tomlContent = generateCodexAgentToml(name, content, modelOverrides, runtimeResolver, effortCfg, sandboxTier);
+    // Pass `fileStem`; `generateCodexAgentToml` itself additionally resolves
+    // and folds in the frontmatter `name:` for the sandbox decision (F1
+    // above) — this call site does not need to pass `name` explicitly.
+    const tomlContent = generateCodexAgentToml(fileStem, content, modelOverrides, runtimeResolver, effortCfg, sandboxTier);
     // Confine the per-agent write to the agents/ dir itself: a crafted agent
     // `name` containing path separators must not escape agents/ (which would let
     // it clobber config.toml or write elsewhere under the configHome).
@@ -12396,9 +12514,19 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       );
       const hasGsdStatusline = sharedRaw.statusLine && sharedRaw.statusLine.command &&
         isManagedHookCommand(sharedRaw.statusLine.command, { surface: 'settings-json' });
-      if (hasGsdHooks || hasGsdStatusline) {
+      const needsMigration = hasGsdHooks || hasGsdStatusline;
+      // readSettings returns null ONLY for an unparseable file — its documented
+      // "preserve existing, don't touch" signal. Stand the WHOLE migration down
+      // in that case: skipping just the local merge while still stripping the
+      // shared file below would destroy the GSD entries outright instead of
+      // relocating them. Leaving both files untouched lets the migration retry
+      // once the user repairs the local file.
+      const localRaw = needsMigration ? readSettings(settingsPath) : null;
+      if (needsMigration && localRaw === null) {
+        console.log('  ' + yellow + 'i' + reset + '  Skipping #338 migration — ' + settingsFileName +
+          ' could not be parsed. Your existing settings are preserved.');
+      } else if (needsMigration) {
         // Merge GSD entries into settings.local.json
-        const localRaw = readSettings(settingsPath) || {};
         if (hasGsdStatusline && !localRaw.statusLine) {
           localRaw.statusLine = sharedRaw.statusLine;
         }
@@ -12458,7 +12586,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   if (rawSettings === null) {
     console.log('  ' + yellow + 'i' + reset + '  Skipping settings.local.json configuration — file could not be parsed (comments or malformed JSON). Your existing settings are preserved.');
     persistActiveProfileMarker();
-    return;
+    // Callers index this result by `runtime` (installAllRuntimes' statusline
+    // lookup), so every early exit must return the full shape — a bare return
+    // crashes the install rather than skipping one file.
+    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
   }
   const settings = validateHookFields(cleanupOrphanedHooks(rawSettings));
   // #3002 CR / #3662: rewrite legacy `node .../gsd-*.js` command strings (pre-
@@ -13636,7 +13767,10 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
     });
   };
 
-  if (primaryStatuslineResult) {
+  // `settings` is null on every early exit (unparseable file, skipped runtime),
+  // and handleStatusline dereferences it — an install that declined to touch a
+  // settings file has no statusline to prompt about, so fall through.
+  if (primaryStatuslineResult && primaryStatuslineResult.settings) {
     handleStatusline(primaryStatuslineResult.settings, isInteractive, continueAfterStatusline);
   } else if (canInstallBanner) {
     // No statusline-capable runtime, but at least one runtime can host the
@@ -13712,7 +13846,10 @@ module.exports = {
     GSD_CLAUDE_LEGACY_ALLOW_PERMISSIONS,
     GSD_CLAUDE_DENY_PERMISSIONS,
     GSD_CODEX_MARKER,
-    CODEX_AGENT_SANDBOX,
+    // #3897 rung 3 (ADR-3473 §8.3, HALT.md option 2)
+    CODEX_SANDBOX_HOLDS,
+    deriveCodexSandboxMode,
+    validateCodexSandboxHolds,
     getGlobalDir,
     getConfigDirFromHome,
     resolveKiloConfigPath,
@@ -13791,6 +13928,8 @@ module.exports = {
     cleanupLegacyGsdCc,
     // #1191 — exported so tests exercise the REAL readSettings, not a replica
     readSettings,
+    writeSettings,
+    writeNonClaudeDefaults,
     stripJsonComments,
     copyWithPathReplacement,
   };

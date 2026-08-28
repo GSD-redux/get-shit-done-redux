@@ -199,6 +199,9 @@
   - [Runtime Identity](#168-runtime-identity)
   - ["Failure Is a Value" — Strict Argv Rejection and the `--pick` Absence Contract](#3884-failure-is-a-value--strict-argv-rejection-and-the---pick-absence-contract)
   - [No Silent Swallow, No Verdict From Dropped Data](#3885-no-silent-swallow-no-verdict-from-dropped-data)
+  - [Runtime Marker Resolution, Derived Codex Sandbox, and In-Phase Short-Form Dependencies](#3897-runtime-marker-resolution-derived-codex-sandbox-and-in-phase-short-form-dependencies)
+  - [Hooks Declare Their Crash Policy](#3911-hooks-declare-their-crash-policy)
+  - [Reachable Lint Rules and a Non-Destructive Quick-Task Append](#3951-reachable-lint-rules-and-a-non-destructive-quick-task-append)
 
 ---
 
@@ -3411,6 +3414,12 @@ The load-bearing wire is the `plan-phase` lift into `must_haves.prohibitions`, s
 
 **Purpose:** A phase that integrates an external API, SDK, or service can no longer seal verification without a decided coverage matrix (#1562).
 
+**Behavior:** At seal time the gate reads the phase scope — the plan bodies, falling back to this phase's ROADMAP section — and runs the deterministic detector over it. An integration signal without a `COVERAGE.md` matrix blocks the seal; no signal passes.
+
+**Unestablished scope is not a negative verdict (#3909).** A phase with no plan body *and* no roadmap section gives the detector nothing to examine. The gate used to run detection over zero bytes and pass, certifying "no external-API integration" from a probe that never looked. It now holds the seal instead, reporting `scope_unavailable: true`. A phase whose plans are real and simply contain no API vocabulary is unaffected — the discriminator is *bytes examined*, never *signals found*.
+
+**Breaking change:** a phase that previously sealed because its detector could not establish a scope is now correctly held. Add the phase plan, or record a reasoned `No external API integration: <reason>` declaration in `COVERAGE.md`. See [Resolve a skipped capability probe](how-to/resolve-a-skipped-capability-probe.md).
+
 ---
 
 ### 157. State Rebuild & Configurable Graph Path
@@ -3821,6 +3830,200 @@ errno rather than folding it into a retry.
   filtering) is still working from the degraded assignment.
 - `review.md`'s evidence preservation is bounded by what a lane actually
   wrote — a lane that produced no output at all leaves nothing to preserve.
+
+---
+
+### 3897. Runtime Marker Resolution, Derived Codex Sandbox, and In-Phase Short-Form Dependencies
+
+**Purpose:** ADR-3473 §8.3 states the rule directly — one implementation per
+invariant, not a hand-maintained copy that quietly drifts from the rule it
+stands in for. This closes three instances across `gsd-tools`: a resolver
+that never read the install-time signal it was documented to read, a
+Codex sandbox map that was fully redundant with the tool contract it stood
+in for, and a dependency-resolution tier lost when the SDK lineage was
+retired.
+
+**A non-Claude install now resolves its own runtime with no config
+needed (#3897).** `resolveRuntime`'s ladder was `GSD_RUNTIME` env var →
+project `config.runtime` → `'claude'` — the per-install `.gsd-runtime`
+marker the installer has written beside `VERSION` since #2297 was read by
+four separate hand-rolled copies (`model-resolver.cts`, and two more inside
+`gsd-cursor-subagent-start.js`), but never by `resolveRuntime` itself. A
+Codex, Cursor, or other non-Claude install with no `GSD_RUNTIME` set and no
+`runtime` key in `.planning/config.json` therefore still resolved `claude`
+everywhere `resolveRuntime` is consulted (slash-command style, `query
+teams-status`, `validate agents`'s agent-directory selection, and 19 other
+call sites). The marker is now the third rung — `GSD_RUNTIME` → `config.runtime`
+→ install marker → `'claude'` — so those installs resolve their own runtime
+by default. The marker's contents are never trusted verbatim: they are routed
+through the same name-normalization the env rung already uses, so a marker
+holding an unexpected or hostile value degrades exactly like an unexpected
+`GSD_RUNTIME` value would.
+
+**Codex sandbox permissions are derived from each agent's own tool contract,
+not a hand-maintained map (#3897).** `generateCodexAgentToml` looked up
+`sandbox_mode` in an 11-entry `CODEX_AGENT_SANDBOX` map, falling back to
+`read-only` — silently — for every role the map didn't name. Measured against
+all 35 shipped roles, the map's 11 entries agree with deriving `sandbox_mode`
+from each role's declared `tools:` frontmatter (`workspace-write` when it
+declares `Write` or `Edit`, `read-only` otherwise) with **zero disagreements**,
+so the map is deleted rather than clamped. The fallback, however, was
+under-granting: 16 of the 24 roles that hit it declare `Write`/`Edit` and
+would derive `workspace-write`. Pending a decision on whether Codex actually
+enforces `sandbox_mode` (a question the derivation can't answer on its own),
+those 16 are held at `read-only` by an explicit, self-invalidating hold
+list — a hold whose role no longer derives broader, or that names a role
+that no longer exists, fails loudly instead of being silently honored.
+**Every one of the 35 emitted `.toml` files is byte-identical to before this
+change** — the fix is in provenance (an explicit, reviewable rule instead of
+a silent default), not in any installed agent's actual permissions today.
+
+**`validate agents` now reports Codex sandbox drift (#3897).** A new
+`sandbox_posture` field — report-only, exit 0, same shape as the existing
+`codex_posture` — flags any installed Codex `.toml` whose `sandbox_mode`
+disagrees with what its role's tool contract derives. Populated only when
+the active runtime is `codex`.
+
+**`depends_on` accepts the bare plan number (#3897).** A plan's frontmatter
+could already reference a dependency by its full id (`"03-01-auth-hardening"`)
+or its canonical phase-plan prefix (`"03-01"`). A third form — the bare
+plan number alone (`"01"`) — existed in the retired SDK lineage but was lost
+when that lineage was consolidated; a plan written with it silently dropped
+the edge entirely, collapsing into wave 1 regardless of its declared
+dependency. That form is restored, scoped to the **same phase only**: `"01"`
+resolves to the sibling plan whose canonical id ends `-01`. This is an
+observable behavior change — a phase whose plans used the bare form and had
+silently collapsed into a single wave will now execute in its actual declared
+waves. Two plans in the same phase sharing a bare form resolve first-write-wins,
+by sorted plan-file order — deterministic, but arbitrary where the collision
+happens, matching the retired behavior exactly.
+
+**Known limits:**
+- The 17 held Codex roles are pinned at `read-only`, not widened. A faithful
+  derivation from the tool contract would widen them, because they declare
+  `Write` or `Edit`; the previous hand-maintained map never listed them and
+  they fell through a silent `|| 'read-only'` default instead. Deriving *and*
+  holding keeps emitted TOML byte-identical for all 35 roles today while the
+  derivation becomes the single owner of the rule. Widening them is a follow-up
+  once Codex's actual enforcement of `sandbox_mode` is confirmed — until then a
+  hold is reversible and a widened sandbox is not. The hold list is
+  self-invalidating: an entry naming a role that no longer derives broader, or
+  that has no file in the shipped roster, fails rather than rotting into the
+  subset map this change deletes.
+- The bare plan-number form is ambiguous by construction across two plans in
+  the same phase that share a short form; first-write-wins is deterministic
+  but not a conflict warning. Prefer the full or canonical id when a phase's
+  plan numbering risks a short-form collision.
+- The install marker never feeds model-tier resolution (`model_profile_overrides`,
+  `model_policy.runtime_tiers`) — that still reads `config.runtime` alone, and
+  reporting-only host detection (`agent_runtime`) is a separate, pre-existing
+  ladder this change does not touch.
+
+---
+
+### 3911. Hooks Declare Their Crash Policy
+
+**Purpose:** Give every shipped enforcement hook (`hooks/*.js`, `hooks/*.sh`) a
+named, auditable termination vocabulary instead of a bare `process.exit(N)`
+scattered per file — and make a hook's fail-open/fail-closed choice a
+declaration a reviewer can see, rather than an inference from which literal
+integer follows `process.exit(` in its outer `catch`.
+
+**What changed (ADR-3889 Phase 7, #3911):**
+
+- `hooks/lib/hook-exit.js` (hand-written) exposes `allow(payload)` → exit 0,
+  `deny(payload, stderrPayload?)` → exit 2, and `crash(onCrash, payload)`,
+  which dispatches to `allow`/`deny` per a `HOOK_ON_CRASH` policy the caller
+  must supply — `crash()` has no default policy, so a hook cannot fail open
+  by omission.
+- Every one of the 19 enforcement hooks under `hooks/*.js` now declares
+  `const ON_CRASH = HOOK_ON_CRASH.ALLOW` (or `DENY`) once, with a
+  hook-specific comment naming why, and calls `crash(ON_CRASH, payload)` from
+  its outer catch instead of a bare `process.exit(0)` / `process.exit(2)`. No
+  hook's effective exit code changed — this is a naming-and-declaration
+  migration, not a behavior change.
+- `hooks/lib/cli-exit.js` and `hooks/lib/exit-code-registry.js` are new,
+  generated, git-tracked copies of the exit-code seam (`src/cli-exit.cts` /
+  `gsd-core/bin/shared/exit-codes.json`), so a shipped hook can terminate
+  correctly on a raw, unbuilt clone without depending on `gsd-core/bin/lib/`
+  tsc output. Generated by `scripts/gen-hooks-cli-exit.cjs` and
+  `scripts/gen-exit-code-registry.cjs`, both `--check`ed by
+  `npm run lint:generated-sync`.
+- `terminateNow` gained an optional third argument, `stderrPayload`, so a
+  deny can send a full JSON body to stdout and a distinct plain-text reason
+  to stderr — needed because `gsd-write-guard.js` (Kimi's native hook bus
+  reads stderr verbatim back to the model) always sent only the bare reason
+  string on fd 2. The two streams are now written in independent try/catch
+  blocks: previously a payload that failed to serialize on fd 1 aborted
+  before fd 2 ever wrote, producing a deny with an empty stderr reason.
+- Two hooks are deliberately **not** migrated to `deny()`:
+  `gsd-read-injection-scanner.js` (PostToolUse — its harness reads the block
+  decision from the JSON response body, not the exit code) and
+  `gsd-cursor-subagent-start.js` (follows Cursor's own `subagentStart`
+  protocol, which reads `permission: "deny"` from the JSON body at exit 0).
+  Both still use `allow()`/`crash()` for their no-op and crash paths.
+- `gsd-phase-boundary.sh`, `gsd-session-state.sh`, and
+  `gsd-validate-commit.sh` gained `set -euo pipefail`, and
+  `gsd-validate-commit.sh`'s three swallow-and-pass sites (the opt-in config
+  read, JSON command extraction, and the `isGitSubcommand` classifier) now
+  distinguish a genuine negative from "could not run" — on the latter they
+  emit a stderr diagnostic and exit 0 instead of silently allowing every
+  commit (#3838).
+
+See [Declare a hook's crash policy](../how-to/declare-a-hook-crash-policy.md)
+for the full how-to, and
+[ADR-3889](../adr/3889-process-exit-contract.md) for the exit-code registry
+this vocabulary is layered over.
+
+---
+
+### 3951. Reachable Lint Rules and a Non-Destructive Quick-Task Append
+
+**Purpose:** Make two ESLint rules cover the code they were written to govern, and stop
+`quick-tasks-append` from overwriting curated `progress.*` values on a body-only write.
+
+**What changed:**
+
+- **`local/no-adhoc-markdown-parsing` reaches its whole registered surface.** The rule short-circuited
+  unless a file's path matched a flat `src/*.cts` pattern, so it **self-gated on its own filename**.
+  Two consequences: 28 `.cts` files in `src/` subdirectories sat inside the `src/**/*.cts` glob it was
+  registered on and were silently skipped, and the rule could not be extended by configuration at all —
+  widening the glob alone left it inert. Both halves now move together, and a test pins that the gate
+  and the registration agree in *both* directions.
+- **The rule now also covers `tests/**` and `scripts/**`**, which surfaced **80 hand-rolled markdown
+  parses across 43 test files**. Seventy are routed through the existing `markdown-sectionizer` and
+  `markdown-table` seams; ten are suppressed with a stated reason (six of those are a shell-pipe
+  detector whose regex merely resembles a table).
+- **`local/no-adhoc-regex-escape` sees property access.** Its unsafe-`new RegExp` arm examined only
+  bare identifiers, so `new RegExp(obj['key'])` — the shape runtime data actually arrives in — was
+  invisible. That is why it never fired on a known ReDoS. It now inspects `MemberExpression`, with an
+  exemption keyed strictly on the property being `source` (18 safe sites), plus provenance exemptions
+  for `_SOURCE` constants reached through a required module (3 sites).
+- **`quick-tasks-append` can write the canonical row.** Optional `--quick-id`, `--slug` and
+  `--directory` let a caller that has a real quick task emit the same row `/gsd-quick` renders. Omit
+  them — as `fast.md` does, having neither an id nor a directory — and the row is byte-identical to
+  before.
+- **A body-only append no longer re-derives progress.** The route was the only body-only STATE.md
+  writer not passing `{ resync: false }`, so appending one row triggered a full re-derive of the
+  disk-derived `progress.*` frontmatter and replaced curated values. Reproduced: a project with two
+  real phase directories and a curated `total_phases: 25` collapsed to `2` on append.
+
+**Found by the widening:** `tests/config-field-docs.test.cjs` asserted that
+`workflow.subagent_timeout`'s documented default is not `600` — but read the **Type** column instead
+of **Default**, so it compared `'number'` against `'600'` and could never fail. The guard against
+regressing to the old seconds-based default had been inert. It is now row-scoped and real.
+
+**Known limits:**
+
+- #3426 and #3239 are **not** closed by this. Their hand-rolled scans in
+  `tests/package-legitimacy-gate.test.cjs` are built from line filters and `split('|')`, not the
+  regex-literal fingerprints this rule detects — measured at zero violations even with the gate
+  bypassed. They need new detectors, which is a separate design.
+- The 10 suppressions are suppressions, not fixes. Each names why the raw markdown text is the
+  subject of that assertion.
+- The `src/` subdirectory hole was **latent** — zero violations existed there when it was fixed. It is
+  closed because "no violations today" is not a property that keeps holding, not because it was
+  hiding anything.
 
 ---
 

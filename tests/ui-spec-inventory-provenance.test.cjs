@@ -44,6 +44,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('fast-check');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -113,7 +114,9 @@ function parseSignOff(text) {
 function parseReturnTableRows(text) {
   const seen = new Map();
   for (const line of lf(text).split('\n')) {
-    const m = /^\|\s*(\d+)\s+([^|]+?)\s*\|/.exec(line);
+    if (!line.trim().startsWith('|')) continue;
+    const cells = splitTableRow(line);
+    const m = cells.length > 0 ? /^(\d+)\s+(\S.*?)\s*$/.exec(cells[0]) : null;
     if (m) seen.set(`${m[1]}|${m[2]}`, { n: Number(m[1]), label: m[2] });
   }
   return [...seen.values()];

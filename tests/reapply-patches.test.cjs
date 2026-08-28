@@ -20,6 +20,7 @@ function sha256(content) {
 }
 
 const { cleanup } = require('./helpers.cjs');
+const { collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 function createTempDir() {
   return fs.mkdtempSync(path.join(require('os').tmpdir(), 'gsd-patch-test-'));
@@ -382,10 +383,9 @@ describe('reapply-patches gated hunk verification (#1999)', () => {
     // assert it both names the table and defines an explicit gate
     // condition tied to the `verified` column.
     const content = fs.readFileSync(workflowPath, 'utf8');
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored reapply-patches.md workflow, bounded prose, not adversarial input
-    const step5Match = content.match(/^##\s+Step 5[^\r\n]*\r?\n([\s\S]*?)(?=^##\s|Z)/m);
-    assert.ok(step5Match, 'reapply-patches workflow must contain a "## Step 5" section');
-    const step5 = step5Match[1];
+    const step5Section = collectSection(content, (h) => /^Step 5\b/.test(h.text));
+    assert.ok(step5Section, 'reapply-patches workflow must contain a "## Step 5" section');
+    const step5 = step5Section.body;
     assert.ok(
       /Hunk Verification Table/.test(step5),
       'Step 5 body must explicitly reference the Hunk Verification Table'
@@ -407,10 +407,9 @@ describe('reapply-patches gated hunk verification (#1999)', () => {
   test('Step 5 also halts when the Hunk Verification Table is absent (Step 4 produced nothing)', () => {
     // Independent gate: missing-table is a separate halt path from any-no-row.
     const content = fs.readFileSync(workflowPath, 'utf8');
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored reapply-patches.md workflow, bounded prose, not adversarial input
-    const step5Match = content.match(/^##\s+Step 5[^\r\n]*\r?\n([\s\S]*?)(?=^##\s|Z)/m);
-    assert.ok(step5Match, 'Step 5 section must exist');
-    const step5 = step5Match[1];
+    const step5Section = collectSection(content, (h) => /^Step 5\b/.test(h.text));
+    assert.ok(step5Section, 'Step 5 section must exist');
+    const step5 = step5Section.body;
     const handlesAbsent = /(table is absent|table is missing|missing.*table|absent.*table)/i.test(step5);
     assert.ok(
       handlesAbsent,

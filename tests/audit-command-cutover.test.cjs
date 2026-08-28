@@ -23,6 +23,7 @@ const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const { routeAuditUat, routeAuditOpen } = require('../gsd-core/bin/lib/audit-command-router.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -1363,12 +1364,14 @@ function extractFrontmatter(content) {
   }
 
   // Case 2: frontmatter is embedded inside a fenced block (```markdown\n---\n…\n---\n)
-  const fenceMatch = content.match(/```(?:markdown|md)?\r?\n(---\r?\n[\s\S]*?\r?\n---)\r?\n/);
-  if (fenceMatch) {
-    // Strip the outer --- delimiters to get just the YAML body
-    const block = fenceMatch[1];
-    const inner = block.match(/^---\r?\n([\s\S]*?)\r?\n---$/);
-    return inner ? inner[1] : null;
+  const lines = content.split(/\r?\n/);
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    const info = (block.infoString || '').trim().toLowerCase();
+    if (info !== '' && info !== 'markdown' && info !== 'md') continue;
+    const fenced = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+    const inner = fenced.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (inner) return inner[1];
   }
 
   return null;

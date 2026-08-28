@@ -320,6 +320,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const ROOT = path.join(__dirname, '..', 'gsd-core', 'workflows');
 
@@ -329,13 +330,13 @@ function read(rel) {
 
 function extractFindingsProbesFromBashBlocks(markdown) {
   const probes = [];
-  const fenceRe = /```bash\r?\n([\s\S]*?)```/g;
-  let fenceMatch;
+  const markdownLines = markdown.split(/\r?\n/);
+  const bashBlocks = scanFencedBlocks(markdownLines)
+    .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash');
 
-  while ((fenceMatch = fenceRe.exec(markdown)) !== null) {
-    const block = fenceMatch[1];
-    const baseLine = markdown.slice(0, fenceMatch.index).split(/\r?\n/).length;
-    const lines = block.split(/\r?\n/);
+  for (const fenced of bashBlocks) {
+    const baseLine = fenced.openLineIdx + 1;
+    const lines = markdownLines.slice(fenced.openLineIdx + 1, fenced.closeLineIdx);
 
     lines.forEach((line, idx) => {
       if (!line.includes('.claude/skills/')) return;

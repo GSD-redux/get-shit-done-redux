@@ -22,8 +22,16 @@ scope (the concatenation of this phase's ROADMAP section + the PLAN body):
 
 ```bash
 SCOPE="$(cat "${PHASE_DIR}"/*-PLAN.md 2>/dev/null) $(gsd_run query roadmap.get-phase "${PHASE}" 2>/dev/null || true)"
-API_COVERAGE_JSON=$(printf '%s' "$SCOPE" | node gsd-core/bin/lib/api-coverage.cjs --json 2>/dev/null || echo '{"detected":false,"signals":[]}')
+API_COVERAGE_JSON=$(printf '%s' "$SCOPE" | node gsd-core/bin/lib/api-coverage.cjs --json 2>/dev/null) || true
+[ -n "$API_COVERAGE_JSON" ] || API_COVERAGE_JSON='{"skipped":true,"reason":"probe_unavailable"}'
 ```
+
+The `|| true` neutralizes the assignment's status without discarding the
+detector's own payload: the detector exits **1** for a real "no integration"
+verdict, so treating any non-zero exit as failure would throw away a correct
+answer. Emptiness — not exit status — is what proves the probe never ran, and
+the second line is the only place the fragment manufactures a payload of its
+own — one that records the *absence* of a verdict rather than asserting one.
 
 The detector's exit code and `--json` payload now distinguish a real negative
 from an unexamined input (ADR-3889 Phase 3, #3907): empty/whitespace-only

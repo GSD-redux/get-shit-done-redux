@@ -92,6 +92,7 @@ const path = require('node:path');
 const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup, readFileNormalized } = require('./helpers.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'resume-project.md');
 
@@ -113,9 +114,14 @@ function extractCheckBlock() {
     'check_incomplete_work step must have a closing </step> tag',
   );
   const stepBody = md.slice(stepStart, stepEnd);
-  const fenceMatch = stepBody.match(/```(?:bash|sh)\r?\n([\s\S]*?)\r?\n```/);
-  assert.ok(fenceMatch, 'check_incomplete_work step must embed a ```bash code block');
-  return fenceMatch[1];
+  const stepLines = stepBody.split('\n');
+  for (const block of scanFencedBlocks(stepLines)) {
+    if (block.closeLineIdx === -1) continue;
+    const info = (block.infoString || '').trim();
+    if (info !== 'bash' && info !== 'sh') continue;
+    return stepLines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+  }
+  assert.fail('check_incomplete_work step must embed a ```bash code block');
 }
 
 function runSnippet(cwd, snippet) {
