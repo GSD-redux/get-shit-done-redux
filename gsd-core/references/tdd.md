@@ -169,7 +169,7 @@ red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_to
 
 | Field | Meaning |
 |---|---|
-| `command` | The exact command whose run this is. |
+| `command` | The exact command whose run this is. Recorded for audit only: the predicate reads no field of it, and nothing binds it to `target_test`. |
 | `exit_status` | That command's process exit status. |
 | `target_test` | The runner-native id the run was asked to produce. |
 | `selected_count` | How many tests the run selected. |
@@ -235,23 +235,27 @@ valid_red =
 This file is the block's only source. Reproduce it character-for-character wherever it is quoted:
 every paraphrase of it so far has silently dropped a conjunct.
 
-**The first and fourth shared conjuncts** are the pinning pair that binds the trailer's `expected`
-and `target_test` echoes to the declaration. They shipped commented out at first, deferred to
-Phase 3 on the grounds that no plan object is held at predicate time. That deferral is withdrawn:
-both reference only `plan.expected_failure` and `plan.target_test`, symbols the parenthesised group
-below already consumes, so deferring them introduced no plan-side input Phase 3 did not already
-require — while leaving the `actual`-versus-`expected` comparisons above them as a self-comparison
-of the trailer against its own echo.
+**`trailer.expected == plan.expected_failure`** and **`trailer.target_test == plan.target_test`**
+are the pinning pair that binds the trailer's `expected` and `target_test` echoes to the
+declaration. They shipped commented out at first, deferred to Phase 3 on the grounds that no plan
+object is held at predicate time. That deferral is withdrawn: both reference only
+`plan.expected_failure` and `plan.target_test`, symbols the parenthesised group below already
+consumes, so deferring them introduced no plan-side input Phase 3 did not already require — while
+leaving the `actual`-versus-`expected` comparisons above them as a self-comparison of the trailer
+against its own echo.
 
 **Two refinements**, neither narrowing the shape: `actual == expected` is written out as its two
 field comparisons, omitting `subject` because the arms bind `actual.subject` to plan-declared
-values instead — strictly stronger; and the target arm's `actual.subject == plan.target_test`
-becomes `id_matches(...)`.
+values instead; and the target arm's `actual.subject == plan.target_test` becomes
+`id_matches(...)`.
 
 `selected_count` and `target_executed` are conditions of the target-test arm **only**: an
 outside-in RED fails before its target test is ever collected, so it reports 0 and false by
 construction, and hoisting those two above the disjunction blocks exactly the case the outside-in
-arm exists to admit.
+arm exists to admit. The arm applies no condition proving the target test exists; the MVP+TDD gate
+supplies that separately by requiring the RED commit to touch a test file, per
+`gsd-core/references/execute-mvp-tdd.md`, because the predicate alone cannot tell whether the
+target test was ever written.
 
 One rule sits outside the predicate: `exit_status == 0` is an unexpected pass. It fails the first
 conjunct, and it is neither valid RED nor an invalid RED to retry — halt the cycle. Every other way
