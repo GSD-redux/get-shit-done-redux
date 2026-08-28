@@ -209,6 +209,18 @@ describe('no-exact-case-env-access: valid cases', () => {
       invalid: [],
     });
   });
+
+  test('V15: envGet(env, "PATH") — the case-insensitive accessor call itself is valid', () => {
+    ruleTester.run('no-exact-case-env-access', rule, {
+      valid: [
+        {
+          code: `const p = envGet(env, 'PATH');`,
+          filename: OUTSIDE_SEAM_FILE,
+        },
+      ],
+      invalid: [],
+    });
+  });
 });
 
 // ─── INVALID cases (I1-I8) ──────────────────────────────────────────────────
