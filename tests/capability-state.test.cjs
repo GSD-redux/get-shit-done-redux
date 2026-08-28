@@ -1016,14 +1016,18 @@ describe('regressions: flat commands/gsd-<stem>.md layout (#1858)', () => {
     // commands/gsd-<stem>.md in a temp dir, then compare stem sets.
     const tmpFlat = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-parity-flat-'));
     try {
-      const nested = require('../gsd-core/bin/lib/install-profiles.cjs').loadSkillsManifest(realCommandsGsdDir);
+      // #3798: both loaders now union workflow spawn tokens; give them the
+      // SAME workflows dir so the comparison stays apples-to-apples (the flat
+      // mirror dir carries no workflows of its own).
+      const realWorkflowsDir = path.resolve(__dirname, '..', 'gsd-core', 'workflows');
+      const nested = require('../gsd-core/bin/lib/install-profiles.cjs').loadSkillsManifest(realCommandsGsdDir, realWorkflowsDir);
       for (const [stem] of nested) {
         if (stem.startsWith('_calls_agents_')) continue;
         const src = path.join(realCommandsGsdDir, stem + '.md');
         if (!fs.existsSync(src)) continue;
         fs.writeFileSync(path.join(tmpFlat, 'gsd-' + stem + '.md'), fs.readFileSync(src, 'utf8'), 'utf8');
       }
-      const flat = _loadFlatCommandsGsdManifest(tmpFlat);
+      const flat = _loadFlatCommandsGsdManifest(tmpFlat, realWorkflowsDir);
       const nestedStems = [...nested.keys()].filter((k) => !k.startsWith('_calls_agents_')).sort();
       const flatStems = [...flat.keys()].filter((k) => !k.startsWith('_calls_agents_')).sort();
       assert.deepStrictEqual(flatStems, nestedStems,

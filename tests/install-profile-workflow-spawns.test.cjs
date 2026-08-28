@@ -18,6 +18,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { cleanup } = require('./helpers.cjs');
 
 const REPO = path.join(__dirname, '..');
 const {
@@ -87,9 +88,31 @@ describe('install-profile workflow spawn closure (#3798)', () => {
   test('#3798 control: the requires: skill closure is unchanged by the agent derivation', () => {
     const { resolved } = realAgentsFor('standard');
     // The skill set must still be exactly the requires: closure — spot-check
-    // a known member and a known non-member.
+    // a known member and a known non-member of standard's closure.
     assert.ok(resolved.skills.has('execute-phase'), 'execute-phase is a standard skill');
-    assert.ok(!resolved.skills.has('verify-work') || resolved.skills.has('verify-work'),
-      'closure membership itself is not under test here — presence assertion only');
+    assert.ok(!resolved.skills.has('autonomous'),
+      'autonomous is not in standard\'s requires: closure — the agent derivation must not widen skills');
+  });
+
+  test('#3798: workflow fragments (steps/, modes/) contribute spawn tokens', (t) => {
+    // Fixture workflows dir: a parent workflow referencing nothing itself,
+    // whose modes/ fragment carries the only spawn token — proves the
+    // recursive fragment walk, not just the parent body, feeds the union.
+    const os = require('node:os');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3798-wf-'));
+    t.after(() => cleanup(tmp));
+    const wfDir = path.join(tmp, 'workflows');
+    fs.mkdirSync(path.join(wfDir, 'probe', 'modes'), { recursive: true });
+    fs.writeFileSync(path.join(wfDir, 'probe.md'), '# Probe\n\nNo agents here.\n');
+    fs.writeFileSync(path.join(wfDir, 'probe', 'modes', 'advisor.md'), 'Spawn: subagent_type="gsd-fixture-only-agent"\n');
+    const cmdDir = path.join(tmp, 'commands', 'gsd');
+    fs.mkdirSync(cmdDir, { recursive: true });
+    fs.writeFileSync(path.join(cmdDir, 'probe-skill.md'), '@~/.claude/gsd-core/workflows/probe.md\n');
+
+    const man = loadSkillsManifest(cmdDir, wfDir);
+    assert.ok(
+      (man.get('_calls_agents_probe-skill') || []).includes('gsd-fixture-only-agent'),
+      '#3798: a spawn token living ONLY in a workflow fragment (modes/) must reach the agent set',
+    );
   });
 });

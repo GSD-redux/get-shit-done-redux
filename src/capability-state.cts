@@ -46,7 +46,7 @@ const { loadConfig } = configLoaderMod;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import installProfilesMod = require('./install-profiles.cjs');
-const { readActiveProfile, loadSkillsManifest, resolveProfile, parseRequires, parseCallsAgents } = installProfilesMod;
+const { readActiveProfile, loadSkillsManifest, resolveProfile, parseRequires, parseCallsAgents, workflowAgentRefs } = installProfilesMod;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import surfaceMod = require('./surface.cjs');
@@ -401,7 +401,17 @@ function _loadInstalledSkillsManifest(configDir: string): Map<string, string[]> 
  * no gsd-*.md files (so _resolveManifest can use size>0 as the "flat layout
  * present" signal and fall through to the installed-skills branch otherwise).
  */
-function _loadFlatCommandsGsdManifest(commandsParentDir: string): Map<string, string[]> {
+function _loadFlatCommandsGsdManifest(commandsParentDir: string, workflowsDir?: string): Map<string, string[]> {
+  // #3798: derive agents from the command body PLUS the workflow files it
+  // references, exactly like loadSkillsManifest does for the nested layout —
+  // the flat (#1858) layout retained the original defect otherwise, and the
+  // parity test in tests/capability-state.test.cjs asserts the two loaders
+  // produce identical _calls_agents_* sets. Default: <pkg>/gsd-core/workflows
+  // one level above the commands dir — the shape of both the repo checkout
+  // (<repo>/commands/) and a flat runtime install (the runtime config dir's
+  // commands/ with the package's gsd-core/ beside it).
+  const flatWorkflowsDir = workflowsDir
+    || path.resolve(commandsParentDir, '..', 'gsd-core', 'workflows');
   const manifest = new Map<string, string[]>();
   let entries: fs.Dirent[];
   try {
@@ -424,7 +434,12 @@ function _loadFlatCommandsGsdManifest(commandsParentDir: string): Map<string, st
     try {
       const content = fs.readFileSync(path.join(commandsParentDir, entry.name), 'utf8');
       manifest.set(stem, parseRequires(content));
-      manifest.set(`_calls_agents_${stem}`, parseCallsAgents(content));
+      manifest.set(`_calls_agents_${stem}`, [
+        ...new Set([
+          ...parseCallsAgents(content),
+          ...workflowAgentRefs(content, flatWorkflowsDir),
+        ]),
+      ]);
     } catch {
       manifest.set(stem, []);
       manifest.set(`_calls_agents_${stem}`, []);

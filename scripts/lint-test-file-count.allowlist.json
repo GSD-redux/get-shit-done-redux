@@ -144,13 +144,14 @@
         "install-minimal-hooks.test.cjs",
         "install-nested-layout.test.cjs",
         "install-path-detection.test.cjs",
+        "install-profile-workflow-spawns.test.cjs",
         "install-regressions.test.cjs",
         "install-runtime-artifacts.test.cjs",
         "install-update-marker.test.cjs",
         "install-write-confinement.test.cjs",
         "install.test.cjs"
       ],
-      "issue": "1679"
+      "issue": "#3798 \u2014 the profile-closure spawn test reads the real repo surface (commands+workflows+agents); consolidating it into install.test.cjs would put a whole-repo scan behind the suite's heaviest file"
     },
     "edge-probe": {
       "files": [
