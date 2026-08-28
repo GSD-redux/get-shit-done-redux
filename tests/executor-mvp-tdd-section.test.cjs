@@ -434,6 +434,130 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     }
   });
 
+  test("the contract's shipped definitions, outcome rows and obligations are each pinned", () => {
+    // One row per load-bearing line the suite used to tolerate deleting: every one of
+    // these was mutated away against a green suite (02-VERIFICATION.md N2, N3, N5, N6,
+    // N8, N9). A future obligation costs one row here, not one new test. `verdict` is
+    // non-null only for ### Outcomes rows, and it is asserted on the SAME line as the
+    // needle, so deleting a row and flipping its verdict both fail.
+    const rows = [
+      {
+        section: 'Evidence',
+        needle: '`command` lands in permanent published Git history',
+        verdict: null,
+        why: "this is the phase's only security control and 02-SECURITY.md records T-02-02 as "
+          + 'closed on the strength of it; mutation N9 deleted it against a green suite',
+      },
+      {
+        section: 'Evidence',
+        needle: 'This is an obligation, not a pattern list',
+        verdict: null,
+        why: 'the obligation form is load-bearing — narrowed to a pattern list, every unlisted '
+          + 'credential position leaks by omission',
+      },
+      {
+        section: 'Evidence',
+        needle: "`target_executed` is true when some member of the run's executed-and-reported set",
+        verdict: null,
+        why: '`target_executed` is a conjunct of the target-test arm, and a conjunct whose term '
+          + 'the contract never defines is unmechanizable by the coded gate — CR-01 exactly',
+      },
+      {
+        section: 'Evidence',
+        needle: '`id_matches(observed, declared)` is true when `observed === declared`',
+        verdict: null,
+        why: 'the predicate body uses `id_matches` and that use is already pinned; deleting only '
+          + 'its definition reproduces CR-01',
+      },
+      {
+        section: 'Evidence',
+        needle: '`declared` followed **immediately** by a runner-native variant delimiter',
+        verdict: null,
+        why: 'a definition narrowed to exact equality alone blocks the legitimate parameterized '
+          + 'RED that `id_matches` exists to admit, so both halves must be pinned',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'Zero tests selected',
+        verdict: 'block',
+        why: 'the Outcomes rows ARE REDC-03 in shipped form, so an unpinned row is an unpinned '
+          + 'requirement',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'Suite failed to collect or parse',
+        verdict: 'block',
+        why: 'a test-file SyntaxError is not the declared missing target and must never '
+          + 'authorize GREEN',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'Fixture or setup crashed before the target assertion',
+        verdict: 'block',
+        why: 'a crash before the target assertion proves nothing about the target behavior',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'A different test failed',
+        verdict: 'block',
+        why: "this row IS #3770's original defect; mutation N5 deleted it and the suite stayed "
+          + 'green',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'Genuine target-behavior failure',
+        verdict: 'authorize',
+        why: 'the one outcome the whole contract exists to admit',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'Outside-in: the declared implementation target is missing',
+        verdict: 'authorize',
+        why: 'the outside-in arm is authorized with no selection or execution condition, and '
+          + 'deleting the row is how that permission silently disappears',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'Fixture is itself the behavior under test',
+        verdict: 'authorize',
+        why: 'a fixture-phase failure is legitimate RED when the fixture is the behavior',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'Unexpected pass',
+        verdict: 'halt',
+        why: 'mutation N6 deleted it and the suite stayed green; halt is not block, and a '
+          + 'flipped verdict would have the cycle retry a passing test forever',
+      },
+      {
+        section: 'RED Predicate',
+        needle: '`exit_status == 0` is an unexpected pass',
+        verdict: null,
+        why: 'the halt rule sits outside the predicate and nothing else in the file states it',
+      },
+      {
+        section: 'RED Predicate',
+        needle: 'neither valid RED nor an invalid RED to retry — halt the cycle',
+        verdict: null,
+        why: "mutation N8 deleted the whole paragraph — ROADMAP Phase 2 SC3's second half — "
+          + 'and the suite stayed green',
+      },
+    ];
+
+    for (const row of rows) {
+      const hits = sliceH3(CONTRACT, row.section).split('\n')
+        .filter((line) => line.includes(row.needle));
+      assert.strictEqual(hits.length, 1,
+        `### ${row.section} must carry exactly one line containing "${row.needle}" — ${row.why}. `
+        + `Found ${hits.length}. See #3770.`);
+      if (row.verdict !== null) {
+        assert.ok(hits[0].trim().endsWith(`| ${row.verdict} |`),
+          `the "${row.needle}" outcome must keep the verdict \`${row.verdict}\` on its own row — `
+          + `${row.why}. Observed: ${hits[0].trim()}. See #3770.`);
+      }
+    }
+  });
+
   test('the evidence fixture survives git interpret-trailers as one JSON trailer', () => {
     // Non-vacuity is git's own charset rule: an underscored token (red_evidence)
     // is silently dropped by interpret-trailers and by %(trailers:key=...), which
