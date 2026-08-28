@@ -203,6 +203,30 @@ describe('task resolve-content (rows 17-19)', () => {
     assert.strictEqual(stdout, '', 'resolver failure must never write a JSON {resolved:false} answer to stdout');
   });
 
+  test('path traversal: --plan escaping the project root -> USAGE, non-zero exit, no filesystem read', (t) => {
+    const dir = createTempDir('gsd-resolve-content-traversal-');
+    t.after(() => cleanup(dir));
+
+    const escapingPath = '../../../etc/passwit';
+    assert.throws(
+      () =>
+        routeResolveContent({
+          args: ['task', 'resolve-content', '--plan', escapingPath, '--task-id', 'test:1'],
+          cwd: dir,
+          raw: false,
+        }),
+      (err) => {
+        assert.ok(err instanceof ExitError, `expected ExitError, got ${err}`);
+        assert.strictEqual(err.code, 1);
+        assert.ok(
+          err.message.includes('outside project scope') && err.message.includes(escapingPath),
+          `expected an outside-project-scope rejection naming the path, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
   test('not-applicable: task-id with no ":" -> {resolved:false}, no reason field', (t) => {
     const dir = createTempDir('gsd-resolve-content-na-');
     t.after(() => cleanup(dir));

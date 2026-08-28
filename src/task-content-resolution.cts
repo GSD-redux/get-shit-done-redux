@@ -157,6 +157,20 @@ interface CapabilityLike {
 // ─── Pure functions ────────────────────────────────────────────────────────────
 
 /**
+ * The SAME kebab-case grammar `capability-validator.cjs`'s `KEBAB_RE`
+ * enforces on `taskContentResolver.trackerPrefix` at install time
+ * (`validateTaskContentResolverFields`). Duplicated as a literal rather than
+ * imported — `.cts` (build-at-publish, ADR-457) and the hand-written
+ * `capability-validator.cjs` are genuinely two different build targets with
+ * no shared-constants module between them today — but `tests/task-content-
+ * resolver-grammar-parity.test.cjs` asserts both regexes agree on a shared
+ * table of inputs, so a future edit to either one that silently diverges from
+ * the other fails a test instead of drifting quietly (CLAUDE.md's Generative
+ * Fix Divergence rule).
+ */
+const TRACKER_PREFIX_RE = /^[a-z][a-z0-9-]*$/;
+
+/**
  * Split a `tracker-id` attribute value into its prefix and id, on the FIRST
  * `:` only — colons after the first stay in the id verbatim (a tracker whose
  * native ids contain colons, e.g. `beads:issue:GSD-1` → `{prefix: "beads",
@@ -189,7 +203,7 @@ function parseResolverDeclaration(
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const body = raw as { trackerPrefix?: unknown; invoke?: unknown };
   const trackerPrefix = typeof body.trackerPrefix === 'string' ? body.trackerPrefix.trim() : '';
-  if (!trackerPrefix) return null;
+  if (!trackerPrefix || !TRACKER_PREFIX_RE.test(trackerPrefix)) return null;
 
   const inv = body.invoke;
   if (inv === null || typeof inv !== 'object' || Array.isArray(inv)) return null;
