@@ -1296,8 +1296,13 @@ describe('greenfield walk (end-to-end)', () => {
     // report nothing) is exercised elsewhere: every oracle's own pass/fail
     // self-test above, the C1/C2 promoted-violation tests, and the wiring
     // self-test below.
-    const totalSmells = report.steps.reduce((sum, step) => sum + step.smells.length, 0);
-    assert.strictEqual(totalSmells, 0, 'expected the greenfield walk to be smell-free after #3913');
+    const allSmells = report.steps.flatMap((step) =>
+      step.smells.map((smell) => ({ at: step.at, id: smell.id, subject: smell.subject, detail: smell.detail })));
+    assert.strictEqual(
+      allSmells.length,
+      0,
+      `expected the greenfield walk to be smell-free after #3913, found ${allSmells.length}:\n${JSON.stringify(allSmells, null, 2)}`,
+    );
   });
 });
 
