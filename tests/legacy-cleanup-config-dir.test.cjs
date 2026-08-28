@@ -27,12 +27,16 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const LEGACY_PKG_SIGNAL = 'get-shit-done-cc';
 
-function seedLegacySkill(dir) {
-  const skillDir = path.join(dir, '.claude', 'skills', 'gsd-add-tests');
+function seedLegacySkill(configDir) {
+  // configDir is a CONFIG DIR root (like ~/.claude): artifacts live at
+  // <configDir>/skills/gsd-*/SKILL.md. The scan's content signal is a stale
+  // '/get-shit-done/' PATH reference (legacy-cleanup.cjs
+  // LEGACY_SKILL_PATH_SIGNAL), not the bare package name.
+  const skillDir = path.join(configDir, 'skills', 'gsd-add-tests');
   fs.mkdirSync(skillDir, { recursive: true });
   fs.writeFileSync(
     path.join(skillDir, 'SKILL.md'),
-    `<!-- installed via ${LEGACY_PKG_SIGNAL} -->\n# Add Tests\n`,
+    `<!-- installed via ${LEGACY_PKG_SIGNAL} -->\nSee ~/.claude/get-shit-done/skills/gsd-add-tests/SKILL.md\n`,
   );
   return path.join(skillDir, 'SKILL.md');
 }
@@ -55,8 +59,9 @@ describe('#3799: cleanupLegacyGsdCc honors an explicit configDirs scope', () => 
   });
 
   test('#3799: an explicit configDirs scope never plans removals outside it', () => {
-    // A LIVE legacy install under the default home…
-    const liveArtifact = seedLegacySkill(defaultHome);
+    // A LIVE legacy install under the default home (at <home>/.claude, one
+    // of _LEGACY_SCAN_SUBDIR_NAMES)…
+    const liveArtifact = seedLegacySkill(path.join(defaultHome, '.claude'));
     // …and one stale artifact inside the redirected sandbox.
     const sandboxArtifact = seedLegacySkill(sandboxDir);
 
@@ -84,7 +89,7 @@ describe('#3799: cleanupLegacyGsdCc honors an explicit configDirs scope', () => 
   });
 
   test('#3799 control: without the override, the home scan is unchanged', () => {
-    const liveArtifact = seedLegacySkill(defaultHome);
+    const liveArtifact = seedLegacySkill(path.join(defaultHome, '.claude'));
     const { plan } = cleanupLegacyGsdCc({
       homeDir: defaultHome,
       dryRun: true,
@@ -109,14 +114,18 @@ describe('#3799: --no-legacy-cleanup and --config-dir CLI flags', () => {
 
   test('the install() call site threads the config-dir scope and the skip flag', () => {
     const src = HELP_TEXT; // same file read — the shipped installer source
-    const callSite = /cleanupLegacyGsdCc\(\{[^}]{0,400}dryRun: false[^}]{0,400}\}\)/.exec(src);
-    assert.ok(callSite, 'install() still calls cleanupLegacyGsdCc');
+    // Slice the install() body up to its cleanup call so the conditional
+    // spread's braces cannot defeat a single-regex match.
+    const fnStart = src.indexOf('function install(isGlobal, runtime = DEFAULT_RUNTIME');
+    const callIdx = src.indexOf('cleanupLegacyGsdCc({ dryRun: false', fnStart);
+    assert.ok(fnStart > 0 && callIdx > fnStart, 'install() still calls cleanupLegacyGsdCc');
+    const callSite = src.slice(callIdx, callIdx + 240);
     assert.ok(
-      /configDirs/.test(callSite[0]),
+      /configDirs/.test(callSite),
       '#3799: the call site must pass a configDirs scope',
     );
     assert.ok(
-      /skipNoLegacyCleanup|skip/.test(callSite[0]),
+      /skipNoLegacyCleanup/.test(src.slice(fnStart, callIdx + 400)),
       '#3799: the call site must honor the --no-legacy-cleanup skip',
     );
   });
