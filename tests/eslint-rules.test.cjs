@@ -14,6 +14,7 @@
  *   - local/no-raw-rmsync-in-tests
  *   - local/no-adhoc-markdown-parsing
  *   - local/require-subprocess-timeout
+ *   - local/require-registered-exit
  */
 
 const { test, describe } = require('node:test');
@@ -30,6 +31,7 @@ const noTautologicalAssert = require('../eslint-rules/no-tautological-assert.cjs
 const noAdhocMarkdownParsing = require('../eslint-rules/no-adhoc-markdown-parsing.cjs');
 const noDuplicateFoldMarker = require('../eslint-rules/no-duplicate-fold-marker.cjs');
 const requireSubprocessTimeout = require('../eslint-rules/require-subprocess-timeout.cjs');
+const requireRegisteredExit = require('../eslint-rules/require-registered-exit.cjs');
 
 const ruleTester = new RuleTester({
   languageOptions: {
@@ -3178,6 +3180,196 @@ describe('require-subprocess-timeout rule', () => {
           `,
           filename: 'src/some-module.cts',
         },
+      ],
+      invalid: [],
+    });
+  });
+});
+
+// ─── require-registered-exit (#3910, epic #3889 Phase 6) ──────────────────
+//
+// See .gsd/phase/enhance-3910-ban-raw-terminator/50-test-matrix.md for the
+// enumerated input-class matrix these tests implement.
+
+describe('require-registered-exit rule', () => {
+  test('rule module exports a create function', () => {
+    assert.strictEqual(typeof requireRegisteredExit.create, 'function');
+  });
+
+  // ── Positive control: one per registered glob (matrix rows 1-4) ──────────
+
+  test('invalid: process.exit() at top level — src/**/*.cts glob', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [],
+      invalid: [
+        {
+          code: `process.exit(0);`,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: process.exit() at top level — scripts/**/*.cjs glob', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [],
+      invalid: [
+        {
+          code: `process.exit(1);`,
+          filename: 'scripts/some-script.cjs',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: process.exit() at top level — hooks/**/*.js glob', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [],
+      invalid: [
+        {
+          code: `process.exit(2);`,
+          filename: 'hooks/some-hook.js',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: process.exit() at top level — gsd-core/bin/**/*.cjs glob', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [],
+      invalid: [
+        {
+          code: `process.exit(1);`,
+          filename: 'gsd-core/bin/gsd-tools.cjs',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
+      ],
+    });
+  });
+
+  // ── Negative control: process.exitCode must NEVER be flagged (matrix rows 5-8) ──
+  //
+  // Required negative control: conflating process.exitCode (the CORRECT
+  // drain-then-exit pattern) with process.exit() is what inflated this
+  // epic's original raw-exit census 2x.
+
+  test('valid: process.exitCode = 1 is not flagged — src/**/*.cts glob', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        { code: `process.exitCode = 1;`, filename: 'src/some-module.cts' },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: process.exitCode = 1 is not flagged — scripts/**/*.cjs glob', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        { code: `process.exitCode = 1;`, filename: 'scripts/some-script.cjs' },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: process.exitCode = 1 is not flagged — hooks/**/*.js glob', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        { code: `process.exitCode = 1;`, filename: 'hooks/some-hook.js' },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: process.exitCode = 1 is not flagged — gsd-core/bin/**/*.cjs glob', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        { code: `process.exitCode = 1;`, filename: 'gsd-core/bin/gsd-tools.cjs' },
+      ],
+      invalid: [],
+    });
+  });
+
+  // ── Allowlist boundary: the ONE sanctioned terminator (matrix rows 9-11) ──
+
+  test('valid: process.exit() lexically inside a function named terminateNow is allowlisted', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        {
+          code: `
+            function terminateNow(outcome, payload) {
+              try {
+                process.exit(0);
+              } catch (err) {
+                process.exit(1);
+              }
+            }
+          `,
+          filename: 'src/cli-exit.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('invalid: near-miss — same shape, function named something else IS flagged', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            function notTerminateNow(outcome, payload) {
+              process.exit(0);
+            }
+          `,
+          filename: 'src/cli-exit.cts',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: a top-level process.exit() is flagged even when an unrelated terminateNow exists elsewhere in the same file (allowlist is structural nesting, not file-wide)', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [],
+      invalid: [
+        {
+          code: `
+            function terminateNow() {
+              // unrelated to the top-level exit below
+            }
+            process.exit(0);
+          `,
+          filename: 'src/cli-exit.cts',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
+      ],
+    });
+  });
+
+  // ── Independence (matrix rows 12-13) ──────────────────────────────────────
+
+  test('valid: a bare (non-process) exit(...) call is not flagged', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        {
+          code: `
+            function exit(code) { return code; }
+            exit(0);
+          `,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: computed member access process["exit"](0) is not flagged (documented boundary, name-based matching only)', () => {
+    ruleTester.run('require-registered-exit', requireRegisteredExit, {
+      valid: [
+        { code: `process['exit'](0);`, filename: 'src/some-module.cts' },
       ],
       invalid: [],
     });

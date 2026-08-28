@@ -249,7 +249,12 @@ try {
   process.stderr.write((bootErr && bootErr.message ? bootErr.message : String(bootErr)) + '\n');
   // Fatal bootstrap failure before the CLI's ExitError/runMain machinery (which
   // lives in ./lib) is available to load, so a direct exit is the only option.
-  // eslint-disable-next-line n/no-process-exit
+  // #3910: this call runs BEFORE ./lib/cli-exit.cjs is even required, so the
+  // registered-exit seam (runMain/ExitError/terminateNow) does not exist yet
+  // at this point in the process's lifetime — there is nothing to route
+  // through. This is the second (and only other) sanctioned allowlist entry
+  // for local/require-registered-exit, alongside terminateNow's own body.
+  // eslint-disable-next-line n/no-process-exit, local/require-registered-exit
   process.exit(1);
 }
 
