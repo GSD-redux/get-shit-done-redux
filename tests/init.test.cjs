@@ -4742,3 +4742,101 @@ describe('init.new-project — GSD_PROJECT scoping (#3749)', () => {
     assert.equal(JSON.parse(r.output)['project_exists'], true, 'default (unscoped) behavior unchanged');
   });
 });
+
+// ─── #3964: three GSD_PROJECT-blind planning literals ────────────────────────
+// Found in the #3955 review and filed as their own issue: waiting_signal read
+// the root WAITING.json, skill-manifest --write wrote the root planning dir,
+// and codebase_dir/exists were root-pinned while verify.cts scopes codebase/
+// through the project-aware resolver.
+describe('init — GSD_PROJECT scoping (#3964)', () => {
+  function writeScopedScaffolding(tmpDir, slug) {
+    const scoped = path.join(tmpDir, '.planning', slug);
+    fs.mkdirSync(path.join(scoped, 'phases', '01-probe'), { recursive: true });
+    fs.writeFileSync(path.join(scoped, 'ROADMAP.md'), '# Roadmap\n\n## Phase 1: Probe\n- [ ] w\n');
+    fs.writeFileSync(path.join(scoped, 'STATE.md'), [
+      '---',
+      'gsd_state_version: 1.0',
+      'current_phase: 01',
+      'status: executing',
+      'progress:',
+      '  total_phases: 1',
+      '---',
+      '',
+      '## Current Position',
+      '',
+      '**Status:** Executing',
+      '',
+    ].join('\n'));
+    return scoped;
+  }
+
+  test('#3964: waiting_signal reads the scoped WAITING.json under GSD_PROJECT', (t) => {
+    const tmpDir = createTempDir('gsd-3964-waiting-');
+    t.after(() => cleanup(tmpDir));
+    const scoped = writeScopedScaffolding(tmpDir, 'second-product');
+    fs.writeFileSync(path.join(scoped, 'WAITING.json'), JSON.stringify({ type: 'decision_point', since: 'x' }));
+
+    const r = runGsdTools(['query', 'init', 'manager'], tmpDir, { GSD_PROJECT: 'second-product' });
+    assert.ok(r.success, r.error);
+    const out = JSON.parse(r.output);
+    assert.equal(out['waiting_signal'] && out['waiting_signal']['type'], 'decision_point',
+      `#3964: waiting_signal must reflect the scoped WAITING.json; got ${JSON.stringify(out['waiting_signal'])}`);
+  });
+
+  test('#3964: a .gsd/WAITING.json wins over the planning-dir copy (mirrors the writer)', (t) => {
+    const tmpDir = createTempDir('gsd-3964-waiting2-');
+    t.after(() => cleanup(tmpDir));
+    const scoped = writeScopedScaffolding(tmpDir, 'second-product');
+    fs.writeFileSync(path.join(scoped, 'WAITING.json'), JSON.stringify({ type: 'from-planning' }));
+    fs.mkdirSync(path.join(tmpDir, '.gsd'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.gsd', 'WAITING.json'), JSON.stringify({ type: 'from-gsd' }));
+
+    const r = runGsdTools(['query', 'init', 'manager'], tmpDir, { GSD_PROJECT: 'second-product' });
+    assert.ok(r.success, r.error);
+    const out = JSON.parse(r.output);
+    assert.equal(out['waiting_signal'] && out['waiting_signal']['type'], 'from-gsd',
+      'the writer\'s primary location (.gsd) must win, matching cmdSignalWaiting');
+  });
+
+  test('#3964: codebase_dir and codebase_dir_exists are scoped under GSD_PROJECT', (t) => {
+    const tmpDir = createTempDir('gsd-3964-codebase-');
+    t.after(() => cleanup(tmpDir));
+    const scoped = writeScopedScaffolding(tmpDir, 'second-product');
+    fs.mkdirSync(path.join(scoped, 'codebase'), { recursive: true });
+
+    const r = runGsdTools(['query', 'init', 'map-codebase'], tmpDir, { GSD_PROJECT: 'second-product' });
+    assert.ok(r.success, r.error);
+    const out = JSON.parse(r.output);
+    assert.ok(String(out['codebase_dir']).includes(path.join('.planning', 'second-product')),
+      `#3964: codebase_dir must be scoped, got ${out['codebase_dir']}`);
+    assert.equal(out['codebase_dir_exists'], true,
+      '#3964: the scoped codebase dir exists — must agree with verify scoping');
+  });
+
+  test('#3964: skill-manifest --write targets the scoped planning dir', (t) => {
+    const tmpDir = createTempDir('gsd-3964-manifest-');
+    t.after(() => cleanup(tmpDir));
+    writeScopedScaffolding(tmpDir, 'second-product');
+
+    const r = runGsdTools(['skill-manifest', '--write'], tmpDir, { GSD_PROJECT: 'second-product' });
+    assert.ok(r.success, r.error);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'second-product', 'skill-manifest.json')),
+      '#3964: skill-manifest.json must be written inside the scoped project');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'skill-manifest.json')),
+      '#3964: the root planning dir must not gain a manifest under GSD_PROJECT');
+  });
+
+  test('#3964 control: unscoped behavior unchanged (root paths)', (t) => {
+    const tmpDir = createTempDir('gsd-3964-unscoped-');
+    t.after(() => cleanup(tmpDir));
+    writeScopedScaffolding(tmpDir, 'rootproj');
+    // No GSD_PROJECT: the effective project is the plain .planning root; give it
+    // the same scaffolding so the command runs.
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'codebase'), { recursive: true });
+
+    const r = runGsdTools(['query', 'init', 'map-codebase'], tmpDir);
+    assert.ok(r.success, r.error);
+    const out = JSON.parse(r.output);
+    assert.equal(out['codebase_dir_exists'], true, 'unscoped probe of the root codebase dir');
+  });
+});
