@@ -13,12 +13,37 @@
  * Async note: cmdExtractMessages and cmdProfileSample are async functions.
  * dispatchCapabilityCommand (gsd-tools.cjs:366-371) explicitly errors if a
  * router returns a Promise. Therefore these router functions call the async
- * function WITHOUT await and WITHOUT returning the Promise. The async functions
- * end with output() or process.exit() so the process terminates correctly once
- * the event loop drains. Unhandled rejections are caught by the .catch() wrapper
- * to surface errors via the error() callback.
+ * function WITHOUT await and WITHOUT returning the Promise; the event loop
+ * drains once the returned promise settles. Since ADR-3889 (#3910), the
+ * pipeline functions terminate by THROWING ExitError (never process.exit()
+ * directly), so a rejection surfacing here can carry either a genuine error
+ * OR a declared ExitError termination — the `.catch()` below must
+ * distinguish them: an ExitError sets process.exitCode directly (mirroring
+ * cli-exit.cjs's own runMain, the only other place ExitError is caught),
+ * while any other rejection is surfaced via the `error()` callback exactly
+ * as before. Calling `error(exitErr.message)` for an ExitError would be
+ * wrong on two counts: it discards the real exit code (error() always
+ * terminates at 1) and it re-derives a message from ExitError's generic
+ * "process exit N" constructor default rather than the (already emitted, or
+ * intentionally absent) stderr output the throwing call site controls.
  */
 const { ERROR_REASON } = require('./io.cjs');
+const { ExitError } = require('./cli-exit.cjs');
+
+/**
+ * Interpret a rejection from a fire-and-forget async pipeline call: an
+ * ExitError sets process.exitCode (and, for a non-zero code carrying a user
+ * message, writes it to stderr) exactly like runMain does; anything else is
+ * handed to the router's injected `error()` callback unchanged.
+ */
+function _handlePipelineRejection(e, error) {
+  if (e instanceof ExitError) {
+    if (e.hasUserMessage && e.code !== 0) process.stderr.write(`${e.message}\n`);
+    process.exitCode = e.code;
+    return;
+  }
+  error(e && e.message ? e.message : String(e));
+}
 
 // ─── Pipeline phase commands ───────────────────────────────────────────────────
 
@@ -51,7 +76,7 @@ function routeExtractMessages({ args, cwd, raw, error, _pipeline }) {
   // The function ends with output() or process.exit(); the event loop will drain.
   void cwd;
   p.cmdExtractMessages(projectArg, { sessionId, limit }, raw, sessionsPath)
-    .catch(e => { error(e && e.message ? e.message : String(e)); });
+    .catch(e => { _handlePipelineRejection(e, error); });
 }
 
 function routeProfileSample({ args, cwd, raw, error, _pipeline }) {
@@ -67,7 +92,7 @@ function routeProfileSample({ args, cwd, raw, error, _pipeline }) {
   const maxChars = maxCharsIdx !== -1 ? parseInt(args[maxCharsIdx + 1], 10) : 500;
   // cmdProfileSample is async — do NOT return the Promise.
   p.cmdProfileSample(sessionsPath, { limit, maxPerProject, maxChars }, raw)
-    .catch(e => { error(e && e.message ? e.message : String(e)); });
+    .catch(e => { _handlePipelineRejection(e, error); });
 }
 
 // ─── Output phase commands ─────────────────────────────────────────────────────

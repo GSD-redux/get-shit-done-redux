@@ -14,7 +14,7 @@ import path from 'node:path';
 import { platformWriteSync, platformEnsureDir } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import cliExitModule = require('./cli-exit.cjs');
-const { setJsonErrorMode, getJsonErrorMode, EXIT_ENVELOPE_REASON } = cliExitModule;
+const { setJsonErrorMode, getJsonErrorMode, EXIT_ENVELOPE_REASON, ExitError } = cliExitModule;
 
 // ─── Temp-file helpers (needed by output()) ──────────────────────────────────
 
@@ -281,7 +281,10 @@ function error(message: string, reason: ErrorReasonValue = ERROR_REASON.UNKNOWN,
   } else {
     writeAllSync(2, 'Error: ' + message + '\n');
   }
-  process.exit(1);
+  // No message passed to ExitError: the stderr write above is already done,
+  // byte-identical to the prior process.exit(1) behavior, and ExitError with
+  // no message means runMain's catch adds nothing further to stderr.
+  throw new ExitError(1);
 }
 
 export = {
