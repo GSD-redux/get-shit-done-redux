@@ -228,7 +228,7 @@ See @~/.claude/gsd-core/references/planner-guidance.md for Task Types table, Tas
 
 **Why TDD gets own plan:** TDD requires RED→GREEN→REFACTOR cycles consuming 40-50% context. Embedding in multi-task plans degrades quality.
 
-**Task-level TDD** (for code-producing tasks in standard plans): When a task creates or modifies production code, add `tdd="true"` and a `<behavior>` block to make test expectations explicit before implementation:
+**Task-level TDD** (for code-producing tasks in standard plans): When a task creates or modifies production code, add `tdd="true"`, a `<behavior>` block, and a `<red_contract>` sibling declaring which failure counts as RED, to make test expectations explicit before implementation:
 
 ```xml
 <task type="auto" tdd="true">
@@ -238,6 +238,15 @@ See @~/.claude/gsd-core/references/planner-guidance.md for Task Types table, Tas
     - Test 1: [expected behavior]
     - Test 2: [edge case]
   </behavior>
+  <red_contract>
+    <target_test>[Runner-native id of the test that must fail]</target_test>
+    <implementation_target>[Production module or symbol GREEN will create]</implementation_target>
+    <expected_failure>
+      <phase>[Runner-native lifecycle phase]</phase>
+      <class_or_mode>[Runner-native exception class or failure mode]</class_or_mode>
+      <subject>[What the failure is reported against]</subject>
+    </expected_failure>
+  </red_contract>
   <action>[Implementation after tests pass]</action>
   <verify>
     <automated>npm test -- --filter=feature</automated>

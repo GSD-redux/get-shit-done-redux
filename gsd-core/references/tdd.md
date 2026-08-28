@@ -62,6 +62,15 @@ Output: [Working, tested feature]
     [Expected behavior in testable terms]
     Cases: input → expected output
   </behavior>
+  <red_contract>
+    <target_test>[Runner-native id of the test that must fail]</target_test>
+    <implementation_target>[Production module or symbol GREEN will create]</implementation_target>
+    <expected_failure>
+      <phase>[Runner-native lifecycle phase the failure occurs in]</phase>
+      <class_or_mode>[Runner-native exception class or failure mode]</class_or_mode>
+      <subject>[What the failure is reported against]</subject>
+    </expected_failure>
+  </red_contract>
   <implementation>[How to implement once tests pass]</implementation>
 </feature>
 
@@ -85,6 +94,9 @@ After completion, create SUMMARY.md with:
 </output>
 ```
 
+`<red_contract>` is a sibling of `<behavior>`, never an attribute on it. Its five field meanings,
+and the predicate that judges the run against them, are in `<red_contract_spec>` below.
+
 **One feature per TDD plan.** If features are trivial enough to batch, they're trivial enough to skip TDD—use a standard plan and add tests after.
 </tdd_plan_structure>
 
@@ -95,8 +107,10 @@ After completion, create SUMMARY.md with:
 1. Create test file following project conventions
 2. Write test describing expected behavior (from `<behavior>` element)
 3. Run test - it MUST fail
-4. If test passes: feature exists or test is wrong. Investigate.
-5. Commit: `test({phase}-{plan}): add failing test for [feature]`
+4. For `tdd="true"` tasks the failure must additionally satisfy the RED Predicate in
+   `<red_contract_spec>` below, and the RED commit carries the `red-evidence:` trailer
+5. If test passes: feature exists or test is wrong. Investigate.
+6. Commit: `test({phase}-{plan}): add failing test for [feature]`
 
 **GREEN - Implement to pass:**
 1. Write minimal code to make test pass
