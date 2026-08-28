@@ -1552,3 +1552,77 @@ describe('gsd-agent-isolation-guard.js: #3582 cold tree — RuntimeBuildError su
     assert.ok(out.reason.length > 0);
   });
 });
+
+// ─── #3972: the guard's sentinel-absent fallback shares the opt-out ladder ───
+// The guard's own config read was flat-root, so a workstream-LOCAL
+// use_worktrees=false was invisible to it: with no sentinel present (fresh
+// checkout) the fallback denied the sequential dispatch the config
+// explicitly allowed. The ladder now lives in planning-workspace and both
+// the resolver and the guard consume it.
+describe('guard fallback — worktreesOptedOut ladder (#3972)', () => {
+  function wsFixture(rootCfg, wsCfg) {
+    const dir = createTempDir('gsd-3972-guard-');
+    fs.mkdirSync(path.join(dir, '.planning', 'workstreams', 'alpha'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify(rootCfg));
+    fs.writeFileSync(path.join(dir, '.planning', 'workstreams', 'alpha', 'config.json'), JSON.stringify(wsCfg));
+    return dir;
+  }
+
+  test('#3972: a workstream-local use_worktrees=false opts the fallback out', (t) => {
+    const dir = wsFixture({ runtime: 'claude' }, { runtime: 'claude', workflow: { use_worktrees: false } });
+    t.after(() => cleanup(dir));
+    assert.equal(fs.existsSync(sentinelFile(dir)), false, 'fixture: sentinel absent — the fallback is under test');
+    const r = runHook(agentPayload(), dir, { GSD_WORKSTREAM: 'alpha' });
+    assert.equal(r.status, 0,
+      `#3972: the workstream opted out — the sentinel-absent fallback must allow; got stdout=${r.stdout}`);
+  });
+
+  test('#3972: a root-only opt-out under a workstream also allows (the #3963 shape, guard side)', (t) => {
+    const dir = wsFixture({ runtime: 'claude', workflow: { use_worktrees: false } }, { runtime: 'claude' });
+    t.after(() => cleanup(dir));
+    const r = runHook(agentPayload(), dir, { GSD_WORKSTREAM: 'alpha' });
+    assert.equal(r.status, 0, 'the inherited root opt-out must reach the fallback too');
+  });
+
+  test('#3972: no opt-out anywhere still denies (unchanged)', (t) => {
+    const dir = wsFixture({ runtime: 'claude' }, { runtime: 'claude' });
+    t.after(() => cleanup(dir));
+    const r = runHook(agentPayload(), dir, { GSD_WORKSTREAM: 'alpha' });
+    assert.equal(r.status, 2, 'the guard must keep demanding the harness flag when nothing opted out');
+  });
+});
+
+describe('worktreesOptedOut — ladder unit semantics (#3972)', () => {
+  const { worktreesOptedOut } = require('../gsd-core/bin/lib/planning-workspace.cjs');
+
+  test('scoped own-key wins; root inherited only under the ws gate; strict === false', (t) => {
+    const dir = createTempDir('gsd-3972-unit-');
+    t.after(() => cleanup(dir));
+    fs.mkdirSync(path.join(dir, '.planning', 'workstreams', 'alpha'), { recursive: true });
+    const root = path.join(dir, '.planning', 'config.json');
+    const ws = path.join(dir, '.planning', 'workstreams', 'alpha', 'config.json');
+    const prev = process.env['GSD_WORKSTREAM'];
+    t.after(() => { if (prev === undefined) delete process.env['GSD_WORKSTREAM']; else process.env['GSD_WORKSTREAM'] = prev; });
+
+    fs.writeFileSync(ws, JSON.stringify({ workflow: { use_worktrees: false } }));
+    process.env['GSD_WORKSTREAM'] = 'alpha';
+    assert.equal(worktreesOptedOut(dir), true, 'scoped own false');
+
+    fs.writeFileSync(ws, JSON.stringify({ workflow: { use_worktrees: true } }));
+    assert.equal(worktreesOptedOut(dir), false, 'scoped own true wins over any root');
+
+    fs.writeFileSync(ws, JSON.stringify({ runtime: 'claude' }));
+    fs.writeFileSync(root, JSON.stringify({ workflow: { use_worktrees: false } }));
+    assert.equal(worktreesOptedOut(dir), true, 'root false inherited under the ws gate');
+
+    delete process.env['GSD_WORKSTREAM'];
+    assert.equal(worktreesOptedOut(dir), false, 'no root inheritance without the ws env (GSD_PROJECT-alone contract)');
+
+    fs.writeFileSync(ws, JSON.stringify({ workflow: { use_worktrees: 'false' } }));
+    process.env['GSD_WORKSTREAM'] = 'alpha';
+    assert.equal(worktreesOptedOut(dir), false, 'string "false" never coerces');
+
+    fs.writeFileSync(ws, '{ malformed');
+    assert.equal(worktreesOptedOut(dir), true, 'unreadable scoped config falls to the root view under the gate');
+  });
+});
