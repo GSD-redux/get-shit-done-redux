@@ -28,6 +28,7 @@
     "workflow.skip_discuss",
     "workflow.auto_prune_state",
     "workflow.use_worktrees",
+    "workflow.session_outlives_turn",
     "workflow.worktree_skip_hooks",
     "workflow.code_review_command",
     "workflow.code_review_depth_overrides",

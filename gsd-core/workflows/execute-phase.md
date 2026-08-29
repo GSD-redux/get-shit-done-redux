@@ -103,6 +103,8 @@ Read runtime/worktree config and fail closed before any executor dispatch:
 ```bash
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
+SESSION_OUTLIVES_TURN=$(gsd_run query config-get workflow.session_outlives_turn --raw 2>/dev/null || echo "true")
+[ "$SESSION_OUTLIVES_TURN" = "false" ] || SESSION_OUTLIVES_TURN="true"
 EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes --raw 2>/dev/null || echo "5")
 EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes --raw 2>/dev/null || echo "10")
 
@@ -706,16 +708,26 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **Isolation model.** The block below is the **`harness-worktree`** path. For `orchestrator-worktree` use the dispatch below it; for `none` use sequential mode. Both are detailed in `execute-phase/steps/executor-isolation-dispatch.md`.
 
    **Sequential dispatch for parallel execution (waves with 2+ agents):**
-   Dispatch each `Agent()` call **one at a time with `run_in_background: true`**. Do NOT
-   send all Agent calls in a single message: simultaneous `git worktree add` calls race
-   on `.git/config.lock`. Agents still run in parallel once their worktrees are created.
+   When `SESSION_OUTLIVES_TURN` is `true` (default), dispatch each `Agent()` call
+   **one at a time with `run_in_background: true`**. Do NOT send all Agent calls
+   in a single message: simultaneous `git worktree add` calls race on `.git/config.lock`.
+   Agents still run in parallel once their worktrees are created.
+   When `SESSION_OUTLIVES_TURN` is `false`, dispatch each `Agent()` call with
+   `run_in_background: false` sequentially, waiting for each executor to complete
+   before dispatching the next plan's executor.
 
    ```text
-   # CORRECT: one Agent() per message with run_in_background: true
+   # CORRECT: one Agent() per message with run_in_background: true (or false if session_outlives_turn=false)
    # WRONG: multiple Agent() calls in one message -> .git/config.lock contention
    ```
 
+   Read and follow `execute-phase/steps/session-survivability-dispatch.md` for the
+   executor-only `SESSION_OUTLIVES_TURN` branch. It supplies literal background
+   and foreground Agent calls; verifier dispatch and isolation selection stay here.
+
    ```text
+   # For SESSION_OUTLIVES_TURN=false, pass run_in_background: false and wait;
+   # for SESSION_OUTLIVES_TURN=true, pass run_in_background: true (see session-survivability-dispatch.md).
    Agent(
     subagent_type="{EXECUTOR_TYPE}",
     description="Execute plan {plan_number} of phase {phase_number}",
