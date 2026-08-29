@@ -2702,6 +2702,33 @@ cmdCommit(${JSON.stringify(cwd)}, 'docs: probe', ${JSON.stringify(files)}, false
     });
   }
 
+  test('a timeout whose partial output contains "nothing to commit" is still a timeout (precedence pin)', () => {
+    // #3886 review: the isSpawnTimeout gate runs BEFORE the nothing-to-commit
+    // branch — a killed commit can have flushed anything, including the
+    // nothing-to-commit text, and must still read as a timeout. Reordering
+    // the branches would silently revert to the misroute this fix retires.
+    const script = `
+const path = require('path');
+const LIB = ${JSON.stringify(LIB)};
+const projection = require(path.join(LIB, 'shell-command-projection.cjs'));
+const { cmdCommit } = require(path.join(LIB, 'commands.cjs'));
+const real = projection.execGit;
+projection.execGit = (args, opts) => {
+  if (args[0] === 'commit') {
+    const e = new Error('spawnSync git ETIMEDOUT');
+    e.code = 'ETIMEDOUT';
+    return { exitCode: 1, stdout: 'nothing to commit, working tree clean', stderr: '', signal: 'SIGTERM', error: e };
+  }
+  return real(args, opts);
+};
+cmdCommit(${JSON.stringify(tmpDir)}, 'docs: probe', ['.planning/STATE.md'], false, false, false);
+`;
+    const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8', timeout: 15_000 });
+    const result = JSON.parse(run.stdout);
+    assert.equal(result.reason, 'commit_timeout', 'the timeout gate must win over the nothing-to-commit text in partial output');
+    assert.equal(result.timed_out, true);
+  });
+
   test('an ordinary commit failure still reports commit_failed (no regression)', () => {
     const script = `
 const path = require('path');

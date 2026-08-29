@@ -1825,11 +1825,11 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   // #3886: `git commit` runs pre-commit hooks (husky/lint-staged routinely
   // idles ~4s on Windows before any task) — 10s is too tight, and a timeout
   // kill is NOT an ordinary failure. Same band as the push call below.
-  const commitResult = execGit(commitArgs, { cwd, timeout: 30_000 });
+  const commitResult = execGit(commitArgs, { cwd, timeout: COMMIT_TIMEOUT_MS });
   if (commitResult.exitCode !== 0) {
     // #3886: a SIGTERM'd git commit is a timeout, not commit_failed — the
     // partial stderr it flushed (often incidental CRLF warnings) is noise,
-    // and the kill can leave a stale .git/index.lock that blocks the next
+    // and the kill can leave a stale index.lock that blocks the next
     // attempt. Report the distinct reason and surface the lock path.
     if (isSpawnTimeout(commitResult)) {
       const result = {
@@ -1837,10 +1837,7 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         hash: null,
         reason: 'commit_timeout',
         timed_out: true,
-        error:
-          `git commit timed out after 30s (killed mid-hook; a stale lock may remain at ` +
-          `${path.join(cwd, '.git', 'index.lock')} — remove it if no git process is running). ` +
-          `Partial stderr: ${commitResult.stderr || commitResult.stdout || '(none)'}`,
+        error: commitTimeoutMessage(cwd, commitResult.stderr, commitResult.stdout),
       };
       output(result, raw, 'failed');
       return;
@@ -1992,7 +1989,7 @@ function cmdCommitToSubrepo(cwd: string, message: string | undefined, files: str
     const commitArgs = canScopeSub
       ? ['commit', '-m', message as string, '--', ...stagedRelPaths]
       : ['commit', '-m', message as string];
-    const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: 30_000 });
+    const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS });
     if (commitResult.exitCode !== 0) {
       if (isSpawnTimeout(commitResult)) {
         // #3886 (subrepo counterpart): timeout ≠ error; surface the stale-lock
@@ -2003,10 +2000,7 @@ function cmdCommitToSubrepo(cwd: string, message: string | undefined, files: str
           files: repoFiles,
           reason: 'commit_timeout',
           timed_out: true,
-          error:
-            `git commit timed out after 30s (killed mid-hook; a stale lock may remain at ` +
-            `${path.join(repoCwd, '.git', 'index.lock')} — remove it if no git process is running). ` +
-            `Partial stderr: ${commitResult.stderr || '(none)'}`,
+          error: commitTimeoutMessage(repoCwd, commitResult.stderr, commitResult.stdout),
         };
         continue;
       }
@@ -2163,15 +2157,15 @@ function cmdPrSubrepo(
   const commitArgs = canScopePr
     ? ['commit', '-m', commitMessage as string, '--', ...changedFiles]
     : ['commit', '-m', commitMessage as string];
-  const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: 30_000 });
+  const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS });
   if (commitResult.exitCode !== 0) {
     rollback();
     if (isSpawnTimeout(commitResult)) {
       // #3886 (PR-subrepo counterpart): name the timeout and the stale lock
       // instead of echoing the killed hook's partial stderr.
       error(
-        `git commit timed out after 30s in ${repo} (killed mid-hook; a stale lock may remain at ` +
-        `${path.join(repoCwd, '.git', 'index.lock')} — remove it if no git process is running)`,
+        `git commit timed out after ${COMMIT_TIMEOUT_MS / 1000}s in ${repo} (killed mid-hook; ` +
+        `a stale lock may remain at ${resolveIndexLockPath(repoCwd)} — remove it if no git process is running)`,
       );
     }
     error(`Failed to commit in ${repo}: ${commitResult.stderr}`);
@@ -3041,6 +3035,40 @@ interface HooksDirResolution {
   ok: boolean;
   dir?: string;
   reason?: string;
+}
+
+/**
+ * #3886: the timeout band for `git commit` — pre-commit hooks (husky +
+ * lint-staged idles ~4s on Windows before any task) routinely exceed the 10s
+ * plumbing default; 30s is the same band the push call uses. Shared by all
+ * three commit sites AND their timeout messages, so the number and the text
+ * cannot drift apart.
+ */
+const COMMIT_TIMEOUT_MS = 30_000;
+
+/**
+ * #3886: resolve where a killed `git commit` would leave its stale
+ * index.lock — via `git rev-parse --git-path index.lock`, never a literal
+ * `.git/index.lock` join (#3588 row 8's class: a linked worktree's `.git` is
+ * a FILE pointing at `<gitdir>/worktrees/<name>/`, so the literal path
+ * cannot exist there while the real lock blocks the next commit). Best
+ * effort: any resolution failure falls back to the literal join, and the
+ * message already hedges with "may remain".
+ */
+function resolveIndexLockPath(cwd: string): string {
+  const result = execGit(['rev-parse', '--git-path', 'index.lock'], { cwd });
+  if (result.exitCode !== 0) return path.join(cwd, '.git', 'index.lock');
+  const raw = result.stdout.trim();
+  return raw ? (path.isAbsolute(raw) ? raw : path.join(cwd, raw)) : path.join(cwd, '.git', 'index.lock');
+}
+
+/** #3886: shared timeout message shape for all three commit sites. */
+function commitTimeoutMessage(cwd: string, stderr: string, stdout: string): string {
+  return (
+    `git commit timed out after ${COMMIT_TIMEOUT_MS / 1000}s (killed mid-hook; a stale lock may remain at ` +
+    `${resolveIndexLockPath(cwd)} — remove it if no git process is running). ` +
+    `Partial stderr: ${stderr || stdout || '(none)'}`
+  );
 }
 
 /**
