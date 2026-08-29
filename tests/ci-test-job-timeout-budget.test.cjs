@@ -31,6 +31,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const yaml = require('js-yaml');
+const { COVERED } = require('../scripts/mutation-matrix.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', '.github', 'workflows');
 
@@ -98,6 +99,19 @@ const LANE_COSTS = [
     // around a minute. Listed so its budget cannot be dropped to nothing.
     evidence: 'targeted-only lane, ~1m observed',
   },
+  {
+    job: 'smoke',
+    workflowFile: 'install-smoke.yml',
+    measuredMinutes: 2,
+    // Worst observed wall-clock across the two most recent PUSH-triggered
+    // (full-matrix, macos-latest included) runs: 65s on macos-latest, run
+    // 32260569855 (2026-08-19). A second push run (31240989202, 2026-08-08)
+    // measured 43-56s across its three jobs, all under this figure. PR-context
+    // runs are faster (~50-62s, ubuntu only, macOS full_only row skipped) and
+    // are not the binding case. Rounded up to whole minutes per this file's
+    // convention.
+    evidence: 'run 32260569855 — 65s, macos-latest push (full matrix)',
+  },
 ];
 
 function requiredBudgetMinutes(measuredMinutes, headroomFactor = HEADROOM_FACTOR) {
@@ -110,13 +124,14 @@ function hasSufficientBudget(budgetMinutes, measuredMinutes, headroomFactor = HE
 }
 
 test('CI job timeout budgets carry headroom over measured cost (#2952)', async (t) => {
-  const workflow = loadWorkflow('test.yml');
-
   for (const lane of LANE_COSTS) {
     await t.test(`${lane.job} is budgeted above its measured cost`, () => {
+      const workflowFile = lane.workflowFile || 'test.yml';
+      const workflow = loadWorkflow(workflowFile);
+
       assert.ok(
         workflow.jobs && Object.prototype.hasOwnProperty.call(workflow.jobs, lane.job),
-        `.github/workflows/test.yml declares no job \`${lane.job}\`. If it was `
+        `.github/workflows/${workflowFile} declares no job \`${lane.job}\`. If it was `
         + 'renamed or removed, update LANE_COSTS in this file to match — do not '
         + 'delete the entry to make this pass.',
       );
@@ -126,7 +141,7 @@ test('CI job timeout budgets carry headroom over measured cost (#2952)', async (
 
       assert.equal(
         typeof budget, 'number',
-        `.github/workflows/test.yml jobs.${lane.job} must declare timeout-minutes`,
+        `.github/workflows/${workflowFile} jobs.${lane.job} must declare timeout-minutes`,
       );
       assert.ok(
         hasSufficientBudget(budget, lane.measuredMinutes),
@@ -168,5 +183,46 @@ test('CI job timeout budgets carry headroom over measured cost (#2952)', async (
     assert.equal(requiredBudgetMinutes(16, 1.5), 24);
     assert.equal(requiredBudgetMinutes(19, 1.5), 29);
     assert.equal(requiredBudgetMinutes(10, 1.5), 15);
+  });
+});
+
+test('mutation.yml mutate job timeout budgets (#4036)', async (t) => {
+  await t.test('mutate job timeout-minutes is matrix-driven, not a fixed literal', () => {
+    const workflow = loadWorkflow('mutation.yml');
+    assert.equal(
+      workflow.jobs.mutate['timeout-minutes'],
+      '${{ matrix.timeoutMinutes }}',
+      'mutation.yml jobs.mutate.timeout-minutes must stay matrix-driven so each covered '
+      + 'module can declare its own per-shard budget via scripts/mutation-matrix.cjs — a '
+      + 'fixed literal here would either under-budget a slow module or over-budget every '
+      + 'fast one.',
+    );
+  });
+
+  await t.test('every covered module declares a sane per-shard timeout', () => {
+    for (const [name, mod] of Object.entries(COVERED)) {
+      const timeoutMinutes = mod.timeoutMinutes || 15;
+      assert.ok(
+        Number.isInteger(timeoutMinutes) && timeoutMinutes >= 15,
+        `COVERED.${name}.timeoutMinutes resolves to ${timeoutMinutes}, but must be an `
+        + 'integer >= 15 (the shared default) — a module\'s override must never budget '
+        + 'BELOW the shared floor every other module gets for free.',
+      );
+    }
+  });
+
+  await t.test('frontmatter mutate shard is budgeted above its measured cost', () => {
+    // Measured: CI run 33026833181 — 713s (11m53s) under the tap runner
+    // (coverageAnalysis: 'perTest'). See scripts/mutation-matrix.cjs's own
+    // comment on the `frontmatter` COVERED entry for the full citation.
+    const measuredMinutes = 12; // 713s rounded up
+    const declared = COVERED.frontmatter.timeoutMinutes || 15;
+    const required = requiredBudgetMinutes(measuredMinutes);
+    assert.ok(
+      hasSufficientBudget(declared, measuredMinutes),
+      `COVERED.frontmatter.timeoutMinutes is ${declared}, but the shard measured `
+      + `${measuredMinutes}m (run 33026833181 — 713s) and needs at least ${required} — `
+      + `${HEADROOM_FACTOR}x — so this module cannot quietly regress toward its cap.`,
+    );
   });
 });

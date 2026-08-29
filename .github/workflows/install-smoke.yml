@@ -117,6 +117,10 @@ jobs:
           # Need enough history to merge origin/main for stale-base detection.
           fetch-depth: 0
 
+      - name: Record job start time (near-cap check)
+        if: steps.skip.outputs.skip != 'true'
+        run: echo "CI_JOB_START_EPOCH_MS=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
+
       # The default `refs/pull/N/merge` ref GitHub produces for PRs is cached
       # against the recorded merge-base, not the current target branch. When the
       # target advances
@@ -212,6 +216,14 @@ jobs:
           name: release-smoke-${{ matrix.os }}-node${{ matrix.node-version }}
           path: /tmp/release-smoke.json
           retention-days: 7
+
+      - name: Check job budget (near-cap advisory)
+        if: always()
+        continue-on-error: true
+        env:
+          CI_JOB_LABEL: "smoke (${{ matrix.os }}, ${{ matrix.node-version }}, ${{ matrix.full_only }}, ${{ matrix.shell }})"
+          CI_JOB_TIMEOUT_MINUTES: '12'
+        run: node scripts/ci-check-job-near-cap.cjs
 
   # ---------------------------------------------------------------------------
   # Job 2: unpacked-dir install
