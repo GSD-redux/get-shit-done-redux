@@ -256,7 +256,8 @@
         "audit-command-cutover.test.cjs",
         "audit-fix-command.test.cjs",
         "audit-milestone-filename-guard.test.cjs",
-        "audit-uat-acknowledged.test.cjs"
+        "audit-uat-acknowledged.test.cjs",
+        "audit-workstream-layouts.test.cjs"
       ],
       "issue": "#3804/#3805 \u2014 audit-layout and acknowledged-marker suites drive the real audit-uat CLI against on-disk fixtures"
     }
