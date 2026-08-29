@@ -1,0 +1,22 @@
+{
+  "name": "gsd-core",
+  "version": "1.11.0",
+  "description": "GSD Core is a meta-prompting, context engineering, and spec-driven development system for AI coding agents.",
+  "author": {"name": "OpenGSD", "url": "https://github.com/open-gsd"},
+  "homepage": "https://github.com/open-gsd/gsd-core",
+  "repository": "https://github.com/open-gsd/gsd-core",
+  "license": "MIT",
+  "keywords": ["spec-driven-development", "planning", "workflow", "context-engineering", "gsd"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "GSD Core",
+    "shortDescription": "Spec-driven development workflows for Codex",
+    "longDescription": "Plan, execute, verify, and ship software with GSD Core's context-engineered development workflows.",
+    "developerName": "OpenGSD",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/open-gsd/gsd-core",
+    "defaultPrompt": ["Show me my GSD project status and next steps", "Run a GSD UAT audit for this project", "Record a UAT result for this project"]
+  }
+}

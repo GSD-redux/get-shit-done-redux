@@ -165,6 +165,15 @@ npx @opengsd/gsd-core@latest --codex --global
 
 Skills land in `~/.codex/skills/gsd-*/SKILL.md`. Agents are written as standalone `~/.codex/agents/gsd-*.toml` files, which Codex auto-discovers — that is the sole registration source for each role; `config.toml` only carries the shared `[agents]` dispatch-tuning scalar (`max_depth`), not a per-role table (#2406). Restart Codex (or run `codex --reload`) after install.
 
+#### Codex native plugin
+
+The npm package also ships a native Codex plugin manifest and companion
+`.mcp.json`. Loading the package as a Codex plugin exposes GSD skills and the
+companion MCP server; this is additive to the installer path above. The server
+is registered as `gsd` and project-aware tools accept an absolute project path.
+See [Connect a host to the GSD MCP server](connect-gsd-mcp-server.md) for the
+complete configuration and tool reference.
+
 **Minimum supported version:** Codex CLI 0.130.0. Earlier versions had additional skill-root scanning that can produce duplicate listings.
 
 **Hook coverage**

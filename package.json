@@ -17,6 +17,8 @@
     "assets",
     "agents",
     ".claude-plugin",
+    ".codex-plugin",
+    ".mcp.json",
     ".opencode",
     "GEMINI.md",
     "hooks",

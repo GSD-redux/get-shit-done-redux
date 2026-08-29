@@ -6,8 +6,9 @@ GSD — run GSD
 commands and read/write `.planning/` state — through the companion MCP server,
 with no bespoke plugin.
 
-Once connected, three tools appear in the host alongside its others:
-`gsd_invoke_command`, `gsd_read_state`, `gsd_write_state`. The server also
+Once connected, the GSD tools appear in the host alongside its others:
+`gsd_invoke_command`, `gsd_read_state`, `gsd_write_state`, plus the project
+control-center and UAT workbench tools in current packages. The server also
 serves a read-only **catalog** of GSD's own content — workflows and
 references as MCP resources, and the `/gsd-*` commands as MCP prompts — so a
 host can browse and pull that content directly instead of shelling out to the
@@ -17,6 +18,13 @@ server exists and its trust model, see
 [capability trust model](../explanation/capability-trust-model.md).)
 
 ## 1. Add the server to your host's MCP config
+
+### Codex plugin installs
+
+The npm package includes a native Codex plugin manifest and companion
+`.mcp.json`. Loading the package as a Codex plugin registers the `gsd` server
+automatically; no marketplace entry is required. Manual registration uses the
+same `gsd` entry below. Pass an absolute project path to project-aware tools.
 
 The entry shape is the same everywhere; only the config file and key differ by
 host.

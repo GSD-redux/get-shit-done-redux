@@ -34,6 +34,7 @@ const ROOT = path.resolve(__dirname, '..');
 // sunset Gemini CLI 2026-06-18); it is no longer a registered manifest.
 const VERSIONED_MANIFESTS = [
   { path: '.claude-plugin/plugin.json', versionKey: 'version' },
+  { path: '.codex-plugin/plugin.json', versionKey: 'version' },
   { path: '.claude-plugin/marketplace.json', versionKey: 'plugins.0.version' },
   { path: 'vscode/package.json', versionKey: 'version' },
 ];
