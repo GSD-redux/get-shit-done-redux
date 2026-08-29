@@ -296,13 +296,37 @@ and it is the property ADR-2980's declined Option 3 lacked.
 >    it was **promoted from SMELL to VIOLATION**, so it can now fail a build, which it never could
 >    before (`runOracles`'s `get failed()` returns `violations` only).
 >
-> **Measured ledger for the epic as delivered:** −1 oracle (`soft-error-exit-zero`), −1
-> `n/no-process-exit: 'off'` exemption block, +1 rule (`local/require-registered-exit`), +1 registry
-> `--check`, +1 generated-docs `--check` (`docs/reference/exit-codes.md`). One further guard changed
-> strength rather than count: `untyped-success` SMELL → VIOLATION. Two mis-scoped oracles were
-> corrected in passing (`routing-validity`, `value-hygiene`) — see #3913.
+> **Measured ledger for the epic as delivered** (corrected again by #3914's audit — the version
+> first written here was wrong twice over, see below):
 >
-> **Net −1 by count**, not −4.
+> | | |
+> |---|--:|
+> | −1 oracle (`soft-error-exit-zero`) | −1 |
+> | −1 `n/no-process-exit: 'off'` hooks exemption block | −1 |
+> | +1 rule (`local/require-registered-exit`) | +1 |
+> | +4 `lint:generated-sync --check` arms: `gen-scripts-cli-exit`, `gen-hooks-cli-exit`, `gen-exit-code-registry`, `gen-exit-code-docs` | +4 |
+> | **Net** | **+3** |
+>
+> **The epic ADDED three guards. It did not remove one.** That is the honest result, and it is worth
+> stating without softening: an epic whose thesis is consolidation ended with a larger guard surface
+> than it started with. The additions are defensible individually — a rule and four drift checks that
+> did not exist — but "net −1" was never true.
+>
+> One further guard changed strength rather than count: `untyped-success` SMELL → VIOLATION. Two
+> mis-scoped oracles were corrected in passing (`routing-validity`, `value-hygiene`) — see #3913.
+>
+> **Two corrections to what this paragraph previously claimed, both mine:**
+>
+> 1. It said **"Net −1 by count"** above a term list reading `−1 −1 +1 +1 +1`. That sums to **+1**.
+>    A plain arithmetic error, in the paragraph immediately below the sentence arguing that an ADR
+>    about honest accounting must not pad its own ledger.
+> 2. The term list also **omitted two of the four `--check` arms** (`gen-scripts-cli-exit` from P0
+>    and `gen-hooks-cli-exit` from P7), which is what turns +1 into the real +3.
+>
+> Recorded rather than quietly rewritten, because the failure this epic exists to close is a written
+> claim nobody checked against the thing it describes — and this ledger was that failure three times:
+> the original "Net −2", the "Net −1" that replaced it, and #3914's own table, which states −1 above
+> terms summing to 0.
 >
 > The −4 first written here counted the five pruned `smell-baseline.json` entries in the same units
 > as oracles and lint rules. They are not guards — they are *acknowledgements* that a guard fired.
