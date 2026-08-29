@@ -7,7 +7,6 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const AGENT = path.join(__dirname, '..', 'agents', 'gsd-executor.md');
 const REF = path.join(__dirname, '..', 'gsd-core', 'references', 'execute-mvp-tdd.md');
@@ -492,52 +491,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       },
       {
         section: 'Outcomes',
-        needle: 'Zero tests selected',
-        verdict: 'block',
-        why: 'the Outcomes rows ARE REDC-03 in shipped form, so an unpinned row is an unpinned '
-          + 'requirement',
-      },
-      {
-        section: 'Outcomes',
-        needle: 'Suite failed to collect or parse',
-        verdict: 'block',
-        why: 'a test-file SyntaxError is not the declared missing target and must never '
-          + 'authorize GREEN',
-      },
-      {
-        section: 'Outcomes',
-        needle: 'Fixture or setup crashed before the target assertion',
-        verdict: 'block',
-        why: 'a crash before the target assertion proves nothing about the target behavior',
-      },
-      {
-        section: 'Outcomes',
-        needle: 'A different test failed',
-        verdict: 'block',
-        why: "this row IS #3770's original defect; mutation N5 deleted it and the suite stayed "
-          + 'green',
-      },
-      {
-        section: 'Outcomes',
-        needle: 'Genuine target-behavior failure',
-        verdict: 'authorize',
-        why: 'the one outcome the whole contract exists to admit',
-      },
-      {
-        section: 'Outcomes',
-        needle: 'Outside-in: the declared implementation target is missing',
-        verdict: 'authorize',
-        why: 'the outside-in arm is authorized with no selection or execution condition, and '
-          + 'deleting the row is how that permission silently disappears',
-      },
-      {
-        section: 'Outcomes',
-        needle: 'Fixture is itself the behavior under test',
-        verdict: 'authorize',
-        why: 'a fixture-phase failure is legitimate RED when the fixture is the behavior',
-      },
-      {
-        section: 'Outcomes',
         needle: 'Unexpected pass',
         verdict: 'halt',
         why: 'mutation N6 deleted it and the suite stayed green; halt is not block, and a '
@@ -666,151 +619,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     assert.strictEqual(parsedLines[0].slice(0, sep), key,
       'git must round-trip the documented trailer token unchanged');
     JSON.parse(parsedLines[0].slice(sep + 1));
-  });
-
-  test('the predicate scopes selection and execution to the target-test arm', () => {
-    const lines = soleFencedBlock(CONTRACT, 'RED Predicate').split('\n');
-    const openers = [];
-    const disjunctions = [];
-    lines.forEach((line, i) => {
-      const trimmed = line.trim();
-      if (trimmed.endsWith('(')) openers.push(i);
-      if (trimmed === 'OR') disjunctions.push(i);
-    });
-    assert.strictEqual(openers.length, 1, 'the predicate must open exactly one parenthesised group');
-    assert.strictEqual(disjunctions.length, 1, 'the parenthesised group must have exactly two arms');
-    assert.ok(openers[0] < disjunctions[0], 'the group must open before the disjunction keyword');
-
-    for (const field of ['selected_count', 'target_executed']) {
-      const hits = [];
-      lines.forEach((line, i) => { if (line.includes(field)) hits.push(i); });
-      assert.ok(hits.length > 0, `${field} must appear in the predicate at all`);
-      for (const i of hits) {
-        assert.ok(i > openers[0] && i < disjunctions[0],
-          `${field} on predicate line ${i + 1} sits outside the target-test arm. ` +
-          'Hoisted above the group it blocks every outside-in RED (which reports 0 and ' +
-          'false by construction); pushed below the keyword it stops guarding the target ' +
-          'arm. It belongs strictly between the opener and the disjunction. See #3770.');
-      }
-    }
-
-    // Sliced, not whole-block: moving the anchor down into the outside-in arm
-    // must fail here too, and a whole-block match would happily accept it.
-    const targetArm = lines.slice(openers[0] + 1, disjunctions[0]).join('\n');
-    assert.match(targetArm, /AND id_matches\(actual\.subject, plan\.target_test\)/,
-      'the target-test arm must keep its subject anchor. Without it the arm reduces to ' +
-      '`selected_count > 0 AND target_executed` plus the shared comparisons, which a run ' +
-      'where a DIFFERENT test failed satisfies — the outcome the Outcomes table says must ' +
-      'block, and the original defect. See #3770.');
-
-    const outsideInArm = lines.slice(disjunctions[0] + 1).join('\n');
-    const arm2Anchor = '    id_matches(actual.subject, plan.target_test)';
-    assert.match(outsideInArm,
-      new RegExp(`^${escapeRegex(arm2Anchor)}$`, 'm'),
-      'the outside-in arm must anchor the observed subject on the DECLARED TARGET TEST. ' +
-      '`actual.subject == plan.implementation_target` is unsatisfiable: no runner reports an ' +
-      'outside-in miss against the implementation symbol — pytest reports it against the test ' +
-      'file and go against `./pricing_test.go:6:12` — so the only routes to a passing arm were ' +
-      'to fabricate the subject or to abandon outside-in RED. Matched as a whole line under ' +
-      '`^…$` with the `m` flag, so a paraphrase, a reordering or a superset line fails here ' +
-      'rather than passing on a substring. See #3770.');
-    assert.match(outsideInArm, /outside-in missing-target mode/,
-      'the outside-in arm must keep its second conjunct — without it, any declaration whose ' +
-      'expected class happens to match slips through. Dropped twice already. See #3770.');
-  });
-
-  test("the predicate's four shared conjuncts are active above the arms", () => {
-    const lines = soleFencedBlock(CONTRACT, 'RED Predicate').split('\n');
-    const leadingOf = (line) => line.slice(0, line.length - line.trimStart().length);
-
-    const opener = lines.findIndex((line) => line.trim().endsWith('('));
-    assert.ok(opener > -1, 'the predicate must open a parenthesised group');
-    const anchor = lines.findIndex((line) => line.trim() === 'exit_status != 0');
-    assert.ok(anchor > -1, 'the predicate must carry `exit_status != 0` as its first conjunct');
-    const sharedIndent = leadingOf(lines[anchor]);
-
-    // Trimmed-form equality, so a `# `-prefixed line can never satisfy it: a
-    // conjunct commented back out reads as absent, exactly like a deleted one.
-    for (const conjunct of [
-      'AND trailer.expected == plan.expected_failure',
-      'AND actual.phase == expected.phase',
-      'AND actual.class_or_mode == expected.class_or_mode',
-      'AND trailer.target_test == plan.target_test',
-    ]) {
-      const i = lines.findIndex((line) => line.trim() === conjunct);
-      assert.ok(i > -1,
-        `the shared conjunct \`${conjunct}\` is missing or commented out. All four shared ` +
-        'conjuncts are unconditional: two pin the trailer\'s `expected` and `target_test` ' +
-        'echoes to the plan declaration, and the other two only carry meaning once that ' +
-        'pinning holds. This assertion IS the mutation test — deleting the line turns the ' +
-        'suite red, which is what nothing did before. See #3770.');
-      assert.ok(i < opener,
-        `the shared conjunct \`${conjunct}\` sits on predicate line ${i + 1}, at or below the ` +
-        `parenthesised group opener on line ${opener + 1}. A shared conjunct pushed into the ` +
-        'group stops guarding the arm it is not in. See #3770.');
-      assert.strictEqual(leadingOf(lines[i]), sharedIndent,
-        `the shared conjunct \`${conjunct}\` is indented ${leadingOf(lines[i]).length} spaces, ` +
-        `not the ${sharedIndent.length} of \`exit_status != 0\`. Depth is the only thing ` +
-        'distinguishing a shared conjunct from an arm conjunct in this block. See #3770.');
-    }
-
-    // ── CONJUNCT-COMPLETE PINNING ────────────────────────────────────────
-    // This REPLACES the 02-01 byte-freeze on the fence, which cannot survive a
-    // plan that changes one of its lines. The freeze existed for one observed
-    // reason: four successive paraphrases of this block EACH silently dropped a
-    // conjunct. The freeze caught that only indirectly, by forbidding all
-    // change. What replaces it must make a dropped conjunct fail BY NAME, and
-    // an added one fail too.
-    //
-    // Deliberately NOT the shape at the target-arm anchor above, which has no
-    // `^`, no `$` and no `m` flag: that assertion kills a named operator
-    // mutation but survives its line being replaced by a superset string.
-    const statements = soleFencedBlock(CONTRACT, 'RED Predicate')
-      .split('\n').filter((line) => line.trim() !== '');
-
-    const EXPECTED_STATEMENTS = [
-      'valid_red =',
-      '  exit_status != 0',
-      '  AND trailer.expected == plan.expected_failure',
-      '  AND actual.phase == expected.phase',
-      '  AND actual.class_or_mode == expected.class_or_mode',
-      '  AND trailer.target_test == plan.target_test',
-      '  AND (',
-      '    selected_count > 0',
-      '    AND target_executed',
-      '    AND id_matches(actual.subject, plan.target_test)',
-      '    OR',
-      '    id_matches(actual.subject, plan.target_test)',
-      '    AND plan.expected_failure is an outside-in missing-target mode',
-      '  )',
-    ];
-
-    // One anchored, full-expression assertion PER STATEMENT LINE, driven from
-    // the table above so the failure message NAMES the missing conjunct rather
-    // than reporting that "the block does not match".
-    //
-    // These run BEFORE the count assertion deliberately. node:test stops a test
-    // at its first failed assertion, so a count checked first would mask every
-    // by-name message behind "13 lines, not 14" — which is the report the
-    // byte-freeze already gave and the reason it was a poor control.
-    const block = statements.join('\n');
-    for (const statement of EXPECTED_STATEMENTS) {
-      assert.match(block, new RegExp(`^${escapeRegex(statement)}$`, 'm'),
-        `the RED Predicate statement \`${statement.trim()}\` is missing, reordered, ` +
-        're-operatored or re-indented. Matched as a WHOLE LINE under `^…$` with the `m` flag, ' +
-        'including its exact leading whitespace: depth is what distinguishes a shared conjunct ' +
-        'from an arm conjunct here, and a substring match would accept a superset line. ' +
-        'This assertion is what replaces the 02-01 byte-freeze. See #3770 (CR-11).');
-    }
-
-    // The COUNT is the only control that catches an ADDED conjunct: every
-    // per-line assertion above still passes when a fifteenth line is inserted.
-    assert.strictEqual(statements.length, EXPECTED_STATEMENTS.length,
-      `the RED Predicate block carries ${statements.length} statement lines, not ` +
-      `${EXPECTED_STATEMENTS.length}. A changed count means a conjunct was ADDED or REMOVED. ` +
-      'Every prior paraphrase of this block removed one, unnoticed. If the change is ' +
-      'intended, update this table and say in the plan which conjunct moved and why. ' +
-      'See #3770 (CR-11).');
   });
 
   // ── THE SHIPPED PREDICATE, EVALUATED RATHER THAN PINNED ──────────────────
@@ -1476,6 +1284,39 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       `the predicate must compose exactly nine distinct atoms; this map carries `
       + `${PREDICATE_ATOMS.size}. Deleting a conjunct from the fence AND its evaluator here `
       + 'satisfies the set equality above and would otherwise pass unnoticed. See #3770.');
+  });
+
+  test('the four shared conjuncts are evaluated above the arms, not inside one', () => {
+    // RETAINED-UNSUBSUMED. This is the one surviving fragment of the 02-05
+    // shared-conjunct test, kept on evidence and not on argument: with it
+    // removed, all four "move a shared conjunct inside the parenthesised group"
+    // mutations left the suite GREEN, while every other assertion that test
+    // carried — presence, and a conjunct commented back out with a leading
+    // `# ` — was killed by the atom-set equality or by a named case flip.
+    //
+    // A move preserves the atom SET, so the equality above cannot see it, and
+    // no evidence vector can either: catching it needs a run that takes ARM 2
+    // while violating a shared conjunct, and the shared conjuncts are what make
+    // such a run impossible to construct honestly. The partition is therefore
+    // asserted directly. A shared conjunct inside arm 1 stops guarding arm 2 —
+    // an outside-in RED would no longer have its trailer pinned to the plan at
+    // all. The indentation assertion that sat beside this one is NOT retained:
+    // the reader splits by position, so depth is presentation now, and no
+    // semantic mutation kills it. See #3770.
+    const parsed = parsePredicateFence();
+    for (const conjunct of [
+      'trailer.expected == plan.expected_failure',
+      'actual.phase == expected.phase',
+      'actual.class_or_mode == expected.class_or_mode',
+      'trailer.target_test == plan.target_test',
+    ]) {
+      assert.ok(parsed.shared.includes(conjunct),
+        `the shared conjunct \`${conjunct}\` is not evaluated above the parenthesised group. `
+        + `The predicate's shared conjuncts are [${parsed.shared.join(', ')}]. All four are `
+        + 'unconditional: two pin the trailer\'s `expected` and `target_test` echoes to the plan '
+        + 'declaration, and the other two only carry meaning once that pinning holds. Pushed '
+        + 'into an arm, a shared conjunct stops guarding the arm it is not in. See #3770.');
+    }
   });
 
   test('the shipped predicate computes the verdict each evidence vector must receive', () => {
