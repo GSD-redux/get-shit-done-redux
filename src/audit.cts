@@ -1789,6 +1789,13 @@ export = {
   formatAuditReport,
   listAuditPhaseTargets,
   cmdAuditAcknowledge,
+  // #3805: exported so uat.cts's cmdAuditUat routes the SAME artifacts'
+  // suppression through the ONE predicate instead of hand-rolling a tenth
+  // copy outside this file's visibility (the exact defect class the
+  // predicate's own header warns about). The snapshot derivations ride
+  // along so the snapshotKeys cannot drift between the two consumers.
+  isAuditItemAcknowledged,
+  deriveUatGapSnapshotValue,
   // #2142: exported so src/milestone.cts's archiveQuickTaskDirectories README
   // index generator shares this ONE discovery rule rather than re-deriving it.
   resolveQuickTaskSummaryFile,

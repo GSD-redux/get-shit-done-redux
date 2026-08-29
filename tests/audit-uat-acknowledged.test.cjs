@@ -52,7 +52,15 @@ function seedVerificationPhase(tmpDir, phaseDir, frontmatterExtra) {
     '---',
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(dir, `${phaseDir}-VERIFICATION.md`), fm + '# Verification\n');
+  fs.writeFileSync(path.join(dir, `${phaseDir}-VERIFICATION.md`), fm + [
+    '# Verification',
+    '',
+    '## Human Verification',
+    '',
+    '1. **Test:** the deleted route stays deleted',
+    '   - **Result:** pending',
+    '',
+  ].join('\n'));
   return dir;
 }
 
@@ -84,7 +92,8 @@ describe('#3805: audit-uat honours audit_acknowledged', () => {
     const out = runAudit(tmpDir);
     assert.equal(out.summary.total_items, 0,
       `#3805: the acknowledged UAT item must be suppressed; got ${JSON.stringify(out.results)}`);
-    assert.equal((out.acknowledged && out.acknowledged.uat_gaps) || out.acknowledged_uat || 0 > 0 ? true : true, true);
+    assert.equal(out.acknowledged_files, 1,
+      '#3805: the suppressed file must be visible in acknowledged_files (audit-open honesty model)');
   });
 
   test('#3805: a STALE gap_snapshot (content changed since ack) still surfaces', (t) => {
@@ -101,6 +110,7 @@ describe('#3805: audit-uat honours audit_acknowledged', () => {
     const out = runAudit(tmpDir);
     assert.ok(out.summary.total_items > 0,
       'a marker whose snapshot no longer matches must NOT suppress (self-invalidation)');
+    assert.equal(out.acknowledged_files, 0, 'a stale marker does not count as acknowledged');
   });
 
   test('#3805: an acknowledged VERIFICATION file is suppressed (status snapshot)', (t) => {
@@ -116,6 +126,8 @@ describe('#3805: audit-uat honours audit_acknowledged', () => {
     const out = runAudit(tmpDir);
     assert.equal(out.summary.total_items, 0,
       `#3805: the acknowledged VERIFICATION item must be suppressed; got ${JSON.stringify(out.results)}`);
+    assert.equal(out.acknowledged_files, 1,
+      '#3805: the suppressed VERIFICATION file must be visible in acknowledged_files');
   });
 
   test('#3805 control: an unacknowledged open UAT file still surfaces', (t) => {
