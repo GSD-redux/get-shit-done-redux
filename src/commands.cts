@@ -103,6 +103,8 @@ interface CommitToSubrepoRepoResult {
   files: string[];
   reason?: string;
   error?: string;
+  /** #3886: true when the repo's git commit was timeout-killed (reason commit_timeout). */
+  timed_out?: boolean;
 }
 
 interface EffortSyncChange {
@@ -1820,8 +1822,29 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   if (canScope) {
     commitArgs.push('--', ...stagedPaths);
   }
-  const commitResult = execGit(commitArgs, { cwd });
+  // #3886: `git commit` runs pre-commit hooks (husky/lint-staged routinely
+  // idles ~4s on Windows before any task) — 10s is too tight, and a timeout
+  // kill is NOT an ordinary failure. Same band as the push call below.
+  const commitResult = execGit(commitArgs, { cwd, timeout: 30_000 });
   if (commitResult.exitCode !== 0) {
+    // #3886: a SIGTERM'd git commit is a timeout, not commit_failed — the
+    // partial stderr it flushed (often incidental CRLF warnings) is noise,
+    // and the kill can leave a stale .git/index.lock that blocks the next
+    // attempt. Report the distinct reason and surface the lock path.
+    if (isSpawnTimeout(commitResult)) {
+      const result = {
+        committed: false,
+        hash: null,
+        reason: 'commit_timeout',
+        timed_out: true,
+        error:
+          `git commit timed out after 30s (killed mid-hook; a stale lock may remain at ` +
+          `${path.join(cwd, '.git', 'index.lock')} — remove it if no git process is running). ` +
+          `Partial stderr: ${commitResult.stderr || commitResult.stdout || '(none)'}`,
+      };
+      output(result, raw, 'failed');
+      return;
+    }
     if (commitResult.stdout.includes('nothing to commit') || commitResult.stderr.includes('nothing to commit')) {
       const result = { committed: false, hash: null, reason: 'nothing_to_commit' };
       output(result, raw, 'nothing');
@@ -1969,8 +1992,24 @@ function cmdCommitToSubrepo(cwd: string, message: string | undefined, files: str
     const commitArgs = canScopeSub
       ? ['commit', '-m', message as string, '--', ...stagedRelPaths]
       : ['commit', '-m', message as string];
-    const commitResult = execGit(commitArgs, { cwd: repoCwd });
+    const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: 30_000 });
     if (commitResult.exitCode !== 0) {
+      if (isSpawnTimeout(commitResult)) {
+        // #3886 (subrepo counterpart): timeout ≠ error; surface the stale-lock
+        // path a killed commit can leave in the subrepo.
+        repos[repo] = {
+          committed: false,
+          hash: null,
+          files: repoFiles,
+          reason: 'commit_timeout',
+          timed_out: true,
+          error:
+            `git commit timed out after 30s (killed mid-hook; a stale lock may remain at ` +
+            `${path.join(repoCwd, '.git', 'index.lock')} — remove it if no git process is running). ` +
+            `Partial stderr: ${commitResult.stderr || '(none)'}`,
+        };
+        continue;
+      }
       if (commitResult.stdout.includes('nothing to commit') || commitResult.stderr.includes('nothing to commit')) {
         repos[repo] = { committed: false, hash: null, files: repoFiles, reason: 'nothing_to_commit' };
         continue;
@@ -2124,9 +2163,17 @@ function cmdPrSubrepo(
   const commitArgs = canScopePr
     ? ['commit', '-m', commitMessage as string, '--', ...changedFiles]
     : ['commit', '-m', commitMessage as string];
-  const commitResult = execGit(commitArgs, { cwd: repoCwd });
+  const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: 30_000 });
   if (commitResult.exitCode !== 0) {
     rollback();
+    if (isSpawnTimeout(commitResult)) {
+      // #3886 (PR-subrepo counterpart): name the timeout and the stale lock
+      // instead of echoing the killed hook's partial stderr.
+      error(
+        `git commit timed out after 30s in ${repo} (killed mid-hook; a stale lock may remain at ` +
+        `${path.join(repoCwd, '.git', 'index.lock')} — remove it if no git process is running)`,
+      );
+    }
     error(`Failed to commit in ${repo}: ${commitResult.stderr}`);
   }
 
