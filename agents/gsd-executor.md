@@ -806,6 +806,12 @@ one of these shapes:
   success path.** Record "skipped (.planning gitignored)" and move on.
 - `{committed: false, reason: 'nothing_to_commit' | 'commit_failed', ...}` —
   no-op / genuine failure; surface in the completion notes.
+- `{committed: false, reason: 'commit_timeout', timed_out: true, error}` —
+  `git commit` itself was timeout-killed mid-hook (#3886). Nothing committed.
+  Unlike `staging_timeout`, a retry CAN succeed after removing the stale lock
+  the error names (`…/index.lock`): verify no git process is running, remove
+  it, address why the pre-commit hook exceeded the band (or stage fewer
+  changes), then retry once.
 - `{committed: false, reason: 'staging_failed' | 'staging_timeout', file, error}` —
   `git add` itself failed (#2608), e.g. an unwritable index. Nothing committed,
   index rolled back. Surface `file` + `error` (git's stderr); do not retry — a

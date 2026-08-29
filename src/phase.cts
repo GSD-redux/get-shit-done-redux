@@ -18,6 +18,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 import ioMod = require('./io.cjs');
 const { output, error, ERROR_REASON, formatDiagnosticToken } = ioMod;
@@ -1141,6 +1142,68 @@ function assertDescriptionPreservesMilestoneScope(description: string, command: 
   );
 }
 
+/**
+ * #3849 — widen "used phase numbers" beyond this checkout. Every sibling git
+ * worktree carries its own `.planning/` on its own branch, so a phase minted
+ * there is invisible to the cwd-scoped sources (headers, bullets, on-disk
+ * dirs). Scan each sibling's phase-directory names (cheap — dir names alone
+ * caught the real incident) and its WHOLE ROADMAP.md headers (a row can exist
+ * before any directory does; milestone-scoping is wrong here because a number
+ * used under any milestone on another branch is still taken).
+ *
+ * Widen, never refuse: a missing `.planning/`, an unreadable sibling, a
+ * non-git cwd, or an unavailable git binary each leave `used` untouched —
+ * allocation then behaves exactly as it did before this horizon existed.
+ * Sentinels reuse the canonical `isSentinelPhaseId`; the dir pattern is the
+ * same one the on-disk scan uses, so decimal sub-phases (`411.1-foo`) are
+ * correctly not integers.
+ */
+function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
+  let porcelain: string;
+  try {
+    porcelain = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+      cwd,
+      encoding: 'utf-8',
+      // Same subprocess band as the other git call sites (smart-entry, check-command-router):
+      // inside the 5-30s git window, hidden console window on Windows, bounded buffer.
+      timeout: 10_000,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  } catch {
+    return; // not a git repo / git unavailable — unchanged behavior
+  }
+  const dirNumPattern = /^(?:[A-Z][A-Z0-9]*-)?(\d+)-/;
+  // Same header shape the allocators scan locally (#1729 tag tolerance).
+  const headerPattern = /#{2,4}\s*Phase\s+(\d+)[A-Z]?(?:\.\d+)*(?:\s*\([^)\n]{0,200}\))?:/gi;
+  for (const line of porcelain.split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const wt = line.slice('worktree '.length).trim();
+    if (!wt || path.resolve(wt) === path.resolve(cwd)) continue;
+    try {
+      for (const entry of fs.readdirSync(path.join(wt, '.planning', 'phases'))) {
+        const match = entry.match(dirNumPattern);
+        if (!match) continue;
+        const num = parseInt(match[1], 10);
+        if (!isSentinelPhaseId(num)) used.add(num);
+      }
+    } catch {
+      /* worktree has no .planning — normal, contributes nothing */
+    }
+    try {
+      const content = fs.readFileSync(path.join(wt, '.planning', 'ROADMAP.md'), 'utf-8');
+      let m: RegExpExecArray | null;
+      headerPattern.lastIndex = 0;
+      while ((m = headerPattern.exec(content)) !== null) {
+        const num = parseInt(m[1], 10);
+        if (!isSentinelPhaseId(num)) used.add(num);
+      }
+    } catch {
+      /* no roadmap in that worktree — normal, contributes nothing */
+    }
+  }
+}
+
 function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: string): void {
   if (!description) {
     error('description required for phase add');
@@ -1214,6 +1277,9 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
       // section headers, roadmap bullets, AND on-disk dirs above is what prevents the
       // #1229 collision (a bullet-only Phase N is now counted), so max+1 cannot reuse
       // an existing number.
+      // 4) Sibling git worktrees (#3849) — same max+1, wider horizon: a number
+      // taken on another branch is still taken.
+      collectSiblingWorktreePhaseNums(cwd, usedPhaseNums);
       const maxUsed = usedPhaseNums.size > 0 ? Math.max(...usedPhaseNums) : 0;
       _newPhaseId = maxUsed + 1;
       const paddedNum = String(_newPhaseId).padStart(2, '0');
@@ -1292,12 +1358,21 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
     const content = extractCurrentMilestone(rawContent, cwd);
     let maxPhase = 0;
     if (config.phase_naming !== 'custom') {
+      // Same three cwd-scoped sources as cmdPhaseAdd (#1229): headers, roadmap
+      // bullets, on-disk dirs. The bullet scan was missing here — a bullet-only
+      // `Phase N` row was invisible to batch allocation (#3849 secondary).
       // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
       const phasePattern = /#{2,4}\s*Phase\s+(\d+)[A-Z]?(?:\.\d+)*(?:\s*\([^)\n]{0,200}\))?:/gi;
+      const bulletPattern = /^[ \t]*-[ \t]*\[[^\]]{0,200}\][ \t]*\*{0,2}Phase[ \t]+(\d+)(?=[:.\s*]|$)/gim;
       let m: RegExpExecArray | null;
       while ((m = phasePattern.exec(content)) !== null) {
         const num = parseInt(m[1], 10);
         // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+        if (isSentinelPhaseId(num)) continue;
+        if (num > maxPhase) maxPhase = num;
+      }
+      while ((m = bulletPattern.exec(content)) !== null) {
+        const num = parseInt(m[1], 10);
         if (isSentinelPhaseId(num)) continue;
         if (num > maxPhase) maxPhase = num;
       }
@@ -1312,6 +1387,12 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
           if (isSentinelPhaseId(num)) continue;
           if (num > maxPhase) maxPhase = num;
         }
+      }
+      // 4) Sibling git worktrees (#3849) — same max+1, wider horizon.
+      const siblingNums = new Set<number>();
+      collectSiblingWorktreePhaseNums(cwd, siblingNums);
+      for (const num of siblingNums) {
+        if (num > maxPhase) maxPhase = num;
       }
     }
     const added: Record<string, unknown>[] = [];
