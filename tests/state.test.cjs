@@ -1304,6 +1304,58 @@ describe('stateExtractField and stateReplaceField helpers', () => {
     );
   });
 
+  test('T5: a bold Phase line in a DIFFERENT section never shadows the plain value inside Current Position (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 5 (in section, plain)',
+      'Plan: 1 of 3',
+      '',
+      '## Archive',
+      '',
+      '**Phase:** 88 (bold, other section — must NOT win)',
+    ].join('\n');
+
+    const result = extractViaProductionChain(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '1 of 5 (in section, plain)',
+      'the form ranking applies only within the Current Position section — a bold line elsewhere must not outrank the in-section plain value'
+    );
+
+    // Discrimination: a reader that runs stateExtractField over the WHOLE
+    // document (skipping the #2956 section scope) disagrees with production
+    // here — it lets the out-of-section bold line win.
+    const wholeDocumentResult = stateExtractField(content, 'Phase');
+    assert.strictEqual(
+      wholeDocumentResult,
+      '88 (bold, other section — must NOT win)',
+      'sanity check: an unscoped reader gets this case wrong, which is exactly the bug this row pins'
+    );
+    assert.notStrictEqual(result, wholeDocumentResult, 'the scoped and unscoped readers must disagree on this fixture');
+  });
+
+  test('T6: a bold Phase line with only trailing whitespace resolves to an empty string, not a fallthrough (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      '**Phase:**   ',
+      'Phase: 1 of 5 (plain, must NOT be used)',
+      'Plan: 1 of 3',
+    ].join('\n');
+
+    const result = extractViaProductionChain(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '',
+      'the bold form wins outright even when its captured value is only trailing whitespace; it must not fall through to the plain line below'
+    );
+  });
+
   // stateReplaceField tests
 
   test('replaces field value', () => {
