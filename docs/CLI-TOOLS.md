@@ -132,13 +132,14 @@ way `query phase-plan-index` does and compares it against the `## Current
 Position` prose. It **refuses to advance** when the two disagree, rather than
 incrementing a position it cannot trust (#3830).
 
-Three answers a caller must tell apart, all at **exit 0**:
+Four answers a caller must tell apart, all at **exit 0**:
 
 | stdout | meaning | what a caller should do |
 |---|---|---|
 | `{"advanced": true, ...}` | the counter moved | proceed; record progress and metrics |
 | `{"advanced": false, "reason": "last_plan", ...}` | already on the phase's last plan | proceed; this is the ordinary end of a phase |
 | `{"advanced": false, "reason": "position_diverged", "prose": {...}, "disk": {...}}` | prose position disagrees with the plans on disk | **stop** — do not record progress or metrics against a position that did not move |
+| `{"error": ..., "reason": "ambiguous_position_phase", "phase_candidates": [...]}` | the `## Current Position` section carries more than one `Phase:` entry, so which entry is current is undecidable (#3807) | **stop** — resolve the section to a single entry and re-run |
 
 A divergence also prints a `[gsd-tools] WARNING:` line to **stderr** naming both
 positions and the repair path, so the refusal is visible to an operator who is

@@ -1123,20 +1123,28 @@ function warnPositionDiverged(data: Record<string, unknown>): void {
   // fix, and the distinction is stated because the review's premise does not hold
   // as written: I could not reach this render with a control character.
   //
-  // `disk.phase` is `normalized` from resolvePlanSetForPhase, and reaching the
-  // warning at all requires that value to BOTH survive normalizePhaseName AND
-  // match a real phase directory via matchPhaseDirs. Those two conditions exclude
-  // control characters between them — a numeric phase keeps only its digits
-  // (`01<ESC>[31m (Demo)` -> `01`), a project-code phase is stripped to its number
-  // (`PROJ-42<ESC>[31m` -> `42`), and an escape placed INSIDE the token normalizes
-  // to something no directory matches, so the scan returns ok:false and the gate
-  // abstains before any warning is emitted. Driven across all five shapes.
+  // The boundary is EARLIER than normalizePhaseName, and naming it wrongly is worse
+  // than not naming it — the RV6.5 review refuted the first version of this comment.
+  // normalizePhaseName does NOT exclude control characters: its final branch returns a
+  // custom ID verbatim (`return str`), and matchPhaseDirs will match such an ID against
+  // a directory carrying the same bytes. Driven: `CUSTOM<ESC>[31m` normalizes to itself
+  // and matches.
   //
-  // Kept anyway, because it costs one line and normalizePhaseName's final branch
-  // is a genuine as-is passthrough (`return str`) — a future widening of
-  // matchPhaseDirs would open what only the matcher currently closes. Deliberately
-  // NOT pinned by a test: no input reaches the branch, so any test would assert
-  // over an unreachable state and pass whatever this line did.
+  // What actually closes the route is upstream of both — `parsePhaseFromProse`, which
+  // `cmdStateAdvancePlan` uses to read `Phase:`, accepts only numeric and
+  // project-code-numeric tokens and returns `phase: null` for anything else. A null
+  // phase leaves the provider absent, so no scan runs and no warning is emitted. The
+  // numeric paths sanitize by construction on the way through (`01<ESC>[31m (Demo)` ->
+  // `01`, `PROJ-42<ESC>[31m` -> `42`).
+  //
+  // Kept anyway, and the case is stronger for being stated accurately: the only thing
+  // between a custom phase ID and this line is one prose parser's token grammar. Widen
+  // parsePhaseFromProse to accept custom IDs — which normalizePhaseName and
+  // matchPhaseDirs already support — and the route opens with nothing else in the way.
+  //
+  // No end-to-end test, because no CLI input reaches the render today; that is a
+  // property of the parser, not of this function, and a test asserting it would be
+  // pinning the parser from the wrong end.
   const scrub = (v: string): string => v.replace(/[\x00-\x1f\x7f]/g, '');
   const scalar = (v: unknown): string =>
     typeof v === 'string' ? scrub(v) : typeof v === 'number' || typeof v === 'bigint' ? v.toString() : '?';
