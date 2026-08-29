@@ -242,7 +242,8 @@ describe('bug #3099: absolute-path safety guidance in gsd-executor.md', () => {
 // plus observed evidence, both defined in gsd-core/references/tdd.md.
 // ────────────────────────────────────────────────────────────────────────
 
-const { runNode, runGit } = require('./helpers/process-seam.cjs');
+const { runNode, runGit, runHook } = require('./helpers/process-seam.cjs');
+const { createTempDir, createTempGitProject, cleanup } = require('./helpers.cjs');
 
 const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const TDD_REF = path.join(__dirname, '..', 'gsd-core', 'references', 'tdd.md');
@@ -556,6 +557,16 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         verdict: null,
         why: 'the arm-2 scoping rationale must name the compensating condition, which lives in '
           + 'execute-mvp-tdd.md, or the coded gate gets built with a real hole in it',
+      },
+      {
+        section: 'RED Predicate',
+        needle: 'does not prove that the missing entity is the declared `implementation_target`',
+        verdict: null,
+        why: 'arm 2 proves the failure belongs to the declared TEST FILE, not that it concerns '
+          + 'the declared implementation target — an unrelated missing dependency in that same '
+          + 'file, at the same declared phase and class, satisfies every conjunct. Deleting the '
+          + 'note would leave the contract silently claiming a guarantee it does not provide, '
+          + 'and Phase 3 would build a coded gate from that claim',
       },
       {
         section: 'Declaration',
@@ -879,6 +890,147 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     assert.ok(snippet.includes('missing_red_commit'),
       'no commit whose subject matches is a different outcome from a commit that exists ' +
       'without the trailer; the snippet must report it as `missing_red_commit`. See #3770.');
+  });
+
+  test('the shipped gate snippet runs clean on a compliant plan and reads the right commit', (t) => {
+    const snippet = soleFencedBlock(
+      sliceH2(TDD_SOURCE, 'Gate Enforcement Rules'), 'Executor Gate Validation',
+    );
+
+    // The snippet is EXTRACTED and EXECUTED, never retyped: CR-03 shipped
+    // because a text assertion judged the block's last statement "exit-safe"
+    // by reading it. A gate's exit status is only observable by running it.
+    // Mechanism copied from tests/unreachable-shell-guard.test.cjs:144-150 —
+    // a script PATH through the process seam, never a `bash -c` argv string
+    // (#2650: quote-dense multi-line scripts do not survive Windows argv
+    // serialization). One script under test, so it is written ONCE here
+    // rather than copied into a fourth runBashScript helper.
+    const scriptDir = createTempDir('gsd-3770-gate-sh-');
+    t.after(() => cleanup(scriptDir));
+    const scriptPath = path.join(scriptDir, 'gate.sh');
+    fs.writeFileSync(scriptPath, `#!/usr/bin/env bash\nset -e\n${snippet}`, { mode: 0o755 });
+
+    const runGate = (cwd) => runHook(scriptPath, [], {
+      interpreter: 'bash', cwd, env: { ...process.env, PHASE: '08', PLAN: '02' },
+    });
+
+    // Derived from the shipped `### Evidence` fixture, never retyped; the
+    // marker makes the emitted value say WHICH commit was selected.
+    const shipped = trailerLine();
+    const evidence = (mark) => {
+      const parsed = JSON.parse(shipped.slice(shipped.indexOf('{')));
+      parsed.command = `${parsed.command} # ${mark}`;
+      return `red-evidence: ${JSON.stringify(parsed)}`;
+    };
+
+    const newRepo = () => {
+      // createTempGitProject already runs init, user.email, user.name and
+      // commit.gpgsign false. The ONE thing it does not do is disarm a
+      // globally configured core.hooksPath, which would otherwise run this
+      // machine's commit-msg hook inside the fixture.
+      const dir = createTempGitProject('gsd-3770-gate-');
+      t.after(() => cleanup(dir));
+      runGit(['config', 'core.hooksPath', ''], { cwd: dir });
+      return dir;
+    };
+    const commit = (cwd, file, subject, trailer) => {
+      const abs = path.join(cwd, file);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, `# ${subject}\n`);
+      runGit(['add', file], { cwd });
+      // A second -m so git parses the trailer as a TRAILER, not body prose.
+      runGit(trailer ? ['commit', '-m', subject, '-m', trailer] : ['commit', '-m', subject], { cwd });
+      return runGit(['rev-parse', 'HEAD'], { cwd }).stdout.trim();
+    };
+
+    // ── S1, compliant RED-only (CR-03) ───────────────────────────────────
+    // The normal state of EVERY plan between RED and GREEN.
+    const s1 = newRepo();
+    commit(s1, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', evidence('S1'));
+    const r1 = runGate(s1);
+    assert.strictEqual(r1.exitCode, 0,
+      'CR-03: the shipped gate must exit 0 on a compliant RED-only plan. It exits 1 today, and ' +
+      'that is the normal state of every plan between RED and GREEN, so an agent keying off ' +
+      'the exit status reads a gate failure where none exists. See #3770.');
+    assert.ok(r1.stdout.includes('# S1'),
+      'the gate must emit the RED commit\'s trailer value');
+    assert.ok(!r1.stdout.includes('add failing test for discount'),
+      'the gate must emit the TRAILER, never a commit subject');
+    assert.match(r1.stdout, /feat\(08-02\)|GREEN/,
+      'an absent GREEN commit must still be REPORTED — the report survives while the gate ' +
+      'stays open, because this block also runs mid-cycle');
+
+    // ── S2, the five-condition repository (CR-04, plus M1 and M4) ────────
+    const s2 = newRepo();
+    const realRed = commit(s2, 'tests/test_pricing.py',
+      'test(08-02): add failing test for discount', evidence('S2-REAL'));
+    commit(s2, 'src/pricing.py', 'feat(08-02): implement discount');
+    // Newer, same plan, trailerless — the shadow decoy — AND a body that
+    // mentions red-evidence: mid-message so it cannot parse as a trailer.
+    runGit(['commit', '--allow-empty', '-m', 'test(08-02): add another failing test',
+      '-m', 'red-evidence: S2-BODY-PROSE', '-m', 'trailing paragraph so the above is body, not a trailer'],
+    { cwd: s2 });
+    fs.writeFileSync(path.join(s2, 'tests', 'test_pricing.py'), '# another\n');
+    runGit(['add', 'tests/test_pricing.py'], { cwd: s2 });
+    runGit(['commit', '--amend', '--no-edit'], { cwd: s2 });
+    // NO refactor(...) commit anywhere. Newest commit is the cross-plan decoy.
+    commit(s2, 'tests/test_other.py', 'test(09-01): unrelated plan', evidence('S2-CROSS'));
+    const r2 = runGate(s2);
+    assert.strictEqual(r2.exitCode, 0,
+      'the five-condition repository is compliant: an absent OPTIONAL refactor commit is not ' +
+      'a violation. See #3770.');
+    assert.ok(r2.stdout.includes('# S2-REAL'),
+      `CR-04: the gate must select the newest commit that is BOTH plan-scoped AND ` +
+      `evidence-bearing (${realRed}). Selecting on position alone lets a newer trailerless ` +
+      'same-plan commit shadow the real RED. See #3770.');
+    assert.ok(!r2.stdout.includes('# S2-CROSS'),
+      'CR-11 M1: an unscoped `test\\(` selects the cross-plan decoy — the NEWEST commit here — ' +
+      'and authorizes this plan\'s GREEN on another plan\'s RED. See #3770.');
+    assert.ok(!r2.stdout.includes('S2-BODY-PROSE'),
+      'CR-11 M4: reading %B instead of the trailer key reads a commit that merely QUOTES a ' +
+      'red-evidence: line in its body as if it were evidence. See #3770.');
+    assert.ok(!r2.stdout.includes('add another failing test'),
+      'the gate must emit the trailer, never a commit subject');
+
+    // ── S3, RED commit touches no test file (CR-02, F1) ──────────────────
+    const s3 = newRepo();
+    commit(s3, 'src/pricing.py', 'test(08-02): add failing test for discount', evidence('S3'));
+    const r3 = runGate(s3);
+    assert.notStrictEqual(r3.exitCode, 0,
+      'F1 / T-02-05-13: a RED commit that touches NO test file is a violation, and the ' +
+      'snippet must exit NON-ZERO on it. The previous draft asserted exitCode === 0 here; ' +
+      'that assertion IS the finding, not the fix. The threat model\'s own words are that ' +
+      'the exit status and the commit selection ARE the gate, so a violation that prints and ' +
+      'returns 0 makes the only shipped gate a diagnostic. Do not relax this without ' +
+      'arguing with that reason. See #3770.');
+    assert.match(r3.stdout, /touches no test file/,
+      'CR-02: the gate must REPORT that the RED commit touches no test file. The ' +
+      'compensating condition previously lived only in execute-mvp-tdd.md, which loads only ' +
+      'when MVP_MODE=true — not this project\'s live path (upstream #4011). See #3770.');
+
+    // ── S4, matching commits with no evidence (CR-04, F1) ────────────────
+    const s4 = newRepo();
+    commit(s4, 'tests/test_pricing.py', 'test(08-02): add failing test for discount');
+    commit(s4, 'tests/test_more.py', 'test(08-02): add failing test for discount');
+    const r4 = runGate(s4);
+    assert.notStrictEqual(r4.exitCode, 0,
+      'F1: matching commits that carry no evidence is a violation and must exit NON-ZERO');
+    assert.match(r4.stdout, /none carries a `?red-evidence:/,
+      'the two RED failures need DIFFERENT remedies and must stay distinguished: this one ' +
+      'means amend the trailer onto the commit you already made, and it is NOT ' +
+      'missing_red_commit, which means write one. See #3770.');
+    assert.ok(!r4.stdout.includes('missing_red_commit'),
+      'matching-commits-without-evidence must not be reported as missing_red_commit');
+
+    // ── S5, no subject-matching commit at all (F2) ───────────────────────
+    const s5 = newRepo();
+    commit(s5, 'src/pricing.py', 'feat(08-02): implement discount');
+    const r5 = runGate(s5);
+    assert.notStrictEqual(r5.exitCode, 0,
+      'F2: no RED commit at all is a violation and must exit NON-ZERO. The previous draft let ' +
+      'this case fall through to an exit-0 tail. See #3770.');
+    assert.ok(r5.stdout.includes('missing_red_commit'),
+      'the snippet must echo `missing_red_commit` verbatim when no subject matches');
   });
 
   test('the MVP+TDD gate reference does not claim a capability the contract disclaims', () => {
