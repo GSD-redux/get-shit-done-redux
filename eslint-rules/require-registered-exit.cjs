@@ -51,15 +51,30 @@ const path = require('node:path');
  *    the call site and fails loudly (an unused-disable lint error) if the
  *    surrounding code changes such that it is no longer needed.
  *
+ * ── Computed member access — `process['exit']()` / `process[x]()` ─────────
+ *
+ * A `MemberExpression` callee on `process` is followed whether or not it is
+ * computed. For a computed property the property name is resolved via
+ * `resolveComputedPropertyName` below:
+ *
+ *   - A string `Literal` property (`process['exit'](0)`) resolves directly.
+ *   - An `Identifier` property (`process[exit](0)`) resolves ONLY when it is
+ *     statically determinable: the identifier must bind to exactly one
+ *     variable declaration in scope, that declaration's initializer must be
+ *     a string `Literal`, and the variable must have at most one write
+ *     reference (its own initializer — i.e. never reassigned). This closes
+ *     `const exit = 'exit'; process[exit](1);`.
+ *
+ * A genuinely dynamic computed property (a runtime value, a function call, a
+ * reassigned binding, or an identifier with no resolvable single-literal
+ * definition) resolves to `null` and is deliberately NOT flagged — the rule
+ * never guesses at a property name it cannot prove.
+ *
  * ── Known limits (documented, deliberately out of scope) ────────────────────
  *
- * The rule matches a literal `CallExpression` shaped exactly like
- * `process.exit(...)` (a non-computed MemberExpression on an Identifier
- * named `process` with a property named `exit`). It does NOT do scope/flow
- * analysis, so it cannot catch:
+ * Even with the computed-property resolution above, the rule does NOT do
+ * general binding/flow analysis, so it still cannot catch:
  *
- *   - `process['exit'](0)` — computed member access (same identifier, but
- *     `callee.computed` is true so the property-name check never runs).
  *   - `const e = process.exit; e(1);` — aliasing the function reference to a
  *     local binding before calling it; by the time the alias is called, the
  *     callee is a plain Identifier, not a MemberExpression on `process`.
@@ -68,14 +83,13 @@ const path = require('node:path');
  *     the outer CallExpression's callee is `process.exit.call`, not
  *     `process.exit` itself.
  *
- * Catching these would require binding/scope-aware analysis (tracking that a
- * local variable or a `.call`/`.apply` receiver resolves back to
- * `process.exit`), which is a materially different and more expensive class
- * of rule. Out of scope for this issue. See the pinning tests in
- * tests/eslint-rules.test.cjs ("KNOWN LIMIT (pinned, not endorsed)") that
- * assert these are NOT flagged today — if a future change starts catching
- * one of them, those tests will fail loudly instead of the change silently
- * altering the rule's reach.
+ * Catching these would require a materially different and more expensive
+ * class of analysis (tracking that a local variable or a `.call`/`.apply`
+ * receiver resolves back to `process.exit`). Out of scope for this issue.
+ * See the pinning tests in tests/eslint-rules.test.cjs ("KNOWN LIMIT (pinned,
+ * not endorsed)") that assert these are NOT flagged today — if a future
+ * change starts catching one of them, those tests will fail loudly instead
+ * of the change silently altering the rule's reach.
  */
 
 /**
@@ -100,6 +114,47 @@ function isInsideFunctionNamed(node, name) {
   return false;
 }
 
+/**
+ * Resolves the property name of a computed `MemberExpression` property node
+ * to a string, or returns `null` when it cannot be statically determined.
+ * See the module doc comment ("Computed member access") for the resolution
+ * rules. `callNode` is used to anchor scope lookup for an Identifier
+ * property.
+ */
+function resolveComputedPropertyName(propertyNode, callNode, context) {
+  if (propertyNode.type === 'Literal' && typeof propertyNode.value === 'string') {
+    return propertyNode.value;
+  }
+  if (propertyNode.type === 'Identifier') {
+    const scope =
+      context.sourceCode && typeof context.sourceCode.getScope === 'function'
+        ? context.sourceCode.getScope(callNode)
+        : context.getScope();
+    let cur = scope;
+    while (cur) {
+      const variable = cur.variables.find((v) => v.name === propertyNode.name);
+      if (variable) {
+        if (variable.defs.length !== 1) return null;
+        const def = variable.defs[0];
+        if (
+          def.type !== 'Variable' ||
+          !def.node.init ||
+          def.node.init.type !== 'Literal' ||
+          typeof def.node.init.value !== 'string'
+        ) {
+          return null;
+        }
+        const writeRefs = variable.references.filter((r) => r.isWrite());
+        if (writeRefs.length > 1) return null;
+        return def.node.init.value;
+      }
+      cur = cur.upper;
+    }
+    return null;
+  }
+  return null;
+}
+
 /** @type {import('eslint').Rule.RuleModule} */
 const rule = {
   meta: {
@@ -122,9 +177,18 @@ const rule = {
     return {
       CallExpression(node) {
         const callee = node.callee;
-        if (callee.type !== 'MemberExpression' || callee.computed) return;
+        if (callee.type !== 'MemberExpression') return;
         if (callee.object.type !== 'Identifier' || callee.object.name !== 'process') return;
-        if (callee.property.type !== 'Identifier' || callee.property.name !== 'exit') return;
+
+        let propertyName;
+        if (!callee.computed) {
+          if (callee.property.type !== 'Identifier') return;
+          propertyName = callee.property.name;
+        } else {
+          propertyName = resolveComputedPropertyName(callee.property, node, context);
+          if (propertyName === null) return;
+        }
+        if (propertyName !== 'exit') return;
 
         const filename = context.filename ?? context.getFilename();
         if (path.basename(filename) === 'cli-exit.cts' && isInsideFunctionNamed(node, 'terminateNow')) return;

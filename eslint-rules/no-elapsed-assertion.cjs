@@ -3,9 +3,17 @@
 /**
  * no-elapsed-assertion
  *
- * Flag assert*() calls whose argument reads a property named
- * /^(elapsed|duration|took|ms)$/ or compares such an identifier.
+ * Flag assert*() calls whose argument reads a property/identifier whose
+ * name is (or is a camelCase-suffixed/prefixed variant of) a timing word
+ * — elapsed, duration, took, ms — or compares such an identifier.
  * Timing assertions are flaky and should not be in the test suite.
+ *
+ * Matches: elapsed, duration, took, ms, elapsedMs, tookMs, durationMs,
+ * msElapsed, elapsedTime, startMs, endMs.
+ * Does NOT match: params, items, forms, terms, dirnames (no capitalized
+ * "Ms"/"Elapsed"/"Duration"/"Took" boundary present), nor configured-bound
+ * identifiers like timeoutMs/cacheTtlMs/staleAfterMs (a deterministic
+ * config value, not a measured wall-clock elapsed value).
  */
 
 /** @type {import('eslint').Rule.RuleModule} */
@@ -24,22 +32,34 @@ const rule = {
     },
   },
   create(context) {
-    const TIMING_PROPS = /^(elapsed|duration|took|ms)$/;
+    // Bare timing word, optionally followed by a camelCase suffix:
+    // elapsed, ms, elapsedMs, msElapsed, elapsedTime, tookMs, durationMs.
+    const TIMING_PROPS = /^(?:elapsed|duration|took|ms)(?:[A-Z]\w*)?$/;
+    // The specific start/end-of-interval delta pair, in millisecond form:
+    // startMs, endMs. Deliberately NOT a blanket "*Ms" suffix — identifiers
+    // like timeoutMs, cacheTtlMs, staleAfterMs name a configured bound
+    // (deterministic, safe to assert equal), not a measured wall-clock
+    // elapsed value, and must not be caught here.
+    const TIMING_DELTA_SUFFIX = /^(?:start|end)Ms$/;
+
+    function isTimingName(name) {
+      return TIMING_PROPS.test(name) || TIMING_DELTA_SUFFIX.test(name);
+    }
 
     function containsTimingRef(node) {
       if (!node) return false;
 
-      // foo.elapsed, foo.duration, foo.took, foo.ms
+      // foo.elapsed, foo.duration, foo.took, foo.ms, foo.elapsedMs, foo.startMs
       if (
         node.type === 'MemberExpression' &&
         node.property.type === 'Identifier' &&
-        TIMING_PROPS.test(node.property.name)
+        isTimingName(node.property.name)
       ) {
         return true;
       }
 
-      // Identifier directly: elapsed, duration, took, ms
-      if (node.type === 'Identifier' && TIMING_PROPS.test(node.name)) {
+      // Identifier directly: elapsed, duration, took, ms, elapsedMs, startMs
+      if (node.type === 'Identifier' && isTimingName(node.name)) {
         return true;
       }
 

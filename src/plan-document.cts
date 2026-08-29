@@ -2,9 +2,10 @@
  * Plan Document Module — the single parser for a `*-PLAN.md` document BODY.
  *
  * Owns: objective extraction, the task-block grammar (`<task>` elements, with
- * the legacy `## Task N` heading fallback), planned-file extraction, and the
- * frontmatter-derived scheduling metadata (`wave`, `depends_on`, `autonomous`,
- * `agent_hint`, `files_modified`).
+ * the legacy `## Task N` heading fallback — including the optional `tracker-id`
+ * attribute, ADR-3646 Phase 1, read verbatim and never split here), planned-file
+ * extraction, and the frontmatter-derived scheduling metadata (`wave`,
+ * `depends_on`, `autonomous`, `agent_hint`, `files_modified`).
  *
  * WHY THIS IS A LEAF MODULE. This logic was written inline inside
  * `cmdPhasePlanIndex` (`src/phase.cts`). Two commands in two different families
@@ -67,6 +68,14 @@ interface PlanTask {
   acceptanceCriteria: string[];
   /** `<done>` text, or null. */
   done: string | null;
+  /**
+   * Verbatim `tracker-id` attribute value (e.g. `beads:GSD-42`), or null.
+   * Never split or parsed here — that belongs to the resolution seam
+   * (ADR-3646), not this grammar layer. Null for a checkpoint task (never
+   * read), an absent attribute, or an empty-string value (`tracker-id=""`
+   * normalises to null, same as every other optional attribute here).
+   */
+  trackerId: string | null;
 }
 
 interface PlanDocument {
@@ -196,6 +205,7 @@ function parseXmlTasks(content: string): PlanTask[] {
         plannedFiles: [],
         acceptanceCriteria: [],
         done: null,
+        trackerId: null,
       };
     }
 
@@ -207,6 +217,7 @@ function parseXmlTasks(content: string): PlanTask[] {
       plannedFiles: splitFileList(elementBody(block, 'files')),
       acceptanceCriteria: splitCriteria(elementBody(block, 'acceptance_criteria')),
       done: collapseWhitespace(elementBody(block, 'done')),
+      trackerId: tagAttribute(openTag, 'tracker-id'),
     };
   });
 }
@@ -225,6 +236,7 @@ function parseMarkdownTasks(content: string): PlanTask[] {
     plannedFiles: [],
     acceptanceCriteria: [],
     done: null,
+    trackerId: null,
   }));
 }
 

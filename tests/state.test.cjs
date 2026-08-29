@@ -1,4 +1,4 @@
-// docs-guard-exempt: docs/CONFIGURATION.md is cited only in a comment; never read.
+// docs-guard-exempt: docs/CONFIGURATION.md and docs/reference/state-md.md are cited only in comments; never read.
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
@@ -1199,6 +1199,161 @@ describe('stateExtractField and stateReplaceField helpers', () => {
     const content = '# State\n\n**status:** Active\n';
     const result = stateExtractField(content, 'Status');
     assert.strictEqual(result, 'Active', 'should match field name case-insensitively');
+  });
+
+  // (#3812) docs/reference/state-md.md's "### Current Position" section
+  // promises: every field there is single-valued, and duplicates resolve by
+  // FORM first (bold `**F:**` anywhere, then plain `^F:`, then pipe-table),
+  // and only within the winning form does first-occurrence win. #2956 already
+  // fixed the INTER-section case (a duplicate in a different section never
+  // shadows the real one) by scoping to `## Current Position`; these rows
+  // pin the INTRA-section case #2956 never addressed — every fixture here
+  // duplicates the field WITHIN the same `## Current Position` section, so a
+  // reader that merely scopes correctly (and gets first-occurrence right by
+  // accident) cannot pass. Each row is exercised through the real production
+  // chain — `stateCurrentPositionSlice` (the function `state.cts`'s private
+  // `matchCurrentPositionSection` delegates to) feeding `stateExtractField`
+  // — not bare `stateExtractField` over hand-scoped content, so section
+  // scoping is genuinely exercised rather than assumed. See
+  // .gsd/phase/docs-3812-current-position-cardinality/50-test-matrix.md.
+
+  function extractViaProductionChain(body, fieldName) {
+    const scope = stateDocument.stateCurrentPositionSlice(body) ?? body;
+    return stateExtractField(scope, fieldName);
+  }
+
+  test('T1: plain-then-plain intra-section duplicate resolves to the first occurrence (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 5 (First, plain)',
+      'Plan: 1 of 3',
+      'Phase: 9 of 9 (Second, plain)',
+    ].join('\n');
+
+    const result = extractViaProductionChain(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '1 of 5 (First, plain)',
+      'within one form (plain), a duplicated Phase field must resolve to the first occurrence'
+    );
+  });
+
+  test('T2: mixed-form intra-section duplicate — later BOLD line beats an earlier plain line (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 5 (First, plain)',
+      'Plan: 1 of 3',
+      '**Phase:** 9 of 9 (Second, bold)',
+    ].join('\n');
+
+    const result = extractViaProductionChain(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '9 of 9 (Second, bold)',
+      'bold form outranks plain form regardless of document order, per docs/reference/state-md.md'
+    );
+  });
+
+  test('T3: an indented Phase line is invisible to the plain form; the later un-indented line wins (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      '    Phase: 1 of 5 (Indented, ignored)',
+      'Phase: 9 of 9 (Un-indented, matches)',
+      'Plan: 1 of 3',
+    ].join('\n');
+
+    const result = extractViaProductionChain(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '9 of 9 (Un-indented, matches)',
+      'the plain form anchors at true line-start; an indented line never matches it'
+    );
+  });
+
+  test('T4: a sibling field between duplicated Phase lines resolves to its own value (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 5 (First, plain)',
+      'Plan: 2 of 3',
+      'Phase: 9 of 9 (Second, plain)',
+    ].join('\n');
+
+    const phase = extractViaProductionChain(content, 'Phase');
+    const plan = extractViaProductionChain(content, 'Plan');
+    assert.strictEqual(
+      phase,
+      '1 of 5 (First, plain)',
+      'Phase must still resolve to the first occurrence within its form with a sibling field in between'
+    );
+    assert.strictEqual(
+      plan,
+      '2 of 3',
+      'Plan must resolve to its own value, not be affected by the duplicated Phase field'
+    );
+  });
+
+  test('T5: a bold Phase line in a DIFFERENT section never shadows the plain value inside Current Position (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 5 (in section, plain)',
+      'Plan: 1 of 3',
+      '',
+      '## Archive',
+      '',
+      '**Phase:** 88 (bold, other section — must NOT win)',
+    ].join('\n');
+
+    const result = extractViaProductionChain(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '1 of 5 (in section, plain)',
+      'the form ranking applies only within the Current Position section — a bold line elsewhere must not outrank the in-section plain value'
+    );
+
+    // Discrimination: a reader that runs stateExtractField over the WHOLE
+    // document (skipping the #2956 section scope) disagrees with production
+    // here — it lets the out-of-section bold line win.
+    const wholeDocumentResult = stateExtractField(content, 'Phase');
+    assert.strictEqual(
+      wholeDocumentResult,
+      '88 (bold, other section — must NOT win)',
+      'sanity check: an unscoped reader gets this case wrong, which is exactly the bug this row pins'
+    );
+    assert.notStrictEqual(result, wholeDocumentResult, 'the scoped and unscoped readers must disagree on this fixture');
+  });
+
+  test('T6: a bold Phase line with only trailing whitespace resolves to an empty string, not a fallthrough (#3812)', () => {
+    const content = [
+      '# STATE',
+      '',
+      '## Current Position',
+      '',
+      '**Phase:**   ',
+      'Phase: 1 of 5 (plain, must NOT be used)',
+      'Plan: 1 of 3',
+    ].join('\n');
+
+    const result = extractViaProductionChain(content, 'Phase');
+    assert.strictEqual(
+      result,
+      '',
+      'the bold form wins outright even when its captured value is only trailing whitespace; it must not fall through to the plain line below'
+    );
   });
 
   // stateReplaceField tests

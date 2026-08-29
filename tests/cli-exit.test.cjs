@@ -13,6 +13,7 @@ const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
+const { ensureScriptsOut } = require('./helpers/exit-code-artifact-flags.cjs');
 
 // Paths to the compiled product seam (src/cli-exit.cts → gsd-core/bin/lib/cli-exit.cjs)
 // used for json-error mode regression tests which require io.cjs integration.
@@ -1824,58 +1825,99 @@ describe('#3911: hooks/lib/cli-exit.js loads and terminates with no build presen
 // ─── #3911 A3: the --check generator guards can actually fail ──────────────
 //
 // CONTEXT.md's prove-it-can-fail rule: a guard that has never been observed
-// to fail is not a guard. For BOTH new committed artifacts, corrupt the
-// committed file, run the generator's --check, assert it fails and names the
-// file, then restore in a `finally` (so a failing assertion here can never
-// leave a committed artifact corrupted) and re-run --check to confirm the
-// restore actually cleared the guard.
+// to fail is not a guard. For BOTH new committed artifacts, corrupt a
+// DISPOSABLE TMPDIR COPY of the artifact (never the committed file itself —
+// test files in this repo run in parallel, and a sibling test
+// (tests/exit-code-registry.test.cjs) asserts byte-equality on the real
+// hooks/lib/exit-code-registry.js concurrently), run the generator's --check
+// redirected at that tmpdir copy via its output-path override flag(s),
+// assert it fails and names the file, then re-run --check against a
+// freshly-restored tmpdir copy to confirm the guard actually clears. Nothing
+// under hooks/ in the repo is ever written by either test.
 describe('#3911: the --check guards for the new hooks/lib artifacts can actually fail (A3)', () => {
   const REPO_ROOT = path.resolve(__dirname, '..');
   const GEN_HOOKS_CLI_EXIT = path.join(REPO_ROOT, 'scripts', 'gen-hooks-cli-exit.cjs');
   const GEN_EXIT_CODE_REGISTRY = path.join(REPO_ROOT, 'scripts', 'gen-exit-code-registry.cjs');
+  const registryGenerator = require(GEN_EXIT_CODE_REGISTRY);
   // gen-hooks-cli-exit.cjs --check runs a real tsc compile of the whole
   // project to a throwaway outDir (see its own COMPILE_TIMEOUT_MS=60000) —
   // this needs a longer bound than a plain probe.
   const CHECK_TIMEOUT_MS = 90000;
 
-  test('gen-hooks-cli-exit.cjs --check fails on a corrupted hooks/lib/cli-exit.js, names the file, and clears on restore', () => {
+  test('gen-hooks-cli-exit.cjs --check fails on a corrupted TMPDIR copy of hooks/lib/cli-exit.js, names the file, and clears on restore', (t) => {
+    const dir = createTempDir('gsd-3911-hooks-cli-exit-check-');
+    t.after(() => cleanup(dir));
+    const copiedOut = path.join(dir, 'cli-exit.js');
     const original = fs.readFileSync(HOOKS_CLI_EXIT_PATH);
-    let corrupted = false;
-    try {
-      fs.appendFileSync(HOOKS_CLI_EXIT_PATH, '\n// corrupted-by-A3-test\n');
-      corrupted = true;
-      const r = toLegacyResult(runNode([GEN_HOOKS_CLI_EXIT, '--check'], { timeoutMs: CHECK_TIMEOUT_MS }));
-      assert.notEqual(r.status, 0, `--check must fail on a corrupted committed artifact; stderr: ${r.stderr}`);
-      assert.ok(
-        r.stderr.includes('cli-exit.js'),
-        `expected the failure to name the drifted file; got: ${r.stderr.slice(0, 400)}`,
-      );
-    } finally {
-      if (corrupted) fs.writeFileSync(HOOKS_CLI_EXIT_PATH, original);
-    }
+    fs.writeFileSync(copiedOut, original);
 
-    const restored = toLegacyResult(runNode([GEN_HOOKS_CLI_EXIT, '--check'], { timeoutMs: CHECK_TIMEOUT_MS }));
+    fs.appendFileSync(copiedOut, '\n// corrupted-by-A3-test\n');
+    const r = toLegacyResult(runNode(
+      [GEN_HOOKS_CLI_EXIT, '--check', '--out', copiedOut],
+      { timeoutMs: CHECK_TIMEOUT_MS },
+    ));
+    assert.notEqual(r.status, 0, `--check must fail on a corrupted artifact; stderr: ${r.stderr}`);
+    assert.ok(
+      r.stderr.includes('cli-exit.js'),
+      `expected the failure to name the drifted file; got: ${r.stderr.slice(0, 400)}`,
+    );
+
+    fs.writeFileSync(copiedOut, original);
+    const restored = toLegacyResult(runNode(
+      [GEN_HOOKS_CLI_EXIT, '--check', '--out', copiedOut],
+      { timeoutMs: CHECK_TIMEOUT_MS },
+    ));
     assert.equal(restored.status, 0, `--check must pass again once the artifact is restored; stderr: ${restored.stderr}`);
+
+    // The property this whole test exists to prove: the committed file was
+    // never touched, at any point, by any of the above.
+    assert.deepEqual(fs.readFileSync(HOOKS_CLI_EXIT_PATH), original, 'committed hooks/lib/cli-exit.js must be untouched');
   });
 
-  test('gen-exit-code-registry.cjs --check fails on a corrupted hooks/lib/exit-code-registry.js, names the file, and clears on restore', () => {
-    const original = fs.readFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH);
-    let corrupted = false;
-    try {
-      fs.appendFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH, '\n// corrupted-by-A3-test\n');
-      corrupted = true;
-      const r = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check'], { timeoutMs: PROBE_TIMEOUT_MS }));
-      assert.notEqual(r.status, 0, `--check must fail on a corrupted committed artifact; stderr: ${r.stderr}`);
-      assert.ok(
-        r.stderr.includes('exit-code-registry.js'),
-        `expected the failure to name the drifted file; got: ${r.stderr.slice(0, 400)}`,
-      );
-    } finally {
-      if (corrupted) fs.writeFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH, original);
-    }
+  test('gen-exit-code-registry.cjs --check fails on a corrupted TMPDIR copy of hooks/lib/exit-code-registry.js, names the file, and clears on restore', (t) => {
+    const dir = createTempDir('gsd-3911-exit-code-registry-check-');
+    t.after(() => cleanup(dir));
 
-    const restored = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check'], { timeoutMs: PROBE_TIMEOUT_MS }));
+    // Copy all FIVE generated artifacts into the tmpdir so --check compares
+    // entirely against tmpdir copies — no write to any real committed path.
+    // `--declaration` stays pointed at the REAL committed declaration
+    // (read-only; never written) rather than a tmpdir copy: the generator's
+    // banner embeds `path.relative(REPO_ROOT, declarationPath)`
+    // (scripts/gen-exit-code-registry.cjs:324), so a tmpdir declaration path
+    // (outside REPO_ROOT) would itself make freshly-derived content diverge
+    // from the real committed artifacts' banners — a false drift unrelated
+    // to the corruption this test injects. The secondary/hooks/dts/sh paths
+    // are derived by the SAME ensureScriptsOut seam
+    // tests/exit-code-registry.test.cjs uses, not a second hand-rolled copy.
+    const copiedOut = path.join(dir, 'exit-code-registry.cjs');
+    const args = ensureScriptsOut(['--declaration', registryGenerator.DEFAULT_DECLARATION_PATH, '--out', copiedOut]);
+    const copiedScriptsOut = args[args.indexOf('--scripts-out') + 1];
+    const copiedHooksOut = args[args.indexOf('--hooks-out') + 1];
+    const copiedDtsOut = args[args.indexOf('--dts-out') + 1];
+    const copiedShOut = args[args.indexOf('--sh-out') + 1];
+
+    fs.copyFileSync(registryGenerator.DEFAULT_OUTPUT_PATH, copiedOut);
+    fs.copyFileSync(registryGenerator.DEFAULT_SCRIPTS_OUTPUT_PATH, copiedScriptsOut);
+    const original = fs.readFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH);
+    fs.writeFileSync(copiedHooksOut, original);
+    fs.copyFileSync(registryGenerator.DEFAULT_DTS_OUTPUT_PATH, copiedDtsOut);
+    fs.copyFileSync(registryGenerator.DEFAULT_SH_OUTPUT_PATH, copiedShOut);
+
+    fs.appendFileSync(copiedHooksOut, '\n// corrupted-by-A3-test\n');
+    const r = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check', ...args], { timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.notEqual(r.status, 0, `--check must fail on a corrupted artifact; stderr: ${r.stderr}`);
+    assert.ok(
+      r.stderr.includes(copiedHooksOut) && r.stderr.includes('hooks'),
+      `expected the failure to name the drifted hooks artifact (${copiedHooksOut}); got: ${r.stderr.slice(0, 400)}`,
+    );
+
+    fs.writeFileSync(copiedHooksOut, original);
+    const restored = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check', ...args], { timeoutMs: PROBE_TIMEOUT_MS }));
     assert.equal(restored.status, 0, `--check must pass again once the artifact is restored; stderr: ${restored.stderr}`);
+
+    // The property this whole test exists to prove: the committed file was
+    // never touched, at any point, by any of the above.
+    assert.deepEqual(fs.readFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH), original, 'committed hooks/lib/exit-code-registry.js must be untouched');
   });
 });
 

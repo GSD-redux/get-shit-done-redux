@@ -134,6 +134,7 @@ const CONFIG_DEFAULTS = {
   security_block_on: _getNestedConfigDefault('workflow', 'security_block_on'),
   post_planning_gaps: _getNestedConfigDefault('workflow', 'post_planning_gaps'),
   smart_zone_tokens: _getNestedConfigDefault('workflow', 'smart_zone_tokens'),
+  inline_plan_threshold: _getNestedConfigDefault('workflow', 'inline_plan_threshold'), // #3801
   max_prompt_tokens: _getNestedConfigDefault('review', 'max_prompt_tokens'),
 };
 
