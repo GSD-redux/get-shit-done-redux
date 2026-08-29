@@ -2860,6 +2860,22 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
     put('Plan: 12 of 12'); const OUT_LAST     = advanceOut();
     put('Plan: 2 of 8');   const OUT_DIVERGED = advanceOut();
     put('Status: no plan line at all'); const OUT_ERROR = advanceOut();
+
+    // Sixth shape, and it did not exist when this PR opened: #3807/#4028 landed on
+    // next while this branch was in review and gave advancePlanCore a NEW refusal
+    // (`ambiguous_position_phase`, for a Current Position carrying more than one
+    // `Phase:` entry). It is exactly the case the allow-list was chosen for — a
+    // reason the callers were never taught — so pin that it reaches the catch-all
+    // rather than assuming the property still holds.
+    fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), [
+      '# Project State', '', '## Current Position', '',
+      'Phase: 01 (Demo Phase) — EXECUTING',
+      'Phase: 02 (Second Phase) — EXECUTING',
+      'Plan: 3 of 12',
+      'Status: Ready to execute', 'Last Activity: 2026-08-01', '',
+    ].join('\n'));
+    const OUT_AMBIGUOUS = advanceOut();
+
     const OUT_EMPTY = '';
 
     // Sanity: the fixtures really did produce the shapes this test is about. Without
@@ -2869,6 +2885,8 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
     assert.match(OUT_LAST, /"reason":\s*"last_plan"/, 'fixture did not produce last_plan');
     assert.match(OUT_DIVERGED, /"reason":\s*"position_diverged"/, 'fixture did not produce a divergence');
     assert.match(OUT_ERROR, /"error"/, 'fixture did not produce an exit-0 error object');
+    assert.match(OUT_AMBIGUOUS, /"reason":\s*"ambiguous_position_phase"/,
+      'fixture did not produce #4028\'s ambiguous-position refusal');
 
     // Lift the caller's own `case` block and replace each arm BODY with an echo of
     // its index, leaving every PATTERN byte-identical to what ships.
@@ -2890,6 +2908,7 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
       ['the last plan',         OUT_LAST,     0],
       ['a divergence refusal',  OUT_DIVERGED, 1],
       ['an exit-0 error object', OUT_ERROR,   'last'],
+      ['#4028 ambiguous position', OUT_AMBIGUOUS, 'last'],
       ['a non-answer (crash)',  OUT_EMPTY,    'last'],
     ];
 
