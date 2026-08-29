@@ -2,4 +2,4 @@
 type: Fixed
 pr: 0
 ---
-**`n/no-process-exit` no longer double-enforces alongside its replacement.** Epic #3889 registered `local/require-registered-exit` on `gsd-core/bin/**/*.cjs` and `scripts/**/*.cjs` but never retired the predecessor rule on those same globs, so both enforced the same property — and the coarser one would flag `terminateNow`'s own generated copy, the single sanctioned terminator. It is now off on exactly those two globs and deliberately still `error` on the seven that have no successor. (#3914)
+**`local/require-registered-exit` now catches computed and optional-chained `process.exit()` calls.** The rule previously missed `process['exit']()` and `process?.[k]?.()` forms where the property name is a statically resolvable string, letting a raw terminator slip past the ADR-3889 registered-exit contract. It now resolves a computed property to a string literal (directly, or through a single never-reassigned string-literal-initialized binding) and flags those forms too. `n/no-process-exit` remains registered everywhere it already was — the two rules are complementary, not predecessor/successor, so neither is retired. (#3914)

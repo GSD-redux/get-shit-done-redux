@@ -3487,8 +3487,27 @@ describe('require-registered-exit rule', () => {
     }
   });
 
-  // ── #3914 (epic #3889 criterion 5): predecessor guard must not be left
-  // standing where the successor now covers the same surface ──────────────
+  // ── #3914 (epic #3889 criterion 5, CORRECTED): the two rules are
+  // COMPLEMENTARY, not predecessor/successor ──────────────────────────────
+  //
+  // An isolated review, plus live measurement (see the parity matrix below),
+  // proved the original #3914 retirement of n/no-process-exit on
+  // gsd-core/bin/**/*.cjs and scripts/**/*.cjs was WRONG: local/require-
+  // registered-exit is NOT a strict superset there. n/no-process-exit's
+  // esquery selector `[property.name="exit"]` matches ANY MemberExpression
+  // property node whose own AST `.name` reads `exit`, computed or not,
+  // regardless of whether the value is statically resolvable — so it catches
+  // a function parameter, a destructured binding, a for-of loop variable, a
+  // reassign-to-the-same-string, a `var` redeclaration, a catch param, or an
+  // undeclared global, all named `exit`, none of which
+  // local/require-registered-exit's narrower (declaration-must-resolve-to-a-
+  // single-string-literal) analysis reaches. Conversely, the successor
+  // catches a string-literal computed property (`process['exit']()`) and an
+  // optional-chained computed property, neither of which the predecessor's
+  // Identifier-only property match reaches. Both rules therefore remain
+  // 'error' everywhere they were already registered; this section documents
+  // and pins that complementary relationship instead of a supersession that
+  // does not exist.
   //
   // n/no-process-exit resolves to a bare string OR an array whose first
   // element is severity (possibly numeric 0/1/2) depending on how ESLint
@@ -3501,85 +3520,61 @@ describe('require-registered-exit rule', () => {
     return raw;
   }
 
-  test('n/no-process-exit is off (superseded) on the two globs shared with local/require-registered-exit', async () => {
+  // All nine globs that carry n/no-process-exit must be 'error' — none of
+  // them are superseded. gsd-core/bin/**/*.cjs and scripts/**/*.cjs are back
+  // in this list; there is no glob where n/no-process-exit is 'off'.
+  test('n/no-process-exit is error on all nine CommonJS/hook globs (no supersession)', async () => {
     const REPO_ROOT = path.join(__dirname, '..');
     const eslint = new ESLint({ cwd: REPO_ROOT });
-    const sharedPaths = [
+    const allPaths = [
       path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs'),
       path.join(REPO_ROOT, 'scripts', 'affected-tests-lib.cjs'),
-    ];
-    for (const p of sharedPaths) {
-      const config = await eslint.calculateConfigForFile(p);
-      assert.strictEqual(
-        normalizeSeverity(config.rules['local/require-registered-exit']),
-        'error',
-        `expected local/require-registered-exit to be error for ${path.relative(REPO_ROOT, p)}`,
-      );
-      assert.strictEqual(
-        normalizeSeverity(config.rules['n/no-process-exit']),
-        'off',
-        `expected n/no-process-exit to be off (superseded) for ${path.relative(REPO_ROOT, p)}`,
-      );
-    }
-  });
-
-  // Positive control: the predecessor must still be 'error' on every glob
-  // that has NO successor registration, so this fix does not become a
-  // blanket disable of n/no-process-exit. bin/lib/**/*.cjs has no real file
-  // in this checkout (the directory does not exist), so it is intentionally
-  // omitted from this list — see PR notes.
-  test('n/no-process-exit remains error on the successor-less globs (positive control)', async () => {
-    const REPO_ROOT = path.join(__dirname, '..');
-    const eslint = new ESLint({ cwd: REPO_ROOT });
-    const controlPaths = [
       path.join(REPO_ROOT, 'eslint-rules', 'no-source-grep.cjs'),
       path.join(REPO_ROOT, 'pi', 'gsd.cjs'),
       path.join(REPO_ROOT, 'examples', 'dynamic-context-management', 'demo.cjs'),
       path.join(REPO_ROOT, 'vscode', 'extension.js'),
       path.join(REPO_ROOT, '.kilo', 'plugins', 'gsd-core.js'),
       path.join(REPO_ROOT, '.opencode', 'plugins', 'gsd-core.js'),
+      path.join(REPO_ROOT, 'hooks', 'gsd-check-update.js'),
     ];
-    for (const p of controlPaths) {
+    for (const p of allPaths) {
       const config = await eslint.calculateConfigForFile(p);
       assert.strictEqual(
         normalizeSeverity(config.rules['n/no-process-exit']),
         'error',
-        `expected n/no-process-exit to remain error for ${path.relative(REPO_ROOT, p)}`,
+        `expected n/no-process-exit to be error for ${path.relative(REPO_ROOT, p)}`,
       );
     }
   });
 
-  test('local/require-registered-exit remains error on src/**/*.cts and hooks/**/*.js (unchanged by the n/no-process-exit narrowing)', async () => {
+  test('local/require-registered-exit is error on all four of its globs', async () => {
     const REPO_ROOT = path.join(__dirname, '..');
     const eslint = new ESLint({ cwd: REPO_ROOT });
-    const unchangedPaths = [
+    const registeredPaths = [
       path.join(REPO_ROOT, 'src', 'cli-exit.cts'),
+      path.join(REPO_ROOT, 'scripts', 'affected-tests-lib.cjs'),
       path.join(REPO_ROOT, 'hooks', 'gsd-check-update.js'),
+      path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs'),
     ];
-    for (const p of unchangedPaths) {
+    for (const p of registeredPaths) {
       const config = await eslint.calculateConfigForFile(p);
       assert.strictEqual(
         normalizeSeverity(config.rules['local/require-registered-exit']),
         'error',
-        `expected local/require-registered-exit to remain error for ${path.relative(REPO_ROOT, p)}`,
+        `expected local/require-registered-exit to be error for ${path.relative(REPO_ROOT, p)}`,
       );
     }
   });
 
-  // ── #3914 Finding 3: construct-parity matrix ────────────────────────────
+  // ── #3914 (corrected): bidirectional construct-parity matrix ────────────
   //
-  // The severity-registration tests above prove n/no-process-exit is 'off'
-  // where local/require-registered-exit is 'error' — they never prove the
-  // successor's AST REACH actually covers what the predecessor caught. This
-  // is the gap the security review found: n/no-process-exit's esquery
-  // selector `[property.name="exit"]` has no `computed=false` guard, so it
-  // also matches a computed property node whose AST `.name` happens to be
-  // literally `exit` (e.g. `process[exit](1)` where the variable is named
-  // `exit`) — a case the pre-fix local rule's `callee.computed` early return
-  // missed entirely. This matrix lints each shape through BOTH rules
-  // directly (via `Linter`, not the project's flat config — n/no-process-exit
-  // is 'off' there by design) and asserts the superset relationship.
-  describe('construct parity with n/no-process-exit', () => {
+  // The severity-registration tests above prove both rules are 'error' on
+  // the shared globs — they don't prove the two rules' AST reach relative to
+  // each other. This matrix lints each measured shape through BOTH rules
+  // directly (via `Linter`) and asserts the true, bidirectional relationship:
+  // each rule catches constructs the other misses; neither over-fires on a
+  // genuinely dynamic property.
+  describe('construct parity with n/no-process-exit (complementary, not predecessor/successor)', () => {
     const FILES_GLOB = ['**/*.js', '**/*.cjs', '**/*.cts'];
 
     function lintLocal(ruleModule, code, filename) {
@@ -3604,83 +3599,59 @@ describe('require-registered-exit rule', () => {
       return linter.verify(code, config, { filename });
     }
 
-    test('process.exit(1) — both n/no-process-exit and local/require-registered-exit flag', () => {
+    test('process.exit(1) — BOTH rules flag (plain member access)', () => {
       const code = 'process.exit(1);';
       assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 1);
       assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 1);
     });
 
-    test("process['exit'](1) — successor flags; predecessor does not (successor is strictly stronger)", () => {
+    test("process['exit'](1) — successor-ONLY (string-literal computed property; predecessor's Identifier-only property match cannot see it)", () => {
       const code = "process['exit'](1);";
-      assert.strictEqual(
-        lintPredecessor(code, 'x.cjs').length,
-        0,
-        'n/no-process-exit is not expected to catch a computed string-literal property',
-      );
+      assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 0);
       assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 1);
     });
 
-    test("const exit = 'exit'; process[exit](1); — the regression: successor must flag, matching the predecessor", () => {
-      const code = "const exit = 'exit'; process[exit](1);";
-      // Predecessor flags this today — not because it resolves the variable's
-      // value, but because its esquery selector matches on the computed
-      // property node's own AST `.name`, which happens to read `exit` here.
+    test('process?.[k]?.(1) with k statically "exit" — successor-ONLY (optional-chained computed property)', () => {
+      const code = "const k = 'exit'; process?.[k]?.(1);";
+      assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 0);
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 1);
+    });
+
+    test('function f(exit) { process[exit](1); } — predecessor-ONLY (parameter named exit; not a resolvable literal binding)', () => {
+      const code = 'function f(exit) { process[exit](1); }';
       assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 1);
-      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 1);
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 0);
     });
 
-    test('process[someRuntimeValue](1) with a genuinely dynamic value — successor must NOT flag (no over-firing)', () => {
+    test("let exit='exit'; exit='exit'; process[exit]() — predecessor-ONLY (reassigned-to-same-value binding disqualifies the successor's single-write check)", () => {
+      const code = "let exit = 'exit'; exit = 'exit'; process[exit]();";
+      assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 1);
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 0);
+    });
+
+    test('const { exit } = obj; process[exit](1) — predecessor-ONLY (destructured binding; no string-literal initializer to resolve)', () => {
+      const code = "const { exit } = require('x'); process[exit](1);";
+      assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 1);
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 0);
+    });
+
+    test('process[someRuntimeValue](1) with a genuinely dynamic value — NEITHER rule flags (no over-firing)', () => {
       const code =
         'function pick(v) { return v; } '
         + 'const someRuntimeValue = pick("exit"); '
         + 'process[someRuntimeValue](1);';
+      assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 0);
       assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 0);
     });
 
-    test('a sanctioned process.exit() inside terminateNow in cli-exit.cts is still not flagged (allowlist unaffected)', () => {
+    test('a sanctioned process.exit() inside terminateNow in cli-exit.cts is still not flagged by the successor (allowlist unaffected)', () => {
       const code = 'function terminateNow(outcome, payload) {\n  process.exit(2);\n}';
       assert.strictEqual(lintLocal(requireRegisteredExit, code, 'src/cli-exit.cts').length, 0);
     });
 
-    // ── RED (pre-fix) → GREEN (post-fix) evidence ──────────────────────────
-    //
-    // A structural reproduction of the pre-fix CallExpression handler (the
-    // exact defect the security review found: an early `return` on
-    // `callee.computed`, so a computed `process[x](...)` was never even
-    // considered). Inlined here — rather than loading
-    // `eslint-rules/require-registered-exit.cjs` at a historical git ref —
-    // so this regression pin is self-contained and portable (no dependency
-    // on git history or an external scratch file surviving into the sandbox
-    // this test runs in). Verbatim results captured live against BOTH the
-    // real pre-fix file (`git show HEAD:eslint-rules/require-registered-exit.cjs`
-    // before this change) and this inlined reproduction, confirming they
-    // agree:
-    //   process['exit'](1);                      PRE=0  POST=1
-    //   const exit = 'exit'; process[exit](1);   PRE=0  POST=1
-    const preFixRule = {
-      meta: { type: 'problem', schema: [], messages: { rawProcessExit: 'flagged' } },
-      create(context) {
-        return {
-          CallExpression(node) {
-            const callee = node.callee;
-            if (callee.type !== 'MemberExpression' || callee.computed) return;
-            if (callee.object.type !== 'Identifier' || callee.object.name !== 'process') return;
-            if (callee.property.type !== 'Identifier' || callee.property.name !== 'exit') return;
-            context.report({ node, messageId: 'rawProcessExit' });
-          },
-        };
-      },
-    };
-
-    test('pre-fix rule shape reproduces both regressions RED; current module is GREEN', () => {
-      const literalCase = "process['exit'](1);";
-      const identifierCase = "const exit = 'exit'; process[exit](1);";
-
-      assert.strictEqual(lintLocal(preFixRule, literalCase, 'x.cjs').length, 0, "RED: pre-fix rule misses process['exit'](1)");
-      assert.strictEqual(lintLocal(preFixRule, identifierCase, 'x.cjs').length, 0, "RED: pre-fix rule misses the const exit = 'exit' regression");
-
-      assert.strictEqual(lintLocal(requireRegisteredExit, literalCase, 'x.cjs').length, 1, "GREEN: fixed rule catches process['exit'](1)");
-      assert.strictEqual(lintLocal(requireRegisteredExit, identifierCase, 'x.cjs').length, 1, 'GREEN: fixed rule catches the regression');
+    test('a sanctioned process.exit() inside terminateNow is still flagged by the predecessor (why both directives are needed at that call site)', () => {
+      const code = 'function terminateNow(outcome, payload) {\n  process.exit(2);\n}';
+      assert.strictEqual(lintPredecessor(code, 'src/cli-exit.cts').length, 1);
     });
   });
 });

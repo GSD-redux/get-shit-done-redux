@@ -324,9 +324,8 @@ and it is the property ADR-2980's declined Option 3 lacked.
 >    and `gen-hooks-cli-exit` from P7), which is what turns +1 into the real +3.
 >
 > Recorded rather than quietly rewritten, because the failure this epic exists to close is a written
-> claim nobody checked against the thing it describes — and this ledger was that failure three times:
-> the original "Net −2", the "Net −1" that replaced it, and #3914's own table, which states −1 above
-> terms summing to 0.
+> claim nobody checked against the thing it describes — and this ledger was that failure twice:
+> the original "Net −2", and the "Net −1" that replaced it above a term list summing to +1.
 >
 > The −4 first written here counted the five pruned `smell-baseline.json` entries in the same units
 > as oracles and lint rules. They are not guards — they are *acknowledgements* that a guard fired.
@@ -346,6 +345,21 @@ and it is the property ADR-2980's declined Option 3 lacked.
 >   `KIND.PROSE` count reached 0 because the sole prose-producing step was changed to
 >   `smart-entry --json`. The promotion is real and the guard now fails a build — but what it
 >   currently guards is that no *new* prose-only step appears, not that an existing one is caught.
+>
+> **The epic's criterion 5 ("retire the predecessor guard the new rule supersedes") does not apply
+> to `n/no-process-exit` and `local/require-registered-exit`.** #3914 originally turned
+> `n/no-process-exit` off on `gsd-core/bin/**/*.cjs` and `scripts/**/*.cjs`, on the premise that
+> `local/require-registered-exit` was a strict superset there. It is not: the two rules are
+> **complementary**, each catching constructs the other misses. Measured directly (successor vs.
+> predecessor flag counts): `process['exit'](1)` and `process?.[k]?.(1)` are successor-only (a
+> string-literal or optional-chained computed property the predecessor's Identifier-only property
+> match never reaches); a function parameter, a destructured binding, a reassign-to-the-same-value
+> binding, a `for`-of loop variable, a `var` redeclaration, a catch param, and an undeclared global
+> — all literally named `exit` — are predecessor-only (the predecessor's esquery selector matches on
+> the AST node's own `.name`, not a resolved value, while the successor only resolves a computed
+> property through a single never-reassigned string-literal initializer). Retiring either rule on
+> that shared surface loses real coverage. Criterion 5 assumed a replacement relationship that does
+> not exist for this pair; both rules remain registered everywhere they were before.
 
 ## Revisit if
 
