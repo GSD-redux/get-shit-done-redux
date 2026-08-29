@@ -2527,6 +2527,36 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     }
   });
 
+  // #3862 RV6.5 review. The disk bound alone was not enough, and this is the case it
+  // missed: 12 plan files of which 8 are live, prose `Plan: 10 of 8`. The total (8)
+  // matches planCount, the position (10) sits UNDER planCountAll (12), so both disk
+  // tests passed — and the verb then satisfied `currentPlan >= totalPlans`, returned
+  // `{reason: "last_plan", status: "ready_for_verification"}` and WROTE the phase to
+  // complete from a position past its own declared total. Driven at HEAD before the fix.
+  test('a current_plan past its OWN declared total is a divergence, even when disk agrees', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= 12; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`),
+        `---\nstatus: ${i <= 8 ? 'complete' : 'superseded'}\n---\n# Plan\n`);
+    }
+    writeState('Plan: 10 of 8');
+    const before = stateText();
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `the refusal must still exit 0: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.advanced, false);
+    assert.strictEqual(output.reason, 'position_diverged',
+      'a position past its own total is incoherent whatever disk says');
+    assert.strictEqual(output.status, undefined,
+      'it must NOT be allowed to claim ready_for_verification');
+    assert.strictEqual(stateText(), before,
+      'and it must not write — this case previously mutated STATE.md');
+  });
+
   test('the range check does not fire on an all-superseded phase positioned past the LIVE count', () => {
     // The bound is planCountAll, not planCount, and this is the negative control
     // for that choice: eight plan FILES of which none is live, prose positioned at

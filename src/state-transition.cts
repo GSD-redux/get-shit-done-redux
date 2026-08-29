@@ -1896,7 +1896,19 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     // every one of them superseded is legitimately positioned past the LIVE count,
     // and bounding on that would manufacture a divergence out of ordinary
     // supersession — the same reason the total test accepts either count.
-    const rangeDiverged = currentPlan < 1 || currentPlan > planSet.planCountAll;
+    // Two bounds, and they answer different questions — #3862 RV6.5 review caught the
+    // second missing. `planCountAll` bounds the position against DISK. `totalPlans`
+    // bounds it against the prose's OWN declared total, which disk agreement does not
+    // imply: with 12 plan files of which 8 are live, `Plan: 10 of 8` matches planCount
+    // on the total, sits under planCountAll on the position, and was therefore accepted
+    // — then satisfied `currentPlan >= totalPlans` below and returned
+    // `{reason: "last_plan", status: "ready_for_verification"}` while WRITING the phase
+    // to complete. A position past its own total is incoherent whatever disk says.
+    // Neither bound subsumes the other: planCountAll catches `20 of 12` (total agrees
+    // with disk, position does not), totalPlans catches `10 of 8` (position agrees with
+    // disk, total does not). The all-superseded `5 of 8` case passes both, as it must.
+    const rangeDiverged =
+      currentPlan < 1 || currentPlan > planSet.planCountAll || currentPlan > totalPlans;
 
     if (totalDiverged || rangeDiverged) {
       return {
