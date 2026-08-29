@@ -505,6 +505,17 @@ function cmdRecordResult(
   if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) error(`UAT file not found: ${options.file}`);
 
   const original = fs.readFileSync(resolvedPath, 'utf-8');
+  const frontmatter = extractFrontmatter(original, resolvedPath);
+  const phase = typeof frontmatter.phase === 'string' ? frontmatter.phase.trim() : '';
+  if (!/^[A-Za-z0-9._-]+$/.test(phase)) error('UAT frontmatter phase must be a simple identifier');
+  const gapPrefix = `gap_id: G-${phase}-`;
+  let nextGap = 1;
+  for (const line of original.split(/\r?\n/)) {
+    const value = line.trim();
+    if (!value.startsWith(gapPrefix)) continue;
+    const number = Number(value.slice(gapPrefix.length));
+    if (Number.isInteger(number) && number >= nextGap) nextGap = number + 1;
+  }
   const current = parseCurrentTest(original);
   if (current.complete || current.number !== testNumber) error(`UAT test ${testNumber} is not the current pending test`);
   const records = parseUatTestRecords(original);
@@ -548,6 +559,7 @@ function cmdRecordResult(
   if (options.result === 'issue') {
     const gap = [
       `- truth: ${quoteUatValue(pendingTarget.expected)}`,
+      `  gap_id: G-${phase}-${nextGap}`,
       '  status: failed',
       `  reason: ${quoteUatValue(`User reported: ${note}`)}`,
       `  severity: ${severity}`,
@@ -567,10 +579,11 @@ function cmdRecordResult(
   output({
     recorded: true,
     file_path: toPosixPath(path.relative(cwd, resolvedPath)),
-    test: testNumber,
+    test_number: testNumber,
     result: options.result,
     severity: options.result === 'issue' ? severity : undefined,
-    complete: !next,
+    status: next ? 'partial' : 'complete',
+    next_test: next?.number ?? null,
   }, raw, undefined);
 }
 

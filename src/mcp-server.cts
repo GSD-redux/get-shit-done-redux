@@ -171,12 +171,12 @@ const TOOLS = [
       type: 'object',
       properties: {
         project_path: { type: 'string', description: 'Absolute project directory.' },
-        file: { type: 'string', description: 'UAT file path under the project .planning directory.' },
-        test: { type: 'integer', minimum: 1, description: 'Pending UAT test number.' },
+        file_path: { type: 'string', description: 'UAT file path under the project .planning directory.' },
+        test_number: { type: 'integer', minimum: 1, description: 'Pending UAT test number.' },
         result: { type: 'string', enum: ['pass', 'issue'] },
         note: { type: 'string' },
       },
-      required: ['project_path', 'file', 'test', 'result'],
+      required: ['project_path', 'file_path', 'test_number', 'result'],
     },
   },
 ];
@@ -259,18 +259,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function nextPendingTest(workbench: Record<string, unknown>, filePath: string, cliFilePath: unknown): unknown {
-  const results = Array.isArray(workbench.results) ? workbench.results as unknown[] : [];
-  for (const entry of results) {
-    const row = asRecord(entry);
-    if (!row || (row.file_path !== filePath && row.file_path !== cliFilePath) || !Array.isArray(row.items)) continue;
-    for (const item of row.items as unknown[]) {
-      if (asRecord(item)?.category === 'pending') return item;
-    }
-  }
-  return null;
-}
-
 function callTool(name: string, args: unknown, ctx: McpContext): { content: Array<{ type: string; text: string }>; isError?: boolean; structuredContent?: unknown } {
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
   const cwd = asString(ctx.cwd) || process.cwd();
@@ -313,16 +301,19 @@ function callTool(name: string, args: unknown, ctx: McpContext): { content: Arra
       const mutationData = asRecord(mutation.value);
       const workbenchData = asRecord(workbench.value);
       if (workbench.error || !mutationData || !workbenchData) return toolError(workbench.error || 'GSD command returned invalid JSON.');
-      // Echo the caller's project-relative selection: CLI realpath resolution
-      // may cross macOS's /var -> /private/var alias and produce an unusable path.
-      const mutationFile = file;
-      const next = nextPendingTest(workbenchData, mutationFile, mutationData.file_path);
+      const mutationStatus = mutationData.status;
+      const nextTest = mutationData.next_test;
+      if ((mutationStatus !== 'partial' && mutationStatus !== 'complete') || !(nextTest === null || Number.isInteger(nextTest))) {
+        return toolError('uat record-result returned invalid JSON.');
+      }
       return structured({
-        file_path: mutationFile,
-        test_number: test,
-        result,
-        status: mutationData.complete === true ? 'complete' : 'testing',
-        next_test: next,
+        mutation: {
+          file_path: file,
+          test_number: test,
+          result,
+          status: mutationStatus,
+          next_test: nextTest,
+        },
         workbench: { project_path: project, ...workbenchData },
       });
     }

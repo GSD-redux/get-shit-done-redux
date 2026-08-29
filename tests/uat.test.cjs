@@ -1544,9 +1544,10 @@ blocked: 0
     assert.deepEqual(JSON.parse(result.output), {
       recorded: true,
       file_path: '.planning/phases/01-test-phase/01-UAT.md',
-      test: 1,
+      test_number: 1,
       result: 'pass',
-      complete: false,
+      status: 'partial',
+      next_test: 2,
     });
     const content = fs.readFileSync(uatPath, 'utf8');
     assert.match(content, /### 1\. Sign in\n{1,}expected: Sign in succeeds\.\nresult: pass/);
@@ -1569,10 +1570,19 @@ blocked: 0
     ], tmpDir);
 
     assert.equal(result.success, true, `record-result failed: ${result.error}`);
+    assert.deepEqual(JSON.parse(result.output), {
+      recorded: true,
+      file_path: '.planning/phases/01-test-phase/01-UAT.md',
+      test_number: 2,
+      result: 'issue',
+      severity: 'major',
+      status: 'complete',
+      next_test: null,
+    });
     const content = fs.readFileSync(uatPath, 'utf8');
     assert.match(content, /### 2\. Profile\n{1,}expected: Profile loads\.\nresult: issue\nreported: "Profile is missing its avatar\."\nseverity: major/);
     assert.equal((content.match(/^- truth:/gm) || []).length, 1, 'one issue adds exactly one gap');
-    assert.match(content, /- truth: "Profile loads\."\n {2}status: failed\n {2}reason: "User reported: Profile is missing its avatar\."\n {2}severity: major\n {2}test: 2/);
+    assert.match(content, /- truth: "Profile loads\."\n {2}gap_id: G-01-test-phase-1\n {2}status: failed\n {2}reason: "User reported: Profile is missing its avatar\."\n {2}severity: major\n {2}test: 2/);
     assert.match(content, /total: 2\npassed: 1\nissues: 1\npending: 0\nskipped: 0\nblocked: 0/);
     assert.match(content, /## Current Test\n\n\[testing complete\]/);
     assert.match(content, /^status: complete$/m);
