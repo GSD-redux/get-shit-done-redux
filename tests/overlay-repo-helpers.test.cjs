@@ -692,3 +692,61 @@ describe('placeVanishableLeaf: property coverage', () => {
     );
   });
 });
+
+// ─── #3900: non-regular working-tree files are not repository content ────────
+
+describe('buildOverlayRepo: non-regular files are skipped (#3900)', () => {
+  // A unix socket under the repo root (an MCP server, a language-server
+  // daemon, a watcher) made every suite built on the overlay fail in its
+  // before() hook: the walker classified anything not-a-directory as a file,
+  // and copyFileSync on a socket throws ENXIO (a FIFO would block). The
+  // reporter measured 32 failures across 6 files — none about the code under
+  // test. Unix-domain sockets bind only on POSIX; the Windows lane keeps the
+  // equivalence via a FIFO-shaped skip is impractical, so it verifies only
+  // the regular-file path.
+  const isPosix = process.platform !== 'win32';
+
+  test('a unix socket anywhere under the repo root does not break the overlay', { skip: !isPosix }, async () => {
+    const net = require('node:net');
+    const probeDir = path.join(__dirname, '..', '.gsd-3900-probe');
+    fs.mkdirSync(probeDir, { recursive: true });
+    const sockPath = path.join(probeDir, 'daemon.sock');
+    const server = net.createServer();
+    await new Promise((resolve) => server.listen(sockPath, resolve));
+    try {
+      let overlay;
+      try {
+        overlay = buildOverlayRepo({});
+        // The socket must not be mirrored into the overlay.
+        assert.equal(
+          fs.existsSync(path.join(overlay, '.gsd-3900-probe', 'daemon.sock')),
+          false,
+          'the socket is not repository content — it must not be copied',
+        );
+        // And the repository's own files still are.
+        assert.equal(fs.existsSync(path.join(overlay, 'package.json')), true);
+      } finally {
+        if (overlay) cleanup(overlay);
+      }
+    } finally {
+      server.close();
+      fs.rmSync(probeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('regular files under the probe directory still copy (control)', () => {
+    const probeDir = path.join(__dirname, '..', '.gsd-3900-probe-ctrl');
+    fs.mkdirSync(probeDir, { recursive: true });
+    fs.writeFileSync(path.join(probeDir, 'note.txt'), 'x');
+    try {
+      const overlay = buildOverlayRepo({});
+      try {
+        assert.equal(fs.existsSync(path.join(overlay, '.gsd-3900-probe-ctrl', 'note.txt')), true);
+      } finally {
+        cleanup(overlay);
+      }
+    } finally {
+      fs.rmSync(probeDir, { recursive: true, force: true });
+    }
+  });
+});
