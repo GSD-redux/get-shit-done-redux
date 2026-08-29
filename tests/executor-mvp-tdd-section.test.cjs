@@ -1614,22 +1614,28 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       return runGit(['rev-parse', 'HEAD'], { cwd }).stdout.trim();
     };
 
-    // ── S1, compliant RED-only (CR-03) ───────────────────────────────────
-    // The normal state of EVERY plan between RED and GREEN.
+    // ── S1, compliant COMPLETED plan (CR-03) ─────────────────────────────
+    // A completed `type: tdd` plan carries both gates. This block runs at
+    // completion and nowhere else — `gsd-core/references/tdd.md:453` scopes it
+    // that way and `agents/gsd-executor.md:416` is its one consumer, invoking
+    // it "after completing the plan" — so RED alone is not the compliant
+    // state, it is the mid-cycle state that no shipped consumer gates.
     const s1 = newRepo();
     commit(s1, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', evidence('S1'));
+    commit(s1, 'src/pricing.py', 'feat(08-02): implement discount');
     const r1 = runGate(s1);
     assert.strictEqual(r1.exitCode, 0,
-      'CR-03: the shipped gate must exit 0 on a compliant RED-only plan. It exits 1 today, and ' +
-      'that is the normal state of every plan between RED and GREEN, so an agent keying off ' +
-      'the exit status reads a gate failure where none exists. See #3770.');
+      'CR-03: the shipped gate must exit 0 on a compliant completed plan. Both required gates ' +
+      'are present and the optional REFACTOR one is not, which is not a violation. See #3770.');
     assert.ok(r1.stdout.includes('# S1'),
       'the gate must emit the RED commit\'s trailer value');
     assert.ok(!r1.stdout.includes('add failing test for discount'),
       'the gate must emit the TRAILER, never a commit subject');
-    assert.match(r1.stdout, /feat\(08-02\)|GREEN/,
-      'an absent GREEN commit must still be REPORTED — the report survives while the gate ' +
-      'stays open, because this block also runs mid-cycle');
+    assert.ok(!r1.stdout.includes('no feat(08-02)'),
+      'GREEN is GATED, not reported: with a feat(08-02) commit present there is nothing to ' +
+      'report about it. `### Gate Definitions:442` marks GREEN `Required | Yes`, and this ' +
+      'scenario is the non-vacuity control on S6 — deleting the feat(08-02) commit above must ' +
+      'turn S1 red. See #3770 (F-3).');
 
     // ── S2, the five-condition repository (CR-04, plus M1 and M4) ────────
     const s2 = newRepo();
@@ -1702,6 +1708,25 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'this case fall through to an exit-0 tail. See #3770.');
     assert.ok(r5.stdout.includes('missing_red_commit'),
       'the snippet must echo `missing_red_commit` verbatim when no subject matches');
+
+    // ── S6, completed plan with no GREEN commit (F-3) ────────────────────
+    // A fully compliant RED — evidence-bearing, plan-scoped, touching a test
+    // file — and no `feat(08-02)` commit at all.
+    const s6 = newRepo();
+    commit(s6, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', evidence('S6'));
+    const r6 = runGate(s6);
+    assert.notStrictEqual(r6.exitCode, 0,
+      'F-3: `### Gate Definitions:442` marks GREEN `Required | Yes`, and this block runs only ' +
+      'after a `type: tdd` plan COMPLETES — tdd.md:453 says so, and agents/gsd-executor.md:416, ' +
+      'its one consumer, invokes it there. A completed plan with no GREEN commit is therefore a ' +
+      'gate violation, and the shipped snippet exits 0 on it — contradicting its own table on ' +
+      'the strength of a mid-cycle run that no shipped consumer performs. See #3770 (F-3).');
+    assert.match(r6.stdout, /feat\(08-02\)/,
+      'the failure must NAME the missing GREEN commit by the subject pattern the executor has ' +
+      'to produce, not merely return a non-zero status. See #3770 (F-3).');
+    assert.ok(r6.stdout.includes('# S6'),
+      'the RED half of the gate must still pass and still emit its trailer: S6 must fail on ' +
+      'GREEN alone, so a regression in RED selection cannot hide behind this scenario');
   });
 
   test('every surface that instructs on the unexpected pass defers to the RED Contract', () => {
