@@ -1337,9 +1337,17 @@ function auditOpenArtifacts(cwd: string): AuditResult {
     try { return scanDeferredItems(planDir, cwd); } catch { return { items: [{ scan_error: true, phase: '', file: '', text: '' }], acknowledged: 0 }; }
   })();
 
-  // Count real items (not scan_error sentinels)
+  // Count real items (not scan_error sentinels). #3817: a `_remainder_count`
+  // marker is not a phantom — it RECORDS real items the detail list truncated
+  // away for display, so its value counts toward the total. Truncation limits
+  // display, never counting; only scan_error (a read failure, not an item)
+  // contributes zero.
   const countReal = (arr: Array<{ scan_error?: boolean; _remainder_count?: number }>) =>
-    arr.filter(i => !i.scan_error && !i._remainder_count).length;
+    arr.reduce((sum, i) => {
+      if (i.scan_error) return sum;
+      if (typeof i._remainder_count === 'number') return sum + i._remainder_count;
+      return sum + 1;
+    }, 0);
 
   const counts: AuditCounts = {
     debug_sessions: countReal(debugSessions.items),

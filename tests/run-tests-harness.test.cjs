@@ -16,7 +16,7 @@
 
 'use strict';
 
-const { describe, test, beforeEach, afterEach } = require('node:test');
+const { describe, test, before, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +24,7 @@ const path = require('path');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup, CONFIG_LOCATION_ENV_KEYS } = require('./helpers.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const HARNESS = path.join(__dirname, '..', 'scripts', 'run-tests.cjs');
 
@@ -811,6 +812,274 @@ test('noop', () => {});
         r.status,
         0,
         `expected zero exit with force-exit enabled; got status=${r.status} signal=${r.signal}\nSTDERR:\n${r.stderr}`,
+      );
+    });
+  });
+
+  describe('chunk-timeout instrumentation (#3889)', () => {
+    // Consolidation (CI cost, #4015): this describe block used to spawn the
+    // harness once PER assertion group (3 success-path runs + 2 timeout-path
+    // runs = 5 subprocess boots). Each boot is expensive — run-tests.cjs
+    // starts, globs the suite, then spawns `node --test` children — so on a
+    // CI shard already within ~39s of its 15-minute cap, paying for 5 boots
+    // to check facts that all hold against the SAME run is wasted spend.
+    // Below, exactly ONE successful run and ONE timed-out run are captured
+    // once (via `before`) and every assertion group below reads from those
+    // captured results instead of spawning its own. This is the whole
+    // savings — no assertion is weakened or removed.
+    const HANGS_FOREVER_BODY = `'use strict';
+const { test } = require('node:test');
+test('hangs forever', () => new Promise(() => {}));
+`;
+
+    let successDir;
+    let successRun;
+    let eventsDirBefore;
+    let eventsDirAfter;
+    let timeoutDir;
+    let timeoutRun;
+
+    before(() => {
+      // Single SUCCESS-path run, reused by T2/T3/T5 below.
+      successDir = createTempDir('gsd-3889-success-');
+      seed(successDir, ['a.test.cjs']);
+      eventsDirBefore = fs.readdirSync(require('os').tmpdir())
+        .filter((n) => n.startsWith('gsd-run-tests-events-'));
+      successRun = runHarness(successDir, []);
+      eventsDirAfter = fs.readdirSync(require('os').tmpdir())
+        .filter((n) => n.startsWith('gsd-run-tests-events-'));
+
+      // Single TIMEOUT-path run, reused by T1/T4 below. 2000ms is kept —
+      // it is already the smallest value this suite used anywhere for the
+      // per-chunk timeout, and going lower risks flaking on a loaded CI
+      // box that has to boot node --test, register the hang, and observe
+      // the kill inside the window.
+      timeoutDir = createTempDir('gsd-3889-timeout-');
+      fs.writeFileSync(path.join(timeoutDir, 'hangs.test.cjs'), HANGS_FOREVER_BODY, 'utf8');
+      timeoutRun = runHarness(timeoutDir, [], {
+        RUN_TESTS_NO_FORCE_EXIT: '1',
+        RUN_TESTS_CHUNK_TIMEOUT_MS: '2000',
+      });
+    });
+
+    after(() => {
+      cleanup(successDir);
+      cleanup(timeoutDir);
+    });
+
+    // T2: per-chunk elapsed timing appears on the normal SUCCESS path, not
+    // only when something goes wrong — this is what makes "which chunk is
+    // drifting toward the cap" readable across ordinary green runs.
+    test('a successful chunk prints its elapsed time', () => {
+      assert.strictEqual(successRun.status, 0, `expected a clean pass; STDERR:\n${successRun.stderr}`);
+      assert.match(
+        successRun.stderr,
+        /run-tests: chunk 1\/1 completed in \d+ms/,
+        `expected a per-chunk completion timing line; STDERR:\n${successRun.stderr}`,
+      );
+    });
+
+    // T3: the ndjson companion reporter's destination file is a temp
+    // artifact of the instrumentation, not a product output — it must not
+    // survive a successful run. Assert against the OS temp root's own
+    // "gsd-run-tests-events-*" prefix (scripts/run-tests.cjs's mkdtemp
+    // prefix) rather than any run-tests-owned directory, since that IS the
+    // leak surface being guarded.
+    test('the ndjson reporter temp dir is cleaned up after a successful run', () => {
+      assert.strictEqual(successRun.status, 0, `expected a clean pass; STDERR:\n${successRun.stderr}`);
+      assert.deepStrictEqual(
+        eventsDirAfter,
+        eventsDirBefore,
+        `expected no leaked gsd-run-tests-events-* temp dir after a successful run; ` +
+          `before=${JSON.stringify(eventsDirBefore)} after=${JSON.stringify(eventsDirAfter)}`,
+      );
+    });
+
+    // T5 (regression): the human reporter's --test-reporter-destination
+    // pairing must be a regular file, not os.devNull. devNull is a character
+    // device; Node opens the reporter destination as an fs.WriteStream and
+    // fsyncs it on close, and fsync on a character device fails with EINVAL
+    // — surfaced as "Emitted 'error' event on WriteStream instance" /
+    // "EINVAL: invalid argument, fsync", which crashed EVERY chunk on the
+    // real remote run this regresses (43/43 failures), not only the timeout
+    // path. The argv construction lives entirely inside main() with no
+    // exported seam to unit-test directly (see NOTES), so this asserts the
+    // closest real, externally-observable consequence: a normal successful
+    // run must not surface that error text, and must still complete and
+    // exit 0 — both of which a reintroduced devNull destination would break
+    // on any platform where fsync(devNull) actually returns EINVAL (this
+    // suite's own bench platform, historically).
+    test('a successful run never surfaces the devNull fsync/EINVAL reporter crash', () => {
+      assert.strictEqual(successRun.status, 0, `expected a clean pass; STDERR:\n${successRun.stderr}`);
+      assert.doesNotMatch(
+        successRun.stderr,
+        /EINVAL|invalid argument, fsync|WriteStream instance/i,
+        `expected no reporter-destination fsync crash; STDERR:\n${successRun.stderr}`,
+      );
+    });
+
+    // T1: on a chunk timeout, the diagnostic must NAME the file that was
+    // still executing — not merely list every file the chunk contained (the
+    // pre-instrumentation behavior). A test that hangs INSIDE its own body
+    // (never resolving) keeps its test:start event unmatched by any
+    // test:pass/test:fail in the ndjson companion reporter's output, which
+    // is exactly the signal the diagnostic reads back on timeout.
+    test('a chunk timeout names the file that was in flight when killed', () => {
+      assert.notStrictEqual(
+        timeoutRun.status,
+        0,
+        `expected non-zero exit from a timed-out chunk; got status=${timeoutRun.status}\nSTDERR:\n${timeoutRun.stderr}`,
+      );
+      assert.match(
+        timeoutRun.stderr,
+        /In flight when killed.*hangs\.test\.cjs/s,
+        `expected the diagnostic to NAME the in-flight file, not just list the chunk; STDERR:\n${timeoutRun.stderr}`,
+      );
+    });
+
+    // Regression (#3889 recurrence): the reporter module itself, called
+    // directly with no subprocess, must return nully — this is the exact
+    // contract violation (`return []`) that crashed every chunk on the real
+    // remote run this file regresses ("Expected nully to be returned from
+    // the 'body' function but got an instance of Array", thrown by
+    // node:stream's `compose` when its async-function body returns an
+    // iterable instead of undefined/null). Also pins the NDJSON side effect:
+    // only the two handled event types are appended, verbatim, one per line.
+    test('the reporter returns nully and appends only the handled event types as NDJSON', async () => {
+      const reporter = require('../scripts/lib/ndjson-reporter.cjs');
+      const eventsFile = path.join(tmpDir, 'ndjson-reporter-events.ndjson');
+      const savedEventsFile = process.env.GSD_RUN_TESTS_EVENTS_FILE;
+      process.env.GSD_RUN_TESTS_EVENTS_FILE = eventsFile;
+      try {
+        async function* fakeEvents() {
+          yield { type: 'test:start', data: { file: 'a.test.cjs', name: 't', nesting: 0, testNumber: 1 } };
+          yield { type: 'test:diagnostic', data: { message: 'ignored' } };
+          yield { type: 'test:pass', data: { file: 'a.test.cjs', name: 't', nesting: 0, testNumber: 1 } };
+        }
+        const result = await reporter(fakeEvents());
+        assert.strictEqual(
+          result ?? null,
+          null,
+          `expected the reporter to return nully (undefined/null) per stream.compose's ` +
+            `async-function body contract; got ${JSON.stringify(result)}`,
+        );
+        const rawContent = fs.readFileSync(eventsFile, 'utf8');
+        const lines = splitLines(rawContent.trim()).filter((l) => l.length > 0);
+        assert.strictEqual(lines.length, 3, `expected exactly 3 NDJSON lines (init marker + 2 handled events); got:\n${lines.join('\n')}`);
+        const [init, start, pass] = lines.map((l) => JSON.parse(l));
+        assert.strictEqual(init.type, 'reporter:init');
+        assert.strictEqual(start.type, 'test:start');
+        assert.strictEqual(start.file, 'a.test.cjs');
+        assert.strictEqual(pass.type, 'test:pass');
+        assert.strictEqual(pass.file, 'a.test.cjs');
+      } finally {
+        if (savedEventsFile === undefined) {
+          delete process.env.GSD_RUN_TESTS_EVENTS_FILE;
+        } else {
+          process.env.GSD_RUN_TESTS_EVENTS_FILE = savedEventsFile;
+        }
+        cleanup(eventsFile);
+      }
+    });
+
+    // Regression (#3889 root cause): a hang inside a test body NEVER produces
+    // a `test:start`/`test:pass`/`test:fail` for that subtest (node:test only
+    // surfaces those to the parent once the child reports completion), so
+    // those three event types alone can never see a hang. `test:enqueue` and
+    // `test:dequeue` are emitted by the RUNNER as it queues/begins a file,
+    // independent of completion — this pins that the reporter now records
+    // both, verbatim, for exactly the "enqueue then dequeue, then nothing"
+    // shape a real hang produces.
+    test('the reporter records test:enqueue and test:dequeue for the hang shape (enqueue, dequeue, nothing else)', async () => {
+      const reporter = require('../scripts/lib/ndjson-reporter.cjs');
+      const eventsFile = path.join(tmpDir, 'ndjson-reporter-hang-shape.ndjson');
+      const savedEventsFile = process.env.GSD_RUN_TESTS_EVENTS_FILE;
+      process.env.GSD_RUN_TESTS_EVENTS_FILE = eventsFile;
+      try {
+        async function* hangShapeEvents() {
+          yield { type: 'test:enqueue', data: { file: 'hangs.test.cjs', name: 'hangs.test.cjs', nesting: 0 } };
+          yield { type: 'test:dequeue', data: { file: 'hangs.test.cjs', name: 'hangs.test.cjs', nesting: 0 } };
+          // Never yields test:start/test:pass/test:fail — this IS the hang.
+        }
+        const result = await reporter(hangShapeEvents());
+        assert.strictEqual(result ?? null, null);
+        const rawContent = fs.readFileSync(eventsFile, 'utf8');
+        const lines = splitLines(rawContent.trim()).filter((l) => l.length > 0);
+        assert.strictEqual(
+          lines.length,
+          3,
+          `expected exactly 3 NDJSON lines (init marker + enqueue + dequeue); got:\n${lines.join('\n')}`,
+        );
+        const [init, enqueue, dequeue] = lines.map((l) => JSON.parse(l));
+        assert.strictEqual(init.type, 'reporter:init');
+        assert.strictEqual(enqueue.type, 'test:enqueue');
+        assert.strictEqual(enqueue.file, 'hangs.test.cjs');
+        assert.strictEqual(dequeue.type, 'test:dequeue');
+        assert.strictEqual(dequeue.file, 'hangs.test.cjs');
+      } finally {
+        if (savedEventsFile === undefined) {
+          delete process.env.GSD_RUN_TESTS_EVENTS_FILE;
+        } else {
+          process.env.GSD_RUN_TESTS_EVENTS_FILE = savedEventsFile;
+        }
+        cleanup(eventsFile);
+      }
+    });
+
+    // #3889: the init marker is the reporter's FIRST action, written before
+    // the `for await` loop even begins — so it must land even when the
+    // source event stream yields ZERO events (e.g. the child is killed
+    // before node:test emits anything). This pins the marker's whole
+    // purpose: its presence alone proves the reporter module loaded and was
+    // invoked, independent of whether any test ever started.
+    test('the reporter writes only the init marker when the source yields zero events', async () => {
+      const reporter = require('../scripts/lib/ndjson-reporter.cjs');
+      const eventsFile = path.join(tmpDir, 'ndjson-reporter-init-only.ndjson');
+      const savedEventsFile = process.env.GSD_RUN_TESTS_EVENTS_FILE;
+      process.env.GSD_RUN_TESTS_EVENTS_FILE = eventsFile;
+      try {
+        async function* emptyEvents() {}
+        const result = await reporter(emptyEvents());
+        assert.strictEqual(
+          result ?? null,
+          null,
+          `expected the reporter to return nully even with zero source events; got ${JSON.stringify(result)}`,
+        );
+        const rawContent = fs.readFileSync(eventsFile, 'utf8');
+        const lines = splitLines(rawContent.trim()).filter((l) => l.length > 0);
+        assert.strictEqual(
+          lines.length,
+          1,
+          `expected exactly 1 NDJSON line (the init marker only); got:\n${lines.join('\n')}`,
+        );
+        const [init] = lines.map((l) => JSON.parse(l));
+        assert.strictEqual(init.type, 'reporter:init');
+        assert.strictEqual(typeof init.ts, 'number');
+      } finally {
+        if (savedEventsFile === undefined) {
+          delete process.env.GSD_RUN_TESTS_EVENTS_FILE;
+        } else {
+          process.env.GSD_RUN_TESTS_EVENTS_FILE = savedEventsFile;
+        }
+        cleanup(eventsFile);
+      }
+    });
+
+    // T4: the pre-existing timeout / abort / force-exit behavior (#1051)
+    // still holds with the reporter instrumentation wired in — the new
+    // --test-reporter flags must not change detection, the abort-on-timeout
+    // control flow, or the exit code.
+    test('existing timeout diagnostic and abort behavior are unchanged', () => {
+      assert.notStrictEqual(timeoutRun.status, 0, `expected non-zero exit; STDERR:\n${timeoutRun.stderr}`);
+      assert.match(
+        timeoutRun.stderr,
+        /exceeded the per-chunk timeout/,
+        `expected the original timeout diagnostic wording to survive; STDERR:\n${timeoutRun.stderr}`,
+      );
+      assert.match(
+        timeoutRun.stderr,
+        /run-tests: chunk 1\/1 was killed after \d+ms/,
+        `expected the new killed/elapsed line; STDERR:\n${timeoutRun.stderr}`,
       );
     });
   });
@@ -2137,5 +2406,133 @@ describe('chunk packing weights measured cost (#2456)', () => {
         .map(([file, value]) => `${file}=${value}`);
       assert.deepStrictEqual(invalid, [], 'every timing-table entry must be a finite non-negative number');
     });
+  });
+});
+
+// ─── analyzeChunkEvents (#3889 durability fix) ──────────────────────────────
+//
+// scripts/lib/ndjson-reporter.cjs now writes durably (fs.appendFileSync to a
+// GSD_RUN_TESTS_EVENTS_FILE path) instead of yielding strings for Node to
+// pipe through a buffered --test-reporter-destination WriteStream that a
+// SIGKILL can wipe out before it flushes. These tests exercise the READER
+// side (analyzeChunkEvents) directly against a hand-written events file, so
+// they pin the reader's contract independently of whether the writer side
+// managed to flush anything in a given subprocess run.
+const { analyzeChunkEvents } = require('../scripts/run-tests.cjs');
+
+describe('analyzeChunkEvents (#3889)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempDir('gsd-3889-events-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('a missing events file is reported as an explicit read error, not silently as "no events"', () => {
+    const missingPath = path.join(tmpDir, 'does-not-exist.ndjson');
+    const result = analyzeChunkEvents(missingPath);
+    assert.strictEqual(result.readError, true, 'a missing file must set readError=true');
+    assert.strictEqual(result.sawAnyEvent, false);
+    assert.deepStrictEqual(result.files, []);
+  });
+
+  test('an existing-but-empty events file is distinguished from a missing one (readError=false)', () => {
+    const emptyPath = path.join(tmpDir, 'empty.ndjson');
+    fs.writeFileSync(emptyPath, '', 'utf8');
+    const result = analyzeChunkEvents(emptyPath);
+    assert.strictEqual(result.readError, false, 'an existing empty file must NOT be reported as a read error');
+    assert.strictEqual(result.sawAnyEvent, false);
+    assert.deepStrictEqual(result.files, []);
+  });
+
+  test('a truncated final line does not crash the reader and earlier complete lines are still reported', () => {
+    const truncatedPath = path.join(tmpDir, 'truncated.ndjson');
+    const complete = [
+      JSON.stringify({ type: 'test:start', file: 'a.test.cjs', name: 'first', nesting: 0, testNumber: 1, ts: 1000 }),
+      JSON.stringify({ type: 'test:pass', file: 'a.test.cjs', name: 'first', nesting: 0, testNumber: 1, ts: 1010 }),
+      JSON.stringify({ type: 'test:start', file: 'b.test.cjs', name: 'hangs', nesting: 0, testNumber: 1, ts: 1020 }),
+    ].join('\n');
+    // Simulate a SIGKILL mid-appendFileSync: the trailing line is cut off
+    // partway through a JSON object, exactly as an unbuffered but non-atomic
+    // write can be interrupted.
+    const truncatedTrailer = '\n{"type":"test:start","file":"c.test.cjs","name":"cut off mid-writ';
+    fs.writeFileSync(truncatedPath, complete + truncatedTrailer, 'utf8');
+
+    const result = analyzeChunkEvents(truncatedPath);
+    assert.strictEqual(result.readError, false, 'a readable-but-truncated file must not be a read error');
+    // The complete test:start (b.test.cjs) with no matching pass/fail is
+    // still identified as in-flight despite the unparsable trailing line.
+    assert.deepStrictEqual(result.files, ['b.test.cjs']);
+    // a.test.cjs completed (start+pass), so it must NOT show as in-flight.
+    assert.ok(!result.files.includes('a.test.cjs'));
+    // c.test.cjs never parsed (truncated line), so it cannot appear either.
+    assert.ok(!result.files.includes('c.test.cjs'));
+    assert.strictEqual(result.sawAnyEvent, true, 'the complete lines before the truncation must still count as events');
+  });
+
+  // Regression (#3889 root cause): test:start/test:pass/test:fail are the
+  // exact three event types a genuine hang guarantees are never emitted —
+  // node:test only surfaces a subtest event to the parent once the child
+  // reports it, which happens on completion. test:dequeue is the RUNNER's
+  // own "began this file" signal and fires independent of completion; these
+  // four cases pin analyzeChunkEvents' dequeue-based in-flight rule directly
+  // against the synthetic event shapes a real hang, and a real finish, produce.
+  test('a dequeued file with no terminal event is reported as in flight', () => {
+    const eventsPath = path.join(tmpDir, 'dequeue-only.ndjson');
+    const lines = [
+      JSON.stringify({ type: 'reporter:init', ts: 900 }),
+      JSON.stringify({ type: 'test:enqueue', file: 'a.test.cjs', ts: 1000 }),
+      JSON.stringify({ type: 'test:dequeue', file: 'a.test.cjs', ts: 1010 }),
+    ].join('\n');
+    fs.writeFileSync(eventsPath, lines, 'utf8');
+
+    const result = analyzeChunkEvents(eventsPath);
+    assert.deepStrictEqual(result.files, ['a.test.cjs']);
+    assert.strictEqual(result.anyDequeued, true);
+    assert.strictEqual(result.sawInitMarker, true);
+  });
+
+  test('a dequeued file that also terminates reports nothing in flight (all files finished)', () => {
+    const eventsPath = path.join(tmpDir, 'dequeue-then-pass.ndjson');
+    const lines = [
+      JSON.stringify({ type: 'reporter:init', ts: 900 }),
+      JSON.stringify({ type: 'test:enqueue', file: 'a.test.cjs', ts: 1000 }),
+      JSON.stringify({ type: 'test:dequeue', file: 'a.test.cjs', ts: 1010 }),
+      JSON.stringify({ type: 'test:pass', file: 'a.test.cjs', ts: 1020 }),
+    ].join('\n');
+    fs.writeFileSync(eventsPath, lines, 'utf8');
+
+    const result = analyzeChunkEvents(eventsPath);
+    assert.deepStrictEqual(result.files, [], 'a terminated file must not show as in flight');
+    assert.strictEqual(result.anyDequeued, true, 'the file WAS dequeued — "all files finished" is a distinct state from "nothing ran"');
+  });
+
+  test('one terminated file followed by a second dequeued-but-unterminated file reports only the second', () => {
+    const eventsPath = path.join(tmpDir, 'two-files.ndjson');
+    const lines = [
+      JSON.stringify({ type: 'reporter:init', ts: 900 }),
+      JSON.stringify({ type: 'test:dequeue', file: 'a.test.cjs', ts: 1000 }),
+      JSON.stringify({ type: 'test:pass', file: 'a.test.cjs', ts: 1010 }),
+      JSON.stringify({ type: 'test:dequeue', file: 'b.test.cjs', ts: 1020 }),
+    ].join('\n');
+    fs.writeFileSync(eventsPath, lines, 'utf8');
+
+    const result = analyzeChunkEvents(eventsPath);
+    assert.deepStrictEqual(result.files, ['b.test.cjs']);
+    assert.ok(!result.files.includes('a.test.cjs'));
+  });
+
+  test('an init marker with no dequeue at all is distinguished (anyDequeued=false) from "all finished"', () => {
+    const eventsPath = path.join(tmpDir, 'init-only.ndjson');
+    fs.writeFileSync(eventsPath, JSON.stringify({ type: 'reporter:init', ts: 900 }), 'utf8');
+
+    const result = analyzeChunkEvents(eventsPath);
+    assert.deepStrictEqual(result.files, []);
+    assert.strictEqual(result.anyDequeued, false);
+    assert.strictEqual(result.sawInitMarker, true);
+    assert.strictEqual(result.sawAnyEvent, false);
   });
 });

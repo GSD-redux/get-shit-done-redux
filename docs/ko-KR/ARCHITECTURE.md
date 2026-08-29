@@ -247,8 +247,8 @@ GSD 워크플로우에 thinking 클래스 모델(o3, o4-mini, Gemini 2.5 Pro)을
 | `gsd-read-injection-scanner.js` | `PostToolUse` | 신뢰할 수 없는 콘텐츠에서 주입된 지시 사항을 위한 Read 도구 출력 스캔 |
 | `gsd-workflow-guard.js` | `PreToolUse` | GSD 워크플로우 컨텍스트 외부의 파일 편집 감지 (자문적, `hooks.workflow_guard`를 통한 옵트인) |
 | `gsd-read-guard.js` | `PreToolUse` | 세션에서 아직 읽지 않은 파일에 Edit/Write를 방지하는 자문적 가드 |
-| `gsd-session-state.sh` | `PostToolUse` | 쉘 기반 런타임을 위한 세션 상태 추적 |
-| `gsd-validate-commit.sh` | `PostToolUse` | 컨벤셔널 커밋 시행을 위한 커밋 검증 |
+| `gsd-session-state.sh` | `SessionStart` | 쉘 기반 런타임을 위한 세션 상태 추적 |
+| `gsd-validate-commit.sh` | `PreToolUse` | 컨벤셔널 커밋 시행을 위한 커밋 검증 |
 | `gsd-phase-boundary.sh` | `PostToolUse` | 워크플로우 전환을 위한 단계 경계 감지 |
 
 권위 있는 11개 훅 목록은 [`docs/INVENTORY.md`](INVENTORY.md#hooks-11-shipped)를 참조하라.

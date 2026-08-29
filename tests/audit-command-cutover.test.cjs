@@ -2259,7 +2259,9 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       }
 
       const before = audit(tmpDir);
-      assert.equal(before.counts.todos, 5, 'display cap: 5 of 7 shown in one scan');
+      // #3817: the display cap truncates the DETAIL list, not the count —
+      // 7 pending files means counts.todos is 7 (5 shown + remainder 2).
+      assert.equal(before.counts.todos, 7, 'counts include the truncation remainder (#3817)');
       assert.equal(before.has_open_items, true);
 
       const shown = before.items.todos.filter((i) => !i.scan_error && !i._remainder_count).map((i) => i.filename);
