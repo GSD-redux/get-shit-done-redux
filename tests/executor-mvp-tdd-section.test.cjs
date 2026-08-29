@@ -1694,6 +1694,139 @@ ${Array(redContractCount).fill(block).join('\n')}
     }
   });
 
+  /**
+   * One row per shape obligation on `location`, so the next one costs one record here
+   * rather than one new test — same rationale as the load-bearing-line table above.
+   * `mutate` receives a deep clone of the shipped `### Evidence` exemplar (parsed through
+   * `trailerLine()`, never retyped) and returns the trailer under test, so these cases track
+   * the contract automatically and cannot drift from it. See #3770.
+   */
+  const LOCATION_SHAPE_CASES = [
+    { name: '`location` absent from an otherwise valid eight-key trailer',
+      mutate: (t) => { delete t.location; return t; }, expected: 'red_commit_not_failing' },
+    { name: '`location` present but `declared` absent',
+      mutate: (t) => { delete t.location.declared; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location` present but `observed` absent',
+      mutate: (t) => { delete t.location.observed; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.observed.file` an empty string',
+      mutate: (t) => { t.location.observed.file = ''; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.observed.file` `null`',
+      mutate: (t) => { t.location.observed.file = null; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.observed.file` absent',
+      mutate: (t) => { delete t.location.observed.file; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.observed.line` absent',
+      mutate: (t) => { delete t.location.observed.line; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.observed.line` a string ("4") rather than a number',
+      mutate: (t) => { t.location.observed.line = '4'; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.observed.line` `null`',
+      mutate: (t) => { t.location.observed.line = null; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.declared` carrying an extra sub-key beyond `file` and `line`',
+      mutate: (t) => { t.location.declared.column = 3; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.observed` carrying an extra sub-key beyond `file` and `line`',
+      mutate: (t) => { t.location.observed.column = 3; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: 'a ninth top-level key added to an otherwise valid vector',
+      mutate: (t) => { t.extra_field = 'unexpected'; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`location.declared.file` and `location.observed.file` BOTH the empty string, '
+        + 'lines equal, every key present — the one case key-set equality cannot catch, since '
+        + '`path.win32.basename(\'\')` is `\'\'` and the two empty sides compare equal',
+      mutate: (t) => {
+        t.location.declared.file = '';
+        t.location.observed.file = '';
+        return t;
+      },
+      expected: 'red_commit_not_failing' },
+    { name: '`declared.line` 8 against `observed.line` 9',
+      mutate: (t) => { t.location.observed.line = 9; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`declared.file` `Pricing.test.js` against `observed.file` `pricing.test.js` — '
+        + 'basenames that differ in case are different basenames, no case folding',
+      mutate: (t) => {
+        t.location.declared.file = 'Pricing.test.js';
+        t.location.observed.file = 'pricing.test.js';
+        return t;
+      },
+      expected: 'red_commit_not_failing' },
+    { name: '`declared.line` 8 against `observed.line` `"8"` as a string',
+      mutate: (t) => { t.location.observed.line = '8'; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`declared.file` `tests/pricing.test.js` against `observed.file` '
+        + '`/srv/build/tests/pricing.test.js` — a separator split only, no other difference',
+      mutate: (t) => {
+        t.location.declared.file = 'tests/pricing.test.js';
+        t.location.observed.file = '/srv/build/tests/pricing.test.js';
+        return t;
+      },
+      expected: 'authorize' },
+    { name: '`declared.file` `tests/pricing.test.js` against `observed.file` '
+        + '`C:\\srv\\build\\tests\\pricing.test.js`',
+      mutate: (t) => {
+        t.location.declared.file = 'tests/pricing.test.js';
+        t.location.observed.file = 'C:\\srv\\build\\tests\\pricing.test.js';
+        return t;
+      },
+      expected: 'authorize' },
+    { name: '`declared.file` and `observed.file` both bare `pricing.test.js`',
+      mutate: (t) => {
+        t.location.declared.file = 'pricing.test.js';
+        t.location.observed.file = 'pricing.test.js';
+        return t;
+      },
+      expected: 'authorize' },
+  ];
+
+  test('shape-check edges: empty, absent and malformed `location` values fail closed; '
+    + 'path-form differences alone still authorize (#3770)', () => {
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    const exemplarLine = trailerLine();
+    const shippedTrailer = JSON.parse(exemplarLine.slice(exemplarLine.indexOf('{')));
+    const validTask = buildTaskContent(GENUINE.plan);
+
+    for (const { name, mutate, expected } of LOCATION_SHAPE_CASES) {
+      const trailer = mutate(structuredClone(shippedTrailer));
+      const { verdict, reason } = evaluateRedEvidence(
+        validTask, `red-evidence: ${JSON.stringify(trailer)}`,
+      );
+      assert.strictEqual(verdict, expected,
+        `${name}: expected \`${expected}\`, got \`${verdict}\` (reason: ${reason}). See #3770.`);
+      if (expected === 'red_commit_not_failing') {
+        assert.ok(typeof reason === 'string' && reason.trim().length > 0,
+          `${name} must carry a non-empty \`reason\` naming which check rejected the vector. `
+          + 'See #3770.');
+      }
+    }
+  });
+
+  test('a task file carrying two <red_contract> blocks fails closed with a reason naming the '
+    + 'ambiguity, even with an otherwise valid trailer (#3770)', () => {
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    const exemplarLine = trailerLine();
+    const shippedTrailer = JSON.parse(exemplarLine.slice(exemplarLine.indexOf('{')));
+    const dualContractTask = buildTaskContent(GENUINE.plan, { redContractCount: 2 });
+
+    const { verdict, reason } = evaluateRedEvidence(
+      dualContractTask, `red-evidence: ${JSON.stringify(shippedTrailer)}`,
+    );
+    assert.strictEqual(verdict, 'red_commit_not_failing',
+      'a task file carrying two <red_contract> blocks — two `tdd="true"` tasks in one '
+      + 'plan-level file — must fail closed even with an otherwise valid trailer: the '
+      + 'ambiguous declaration is what is wrong, not the trailer. This pins the guard that '
+      + 'binds the evaluator to the gated task when TASK_FILE resolves to a multi-task plan '
+      + 'file. See #3770.');
+    assert.match(reason, /contract|ambigu/i,
+      `the reason must name the multi-contract ambiguity, got: "${reason}". See #3770.`);
+  });
+
   test(
     "the predicate's prose names the pinning pair and claims nothing the predicate does not do",
     () => {
