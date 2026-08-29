@@ -294,7 +294,10 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'verify.cts'), new Set(['cmdValidateHealth', 'cmdVerifySchemaDrift'])],
   [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive'])],
   [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories', 'cmdMilestoneComplete', 'cmdPhasesClear'])],
-  [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases'])],
+  // #3849: collectSiblingWorktreePhaseNums reads a SIBLING worktree's phases dir —
+  // a different checkout listMilestonePhaseDirs (cwd-scoped) cannot serve; the
+  // allocators' own on-disk scans stay unexempted.
+  [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases', 'collectSiblingWorktreePhaseNums'])],
   [path.join('src', 'audit.cts'), new Set(['listAuditPhaseTargets'])],
   [path.join('src', 'commands.cts'), new Set(['cmdHistoryDigest'])],
   [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild'])],
