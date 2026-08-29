@@ -40,6 +40,14 @@ const INJECTION_PATTERNS = Object.freeze([
   /\[SYSTEM\]/i,
   /\[INST\]/i,
   /<<\s*SYS\s*>>/i,
+  // #4016: filler-tolerant imperative-override family. The narrow patterns
+  // above tolerate no filler between the verb and the noun, so a planted
+  // "Forget all of your instructions" (measured in the wild) matched nothing.
+  // Appended rather than replacing the narrow four to stay merge-friendly;
+  // overlap means one sentence can count twice toward severity thresholds.
+  // Known FP class: "ignore (the) rules" in linter-doc prose trips a LOW
+  // advisory.
+  /(?:ignore|disregard|forget|discard)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|your\s+|my\s+)?(?:previous\s+|prior\s+|above\s+|earlier\s+)?(?:instructions|directives|prompts?|rules)/i,
 ]);
 
 module.exports = { INJECTION_PATTERNS };
