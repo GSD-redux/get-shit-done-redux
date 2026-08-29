@@ -2496,6 +2496,141 @@ describe('find-phase scalar counts (#3218)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// phase number allocation across sibling git worktrees (#3849)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase add allocation vs sibling git worktrees (#3849)', () => {
+  const activeWorktrees = [];
+  const activeDirs = [];
+
+  function git(args, cwd) {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8' });
+  }
+
+  function initRepo(repoDir) {
+    fs.mkdirSync(path.join(repoDir, '.planning', 'phases'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap v1.0', '', '### Phase 440: existing thing', '**Goal:** Setup', '', '---', ''].join('\n')
+    );
+    fs.mkdirSync(path.join(repoDir, '.planning', 'phases', '440-existing-thing'));
+    git(['init', '-b', 'main'], repoDir);
+    git(['config', 'user.email', 'test@example.com'], repoDir);
+    git(['config', 'user.name', 'Test'], repoDir);
+    git(['add', '-A'], repoDir);
+    git(['commit', '-m', 'init'], repoDir);
+  }
+
+  /** Materialize the issue's repro: a sibling worktree branch holding Phase 441. */
+  function addSiblingHolding441(repoDir) {
+    const sha = git(['rev-parse', 'HEAD'], repoDir).trim();
+    const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-sib-'));
+    git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
+    activeWorktrees.push({ repoDir, worktreeDir });
+    fs.mkdirSync(path.join(worktreeDir, '.planning', 'phases', '441-conversation-surface'), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktreeDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap v1.0', '', '### Phase 440: existing thing', '**Goal:** Setup', '', '### Phase 441: conversation surface', '**Goal:** Talk', '', '---', ''].join('\n')
+    );
+    return worktreeDir;
+  }
+
+  /** A sibling worktree whose checkout has no .planning at all (fail-open case). */
+  function addBareSibling(repoDir) {
+    const sha = git(['rev-parse', 'HEAD'], repoDir).trim();
+    const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-bare-'));
+    git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
+    activeWorktrees.push({ repoDir, worktreeDir });
+    fs.rmSync(path.join(worktreeDir, '.planning'), { recursive: true, force: true });
+    return worktreeDir;
+  }
+
+  function teardown() {
+    while (activeWorktrees.length) {
+      const { repoDir, worktreeDir } = activeWorktrees.pop();
+      try {
+        git(['worktree', 'remove', '--force', worktreeDir], repoDir);
+      } catch (_) { /* best-effort; cleanup() below still removes the directory */ }
+      cleanup(worktreeDir);
+    }
+    while (activeDirs.length) cleanup(activeDirs.pop());
+  }
+
+  afterEach(teardown);
+
+  test('phase add skips a number held only by a sibling worktree (dir + roadmap header)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-main-'));
+    activeDirs.push(repoDir);
+    initRepo(repoDir);
+    addSiblingHolding441(repoDir);
+
+    const result = runGsdTools('phase add anything', repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      442,
+      '#3849: sibling worktree holds Phase 441 — allocation must skip to 442, not collide'
+    );
+    assert.ok(
+      fs.existsSync(path.join(repoDir, '.planning', 'phases', '442-anything')),
+      'directory for the non-colliding 442 should be created'
+    );
+  });
+
+  test('phase add-batch skips a number held only by a sibling worktree', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-batch-'));
+    activeDirs.push(repoDir);
+    initRepo(repoDir);
+    addSiblingHolding441(repoDir);
+
+    const result = runGsdTools(['phase', 'add-batch', '--descriptions', '["New Thing"]'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.results[0].phase_number,
+      442,
+      '#3849: the batch allocator must widen its horizon the same way the single-add allocator does'
+    );
+  });
+
+  test('a sibling worktree without .planning/ changes nothing (fail open)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-failopen-'));
+    activeDirs.push(repoDir);
+    initRepo(repoDir);
+    addBareSibling(repoDir);
+
+    const result = runGsdTools('phase add next thing', repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, 441, 'no sibling numbers visible — max+1 from the local 440');
+  });
+
+  test('phase add-batch counts bullet-only Phase N rows (#1229 reached the batch path)', () => {
+    const tmp = createTempProject();
+    try {
+      fs.writeFileSync(
+        path.join(tmp, '.planning', 'ROADMAP.md'),
+        ['# Roadmap v1.0', '', '- [ ] **Phase 11: bullet-only phase**', '', '---', ''].join('\n')
+      );
+      const result = runGsdTools(['phase', 'add-batch', '--descriptions', '["After Bullet"]'], tmp);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(
+        output.results[0].phase_number,
+        12,
+        '#3849 secondary: a bullet-only Phase 11 must not be re-allocated by add-batch'
+      );
+    } finally {
+      cleanup(tmp);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // phase add-batch command (#2165)
 // ─────────────────────────────────────────────────────────────────────────────
 
