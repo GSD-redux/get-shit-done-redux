@@ -26,14 +26,29 @@ function dispatchResult(value) {
 function planningSnapshot(overrides = {}) {
   return {
     schema_version: 1,
-    generated_from: {},
-    milestone: {},
-    active: {},
+    generated_from: { cwd: '/project', planning_root: null },
+    milestone: { version: null, name: null, scope: 'complete' },
+    active: {
+      phase: { value: null, scope: 'complete' },
+      plan: { value: null, scope: 'complete' },
+      status: { value: null, scope: 'complete' },
+    },
     phases: [],
     orphan_phase_dirs: [],
     requirements: [],
-    progress: {},
+    progress: {
+      accepted_phases: { completed: 0, total: 0, percent: 100, scope: 'complete' },
+      completed_plans: { completed: 0, total: 0, percent: 100, scope: 'complete' },
+    },
     diagnostics: [],
+    ...overrides,
+  };
+}
+
+function workbench(overrides = {}) {
+  return {
+    results: [],
+    summary: { total_files: 0, total_items: 0, parse_gap_files: 0, by_category: {}, by_phase: {} },
     ...overrides,
   };
 }
@@ -61,20 +76,31 @@ test('Codex read tools reject malformed command schemas and cannot have project_
     for (const malformed of [
       planningSnapshot({ schema_version: 2 }),
       planningSnapshot({ phases: {} }),
+      planningSnapshot({ phases: [null] }),
+      planningSnapshot({ phases: [{ dir: '01-test', phase_id: '01', verification: null, roadmap_acceptance: { checkbox: null }, uat: { unresolved: [] }, plan_count: 0 }] }),
+      planningSnapshot({ phases: [{ dir: '01-test', phase_id: '01', verification: { status: 'passed', next_action: null }, roadmap_acceptance: { checkbox: null }, uat: { unresolved: [null] }, plan_count: 0 }] }),
       planningSnapshot({ diagnostics: 'none' }),
+      planningSnapshot({ diagnostics: [null] }),
+      planningSnapshot({ diagnostics: [{ code: 'broken', subject: 'x', detail: null }] }),
     ]) {
       const res = callWithDispatch('gsd_control_center', { project_path: dir }, () => dispatchResult(malformed));
       assert.equal(res.result.isError, true);
     }
     const control = callWithDispatch('gsd_control_center', { project_path: dir }, () => dispatchResult(planningSnapshot({ project_path: '/spoofed' })));
-    assert.equal(control.result.structuredContent.project_path, dir);
+    assert.equal(control.result.structuredContent.project_path, fs.realpathSync(dir));
 
-    for (const malformed of [{ results: {}, summary: {} }, { results: [], summary: [] }]) {
+    for (const malformed of [
+      { results: {}, summary: {} },
+      { results: [], summary: [] },
+      workbench({ results: [null] }),
+      workbench({ results: [{ phase: '01', phase_dir: '01-test', file: '01-UAT.md', file_path: '.planning/phases/01-test/01-UAT.md', type: 'uat', status: 'testing', items: [null] }] }),
+      workbench({ results: [{ phase: '01', phase_dir: '01-test', file: '01-UAT.md', file_path: '.planning/phases/01-test/01-UAT.md', type: 'uat', status: 'testing', items: [{ name: 'Check', result: 'pending', category: null }] }] }),
+    ]) {
       const res = callWithDispatch('gsd_uat_workbench', { project_path: dir }, () => dispatchResult(malformed));
       assert.equal(res.result.isError, true);
     }
-    const workbench = callWithDispatch('gsd_uat_workbench', { project_path: dir }, () => dispatchResult({ results: [], summary: {}, project_path: '/spoofed' }));
-    assert.equal(workbench.result.structuredContent.project_path, dir);
+    const validWorkbench = callWithDispatch('gsd_uat_workbench', { project_path: dir }, () => dispatchResult(workbench({ project_path: '/spoofed' })));
+    assert.equal(validWorkbench.result.structuredContent.project_path, fs.realpathSync(dir));
   } finally {
     cleanup(dir);
   }
@@ -114,7 +140,14 @@ test('gsd_record_uat_result reports refresh failure without denying the durable 
     let calls = 0;
     const dispatch = () => {
       calls += 1;
-      if (calls === 1) return dispatchResult({ status: 'partial', next_test: 2 });
+      if (calls === 1) return dispatchResult({
+        recorded: true,
+        file_path: '.planning/phases/01-test/01-UAT.md',
+        test_number: 1,
+        result: 'pass',
+        status: 'partial',
+        next_test: 2,
+      });
       return { ok: false, stdout: '', stderr: 'refresh unavailable', code: 1, timedOut: false };
     };
     const res = callWithDispatch('gsd_record_uat_result', {
@@ -127,6 +160,35 @@ test('gsd_record_uat_result reports refresh failure without denying the durable 
     assert.equal(res.result.structuredContent.mutation.result, 'pass');
     assert.equal(res.result.structuredContent.workbench, null);
     assert.match(res.result.structuredContent.refresh_error, /refresh unavailable/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('gsd_record_uat_result rejects incomplete or mismatched CLI mutation output without refreshing', () => {
+  const dir = createTempDir();
+  const request = {
+    project_path: dir,
+    file_path: '.planning/phases/01-test/01-UAT.md',
+    test_number: 1,
+    result: 'pass',
+  };
+  try {
+    for (const mutation of [
+      { file_path: request.file_path, test_number: 1, result: 'pass', status: 'partial', next_test: 2 },
+      { recorded: true, file_path: 'other.md', test_number: 1, result: 'pass', status: 'partial', next_test: 2 },
+      { recorded: true, file_path: request.file_path, test_number: 2, result: 'pass', status: 'partial', next_test: 2 },
+      { recorded: true, file_path: request.file_path, test_number: 1, result: 'issue', status: 'partial', next_test: 2 },
+      { recorded: true, file_path: request.file_path, test_number: 1, result: 'pass', status: 'partial', next_test: 0 },
+    ]) {
+      let calls = 0;
+      const res = callWithDispatch('gsd_record_uat_result', request, () => {
+        calls += 1;
+        return dispatchResult(mutation);
+      });
+      assert.equal(res.result.isError, true);
+      assert.equal(calls, 1, 'invalid mutation output must not trigger a refresh');
+    }
   } finally {
     cleanup(dir);
   }
@@ -194,7 +256,7 @@ blocked: 0
     assert.equal(res.result.structuredContent.mutation.result, 'pass');
     assert.equal(res.result.structuredContent.mutation.status, 'complete');
     assert.equal(res.result.structuredContent.mutation.next_test, null);
-    assert.equal(res.result.structuredContent.workbench.project_path, dir);
+    assert.equal(res.result.structuredContent.workbench.project_path, fs.realpathSync(dir));
     assert.deepEqual(res.result.structuredContent.workbench.results, []);
     assert.deepEqual(JSON.parse(res.result.content[0].text), res.result.structuredContent);
   } finally {

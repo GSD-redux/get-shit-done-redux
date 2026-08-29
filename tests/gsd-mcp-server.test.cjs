@@ -150,6 +150,21 @@ test('runServer: line-delimited JSON-RPC round-trip over injectable streams', as
   assert.ok(Array.isArray(responses[2].result.tools), 'tools/list handled');
 });
 
+test('runServer: preserves UTF-8 code points split across arbitrary Buffer chunks', async () => {
+  const request = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'gsd_bogus-🧪' } }) + '\n');
+  const marker = request.indexOf(Buffer.from('🧪'));
+  const input = Readable.from([
+    request.subarray(0, marker + 1),
+    request.subarray(marker + 1, marker + 3),
+    request.subarray(marker + 3),
+  ]);
+  const out = [];
+  await runServer({ input, output: { write: (s) => { out.push(s); return true; } } });
+  const response = JSON.parse(out.join(''));
+  assert.match(response.result.content[0].text, /🧪/);
+  assert.doesNotMatch(response.result.content[0].text, /�/);
+});
+
 // tiny helper to get a throwaway cwd without polluting the assertion helpers import above
 function createTempDirClean() {
   const os = require('node:os');

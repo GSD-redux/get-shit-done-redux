@@ -35,6 +35,7 @@ import shellCommandProjection = require('./shell-command-projection.cjs');
 const { dispatchGsdCommand } = shellCommandProjection;
 import fs from 'node:fs';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import {
   buildCatalog,
   readResource,
@@ -236,7 +237,7 @@ function toolError(text: string) {
 function projectPath(value: unknown): string | null {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
   try {
-    return fs.statSync(value).isDirectory() ? path.resolve(value) : null;
+    return fs.statSync(value).isDirectory() ? fs.realpathSync(value) : null;
   } catch {
     return null;
   }
@@ -260,23 +261,126 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function optionalString(record: Record<string, unknown>, key: string): boolean {
+  return record[key] === undefined || record[key] === null || typeof record[key] === 'string';
+}
+
+function validScopedValue(value: unknown): boolean {
+  const record = asRecord(value);
+  return record !== null && optionalString(record, 'value') && typeof record.scope === 'string';
+}
+
+function validFraction(value: unknown): boolean {
+  const record = asRecord(value);
+  return record !== null
+    && typeof record.completed === 'number'
+    && typeof record.total === 'number'
+    && (record.percent === null || typeof record.percent === 'number')
+    && typeof record.scope === 'string';
+}
+
+function validPhase(value: unknown): boolean {
+  const phase = asRecord(value);
+  const verification = phase && asRecord(phase.verification);
+  const acceptance = phase && asRecord(phase.roadmap_acceptance);
+  const uat = phase && asRecord(phase.uat);
+  return phase !== null
+    && typeof phase.dir === 'string'
+    && optionalString(phase, 'phase_id')
+    && verification !== null
+    && typeof verification.status === 'string'
+    && optionalString(verification, 'next_action')
+    && acceptance !== null
+    && (acceptance.checkbox === null || typeof acceptance.checkbox === 'boolean')
+    && uat !== null
+    && Array.isArray(uat.unresolved)
+    && uat.unresolved.every((item) => asRecord(item) !== null)
+    && Number.isInteger(phase.plan_count)
+    && Number(phase.plan_count) >= 0;
+}
+
+function validDiagnostic(value: unknown): boolean {
+  const diagnostic = asRecord(value);
+  return diagnostic !== null
+    && typeof diagnostic.code === 'string'
+    && typeof diagnostic.subject === 'string'
+    && typeof diagnostic.detail === 'string';
+}
+
+function validCountRecord(value: unknown): boolean {
+  const record = asRecord(value);
+  return record !== null && Object.values(record).every((count) => Number.isInteger(count) && Number(count) >= 0);
+}
+
+function validWorkbenchItem(value: unknown): boolean {
+  const item = asRecord(value);
+  return item !== null
+    && typeof item.name === 'string'
+    && typeof item.result === 'string'
+    && typeof item.category === 'string'
+    && (item.test === undefined || (Number.isInteger(item.test) && Number(item.test) >= 1))
+    && optionalString(item, 'expected')
+    && optionalString(item, 'reason')
+    && optionalString(item, 'blocked_by');
+}
+
+function validWorkbenchFile(value: unknown): boolean {
+  const file = asRecord(value);
+  return file !== null
+    && typeof file.phase === 'string'
+    && typeof file.phase_dir === 'string'
+    && typeof file.file === 'string'
+    && typeof file.file_path === 'string'
+    && (file.type === 'uat' || file.type === 'verification' || file.type === 'deferred')
+    && typeof file.status === 'string'
+    && optionalString(file, 'archived_milestone')
+    && (file.parse_gap === undefined || typeof file.parse_gap === 'boolean')
+    && (file.unparsed_blocks === undefined || (Number.isInteger(file.unparsed_blocks) && Number(file.unparsed_blocks) >= 1))
+    && Array.isArray(file.items)
+    && file.items.every(validWorkbenchItem);
+}
+
 function validPlanningSnapshot(value: unknown): value is Record<string, unknown> {
   const record = asRecord(value);
+  const milestone = record && asRecord(record.milestone);
+  const active = record && asRecord(record.active);
+  const progress = record && asRecord(record.progress);
   return record !== null
     && record.schema_version === 1
     && asRecord(record.generated_from) !== null
-    && asRecord(record.milestone) !== null
-    && asRecord(record.active) !== null
+    && milestone !== null
+    && optionalString(milestone, 'name')
+    && typeof milestone.scope === 'string'
+    && active !== null
+    && validScopedValue(active.phase)
+    && validScopedValue(active.plan)
+    && validScopedValue(active.status)
     && Array.isArray(record.phases)
+    && record.phases.every(validPhase)
     && Array.isArray(record.orphan_phase_dirs)
     && Array.isArray(record.requirements)
-    && asRecord(record.progress) !== null
-    && Array.isArray(record.diagnostics);
+    && progress !== null
+    && validFraction(progress.accepted_phases)
+    && validFraction(progress.completed_plans)
+    && Array.isArray(record.diagnostics)
+    && record.diagnostics.every(validDiagnostic);
 }
 
 function validWorkbench(value: unknown): value is Record<string, unknown> {
   const record = asRecord(value);
-  return record !== null && Array.isArray(record.results) && asRecord(record.summary) !== null;
+  const summary = record && asRecord(record.summary);
+  return record !== null
+    && Array.isArray(record.results)
+    && record.results.every(validWorkbenchFile)
+    && summary !== null
+    && Number.isInteger(summary.total_files)
+    && Number(summary.total_files) >= 0
+    && Number.isInteger(summary.total_items)
+    && Number(summary.total_items) >= 0
+    && Number.isInteger(summary.parse_gap_files)
+    && Number(summary.parse_gap_files) >= 0
+    && validCountRecord(summary.by_category)
+    && validCountRecord(summary.by_phase);
 }
 
 function callTool(name: string, args: unknown, ctx: McpContext): { content: Array<{ type: string; text: string }>; isError?: boolean; structuredContent?: unknown } {
@@ -325,7 +429,12 @@ function callTool(name: string, args: unknown, ctx: McpContext): { content: Arra
       if (!mutationData) return toolError('uat record-result returned invalid JSON.');
       const mutationStatus = mutationData.status;
       const nextTest = mutationData.next_test;
-      if ((mutationStatus !== 'partial' && mutationStatus !== 'complete') || !(nextTest === null || Number.isInteger(nextTest))) {
+      if (mutationData.recorded !== true
+        || mutationData.file_path !== file
+        || mutationData.test_number !== test
+        || mutationData.result !== result
+        || (mutationStatus !== 'partial' && mutationStatus !== 'complete')
+        || !(nextTest === null || (Number.isInteger(nextTest) && Number(nextTest) >= 1))) {
         return toolError('uat record-result returned invalid JSON.');
       }
       const mutationResult = {
@@ -487,8 +596,9 @@ export async function runServer({
     }
   };
   let buffer = '';
+  const decoder = new StringDecoder('utf8');
   for await (const chunk of input as AsyncIterable<Buffer | string>) {
-    buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+    buffer += typeof chunk === 'string' ? decoder.end() + chunk : decoder.write(chunk);
     let newline: number;
     while ((newline = buffer.indexOf('\n')) !== -1) {
       const line = buffer.slice(0, newline).replace(/\r$/, '');
@@ -496,6 +606,7 @@ export async function runServer({
       processLine(line);
     }
   }
+  buffer += decoder.end();
   processLine(buffer.replace(/\r$/, ''));
 }
 
