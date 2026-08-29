@@ -73,8 +73,10 @@ interface RouteInitCommandOptions {
  * §8.4, silently answer `phase_found:false, plan_count:0` for a phase with
  * plans on disk). A valueless `--phase` is a usage error naming the flag.
  * Any other flag-shaped args[2] resolves to `undefined` — the commands'
- * designed "use the current phase" input — instead of passing the flag text
- * down as a phase name.
+ * no-position-given input (execute-phase/plan-phase/verify-work usage-error
+ * "phase required"; the find-based queries answer phase_found:false; todos
+ * drops its area filter) — instead of passing the flag text down as a phase
+ * name.
  */
 function normalizePhaseAlias(
   args: string[],
@@ -84,6 +86,9 @@ function normalizePhaseAlias(
   if (tok === undefined) return { args, phase: undefined };
   if (tok === '--phase=') {
     error('--phase requires a value: use --phase <N> (or the positional form <N>)');
+    // Fail-closed backstop, mirroring parseNamedArgsOrExit: the wired error()
+    // exits, but a returning fail() must not fall through to the splices below.
+    throw new Error('normalizePhaseAlias: error() returned instead of exiting');
   }
   if (tok.startsWith('--phase=')) {
     const value = tok.slice('--phase='.length);
@@ -95,6 +100,7 @@ function normalizePhaseAlias(
     const next = args[3];
     if (next === undefined || isFlagToken(next)) {
       error('--phase requires a value: use --phase <N> (or the positional form <N>)');
+      throw new Error('normalizePhaseAlias: error() returned instead of exiting');
     }
     const out = args.slice();
     out.splice(2, 2, next);
