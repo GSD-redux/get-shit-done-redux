@@ -1261,6 +1261,88 @@ describe('Quick Tasks heading tolerance (#3860)', () => {
       `the failure must describe the legacy table, not claim the section is absent; got: ${result.reason}`
     );
   });
+
+  test('#3860 review: a later ## Deferred Items pipe table is NOT the splice target', () => {
+    // The canonical STATE.md layout (templates/state.md + workflows/quick.md)
+    // puts a pipe table AFTER the Quick Tasks section. A section-body
+    // collection that only stops at the next matching heading would swallow
+    // it, and the append's last-table-line scan would splice the quick-task
+    // row into the Deferred Items table.
+    const canonicalLayout = [
+      '# STATE',
+      '',
+      '### Quick Tasks Completed (v1.1+)',
+      '',
+      '| # | Description | Date | Commit | Directory |',
+      '|---|-------------|------|--------|-----------|',
+      '| 1 | fix typo | 2026-01-01 | abc1234 | — |',
+      '',
+      '### Blockers/Concerns',
+      'None',
+      '',
+      '## Deferred Items',
+      '',
+      '| Category | Item | Status | Deferred At | Milestone |',
+      '|----------|------|--------|-------------|-----------|',
+      '| scope | extra thing | deferred | 2026-01-02 | v1.1 |',
+      '',
+    ].join('\n');
+    const result = appendQuickTaskRow(canonicalLayout, {
+      description: 'probe',
+      date: '2026-08-25',
+      commit: 'deadbee',
+    });
+    assert.equal(result.ok, true, `reason: ${result.reason}`);
+    const content = result.value.content;
+    const quickRow = '| 2 | probe | 2026-08-25 | deadbee | — |';
+    assert.ok(content.includes(quickRow), 'the new row exists');
+    assert.ok(
+      content.indexOf(quickRow) < content.indexOf('## Deferred Items'),
+      'the row lands INSIDE the Quick Tasks table, before the Deferred Items section'
+    );
+    assert.ok(
+      content.includes('| scope | extra thing | deferred | 2026-01-02 | v1.1 |'),
+      'the Deferred Items table is byte-identical (no row spliced after its last line)'
+    );
+    const deferred = content.slice(content.indexOf('## Deferred Items'));
+    assert.ok(!deferred.includes(quickRow), 'the Deferred Items section contains no quick-task row');
+  });
+
+  test('#3860 convention: several schema-valid sections — document order (newest-on-top) wins', () => {
+    // The archive flow preserves a recognized header-only table under the old
+    // heading (workflows/complete-milestone.md), so both sections can be
+    // schema-valid. This layer has no active-milestone signal; the pinned
+    // tie-break is document order — first section — matching the issue's own
+    // newest-on-top layout.
+    const bothValid = [
+      '# STATE',
+      '',
+      '### Quick Tasks Completed (v1.1+)',
+      '',
+      '| # | Description | Date | Commit | Directory |',
+      '|---|-------------|------|--------|-----------|',
+      '| 1 | current task | 2026-01-01 | abc1234 | — |',
+      '',
+      '### Quick Tasks Completed (v1.0)',
+      '',
+      '| # | Description | Date | Commit | Directory |',
+      '|---|-------------|------|--------|-----------|',
+      '| 99 | archived task | 2025-01-01 | old1234 | — |',
+    ].join('\n');
+    const result = appendQuickTaskRow(bothValid, {
+      description: 'new task',
+      date: '2026-08-25',
+      commit: 'deadbee',
+    });
+    assert.equal(result.ok, true, `reason: ${result.reason}`);
+    const v11 = result.value.content.indexOf('### Quick Tasks Completed (v1.1+)');
+    const v10 = result.value.content.indexOf('### Quick Tasks Completed (v1.0)');
+    assert.ok(
+      result.value.content.indexOf('| 2 | new task | 2026-08-25 | deadbee | — |') > v11
+        && result.value.content.indexOf('| 2 | new task | 2026-08-25 | deadbee | — |') < v10,
+      'the row lands in the FIRST (newest-on-top) section'
+    );
+  });
 });
 
 // ─── resetQuickTaskRows (#2142) ─────────────────────────────────────────────

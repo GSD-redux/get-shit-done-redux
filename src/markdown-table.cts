@@ -10,7 +10,7 @@
  * {ok,data|kind}; the two never mix (different modules).
  */
 
-import { collectSections, replaceSection } from './markdown-sectionizer.cjs';
+import { collectSection, collectSections, replaceSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken, Section } from './markdown-sectionizer.cjs';
 import type { Result } from './write-set.cjs';
 export type { Result } from './write-set.cjs';
@@ -752,15 +752,36 @@ const isQuickTasksHeading = (h: HeadingToken): boolean =>
  * NO section is usable, return the FIRST match so the caller's downstream
  * error describes the real problem (unparseable/legacy table) instead of a
  * false QUICK_TASKS_SECTION_ABSENT.
+ *
+ * Bounding: `collectSections` ends a candidate's body only at the NEXT
+ * matching heading — far too wide for splicing (it would swallow an
+ * intervening `## Deferred Items` table into the Quick Tasks body, and
+ * `appendQuickTaskRow`'s last-table-line scan would then splice the new row
+ * into that WRONG table). Each candidate is therefore re-collected through
+ * `collectSection` with an offset-precise predicate, whose default
+ * level-bounded stop (next heading of the same or higher level) is exactly
+ * the semantics the pre-#3860 single-section lookup had.
+ *
+ * Convention: "first" is document order — the newest-on-top layout the issue
+ * itself demonstrates (`(v1.1+)` above an archived `(v1.0)`). When several
+ * suffixed sections all carry recognized schemas, this layer has no signal
+ * for which milestone is active, so document order is the pinned tie-break.
  */
 function selectQuickTasksSection(stateContent: string): Section | null {
-  const sections = collectSections(stateContent, isQuickTasksHeading);
-  if (sections.length === 0) return null;
-  for (const s of sections) {
-    const parsed = parseMarkdownTable(s.body);
-    if (parsed.ok && matchTableSchema(parsed.value.columns)?.id === 'QuickTasks') return s;
+  const candidates = collectSections(stateContent, isQuickTasksHeading);
+  if (candidates.length === 0) return null;
+
+  const boundedOf = (cand: Section): Section | null =>
+    collectSection(stateContent, (h: HeadingToken) => h.offset === cand.heading.offset);
+
+  const firstBounded = boundedOf(candidates[0]);
+  for (const cand of candidates) {
+    const bounded = boundedOf(cand);
+    if (!bounded) continue;
+    const parsed = parseMarkdownTable(bounded.body);
+    if (parsed.ok && matchTableSchema(parsed.value.columns)?.id === 'QuickTasks') return bounded;
   }
-  return sections[0];
+  return firstBounded;
 }
 
 /** Fields needed to render one "Quick Tasks Completed" row (schema-driven). */
@@ -873,7 +894,7 @@ export function appendQuickTaskRow(
  * directories out from under the table (see `src/milestone.cts`'s
  * `archiveQuickTaskDirectories` / `cmdMilestoneComplete` wiring).
  *
- * Mirrors `appendQuickTaskRow`'s exact contract (same `collectSection` ->
+ * Mirrors `appendQuickTaskRow`'s exact contract (same `selectQuickTasksSection` ->
  * `parseMarkdownTable` -> `matchTableSchema` pipeline, same fail-loud posture,
  * same EOL-detect-before-split handling) rather than inventing a second one:
  *   - no "Quick Tasks Completed" heading -> `{ok:false, reason:
