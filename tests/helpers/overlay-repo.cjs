@@ -211,9 +211,10 @@ function linkOrCopyFile(src, dest) {
 function buildOverlayRepo(fileOverrides, opts = {}) {
   const mode = opts.mode || 'link';
   const warn = opts.warn || console.warn;
-  // #3900: test-only root override — the #3900 regression tests build the
-  // overlay from a tiny synthetic root instead of walking the whole repo
-  // (every existing caller uses the default and is unaffected).
+  // #3900: test-only root override (mirrors cold-runtime-lib-fixture's
+  // repoRoot) — the #3900 regression tests build the overlay from a tiny
+  // synthetic root instead of walking the whole repo; every existing caller
+  // uses the default REPO_ROOT and is unaffected.
   const root = opts.root || REPO_ROOT;
   const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2930-overlay-'));
   const entries = Object.entries(fileOverrides).map(([relPath, content]) => ({
