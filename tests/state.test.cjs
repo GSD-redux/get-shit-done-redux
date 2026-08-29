@@ -2444,13 +2444,11 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     // review found the fixtures above exercise only `plan_count`, so a branch that
     // checked that count alone would pass every assertion here. 12 files, 8 live,
     // prose total 12: matches planCountAll and not planCount, position out of range.
-    fs.rmSync(phaseDir, { recursive: true, force: true });
-    fs.mkdirSync(phaseDir, { recursive: true });
-    for (let i = 1; i <= 12; i++) {
-      const id = String(i).padStart(2, '0');
-      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`),
-        `---\nstatus: ${i <= 8 ? 'complete' : 'superseded'}\n---\n# Plan\n`);
-    }
+    // The fixture above is already 12 files with 8 live, and the refusal wrote
+    // nothing, so it stands unchanged — only the prose total moves. (No teardown
+    // here on purpose: a raw fs.rmSync in a test is refused by
+    // local/no-raw-rmsync-in-tests, and re-seeding an identical tree to change one
+    // line of prose is work for its own sake.)
     writeState('Plan: 15 of 12');
     const allFiles = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
     assert.strictEqual(allFiles.exitCode, 0, `must still exit 0: ${allFiles.stderr}`);
