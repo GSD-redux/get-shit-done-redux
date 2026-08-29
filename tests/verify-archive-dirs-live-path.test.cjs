@@ -42,7 +42,7 @@ function injectMilestonesFault(t, code, targetPath) {
 }
 
 function scopeOf(snapshot) {
-  const field = snapshot && snapshot.fields && snapshot.archivedPhaseTokens;
+  const field = snapshot && snapshot.archivedPhaseTokens;
   return field ? field.scope : undefined;
 }
 

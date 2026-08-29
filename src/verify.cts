@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { MILESTONE_ARCHIVE_DIR_RE, textEncodingError } from './validate.cjs';
+import { textEncodingError } from './validate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -1428,31 +1428,6 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
   );
 }
 
-function listMilestoneArchiveDirs(planBase: string): string[] {
-  const milestonesDir = path.join(planBase, 'milestones');
-  try {
-    return fs
-      .readdirSync(milestonesDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && MILESTONE_ARCHIVE_DIR_RE.test(e.name))
-      .map((e) => path.join(milestonesDir, e.name))
-      .sort((a, b) =>
-        path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true }),
-      );
-  } catch (err) {
-    // #1883: distinguish genuine absence from a permission/I-O failure. ENOENT
-    // (no milestones/ dir yet) keeps the long-standing [] contract callers of
-    // this function depend on for "no archives"; every other error (EACCES,
-    // EIO, …) must propagate — otherwise an unreadable milestones/ dir is
-    // silently reported as "no archives" and archived-phase resolution
-    // misbehaves. As of Phase 12 (#3310), `cmdValidateConsistency`'s own
-    // caller of this function (`collectPhaseRoots` -> `getActiveMilestoneArchiveDir`)
-    // was migrated onto `buildPlanningSnapshot` and deleted; this function is
-    // retained solely for its `_listMilestoneArchiveDirs` test seam below.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw err;
-  }
-}
-
 interface IssueEntry {
   code: string;
   message: string;
@@ -2026,9 +2001,4 @@ export = {
   cmdVerifySchemaDrift,
   cmdVerifyCodebaseDrift,
   STATE_HEAD_ADVISORY_COMMITS,
-  // Test seam (#1883): listMilestoneArchiveDirs is private and exercised through
-  // the validate command, which runs in a subprocess — an fs monkeypatch in the
-  // test process cannot reach it. Exposed under a leading underscore so the
-  // permission-error path can be unit-tested directly (no chmod 0o000).
-  _listMilestoneArchiveDirs: listMilestoneArchiveDirs,
 };

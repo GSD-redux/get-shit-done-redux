@@ -129,6 +129,7 @@
     },
     "verify": {
       "files": [
+        "verify-archive-dirs-live-path.test.cjs",
         "verify-health.test.cjs",
         "verify-mvp-uat.test.cjs",
         "verify-npm-publish.test.cjs",
@@ -136,7 +137,7 @@
         "verify-work-auto-transition.test.cjs",
         "verify.test.cjs"
       ],
-      "issue": "3767",
+      "issue": "#3813 \u2014 the live-path #1883 suite drives buildPlanningSnapshot in-process with an fs fault; the verify module suites are CLI-driving and cannot host an fs monkeypatch",
       "justification": "verify-command-grounding added by #2401/#3678; allowlist follow-up landed with #3606 (base was red on this lane)."
     },
     "install": {
