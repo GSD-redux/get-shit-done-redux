@@ -59,9 +59,20 @@ function packListToPathSet(parsed) {
   // the object shape — which threw in this file's before() hook and silently
   // disabled the whole packaging guard, including both `does NOT ship`
   // assertions. Resolve either shape; anything else fails loud.
-  const entry = Array.isArray(parsed)
-    ? parsed[0]
-    : parsed[Object.keys(parsed)[0]];
+  // Single-package assumption: this repo has no workspaces, so npm 12 emits
+  // exactly ONE key. If workspaces are ever adopted, first-key would silently
+  // validate only one package — recreate the silent-disarm this fix kills —
+  // so a multi-key object fails loud instead.
+  let entry;
+  if (Array.isArray(parsed)) {
+    entry = parsed[0];
+  } else {
+    const keys = Object.keys(parsed);
+    if (keys.length !== 1) {
+      throw new Error(`npm pack --json emitted ${keys.length} package keys; expected exactly 1 for this single-package repo`);
+    }
+    entry = parsed[keys[0]];
+  }
   if (!entry || !Array.isArray(entry.files)) {
     throw new Error(`npm pack --json returned an unrecognized shape: ${Object.prototype.toString.call(parsed)}`);
   }
@@ -241,5 +252,12 @@ describe('#3902 packListToPathSet resolves both npm pack --json shapes', () => {
 
   test('an unrecognized shape fails loud, never silently-empty', () => {
     assert.throws(() => packListToPathSet({ weird: true }));
+  });
+
+  test('a multi-key object (workspaces) fails loud — first-key would silently validate one package', () => {
+    assert.throws(() => packListToPathSet({
+      'pkg-a': { files: FILES },
+      'pkg-b': { files: FILES },
+    }), /exactly 1/);
   });
 });
