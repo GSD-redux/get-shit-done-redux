@@ -1151,11 +1151,24 @@ function warnPositionDiverged(data: Record<string, unknown>): void {
   const prose = (data['prose'] ?? {}) as Record<string, unknown>;
   const disk = (data['disk'] ?? {}) as Record<string, unknown>;
   const phase = disk['phase'] == null ? 'the current phase' : `phase ${scalar(disk['phase'])}`;
+  // #3862 RV6.5 review (MISSED). There are now TWO ways to diverge and they have
+  // different explanations, so a single sentence is wrong for one of them. The old
+  // text always said "the prose position matches neither" — true for a total that
+  // matches no disk count, and FALSE for the range refusal added this round, where
+  // `Plan: 10 of 8` has a total agreeing with the live count and a position past it.
+  // Telling an operator their total matches nothing when it matches exactly sends
+  // them to reconcile the wrong half of the line.
+  const proseTotal = Number(prose['total_plans']);
+  const totalMatchesDisk =
+    proseTotal === Number(disk['plan_count']) || proseTotal === Number(disk['plan_count_all']);
+  const because = totalMatchesDisk
+    ? `The total agrees with the plans on disk, but the position is outside it, so `
+    : `The prose total matches neither count, so `;
   process.stderr.write(
     `[gsd-tools] WARNING: state.advance-plan REFUSED to advance (#3830): ` +
       `## Current Position says plan ${scalar(prose['current_plan'])} of ${scalar(prose['total_plans'])} ` +
       `for ${phase}, but the plans on disk number ${scalar(disk['plan_count'])} ` +
-      `(${scalar(disk['plan_count_all'])} including superseded). The prose position matches neither, so ` +
+      `(${scalar(disk['plan_count_all'])} including superseded). ${because}` +
       `nothing was written and the plan counter did NOT advance. Reconcile STATE.md before continuing — ` +
       `\`gsd-tools query phase-plan-index\` shows the real plan set; \`state rebuild\`, \`state sync\` or ` +
       `\`state patch\` are the repair paths.\n`,
