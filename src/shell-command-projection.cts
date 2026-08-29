@@ -56,7 +56,13 @@ export function posixNormalize(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
-/** #1460: Quote an arbitrary value as one POSIX shell token. */
+/**
+ * #1460 (R) HIGH: POSIX single-quote an arbitrary string for safe inclusion
+ * in a shell command. Hook commands contain absolute install paths, which may
+ * include spaces or shell metacharacters; wrapping the value and escaping each
+ * embedded quote keeps it one shell token and prevents command injection.
+ * POSIX-only: callers targeting cmd.exe must use its native projection.
+ */
 export function shellSingleQuote(value: string): string {
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
