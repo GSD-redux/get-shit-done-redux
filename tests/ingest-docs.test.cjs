@@ -198,12 +198,18 @@ describe('ingest-docs workflow content', () => {
     assert.ok(delegateIdx !== -1, 'new mode must still delegate to gsd-roadmapper');
     assert.ok(gateIdx < delegateIdx, 'the routing gate must precede the roadmapper delegation');
 
-    // The gate must show the user exactly what will be written (#3827: the
-    // classification approval must not also authorize scaffold creation).
-    for (const dest of ['PROJECT.md', 'REQUIREMENTS.md', 'ROADMAP.md', 'STATE.md']) {
+    // The gate display must show the user exactly what will be written
+    // (#3827: the classification approval must not also authorize scaffold
+    // creation). Window is the DISPLAY BLOCK only (gate question → the
+    // AskUserQuestion spec), so the assertions can't pass off text from the
+    // option-disposition branches below.
+    const askIdx = content.indexOf('Use `AskUserQuestion`', gateIdx);
+    assert.ok(askIdx !== -1 && askIdx < delegateIdx, 'gate must specify its AskUserQuestion contract');
+    const displayBlock = content.slice(gateIdx, askIdx);
+    for (const dest of ['.planning/PROJECT.md', '.planning/REQUIREMENTS.md', '.planning/ROADMAP.md', '.planning/STATE.md']) {
       assert.ok(
-        gateIdx !== -1 && content.slice(gateIdx, delegateIdx).includes(dest),
-        `routing gate must name destination file ${dest}`
+        displayBlock.includes(dest),
+        `routing gate display block must name destination file ${dest}`
       );
     }
 
@@ -229,8 +235,8 @@ describe('ingest-docs workflow content', () => {
       'the zero-conflict branch must not authorize silent routing; it hands control to the routing gate'
     );
     assert.ok(
-      zeroWindow.includes('routing gate'),
-      'zero-conflict branch must name the routing gate as its destination'
+      zeroWindow.includes('proceed to the routing gate'),
+      'zero-conflict branch must hand control to the routing gate'
     );
   });
 
