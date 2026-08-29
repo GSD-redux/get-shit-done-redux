@@ -91,7 +91,8 @@ node gsd-tools.cjs state get [section]
 # Batch update multiple fields
 node gsd-tools.cjs state patch --field1 val1 --field2 val2
 
-# Increment plan counter
+# Increment plan counter. Takes no options and no arguments — see the refusal
+# contract below, since this verb can decline to advance.
 node gsd-tools.cjs state advance-plan
 # When no labeled plan position can be parsed (e.g. ## Current Position drifted
 # to pure narrative prose), declines with reason "plan_position_unreadable" plus
@@ -123,6 +124,32 @@ node gsd-tools.cjs state begin-phase --phase N --name SLUG --plans COUNT
 node gsd-tools.cjs state signal-waiting --type TYPE --question "..." --options "A|B" --phase P
 node gsd-tools.cjs state signal-resume
 ```
+
+### `state advance-plan` — the refusal contract
+
+Before advancing, the verb resolves the phase's real plan set from disk the same
+way `query phase-plan-index` does and compares it against the `## Current
+Position` prose. It **refuses to advance** when the two disagree, rather than
+incrementing a position it cannot trust (#3830).
+
+Three answers a caller must tell apart, all at **exit 0**:
+
+| stdout | meaning | what a caller should do |
+|---|---|---|
+| `{"advanced": true, ...}` | the counter moved | proceed; record progress and metrics |
+| `{"advanced": false, "reason": "last_plan", ...}` | already on the phase's last plan | proceed; this is the ordinary end of a phase |
+| `{"advanced": false, "reason": "position_diverged", "prose": {...}, "disk": {...}}` | prose position disagrees with the plans on disk | **stop** — do not record progress or metrics against a position that did not move |
+
+A divergence also prints a `[gsd-tools] WARNING:` line to **stderr** naming both
+positions and the repair path, so the refusal is visible to an operator who is
+not reading stdout. stdout stays clean JSON.
+
+Because every answer exits 0, branch on the payload rather than the exit code —
+and branch as an **allow-list**: treat anything that is not one of the two
+advancing shapes as a stop, so a reason added later, an `{"error": ...}` object,
+or an empty capture from a crashed invocation all fail closed. Reconcile a
+diverged STATE.md with `state rebuild`, `state sync`, or `state patch`;
+`query phase-plan-index` shows the real plan set.
 
 ### State Snapshot
 
