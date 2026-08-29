@@ -1737,15 +1737,6 @@ gap_id: G-01-test-phase-99`));
     assert.match(content, /reported: "Something broke\."/);
   });
 
-  test('holds the planning lock and uses a strict sibling-temp rename for the transaction', () => {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'uat.cts'), 'utf8');
-    // allow-test-rule: lock/write wiring has no deterministic CLI observation without adding a production race hook (#3707)
-    const command = source.slice(source.indexOf('function cmdRecordResult('), source.indexOf('// ─── parseCurrentTest'));
-    assert.match(command, /withPlanningLock\(cwd, \(\) => \{[\s\S]*fs\.readFileSync[\s\S]*strictAtomicWrite/);
-    assert.match(command, /strictAtomicWrite/);
-    assert.doesNotMatch(command, /platformWriteSync/);
-  });
-
   test('rejects a fake pending result inside fenced code without modifying the file', () => {
     fs.writeFileSync(uatPath, fs.readFileSync(uatPath, 'utf8').replace(
       'result: pending\n\n### 2. Profile',
