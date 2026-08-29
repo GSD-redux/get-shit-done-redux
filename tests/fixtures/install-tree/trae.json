@@ -391,6 +391,7 @@
   "scripts/gen-loop-host-contract.cjs",
   "scripts/lib/alias-drift-families.cjs",
   "scripts/lib/allowlist-ratchet.cjs",
+  "scripts/lib/ci-job-timing.cjs",
   "scripts/lib/cli-exit.cjs",
   "scripts/lib/drift-scan.cjs",
   "scripts/lib/exit-code-registry.cjs",
