@@ -114,6 +114,35 @@ describe('smart-entry: situation coverage', () => {
     });
   }
 
+  // #3860-family guard is NOT wanted here; these are #3864's missing pins:
+  // the classifier's verify branch must match the same verif* stem that
+  // state-document's normalizeStateStatus matches, or a STATE.md declaring
+  // `status: verified` falls through to `unknown` (and, on a clean tree with
+  // unpushed commits, to idle-stranded — differently wrong).
+  test('#3864: status "verified" classifies as verify-pending', () => {
+    const dir = track(makeProject({ state: state({ status: 'verified', total_phases: 5, current_phase: 2 }), roadmap: true }));
+    const result = classifyProject(dir);
+    assert.equal(result.situation, 'verify-pending');
+  });
+
+  test('#3864: status "verification" classifies as verify-pending', () => {
+    const dir = track(makeProject({ state: state({ status: 'verification', total_phases: 5, current_phase: 2 }), roadmap: true }));
+    const result = classifyProject(dir);
+    assert.equal(result.situation, 'verify-pending');
+  });
+
+  test('#3864: the stem does not over-match — "completed" still reaches complete', () => {
+    const dir = track(makeProject({ state: state({ status: 'completed', total_phases: 5, current_phase: 5 }), roadmap: true }));
+    const result = classifyProject(dir);
+    assert.equal(result.situation, 'complete');
+  });
+
+  test('#3864: verify-failed still wins over the verify-pending stem (ordering pinned)', () => {
+    const dir = track(makeProject({ state: state({ status: 'verify-failed', total_phases: 5, current_phase: 2 }), roadmap: true, verifyFail: true }));
+    const result = classifyProject(dir);
+    assert.equal(result.situation, 'verify-failed');
+  });
+
   test('SITUATIONS constant lists all 11 (incl unknown) and is frozen', () => {
     assert.equal(SITUATIONS.length, 11);
     assert.ok(SITUATIONS.includes('unknown'));
