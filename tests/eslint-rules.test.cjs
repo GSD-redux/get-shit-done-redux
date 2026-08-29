@@ -3367,12 +3367,24 @@ describe('require-registered-exit rule', () => {
     });
   });
 
-  test('valid: computed member access process["exit"](0) is not flagged (documented boundary, name-based matching only)', () => {
+  // #3914 (epic #3889 Phase 7 follow-up) moved this boundary on purpose: see
+  // docs/adr/3889-process-exit-contract.md ~:350-362. Previously
+  // process['exit'](0) was caught by NEITHER this rule (name-based matching
+  // only) nor n/no-process-exit's Identifier-only property match, so it was
+  // a genuine, silent evasion. The rule now resolves a string-literal
+  // computed property the same as a dotted one, closing that gap. This is
+  // NOT a weakening — the old "not flagged" behavior documented below is
+  // superseded and should never be restored to make this test pass again.
+  test('invalid: computed member access process["exit"](0) IS flagged (boundary moved by #3914, ADR-3889)', () => {
     ruleTester.run('require-registered-exit', requireRegisteredExit, {
-      valid: [
-        { code: `process['exit'](0);`, filename: 'src/some-module.cts' },
+      valid: [],
+      invalid: [
+        {
+          code: `process['exit'](0);`,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'rawProcessExit' }],
+        },
       ],
-      invalid: [],
     });
   });
 
@@ -3520,10 +3532,20 @@ describe('require-registered-exit rule', () => {
     return raw;
   }
 
-  // All nine globs that carry n/no-process-exit must be 'error' — none of
-  // them are superseded. gsd-core/bin/**/*.cjs and scripts/**/*.cjs are back
-  // in this list; there is no glob where n/no-process-exit is 'off'.
-  test('n/no-process-exit is error on all nine CommonJS/hook globs (no supersession)', async () => {
+  // n/no-process-exit is registered ('error') on exactly the nine globs of
+  // the shared CommonJS block (eslint.config.mjs ~:476-486): gsd-core/bin/**/*.cjs,
+  // scripts/**/*.cjs, eslint-rules/**/*.cjs, bin/lib/**/*.cjs, pi/**/*.cjs,
+  // examples/**/*.cjs, vscode/*.js, .kilo/plugins/*.js, .opencode/plugins/*.js.
+  // hooks/**/*.js is NOT one of them — the hooks block (eslint.config.mjs
+  // ~:594-619) registers the `n` plugin (for n/no-path-concat) but never sets
+  // the n/no-process-exit rule key, so it resolves to undefined there, not
+  // 'off' and not 'error'. Asserting 'error' for a hooks path is a false
+  // claim about the rule's actual reach; see the companion test below, which
+  // pins that undefined resolution explicitly.
+  // bin/lib/**/*.cjs is skipped here: it is a build-time-generated directory
+  // with no file checked into this repo, so there is no real representative
+  // path to resolve config for. Eight of the nine globs are exercised.
+  test('n/no-process-exit is error on eight of its nine CommonJS globs (bin/lib/** has no checked-in file; no supersession)', async () => {
     const REPO_ROOT = path.join(__dirname, '..');
     const eslint = new ESLint({ cwd: REPO_ROOT });
     const allPaths = [
@@ -3535,7 +3557,6 @@ describe('require-registered-exit rule', () => {
       path.join(REPO_ROOT, 'vscode', 'extension.js'),
       path.join(REPO_ROOT, '.kilo', 'plugins', 'gsd-core.js'),
       path.join(REPO_ROOT, '.opencode', 'plugins', 'gsd-core.js'),
-      path.join(REPO_ROOT, 'hooks', 'gsd-check-update.js'),
     ];
     for (const p of allPaths) {
       const config = await eslint.calculateConfigForFile(p);
@@ -3545,6 +3566,29 @@ describe('require-registered-exit rule', () => {
         `expected n/no-process-exit to be error for ${path.relative(REPO_ROOT, p)}`,
       );
     }
+  });
+
+  // hooks/**/*.js is NOT among n/no-process-exit's registered globs (see
+  // above): the rule resolves to undefined there, while local/require-
+  // registered-exit — the successor rule for this surface — is 'error'.
+  // This pins the real, slightly surprising state (an unregistered rule,
+  // not an 'off' rule) rather than papering over it with a false 'error'
+  // claim.
+  test('on hooks/** n/no-process-exit is unregistered (undefined) while local/require-registered-exit is error', async () => {
+    const REPO_ROOT = path.join(__dirname, '..');
+    const eslint = new ESLint({ cwd: REPO_ROOT });
+    const p = path.join(REPO_ROOT, 'hooks', 'gsd-check-update.js');
+    const config = await eslint.calculateConfigForFile(p);
+    assert.strictEqual(
+      config.rules['n/no-process-exit'],
+      undefined,
+      `expected n/no-process-exit to be unregistered for ${path.relative(REPO_ROOT, p)}`,
+    );
+    assert.strictEqual(
+      normalizeSeverity(config.rules['local/require-registered-exit']),
+      'error',
+      `expected local/require-registered-exit to be error for ${path.relative(REPO_ROOT, p)}`,
+    );
   });
 
   test('local/require-registered-exit is error on all four of its globs', async () => {

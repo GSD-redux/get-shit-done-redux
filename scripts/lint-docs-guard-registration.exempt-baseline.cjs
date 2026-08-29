@@ -139,7 +139,10 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'declarative-reference-antigravity.test.cjs': ['docs/cli/features'],
   'declarative-reference-zcode.test.cjs': ['docs/reference/host-integration-capability-matrix.md'],
   'emitted-attribution.test.cjs': ['docs/README.md', 'docs/tests', 'docs/tests/helpers/install-shared.cjs'],
-  'eslint-rules.test.cjs': ['docs/readme.md'],
+  // #3914: cites docs/adr/3889-process-exit-contract.md ~:350-362 in an
+  // explanatory comment describing the intentional computed-property
+  // boundary move; the file never reads that (or any) docs/ file.
+  'eslint-rules.test.cjs': ['docs/adr/3889-process-exit-contract.md', 'docs/readme.md'],
   'estimate-calibrate.test.cjs': [
     'docs/adr', 'docs/adr/2629-phase-effort-estimation-calibration.md', 'docs/reference',
     'docs/reference/planning-artifacts.md',
