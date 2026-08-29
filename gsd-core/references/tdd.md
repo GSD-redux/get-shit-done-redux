@@ -477,10 +477,13 @@ else
     STATUS=1
   }
 fi
-# Check for GREEN gate commit — reported, never gated: this block also runs
-# mid-cycle, between RED and GREEN, so an absent feat commit is not a violation.
+# Check for GREEN gate commit — GATED: `### Gate Definitions` marks GREEN
+# `Required | Yes`, and this block runs only after the plan COMPLETES.
 GREEN_HIT=$(git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ feat\(${PHASE}-${PLAN}\):" || true)
-[ -n "$GREEN_HIT" ] || echo "no feat(${PHASE}-${PLAN}) commit yet — reported into the SUMMARY's ## TDD Gate Compliance section, not a gate failure"
+if [ -z "$GREEN_HIT" ]; then
+  echo "missing GREEN gate: no feat(${PHASE}-${PLAN}) commit — the plan completed without one"
+  STATUS=1
+fi
 # Check for optional REFACTOR gate commit
 REFACTOR_HIT=$(git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ refactor\(${PHASE}-${PLAN}\):" || true)
 [ -n "$REFACTOR_HIT" ] || echo "no refactor(${PHASE}-${PLAN}) commit — REFACTOR is optional and its absence is not a violation"
