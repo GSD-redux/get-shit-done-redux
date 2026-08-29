@@ -2541,12 +2541,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             const uat = require('./lib/uat.cjs');
             const options = parseNamedArgsOrExit(args, { valueFlags: ['file'], positionals: 2 }, error);
             uat.cmdRenderCheckpoint(cwd, options, raw);
+          } else if (subcommand === 'record-result') {
+            const uat = require('./lib/uat.cjs');
+            const options = parseNamedArgsOrExit(args, { valueFlags: ['file', 'test', 'result', 'note'], positionals: 2 }, error);
+            uat.cmdRecordResult(cwd, options, raw);
           } else if (subcommand === 'classify-coverage') {
             const coverage = require('./lib/coverage.cjs');
             const options = parseNamedArgsOrExit(args, { valueFlags: ['summary', 'file'], positionals: 2 }, error);
             coverage.cmdClassify(cwd, options, raw);
           } else {
-            error('Unknown uat subcommand. Available: render-checkpoint, classify-coverage', ERROR_REASON.SDK_UNKNOWN_COMMAND);
+            error('Unknown uat subcommand. Available: render-checkpoint, record-result, classify-coverage', ERROR_REASON.SDK_UNKNOWN_COMMAND);
           }
   }
 
@@ -4909,4 +4913,3 @@ module.exports = {
   MODEL_ID_SANITIZE_STRIP_RE,
   MODEL_ID_MAX_LENGTH,
 };
-

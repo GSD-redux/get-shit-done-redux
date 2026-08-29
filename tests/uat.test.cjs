@@ -1482,6 +1482,117 @@ awaiting: user response
   });
 });
 
+describe('uat record-result', () => {
+  let tmpDir;
+  let uatPath;
+
+  function writeUat() {
+    fs.writeFileSync(uatPath, `---
+status: testing
+phase: 01-test-phase
+started: 2025-01-01T00:00:00Z
+updated: 2025-01-01T00:00:00Z
+---
+
+## Current Test
+
+number: 1
+name: Sign in
+expected: Sign in succeeds.
+awaiting: user response
+
+## Tests
+
+### 1. Sign in
+expected: Sign in succeeds.
+result: pending
+
+### 2. Profile
+expected: Profile loads.
+result: pending
+
+## Summary
+
+total: 2
+passed: 0
+issues: 0
+pending: 2
+skipped: 0
+blocked: 0
+
+## Gaps
+`);
+  }
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-test-phase');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    uatPath = path.join(phaseDir, '01-UAT.md');
+    writeUat();
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  test('records a pending pass and advances the current test', () => {
+    const result = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '1', '--result', 'pass', '--raw',
+    ], tmpDir);
+
+    assert.equal(result.success, true, `record-result failed: ${result.error}`);
+    assert.deepEqual(JSON.parse(result.output), {
+      recorded: true,
+      file_path: '.planning/phases/01-test-phase/01-UAT.md',
+      test: 1,
+      result: 'pass',
+      complete: false,
+    });
+    const content = fs.readFileSync(uatPath, 'utf8');
+    assert.match(content, /### 1\. Sign in\n{1,}expected: Sign in succeeds\.\nresult: pass/);
+    assert.match(content, /total: 2\npassed: 1\nissues: 0\npending: 1\nskipped: 0\nblocked: 0/);
+    assert.match(content, /## Current Test\n\nnumber: 2\nname: Profile\nexpected: Profile loads\.\nawaiting: user response/);
+    assert.match(content, /^status: testing$/m);
+    assert.match(content, /^updated: \d{4}-\d{2}-\d{2}T/m);
+  });
+
+  test('records an issue with one severity-classified gap and completes the session', () => {
+    const first = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '1', '--result', 'pass', '--raw',
+    ], tmpDir);
+    assert.equal(first.success, true, `first result failed: ${first.error}`);
+
+    const result = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '2', '--result', 'issue', '--note', 'Profile is missing its avatar.', '--raw',
+    ], tmpDir);
+
+    assert.equal(result.success, true, `record-result failed: ${result.error}`);
+    const content = fs.readFileSync(uatPath, 'utf8');
+    assert.match(content, /### 2\. Profile\n{1,}expected: Profile loads\.\nresult: issue\nreported: "Profile is missing its avatar\."\nseverity: major/);
+    assert.equal((content.match(/^- truth:/gm) || []).length, 1, 'one issue adds exactly one gap');
+    assert.match(content, /- truth: "Profile loads\."\n {2}status: failed\n {2}reason: "User reported: Profile is missing its avatar\."\n {2}severity: major\n {2}test: 2/);
+    assert.match(content, /total: 2\npassed: 1\nissues: 1\npending: 0\nskipped: 0\nblocked: 0/);
+    assert.match(content, /## Current Test\n\n\[testing complete\]/);
+    assert.match(content, /^status: complete$/m);
+  });
+
+  test('rejects outside, invalid, and stale requests without modifying the file', () => {
+    const before = fs.readFileSync(uatPath, 'utf8');
+    const attempts = [
+      ['uat', 'record-result', '--file', '../outside.md', '--test', '1', '--result', 'pass'],
+      ['uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md', '--test', '1', '--result', 'blocked'],
+      ['uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md', '--test', '2', '--result', 'pass'],
+    ];
+    for (const args of attempts) {
+      const result = runGsdTools(args, tmpDir);
+      assert.equal(result.success, false, `request unexpectedly succeeded: ${args.join(' ')}`);
+      assert.equal(fs.readFileSync(uatPath, 'utf8'), before, 'rejected request must not modify the UAT file');
+    }
+  });
+});
+
 // ─── cmdAuditUat behavioral coverage (#2287 deferred-items.md) ─────────────
 
 describe('#2287 cmdAuditUat: deferred-items.md awareness', () => {

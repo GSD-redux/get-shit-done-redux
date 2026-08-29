@@ -39,6 +39,7 @@ import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 import configLoader = require('./config-loader.cjs');
 const { loadConfig } = configLoader;
+import { platformWriteSync } from './shell-command-projection.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -378,6 +379,168 @@ function cmdRenderCheckpoint(cwd: string, options: { file?: string } = {}, raw: 
     test_name: currentTest.name,
     checkpoint,
   }, raw, checkpoint);
+}
+
+// ─── cmdRecordResult ─────────────────────────────────────────────────────────
+
+interface UatTestRecord {
+  number: number;
+  name: string;
+  expected: string;
+  result: string;
+  start: number;
+  end: number;
+}
+
+function parseUatTestRecords(content: string): UatTestRecord[] {
+  const tests = collectSection(
+    content,
+    (h) => /^tests$/i.test(h.text) && h.level === 2,
+    { levelBounded: true },
+  );
+  if (!tests) error('UAT file is missing a Tests section');
+
+  const headings = tokenizeHeadings(blankIndentedFenceDelimiters(tests!.body)).filter(
+    (h) => h.level === 3 && isTestRowHeadingText(h.text) && isColumnZeroHeading(tests!.body, h),
+  );
+  const records: UatTestRecord[] = [];
+  for (let i = 0; i < headings.length; i += 1) {
+    const heading = headings[i];
+    const next = headings[i + 1];
+    const parts = parseTestRowHeadingText(heading.text);
+    if (!parts) continue;
+    const start = tests!.bodyStart + heading.offset;
+    const end = next ? tests!.bodyStart + next.offset : tests!.bodyEnd;
+    const block = content.slice(start, end);
+    const result = block.match(/^result:\s*\[?([\w-]+)\]?\s*$/im)?.[1]?.toLowerCase();
+    const expected = parseExpectedFromTestBlock(clipBlockAtFirstFence(block));
+    if (!result || !expected) error(`UAT test ${parts.number} is malformed`);
+    records.push({
+      number: parts.number,
+      name: parts.name,
+      expected: expected!,
+      result: result!,
+      start,
+      end,
+    });
+  }
+  if (records.length === 0) error('UAT file has no parseable tests');
+  return records;
+}
+
+function quoteUatValue(value: string): string {
+  return JSON.stringify(value);
+}
+
+function inferIssueSeverity(note: string): 'blocker' | 'major' | 'minor' | 'cosmetic' {
+  if (/crash|error|exception|fails completely|unusable/i.test(note)) return 'blocker';
+  if (/color|font|spacing|alignment|visual|looks off/i.test(note)) return 'cosmetic';
+  if (/works but|slow|weird|minor|small issue/i.test(note)) return 'minor';
+  return 'major';
+}
+
+function renderCurrentTest(test: UatTestRecord | undefined): string {
+  if (!test) return '[testing complete]';
+  const expected = test.expected.includes('\n')
+    ? `expected: |\n${test.expected.split('\n').map((line) => `  ${line}`).join('\n')}`
+    : `expected: ${test.expected}`;
+  return `number: ${test.number}\nname: ${test.name}\n${expected}\nawaiting: user response`;
+}
+
+function replaceSectionBody(content: string, title: string, body: string): string {
+  const section = collectSection(content, (h) => h.level === 2 && new RegExp(`^${title}$`, 'i').test(h.text), { levelBounded: true });
+  if (!section) error(`UAT file is missing a ${title} section`);
+  return content.slice(0, section!.bodyStart) + body + content.slice(section!.bodyEnd);
+}
+
+function replaceRequiredFrontmatterField(content: string, field: string, value: string): string {
+  const line = new RegExp(`^${field}:.*$`, 'm');
+  if (!line.test(content)) error(`UAT file is missing frontmatter ${field}`);
+  return content.replace(line, `${field}: ${value}`);
+}
+
+function cmdRecordResult(
+  cwd: string,
+  options: { file?: string; test?: string; result?: string; note?: string } = {},
+  raw: boolean,
+): void {
+  if (!options.file || !options.test || !options.result) {
+    error('UAT result requires --file, --test, and --result');
+  }
+  if (!/^\d+$/.test(options.test!)) error('--test must be a positive integer');
+  const testNumber = Number(options.test);
+  if (testNumber < 1) error('--test must be a positive integer');
+  if (options.result !== 'pass' && options.result !== 'issue') error('--result must be pass or issue');
+
+  const candidate = requireSafePath(options.file, cwd, 'UAT file', { allowAbsolute: true });
+  const resolvedPath = requireSafePath(candidate, planningDir(cwd), 'UAT file', { allowAbsolute: true });
+  if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) error(`UAT file not found: ${options.file}`);
+
+  const original = fs.readFileSync(resolvedPath, 'utf-8');
+  const current = parseCurrentTest(original);
+  if (current.complete || current.number !== testNumber) error(`UAT test ${testNumber} is not the current pending test`);
+  const records = parseUatTestRecords(original);
+  const target = records.find((test) => test.number === testNumber);
+  if (!target || target.result !== 'pending') error(`UAT test ${testNumber} is not pending`);
+  const pendingTarget = target as UatTestRecord;
+
+  const summarySection = collectSection(original, (h) => /^summary$/i.test(h.text) && h.level === 2, { levelBounded: true });
+  const gapsSection = collectSection(original, (h) => /^gaps$/i.test(h.text) && h.level === 2, { levelBounded: true });
+  if (!summarySection || !gapsSection) error('UAT file is missing Summary or Gaps section');
+
+  const note = options.note ?? '';
+  const severity = inferIssueSeverity(note);
+  const targetBlock = original.slice(pendingTarget.start, pendingTarget.end);
+  const replacement = options.result === 'issue'
+    ? `result: issue\nreported: ${quoteUatValue(note)}\nseverity: ${severity}`
+    : 'result: pass';
+  let updated = original.slice(0, pendingTarget.start) + targetBlock.replace(/^result:\s*\[?pending\]?\s*$/im, `${replacement}\n`) + original.slice(pendingTarget.end);
+  const updatedRecords = parseUatTestRecords(updated);
+  const counts = { passed: 0, issues: 0, pending: 0, skipped: 0, blocked: 0 };
+  for (const test of updatedRecords) {
+    if (test.result === 'pass') counts.passed += 1;
+    else if (test.result === 'issue') counts.issues += 1;
+    else if (test.result === 'pending') counts.pending += 1;
+    else if (test.result === 'skipped') counts.skipped += 1;
+    else if (test.result === 'blocked') counts.blocked += 1;
+  }
+  const next = updatedRecords.find((test) => test.result === 'pending');
+  updated = replaceSectionBody(updated, 'Current Test', renderCurrentTest(next));
+  updated = replaceSectionBody(updated, 'Summary', [
+    `total: ${updatedRecords.length}`,
+    `passed: ${counts.passed}`,
+    `issues: ${counts.issues}`,
+    `pending: ${counts.pending}`,
+    `skipped: ${counts.skipped}`,
+    `blocked: ${counts.blocked}`,
+  ].join('\n'));
+  if (options.result === 'issue') {
+    const gap = [
+      `- truth: ${quoteUatValue(pendingTarget.expected)}`,
+      '  status: failed',
+      `  reason: ${quoteUatValue(`User reported: ${note}`)}`,
+      `  severity: ${severity}`,
+      `  test: ${testNumber}`,
+      '  root_cause: ""',
+      '  artifacts: []',
+      '  missing: []',
+      '  debug_session: ""',
+    ].join('\n');
+    const existingGaps = collectSection(updated, (h) => /^gaps$/i.test(h.text) && h.level === 2, { levelBounded: true })!;
+    updated = updated.slice(0, existingGaps.bodyEnd) + `${existingGaps.body.trim() ? '\n\n' : ''}${gap}` + updated.slice(existingGaps.bodyEnd);
+  }
+  updated = replaceRequiredFrontmatterField(updated, 'status', next ? 'testing' : 'complete');
+  updated = replaceRequiredFrontmatterField(updated, 'updated', new Date().toISOString());
+
+  platformWriteSync(resolvedPath, updated);
+  output({
+    recorded: true,
+    file_path: toPosixPath(path.relative(cwd, resolvedPath)),
+    test: testNumber,
+    result: options.result,
+    severity: options.result === 'issue' ? severity : undefined,
+    complete: !next,
+  }, raw, undefined);
 }
 
 // ─── parseCurrentTest ─────────────────────────────────────────────────────────
@@ -2933,6 +3096,7 @@ function categorizeItem(rawResult: string, reason?: string, blockedBy?: string):
 export = {
   cmdAuditUat,
   cmdRenderCheckpoint,
+  cmdRecordResult,
   parseCurrentTest,
   parseUatItems,
   parseUatItemsWithStats,
