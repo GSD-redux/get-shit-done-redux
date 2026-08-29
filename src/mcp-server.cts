@@ -150,7 +150,7 @@ const TOOLS = [
   {
     name: 'gsd_control_center',
     description: 'Read the selected project planning snapshot for the GSD Control Center.',
-    _meta: { 'ui/resourceUri': 'ui://gsd/control-center-v1.html' },
+    _meta: { ui: { resourceUri: 'ui://gsd/control-center-v1.html' }, 'ui/resourceUri': 'ui://gsd/control-center-v1.html' },
     inputSchema: {
       type: 'object', properties: { project_path: { type: 'string', description: 'Absolute project directory.' } }, required: ['project_path'],
     },
@@ -158,7 +158,7 @@ const TOOLS = [
   {
     name: 'gsd_uat_workbench',
     description: 'Read unresolved UAT items for the selected project.',
-    _meta: { 'ui/resourceUri': 'ui://gsd/uat-workbench-v1.html' },
+    _meta: { ui: { resourceUri: 'ui://gsd/uat-workbench-v1.html' }, 'ui/resourceUri': 'ui://gsd/uat-workbench-v1.html' },
     inputSchema: {
       type: 'object', properties: { project_path: { type: 'string', description: 'Absolute project directory.' } }, required: ['project_path'],
     },
@@ -166,7 +166,7 @@ const TOOLS = [
   {
     name: 'gsd_record_uat_result',
     description: 'Record a pass or issue for one pending UAT test, then refresh the workbench.',
-    _meta: { 'ui/resourceUri': 'ui://gsd/uat-workbench-v1.html' },
+    _meta: { ui: { resourceUri: 'ui://gsd/uat-workbench-v1.html' }, 'ui/resourceUri': 'ui://gsd/uat-workbench-v1.html' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -255,6 +255,22 @@ function structured(value: unknown) {
   return { structuredContent: value, content: [{ type: 'text', text: JSON.stringify(value) }] };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function nextPendingTest(workbench: Record<string, unknown>, filePath: string, cliFilePath: unknown): unknown {
+  const results = Array.isArray(workbench.results) ? workbench.results as unknown[] : [];
+  for (const entry of results) {
+    const row = asRecord(entry);
+    if (!row || (row.file_path !== filePath && row.file_path !== cliFilePath) || !Array.isArray(row.items)) continue;
+    for (const item of row.items as unknown[]) {
+      if (asRecord(item)?.category === 'pending') return item;
+    }
+  }
+  return null;
+}
+
 function callTool(name: string, args: unknown, ctx: McpContext): { content: Array<{ type: string; text: string }>; isError?: boolean; structuredContent?: unknown } {
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
   const cwd = asString(ctx.cwd) || process.cwd();
@@ -276,23 +292,39 @@ function callTool(name: string, args: unknown, ctx: McpContext): { content: Arra
       if (!project) return toolError(`${name} requires an existing absolute "project_path" directory.`);
       if (name === 'gsd_control_center') {
         const result = parsedDispatch('planning', 'inspect', [], project);
-        return result.error ? toolError(result.error) : structured(result.value);
+        const planning = asRecord(result.value);
+        return result.error || !planning ? toolError(result.error || 'planning inspect returned invalid JSON.') : structured({ project_path: project, ...planning });
       }
       if (name === 'gsd_uat_workbench') {
         const result = parsedDispatch('audit-uat', 'run', [], project);
-        return result.error ? toolError(result.error) : structured(result.value);
+        const workbench = asRecord(result.value);
+        return result.error || !workbench ? toolError(result.error || 'audit-uat returned invalid JSON.') : structured({ project_path: project, ...workbench });
       }
-      const file = asString(a.file);
-      const test = a.test;
+      const file = asString(a.file_path);
+      const test = a.test_number;
       const result = asString(a.result);
       const note = asString(a.note);
       if (!file || !Number.isInteger(test) || (result !== 'pass' && result !== 'issue') || (a.note !== undefined && note === null)) {
-        return toolError('gsd_record_uat_result requires string "file", integer "test", result "pass" or "issue", and optional string "note".');
+        return toolError('gsd_record_uat_result requires string "file_path", integer "test_number", result "pass" or "issue", and optional string "note".');
       }
       const mutation = parsedDispatch('uat', 'record-result', ['--file', file, '--test', String(test), '--result', result, ...(note === null ? [] : ['--note', note])], project);
       if (mutation.error) return toolError(mutation.error);
       const workbench = parsedDispatch('audit-uat', 'run', [], project);
-      return workbench.error ? toolError(workbench.error) : structured({ mutation: mutation.value, workbench: workbench.value });
+      const mutationData = asRecord(mutation.value);
+      const workbenchData = asRecord(workbench.value);
+      if (workbench.error || !mutationData || !workbenchData) return toolError(workbench.error || 'GSD command returned invalid JSON.');
+      // Echo the caller's project-relative selection: CLI realpath resolution
+      // may cross macOS's /var -> /private/var alias and produce an unusable path.
+      const mutationFile = file;
+      const next = nextPendingTest(workbenchData, mutationFile, mutationData.file_path);
+      return structured({
+        file_path: mutationFile,
+        test_number: test,
+        result,
+        status: mutationData.complete === true ? 'complete' : 'testing',
+        next_test: next,
+        workbench: { project_path: project, ...workbenchData },
+      });
     }
     if (name === 'gsd_read_state') {
       const p = asString(a.path);

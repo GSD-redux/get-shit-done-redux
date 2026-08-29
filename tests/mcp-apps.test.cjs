@@ -23,9 +23,9 @@ test('Codex app tools require an absolute project_path', () => {
 test('Codex app tools declare the UI resource each host should render', () => {
   const res = handleMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
   const byName = Object.fromEntries(res.result.tools.map((tool) => [tool.name, tool]));
-  assert.equal(byName.gsd_control_center._meta['ui/resourceUri'], 'ui://gsd/control-center-v1.html');
-  assert.equal(byName.gsd_uat_workbench._meta['ui/resourceUri'], 'ui://gsd/uat-workbench-v1.html');
-  assert.equal(byName.gsd_record_uat_result._meta['ui/resourceUri'], 'ui://gsd/uat-workbench-v1.html');
+  assert.equal(byName.gsd_control_center._meta.ui.resourceUri, 'ui://gsd/control-center-v1.html');
+  assert.equal(byName.gsd_uat_workbench._meta.ui.resourceUri, 'ui://gsd/uat-workbench-v1.html');
+  assert.equal(byName.gsd_record_uat_result._meta.ui.resourceUri, 'ui://gsd/uat-workbench-v1.html');
 });
 
 test('gsd_control_center returns matching structured data and JSON text', () => {
@@ -79,12 +79,17 @@ blocked: 0
 `);
     const res = call('gsd_record_uat_result', {
       project_path: dir,
-      file: '.planning/phases/01-test-phase/01-UAT.md',
-      test: 1,
+      file_path: '.planning/phases/01-test-phase/01-UAT.md',
+      test_number: 1,
       result: 'pass',
     });
     assert.equal(res.result.isError, undefined, res.result.content[0].text);
-    assert.equal(res.result.structuredContent.mutation.recorded, true);
+    assert.equal(res.result.structuredContent.file_path, '.planning/phases/01-test-phase/01-UAT.md');
+    assert.equal(res.result.structuredContent.test_number, 1);
+    assert.equal(res.result.structuredContent.result, 'pass');
+    assert.equal(res.result.structuredContent.status, 'complete');
+    assert.equal(res.result.structuredContent.next_test, null);
+    assert.equal(res.result.structuredContent.workbench.project_path, dir);
     assert.deepEqual(res.result.structuredContent.workbench.results, []);
     assert.deepEqual(JSON.parse(res.result.content[0].text), res.result.structuredContent);
   } finally {
@@ -99,7 +104,18 @@ test('Codex app resources are versioned HTML with border metadata', () => {
     assert.equal(content.mimeType, 'text/html;profile=mcp-app');
     assert.equal(content._meta['ui.prefersBorder'], true);
     assert.match(content.text, /postMessage/);
-    assert.match(content.text, /ui\/initialize/);
+    assert.match(content.text, /protocolVersion/);
+    assert.match(content.text, /appCapabilities/);
+    assert.match(content.text, /ui\/notifications\/initialized/);
     assert.match(content.text, /textContent/);
   }
+});
+
+test('MCP App resources expose semantic dashboards, not a manual JSON console', () => {
+  const control = handleMessage({ jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'ui://gsd/control-center-v1.html' } }).result.contents[0].text;
+  const workbench = handleMessage({ jsonrpc: '2.0', id: 2, method: 'resources/read', params: { uri: 'ui://gsd/uat-workbench-v1.html' } }).result.contents[0].text;
+  for (const label of ['Milestone', 'Active work', 'Progress', 'Phases', 'Diagnostics', 'Next action']) assert.match(control, new RegExp(label));
+  for (const label of ['phase-filter', 'type-filter', 'Record pass', 'Record issue', 'note']) assert.match(workbench, new RegExp(label));
+  assert.doesNotMatch(control, /Load planning/);
+  assert.doesNotMatch(workbench, /Load UAT/);
 });
