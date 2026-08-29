@@ -20,6 +20,7 @@ A narrative companion guide to GSD Core — orient yourself here, then follow th
 - [Workstreams & Workspaces](#workstreams--workspaces)
 - [Security](#security)
 - [Usage Examples](#usage-examples)
+- [Debugging and adaptive runtime evidence](#debugging-and-adaptive-runtime-evidence)
 - [Troubleshooting](#troubleshooting)
 - [Recovery Quick Reference](#recovery-quick-reference)
 - [Project File Structure](#project-file-structure)
@@ -686,6 +687,28 @@ Toggle at project setup (`/gsd-new-project` asks during workflow preferences) or
 /gsd-phase --remove 7       # Descope phase 7 and renumber
 /gsd-phase --edit 4         # Edit any field of phase 4 in place
 ```
+
+---
+
+## Debugging and adaptive runtime evidence
+
+`/gsd-debug "description"` creates a persistent session and investigates with ordinary tests and passive/native evidence. Temporary source probes are **off by default**. Opt in only when stronger causal evidence is useful:
+
+```bash
+/gsd-debug --runtime-probes "Cache state diverges between workers"
+/gsd-debug continue cache-divergence
+/gsd-debug continue cache-divergence --no-runtime-probes
+```
+
+`--runtime-probes` selects the `adaptive` policy; it does not force instrumentation. GSD installs a source probe only after it has an exact persisted reproduction, competing recorded hypotheses that existing evidence cannot distinguish, bounded sanitized observations, sufficiently low perturbation risk, and a durable ownership ledger. The same reproduction is reused unchanged for the instrumented `baseline`, instrumented `post_fix`, and final `uninstrumented_verify` phases.
+
+The effective policy is persisted in the session. `/gsd-debug continue <slug>` retains a valid saved policy unless an explicit probe flag overrides it. `--no-runtime-probes` selects `off`, which prohibits new source probes while still requiring cleanup of any prior session-owned instrumentation or capture artifacts.
+
+`--diagnose` creates an immutable `find_root_cause_only` session. That goal survives every resume: the session may inspect existing tests and passive evidence, but it never offers or applies a fix, edits tracked source, or creates structured runtime captures. Consequently, `--diagnose --runtime-probes` is rejected; redundant `--diagnose --no-runtime-probes` is allowed.
+
+Cleanup is part of correctness. GSD removes only ledgered, session-owned probe blocks and capture artifacts, verifies the resulting diff and ownership counts, and blocks commits, abandonment, archival, human verification, and completion if cleanup cannot be proved. The protocol is local and self-contained: no daemon, hosted service, telemetry, network transport, SDK, or external package is introduced.
+
+See [the command reference](COMMANDS.md#gsd-debug) and [debugging a failed execution](how-to/debug-a-failed-execution.md) for operational examples.
 
 ---
 

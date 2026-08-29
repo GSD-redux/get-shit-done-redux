@@ -5,7 +5,7 @@
  *
  * Prerequisite for #3128 condition 1: ADR-1671 admission gate (2), "a fact the
  * init seam demonstrably computes at a real entry point"
- * (`docs/adr/1671-dynamic-context-management-platform.md:122-131`). Before this,
+ * (ADR-1671, admission gate 2). Before this,
  * `gsd-core/workflows/debug.md` was one of the last workflows with no `cmdInit*`
  * of its own, so no debug-scoped fact could ever be computed and any `when=` atom
  * naming one would have evaluated FALSE forever — the silent-exclusion bug that
@@ -38,11 +38,52 @@ function writeConfig(tmpDir, config, { ws = null } = {}) {
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config, null, 2));
 }
 
+function writeRawDebugSession(tmpDir, slug, body) {
+  const debugDir = path.join(tmpDir, '.planning', 'debug');
+  fs.mkdirSync(debugDir, { recursive: true });
+  const sessionPath = path.join(debugDir, `${slug}.md`);
+  fs.writeFileSync(sessionPath, body);
+  return sessionPath;
+}
+
+function writeDebugSession(tmpDir, slug, policy) {
+  const lines = [
+    '---',
+    'status: investigating',
+    'trigger: test session',
+    '---',
+    '',
+    '## Current Focus',
+    '',
+    'next_action: gather evidence',
+  ];
+  if (policy !== undefined) {
+    lines.push(
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      `policy: ${policy}`,
+      'state: not_used',
+      'mode: null',
+    );
+  }
+  return writeRawDebugSession(tmpDir, slug, `${lines.join('\n')}\n`);
+}
+
 /** Runs a gsd-tools query and parses its JSON, asserting a clean exit first. */
 function runJson(argv, cwd, env = {}) {
   const result = runGsdTools(argv, cwd, env);
   assert.ok(result.success, `Command failed: ${result.error}`);
   return JSON.parse(result.output);
+}
+
+function runJsonError(argv, cwd) {
+  const result = runGsdTools(argv, cwd, { GSD_JSON_ERRORS: '1' });
+  assert.equal(result.success, false, `expected rejection: ${argv.join(' ')}`);
+  const payload = JSON.parse(result.error);
+  assert.equal(payload.ok, false);
+  return payload;
 }
 
 // ─── Group A: equivalence with the three calls init.debug replaces ──────────
@@ -195,7 +236,21 @@ describe('init.debug bundle shape (matrix §B)', () => {
   test('emits the documented field set (row B1)', () => {
     const output = runJson(['init', 'debug'], tmpDir);
 
-    for (const key of ['project_root', 'debug_dir', 'commit_docs', 'debugger_model', 'tdd_mode', 'diagnose']) {
+    for (const key of [
+      'project_root',
+      'debug_dir',
+      'commit_docs',
+      'debugger_model',
+      'tdd_mode',
+      'subcommand',
+      'slug',
+      'description',
+      'diagnose',
+      'debug_global_flags',
+      'runtime_evidence_override',
+      'runtime_evidence_policy',
+      'runtime_evidence_eligible',
+    ]) {
       assert.ok(
         Object.prototype.hasOwnProperty.call(output, key),
         `init.debug must emit "${key}"`
@@ -205,6 +260,15 @@ describe('init.debug bundle shape (matrix §B)', () => {
       Object.prototype.hasOwnProperty.call(output, 'section_manifest'),
       'section_manifest must be present even when it degrades to null'
     );
+  });
+
+  test('emits an exact off policy and boolean false eligibility by default (#3128)', () => {
+    const output = runJson(['init', 'debug'], tmpDir);
+
+    assert.equal(output.runtime_evidence_policy, 'off');
+    assert.equal(output.runtime_evidence_eligible, false);
+    assert.equal(typeof output.runtime_evidence_eligible, 'boolean');
+    assert.deepEqual(output.debug_global_flags, []);
   });
 
   test('omits response_language entirely when unset (row B2)', () => {
@@ -282,6 +346,444 @@ describe('init.debug bundle shape (matrix §B)', () => {
   });
 });
 
+// ─── #3128: runtime-evidence flag routing and persisted precedence ───────────
+
+describe('init.debug resolves runtime-evidence policy at the real CLI seam (#3128)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('init-debug-runtime-evidence-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('--runtime-probes is an exact order-independent boolean selecting adaptive', () => {
+    for (const argv of [
+      ['init', 'debug', '--runtime-probes'],
+      ['init', 'debug', '--runtime-probes', 'continue', 'missing-session'],
+      ['init', 'debug', 'continue', 'missing-session', '--runtime-probes'],
+      ['init', 'debug', '--runtime-probes', '--runtime-probes'],
+    ]) {
+      const output = runJson(argv, tmpDir);
+      assert.equal(output.runtime_evidence_policy, 'adaptive', argv.join(' '));
+      assert.equal(output.runtime_evidence_eligible, true, argv.join(' '));
+      assert.equal(typeof output.runtime_evidence_eligible, 'boolean');
+      assert.deepEqual(output.debug_global_flags, ['--runtime-probes']);
+    }
+  });
+
+  test('--no-runtime-probes is an exact order-independent boolean selecting off', () => {
+    writeDebugSession(tmpDir, 'saved-adaptive', 'adaptive');
+
+    for (const argv of [
+      ['init', 'debug', '--no-runtime-probes'],
+      ['init', 'debug', '--no-runtime-probes', 'continue', 'saved-adaptive'],
+      ['init', 'debug', 'continue', 'saved-adaptive', '--no-runtime-probes'],
+      ['init', 'debug', '--no-runtime-probes', '--no-runtime-probes'],
+    ]) {
+      const output = runJson(argv, tmpDir);
+      assert.equal(output.runtime_evidence_policy, 'off', argv.join(' '));
+      assert.equal(
+        output.runtime_evidence_eligible,
+        argv.includes('continue'),
+        `${argv.join(' ')}: continuations retain cleanup/reconciliation routing`,
+      );
+      assert.equal(typeof output.runtime_evidence_eligible, 'boolean');
+      assert.deepEqual(output.debug_global_flags, ['--no-runtime-probes']);
+    }
+  });
+
+  test('probe flags use exact whole-token matching', () => {
+    for (const token of [
+      '--runtime-probes=true',
+      '--runtime-probes-extra',
+      'prefix--runtime-probes',
+      '--no-runtime-probes=false',
+      '--no-runtime-probes-extra',
+    ]) {
+      const output = runJson(['init', 'debug', token], tmpDir);
+      assert.equal(output.runtime_evidence_policy, 'off', `must ignore non-exact token ${token}`);
+      assert.equal(output.runtime_evidence_eligible, false, `must ignore non-exact token ${token}`);
+      assert.deepEqual(output.debug_global_flags, [], `must not replay non-exact token ${token}`);
+    }
+  });
+
+  test('the real CLI emits one authoritative route after stripping global flags', () => {
+    const output = runJson([
+      'init', 'debug', 'investigate', '--runtime-probes', 'cache', 'miss',
+    ], tmpDir);
+
+    assert.equal(output.subcommand, 'debug');
+    assert.equal(output.slug, null);
+    assert.equal(output.description, 'investigate cache miss');
+    assert.equal(output.diagnose, false);
+    assert.equal(output.runtime_evidence_override, 'adaptive');
+    assert.equal(output.runtime_evidence_policy, 'adaptive');
+    assert.deepEqual(output.debug_global_flags, ['--runtime-probes']);
+  });
+
+  test('conflicting probe flags fail closed in either order', () => {
+    for (const argv of [
+      ['init', 'debug', '--runtime-probes', '--no-runtime-probes'],
+      ['init', 'debug', '--no-runtime-probes', '--runtime-probes'],
+    ]) {
+      const payload = runJsonError(argv, tmpDir);
+      assert.equal(payload.reason, 'usage');
+    }
+  });
+
+  test('invalid subcommand forms and slugs emit typed usage errors', () => {
+    for (const argv of [
+      ['init', 'debug', 'list', 'extra'],
+      ['init', 'debug', 'status'],
+      ['init', 'debug', 'status', 'Bad-Slug'],
+      ['init', 'debug', 'continue'],
+      ['init', 'debug', 'continue', 'Bad-Slug'],
+      ['init', 'debug', 'continue', 'valid-slug', 'extra'],
+      ['init', 'debug', 'continue', 'valid-slug', '--diagnose'],
+      ['init', 'debug', '--diagnose', '--runtime-probes'],
+    ]) {
+      const payload = runJsonError(argv, tmpDir);
+      assert.equal(payload.reason, 'usage', argv.join(' '));
+    }
+  });
+
+  test('valid saved adaptive and off policies are retained on continue', () => {
+    writeDebugSession(tmpDir, 'adaptive-session', 'adaptive');
+    writeDebugSession(tmpDir, 'off-session', 'off');
+
+    const adaptive = runJson(['init', 'debug', 'continue', 'adaptive-session'], tmpDir);
+    assert.equal(adaptive.runtime_evidence_policy, 'adaptive');
+    assert.equal(adaptive.runtime_evidence_eligible, true);
+
+    const off = runJson(['init', 'debug', 'continue', 'off-session'], tmpDir);
+    assert.equal(off.runtime_evidence_policy, 'off');
+    assert.equal(off.runtime_evidence_eligible, true, 'off-policy continuation still routes reconciliation');
+  });
+
+  test('an explicit probe flag overrides the opposite valid saved policy', () => {
+    writeDebugSession(tmpDir, 'saved-off', 'off');
+    writeDebugSession(tmpDir, 'saved-adaptive', 'adaptive');
+
+    const enabled = runJson(
+      ['init', 'debug', 'continue', 'saved-off', '--runtime-probes'],
+      tmpDir,
+    );
+    assert.equal(enabled.runtime_evidence_policy, 'adaptive');
+    assert.equal(enabled.runtime_evidence_eligible, true);
+
+    const disabled = runJson(
+      ['init', 'debug', '--no-runtime-probes', 'continue', 'saved-adaptive'],
+      tmpDir,
+    );
+    assert.equal(disabled.runtime_evidence_policy, 'off');
+    assert.equal(disabled.runtime_evidence_eligible, true, 'explicit off cannot hide saved cleanup ownership');
+  });
+
+  test('an invalid saved policy fails safe to off and is not rewritten', () => {
+    const sessionPath = writeDebugSession(tmpDir, 'invalid-policy', 'force');
+    const before = fs.readFileSync(sessionPath);
+
+    const output = runJson(['init', 'debug', 'continue', 'invalid-policy'], tmpDir);
+
+    assert.equal(output.runtime_evidence_policy, 'off');
+    assert.equal(output.runtime_evidence_eligible, true, 'invalid-policy continuation still routes reconciliation');
+    assert.deepEqual(fs.readFileSync(sessionPath), before, 'inspection must not normalize the invalid value on disk');
+  });
+
+  test('a legacy session without Runtime Evidence defaults off and is not rewritten', () => {
+    const sessionPath = writeDebugSession(tmpDir, 'legacy-session', undefined);
+    const before = fs.readFileSync(sessionPath);
+
+    const output = runJson(['init', 'debug', 'continue', 'legacy-session'], tmpDir);
+
+    assert.equal(output.runtime_evidence_policy, 'off');
+    assert.equal(output.runtime_evidence_eligible, true, 'legacy continuation still routes reconciliation');
+    assert.deepEqual(fs.readFileSync(sessionPath), before, 'legacy reads must not perform a migration-only rewrite');
+  });
+
+  test('policy lookalikes outside the canonical Runtime Evidence section cannot enable probes', () => {
+    const cases = [
+      {
+        slug: 'policy-in-evidence',
+        lines: [
+          '---',
+          'status: investigating',
+          '---',
+          '',
+          '## Evidence',
+          '',
+          '- timestamp: 2026-08-10T00:00:00Z',
+          '  what_checked: policy parsing',
+          '  what_found: policy: adaptive',
+          'policy: adaptive',
+          '',
+        ],
+      },
+      {
+        slug: 'policy-in-fence',
+        lines: [
+          '---',
+          'status: investigating',
+          '---',
+          '',
+          '## Notes',
+          '',
+          '```yaml',
+          '## Runtime Evidence',
+          'policy: adaptive',
+          '```',
+          '',
+        ],
+      },
+      {
+        slug: 'policy-unrelated-heading',
+        lines: [
+          '---',
+          'status: investigating',
+          '---',
+          '',
+          '## Runtime Evidence Appendix',
+          '',
+          'policy: adaptive',
+          '',
+        ],
+      },
+    ];
+
+    for (const fixture of cases) {
+      const sessionPath = writeRawDebugSession(tmpDir, fixture.slug, fixture.lines.join('\n'));
+      const before = fs.readFileSync(sessionPath);
+      const output = runJson(['init', 'debug', 'continue', fixture.slug], tmpDir);
+
+      assert.equal(output.runtime_evidence_policy, 'off', `${fixture.slug}: must fail safe to off`);
+      assert.equal(output.runtime_evidence_eligible, true, `${fixture.slug}: continuation must route reconciliation`);
+      assert.deepEqual(fs.readFileSync(sessionPath), before, `${fixture.slug}: read must be byte-identical`);
+    }
+  });
+
+  test('duplicate Runtime Evidence sections or duplicate policy keys are ambiguous and fail safe', () => {
+    const sessionPrefix = ['---', 'status: investigating', '---', ''];
+    const runtimeSection = (policy) => [
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      `policy: ${policy}`,
+      'state: not_used',
+      'mode: null',
+      '',
+    ];
+    const cases = [
+      {
+        slug: 'duplicate-sections-a',
+        lines: [...sessionPrefix, ...runtimeSection('adaptive'), ...runtimeSection('off')],
+      },
+      {
+        slug: 'duplicate-sections-b',
+        lines: [...sessionPrefix, ...runtimeSection('off'), ...runtimeSection('adaptive')],
+      },
+      {
+        slug: 'duplicate-policy-a',
+        lines: [
+          ...sessionPrefix, '## Runtime Evidence', '', 'schema_version: 1',
+          'policy: adaptive', 'policy: off', 'state: not_used', '',
+        ],
+      },
+      {
+        slug: 'duplicate-policy-b',
+        lines: [
+          ...sessionPrefix, '## Runtime Evidence', '', 'schema_version: 1',
+          'policy: off', 'policy: adaptive', 'state: not_used', '',
+        ],
+      },
+    ];
+
+    for (const fixture of cases) {
+      const sessionPath = writeRawDebugSession(tmpDir, fixture.slug, fixture.lines.join('\n'));
+      const before = fs.readFileSync(sessionPath);
+      const output = runJson(['init', 'debug', 'continue', fixture.slug], tmpDir);
+
+      assert.equal(output.runtime_evidence_policy, 'off', `${fixture.slug}: ambiguity must fail safe to off`);
+      assert.equal(output.runtime_evidence_eligible, true, `${fixture.slug}: continuation must route reconciliation`);
+      assert.deepEqual(fs.readFileSync(sessionPath), before, `${fixture.slug}: read must be byte-identical`);
+    }
+  });
+
+  test('a malformed Runtime Evidence policy record fails safe without rewriting the session', () => {
+    const sessionPath = writeRawDebugSession(tmpDir, 'malformed-runtime-section', [
+      '---',
+      'status: investigating',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy:',
+      '  adaptive',
+      'state: not_used',
+      '',
+    ].join('\n'));
+    const before = fs.readFileSync(sessionPath);
+
+    const output = runJson(['init', 'debug', 'continue', 'malformed-runtime-section'], tmpDir);
+
+    assert.equal(output.runtime_evidence_policy, 'off');
+    assert.equal(output.runtime_evidence_eligible, true, 'malformed continuation must still route reconciliation');
+    assert.deepEqual(fs.readFileSync(sessionPath), before, 'malformed session read must be byte-identical');
+  });
+
+  test('a canonical CRLF Runtime Evidence section retains saved adaptive policy byte-identically', () => {
+    const sessionPath = writeRawDebugSession(tmpDir, 'crlf-adaptive', [
+      '---',
+      'status: investigating',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy: adaptive',
+      'state: not_used',
+      'mode: null',
+      '',
+      '## Resolution',
+      '',
+    ].join('\r\n'));
+    const before = fs.readFileSync(sessionPath);
+
+    const output = runJson(['init', 'debug', 'continue', 'crlf-adaptive'], tmpDir);
+
+    assert.equal(output.runtime_evidence_policy, 'adaptive');
+    assert.equal(output.runtime_evidence_eligible, true);
+    assert.deepEqual(fs.readFileSync(sessionPath), before, 'valid CRLF session read must be byte-identical');
+  });
+
+  test('a stray HTML comment closer in user text cannot hide a valid saved policy', () => {
+    const sessionPath = writeRawDebugSession(tmpDir, 'stray-comment-close', [
+      '---',
+      'status: investigating',
+      'trigger: user reported --> in generated markup',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy: adaptive',
+      'state: not_used',
+      '',
+      '## Notes',
+      '',
+      'The literal --> is evidence data, not a comment instruction.',
+      '',
+    ].join('\n'));
+    const before = fs.readFileSync(sessionPath);
+
+    const output = runJson(['init', 'debug', 'continue', 'stray-comment-close'], tmpDir);
+
+    assert.equal(output.runtime_evidence_policy, 'adaptive');
+    assert.equal(output.runtime_evidence_eligible, true);
+    assert.deepEqual(fs.readFileSync(sessionPath), before, 'saved session reads remain byte-identical');
+  });
+
+  test('invalid UTF-8 in a saved session fails safe instead of decoding replacement characters', () => {
+    const validPrefix = Buffer.from([
+      '---',
+      'status: investigating',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy: adaptive',
+      'state: not_used',
+      '',
+      '## Resolution',
+      '',
+    ].join('\n'));
+    const sessionPath = writeRawDebugSession(
+      tmpDir,
+      'invalid-utf8',
+      Buffer.concat([validPrefix, Buffer.from([0xc3, 0x28])]),
+    );
+    const before = fs.readFileSync(sessionPath);
+
+    const output = runJson(['init', 'debug', 'continue', 'invalid-utf8'], tmpDir);
+
+    assert.equal(output.runtime_evidence_policy, 'off');
+    assert.equal(output.runtime_evidence_eligible, true, 'invalid-byte continuation must still route reconciliation');
+    assert.deepEqual(fs.readFileSync(sessionPath), before, 'invalid bytes must remain untouched');
+  });
+
+  test('continue slug length boundary accepts 29/30 and rejects 31 characters', () => {
+    for (const length of [29, 30]) {
+      const slug = `a${'b'.repeat(length - 1)}`;
+      const sessionPath = writeDebugSession(tmpDir, slug, 'adaptive');
+      const before = fs.readFileSync(sessionPath);
+      const output = runJson(['init', 'debug', 'continue', slug], tmpDir);
+      assert.equal(output.slug, slug);
+      assert.equal(output.runtime_evidence_policy, 'adaptive');
+      assert.equal(output.runtime_evidence_eligible, true);
+      assert.deepEqual(fs.readFileSync(sessionPath), before);
+    }
+
+    const slug31 = 'a'.repeat(31);
+    const result = runGsdTools(['init', 'debug', 'continue', slug31], tmpDir);
+    assert.equal(result.success, false);
+  });
+
+  test('saved-session policy reads accept 8 MiB minus one and exactly 8 MiB, then reject plus one', () => {
+    const slug = 'policy-size-boundary';
+    const prefix = Buffer.from([
+      '---',
+      'status: investigating',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy: adaptive',
+      'state: not_used',
+      '',
+    ].join('\n'));
+    const limitBytes = 8 * 1024 * 1024;
+    const belowLimit = Buffer.alloc(limitBytes - 1, 0x20);
+    prefix.copy(belowLimit);
+    const sessionPath = writeRawDebugSession(tmpDir, slug, belowLimit);
+
+    const below = runJson(['init', 'debug', 'continue', slug], tmpDir);
+    assert.equal(below.runtime_evidence_policy, 'adaptive');
+    assert.equal(below.runtime_evidence_eligible, true);
+    assert.equal(fs.statSync(sessionPath).size, limitBytes - 1);
+
+    fs.appendFileSync(sessionPath, Buffer.from(' '));
+
+    const atLimit = runJson(['init', 'debug', 'continue', slug], tmpDir);
+    assert.equal(atLimit.runtime_evidence_policy, 'adaptive');
+    assert.equal(atLimit.runtime_evidence_eligible, true);
+    assert.equal(fs.statSync(sessionPath).size, limitBytes);
+
+    fs.appendFileSync(sessionPath, Buffer.from(' '));
+    const aboveLimit = runJson(['init', 'debug', 'continue', slug], tmpDir);
+    assert.equal(aboveLimit.runtime_evidence_policy, 'off');
+    assert.equal(aboveLimit.runtime_evidence_eligible, true, 'cleanup routing survives a degraded read');
+    assert.equal(fs.statSync(sessionPath).size, limitBytes + 1);
+  });
+
+  test('hostile continue slugs cannot escape the debug directory', () => {
+    const outsidePath = path.join(tmpDir, '.planning', 'outside.md');
+    fs.writeFileSync(outsidePath, '## Runtime Evidence\n\npolicy: adaptive\n');
+    const outsideBefore = fs.readFileSync(outsidePath);
+
+    for (const slug of ['../outside', '..\\outside', 'foo/bar']) {
+      const payload = runJsonError(['init', 'debug', 'continue', slug], tmpDir);
+      assert.equal(payload.reason, 'usage', `${slug}: invalid paths must be rejected at the argv seam`);
+
+      assert.deepEqual(fs.readFileSync(outsidePath), outsideBefore, 'outside decoy must remain untouched');
+    }
+  });
+});
+
 // ─── Group C: --diagnose forwarding + CLI negative matrix ──────────────────
 
 describe('init.debug --diagnose forwarding and hostile argv (matrix §C)', () => {
@@ -298,6 +800,7 @@ describe('init.debug --diagnose forwarding and hostile argv (matrix §C)', () =>
   test('--diagnose surfaces as diagnose:true (row C1)', () => {
     const output = runJson(['init', 'debug', '--diagnose'], tmpDir);
     assert.equal(output.diagnose, true);
+    assert.deepEqual(output.debug_global_flags, ['--diagnose']);
   });
 
   test('absent --diagnose is false, not undefined (row C2)', () => {
@@ -309,51 +812,39 @@ describe('init.debug --diagnose forwarding and hostile argv (matrix §C)', () =>
   test('duplicate --diagnose is idempotent (row C3)', () => {
     const output = runJson(['init', 'debug', '--diagnose', '--diagnose'], tmpDir);
     assert.equal(output.diagnose, true);
+    assert.deepEqual(output.debug_global_flags, ['--diagnose']);
   });
 
-  test('rejects an unrecognized flag with the flag named (row C4)', () => {
-    // ADR-3473 §8.4 (Bucket-B correction): "`parseNamedArgs` rejects
-    // unrecognized ... tokens with a non-zero exit — it is called by agents
-    // that will drift again." An unrecognized flag is exactly the mandated
-    // rejection, not a thing to silently absorb.
-    const result = runGsdTools(['init', 'debug', '--nope'], tmpDir);
-    assert.equal(result.success, false, 'an unknown flag must now fail the command');
-    assert.match(result.error, /--nope/, 'the rejection must name the offending flag');
+  test('preserves an unrecognized flag-shaped token as issue-description data (row C4)', () => {
+    const output = runJson(['init', 'debug', '--nope'], tmpDir);
+    assert.equal(output.subcommand, 'debug');
+    assert.equal(output.description, '--nope');
+    assert.equal(output.runtime_evidence_policy, 'off');
   });
 
-  test('rejects a flag-shaped trailing token, naming it (row C5)', () => {
-    const result = runGsdTools(['init', 'debug', '--diagnose', '--weird'], tmpDir);
-    assert.equal(result.success, false, 'an unrecognized flag-shaped token must now fail the command');
-    assert.match(result.error, /--weird/, 'the rejection must name the offending flag');
+  test('strips recognized flags while retaining other flag-shaped description data (row C5)', () => {
+    const output = runJson(['init', 'debug', '--diagnose', '--weird'], tmpDir);
+    assert.equal(output.diagnose, true);
+    assert.equal(output.description, '--weird');
   });
 
-  test('does not interpolate shell metacharacters even though the hostile positional is now rejected (row C6)', () => {
+  test('does not interpolate shell metacharacters while projecting description data (row C6)', () => {
     const canary = path.join(tmpDir, 'PWNED');
     const hostile = `; touch ${canary}; $(touch ${canary}) \`touch ${canary}\` && touch ${canary}`;
 
-    const result = runGsdTools(['init', 'debug', hostile], tmpDir);
+    const output = runJson(['init', 'debug', hostile], tmpDir);
 
-    // §8.4 now rejects this as an unexpected positional argument (exit
-    // non-zero) instead of silently absorbing it — that is at least as safe
-    // as the old accept-and-ignore behavior. The canary assertion is the
-    // actual point of this test and is unchanged: no shell ever touches this
-    // string, whether the token is accepted or rejected.
-    assert.equal(result.success, false, 'a stray positional argument must now fail the command');
+    assert.equal(output.description, hostile);
     assert.equal(fs.existsSync(canary), false, 'no shell interpolation of an attacker-controlled argument');
-    assert.equal(result.error.includes('    at '), false, 'no stack trace in non-debug output');
   });
 
-  test('rejects a very long or unicode positional argument, not just tolerates it (row C7/C8)', () => {
-    // Classified as the same §8.4 unexpected-positional-argument shape as
-    // C6: `init debug` declares no positionals, so any bare token here is a
-    // stray positional and must now be rejected rather than silently
-    // absorbed.
+  test('projects a very long or unicode issue description without crashing (row C7/C8)', () => {
     const long = 'x'.repeat(8192);
     const unicode = 'ünïcødé-🐛-测试';
 
     for (const arg of [long, unicode]) {
-      const result = runGsdTools(['init', 'debug', arg], tmpDir);
-      assert.equal(result.success, false, `argument of length ${arg.length} must now fail the command, not crash`);
+      const output = runJson(['init', 'debug', arg], tmpDir);
+      assert.equal(output.description, arg);
     }
   });
 });
@@ -380,12 +871,15 @@ describe('init.debug section_manifest degradation (matrix §D)', () => {
     return { GSD_SECTION_MANIFEST: manifestPath };
   }
 
-  test('section_manifest is null while debug has no manifest key (row D1)', () => {
-    // Drives the SHIPPED artifact deliberately: `debug` carries no gsd:section
-    // markers until #3128, so the shipped manifest has no `debug` key and the
-    // field must degrade to null — which debug.md reads as "read everything".
+  test('the shipped debug manifest computes an off-policy protocol exclusion (row D1, #3128)', () => {
+    // Drives the SHIPPED artifact deliberately. #3128 adds debug's first
+    // conditional section; the off default therefore yields a real computed
+    // exclusion, never the degraded null value that pre-#3128 debug returned.
     const output = runJson(['init', 'debug'], tmpDir);
-    assert.equal(output.section_manifest, null);
+    assert.notEqual(output.section_manifest, null);
+    assert.deepEqual(output.section_manifest.included, []);
+    assert.deepEqual(output.section_manifest.excluded, ['runtime-evidence-protocol']);
+    assert.deepEqual(output.section_manifest.read, []);
   });
 
   test('an explicit empty debug key computes [], not null (row D2)', () => {
@@ -468,14 +962,16 @@ describe('planningPaths exposes the debug directory (matrix §E)', () => {
 
 // ─── Group G: regressions this change must not cause ───────────────────────
 
-describe('init.debug does not widen the applicability grammar (matrix §G)', () => {
-  test('WHEN_VOCABULARY is unchanged at 29 entries (row G3)', () => {
-    // ADR-1671: the vocabulary is CLOSED and widening it is a coordinated
-    // amendment. This PR delivers admission gate (2) only — the atom that
-    // consumes it belongs to #3128, which owns the amendment.
+describe('init.debug coordinates the #3128 applicability-grammar amendment (matrix §G)', () => {
+  test('WHEN_VOCABULARY is widened to exactly 30 entries by the resolved state atom (row G3)', () => {
+    // ADR-3128 flips ADR-1671's existing reservation to shipped. Eligibility
+    // is a resolved state fact so a saved adaptive policy works on continue;
+    // neither raw public flag becomes a grammar atom.
     const { WHEN_VOCABULARY } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
-    assert.equal(WHEN_VOCABULARY.length, 29);
+    assert.equal(WHEN_VOCABULARY.length, 30);
+    assert.equal(WHEN_VOCABULARY.includes('state:runtime-evidence-eligible'), true);
     assert.equal(WHEN_VOCABULARY.includes('flag:--diagnose'), false);
     assert.equal(WHEN_VOCABULARY.includes('flag:--runtime-probes'), false);
+    assert.equal(WHEN_VOCABULARY.includes('flag:--no-runtime-probes'), false);
   });
 });

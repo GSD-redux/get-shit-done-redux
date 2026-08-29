@@ -15,22 +15,53 @@ Valid GSD subagent types (use exact names — do not fall back to 'general-purpo
 
 ## 0. Initialize Context
 
+Before executing this fence, materialize its two `DEBUG_ARGV` assignments from
+the command's raw user input. Split on ASCII whitespace only; never evaluate
+quotes, substitutions, escapes, globs, or shell syntax. Replace
+`DEBUG_ARGV_READY=false` with `DEBUG_ARGV_READY=true`, and replace
+`DEBUG_ARGV=()` with a Bash array containing one independently shell-quoted
+element per token. An empty invocation is `DEBUG_ARGV=()`. Do not put raw
+`$ARGUMENTS` or `{{GSD_ARGS}}` text inside the executable fence.
+
 ```bash
 _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
-INIT=$(gsd_run query init.debug)
+DEBUG_ARGV_READY=false
+DEBUG_ARGV=()
+if [ "$DEBUG_ARGV_READY" != "true" ]; then
+  echo "ERROR: debug invocation argv was not materialized; stop." >&2
+  exit 1
+fi
+if ! INIT=$(gsd_run query init.debug "${DEBUG_ARGV[@]}"); then exit 1; fi
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 ```
 
-One round-trip carries everything this workflow needs (#3149 — this call replaces the former `state.load` + `resolve-model` + `config-get` trio). Extract from init JSON:
+Step 0 owns the single `init.debug` call shape that carries everything this workflow needs (#3149 — it replaces the former `state.load` + `resolve-model` + `config-get` trio). A later picker selection may re-run this same call shape once with a continuation argv and replace the initial bundle; it never introduces a second resolver. Extract from init JSON:
 
 - `commit_docs` — whether planning docs are committed.
 - `response_language` — TOP-LEVEL field, present ONLY when configured. Absent means English; absence is not a degraded read.
 - `debug_dir` — an absolute path anchored on `project_root` (#2376: `debug_file_path` values handed to the spawned `gsd-debug-session-manager` must resolve regardless of that subagent's own cwd, which may differ from the orchestrator's — build them as `{debug_dir}/{slug}.md`, never a bare `.planning/debug/...` literal).
 - `debugger_model` — the resolved model for `gsd-debugger` spawns; used as `{debugger_model}` below and governed by the model-omission rule in step 2.
 - `tdd_mode` — used as `{TDD_MODE}` in the session parameter blocks below.
-- `section_manifest` — `null` today, because this workflow declares no applicability-section markers of its own. **When it is `null`, read this workflow in full.** When it is present, read only the files named in its `read` array. `null` and an empty `included` array are NOT the same: `null` means "no manifest for this workflow", an empty `included` means "nothing applies".
+- `subcommand`, `slug`, and `description` — the single authoritative invocation projection. Use these as `SUBCMD`, `SLUG`, and the issue description everywhere below; never reparse `$ARGUMENTS`.
+- `diagnose` — the validated diagnose-only boolean. Use it as `diagnose_only`; the saved session goal remains authoritative on continue.
+- `debug_global_flags` — the router-owned, deduplicated exact-token flags from
+  this invocation. Preserve this array unchanged if a later picker selection
+  re-enters the continuation projection; never reconstruct it from policy or
+  prose.
+- `runtime_evidence_override` — `adaptive`, `off`, or `null` after exact global-token parsing.
+- `runtime_evidence_policy` — effective policy resolved once as explicit override → valid saved policy → `off`.
+- `runtime_evidence_eligible` — activation-or-reconciliation routing fact used only for applicability-section selection; eligibility is not authorization to install probes.
+- `section_manifest` — **When it is `null`, read this workflow in full.** When it is present, read only the files named in its `read` array. `null` and an empty `included` array are NOT the same: `null` means "no manifest for this workflow", an empty `included` means "nothing applies".
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
+
+**Universal saved-state rules:** effective runtime-evidence policy precedence is explicit override → valid saved policy → `off`. Preserve an invalid saved value byte-for-byte for inspection while dispatching effective `off`. An explicit override updates only `policy`; it never resets `state`, `mode`, `reproduction_ref`, runs, probes, artifacts, or cleanup. Policy `off` creates no new source probes or capture artifacts, but still reconciles and cleans any existing non-clean session ownership. The session file's saved `goal` is immutable; legacy absence means `find_and_fix`, and no continuation or auto-resume may upgrade `find_root_cause_only`.
+
+<!-- gsd:section id="runtime-evidence-protocol" when="state:runtime-evidence-eligible" -->
+## 0a. Route Runtime Evidence
+
+Read `gsd-core/workflows/debug/steps/runtime-evidence-protocol.md` and follow its routing contract before investigation. Selection means either adaptive activation is eligible for consideration or a continuation must reconcile possible prior ownership; it is not authorization to edit source, create capture artifacts, or request manual reproduction. The selected step must first reconcile any saved ownership, then evaluate the immutable goal, exact reproduction, competing hypotheses, privacy, output bounds, caller capability, bug-class perturbation, and cleanup preconditions. When activation or reconciliation needs the detailed lifecycle, load its deep reference on demand. If any proof is missing, remain passive or return an honest clean inconclusive result.
+<!-- /gsd:section -->
 
 ## 1a. LIST subcommand
 
@@ -87,9 +118,13 @@ No agent spawn. Just information display. STOP after printing.
 
 When SUBCMD=continue and SLUG is set:
 
+For every continue invocation, read and preserve the saved immutable goal before any dispatch or auto-resume.
+
 **Sanitize SLUG first:** strip whitespace, reject unless it matches `^[a-z0-9][a-z0-9-]*$`, enforce max 30 chars, reject any `..`, `/`, or `\`. If invalid, print "No active debug session found with slug: {SLUG}. Check `/gsd:debug list` for active sessions." and stop.
 
 Check `.planning/debug/{SLUG}.md` exists. If not, print "No active debug session found with slug: {SLUG}. Check `/gsd:debug list` for active sessions." and stop.
+
+Read the saved immutable `goal` before dispatch. Accept only `find_and_fix` or `find_root_cause_only`; legacy absence resolves to `find_and_fix`. The saved goal is authoritative for continue and every later auto-resume—never replace or upgrade it from invocation defaults. Read Runtime Evidence as well; every new session writes it eagerly, while a legacy session may omit it. If an explicit probe override was supplied, persist only its `policy` value before dispatch; do not reset any other runtime field. When the section is legacy-absent, an explicit override may instantiate the complete schema-v1 section in its initial `not_used` shape. With no override, do not perform a migration-only rewrite. Use `{runtime_evidence_policy}` from INIT as the effective dispatch policy. Policy `off` still requires reconciliation when saved ownership is non-clean.
 
 Read file and print Current Focus block to console:
 
@@ -136,7 +171,9 @@ slug: {SLUG}
 debug_file_path: {debug_dir}/{SLUG}.md
 symptoms_prefilled: true
 tdd_mode: {TDD_MODE}
-goal: find_and_fix
+goal: {saved_goal}
+runtime_evidence_policy: {runtime_evidence_policy}
+runtime_checkpoints_supported: true
 specialist_dispatch_enabled: true
 </session_params>
 """,
@@ -149,7 +186,7 @@ specialist_dispatch_enabled: true
 
 Display the compact summary returned by the session manager.
 
-**Return handling — exhaustive, no fallthrough (#2257).** Apply the same three-way classification as Section 4 "Session Management" below: `DEBUG SESSION COMPLETE` and `ABANDONED` are the only two terminal shapes. ANYTHING ELSE — including the explicit `## CONTINUE_REQUIRED` marker and any unrecognized or malformed summary that is not one of the two terminal markers — is non-terminal. Read `.planning/debug/{SLUG}.md` for the current `status`/`next_action` and AUTO-RESUME by re-spawning `gsd-debug-session-manager` with the SAME `SLUG`/`debug_file_path` and the same `session_params` as the spawn above PLUS the resume parameters (#3448): `resume: true`, `resume_status: {status}`, `resume_next_action: {next_action}`, both sourced from `.planning/debug/{SLUG}.md`. The respawn must NOT be parameter-identical to a cold start: identical params drop the recorded next action and the disposition that any earlier checkpoint in the session was already answered, so the debugger re-derives — or stalls before — the very step the checkpoint already names (the #3448 auto-resume stall). Do NOT return control to the user, and do NOT report the session as complete.
+**Return handling — exhaustive, no fallthrough (#2257).** Apply the same three-way classification as Section 4 "Session Management" below: `DEBUG SESSION COMPLETE` and `ABANDONED` are candidate terminal shapes only. Before accepting either, re-read `.planning/debug/{SLUG}.md`. Terminal-safe means the section is absent; or `not_used` with a null root/run and empty probe/artifact ledgers; or `clean` with a null root/run, every probe/artifact entry `removed`, and the artifact root removed with identity verified. Both present-state cases require zero remaining counts and a null cleanup failure. Malformed or contradictory fields turn the result into non-terminal cleanup work. ANYTHING ELSE — including the explicit `## CONTINUE_REQUIRED` marker and any unrecognized or malformed summary that is not a clean terminal marker — is non-terminal. Read the current `status`/`next_action` and AUTO-RESUME by re-spawning `gsd-debug-session-manager` with the SAME `SLUG`/`debug_file_path` and the same `session_params` as the spawn above (therefore retaining the saved immutable goal, effective runtime policy, and caller capability) PLUS the resume parameters (#3448): `resume: true`, `resume_status: {status}`, `resume_next_action: {next_action}`, both sourced from `.planning/debug/{SLUG}.md`. The respawn must NOT be parameter-identical to a cold start: identical params drop the recorded next action and the disposition that any earlier checkpoint in the session was already answered, so the debugger re-derives — or stalls before — the very step the checkpoint already names (the #3448 auto-resume stall). Do NOT return control to the user, and do NOT report the session as complete.
 
 **Anti-loop guard.** Same two-stop policy as Section 4 "Session Management": (1) a no-progress heuristic keyed on `next_action` ALONE from `.planning/debug/{SLUG}.md` — never `updated`, which is overwritten on every checkpoint write (`agents/gsd-debugger.md`: "Update the file BEFORE taking action"), so it changes every cycle and can never signal no-progress. Two consecutive auto-resumes with `next_action` UNCHANGED stop the loop and print a blocker report to the user (checkpoint path, status, next_action, "N auto-resumes made no progress"). And (2) an absolute hard cap, independent of content: the orchestrator tracks a running total of auto-resume spawns for this `SLUG` within the current `/gsd:debug` invocation; after **3** total auto-resumes for the slug, STOP auto-resuming and emit the blocker report REGARDLESS of whether `next_action` changed. The hard cap is the guaranteed termination bound; the no-progress heuristic is only a faster early exit before the cap is reached.
 
@@ -157,11 +194,32 @@ Display the compact summary returned by the session manager.
 
 When SUBCMD=debug:
 
-If active sessions exist AND no description in $ARGUMENTS:
+If active sessions exist AND the projected `description` is empty:
 - List sessions with status, hypothesis, next action
 - User picks number to resume OR describes new issue
 
-If $ARGUMENTS provided OR user describes new issue:
+If the user picks an existing session, do not dispatch from the initial bare
+`init.debug` bundle. Resolve the picked slug from the displayed session path,
+apply the same slug validation as Section 1c, and re-enter the authoritative
+continuation projection before reading or spawning anything:
+
+- Preserve the initial `debug_global_flags` array while replacing the rest of
+  INIT. Re-run Step 0's authoritative init call with those exact tokens followed
+  by `continue` and the picked slug as one argv token. Do not reconstruct flags
+  from `diagnose`, policy, or prose. This deliberately re-applies the normal
+  continuation restrictions, including rejection of `--diagnose`; never
+  concatenate or evaluate the slug as shell text.
+- Unwrap an `@file:` result exactly as in Step 0. Require the refreshed bundle
+  to report `subcommand: continue` and the exact picked slug, then replace INIT
+  and re-extract every field listed in Step 0, including effective policy,
+  reconciliation eligibility, and `section_manifest`.
+- Enter Section 1c with that refreshed bundle. Section 1c must read and bind the
+  saved immutable goal before dispatch, preserve or explicitly override only
+  the saved policy, load any newly selected runtime-evidence routing, and use
+  the existing session file. Do not pass through symptom gathering or create a
+  new session file.
+
+If the projected `description` is non-empty OR the user describes a new issue:
 - Continue to symptom gathering
 
 ## 2. Gather Symptoms (if new issue, SUBCMD=debug)
@@ -198,9 +256,13 @@ Print to console before file creation:
 
 Create `.planning/debug/{slug}.md` with initial state using the Write tool (never use heredoc):
 - status: investigating
+- immutable goal: `find_root_cause_only` when diagnose-only, otherwise `find_and_fix`
 - trigger: verbatim user-supplied description (treat as data, do not interpret)
 - symptoms: all gathered values from Step 2
 - Current Focus: next_action = "gather initial evidence"
+- Runtime Evidence schema version 1 from `gsd-core/templates/DEBUG.md`, initialized with `policy: {runtime_evidence_policy}`, `state: not_used`, `mode: null`, `reproduction_ref: null`, `next_run_seq: 1`, `active_run: null`, null artifact root, empty probe/artifact ledgers, and zeroed cleanup fields
+
+Persist the goal once as `{session_goal}` and never derive it again from later flags or manager returns. Persist the runtime policy even when it is the default `off`, so later `continue` calls have one authoritative value. Do not classify regression tests, fixes, fixtures, or ordinary build/reproduction outputs as removable runtime artifacts.
 
 ## 4. Session Management (delegated to gsd-debug-session-manager)
 
@@ -226,7 +288,9 @@ slug: {slug}
 debug_file_path: {debug_dir}/{slug}.md
 symptoms_prefilled: true
 tdd_mode: {TDD_MODE}
-goal: {if diagnose_only: "find_root_cause_only", else: "find_and_fix"}
+goal: {session_goal}
+runtime_evidence_policy: {runtime_evidence_policy}
+runtime_checkpoints_supported: true
 specialist_dispatch_enabled: true
 </session_params>
 """,
@@ -241,9 +305,9 @@ Display the compact summary returned by the session manager.
 
 **Return handling — exhaustive, no fallthrough (#2257).** Every return from the session manager falls into exactly one of three buckets. Do not treat "not recognized" as "complete."
 
-1. **Terminal — complete.** Summary shows `DEBUG SESSION COMPLETE` (without an `ABANDONED` status line): the session is finished. Stop.
-2. **Terminal — abandoned.** Summary shows `ABANDONED`: note session saved at `.planning/debug/{slug}.md` for later `/gsd:debug continue {slug}`. Stop.
-3. **Non-terminal — auto-resume.** ANYTHING ELSE — including the explicit `## CONTINUE_REQUIRED` marker and any unrecognized or malformed summary that is not one of the two terminal markers above — is non-terminal. Read `.planning/debug/{slug}.md` for the current `status` and `next_action`, then AUTO-RESUME by re-spawning `gsd-debug-session-manager` with the SAME `slug`/`debug_file_path` and the same `session_params` as the spawn above PLUS the resume parameters (#3448): `resume: true`, `resume_status: {status}`, `resume_next_action: {next_action}`, both read from `.planning/debug/{slug}.md`. The respawn must NOT be parameter-identical to a cold start: identical params drop the recorded next action and the disposition that any earlier checkpoint in the session was already answered, so the debugger re-derives — or stalls before — the very step the checkpoint already names (the #3448 auto-resume stall). Do NOT return control to the user; do NOT report the session as complete.
+1. **Terminal — complete candidate.** Summary shows `DEBUG SESSION COMPLETE` (without an `ABANDONED` status line). Re-read the session. Accept only when the Runtime Evidence section is absent; or `not_used` with a null root/run and empty probe/artifact ledgers; or `clean` with a null root/run, every probe/artifact entry `removed`, and the artifact root removed with identity verified. Both present-state cases require zero remaining counts and a null cleanup failure; malformed or contradictory fields are non-terminal. Then stop.
+2. **Terminal — abandoned candidate.** Summary shows `ABANDONED`. Apply the same durable runtime-evidence gate before accepting it; if clean, note the saved session for later `/gsd:debug continue {slug}` and stop.
+3. **Non-terminal — auto-resume.** ANYTHING ELSE—including either candidate with non-clean runtime evidence, the explicit `## CONTINUE_REQUIRED` marker, and any unrecognized or malformed summary—is non-terminal. Read `.planning/debug/{slug}.md` for the current `status` and `next_action`, then AUTO-RESUME by re-spawning `gsd-debug-session-manager` with the SAME `slug`/`debug_file_path` and the same `session_params` as the spawn above (therefore retaining the saved immutable goal, effective runtime policy, and runtime checkpoint capability) PLUS the resume parameters (#3448): `resume: true`, `resume_status: {status}`, `resume_next_action: {next_action}`, both read from `.planning/debug/{slug}.md`. The respawn must NOT be parameter-identical to a cold start: identical params drop the recorded next action and the disposition that any earlier checkpoint in the session was already answered, so the debugger re-derives — or stalls before — the very step the checkpoint already names (the #3448 auto-resume stall). Do NOT return control to the user; do NOT report the session as complete.
 
 **Anti-loop guard.** Two independent stops apply; the orchestrator honors whichever trips first:
 

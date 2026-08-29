@@ -105,8 +105,9 @@ import contextComposer = require('./context-composer.cjs');
  * #2994 slice (epic #1671 Phase 6.3) fragmentizing
  * `docs-update.md`, `update.md`, `transition.md`, and `new-milestone.md` —
  * every one of the 13 workflows targeted by ADR-1671 is now on the fragment
- * model. The vocabulary remains CLOSED: no operators, no negation, no nesting.
- * Cardinality is not expressiveness — a 29-entry flat list with no
+ * model — then from 29 to 30 via #3128's runtime-evidence protocol section
+ * in `debug.md`. The vocabulary remains CLOSED: no operators, no negation,
+ * no nesting. Cardinality is not expressiveness — a 30-entry flat list with no
  * composition is still not a language.
  *
  * Held at 14, not wider: an atom whose fact is never computed always
@@ -204,6 +205,10 @@ import contextComposer = require('./context-composer.cjs');
  * `state:workstream-active`, introduced because the grammar has no negation
  * operator and `new-milestone.md`'s Step 4 Part A is gated on the OPPOSITE
  * condition from `transition.md`'s section).
+ *
+ * #3128 adds `state:runtime-evidence-eligible` for one contiguous optional
+ * protocol section in `debug.md`. The init seam resolves the compound policy
+ * precedence into a boolean fact; this grammar still sees one atom only.
  */
 export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'always',
@@ -232,6 +237,7 @@ export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'state:phase-mvp-mode',
   'state:plan-strategy-converge',
   'state:reviewer-instances-configured',
+  'state:runtime-evidence-eligible',
   'state:ui-phase-active',
   'state:workstream-active',
   'state:worktrees-enabled',

@@ -28,7 +28,8 @@
  * `review.md` and `discuss-phase-assumptions.md`, then from 26 to 30 — and
  * finally to 29, `flag:--full` having been retired as dead vocabulary — via the
  * final #2994 slice fragmentizing `docs-update.md`, `update.md`,
- * `transition.md`, and `new-milestone.md`.
+ * `transition.md`, and `new-milestone.md`, then from 29 to 30 via #3128's
+ * resolved runtime-evidence eligibility fact for `debug.md`.
  * {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
  * It MUST NOT tokenize, split on operators, or interpret structure in the
@@ -205,6 +206,13 @@ export interface InvocationFacts {
    * Absent/undefined is falsy, never throws.
    */
   readonly flatMode?: boolean;
+  /**
+   * Whether `debug.md` should load the optional runtime-evidence protocol
+   * (#3128): explicit probe flag -> valid saved continuation policy -> `off`,
+   * resolved by `cmdInitDebug` before this lookup. This is text eligibility,
+   * not authorization to install a source probe. Absent/undefined is falsy.
+   */
+  readonly runtimeEvidenceEligible?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -310,6 +318,7 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'state:phase-mvp-mode': (facts: InvocationFacts) => facts.phaseMvpMode === true,
     'state:plan-strategy-converge': (facts: InvocationFacts) => facts.planStrategyConverge === true,
     'state:reviewer-instances-configured': (facts: InvocationFacts) => facts.reviewerInstancesConfigured === true,
+    'state:runtime-evidence-eligible': (facts: InvocationFacts) => facts.runtimeEvidenceEligible === true,
     'state:ui-phase-active': (facts: InvocationFacts) => facts.uiPhaseActive === true,
     'state:workstream-active': (facts: InvocationFacts) => facts.workstreamActive === true,
     'state:worktrees-enabled': (facts: InvocationFacts) => facts.worktreesEnabled === true,

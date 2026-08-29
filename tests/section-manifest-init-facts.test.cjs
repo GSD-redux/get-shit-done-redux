@@ -318,3 +318,164 @@ describe('flag value shapes drive section_manifest by truthiness, not semantic v
     assert.ok(output.section_manifest.included.includes('prd-express-gate'));
   });
 });
+
+// ─── #3128: resolved runtime-evidence fact at the real init seam ────────
+
+describe('init.debug projects state:runtime-evidence-eligible into section_manifest (#3128)', () => {
+  let tmpDir;
+  let manifestDir;
+  let manifestPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('section-manifest-debug-runtime-');
+    manifestDir = createTempDir('section-manifest-debug-runtime-manifest-');
+    manifestPath = path.join(manifestDir, 'manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      workflows: {
+        debug: [{
+          id: 'runtime-evidence-protocol',
+          when: 'state:runtime-evidence-eligible',
+          read: 'gsd-core/workflows/debug/steps/runtime-evidence-protocol.md',
+        }],
+      },
+    }));
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+    cleanup(manifestDir);
+  });
+
+  function env() {
+    return { GSD_SECTION_MANIFEST: manifestPath };
+  }
+
+  function writeSavedAdaptive(slug) {
+    const debugDir = path.join(tmpDir, '.planning', 'debug');
+    fs.mkdirSync(debugDir, { recursive: true });
+    fs.writeFileSync(path.join(debugDir, `${slug}.md`), [
+      '---',
+      'status: investigating',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy: adaptive',
+      'state: not_used',
+      'mode: null',
+      '',
+    ].join('\n'));
+  }
+
+  function writeSavedNonCleanOff(slug) {
+    const debugDir = path.join(tmpDir, '.planning', 'debug');
+    fs.mkdirSync(debugDir, { recursive: true });
+    fs.writeFileSync(path.join(debugDir, `${slug}.md`), [
+      '---',
+      'status: investigating',
+      'goal: find_root_cause_only',
+      '---',
+      '',
+      '## Runtime Evidence',
+      '',
+      'schema_version: 1',
+      'policy: off',
+      'state: active',
+      'mode: passive',
+      'reproduction_ref: test:picker-reproduction',
+      'next_run_seq: 2',
+      'active_run:',
+      '  run_id: run-1',
+      '  phase: baseline',
+      '  reproduction_ref: test:picker-reproduction',
+      '  sink_artifact_id: null',
+      '  started_at: 2026-08-27T00:00:00Z',
+      'artifact_root: null',
+      'probes: []',
+      'artifacts: []',
+      'cleanup:',
+      '  markers_remaining: 0',
+      '  artifacts_remaining: 0',
+      '  verified_at: null',
+      '  failure: null',
+      '',
+    ].join('\n'));
+  }
+
+  test('an explicit --runtime-probes flag includes the real debug protocol section', () => {
+    const output = runInitJson(['init', 'debug', '--runtime-probes'], tmpDir, env());
+
+    assert.equal(output.runtime_evidence_policy, 'adaptive');
+    assert.equal(output.runtime_evidence_eligible, true);
+    assert.deepEqual(output.section_manifest.included, ['runtime-evidence-protocol']);
+    assert.deepEqual(output.section_manifest.excluded, []);
+    assert.deepEqual(output.section_manifest.read, [
+      'gsd-core/workflows/debug/steps/runtime-evidence-protocol.md',
+    ]);
+  });
+
+  test('a saved adaptive policy includes the section without a flag on continue', () => {
+    writeSavedAdaptive('saved-adaptive');
+
+    const output = runInitJson(
+      ['init', 'debug', 'continue', 'saved-adaptive'],
+      tmpDir,
+      env(),
+    );
+
+    assert.equal(output.runtime_evidence_policy, 'adaptive');
+    assert.equal(output.runtime_evidence_eligible, true);
+    assert.deepEqual(output.section_manifest.included, ['runtime-evidence-protocol']);
+    assert.deepEqual(output.section_manifest.excluded, []);
+  });
+
+  test('the off default computes a real exclusion rather than degrading to null', () => {
+    const output = runInitJson(['init', 'debug'], tmpDir, env());
+
+    assert.equal(output.runtime_evidence_policy, 'off');
+    assert.equal(output.runtime_evidence_eligible, false);
+    assert.notEqual(output.section_manifest, null);
+    assert.deepEqual(output.section_manifest.included, []);
+    assert.deepEqual(output.section_manifest.excluded, ['runtime-evidence-protocol']);
+    assert.deepEqual(output.section_manifest.read, []);
+  });
+
+  test('an explicit --no-runtime-probes continuation still includes reconciliation routing', () => {
+    writeSavedAdaptive('saved-adaptive');
+
+    const output = runInitJson(
+      ['init', 'debug', '--no-runtime-probes', 'continue', 'saved-adaptive'],
+      tmpDir,
+      env(),
+    );
+
+    assert.equal(output.runtime_evidence_policy, 'off');
+    assert.equal(output.runtime_evidence_eligible, true);
+    assert.deepEqual(output.section_manifest.included, ['runtime-evidence-protocol']);
+    assert.deepEqual(output.section_manifest.excluded, []);
+  });
+
+  test('a bare picker refreshes a selected non-clean off session through continuation routing', () => {
+    writeSavedNonCleanOff('picked-non-clean');
+
+    const bare = runInitJson(['init', 'debug'], tmpDir, env());
+    assert.equal(bare.subcommand, 'debug');
+    assert.deepEqual(bare.debug_global_flags, []);
+    assert.equal(bare.runtime_evidence_policy, 'off');
+    assert.equal(bare.runtime_evidence_eligible, false);
+    assert.deepEqual(bare.section_manifest.excluded, ['runtime-evidence-protocol']);
+
+    const refreshed = runInitJson(
+      ['init', 'debug', ...bare.debug_global_flags, 'continue', 'picked-non-clean'],
+      tmpDir,
+      env(),
+    );
+    assert.equal(refreshed.subcommand, 'continue');
+    assert.equal(refreshed.slug, 'picked-non-clean');
+    assert.equal(refreshed.runtime_evidence_policy, 'off');
+    assert.equal(refreshed.runtime_evidence_eligible, true);
+    assert.deepEqual(refreshed.section_manifest.included, ['runtime-evidence-protocol']);
+    assert.deepEqual(refreshed.section_manifest.excluded, []);
+  });
+});

@@ -100,6 +100,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/capability-loader.cjs',
       'gsd-core/bin/lib/capability-source.cjs',
       'gsd-core/bin/lib/capability-ledger.cjs',
+      // #3128: tsc-generated runtime artifact — lint src/debug-session-policy.cts, not this.
+      'gsd-core/bin/lib/debug-session-policy.cjs',
       'gsd-core/bin/lib/capability-trust.cjs',
       'gsd-core/bin/lib/capability-lifecycle.cjs',
       'gsd-core/bin/lib/capability-consent.cjs',

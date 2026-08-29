@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { TextDecoder } from 'node:util';
 import { execGit, platformWriteSync, platformReadSync, toNativePath, posixNormalize } from './shell-command-projection.cjs';
 import { realClock } from './clock.cjs';
 import { escapeRegex } from './pattern.cjs';
@@ -55,6 +56,8 @@ import sectionManifest = require('./section-manifest.cjs');
 import loopResolverMod = require('./loop-resolver.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-loader.cjs is compiled from capability-loader.cts's named exports; imported as a namespace to read loadRegistry off module.exports directly.
 import capabilityLoaderMod = require('./capability-loader.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-ledger.cjs owns the shared fd-bound, size-capped reader for untrusted project files.
+import capabilityLedgerMod = require('./capability-ledger.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-state.cjs is an export= CommonJS module
 import capabilityStateMod = require('./capability-state.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- docs.cjs is an export= CommonJS module
@@ -80,6 +83,9 @@ const {
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verify-command-grounding.cjs is an export= CommonJS module
 import verifyCommandGrounding = require('./verify-command-grounding.cjs');
 const { harvestPriorVerifyCommands } = verifyCommandGrounding;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- debug-session-policy.cjs is an export= CommonJS module
+import debugSessionPolicy = require('./debug-session-policy.cjs');
+const { parseSavedRuntimeEvidencePolicy } = debugSessionPolicy;
 
 const { output, error, ERROR_REASON, formatDiagnosticToken } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
@@ -112,6 +118,7 @@ const { isPhaseComplete, resolveVerificationFile, resolveUatFile } = verificatio
 const { evaluateUatPassed } = uatPredicateMod;
 const { resolveLoopHooks } = loopResolverMod;
 const { loadRegistry } = capabilityLoaderMod;
+const { readSmallRegularFileBufferWithIdentity } = capabilityLedgerMod;
 const { resolveCapabilityRuntimeState } = capabilityStateMod;
 
 // Unused but imported for structural parity
@@ -780,6 +787,7 @@ function buildSectionManifestField(
     workstreamActive?: boolean;
     flatMode?: boolean;
     uiPhaseActive?: boolean;
+    runtimeEvidenceEligible?: boolean;
   } = {},
 ): Record<string, unknown> | null {
   const sections = loadSectionManifestSections(workflow);
@@ -825,6 +833,7 @@ function buildSectionManifestField(
     nextChannel: overrides.nextChannel,
     workstreamActive: overrides.workstreamActive,
     flatMode: overrides.flatMode,
+    runtimeEvidenceEligible: overrides.runtimeEvidenceEligible,
   };
 
   try {
@@ -2921,6 +2930,95 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
   output(withProjectRoot(cwd, result), raw);
 }
 
+type RuntimeEvidencePolicy = 'adaptive' | 'off';
+
+const DEBUG_SESSION_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+const DEBUG_SESSION_SLUG_MAX_LENGTH = 30;
+// A debug session should stay far below this; the generous ceiling is a DoS
+// backstop for a repo-planted file, not a product-level session-size limit.
+const DEBUG_SESSION_POLICY_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Resolve a continuation's saved policy through the canonical planning path
+ * and security seams. The slug is shape-checked before any path construction;
+ * path containment, a non-symlink regular-file leaf, bounded fd-based reading,
+ * and stable pre/post identity are all required. Every degraded condition is
+ * fail-safe `null`, which the caller maps to the shipped `off` default.
+ */
+function readSavedRuntimeEvidencePolicy(
+  cwd: string,
+  continueSlug: string | null,
+): RuntimeEvidencePolicy | null {
+  if (
+    typeof continueSlug !== 'string'
+    || continueSlug.length > DEBUG_SESSION_SLUG_MAX_LENGTH
+    || !DEBUG_SESSION_SLUG_RE.test(continueSlug)
+  ) {
+    return null;
+  }
+
+  const debugDir = planningPaths(cwd).debug;
+  const sessionPath = path.join(debugDir, `${continueSlug}.md`);
+  const beforeValidation = validatePath(sessionPath, debugDir, { allowAbsolute: true });
+  if (!beforeValidation.safe) return null;
+
+  try {
+    const before = fs.lstatSync(sessionPath);
+    if (!before.isFile() || before.isSymbolicLink()) return null;
+
+    const opened = readSmallRegularFileBufferWithIdentity(
+      sessionPath,
+      DEBUG_SESSION_POLICY_MAX_BYTES,
+      before,
+    );
+    if (opened === null) return null;
+
+    let content: string;
+    try {
+      content = new TextDecoder('utf-8', { fatal: true }).decode(opened.buffer);
+    } catch {
+      return null;
+    }
+
+    const after = fs.lstatSync(sessionPath);
+    const afterValidation = validatePath(sessionPath, debugDir, { allowAbsolute: true });
+    if (
+      !after.isFile()
+      || after.isSymbolicLink()
+      || opened.identity.dev !== after.dev
+      || opened.identity.ino !== after.ino
+      || opened.identity.mode !== after.mode
+      || opened.identity.size !== after.size
+      || opened.identity.mtimeMs !== after.mtimeMs
+      || opened.identity.ctimeMs !== after.ctimeMs
+      || !afterValidation.safe
+      || afterValidation.resolved !== beforeValidation.resolved
+    ) {
+      return null;
+    }
+
+    return parseSavedRuntimeEvidencePolicy(content);
+  } catch {
+    return null;
+  }
+}
+
+function resolveRuntimeEvidencePolicy(
+  cwd: string,
+  options: Record<string, unknown>,
+  continueSlug: string | null,
+): RuntimeEvidencePolicy {
+  const runtimeProbes = options['runtime-probes'] === true;
+  const noRuntimeProbes = options['no-runtime-probes'] === true;
+
+  // The public router rejects this combination. Keep the fact resolver itself
+  // fail-safe for any future internal caller that bypasses the argv seam.
+  if (runtimeProbes && noRuntimeProbes) return 'off';
+  if (runtimeProbes) return 'adaptive';
+  if (noRuntimeProbes) return 'off';
+  return readSavedRuntimeEvidencePolicy(cwd, continueSlug) ?? 'off';
+}
+
 /**
  * `debug.md`'s dedicated init entry point (#3149; prerequisite for #3128).
  * `debug.md` previously carried NO `gsd_run query init.*` call at all — it made
@@ -2951,17 +3049,33 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
  * `state.load` is deliberately NOT narrowed — see the note beside its own
  * `debug_dir` field. This handler is purely additive alongside it.
  *
- * `diagnose` is the one flag `/gsd:debug` already documents. Exposing it as a
- * top-level fact follows `cmdInitUpdate`'s `next_channel` and
- * `cmdInitAutonomous`'s `plan_strategy_converge` precedent, and is what makes
- * the router's flag forwarding observable. No `when=` atom consumes it yet:
- * admission gate (1) — a consuming section of at least 400 bytes — is #3128's
- * to satisfy, and shipping the atom before its section is the same
- * silent-exclusion bug from the other direction.
+ * `diagnose` remains a top-level fact. #3128 additionally resolves runtime
+ * evidence once here — explicit flag, then a valid saved continuation policy,
+ * then the shipped `off` default — and projects the resulting boolean to the
+ * section-manifest evaluator. The grammar never re-derives that precedence.
  */
-function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+function cmdInitDebug(
+  cwd: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+  continueSlug: string | null = null,
+  debugGlobalFlags: string[] = [],
+): void {
   const config = loadConfig(cwd);
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
+  const subcommand = options['subcommand'] === 'list'
+    || options['subcommand'] === 'status'
+    || options['subcommand'] === 'continue'
+    ? options['subcommand']
+    : 'debug';
+  const description = typeof options['description'] === 'string' ? options['description'] : '';
+  const runtimeEvidencePolicy = resolveRuntimeEvidencePolicy(cwd, options, continueSlug);
+  // Adaptive sessions need activation routing. Every continuation also needs
+  // reconciliation routing because an explicit off override must still clean
+  // any session-owned probes, runs, or capture artifacts. Picker resumes are
+  // re-projected as continuations before dispatch, so they reach this same
+  // disjunct instead of relying on the initial bare bundle.
+  const runtimeEvidenceEligible = runtimeEvidencePolicy !== 'off' || continueSlug !== null;
 
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
@@ -2971,14 +3085,25 @@ function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown
     debug_dir: toPosixPath(planningPaths(cwd).debug),
     debugger_model: resolveModelInternal(cwd, 'gsd-debugger'),
     tdd_mode: Boolean(wf['tdd_mode']),
+    subcommand,
+    slug: typeof options['slug'] === 'string' ? options['slug'] : null,
+    description,
     diagnose: options['diagnose'] === true,
+    // The router owns this fixed-token projection. Clone it so the output
+    // cannot mutate the route object that established the invocation facts.
+    debug_global_flags: [...debugGlobalFlags],
+    runtime_evidence_override:
+      options['runtime-evidence-override'] === 'adaptive'
+      || options['runtime-evidence-override'] === 'off'
+        ? options['runtime-evidence-override']
+        : null,
+    runtime_evidence_policy: runtimeEvidencePolicy,
+    runtime_evidence_eligible: runtimeEvidenceEligible,
   };
 
-  // Additive, optional field — degrades to null while `debug` has no key in
-  // `gsd-core/workflows/section-manifest.json` (it has no `gsd:section` markers
-  // until #3128). null means "read everything", which is NOT the same as a
-  // computed empty selection.
-  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'debug', {});
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'debug', {
+    runtimeEvidenceEligible,
+  });
 
   output(withProjectRoot(cwd, result), raw);
 }

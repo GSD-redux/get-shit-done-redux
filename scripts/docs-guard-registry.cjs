@@ -202,6 +202,9 @@ const DOCS_GUARD_TESTS = {
   // fixed file set.
   'tests/context7-tool-name-parity.test.cjs': ['*'],
   'tests/contributor-standards.test.cjs': ['docs/contributor-standards.md'],
+  'tests/debugger-runtime-evidence.test.cjs': [
+    'docs/adr/1671-dynamic-context-management-platform.md',
+  ],
   'tests/cursor-reviewer.test.cjs': [
     'docs/COMMANDS.md',
     'docs/FEATURES.md',

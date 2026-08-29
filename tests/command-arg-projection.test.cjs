@@ -6,6 +6,9 @@ const {
   parseNamedArgs,
   parseMultiwordArg,
 } = require('../gsd-core/bin/lib/command-arg-projection.cjs');
+const {
+  projectDebugInvocation,
+} = require('../gsd-core/bin/lib/init-command-router.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { createTempProject, cleanup } = require('./helpers.cjs');
 const { runCli } = require('./helpers/cli-negative.cjs');
@@ -351,6 +354,105 @@ describe('parseNamedArgs — strict argv (#3358, ADR-3473 §8.4)', () => {
   });
 });
 
+describe('projectDebugInvocation (#3128)', () => {
+  const recognized = new Set(['--diagnose', '--runtime-probes', '--no-runtime-probes']);
+  const descriptionToken = fc
+    .stringMatching(/^[a-zA-Z0-9_=.-]{1,24}$/)
+    .filter((token) => !recognized.has(token) && !['list', 'status', 'continue'].includes(token));
+
+  test('routes list, status, continue, and diagnose restrictions deterministically', () => {
+    assert.deepStrictEqual(projectDebugInvocation(['list']), {
+      ok: true,
+      data: {
+        subcommand: 'list', slug: null, description: '', diagnose: false, runtimeEvidenceOverride: null,
+        debugGlobalFlags: [],
+      },
+    });
+    assert.deepStrictEqual(projectDebugInvocation(['status', 'cache-miss']), {
+      ok: true,
+      data: {
+        subcommand: 'status', slug: 'cache-miss', description: '', diagnose: false, runtimeEvidenceOverride: null,
+        debugGlobalFlags: [],
+      },
+    });
+    const continued = projectDebugInvocation([
+      '--runtime-probes', 'continue', 'cache-miss', '--runtime-probes',
+    ]);
+    assert.equal(continued.ok, true);
+    assert.deepEqual(continued.data.debugGlobalFlags, ['--runtime-probes']);
+    assert.equal(projectDebugInvocation(['--diagnose', 'continue', 'cache-miss']).ok, false);
+    assert.equal(projectDebugInvocation(['--runtime-probes', 'list']).ok, false);
+    assert.equal(projectDebugInvocation(['status', 'cache-miss', '--no-runtime-probes']).ok, false);
+  });
+
+  test('fc: exact global flags are order-independent and stripped from descriptions', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.oneof(
+            descriptionToken.map((token) => ({ kind: 'description', token })),
+            fc.constantFrom('--diagnose', '--runtime-probes', '--no-runtime-probes')
+              .map((token) => ({ kind: 'flag', token })),
+          ),
+          { minLength: 0, maxLength: 30 },
+        ),
+        (entries) => {
+          const tokens = entries.map(({ token }) => token);
+          const hasDiagnose = tokens.includes('--diagnose');
+          const hasAdaptive = tokens.includes('--runtime-probes');
+          const hasOff = tokens.includes('--no-runtime-probes');
+          const result = projectDebugInvocation(tokens);
+
+          if ((hasAdaptive && hasOff) || (hasDiagnose && hasAdaptive)) {
+            assert.equal(result.ok, false);
+            return;
+          }
+
+          assert.equal(result.ok, true);
+          assert.equal(result.data.subcommand, 'debug');
+          assert.equal(
+            result.data.description,
+            entries.filter(({ kind }) => kind === 'description').map(({ token }) => token).join(' '),
+          );
+          assert.equal(result.data.diagnose, hasDiagnose);
+          assert.equal(
+            result.data.runtimeEvidenceOverride,
+            hasAdaptive ? 'adaptive' : hasOff ? 'off' : null,
+          );
+          assert.deepEqual(
+            result.data.debugGlobalFlags,
+            [...new Set(entries.filter(({ kind }) => kind === 'flag').map(({ token }) => token))],
+          );
+        },
+      ),
+      { seed: 3128, numRuns: 200 },
+    );
+  });
+
+  test('fc: runtime-probe near-misses remain ordinary data and never activate probes', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(
+          '--runtime-probes=true',
+          '--runtime-probes-extra',
+          'prefix--runtime-probes',
+          '--no-runtime-probes=false',
+          '--no-runtime-probes-extra',
+        ),
+        descriptionToken,
+        (lookalike, token) => {
+          const result = projectDebugInvocation([lookalike, token]);
+          assert.equal(result.ok, true);
+          assert.equal(result.data.description, `${lookalike} ${token}`);
+          assert.equal(result.data.runtimeEvidenceOverride, null);
+          assert.deepEqual(result.data.debugGlobalFlags, []);
+        },
+      ),
+      { seed: 3128, numRuns: 200 },
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // formatDiagnosticToken (io.cjs) — untrusted-token diagnostic escaping.
 //
@@ -445,13 +547,13 @@ function readFrontmatter(filePath) {
   return parseFrontmatter(fs.readFileSync(filePath, 'utf8'));
 }
 
-test('#3431: commands/gsd/debug.md frontmatter parses as YAML and preserves argument-hint', () => {
+test('#3431/#3128: debug command frontmatter preserves the public flag hint', () => {
   const frontmatter = readFrontmatter(DEBUG_COMMAND_PATH);
 
   assert.equal(frontmatter.name, 'gsd:debug');
   assert.equal(
     frontmatter['argument-hint'],
-    '[list | status <slug> | continue <slug> | --diagnose] [issue description]',
+    '[list | status <slug> | continue <slug>] [--diagnose] [--runtime-probes | --no-runtime-probes] [issue description]',
     'argument-hint should remain user-visible text after YAML parsing'
   );
 });

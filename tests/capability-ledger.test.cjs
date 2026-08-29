@@ -23,7 +23,13 @@ const {
   LEDGER_FILE_NAME,
 } = capLedger;
 // Destructure optional exports (new in this patch) — will be undefined until implemented.
-const { LedgerIOError, isValidLedgerEntry, readLedgerStrict, readSmallRegularFile } = capLedger;
+const {
+  LedgerIOError,
+  isValidLedgerEntry,
+  readLedgerStrict,
+  readSmallRegularFile,
+  readSmallRegularFileBufferWithIdentity,
+} = capLedger;
 
 const { runHook } = require('./helpers/process-seam.cjs');
 // A single `mkfifo` system call creating a fixture FIFO — no install or build.
@@ -2404,6 +2410,33 @@ test('finding-2: readSmallRegularFile reads a normal small regular file byte-for
 
   assert.strictEqual(readSmallRegularFile(f, 64 * 1024), content,
     'a normal small regular file must read back exactly');
+});
+
+test('#3128: identity-bound bounded reads reject a different opened regular file', (t) => {
+  const dir = createTempDir('ledger-identity-bound-');
+  t.after(() => cleanup(dir));
+  const expectedPath = path.join(dir, 'expected.md');
+  const substitutedPath = path.join(dir, 'substituted.md');
+  fs.writeFileSync(expectedPath, 'policy: off\n');
+  fs.writeFileSync(substitutedPath, 'policy: adaptive\n');
+  const expectedIdentity = fs.lstatSync(expectedPath);
+
+  assert.equal(
+    typeof readSmallRegularFileBufferWithIdentity,
+    'function',
+    'the shared reader must expose the identity of the descriptor it actually opened',
+  );
+  assert.throws(
+    () => readSmallRegularFileBufferWithIdentity(substitutedPath, 64 * 1024, expectedIdentity),
+    /identity|changed|replaced/i,
+    'a path substitution must fail before attacker-selected bytes are returned',
+  );
+
+  const bound = readSmallRegularFileBufferWithIdentity(expectedPath, 64 * 1024, expectedIdentity);
+  assert.ok(bound !== null);
+  assert.equal(bound.buffer.toString('utf8'), 'policy: off\n');
+  assert.equal(bound.identity.dev, expectedIdentity.dev);
+  assert.equal(bound.identity.ino, expectedIdentity.ino);
 });
 
 // Revert-fails: route readLedgerRaw back through statSync(path)+readFileSync(path) → a FIFO ledger

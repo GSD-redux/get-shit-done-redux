@@ -9,6 +9,7 @@ Template for `.planning/debug/[slug].md` — active debug session tracking.
 ```markdown
 ---
 status: gathering | investigating | fixing | verifying | awaiting_human_verify | resolved
+goal: find_and_fix | find_root_cause_only
 trigger: "[verbatim user input]"
 created: [ISO timestamp]
 updated: [ISO timestamp]
@@ -49,6 +50,25 @@ started: [when it broke / always broken]
   found: [what was observed]
   implication: [what this means]
 
+## Runtime Evidence
+<!-- EAGER for new sessions. Legacy absence means policy off + state not_used. -->
+
+schema_version: 1
+policy: off
+state: not_used
+mode: null
+reproduction_ref: null
+next_run_seq: 1
+active_run: null  # or {run_id, phase, reproduction_ref, sink_artifact_id, started_at}
+artifact_root: null
+probes: []
+artifacts: []
+cleanup:
+  markers_remaining: 0
+  artifacts_remaining: 0
+  verified_at: null
+  failure: null
+
 ## Resolution
 <!-- OVERWRITE as understanding evolves -->
 
@@ -63,11 +83,13 @@ files_changed: []
 
 <section_rules>
 
-**Frontmatter (status, trigger, timestamps):**
+**Frontmatter (status, goal, trigger, timestamps):**
 - `status`: OVERWRITE - reflects current phase
+- `goal`: IMMUTABLE - set once to `find_and_fix` or `find_root_cause_only`, then never changes
 - `trigger`: IMMUTABLE - verbatim user input, never changes
 - `created`: IMMUTABLE - set once
 - `updated`: OVERWRITE - update on every change
+- A missing `goal` in a legacy session means `find_and_fix`; preserve that effective value on every resume without a migration-only rewrite.
 
 **Current Focus:**
 - OVERWRITE entirely on each update
@@ -95,6 +117,13 @@ files_changed: []
 - Facts discovered during investigation
 - Each entry: timestamp, what checked, what found, implication
 - Builds the case for root cause
+
+**Runtime Evidence:**
+- Every new session eagerly writes the complete schema version 1 block in its terminal-safe `not_used` shape. A missing section in a legacy session means `policy: off` and `state: not_used`; do not rewrite merely to migrate it.
+- Valid policy is `adaptive | off`. An invalid saved policy remains stored for inspection while effective dispatch fails safe to `off`.
+- An explicit policy override changes only `policy`; it never resets state, mode, reproduction, runs, probes, artifacts, or cleanup.
+- Probe and artifact entries, write-ahead runs, bounded Evidence digests, and exact cleanup follow `gsd-core/references/debugger-runtime-evidence.md` when the protocol is active or needs reconciliation.
+- Terminal-safe means the section is absent; or `not_used` with null root/run and empty probe/artifact ledgers; or `clean` with null root/run, every probe/artifact entry `removed`, and the artifact root removed with identity verified. Both present-state cases require zero cleanup counts and null failure; malformed or contradictory fields are non-terminal.
 
 **Resolution:**
 - OVERWRITE as understanding evolves
@@ -149,11 +178,12 @@ files_changed: []
 
 When Claude reads this file after /clear:
 
-1. Parse frontmatter → know status
-2. Read Current Focus → know exactly what was happening
-3. Read Eliminated → know what NOT to retry
-4. Read Evidence → know what's been learned
-5. Continue from next_action
+1. Parse frontmatter → know status and immutable goal (`find_and_fix` when legacy-absent)
+2. Inspect Runtime Evidence ownership first when it is non-clean or has an active run
+3. Read Current Focus → know exactly what was happening
+4. Read Eliminated → know what NOT to retry
+5. Read Evidence → know what's been learned
+6. Continue from next_action
 
 The file IS the debugging brain. Claude should be able to resume perfectly from any interruption point.
 

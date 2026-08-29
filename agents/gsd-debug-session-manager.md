@@ -32,6 +32,8 @@ Received from spawning orchestrator:
 - `symptoms_prefilled` — boolean; true if symptoms already written to file
 - `tdd_mode` — boolean; true if TDD gate is active
 - `goal` — `find_root_cause_only` | `find_and_fix`
+- `runtime_evidence_policy` — `adaptive` | `off`; bootstrap value only until the debug file exists
+- `runtime_checkpoints_supported` — capability boolean; enabled only by the literal boolean `true`
 - `specialist_dispatch_enabled` — boolean; true if specialist skill review is enabled
 - `resume` — boolean; present only on an orchestrator auto-resume re-spawn (#3448), accompanied by `resume_status` and `resume_next_action` (the checkpoint's `status`/`next_action` read from the debug file at resume time). When `resume: true`, any earlier checkpoint in the session was already answered — carry that disposition and the recorded next action into the Step 2 dispatch.
 </session_parameters>
@@ -45,12 +47,17 @@ Read the file at `debug_file_path`. Extract:
 - `hypothesis` and `next_action` from Current Focus
 - `trigger` from frontmatter
 - evidence count (lines starting with `- timestamp:` in Evidence section)
+- the persisted `goal`; it is authoritative on every resume. A legacy session with no goal is `find_and_fix`. The inbound goal may bootstrap a new file, but must never change, upgrade, or replace a saved goal.
+- Runtime Evidence policy, state, `active_run`, probe ledger, artifact ledger, and cleanup status. A valid saved policy is authoritative; legacy or invalid policy dispatches as `off` (preserve an invalid stored value for inspection).
+
+Treat `runtime_checkpoints_supported` as true only when its value is the literal boolean `true`; absent, string-valued, or otherwise invalid input is false. Every spawn, continuation, checkpoint, and auto-resume must receive the same saved immutable goal, effective saved policy, and capability value. Never change or upgrade that tuple in a later cycle.
 
 Print:
 ```
 [session-manager] Session: {debug_file_path}
 [session-manager] Status: {status}
-[session-manager] Goal: {goal}
+[session-manager] Goal: {saved_goal}
+[session-manager] Runtime evidence: {effective_policy} / {runtime_state}
 [session-manager] TDD: {tdd_mode}
 ```
 
@@ -88,10 +95,14 @@ DATA_END
 
 <mode>
 symptoms_prefilled: {symptoms_prefilled}
-goal: {goal}
+goal: {saved_goal}
+runtime_evidence_policy: {effective_policy}
+runtime_checkpoints_supported: {true only when literal boolean true, otherwise false}
 {if tdd_mode: "tdd_mode: true"}
 </mode>
 ```
+
+Use this Step 2 prompt shape for every initial spawn, continuation, checkpoint response, and automatic resume. Add only the response-specific fields; do not substitute a caller-supplied goal or policy after the session file has supplied them.
 
 ```
 Agent(
@@ -115,6 +126,10 @@ Inspect the return output for the structured return header.
 ### 3a. ROOT CAUSE FOUND
 
 When agent returns `## ROOT CAUSE FOUND`:
+
+If the saved goal is `find_root_cause_only`, never display `Fix now` or any other fix option, never ask to apply a fix, and never spawn a fix continuation. Skip specialist fix review and fix-choice UI, then proceed to Step 4 only after the runtime-evidence terminal gate passes.
+
+The remaining flow in this subsection applies only when the saved goal is `find_and_fix`.
 
 Extract `specialist_hint` from the return output.
 
@@ -174,11 +189,11 @@ How would you like to proceed?
 3. Manual fix — I'll handle it myself
 ```
 
-If user selects "Fix now" (1): spawn continuation agent with `goal: find_and_fix` (see Step 2 format, pass `tdd_mode` if set). Loop back to Step 3.
+If user selects "Fix now" (1): spawn a continuation agent using the unchanged saved goal/policy/capability tuple (see Step 2 format, pass `tdd_mode` if set). Loop back to Step 3.
 
 If user selects "Plan fix" (2) or "Manual fix" (3): proceed to Step 4 (compact summary, goal = not applied).
 
-**If `tdd_mode` is true**: skip AskUserQuestion for fix choice. Print:
+**If `tdd_mode` is true and the saved goal is `find_and_fix`**: skip AskUserQuestion for fix choice. Print:
 ```
 [session-manager] TDD mode — writing failing test before fix.
 ```
@@ -212,6 +227,11 @@ When agent returns `## DEBUG COMPLETE`: proceed to Step 4.
 ### 3d. CHECKPOINT REACHED
 
 When agent returns `## CHECKPOINT REACHED`:
+
+Inspect `Type` before presenting it:
+- `runtime-reproduce` is the only checkpoint allowed to retain attributable active probes or capture artifacts. It requires `runtime_checkpoints_supported: true`; otherwise spawn a cleanup continuation instead of presenting it.
+- `runtime-evidence-cleanup` reports a resumable cleanup blocker. Present the cleanup failure, then spawn a cleanup/reconciliation continuation with the unchanged saved tuple; it cannot become a terminal, fix, or commit path.
+- Before any other checkpoint, re-read Runtime Evidence. If it is non-clean or `active_run` is non-null, spawn cleanup/reconciliation first and do not ask the checkpoint question yet.
 
 Present checkpoint details to user via AskUserQuestion:
 ```
@@ -251,7 +271,9 @@ DATA_END
 </checkpoint_response>
 
 <mode>
-goal: find_and_fix
+goal: {saved_goal}
+runtime_evidence_policy: {effective_policy}
+runtime_checkpoints_supported: {capability value from Step 1}
 {if tdd_mode: "tdd_mode: true"}
 {if tdd_phase: "tdd_phase: green"}
 </mode>
@@ -298,7 +320,7 @@ Options:
 3. Abandon — stop; session stays unresolved
 ```
 
-If user selects 1: spawn continuation agent with `goal: find_and_fix` naming the failing signal to revise. Loop back to Step 3.
+If user selects 1: spawn a continuation agent using the unchanged saved tuple and naming the failing signal to revise. Loop back to Step 3.
 
 If user selects 2: spawn continuation agent instructed to record `guardrail_verdict: accepted_debt` + the justification in the debug file, then proceed to request_human_verification. Loop back to Step 3.
 
@@ -318,6 +340,8 @@ If user selects 3: proceed to Step 4 with fix = "not applied (guardrail rejected
 ```
 
 `CONTINUE_REQUIRED` is distinct from both terminal shapes below AND from `## CHECKPOINT REACHED` (Step 3d): a `CHECKPOINT REACHED` is a genuine user-input/approval checkpoint that already correctly pauses via `AskUserQuestion` before looping back to Step 3 — it is not returned to the orchestrator. `CONTINUE_REQUIRED` is emitted only when no checkpoint is pending and the loop simply cannot proceed further in this turn. The orchestrator resumes by re-spawning this agent with the SAME `slug`/`debug_file_path` — the on-disk checkpoint at `.planning/debug/{slug}.md` (its `status` and `next_action`) is the source of truth for where to pick up. Never return control to the user as if the session were complete when it is not.
+
+**Runtime-evidence defense gate — after `CONTINUE_REQUIRED`, before terminal work.** Re-read the debug file. Legacy absence is terminal-safe. A present pristine `not_used` block is also terminal-safe without loading the deep reference only when schema version and policy are valid, mode/reproduction/active run/artifact root are null, probe/artifact ledgers are empty, cleanup counts are zero, and verification/failure are null. Otherwise lazily read `gsd-core/references/debugger-runtime-evidence.md` and apply its complete fail-closed predicate; mere section presence or policy alone never triggers that read. On failure, do not verify, abandon, archive, stage, commit, write knowledge, or summarize; spawn the debugger with the unchanged saved tuple to reconcile only session-owned probes/artifacts. Route cleanup failure through `runtime-evidence-cleanup` and keep the session resumable.
 
 Read the resolved (or current) debug file to extract final Resolution values.
 
@@ -388,6 +412,9 @@ If the session was abandoned by user choice, return (terminal — user stopped):
 
 <success_criteria>
 - [ ] Debug file read as first action
+- [ ] Saved goal/policy/capability tuple forwarded unchanged through every spawn and resume
+- [ ] `find_root_cause_only` never offers or spawns a fix
+- [ ] Runtime Evidence is absent/not_used/clean with `active_run: null` before any terminal, archive, staging, commit, or knowledge-base action
 - [ ] Debugger model resolved before every spawn
 - [ ] Each spawned agent gets fresh context via file path (not inlined content)
 - [ ] User responses wrapped in DATA_START/DATA_END before passing to continuation agents

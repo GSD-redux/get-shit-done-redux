@@ -92,6 +92,16 @@ This runs in parallel - all gaps investigated simultaneously.
 </step>
 
 <step name="spawn_agents">
+**Diagnosis-only runtime contract:** this direct caller is tracked-source read-only. Every spawned debugger receives:
+
+```yaml
+goal: find_root_cause_only
+runtime_evidence_policy: off
+runtime_checkpoints_supported: false
+```
+
+It must never create a source probe, edit tracked source, offer or apply a fix, create structured capture artifacts, or request a `runtime-reproduce` checkpoint. It may run ordinary existing tests and inspect existing passive/native evidence; when those are insufficient it returns a clean inconclusive diagnosis.
+
 **Load agent skills:**
 
 ```bash
@@ -186,6 +196,8 @@ Template placeholders:
 - `{reproduction}`: "Test {test_num} in UAT"
 - `{timeline}`: "Discovered during UAT"
 - `{goal}`: `find_root_cause_only` (UAT flow - plan-phase --gaps handles fixes)
+- `{runtime_evidence_policy}`: `off` (diagnosis-only callers never activate source probes)
+- `{runtime_checkpoints_supported}`: `false` (parallel UAT diagnosis has no runtime checkpoint loop)
 - `{slug}`: Generated from truth
 </step>
 

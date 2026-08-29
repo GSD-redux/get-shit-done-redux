@@ -24,6 +24,8 @@ timeline: {timeline}
 <mode>
 symptoms_prefilled: {true_or_false}
 goal: {find_root_cause_only | find_and_fix}
+runtime_evidence_policy: {runtime_evidence_policy}
+runtime_checkpoints_supported: {runtime_checkpoints_supported}
 </mode>
 
 <debug_file>
@@ -45,6 +47,8 @@ Create: .planning/debug/{slug}.md
 | `{reproduction}` | From symptoms | `Open /auth page` |
 | `{timeline}` | From symptoms | `After recent deploy` |
 | `{goal}` | Orchestrator sets | `find_and_fix` |
+| `{runtime_evidence_policy}` | Orchestrator resolves explicit override → valid saved policy → `off` | `adaptive` |
+| `{runtime_checkpoints_supported}` | Caller capability; absent/invalid means `false` | `true` |
 | `{slug}` | Generated | `auth-screen-dark` |
 
 ---
@@ -87,5 +91,7 @@ Debug file: @.planning/debug/{slug}.md
 
 <mode>
 goal: {goal}
+runtime_evidence_policy: {runtime_evidence_policy}
+runtime_checkpoints_supported: {runtime_checkpoints_supported}
 </mode>
 ```

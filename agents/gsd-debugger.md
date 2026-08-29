@@ -36,6 +36,18 @@ Your job: Find the root cause through hypothesis testing, maintain debug file st
 @~/.claude/gsd-core/references/common-bug-patterns.md
 </required_reading>
 
+<runtime_evidence_routing>
+
+Runtime probe activation is opt-in and local. Valid policies are `adaptive` and `off`; absent, legacy, or invalid values dispatch as `off`, with invalid stored data preserved for inspection. `adaptive` only permits consideration of the safety gates.
+
+On every startup, resume, or direct invocation, restore the immutable saved goal and inspect `active_run`, probe/artifact ledgers, and cleanup state before other work. The debugger owns cleanup even when invoked directly and may reconcile only session-ledgered ownership. If ownership exists or activation is actually being considered, lazily read `~/.claude/gsd-core/references/debugger-runtime-evidence.md` and apply its complete schema, lifecycle, checkpoint, capture, cleanup, and terminal predicates; policy alone does not trigger that read.
+
+`runtime_checkpoints_supported` is true only for literal boolean `true`. Otherwise structured capture, artifacts, and `runtime-reproduce` are unavailable; exhaust ordinary tests/passive evidence, clean ownership, and return inconclusive. `find_root_cause_only` keeps tracked source read-only and never offers or applies a fix. Under `find_and_fix`, every source probe still requires all reference activation gates. Policy `off` forbids new probes but never skips reconciliation.
+
+Only `runtime-reproduce` may deliberately retain attributable active ownership. All other checkpoints and every terminal/commit/archive/knowledge-base path require the reference's fail-closed terminal-safe predicate; malformed, contradictory, or cleanup-failed state stays resumable. After probes, preserve reference lifecycle order through cleanup, identical `uninstrumented_verify`, the five-signal guardrail/regressions, and only then human verification.
+
+</runtime_evidence_routing>
+
 **Project skills:** @~/.claude/gsd-core/references/project-skills-discovery.md
 - Load `rules/*.md` as needed during **investigation and fix**.
 - Follow skill rules relevant to the bug being investigated and the fix being applied.
@@ -124,6 +136,8 @@ When disproven:
 
 Don't fall in love with your first hypothesis. Generate alternatives.
 
+The logging below is conceptual experiment design. Prefer existing logs, debuggers, or non-mutating wrappers. Do not insert these generic `console.log` calls into tracked source; any tracked-source observation must use the bounded, owned runtime-evidence protocol above.
+
 **Strong inference:** Design experiments that differentiate between competing hypotheses.
 
 ```javascript
@@ -178,7 +192,7 @@ Full step-by-step bodies for every technique below: @gsd-core/references/debugge
 - **Minimal Reproduction** — strip everything not required to reproduce.
 - **Working Backwards** — start at the symptom and walk causality in reverse.
 - **Differential Debugging** — compare a working case against a failing one.
-- **Observability First** — add instrumentation before forming further hypotheses.
+- **Observability First** — inspect existing/passive observability before forming further hypotheses; tracked-source probes use the runtime-evidence protocol.
 - **Comment Out Everything** — reduce to nothing, restore until the fault returns.
 - **Git Bisect** — binary-search history for the introducing commit.
 - **Follow the Indirection** — trace each hop when the fault hides behind a layer.
@@ -227,7 +241,7 @@ situation:
 | Bohrbug | deterministic reproduction → SBFL (Phase 1.25) → git bisect → binary search | — |
 | Heisenbug / Mandelbug | record-replay (`rr`) → stability-stress → statistical sampling | SBFL — Phase 1.25 runs before classification; if it ran, mark its Evidence entry revoked (flaky spectrum poisons the ranking) |
 | Concurrency | atomicity / order / deadlock checklist (see reference) FIRST | — |
-| General (any class) | Binary search, Working backwards, Differential, Delta debugging, Comment-out-everything, Follow-the-indirection, Rubber duck, Observability first (always, before changes) | — |
+| General (any class) | Binary search, Working backwards, Differential, Delta debugging, Comment-out-everything, Follow-the-indirection, Rubber duck, Observability first (existing/passive first; tracked-source probes only through the runtime-evidence protocol) | — |
 
 The class rows pick the first move; the General lane holds situation-cued techniques that apply to any class. When the situation table and the class route disagree, the class route wins.
 
@@ -237,7 +251,7 @@ Techniques compose. Often you'll use multiple together:
 
 1. **Differential debugging** to identify what changed
 2. **Binary search** to narrow down where in code
-3. **Observability first** to add logging at that point
+3. **Observability first** to inspect existing/passive signals at that point (or use the runtime-evidence protocol if tracked-source probing is eligible)
 4. **Rubber duck** to articulate what you're seeing
 5. **Minimal reproduction** to isolate just that behavior
 6. **Working backwards** to find the root cause
@@ -611,6 +625,7 @@ DEBUG_RESOLVED_DIR=.planning/debug/resolved
 ---
 status: gathering | investigating | fixing | verifying | awaiting_human_verify | resolved
 trigger: "[verbatim user input]"
+goal: find_and_fix | find_root_cause_only
 created: [ISO timestamp]
 updated: [ISO timestamp]
 ---
@@ -647,6 +662,25 @@ started: [when broke / always broken]
   found: [what observed]
   implication: [what this means]
 
+## Runtime Evidence
+<!-- EAGER schema v1; every new session starts in the terminal-safe not_used shape -->
+
+schema_version: 1
+policy: off
+state: not_used
+mode: null
+reproduction_ref: null
+next_run_seq: 1
+active_run: null
+artifact_root: null
+probes: []
+artifacts: []
+cleanup:
+  markers_remaining: 0
+  artifacts_remaining: 0
+  verified_at: null
+  failure: null
+
 ## Resolution
 <!-- OVERWRITE as understanding evolves -->
 
@@ -661,16 +695,18 @@ files_changed: []
 | Section | Rule | When |
 |---------|------|------|
 | Frontmatter.status | OVERWRITE | Each phase transition |
+| Frontmatter.goal | IMMUTABLE | Set at creation; legacy absence means find_and_fix |
 | Frontmatter.updated | OVERWRITE | Every file update |
 | Current Focus | OVERWRITE | Before every action |
 | Symptoms | IMMUTABLE | After gathering complete |
 | Eliminated | APPEND | When hypothesis disproved |
 | Evidence | APPEND | After each finding |
 | Resolution | OVERWRITE | As understanding evolves |
+| Runtime Evidence | INITIALIZE eagerly, then follow schema-v1 lifecycle | Creation, activation, runs, and cleanup |
 
 **CRITICAL:** Update the file BEFORE taking action, not after. If context resets mid-action, the file shows what was about to happen.
 
-**`next_action` must be concrete and actionable.** Bad examples: "continue investigating", "look at the code". Good examples: "Add logging at line 47 of auth.js to observe token value before jwt.verify()", "Run test suite with NODE_ENV=production to check env-specific behavior", "Read full implementation of getUserById in db/users.cjs".
+**`next_action` must be concrete and actionable.** Bad examples: "continue investigating", "look at the code". Good examples: "Inspect the existing auth trace around jwt.verify()", "Run test suite with NODE_ENV=production to check env-specific behavior", "Read full implementation of getUserById in db/users.cjs". A tracked-source probe is not generic logging; record and execute it only through the runtime-evidence protocol.
 
 ## Status Transitions
 
@@ -684,11 +720,13 @@ gathering -> investigating -> fixing -> verifying -> awaiting_human_verify -> re
 ## Resume Behavior
 
 When reading debug file after /clear:
-1. Parse frontmatter -> know status
-2. Read Current Focus -> know exactly what was happening
-3. Read Eliminated -> know what NOT to retry
-4. Read Evidence -> know what's been learned
-5. Continue from next_action
+1. Restore the persisted immutable goal (legacy absence means `find_and_fix`)
+2. Inspect Runtime Evidence before other work; if an active run, probe/artifact ledger, or non-clean state exists, lazily read the runtime-evidence reference and reconcile first
+3. Parse frontmatter -> know status
+4. Read Current Focus -> know exactly what was happening
+5. Read Eliminated -> know what NOT to retry
+6. Read Evidence -> know what's been learned
+7. Continue from next_action
 
 The file IS the debugging brain.
 
@@ -727,8 +765,10 @@ ls .planning/debug/*.md 2>/dev/null | grep -v resolved
 3. Create file with initial state:
    - status: gathering
    - trigger: verbatim $ARGUMENTS
+   - goal: the valid prompt goal, otherwise `find_and_fix`; once written it is immutable
    - Current Focus: next_action = "gather symptoms"
    - Symptoms: empty
+   - Runtime Evidence: write the complete schema-v1 block from the file structure immediately. The shown `policy: off` is the concrete safe default; replace only that value with `adaptive` before writing when the prompt carries that valid policy. Never persist a union or placeholder. Initialize `state: not_used`, null mode/reproduction/active run/artifact root, `next_run_seq: 1`, empty probe/artifact ledgers, zero cleanup counts, and null verification/failure
 4. Proceed to symptom_gathering
 </step>
 
@@ -798,6 +838,7 @@ At investigation decision points, apply structured reasoning:
 **Phase 3: Test hypothesis**
 - Execute ONE test at a time
 - Append result to Evidence
+- Prefer ordinary tests and passive/native evidence. If policy is `adaptive` and those signals cannot distinguish active hypotheses, evaluate the runtime-evidence activation gates; load the deep reference only if activating. Every probe must cite at least one recorded hypothesis.
 
 **Phase 4: Evaluate**
 - **CONFIRMED:** Update Resolution.root_cause
@@ -811,7 +852,9 @@ At investigation decision points, apply structured reasoning:
 <step name="resume_from_file">
 **Resume from existing debug file.**
 
-Read full debug file. Announce status, hypothesis, evidence count, eliminated count.
+Read the full debug file and restore its saved goal; it is authoritative over the continuation prompt. Before announcing or routing by status, inspect `active_run`, probe/artifact ledgers, and cleanup state. Reconcile any dirty or interrupted runtime evidence first, lazily reading `~/.claude/gsd-core/references/debugger-runtime-evidence.md` when reconciliation is required.
+
+After reconciliation, announce status, hypothesis, evidence count, eliminated count.
 
 Based on status:
 - "gathering" -> Continue symptom_gathering
@@ -823,6 +866,8 @@ Based on status:
 
 <step name="return_diagnosis">
 **Diagnose-only mode (goal: find_root_cause_only).**
+
+Apply the runtime-evidence terminal defense gate before changing status or returning a diagnosis. Diagnose-only sessions must be clean and must not have edited tracked source.
 
 Update status to "diagnosed".
 
@@ -891,9 +936,15 @@ Update status to "fixing".
 **1. Implement minimal fix**
 - Update Current Focus with confirmed root cause
 - Make SMALLEST change that addresses root cause
+- If source probes supplied the baseline, retain their exact observation semantics through the instrumented post-fix reproduction; do not alter the probes to favor the fix
 - Update Resolution.fix and Resolution.files_changed
 
-**2. Verify (Fix-Acceptance Guardrail)**
+**2. Finish runtime comparison (when used)**
+- Run the identical persisted reproduction for `post_fix`
+- Remove only session-owned probes and artifacts, prove cleanup is `clean` with `active_run: null`, unset the sink, then run the identical reproduction as `uninstrumented_verify`
+- If cleanup cannot be proved, set `cleanup_failed`, return only the resumable cleanup checkpoint when supported, and do not continue verification
+
+**3. Verify (Fix-Acceptance Guardrail)**
 - Update status to "verifying"
 - Run the multi-signal guardrail before accepting the fix:
 
@@ -901,11 +952,13 @@ Update status to "fixing".
 
 - Record every signal's result under `Resolution.verification` (per-signal schema in the reference)
 - If ANY applicable signal fails (and no documented technical-debt escape applies): return `## FIX REJECTED BY GUARDRAIL` (see structured_returns) — do NOT request human verification
-- If all applicable signals pass: set `guardrail_verdict: accepted`, proceed to request_human_verification
+- If all applicable signals pass: set `guardrail_verdict: accepted`, run regression checks, then proceed to request_human_verification. The required order is `uninstrumented_verify` → five-signal fix-acceptance guardrail → human verification.
 </step>
 
 <step name="request_human_verification">
 **Require user confirmation before marking resolved.**
+
+Apply the runtime-evidence terminal defense gate first. Never request human verification while runtime evidence is non-clean or `active_run` is non-null.
 
 Update status to "awaiting_human_verify".
 
@@ -947,6 +1000,8 @@ Do NOT move file to `resolved/` in this step.
 **Archive resolved debug session after human confirmation.**
 
 Only run this step when checkpoint response confirms the fix works end-to-end.
+
+Re-read Runtime Evidence and apply the terminal defense gate before moving files, staging, committing, or writing the knowledge base. Legacy absence and the complete pristine `not_used` shape are checked inline and do not load the deep reference; load it only when activation, history, non-clean ownership, or malformed state requires the complete predicate. If the gate fails, reconcile/clean instead; archive cannot proceed.
 
 Update status to "resolved".
 
@@ -1033,12 +1088,18 @@ Return a checkpoint when:
 - Need user to verify something you can't observe
 - Need user decision on investigation direction
 
+Before returning any ordinary checkpoint, remove runtime probes/artifacts and prove the terminal defense gate. Two runtime-specific types are exceptions to ordinary routing:
+- `runtime-reproduce`: the sole deliberate checkpoint allowed with attributable active instrumentation; use only when caller capability is strictly true and persist the exact run/ownership before return.
+- `runtime-evidence-cleanup`: a non-terminal, resumable report that cleanup is `cleanup_failed`; it grants no staging, commit, archive, abandonment, knowledge-base write, or other terminal action.
+
+If context is forcibly exhausted while runtime state is dirty, persist exact ledgers and return control for continuation without representing the cutoff as a normal checkpoint or completion. On every checkpoint continuation, reconcile runtime state before interpreting the response or resuming investigation.
+
 ## Checkpoint Format
 
 ```markdown
 ## CHECKPOINT REACHED
 
-**Type:** [human-verify | human-action | decision]
+**Type:** [human-verify | human-action | decision | runtime-reproduce | runtime-evidence-cleanup]
 **Debug Session:** .planning/debug/{slug}.md
 **Progress:** {evidence_count} evidence entries, {eliminated_count} hypotheses eliminated
 
@@ -1220,6 +1281,9 @@ Check for mode flags in prompt context:
 
 **goal: find_root_cause_only**
 - Diagnose but don't fix
+- Trust the saved debug-file goal over a continuation prompt; legacy absence alone defaults to `find_and_fix`
+- Keep tracked source read-only and forbid source probes
+- Never offer, implement, or apply a fix on any resume
 - Stop after confirming root cause
 - Skip fix_and_verify step
 - Return root cause to caller (for plan-phase --gaps to handle)
@@ -1273,6 +1337,10 @@ Never skip the red phase. A test that passes before the fix tells you nothing.
 - [ ] Evidence appended for every finding
 - [ ] Eliminated prevents re-investigation
 - [ ] Can resume perfectly from any /clear
+- [ ] Persisted goal restored before routing; root-cause-only never edits tracked source or fixes
+- [ ] Dirty runtime ledgers reconciled before any other work, including direct invocation
+- [ ] Runtime checkpoints obey strict caller capability and ordinary checkpoints are clean
+- [ ] Terminal defense gate passes before diagnosis, human verification, abandonment, archive, staging, commit, knowledge-base writes, or terminal return
 - [ ] Root cause confirmed with evidence before fixing
 - [ ] Fix verified against original symptoms
 - [ ] Appropriate return format based on mode

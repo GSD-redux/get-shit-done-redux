@@ -46,6 +46,13 @@
         "read": "gsd-core/workflows/complete-milestone/steps/git-tag.md"
       }
     ],
+    "debug": [
+      {
+        "id": "runtime-evidence-protocol",
+        "when": "state:runtime-evidence-eligible",
+        "read": "gsd-core/workflows/debug/steps/runtime-evidence-protocol.md"
+      }
+    ],
     "discuss-phase-assumptions": [
       {
         "id": "auto-advance-dispatch",

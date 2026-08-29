@@ -1035,21 +1035,34 @@ Systematic debugging with persistent state.
 | Flag | Description |
 |------|-------------|
 | `--diagnose` | Diagnosis-only mode — investigate without attempting fixes |
+| `--runtime-probes` | Opt in to `adaptive` runtime evidence; source probes are considered only when every safety gate passes |
+| `--no-runtime-probes` | Explicitly select policy `off`; this is also the no-flag default |
 
 **Subcommands:**
+
 - `/gsd-debug list` — List all active debug sessions with status, hypothesis, and next action
 - `/gsd-debug status <slug>` — Print full summary of a session (Evidence count, Eliminated count, Resolution, TDD checkpoint) without spawning an agent
-- `/gsd-debug continue <slug>` — Resume a specific session by slug (surfaces Current Focus then spawns continuation agent)
-- `/gsd-debug [--diagnose] <description>` — Start new debug session (existing behavior; `--diagnose` stops at root cause without applying fix)
+- `/gsd-debug continue <slug> [--runtime-probes | --no-runtime-probes]` — Resume a specific session, retaining its valid saved runtime-evidence policy unless an explicit flag overrides it
+- `/gsd-debug [--diagnose] [--runtime-probes | --no-runtime-probes] <description>` — Start a new debug session; `--diagnose` stops at root cause without applying a fix
+
+Probe flags are exact, global, and order-independent. Supplying both is an error. `list` and `status` reject debug flags, `continue` rejects `--diagnose`, and a new `--diagnose --runtime-probes` session is rejected because diagnosis-only sessions may not install source probes. The redundant `--diagnose --no-runtime-probes` combination is valid.
+
+**Runtime-evidence policy:** With no probe flag, new and legacy sessions use `off`: GSD continues to use ordinary tests and passive/native evidence but does not install temporary source probes. `--runtime-probes` selects `adaptive` and persists that policy in the session. A later `continue` reuses the saved policy; an explicit override changes the policy without resetting its run, probe, artifact, or cleanup ledger.
+
+Adaptive eligibility is not permission to instrument. GSD first requires an exact persisted reproduction, competing hypotheses that existing evidence cannot distinguish, bounded sanitized observations, a sufficiently low-perturbation bug class, and a complete ownership ledger. It reuses the identical reproduction for `baseline`, `post_fix`, and final `uninstrumented_verify`. Temporary source blocks and capture artifacts are removed and verified before final verification; cleanup failure blocks commits, abandonment, human verification, archival, and every terminal result until the session is reconciled.
+
+Runtime evidence is entirely local and transport-neutral. It adds no daemon, collector, hosted service, telemetry, network transport, SDK, or external package.
 
 **TDD mode:** When `tdd_mode: true` in `.planning/config.json`, debug sessions require a failing test to be written and verified before any fix is applied (red → green → done).
 
 ```bash
 /gsd-debug "Login button not responding on mobile Safari"
 /gsd-debug --diagnose "Intermittent 500 errors on /api/users"
+/gsd-debug --runtime-probes "Cache state diverges between workers"
 /gsd-debug list
 /gsd-debug status auth-token-null
 /gsd-debug continue form-submit-500
+/gsd-debug continue cache-divergence --no-runtime-probes
 ```
 
 ### `/gsd-add-tests`
