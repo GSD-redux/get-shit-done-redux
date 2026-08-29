@@ -25,7 +25,7 @@ import coreUtils = require('./core-utils.cjs');
 const { toPosixPath, normalizeLineEndings } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir } = planningWorkspace;
+const { planningDir, withPlanningLock } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatter;
@@ -39,7 +39,7 @@ import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 import configLoader = require('./config-loader.cjs');
 const { loadConfig } = configLoader;
-import { platformWriteSync } from './shell-command-projection.cjs';
+import { normalizeContent, retryRenameSync } from './shell-command-projection.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -388,6 +388,7 @@ interface UatTestRecord {
   name: string;
   expected: string;
   result: string;
+  reason: string | null;
   start: number;
   end: number;
   resultStart: number;
@@ -403,13 +404,17 @@ function findTopLevelResult(block: string): { result: string; start: number; end
   }
 
   let offset = 0;
+  let found: { result: string; start: number; end: number } | null = null;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     const match = !hidden.has(i) && line.match(/^result:\s*\[?([\w-]+)\]?\s*\r?$/i);
-    if (match) return { result: match[1].toLowerCase(), start: offset, end: offset + line.length };
+    if (match) {
+      if (found) error('UAT test has multiple result fields');
+      found = { result: match[1].toLowerCase(), start: offset, end: offset + line.length };
+    }
     offset += line.length + 1;
   }
-  return null;
+  return found;
 }
 
 function parseUatTestRecords(content: string): UatTestRecord[] {
@@ -429,6 +434,7 @@ function parseUatTestRecords(content: string): UatTestRecord[] {
     const next = headings[i + 1];
     const parts = parseTestRowHeadingText(heading.text);
     if (!parts) continue;
+    if (!Number.isSafeInteger(parts.number) || parts.number < 1) error('UAT test number must be a safe positive integer');
     const start = tests!.bodyStart + heading.offset;
     const end = next ? tests!.bodyStart + next.offset : tests!.bodyEnd;
     const block = content.slice(start, end);
@@ -440,6 +446,7 @@ function parseUatTestRecords(content: string): UatTestRecord[] {
       name: parts.name,
       expected: expected!,
       result: result!.result,
+      reason: extractScalarField(stripFencedCode(block).text, 'reason'),
       start,
       end,
       resultStart: start + result!.start,
@@ -447,6 +454,7 @@ function parseUatTestRecords(content: string): UatTestRecord[] {
     });
   }
   if (records.length === 0) error('UAT file has no parseable tests');
+  if (new Set(records.map((record) => record.number)).size !== records.length) error('UAT file has duplicate test numbers');
   return records;
 }
 
@@ -487,6 +495,19 @@ function replaceRequiredFrontmatterField(content: string, field: string, value: 
     + content.slice(frontmatterMatch!.index! + frontmatterMatch![0].length);
 }
 
+let strictAtomicWriteCounter = 0;
+function strictAtomicWrite(filePath: string, content: string): void {
+  const tmpPath = `${filePath}.tmp-${process.pid}-${++strictAtomicWriteCounter}`;
+  try {
+    const normalized = normalizeContent(filePath, content);
+    fs.writeFileSync(tmpPath, normalized.content, { encoding: normalized.encoding, flag: 'wx' });
+    retryRenameSync(tmpPath, filePath);
+  } catch (cause) {
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* best-effort cleanup */ }
+    throw cause;
+  }
+}
+
 function cmdRecordResult(
   cwd: string,
   options: { file?: string; test?: string; result?: string; note?: string } = {},
@@ -497,93 +518,105 @@ function cmdRecordResult(
   }
   if (!/^\d+$/.test(options.test!)) error('--test must be a positive integer');
   const testNumber = Number(options.test);
-  if (testNumber < 1) error('--test must be a positive integer');
+  if (!Number.isSafeInteger(testNumber) || testNumber < 1) error('--test must be a safe positive integer');
   if (options.result !== 'pass' && options.result !== 'issue') error('--result must be pass or issue');
+  const note = options.note?.trim() ?? '';
+  if (options.result === 'issue' && !note) error('--note is required for issue results');
 
   const candidate = requireSafePath(options.file, cwd, 'UAT file', { allowAbsolute: true });
   const resolvedPath = requireSafePath(candidate, planningDir(cwd), 'UAT file', { allowAbsolute: true });
-  if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) error(`UAT file not found: ${options.file}`);
+  const mutation = withPlanningLock(cwd, () => {
+    if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) error(`UAT file not found: ${options.file}`);
 
-  const original = fs.readFileSync(resolvedPath, 'utf-8');
-  const frontmatter = extractFrontmatter(original, resolvedPath);
-  const phase = typeof frontmatter.phase === 'string' ? frontmatter.phase.trim() : '';
-  if (!/^[A-Za-z0-9._-]+$/.test(phase)) error('UAT frontmatter phase must be a simple identifier');
-  const gapPrefix = `gap_id: G-${phase}-`;
-  let nextGap = 1;
-  for (const line of original.split(/\r?\n/)) {
-    const value = line.trim();
-    if (!value.startsWith(gapPrefix)) continue;
-    const number = Number(value.slice(gapPrefix.length));
-    if (Number.isInteger(number) && number >= nextGap) nextGap = number + 1;
-  }
-  const current = parseCurrentTest(original);
-  if (current.complete || current.number !== testNumber) error(`UAT test ${testNumber} is not the current pending test`);
-  const records = parseUatTestRecords(original);
-  const target = records.find((test) => test.number === testNumber);
-  if (!target || target.result !== 'pending') error(`UAT test ${testNumber} is not pending`);
-  const pendingTarget = target as UatTestRecord;
+    const original = fs.readFileSync(resolvedPath, 'utf-8');
+    const frontmatter = extractFrontmatter(original, resolvedPath);
+    const phase = typeof frontmatter.phase === 'string' ? frontmatter.phase.trim() : '';
+    if (!/^[A-Za-z0-9._-]+$/.test(phase)) error('UAT frontmatter phase must be a simple identifier');
+    const current = parseCurrentTest(original);
+    if (current.complete || current.number !== testNumber) error(`UAT test ${testNumber} is not the current pending test`);
+    const records = parseUatTestRecords(original);
+    const target = records.find((test) => test.number === testNumber);
+    if (!target || target.result !== 'pending') error(`UAT test ${testNumber} is not pending`);
+    const pendingTarget = target as UatTestRecord;
 
-  const summarySection = collectSection(original, (h) => /^summary$/i.test(h.text) && h.level === 2, { levelBounded: true });
-  const gapsSection = collectSection(original, (h) => /^gaps$/i.test(h.text) && h.level === 2, { levelBounded: true });
-  if (!summarySection || !gapsSection) error('UAT file is missing Summary or Gaps section');
+    const summarySection = collectSection(original, (h) => /^summary$/i.test(h.text) && h.level === 2, { levelBounded: true });
+    const gapsSection = collectSection(original, (h) => /^gaps$/i.test(h.text) && h.level === 2, { levelBounded: true });
+    if (!summarySection || !gapsSection) error('UAT file is missing Summary or Gaps section');
 
-  const note = options.note ?? '';
-  const severity = inferIssueSeverity(note);
-  const replacement = options.result === 'issue'
-    ? `result: issue\nreported: ${quoteUatValue(note)}\nseverity: ${severity}`
-    : 'result: pass';
-  const suffix = original.slice(pendingTarget.resultEnd);
-  let updated = original.slice(0, pendingTarget.resultStart)
-    + replacement
-    + (suffix.startsWith('\n') ? '' : '\n')
-    + suffix;
-  const updatedRecords = parseUatTestRecords(updated);
-  const counts = { passed: 0, issues: 0, pending: 0, skipped: 0, blocked: 0 };
-  for (const test of updatedRecords) {
-    if (test.result === 'pass') counts.passed += 1;
-    else if (test.result === 'issue') counts.issues += 1;
-    else if (test.result === 'pending') counts.pending += 1;
-    else if (test.result === 'skipped') counts.skipped += 1;
-    else if (test.result === 'blocked') counts.blocked += 1;
-  }
-  const next = updatedRecords.find((test) => test.result === 'pending');
-  updated = replaceSectionBody(updated, 'Current Test', renderCurrentTest(next));
-  updated = replaceSectionBody(updated, 'Summary', [
-    `total: ${updatedRecords.length}`,
-    `passed: ${counts.passed}`,
-    `issues: ${counts.issues}`,
-    `pending: ${counts.pending}`,
-    `skipped: ${counts.skipped}`,
-    `blocked: ${counts.blocked}`,
-  ].join('\n'));
-  if (options.result === 'issue') {
-    const gap = [
-      `- truth: ${quoteUatValue(pendingTarget.expected)}`,
-      `  gap_id: G-${phase}-${nextGap}`,
-      '  status: failed',
-      `  reason: ${quoteUatValue(`User reported: ${note}`)}`,
-      `  severity: ${severity}`,
-      `  test: ${testNumber}`,
-      '  root_cause: ""',
-      '  artifacts: []',
-      '  missing: []',
-      '  debug_session: ""',
-    ].join('\n');
-    const existingGaps = collectSection(updated, (h) => /^gaps$/i.test(h.text) && h.level === 2, { levelBounded: true })!;
-    updated = updated.slice(0, existingGaps.bodyEnd) + `${existingGaps.body.trim() ? '\n\n' : ''}${gap}` + updated.slice(existingGaps.bodyEnd);
-  }
-  updated = replaceRequiredFrontmatterField(updated, 'status', next ? 'testing' : 'complete');
-  updated = replaceRequiredFrontmatterField(updated, 'updated', new Date().toISOString());
+    let nextGap = 1;
+    const gapPrefix = `G-${phase}-`;
+    for (const entry of stripFencedCode(gapsSection!.body).text.split(/(?=^- )/m)) {
+      if (!/^- truth:\s*\S/m.test(entry)) continue;
+      const id = entry.match(/^ {2}gap_id:\s*(\S+)\s*$/m)?.[1];
+      if (!id?.startsWith(gapPrefix)) continue;
+      const number = Number(id.slice(gapPrefix.length));
+      if (Number.isSafeInteger(number) && number >= nextGap) nextGap = number + 1;
+    }
 
-  platformWriteSync(resolvedPath, updated);
+    const severity = inferIssueSeverity(note);
+    const replacement = options.result === 'issue'
+      ? `result: issue\nreported: ${quoteUatValue(note)}\nseverity: ${severity}`
+      : 'result: pass';
+    const suffix = original.slice(pendingTarget.resultEnd);
+    let updated = original.slice(0, pendingTarget.resultStart)
+      + replacement
+      + (suffix.startsWith('\n') ? '' : '\n')
+      + suffix;
+    const updatedRecords = parseUatTestRecords(updated);
+    const counts = { passed: 0, issues: 0, pending: 0, skipped: 0, blocked: 0 };
+    for (const test of updatedRecords) {
+      if (test.result === 'pass') counts.passed += 1;
+      else if (test.result === 'issue') counts.issues += 1;
+      else if (test.result === 'pending') counts.pending += 1;
+      else if (test.result === 'skipped') counts.skipped += 1;
+      else if (test.result === 'blocked') counts.blocked += 1;
+    }
+    const next = updatedRecords.find((test) => test.result === 'pending');
+    const partial = counts.pending > 0 || counts.blocked > 0
+      || updatedRecords.some((test) => test.result === 'skipped' && !test.reason?.trim());
+    const status = partial ? 'partial' : 'complete';
+    updated = replaceSectionBody(updated, 'Current Test', renderCurrentTest(next));
+    updated = replaceSectionBody(updated, 'Summary', [
+      `total: ${updatedRecords.length}`,
+      `passed: ${counts.passed}`,
+      `issues: ${counts.issues}`,
+      `pending: ${counts.pending}`,
+      `skipped: ${counts.skipped}`,
+      `blocked: ${counts.blocked}`,
+    ].join('\n'));
+    if (options.result === 'issue') {
+      const gap = [
+        `- truth: ${quoteUatValue(pendingTarget.expected)}`,
+        `  gap_id: G-${phase}-${nextGap}`,
+        '  status: failed',
+        `  reason: ${quoteUatValue(`User reported: ${note}`)}`,
+        `  severity: ${severity}`,
+        `  test: ${testNumber}`,
+        '  root_cause: ""',
+        '  artifacts: []',
+        '  missing: []',
+        '  debug_session: ""',
+      ].join('\n');
+      const existingGaps = collectSection(updated, (h) => /^gaps$/i.test(h.text) && h.level === 2, { levelBounded: true })!;
+      updated = updated.slice(0, existingGaps.bodyEnd) + `${existingGaps.body.trim() ? '\n\n' : ''}${gap}` + updated.slice(existingGaps.bodyEnd);
+    }
+    updated = replaceRequiredFrontmatterField(updated, 'status', status);
+    updated = replaceRequiredFrontmatterField(updated, 'updated', new Date().toISOString());
+    strictAtomicWrite(resolvedPath, updated);
+
+    return {
+      severity: options.result === 'issue' ? severity : undefined,
+      status,
+      next_test: next?.number ?? null,
+    };
+  });
+
   output({
     recorded: true,
     file_path: toPosixPath(path.relative(cwd, resolvedPath)),
     test_number: testNumber,
     result: options.result,
-    severity: options.result === 'issue' ? severity : undefined,
-    status: next ? 'partial' : 'complete',
-    next_test: next?.number ?? null,
+    ...mutation,
   }, raw, undefined);
 }
 

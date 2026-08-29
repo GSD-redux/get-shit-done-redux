@@ -1553,7 +1553,7 @@ blocked: 0
     assert.match(content, /### 1\. Sign in\n{1,}expected: Sign in succeeds\.\nresult: pass/);
     assert.match(content, /total: 2\npassed: 1\nissues: 0\npending: 1\nskipped: 0\nblocked: 0/);
     assert.match(content, /## Current Test\n\nnumber: 2\nname: Profile\nexpected: Profile loads\.\nawaiting: user response/);
-    assert.match(content, /^status: testing$/m);
+    assert.match(content, /^status: partial$/m);
     assert.match(content, /^updated: \d{4}-\d{2}-\d{2}T/m);
   });
 
@@ -1600,6 +1600,107 @@ blocked: 0
       assert.equal(result.success, false, `request unexpectedly succeeded: ${args.join(' ')}`);
       assert.equal(fs.readFileSync(uatPath, 'utf8'), before, 'rejected request must not modify the UAT file');
     }
+  });
+
+  test('requires a nonblank issue note without modifying the file', () => {
+    const before = fs.readFileSync(uatPath, 'utf8');
+    for (const noteArgs of [[], ['--note', '   ']]) {
+      const result = runGsdTools([
+        'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+        '--test', '1', '--result', 'issue', ...noteArgs,
+      ], tmpDir);
+      assert.equal(result.success, false);
+      assert.equal(fs.readFileSync(uatPath, 'utf8'), before);
+    }
+  });
+
+  test('keeps the session partial for blocked or unexplained skipped checks', () => {
+    for (const remainder of ['blocked', 'skipped']) {
+      writeUat();
+      fs.writeFileSync(uatPath, fs.readFileSync(uatPath, 'utf8')
+        .replace('result: pending\n\n## Summary', `result: ${remainder}\n\n## Summary`));
+      const result = runGsdTools([
+        'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+        '--test', '1', '--result', 'pass', '--raw',
+      ], tmpDir);
+      assert.equal(result.success, true, result.error);
+      assert.equal(JSON.parse(result.output).status, 'partial');
+      const content = fs.readFileSync(uatPath, 'utf8');
+      assert.match(content, /^status: partial$/m);
+      assert.match(content, /## Current Test\n\n\[testing complete\]/);
+    }
+
+    writeUat();
+    fs.writeFileSync(uatPath, fs.readFileSync(uatPath, 'utf8')
+      .replace('result: pending\n\n## Summary', 'result: skipped\nreason: Covered by automation.\n\n## Summary'));
+    const explained = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '1', '--result', 'pass', '--raw',
+    ], tmpDir);
+    assert.equal(explained.success, true, explained.error);
+    assert.equal(JSON.parse(explained.output).status, 'complete');
+    assert.match(fs.readFileSync(uatPath, 'utf8'), /^status: complete$/m);
+  });
+
+  test('rejects ambiguous rows, duplicate test numbers, and unsafe integers byte-identically', () => {
+    const mutations = [
+      (content) => content.replace('result: pending\n\n### 2.', 'result: pending\nresult: pass\n\n### 2.'),
+      (content) => content.replace('### 2. Profile', '### 1. Profile'),
+    ];
+    for (const mutate of mutations) {
+      writeUat();
+      fs.writeFileSync(uatPath, mutate(fs.readFileSync(uatPath, 'utf8')));
+      const before = fs.readFileSync(uatPath, 'utf8');
+      const result = runGsdTools([
+        'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+        '--test', '1', '--result', 'pass',
+      ], tmpDir);
+      assert.equal(result.success, false);
+      assert.equal(fs.readFileSync(uatPath, 'utf8'), before);
+    }
+
+    writeUat();
+    const before = fs.readFileSync(uatPath, 'utf8');
+    const unsafe = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '9007199254740993', '--result', 'pass',
+    ], tmpDir);
+    assert.equal(unsafe.success, false);
+    assert.equal(fs.readFileSync(uatPath, 'utf8'), before);
+  });
+
+  test('allocates the next gap id from canonical unfenced Gaps entries only', () => {
+    fs.writeFileSync(uatPath, fs.readFileSync(uatPath, 'utf8').replace('## Gaps', `## Gaps
+
+- truth: "older"
+  gap_id: G-01-test-phase-2
+  status: failed
+
+\`\`\`yaml
+- truth: "example"
+  gap_id: G-01-test-phase-88
+\`\`\`
+
+## Notes
+
+gap_id: G-01-test-phase-99`));
+    const result = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '1', '--result', 'issue', '--note', '  Something broke.  ', '--raw',
+    ], tmpDir);
+    assert.equal(result.success, true, result.error);
+    const content = fs.readFileSync(uatPath, 'utf8');
+    assert.match(content, /gap_id: G-01-test-phase-3/);
+    assert.match(content, /reported: "Something broke\."/);
+  });
+
+  test('holds the planning lock and uses a strict sibling-temp rename for the transaction', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'uat.cts'), 'utf8');
+    // allow-test-rule: lock/write wiring has no deterministic CLI observation without adding a production race hook (#3707)
+    const command = source.slice(source.indexOf('function cmdRecordResult('), source.indexOf('// ─── parseCurrentTest'));
+    assert.match(command, /withPlanningLock\(cwd, \(\) => \{[\s\S]*fs\.readFileSync[\s\S]*strictAtomicWrite/);
+    assert.match(command, /strictAtomicWrite/);
+    assert.doesNotMatch(command, /platformWriteSync/);
   });
 
   test('rejects a fake pending result inside fenced code without modifying the file', () => {
