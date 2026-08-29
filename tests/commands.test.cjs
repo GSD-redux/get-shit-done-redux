@@ -2912,6 +2912,21 @@ describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
     hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
   });
 
+  test('#3901: enable succeeds even when a GLOBAL core.hooksPath is configured', () => {
+    // Simulate the developer machine via GIT_CONFIG_GLOBAL pointing at a
+    // hostile file (a fresh repo still inherits ~/.gitconfig): the guard
+    // correctly refuses to install a hook git would never run — the fixture
+    // must isolate the suite from the host's git config instead of failing
+    // 18 tests that read as a commit-docs-guard regression.
+    const globalCfg = path.join(tmpDir, '..', 'gsd-3901-global.gitconfig');
+    fs.writeFileSync(globalCfg, '[core]\n\thooksPath = /definitely/not/.git/hooks\n');
+    const result = runGsdTools('commit-docs-guard enable --raw', tmpDir, {
+      GIT_CONFIG_GLOBAL: globalCfg,
+    });
+    assert.ok(result.success, `enable failed under a global core.hooksPath: ${result.error}`);
+    assert.ok(fs.existsSync(hookPath), 'the hook is installed at the repo-local default path');
+  });
+
   afterEach(() => {
     cleanup(tmpDir);
   });
