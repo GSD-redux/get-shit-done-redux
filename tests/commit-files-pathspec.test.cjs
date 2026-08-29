@@ -19,6 +19,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
 const { createTempGitProject, cleanup, runGsdTools } = require('./helpers.cjs');
+const { execFileSync } = require('node:child_process');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 // #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
 const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
@@ -2641,5 +2642,112 @@ describe('workflow call sites declare --files (#2269)', () => {
         'the unstaged .planning/ stray must not be swept in. Status:\n' + statusOutput,
       );
     });
+  });
+});
+
+// ─── #3886: git commit timeout is a commit_timeout, not a commit_failed ─────
+
+describe('commit timeout reporting (#3886)', () => {
+  // Same in-process execGit interception family as #2608's staging harness
+  // above, verb-swapped to `commit`: the killed `git commit` surfaces the
+  // SIGTERM+ETIMEDOUT shape (posix) or the ETIMEDOUT-only shape (Windows —
+  // #3050: signal is not reliably reported there).
+  function commitWithTimedOutCommit({ cwd, files, stderr = "warning: LF will be replaced by CRLF", timeoutShape = 'posix' }) {
+    const script = `
+const path = require('path');
+const LIB = ${JSON.stringify(LIB)};
+const projection = require(path.join(LIB, 'shell-command-projection.cjs'));
+const { cmdCommit } = require(path.join(LIB, 'commands.cjs'));
+const timeoutShape = ${JSON.stringify(timeoutShape)};
+const stderrText = ${JSON.stringify(stderr)};
+const real = projection.execGit;
+projection.execGit = (args, opts) => {
+  if (args[0] === 'commit') {
+    const e = new Error('spawnSync git ETIMEDOUT');
+    e.code = 'ETIMEDOUT';
+    return { exitCode: 1, stdout: '', stderr: stderrText, signal: timeoutShape === 'posix' ? 'SIGTERM' : null, error: e };
+  }
+  return real(args, opts);
+};
+cmdCommit(${JSON.stringify(cwd)}, 'docs: probe', ${JSON.stringify(files)}, false, false, false);
+`;
+    const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8', timeout: 15_000 });
+    if (run.status !== 0 && !run.stdout) {
+      throw new Error(`probe crashed: ${run.stderr}`);
+    }
+    return { result: JSON.parse(run.stdout) };
+  }
+
+  let tmpDir;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3886-'));
+    fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# State\n');
+    execFileSync('git', ['init', '-b', 'main'], { cwd: tmpDir, timeout: 15_000 });
+    execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: tmpDir, timeout: 15_000 });
+    execFileSync('git', ['config', 'user.name', 'T'], { cwd: tmpDir, timeout: 15_000 });
+  });
+  afterEach(() => cleanup(tmpDir));
+
+  for (const shape of ['posix', 'windows']) {
+    test(`a timed-out git commit reports commit_timeout (${shape} shape), naming the stale lock`, () => {
+      const { result } = commitWithTimedOutCommit({ cwd: tmpDir, files: ['.planning/STATE.md'], timeoutShape: shape });
+      assert.equal(result.committed, false);
+      assert.equal(result.reason, 'commit_timeout', `a timeout must not read as commit_failed (${shape})`);
+      assert.equal(result.timed_out, true);
+      assert.ok(
+        (result.error || '').includes('index.lock'),
+        'the error must surface the stale .git/index.lock a killed git commit can leave behind'
+      );
+    });
+  }
+
+  test('a timeout whose partial output contains "nothing to commit" is still a timeout (precedence pin)', () => {
+    // #3886 review: the isSpawnTimeout gate runs BEFORE the nothing-to-commit
+    // branch — a killed commit can have flushed anything, including the
+    // nothing-to-commit text, and must still read as a timeout. Reordering
+    // the branches would silently revert to the misroute this fix retires.
+    const script = `
+const path = require('path');
+const LIB = ${JSON.stringify(LIB)};
+const projection = require(path.join(LIB, 'shell-command-projection.cjs'));
+const { cmdCommit } = require(path.join(LIB, 'commands.cjs'));
+const real = projection.execGit;
+projection.execGit = (args, opts) => {
+  if (args[0] === 'commit') {
+    const e = new Error('spawnSync git ETIMEDOUT');
+    e.code = 'ETIMEDOUT';
+    return { exitCode: 1, stdout: 'nothing to commit, working tree clean', stderr: '', signal: 'SIGTERM', error: e };
+  }
+  return real(args, opts);
+};
+cmdCommit(${JSON.stringify(tmpDir)}, 'docs: probe', ['.planning/STATE.md'], false, false, false);
+`;
+    const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8', timeout: 15_000 });
+    const result = JSON.parse(run.stdout);
+    assert.equal(result.reason, 'commit_timeout', 'the timeout gate must win over the nothing-to-commit text in partial output');
+    assert.equal(result.timed_out, true);
+  });
+
+  test('an ordinary commit failure still reports commit_failed (no regression)', () => {
+    const script = `
+const path = require('path');
+const LIB = ${JSON.stringify(LIB)};
+const projection = require(path.join(LIB, 'shell-command-projection.cjs'));
+const { cmdCommit } = require(path.join(LIB, 'commands.cjs'));
+const real = projection.execGit;
+projection.execGit = (args, opts) => {
+  if (args[0] === 'commit') {
+    return { exitCode: 128, stdout: '', stderr: 'fatal: injected commit failure', signal: null, error: null };
+  }
+  return real(args, opts);
+};
+cmdCommit(${JSON.stringify(tmpDir)}, 'docs: probe', ['.planning/STATE.md'], false, false, false);
+`;
+    const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8', timeout: 15_000 });
+    const result = JSON.parse(run.stdout);
+    assert.equal(result.committed, false);
+    assert.equal(result.reason, 'commit_failed');
+    assert.equal(result.timed_out, undefined);
   });
 });

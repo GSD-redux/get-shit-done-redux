@@ -133,6 +133,7 @@ const CONFIG_DEFAULTS = {
   security_asvs_level: _getNestedConfigDefault('workflow', 'security_asvs_level'),
   security_block_on: _getNestedConfigDefault('workflow', 'security_block_on'),
   post_planning_gaps: _getNestedConfigDefault('workflow', 'post_planning_gaps'),
+  research_before_questions: _getNestedConfigDefault('workflow', 'research_before_questions'), // #3894
   smart_zone_tokens: _getNestedConfigDefault('workflow', 'smart_zone_tokens'),
   inline_plan_threshold: _getNestedConfigDefault('workflow', 'inline_plan_threshold'), // #3801
   max_prompt_tokens: _getNestedConfigDefault('review', 'max_prompt_tokens'),
@@ -345,7 +346,7 @@ function _resetRuntimeWarningCacheForTests(): void {
 // drift in either direction.
 const GLOBAL_DEFAULTS_RESOLUTION_KEYS = [
   'model_profile', 'commit_docs', 'research', 'plan_checker', 'verifier',
-  'nyquist_validation', 'post_planning_gaps', 'parallelization', 'text_mode',
+  'nyquist_validation', 'post_planning_gaps', 'research_before_questions', 'parallelization', 'text_mode',
   'resolve_model_ids', 'context_window', 'subagent_timeout', 'model_overrides',
   'models', 'granularity', 'granularities', 'planning', 'dynamic_routing',
   'effort', 'fast_mode', 'agent_skills', 'response_language', 'runtime',
@@ -365,11 +366,14 @@ function _warnShadowedGlobalDefaults(globalDefaults: Record<string, unknown>, gl
   // `?? globalDefaults['workflow']?.['post_planning_gaps']` fallback in
   // _globalBaseCfg) — a global file using only the nested form is equally
   // shadowed, so it reports under its dotted name.
-  if (!shadowed.includes('post_planning_gaps')) {
-    const wf = globalDefaults['workflow'];
-    if (wf && typeof wf === 'object' && !Array.isArray(wf) &&
-        Object.prototype.hasOwnProperty.call(wf, 'post_planning_gaps')) {
-      shadowed.push('workflow.post_planning_gaps');
+  // #3894: research_before_questions gets the same nested-alias reporting.
+  const nestedAliasKeys = ['post_planning_gaps', 'research_before_questions'];
+  const wf = globalDefaults['workflow'];
+  if (wf && typeof wf === 'object' && !Array.isArray(wf)) {
+    for (const k of nestedAliasKeys) {
+      if (!shadowed.includes(k) && Object.prototype.hasOwnProperty.call(wf, k)) {
+        shadowed.push(`workflow.${k}`);
+      }
     }
   }
   if (shadowed.length === 0) return;
@@ -1020,6 +1024,12 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
         post_planning_gaps: (globalDefaults['post_planning_gaps'])
           ?? (globalDefaults['workflow'] as Record<string, unknown> | undefined)?.['post_planning_gaps']
           ?? defaults.post_planning_gaps,
+        // #3894: same nested-alias shape as post_planning_gaps above — the key
+        // was silently dropped from global defaults, so it was unavailable at
+        // user scope AND inert at project scope on the /gsd-quick path.
+        research_before_questions: (globalDefaults['research_before_questions'])
+          ?? (globalDefaults['workflow'] as Record<string, unknown> | undefined)?.['research_before_questions']
+          ?? defaults.research_before_questions,
         parallelization: (globalDefaults['parallelization']) ?? defaults.parallelization,
         text_mode: (globalDefaults['text_mode']) ?? defaults.text_mode,
         resolve_model_ids: (globalDefaults['resolve_model_ids']) ?? defaults.resolve_model_ids,
