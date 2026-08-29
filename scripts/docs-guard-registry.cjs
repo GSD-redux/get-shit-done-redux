@@ -286,6 +286,18 @@ const DOCS_GUARD_TESTS = {
   'tests/inventory-manifest-sync.test.cjs': ['docs/INVENTORY.md', 'docs/INVENTORY-MANIFEST.json'],
   'tests/kilo-upgrades.test.cjs': ['docs/how-to/connect-gsd-mcp-server.md'],
   'tests/live-config-guard.test.cjs': ['docs/TESTING-SUITES.md'],
+  // #3726: pins the `milestone complete` synopsis (English + four localized
+  // mirrors), the `--confirm` flag row and the guard-override instructions —
+  // `type: Fixed` exempts that PR from the docs-required lint, so this is the
+  // only gate on that prose.
+  'tests/milestone.test.cjs': [
+    'docs/CLI-TOOLS.md',
+    'docs/COMMANDS.md',
+    'docs/ja-JP/CLI-TOOLS.md',
+    'docs/ko-KR/CLI-TOOLS.md',
+    'docs/pt-BR/CLI-TOOLS.md',
+    'docs/zh-CN/CLI-TOOLS.md',
+  ],
   'tests/model-catalog-runtime-defaults.test.cjs': ['docs/CONFIGURATION.md'],
   // Scans every git-tracked file in the whole repo via `git ls-files`
   // (no-pending-3212-markers.test.cjs:37-46), which includes all of docs/ —

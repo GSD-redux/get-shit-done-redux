@@ -393,8 +393,9 @@ elsewhere — phase scoping cannot be trusted, and the command now refuses
 rather than falling back to an over-inclusive filter that would archive every
 phase directory in the project. `unreadable` (no ROADMAP.md at all) and
 `unscoped` (no section for this version) are pre-existing, legitimately
-handled states and are not refused here. Pass `--force` to override, the same
-affordance the unstarted-phase guard uses.
+handled states and are not refused here. Pass `--force --confirm` to override, the same
+affordance the unstarted-phase guard uses (`--confirm` is required for any mutating run —
+#3726; `--force` alone does not imply it).
 
 ---
 
@@ -881,7 +882,7 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 ```bash
 # Archive milestone
-node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases] [--force] [--dry-run] [--archive-quick]
+node gsd-tools.cjs milestone complete <version> (--confirm | --dry-run) [--name <name>] [--no-archive-phases] [--force] [--archive-quick]
 
 # Archive .planning/quick/* into milestones/<version>-quick/ WITHOUT the milestone complete close-out (#2142)
 node gsd-tools.cjs milestone archive-quick <version> [--dry-run]
@@ -896,13 +897,14 @@ node gsd-tools.cjs requirements mark-complete <ids>
 | Flag | Description |
 |------|-------------|
 | `<version>` | Milestone version label to archive (e.g. `v1.0`). |
+| `--confirm` | **Required to mutate (#3726).** The archive is irreversible — ROADMAP.md/REQUIREMENTS.md archived, phase directories MOVED, STATE.md rewritten — so without this flag the command refuses and changes nothing (exit 1, with a message naming both `--confirm` and `--dry-run`). Not implied by `--force`, which only overrides the guards below. |
 | `--name <name>` | Display name for the MILESTONES.md entry. Defaults to `<version>`. |
 | `--no-archive-phases` | Leave phase directories in place instead of moving them into `.planning/milestones/<version>-phases/`. |
 | `--archive-quick` | Opt-in (default OFF, #2142): also move every directory under `.planning/quick/` into `.planning/milestones/<version>-quick/`, (re)write that archive directory's `README.md` index, and clear STATE.md's `### Quick Tasks Completed` table rows. See "`milestone archive-quick`" below for the narrower standalone form and the full behavior. |
 | `--force` | Override the unstarted-phase guard (see below). |
 | `--dry-run` | Print the archive plan (roadmap, requirements, phases, and — when `--archive-quick` is also passed — quick-task dirs to move) without mutating anything. |
 
-**Unstarted-phase guard.** Before archiving, the command scans the ROADMAP scoped for `<version>` and refuses if any `### Phase N:` heading in that slice has no matching phase directory on disk (`disk_status: no_directory`). Phase 0 (pre-milestone) and Phase 999 (backlog) sentinels are excluded. The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946). Pass `--force` to override.
+**Unstarted-phase guard.** Before archiving, the command scans the ROADMAP scoped for `<version>` and refuses if any `### Phase N:` heading in that slice has no matching phase directory on disk (`disk_status: no_directory`). Phase 0 (pre-milestone) and Phase 999 (backlog) sentinels are excluded. The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946). Pass `--force --confirm` to override (`--confirm` is required for any mutating run — #3726; `--force` alone does not imply it).
 
 **Sentinel directories are never archived.** The phase-directory move performed when `--no-archive-phases` is absent is now filtered through the same canonical sentinel predicate as `phases list` and `phases clear`: `999.*` (backlog) and `0-*` (pre-milestone) directories are left in place rather than moved into `.planning/milestones/<version>-phases/`. Previously this path was scoped only by the milestone window, with no sentinel filter, so a sentinel directory sitting inside the window could be archived along with the milestone's real phases.
 

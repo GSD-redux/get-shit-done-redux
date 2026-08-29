@@ -280,7 +280,7 @@ checkpoints between tasks. The user can review, modify, or redirect work at any 
 <step name="handle_branching">
 Check `branching_strategy` from init:
 
-**"none":** Skip, continue on current branch.
+**"none":** Read and execute `execute-phase/steps/protected-branch.md`.
 
 **"phase" or "milestone":** Use pre-computed `branch_name` from init.
 

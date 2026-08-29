@@ -30,6 +30,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runGsdTools, cleanup, readFileNormalized } = require('./helpers.cjs');
+const { ExitError } = require('../gsd-core/bin/lib/cli-exit.cjs');
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
@@ -62,6 +63,21 @@ function createGitRepo(opts = {}) {
  */
 function addPlanning(dir) {
   fs.mkdirSync(path.join(dir, '.planning', 'phases'), { recursive: true });
+}
+
+/** Snapshot every file below .planning, including bytes and relative paths. */
+function snapshotPlanningTree(dir) {
+  const root = path.join(dir, '.planning');
+  const snapshot = new Map();
+  function visit(current) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else snapshot.set(path.relative(root, absolute), fs.readFileSync(absolute));
+    }
+  }
+  visit(root);
+  return snapshot;
 }
 
 /**
@@ -234,6 +250,30 @@ describe('#1146: git.base-branch resolver', () => {
       `Expected flat config override 'release', got: '${branch}'`);
   });
 
+  test('A3. #3648 precedence: both flat base_branch and nested git.base_branch set → nested (canonical) wins', (t) => {
+    // Regression for #3648 review Blocker 1: production config resolution
+    // (config-loader's `get()`) is flat-first, so a project that migrated to
+    // the namespaced `git.base_branch` but still carries a stale flat
+    // `base_branch` from before migration would silently get the old flat
+    // value back. `normalizeLegacyKeys` must hoist/resolve `base_branch` the
+    // same way it already does `branching_strategy` — canonical nested wins,
+    // stale flat top-level is dropped.
+    const dir = createGitRepo({ prefix: 'gsd-3648-a3-', defaultBranch: 'master' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const cfgPath = require('node:path').join(dir, '.planning', 'config.json');
+    require('node:fs').writeFileSync(
+      cfgPath,
+      JSON.stringify({ base_branch: 'stale-flat', git: { base_branch: 'canonical-nested' } }, null, 2) + '\n',
+    );
+
+    const result = runGsdTools(['query', 'git.base-branch'], dir);
+    assert.ok(result.success, `git.base-branch with both config keys failed:\n${result.error}`);
+    const branch = result.output.trim();
+    assert.strictEqual(branch, 'canonical-nested',
+      `Expected namespaced 'git.base_branch' to win over stale flat 'base_branch', got: '${branch}'`);
+  });
+
   test('H. No remote, both "main" and "master" local branches exist → returns "main" (main wins tie-break)', (t) => {
     // Tier-4 tie-break: when both main and master exist locally and no remote info is available,
     // "main" wins (documented in tryLocalBranch JSDoc — modern default).
@@ -337,7 +377,7 @@ describe('#3057 B4: resolveBaseBranchDiagnostics — verified vs unverified last
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3057-b4-fault-'));
     t.after(() => cleanup(dir));
     // No .planning/config.json in this dir → the config-override tier is
-    // skipped naturally (readConfigBaseBranch's real-fs read misses cleanly).
+    // skipped naturally (loadConfig's real-fs read misses cleanly).
     const faultyGit = makeFaultyGit({ faults: [{ kind: 'timeout' }] });
 
     const result = gitBaseBranch.resolveBaseBranchDiagnostics(dir, { execGit: faultyGit });
@@ -400,6 +440,1044 @@ describe('#3057 B4: resolveBaseBranchDiagnostics — verified vs unverified last
     assert.strictEqual(stdoutText, 'main\n');
     assert.strictEqual(stderrText, '', 'a verified fallback must not write any diagnostic');
   });
+
+  test('#3648 Major: --is-protected fails CLOSED (reports protected) when the base branch is unverified', (t) => {
+    // Regression for #3648 review's Major finding: `--is-protected` used to
+    // discard `verified` entirely, so a degraded git (timeout / spawn
+    // failure) silently answered `false` — the wrong failure direction for a
+    // protection guard. An unverified guess must not let a caller conclude
+    // "definitely not protected".
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3648-major-'));
+    t.after(() => cleanup(dir));
+
+    let stdoutText = '';
+    let stderrText = '';
+    gitBaseBranch.cmdGitBaseBranch(dir, ['--is-protected', 'some-topic-branch'], {
+      execGit: makeFaultyGit({ faults: [{ kind: 'timeout' }] }),
+      write: (s) => { stdoutText += s; },
+      writeDiagnostic: (s) => { stderrText += s; },
+    });
+    assert.strictEqual(stdoutText, 'true\n',
+      'an unverified answer must fail closed (report protected), not silently false');
+    assert.match(stderrText, /could not verify repository branch metadata/);
+
+    // Negative control: a verified resolution for the same non-matching
+    // branch must still cleanly report false — the fail-closed path must
+    // trigger on non-verification, not on every "not protected" answer.
+    stdoutText = '';
+    stderrText = '';
+    gitBaseBranch.cmdGitBaseBranch(dir, ['--is-protected', 'some-topic-branch'], {
+      execGit: makeFaultyGit(),
+      write: (s) => { stdoutText += s; },
+      writeDiagnostic: (s) => { stderrText += s; },
+    });
+    assert.strictEqual(stdoutText, 'false\n');
+    assert.strictEqual(stderrText, '', 'a verified non-match must not write any diagnostic');
+  });
+});
+
+// ─── #3552: protected-branch policy and execute-phase warning ────────────────
+
+function extractProtectedBranchWarningBash(workflowFile, stepName) {
+  const content = readFileNormalized(path.join(WORKFLOW_DIR, workflowFile));
+  const lines = content.split('\n');
+  const blocks = [];
+  let inStep = false;
+  let inBash = false;
+  let buffer = [];
+
+  for (const line of lines) {
+    if (!inStep && line === `<step name="${stepName}">`) {
+      inStep = true;
+      continue;
+    }
+    if (inStep && /^<\/step>\s*$/.test(line)) break;
+    if (inStep && !inBash && /^\s*```bash\s*$/.test(line)) {
+      inBash = true;
+      buffer = [];
+      continue;
+    }
+    if (inBash && /^\s*```\s*$/.test(line)) {
+      blocks.push(buffer.join('\n'));
+      inBash = false;
+      continue;
+    }
+    if (inBash) buffer.push(line);
+  }
+
+  let block = blocks.find((candidate) => candidate.includes('--is-protected'));
+  if (!block) {
+    // #3648: the step may point at an extracted step file (e.g. execute-phase.md's
+    // ADR-857 byte-ceiling extraction) instead of carrying the bash block inline.
+    const stepBody = lines.slice(lines.indexOf(`<step name="${stepName}">`) + 1);
+    const ref = stepBody.find((l) => /`execute-phase\/steps\/[\w-]+\.md`/.test(l));
+    const refMatch = ref && ref.match(/`(execute-phase\/steps\/[\w-]+\.md)`/);
+    if (refMatch) {
+      const refLines = readFileNormalized(path.join(WORKFLOW_DIR, refMatch[1])).split('\n');
+      const refBlocks = [];
+      let refInBash = false;
+      let refBuffer = [];
+      for (const line of refLines) {
+        if (!refInBash && /^\s*```bash\s*$/.test(line)) {
+          refInBash = true;
+          refBuffer = [];
+          continue;
+        }
+        if (refInBash && /^\s*```\s*$/.test(line)) {
+          refBlocks.push(refBuffer.join('\n'));
+          refInBash = false;
+          continue;
+        }
+        if (refInBash) refBuffer.push(line);
+      }
+      block = refBlocks.find((candidate) => candidate.includes('--is-protected'));
+      // #3648: sync-runtime-launcher.cjs adds the canonical gsd_run resolver
+      // preamble to this standalone step file (runtime-launcher-parity's
+      // one-preamble-per-file rule). That preamble defines its own gsd_run(),
+      // which would shadow this harness's injected mock and reach the real
+      // gsd-tools.cjs on the machine running the test. The preamble's own
+      // correctness is covered by tests/runtime-launcher-parity.test.cjs; this
+      // harness only needs the #3552 warning logic, so strip it here.
+      if (block) {
+        block = block.split('\n').filter((l) => !l.trimStart().startsWith('_GSD_SHIM_NAME=')).join('\n');
+      }
+    }
+  }
+  if (!block) {
+    throw new Error(`${workflowFile} ${stepName} has no protected-branch warning bash block`);
+  }
+  return block;
+}
+
+function writeProtectedBranchWarningScript(prefix, bash) {
+  const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const scriptPath = path.join(scriptDir, 'warning.sh');
+  fs.writeFileSync(scriptPath, [
+    '#!/usr/bin/env bash',
+    'set -eu',
+    'git() {',
+    '  if [ "$#" -ne 2 ] || [ "$1" != branch ] || [ "$2" != --show-current ]; then',
+    '    printf "unexpected git invocation\\n" >&2',
+    '    return 97',
+    '  fi',
+    '  printf "%s\\n" "$CURRENT_BRANCH_VALUE"',
+    '}',
+    'gsd_run() {',
+    '  if [ "$#" -ne 4 ] || [ "$1" != query ] || [ "$2" != git.base-branch ] ||',
+    '     [ "$3" != --is-protected ] || [ "$4" != "$CURRENT_BRANCH_VALUE" ]; then',
+    '    printf "unexpected protected-branch query\\n"',
+    '    return 0',
+    '  fi',
+    // The real command writes its fail-closed and rejected-entry
+    // explanations to stderr. Emitting one here is what makes a swallowed
+    // `2>/dev/null` at the call site visible to a test.
+    '  if [ -n "${DIAGNOSTIC_TEXT:-}" ]; then printf "%s\\n" "$DIAGNOSTIC_TEXT" >&2; fi',
+    // QUERY_EXIT lets a test make the query FAIL (gsd-tools missing, a crash, a
+    // non-zero exit). Defaults to 0, so every pre-existing caller of this
+    // harness is unaffected. Nothing is printed on stdout in that case —
+    // matching a real failed command substitution.
+    '  if [ "${QUERY_EXIT:-0}" != 0 ]; then return "${QUERY_EXIT}"; fi',
+    '  printf "%s\\n" "$PROTECTED_RESULT"',
+    '}',
+    bash,
+    'printf "IS_PROTECTED=%s\\n" "${IS_PROTECTED:-unbound}"',
+    'printf "continued\\n"',
+  ].join('\n'), { mode: 0o755 });
+  return { scriptDir, scriptPath };
+}
+
+describe('#3552: configured protected branches', () => {
+  const configuredLoad = (requestedCwd) => {
+    assert.strictEqual(requestedCwd, '/repo');
+    return {
+      base_branch: 'main',
+      protected_branches: ['develop', 'next', 'develop'],
+    };
+  };
+
+  test('#3552 configured match and unrelated branch produce opposite results', () => {
+    const match = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', {
+      loadConfig: configuredLoad,
+    });
+    const control = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/3552', {
+      loadConfig: configuredLoad,
+    });
+
+    assert.deepStrictEqual(match, {
+      baseBranch: 'main',
+      protectedBranches: ['main', 'develop', 'next'],
+      rejectedProtectedBranches: [],
+      isProtected: true,
+      verified: true,
+    });
+    assert.strictEqual(control.isProtected, false);
+    assert.notStrictEqual(match.isProtected, control.isProtected,
+      'negative control must disagree with the configured protected-branch match');
+  });
+
+  test('#3552 absent list retains resolved-base protection and unrelated control', () => {
+    const deps = { loadConfig: () => ({ base_branch: 'main' }) };
+    const base = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', deps);
+    const control = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/3552', deps);
+
+    assert.deepStrictEqual(base.protectedBranches, ['main']);
+    assert.strictEqual(base.isProtected, true);
+    assert.strictEqual(control.isProtected, false);
+    assert.notStrictEqual(base.isProtected, control.isProtected,
+      'negative control must disagree with the resolved-base match');
+  });
+
+  test('#3552 a bad element drops only itself — valid names still protect', () => {
+    // A protection predicate must not fail OPEN. config-set validation is
+    // bypassable by a direct edit of .planning/config.json, so one bad element
+    // discarding the whole list is the exact failure #3552 exists to close,
+    // reintroduced through a different door (#3648 review Blocker 3).
+    for (const protectedBranches of [['develop', 42], ['develop', '   '], ['develop', null]]) {
+      const loadConfig = () => ({ base_branch: 'main', protected_branches: protectedBranches });
+      const configuredName = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { loadConfig });
+
+      assert.strictEqual(configuredName.isProtected, true,
+        `'develop' must stay protected alongside a bad sibling: ${JSON.stringify(protectedBranches)}`);
+      assert.deepStrictEqual(configuredName.protectedBranches, ['main', 'develop']);
+      assert.strictEqual(configuredName.rejectedProtectedBranches.length, 1,
+        'the bad element must be reported, not silently swallowed');
+    }
+  });
+
+  test('#3552 a non-array value contributes no names and is reported', () => {
+    const loadConfig = () => ({ base_branch: 'main', protected_branches: 'develop' });
+    const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { loadConfig });
+
+    assert.strictEqual(status.isProtected, false,
+      'a bare string is not a list of branch names — it must not protect');
+    assert.deepStrictEqual(status.protectedBranches, ['main']);
+    assert.deepStrictEqual(status.rejectedProtectedBranches, ['"develop"']);
+  });
+
+  test('#3552 negative control: a well-formed list reports nothing rejected', () => {
+    // Must disagree with every case above — otherwise the reject channel is
+    // reporting unconditionally and proves nothing.
+    const loadConfig = () => ({ base_branch: 'main', protected_branches: ['develop'] });
+    const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', { loadConfig });
+
+    assert.strictEqual(status.isProtected, true);
+    assert.deepStrictEqual(status.rejectedProtectedBranches, []);
+  });
+
+  test('#3552 an empty list is well-formed, not malformed', () => {
+    const loadConfig = () => ({ base_branch: 'main', protected_branches: [] });
+    const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'main', { loadConfig });
+
+    assert.deepStrictEqual(status.protectedBranches, ['main']);
+    assert.deepStrictEqual(status.rejectedProtectedBranches, [],
+      'declaring no extra protected branches is a valid choice, not an error');
+  });
+
+  test('#3552 --is-protected writes a diagnostic naming the rejected elements', () => {
+    const diagnostics = [];
+    const out = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop', 42] }),
+      write: (chunk) => out.push(chunk),
+      writeDiagnostic: (chunk) => diagnostics.push(chunk),
+    });
+
+    assert.strictEqual(out.join('').trim(), 'true');
+    assert.strictEqual(diagnostics.length, 1, 'the rejection must be surfaced, not swallowed');
+    assert.match(diagnostics.join(''), /protected_branches/);
+    assert.match(diagnostics.join(''), /42/);
+  });
+
+  test('#3552 negative control: a clean list writes no diagnostic', () => {
+    const diagnostics = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      write: () => {},
+      writeDiagnostic: (chunk) => diagnostics.push(chunk),
+    });
+
+    assert.deepStrictEqual(diagnostics, [],
+      'a well-formed list must be silent — otherwise the diagnostic carries no signal');
+  });
+
+  test('#3648 Nit F-7: renderRejected sanitizes control and ANSI characters in diagnostics', () => {
+    const diagnostics = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop', { malicious: 'bad\x1b[31m\nbranch' }] }),
+      write: () => {},
+      writeDiagnostic: (chunk) => diagnostics.push(chunk),
+    });
+
+    assert.strictEqual(diagnostics.length, 1);
+    const diag = diagnostics.join('');
+    assert.match(diag, /bad\\u001b\[31m/);
+    assert.strictEqual(diag.includes('\x1b'), false, 'diagnostic must not contain raw ESC control bytes');
+  });
+
+  test('#3552 execute-phase handle_branching wires protected-branch step with Read and execute (not Skip.)', () => {
+    const content = readFileNormalized(path.join(WORKFLOW_DIR, 'execute-phase.md'));
+    const stepMatch = content.match(/<step name="handle_branching">([\s\S]*?)<\/step>/);
+    assert.ok(stepMatch, 'handle_branching step must exist in execute-phase.md');
+    const stepBody = stepMatch[1];
+
+    assert.match(
+      stepBody,
+      /\*\*"none":\*\*\s+Read and execute `execute-phase\/steps\/protected-branch\.md`\./,
+      'execute-phase handle_branching "none" arm must instruct executor to Read and execute the step file',
+    );
+    assert.doesNotMatch(
+      stepBody,
+      /\*\*"none":\*\*\s*Skip\./,
+      'execute-phase handle_branching "none" arm must not say "Skip."',
+    );
+
+    // Negative control: verify the assertion rejects an advisory "Skip." pointer
+    const fakeAdvisoryBody = stepBody.replace(
+      /\*\*"none":\*\*\s+Read and execute `execute-phase\/steps\/protected-branch\.md`\./,
+      '**"none":** Skip. See `execute-phase/steps/protected-branch.md`.',
+    );
+    assert.doesNotMatch(
+      fakeAdvisoryBody,
+      /\*\*"none":\*\*\s+Read and execute `execute-phase\/steps\/protected-branch\.md`\./,
+      'negative control: fake advisory pointer must fail the wiring assertion',
+    );
+  });
+
+  test('#3552 active workstream CLI uses configured list and excludes root-only names', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3552-cli-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    setGsdConfig(dir, 'git.protected_branches', ['root-only']);
+    fs.mkdirSync(path.join(dir, '.planning', 'workstreams', 'alpha'), { recursive: true });
+    // Both HOME and USERPROFILE must be redirected — Node's os.homedir() (and
+    // anything relying on it) consults USERPROFILE first on Windows, where
+    // setting HOME alone leaves the real home directory in effect and makes
+    // this isolation silently vacuous on that platform.
+    const workstreamEnv = { GSD_WORKSTREAM: 'alpha', HOME: dir, USERPROFILE: dir };
+
+    const setResult = runGsdTools(
+      ['config-set', 'git.protected_branches', '["develop","next"]'],
+      dir,
+      workstreamEnv,
+    );
+    assert.ok(setResult.success, setResult.error);
+    const workstreamConfig = JSON.parse(fs.readFileSync(
+      path.join(dir, '.planning', 'workstreams', 'alpha', 'config.json'),
+      'utf8',
+    ));
+    assert.deepStrictEqual(workstreamConfig.git.protected_branches, ['develop', 'next']);
+
+    const match = runGsdTools(
+      ['query', 'git.base-branch', '--is-protected', 'develop'], dir, workstreamEnv,
+    );
+    const control = runGsdTools(
+      ['query', 'git.base-branch', '--is-protected', 'topic/3552'], dir, workstreamEnv,
+    );
+    const rootOnly = runGsdTools(
+      ['query', 'git.base-branch', '--is-protected', 'root-only'], dir, workstreamEnv,
+    );
+
+    assert.ok(match.success, match.error);
+    assert.ok(control.success, control.error);
+    assert.ok(rootOnly.success, rootOnly.error);
+    assert.strictEqual(match.output, 'true');
+    assert.strictEqual(control.output, 'false');
+    assert.strictEqual(rootOnly.output, 'false');
+    assert.notStrictEqual(match.output, control.output,
+      'CLI negative control must disagree with the configured protected-branch match');
+    assert.notStrictEqual(match.output, rootOnly.output,
+      'workstream override must replace the root-only configured name');
+
+    let written = '';
+    const returned = gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop'], {
+      loadConfig: configuredLoad,
+      write: (text) => { written += text; },
+    });
+    assert.strictEqual(returned, 'true');
+    assert.strictEqual(written, 'true\n', 'direct command contract must remain newline-terminated');
+  });
+
+  test('#3552 execute-phase warns on true, stays silent on false, and continues both', (t) => {
+    const bash = extractProtectedBranchWarningBash('execute-phase.md', 'handle_branching');
+    const { scriptDir, scriptPath } = writeProtectedBranchWarningScript(
+      'gsd-3552-execute-',
+      bash,
+    );
+    t.after(() => cleanup(scriptDir));
+
+    const baseEnv = { ...process.env, CURRENT_BRANCH_VALUE: 'develop' };
+    const match = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'true' },
+    });
+    const control = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'false' },
+    });
+
+    assert.strictEqual(match.exitCode, 0, match.stderr);
+    assert.strictEqual(control.exitCode, 0, control.stderr);
+    assert.match(match.stdout, /continued\n$/);
+    assert.match(control.stdout, /continued\n$/);
+    assert.match(match.stderr, /protected branch/i);
+    assert.doesNotMatch(control.stderr, /protected branch/i);
+    assert.notStrictEqual(match.stderr, control.stderr,
+      'warning negative control must disagree with the protected-branch match');
+  });
+
+  test('#3552 ship warns on true, stays silent on false, and keeps the none-strategy offer', (t) => {
+    const bash = extractProtectedBranchWarningBash('ship.md', 'preflight_checks');
+    const { scriptDir, scriptPath } = writeProtectedBranchWarningScript(
+      'gsd-3552-ship-',
+      bash,
+    );
+    t.after(() => cleanup(scriptDir));
+
+    const baseEnv = { ...process.env, CURRENT_BRANCH_VALUE: 'develop' };
+    const match = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'true' },
+    });
+    const control = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'false' },
+    });
+
+    assert.strictEqual(match.exitCode, 0, match.stderr);
+    assert.strictEqual(control.exitCode, 0, control.stderr);
+    assert.match(match.stdout, /continued\n$/);
+    assert.match(control.stdout, /continued\n$/);
+    assert.match(match.stderr, /protected branch/i);
+    assert.doesNotMatch(control.stderr, /protected branch/i);
+    assert.notStrictEqual(match.stderr, control.stderr,
+      'ship warning negative control must disagree with the protected-branch match');
+
+    const ship = readFileNormalized(path.join(WORKFLOW_DIR, 'ship.md'));
+    const preflight = ship.slice(
+      ship.indexOf('<step name="preflight_checks">'),
+      ship.indexOf('</step>', ship.indexOf('<step name="preflight_checks">')),
+    );
+    assert.match(preflight, /branching_strategy is `none`: offer to create a branch now/i,
+      'protected-branch warning must retain the none-strategy feature-branch offer');
+  });
+
+  test('#3648 Nit: detached HEAD answers false; a missing argument is reported', () => {
+    // `git branch --show-current` prints nothing on a detached HEAD, so the
+    // call sites pass an explicit empty string. That must answer false — no
+    // protected branch is named '' — and must stay SILENT, because a detached
+    // HEAD is a normal state, not a misconfiguration.
+    const detachedDiagnostics = [];
+    const detachedOut = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', ''], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      write: (chunk) => detachedOut.push(chunk),
+      writeDiagnostic: (chunk) => detachedDiagnostics.push(chunk),
+    });
+    assert.strictEqual(detachedOut.join('').trim(), 'false');
+    assert.deepStrictEqual(detachedDiagnostics, [],
+      'a detached HEAD is not an error and must not warn');
+
+    // The flag with NO argument at all is a caller bug that `args[1] ?? ''`
+    // silently collapsed into the detached-HEAD case. Same answer, but said
+    // out loud so the two are distinguishable.
+    const missingDiagnostics = [];
+    const missingOut = [];
+    gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected'], {
+      loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      write: (chunk) => missingOut.push(chunk),
+      writeDiagnostic: (chunk) => missingDiagnostics.push(chunk),
+    });
+    assert.strictEqual(missingOut.join('').trim(), 'false');
+    assert.strictEqual(missingDiagnostics.length, 1,
+      'a missing branch argument must be reported, not read as a detached HEAD');
+    assert.match(missingDiagnostics.join(''), /--is-protected/);
+
+    assert.notDeepStrictEqual(detachedDiagnostics, missingDiagnostics,
+      'the two paths must be distinguishable — that is the whole point of the arm');
+
+    assert.throws(
+      () => gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protectd', 'develop'], {
+        loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      }),
+      (err) => err instanceof ExitError && err.code === 1,
+      'a misspelled predicate flag must be rejected with exit 1 via error()',
+    );
+
+    assert.throws(
+      () => gitBaseBranch.cmdGitBaseBranch('/repo', ['--is-protected', 'develop', 'extra'], {
+        loadConfig: () => ({ base_branch: 'main', protected_branches: ['develop'] }),
+      }),
+      (err) => err instanceof ExitError && err.code === 1,
+      'surplus predicate arguments must be rejected with exit 1 via error()',
+    );
+  });
+
+  test('#3648 cmdGitBaseBranch usage errors emit structured ERROR_REASON.USAGE and do not print stack trace', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3648-usage-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+
+    const unknownFlag = runGsdTools(['query', 'git.base-branch', '--unknown-flag', '--json-errors'], dir);
+    assert.strictEqual(unknownFlag.success, false);
+    assert.strictEqual(unknownFlag.exitCode, 1);
+    assert.doesNotMatch(unknownFlag.error, /^\s*at\s+/m, 'usage errors must not print stack traces');
+    let parsed = null;
+    try { parsed = JSON.parse(unknownFlag.error); } catch {}
+    assert.strictEqual(parsed?.reason, 'usage');
+
+    const surplusPositional = runGsdTools(['query', 'git.base-branch', '--is-protected', 'main', 'extra', '--json-errors'], dir);
+    assert.strictEqual(surplusPositional.success, false);
+    assert.strictEqual(surplusPositional.exitCode, 1);
+    assert.doesNotMatch(surplusPositional.error, /^\s*at\s+/m);
+    let parsedSurplus = null;
+    try { parsedSurplus = JSON.parse(surplusPositional.error); } catch {}
+    assert.strictEqual(parsedSurplus?.reason, 'usage');
+  });
+
+  test('#3648 Minor F-1: nested and flat predicate reads stay aligned with the loader', () => {
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    const cases = [
+      { git: { base_branch: 'nested', protected_branches: ['develop'] }, base_branch: 'flat', protected_branches: ['bogus'] },
+      { git: { base_branch: 'nested' }, base_branch: 'flat' },
+      { git: 'not-an-object', base_branch: 'flat', protected_branches: ['bogus'] },
+    ];
+    for (const fixture of cases) {
+      const seam = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'develop', {
+        readFile: () => JSON.stringify(fixture),
+      });
+      assert.strictEqual(
+        gitBaseBranch._readGitKey(fixture, 'base_branch'),
+        configLoader._getConfigValue(fixture, 'base_branch', { section: 'git', field: 'base_branch' }),
+      );
+      assert.strictEqual(
+        gitBaseBranch._readGitNested(fixture, 'protected_branches'),
+        configLoader._getConfigNested(fixture, 'git', 'protected_branches'),
+      );
+      assert.ok(seam);
+    }
+  });
+
+  test('#3648 Blocker 4: the predicate diagnostic reaches the user at both call sites', (t) => {
+    // Both call sites piped the query's stderr to /dev/null, so the
+    // fail-closed explanation ("could not verify the base branch ... defaulting
+    // to protected") was discarded and the user saw a bare protected-branch
+    // warning on a branch that is not protected. The diagnostic was exercised
+    // only by its unit test — dead in production.
+    const cases = [
+      ['execute-phase.md', 'handle_branching', 'gsd-3648-b4-execute-'],
+      ['ship.md', 'preflight_checks', 'gsd-3648-b4-ship-'],
+    ];
+
+    for (const [workflow, step, prefix] of cases) {
+      const bash = extractProtectedBranchWarningBash(workflow, step);
+      const { scriptDir, scriptPath } = writeProtectedBranchWarningScript(prefix, bash);
+      t.after(() => cleanup(scriptDir));
+
+      const baseEnv = {
+        ...process.env,
+        CURRENT_BRANCH_VALUE: 'develop',
+        PROTECTED_RESULT: 'true',
+      };
+      const surfaced = runHook(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...baseEnv, DIAGNOSTIC_TEXT: 'could not verify the base branch' },
+      });
+      const control = runHook(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...baseEnv, DIAGNOSTIC_TEXT: '' },
+      });
+
+      assert.strictEqual(surfaced.exitCode, 0, surfaced.stderr);
+      assert.match(surfaced.stderr, /could not verify the base branch/,
+        workflow + " must not discard the predicate's explanation");
+      // Negative control: with nothing emitted that text must be absent,
+      // otherwise the assertion above could pass on unrelated output.
+      assert.doesNotMatch(control.stderr, /could not verify the base branch/);
+      assert.notStrictEqual(surfaced.stderr, control.stderr);
+      // The warning itself still fires in both, so the diagnostic is additive.
+      assert.match(surfaced.stderr, /protected branch/i);
+      assert.match(control.stderr, /protected branch/i);
+    }
+  });
+
+  test('#3648 round-4: a FAILED query degrades visibly, and does not abort under set -e', (t) => {
+    // Found by the round-4 external review. `IS_PROTECTED=$(gsd_run ...)` had
+    // two problems when the query itself failed (gsd-tools absent, a crash, any
+    // non-zero exit): the substitution yielded an empty string, so `[ "$X" = true ]`
+    // was simply false and the workflow continued with NO warning and no trace —
+    // a silent fail-open in the guard whose whole purpose is to warn; and the
+    // bare assignment is the last command in its own right, so a non-zero exit
+    // aborted the step under `set -e` before any branch ran.
+    //
+    // The contract is neither fail-open nor fail-closed: it degrades VISIBLY.
+    // Claiming "protected" on no evidence would warn on every branch whenever
+    // gsd-tools is unavailable; claiming "not protected" is the silent hole.
+    const cases = [
+      ['execute-phase.md', 'handle_branching', 'gsd-3648-r4-execute-'],
+      ['ship.md', 'preflight_checks', 'gsd-3648-r4-ship-'],
+    ];
+
+    for (const [workflow, step, prefix] of cases) {
+      const bash = extractProtectedBranchWarningBash(workflow, step);
+      const { scriptDir, scriptPath } = writeProtectedBranchWarningScript(prefix, bash);
+      t.after(() => cleanup(scriptDir));
+
+      const baseEnv = {
+        ...process.env,
+        CURRENT_BRANCH_VALUE: 'topic/3648',
+        PROTECTED_RESULT: 'false',
+      };
+      const failed = runHook(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...baseEnv, QUERY_EXIT: '3' },
+      });
+      // Control: the SAME script with a working query must stay silent on a
+      // non-protected branch. Without it, an assertion that the failure warns
+      // could pass against a script that warns unconditionally.
+      const working = runHook(scriptPath, [], {
+        interpreter: 'bash',
+        env: { ...baseEnv, QUERY_EXIT: '0' },
+      });
+
+      // The harness runs under `set -eu`, so this also pins the set -e half.
+      assert.strictEqual(failed.exitCode, 0,
+        workflow + ' must survive a failed query under set -e: ' + failed.stderr);
+      assert.match(failed.stdout, /continued/,
+        workflow + ' must reach the end of the step');
+      assert.match(failed.stderr, /Could not determine whether/,
+        workflow + ' must say the check did not run, rather than pass silently');
+      assert.doesNotMatch(failed.stderr, /is a protected branch/,
+        'and must NOT assert protectedness it never established');
+
+      assert.strictEqual(working.exitCode, 0, working.stderr);
+      assert.doesNotMatch(working.stderr, /Could not determine whether/,
+        'a working query must not emit the degradation notice');
+      assert.doesNotMatch(working.stderr, /is a protected branch/,
+        'and must not warn about a branch that is not protected');
+      assert.notStrictEqual(failed.stderr, working.stderr,
+        'the two paths must be distinguishable');
+    }
+  });
+
+  test('#3648 Minor 2: ship binds the predicate result instead of discarding it', (t) => {
+    // ship.md's prose branches on protectedness twice ("warn - should be on a
+    // feature branch", "if branching_strategy is none, offer to create a
+    // branch"). Echoing the warning without binding leaves the agent inferring
+    // state from warning text in tool output; the comparison it replaced was
+    // directly evaluable.
+    const bash = extractProtectedBranchWarningBash('ship.md', 'preflight_checks');
+    const { scriptDir, scriptPath } = writeProtectedBranchWarningScript('gsd-3648-bind-', bash);
+    t.after(() => cleanup(scriptDir));
+
+    const baseEnv = { ...process.env, CURRENT_BRANCH_VALUE: 'develop' };
+    const match = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'true' },
+    });
+    const control = runHook(scriptPath, [], {
+      interpreter: 'bash',
+      env: { ...baseEnv, PROTECTED_RESULT: 'false' },
+    });
+
+    assert.match(match.stdout, /^IS_PROTECTED=true$/m,
+      'ship must bind the predicate result to a variable the following prose can branch on');
+    assert.match(control.stdout, /^IS_PROTECTED=false$/m,
+      'the binding must track the predicate, not be hardcoded');
+    assert.notStrictEqual(match.stdout, control.stdout);
+  });
+});
+
+// ─── #3648 Major 1: negative space for readEffectiveGitConfig's readFile seam ─
+//
+// The #3057 W3 suite that pinned readConfigBaseBranch's unusable-config arms
+// was deleted with the function it targeted, but every arm it covered survives
+// verbatim in readEffectiveGitConfig's readFile branch: the JSON.parse catch,
+// the non-object guard, the git-section object guard, .trim(), and blank-string
+// rejection. Deleting the tests left all of them unexercised — the four
+// surviving readFile injections are positive-path only, and protected_branches
+// was never driven through this seam at all.
+//
+// Reaching the seam requires readFile WITHOUT loadConfig. execGit is stubbed to
+// answer cleanly-but-emptily so tiers 2-4 fall to a VERIFIED 'main', which
+// makes 'main' the unambiguous signal that the config tier contributed nothing.
+//
+// WHAT THIS SUITE DOES AND DOES NOT PIN. Verified by mutating the built lib and
+// re-running:
+//
+//   .trim() on the resolved value            -> KILLED by the positive controls
+//   the non-object guard on JSON.parse output -> SURVIVES
+//   the blank-string rejection                -> SURVIVES
+//
+// The two survivors are unreachable through this entry point, for the same
+// reason the deleted #3057 W3 suite recorded against its own equivalents:
+//
+//   * A JSON-parsed value can never carry a `.git` or `.base_branch` own
+//     property unless it is already an object, so `null` / `42` / `"x"` / `[]`
+//     read as "no keys" whether or not the guard runs.
+//   * A blank base_branch is rejected a second time downstream — the resolver's
+//     `if (configured)` treats '' as falsy — so removing the guard here changes
+//     no observable output.
+//
+// Both remain defence-in-depth for a future non-JSON caller. They are recorded
+// here as known-unkillable rather than left to look like coverage this suite
+// does not provide.
+
+describe('#3648 property: config-set validation and resolver filtering must agree', () => {
+  // The two new validating surfaces this PR adds are deliberately different
+  // shapes: `config-set` is all-or-nothing (reject the whole write), while the
+  // resolver is per-entry (drop the bad names, keep the good ones, report), so
+  // that a direct edit of config.json cannot fail the predicate OPEN. Nothing
+  // structural keeps the two definitions of "usable branch name" in step —
+  // only this property, which asks both about the same values.
+  const fc = require('./helpers/fast-check-setup.cjs');
+  const { isValidProtectedBranches } = require('../gsd-core/bin/lib/config.cjs');
+
+  /** A value generator weighted towards the boundary cases both surfaces care about. */
+  const entry = () => fc.oneof(
+    fc.string(),
+    fc.constantFrom('', '   ', '\t\n', ' develop ', 'develop'),
+    fc.integer(),
+    fc.boolean(),
+    fc.constant(null),
+    fc.constant(undefined),
+  );
+
+  /**
+   * `fc.array` never produces a HOLE, and a hole is exactly where the two
+   * surfaces disagreed: `.every()` skips holes, `for...of` yields `undefined`
+   * for them. The property passed only because the generator could not reach
+   * the case (round-4 external review). Punching holes into a generated array
+   * is what makes this axis falsifiable.
+   */
+  const withHoles = () => fc.tuple(
+    fc.array(entry(), { maxLength: 5 }),
+    fc.array(fc.nat({ max: 5 }), { maxLength: 3 }),
+  ).map(([values, holeIndices]) => {
+    const arr = values.slice();
+    for (const i of holeIndices) {
+      if (i < arr.length) delete arr[i];
+    }
+    return arr;
+  });
+
+  test('accepted by config-set ⟺ the resolver rejects nothing from a non-empty list', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.array(entry(), { maxLength: 6 }), withHoles(), entry()),
+        (configured) => {
+          const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/x', {
+            loadConfig: () => ({ base_branch: 'main', protected_branches: configured }),
+          });
+
+          const resolverKeptEverything = Array.isArray(configured)
+            && configured.length > 0
+            && status.rejectedProtectedBranches.length === 0;
+
+          assert.strictEqual(isValidProtectedBranches(configured), resolverKeptEverything,
+            `disagreement on ${JSON.stringify(configured)}`);
+        },
+      ),
+      { numRuns: 400 },
+    );
+  });
+
+  test('a top-level `protected_branches` is NOT an alias for the canonical nested key', (t) => {
+    // Round-4 external review. `get(key, {section, field})` is flat-then-nested,
+    // which is back-compat for keys `normalizeLegacyKeys` migrates. Routing a
+    // BRAND-NEW key through it invents an undocumented top-level spelling that
+    // silently outranks `git.protected_branches`. `protected_branches` has no
+    // legacy form, so it resolves nested-only — in production and in the seam.
+    const dir = createGitRepo({ prefix: 'gsd-3648-flat-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ protected_branches: ['bogus'], git: { protected_branches: ['develop'] } }),
+    );
+
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    assert.deepStrictEqual(
+      configLoader.loadConfig(dir, { persist: false })['protected_branches'], ['develop'],
+      'the canonical nested key must win outright');
+
+    // Control: `base_branch` DOES keep flat-then-nested, because it has a legacy
+    // flat spelling #3760's refusal path can leave behind. Without this, the
+    // assertion above could pass against a loader that lost flat support wholesale.
+    const seam = gitBaseBranch.resolveProtectedBranchStatus(dir, 'develop', {
+      readFile: () => JSON.stringify({
+        git: 'not-an-object', base_branch: 'release', protected_branches: ['bogus'],
+      }),
+    });
+    assert.strictEqual(seam.baseBranch, 'release',
+      'a refused migration must still let the surviving flat base_branch through');
+    assert.deepStrictEqual(seam.protectedBranches, ['release'],
+      'while a top-level protected_branches contributes nothing');
+  });
+
+  test('every surviving name is trimmed, non-empty, and de-duplicated against the base', () => {
+    fc.assert(
+      fc.property(
+        fc.array(entry(), { maxLength: 6 }),
+        (configured) => {
+          const status = gitBaseBranch.resolveProtectedBranchStatus('/repo', 'topic/x', {
+            loadConfig: () => ({ base_branch: 'main', protected_branches: configured }),
+          });
+
+          for (const name of status.protectedBranches) {
+            assert.strictEqual(typeof name, 'string');
+            assert.strictEqual(name, name.trim(), 'names must be stored trimmed');
+            assert.notStrictEqual(name, '', 'a blank name would silently match a detached HEAD');
+          }
+          assert.deepStrictEqual(
+            status.protectedBranches, [...new Set(status.protectedBranches)],
+            'duplicates (including one equal to the base branch) must collapse');
+          assert.strictEqual(status.protectedBranches[0], 'main',
+            'the resolved base branch is always protected and always leads');
+
+          // Nothing is lost silently: each input element is either kept
+          // (trimmed) or reported as rejected.
+          const kept = configured.filter((b) => typeof b === 'string' && b.trim() !== '');
+          assert.strictEqual(
+            kept.length + status.rejectedProtectedBranches.length, configured.length);
+        },
+      ),
+      { numRuns: 400 },
+    );
+  });
+});
+
+describe('#3648 Blocker 1: --is-protected is a QUERY and must not rewrite config.json', () => {
+  // The predicate runs on every execute-phase and every ship. It resolves config
+  // through config-loader's `loadConfig`, which normalizes legacy keys and then
+  // WRITES the migrated shape back to .planning/config.json. A boolean question
+  // was therefore silently rewriting the user's checked-in config — and this PR
+  // widened the trigger by adding a fifth normalization block (top-level
+  // `base_branch` -> `git.base_branch`). The read now passes `persist: false`.
+  //
+  // Asserted on BYTES, not on parsed shape: the persisted rewrite reorders keys
+  // and reflows whitespace even when the resolved values are equivalent.
+
+  /** A config whose ONLY interesting property is that it triggers a normalization. */
+  function writeLegacyConfig(dir) {
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    const cfgPath = path.join(dir, '.planning', 'config.json');
+    // Hand-written formatting deliberately unlike JSON.stringify(cfg, null, 2):
+    // if anything rewrites this file, the bytes cannot come back identical.
+    fs.writeFileSync(cfgPath, '{"base_branch": "develop", "granularity": "standard"}\n');
+    return cfgPath;
+  }
+
+  test('a legacy-key config survives --is-protected byte-for-byte, and is still honoured', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const cfgPath = writeLegacyConfig(dir);
+    fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), '\n.planning/\n');
+    const before = fs.readFileSync(cfgPath);
+    const planningBefore = snapshotPlanningTree(dir);
+
+    const match = runGsdTools(['query', 'git.base-branch', '--is-protected', 'develop'], dir);
+    const control = runGsdTools(['query', 'git.base-branch', '--is-protected', 'topic/3648'], dir);
+
+    assert.ok(match.success, match.error);
+    assert.ok(control.success, control.error);
+    // Positive control: the flat legacy `base_branch` DID reach the predicate.
+    // Without this the byte assertion below would also pass for a query that
+    // ignored the config entirely.
+    assert.strictEqual(match.output, 'true');
+    assert.strictEqual(control.output, 'false');
+
+    assert.deepStrictEqual(
+      fs.readFileSync(cfgPath), before,
+      'a read-only predicate must leave .planning/config.json byte-identical',
+    );
+    assert.deepStrictEqual(
+      snapshotPlanningTree(dir), planningBefore,
+      'a read-only predicate must leave the entire .planning tree byte-identical',
+    );
+    const status = gitOrThrow(['status', '--porcelain'], { cwd: dir });
+    assert.strictEqual(status, '', 'read-only predicate must not leave a sibling write');
+  });
+
+  test('negative control: an ordinary persisting load DOES rewrite the same fixture', (t) => {
+    // Without this the test above cannot fail for the right reason — a fixture
+    // that never triggered a normalization would keep its bytes no matter what
+    // `persist` did. This proves the fixture is live.
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-neg-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const cfgPath = writeLegacyConfig(dir);
+    const before = fs.readFileSync(cfgPath);
+
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    const persisted = configLoader.loadConfig(dir);
+
+    assert.notDeepStrictEqual(
+      fs.readFileSync(cfgPath), before,
+      'the default (omitted) option must keep migrating legacy configs on disk',
+    );
+    assert.strictEqual(persisted['base_branch'], 'develop',
+      'and it must resolve the same value the non-persisting read resolves');
+  });
+
+  test('negative control: a planted .planning sibling changes the tree snapshot', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-stray-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const before = snapshotPlanningTree(dir);
+
+    fs.writeFileSync(path.join(dir, '.planning', 'sibling'), 'stray write\n');
+
+    assert.notDeepStrictEqual(
+      snapshotPlanningTree(dir), before,
+      'the snapshot must detect a newly planted .planning sibling',
+    );
+  });
+
+  test('persist:false changes only the side effect, not the resolved config', (t) => {
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-parity-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    const cfgPath = writeLegacyConfig(dir);
+    const before = fs.readFileSync(cfgPath);
+
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    const quiet = configLoader.loadConfig(dir, { persist: false });
+    assert.deepStrictEqual(fs.readFileSync(cfgPath), before,
+      'persist:false must not write');
+
+    const loud = configLoader.loadConfig(dir);
+    assert.notDeepStrictEqual(fs.readFileSync(cfgPath), before,
+      'the same directory, without the option, must write — proving the two differ');
+    assert.deepStrictEqual(quiet, loud,
+      'resolution must be identical; only the write is suppressed');
+  });
+
+  test('persist survives the workstream fallback recursion', (t) => {
+    // `loadConfigResolved` re-enters ITSELF with `{ workstream: null }` when a
+    // workstream was requested but has no config.json of its own. That literal
+    // dropped every other option, so the recursive pass ran with the DEFAULT
+    // persistence and rewrote the root config — the predicate's `persist:false`
+    // was silently discarded for exactly the projects that use workstreams.
+    // Found by the round-4 external review.
+    const dir = createGitRepo({ prefix: 'gsd-3648-b1-ws-', defaultBranch: 'main' });
+    t.after(() => cleanup(dir));
+    addPlanning(dir);
+    // The workstream directory exists but carries no config.json — the shape
+    // that forces the fallback. Without it the recursion never runs and this
+    // test degenerates into the non-workstream case above.
+    fs.mkdirSync(path.join(dir, '.planning', 'workstreams', 'alpha'), { recursive: true });
+    const cfgPath = writeLegacyConfig(dir);
+    const before = fs.readFileSync(cfgPath);
+
+    const configLoader = require('../gsd-core/bin/lib/config-loader.cjs');
+    const quiet = configLoader.loadConfig(dir, { persist: false, workstream: 'alpha' });
+
+    assert.strictEqual(quiet['base_branch'], 'develop',
+      'positive control: the fallback really did resolve the root config');
+    assert.deepStrictEqual(fs.readFileSync(cfgPath), before,
+      'the recursive fallback pass must inherit persist:false');
+
+    const loud = configLoader.loadConfig(dir, { workstream: 'alpha' });
+    assert.notDeepStrictEqual(fs.readFileSync(cfgPath), before,
+      'negative control: the same fallback without the option must still write');
+    assert.deepStrictEqual(quiet, loud,
+      'and suppressing the write must not change what the fallback resolves');
+  });
+});
+
+describe('#3648 Major 1: readEffectiveGitConfig readFile seam — config present but unusable', () => {
+  const CWD = path.join(path.sep, 'gsd-3648-seam');
+
+  /** Drive the seam with raw config text, recording the paths requested. */
+  function readWith(raw, seenPaths) {
+    return gitBaseBranch.resolveProtectedBranchStatus(CWD, 'some-topic-branch', {
+      execGit: makeFaultyGit(),
+      readFile: (requested) => { if (seenPaths) seenPaths.push(requested); return raw; },
+    });
+  }
+
+  test('config.json exists but is not valid JSON → parse failure swallowed, base falls through', () => {
+    const seen = [];
+    assert.strictEqual(readWith('{ not json', seen).baseBranch, 'main');
+    assert.deepStrictEqual(seen, [path.join(CWD, '.planning', 'config.json')],
+      'the seam must look for config.json inside the planning dir under the cwd it was given');
+  });
+
+  test('config.json parses to a non-object → ignored for null / string / number / array', () => {
+    assert.strictEqual(readWith('null').baseBranch, 'main', 'JSON null must not be treated as a config');
+    assert.strictEqual(readWith('"master"').baseBranch, 'main', 'a bare JSON string must not be treated as a config');
+    assert.strictEqual(readWith('42').baseBranch, 'main', 'a bare JSON number must not be treated as a config');
+    assert.strictEqual(readWith('[]').baseBranch, 'main', 'a JSON array must not be treated as a config');
+  });
+
+  test('"git" section present but base_branch missing / non-string / blank → no override', () => {
+    assert.strictEqual(readWith('{"git":{}}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"git":{"base_branch":42}}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"git":{"base_branch":null}}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"git":{"base_branch":""}}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"git":{"base_branch":"   "}}').baseBranch, 'main',
+      'a whitespace-only override must not win the precedence ladder');
+  });
+
+  test('"git" key present but not a usable object → the flat legacy key is still honoured', () => {
+    // These also guard the hoist: a non-object "git" must not be spread into
+    // index keys on the way to carrying the flat value across.
+    assert.strictEqual(readWith('{"git":"main","base_branch":"release"}').baseBranch, 'release');
+    assert.strictEqual(readWith('{"git":[],"base_branch":"release"}').baseBranch, 'release');
+    assert.strictEqual(readWith('{"git":null,"base_branch":"release"}').baseBranch, 'release');
+  });
+
+  test('flat base_branch present but non-string / blank → no override', () => {
+    assert.strictEqual(readWith('{"base_branch":true}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"base_branch":["main"]}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"base_branch":""}').baseBranch, 'main');
+    assert.strictEqual(readWith('{"base_branch":"   "}').baseBranch, 'main');
+  });
+
+  test('config parses cleanly but carries neither key → distinct from an absent file', () => {
+    // The absent-file path returns before JSON.parse; these parse a real object
+    // and fall all the way through both lookups.
+    assert.strictEqual(readWith('{"other":1}').baseBranch, 'main');
+    assert.strictEqual(readWith('{}').baseBranch, 'main');
+    assert.strictEqual(readWith('').baseBranch, 'main', 'absent file (empty read) also yields no override');
+    assert.strictEqual(readWith(null).baseBranch, 'main', 'a null read is an absent file');
+  });
+
+  test('positive controls: values are trimmed and the nested key outranks the flat one', () => {
+    // Without these the whole describe could pass against a seam that ignored
+    // config entirely — every assertion above expects the fallback value.
+    assert.strictEqual(readWith('{"git":{"base_branch":"  develop  "}}').baseBranch, 'develop');
+    assert.strictEqual(readWith('{"base_branch":"  release\\n"}').baseBranch, 'release');
+    assert.strictEqual(readWith('{"git":{"base_branch":"nested"},"base_branch":"flat"}').baseBranch, 'nested');
+  });
+
+  test('protected_branches is honoured and validated through this seam too', () => {
+    const clean = readWith('{"git":{"base_branch":"main","protected_branches":["develop"," next "]}}');
+    assert.deepStrictEqual(clean.protectedBranches, ['main', 'develop', 'next']);
+    assert.deepStrictEqual(clean.rejectedProtectedBranches, []);
+
+    const partial = readWith('{"git":{"base_branch":"main","protected_branches":["develop",42]}}');
+    assert.deepStrictEqual(partial.protectedBranches, ['main', 'develop'],
+      'a bad element must drop only itself on this path as well');
+    assert.deepStrictEqual(partial.rejectedProtectedBranches, ['42']);
+
+    const notAList = readWith('{"git":{"base_branch":"main","protected_branches":"develop"}}');
+    assert.deepStrictEqual(notAList.protectedBranches, ['main']);
+    assert.deepStrictEqual(notAList.rejectedProtectedBranches, ['"develop"']);
+  });
+
+  test('loadConfig wins when both seams are supplied — readFile is the test-only path', () => {
+    const status = gitBaseBranch.resolveProtectedBranchStatus(CWD, 'from-loader', {
+      execGit: makeFaultyGit(),
+      readFile: () => '{"git":{"base_branch":"from-readfile"}}',
+      loadConfig: () => ({ base_branch: 'from-loader' }),
+    });
+
+    assert.strictEqual(status.baseBranch, 'from-loader',
+      'production resolution must not be displaced by the low-level seam');
+    assert.strictEqual(status.isProtected, true);
+  });
 });
 
 // ─── #3057 W3: negative-space coverage for the resolver's failure arms ───────
@@ -440,86 +1518,6 @@ function constGit(overrides) {
 function throwingGit(message) {
   return () => { throw new Error(message); };
 }
-
-describe('#3057 W3: readConfigBaseBranch — config present but unusable', () => {
-  const PLANNING_DIR = path.join(path.sep, 'gsd-3057-w3', '.planning');
-
-  /** Read a config whose raw text is `raw`, recording the paths requested. */
-  function readWith(raw, seenPaths) {
-    return gitBaseBranch.readConfigBaseBranch(PLANNING_DIR, {
-      readFile: (p) => { if (seenPaths) seenPaths.push(p); return raw; },
-    });
-  }
-
-  test('config.json exists but is not valid JSON → null (parse failure swallowed)', () => {
-    const seen = [];
-    assert.strictEqual(readWith('{ not json', seen), null);
-    assert.deepStrictEqual(seen, [path.join(PLANNING_DIR, 'config.json')],
-      'the resolver must look for config.json inside the planning dir it was given');
-  });
-
-  test('config.json parses to a non-object → null for null / string / number / array', () => {
-    // NOTE on the `[]` case: this documents observed behaviour only. It does
-    // NOT pin the `Array.isArray(cfg)` guard in readConfigBaseBranch — that
-    // guard is unreachable (and therefore unkillable) through this readFile
-    // entry point. `cfg` is always the result of `JSON.parse(raw)` on a
-    // string, and a JSON array can never carry a `.git` or `.base_branch`
-    // own-property the way a hand-built JS array could; with the guard
-    // deleted entirely, `top.git`/`top.base_branch` on an array are still
-    // `undefined`, so the result is `null` either way. Verified by mutation:
-    // deleting `|| Array.isArray(cfg)` from the built lib does not change any
-    // output for any JSON-string input. The guard is real defense-in-depth
-    // for a future non-JSON-string caller, not something this suite can pin.
-    assert.strictEqual(readWith('null'), null, 'JSON null must not be treated as a config');
-    assert.strictEqual(readWith('"master"'), null, 'a bare JSON string must not be treated as a config');
-    assert.strictEqual(readWith('42'), null, 'a bare JSON number must not be treated as a config');
-    assert.strictEqual(readWith('[]'), null, 'a JSON array must not be treated as a config');
-  });
-
-  test('"git" section present but base_branch missing / non-string / blank → null', () => {
-    assert.strictEqual(readWith('{"git":{}}'), null);
-    assert.strictEqual(readWith('{"git":{"base_branch":42}}'), null);
-    assert.strictEqual(readWith('{"git":{"base_branch":null}}'), null);
-    assert.strictEqual(readWith('{"git":{"base_branch":""}}'), null);
-    assert.strictEqual(readWith('{"git":{"base_branch":"   "}}'), null,
-      'a whitespace-only override must not win the precedence ladder');
-  });
-
-  test('"git" key present but not a usable object (string/array/null) → nested lookup finds nothing, flat legacy key still consulted', () => {
-    // NOTE on the `"git":[]` case: like the sibling note above, this does NOT
-    // pin `!Array.isArray(gitSection)`. `gitSection` here is a JSON-parsed
-    // array with no `.base_branch` own-property, so `gitSection.base_branch`
-    // is `undefined` whether or not the guard runs — the flat key is
-    // consulted either way. Verified by mutation: deleting
-    // `&& !Array.isArray(gitSection)` from the built lib does not change this
-    // output for any JSON-string input.
-    assert.strictEqual(readWith('{"git":"main","base_branch":"release"}'), 'release');
-    assert.strictEqual(readWith('{"git":[],"base_branch":"release"}'), 'release');
-    assert.strictEqual(readWith('{"git":null,"base_branch":"release"}'), 'release');
-  });
-
-  test('flat base_branch present but non-string / blank → null', () => {
-    assert.strictEqual(readWith('{"base_branch":true}'), null);
-    assert.strictEqual(readWith('{"base_branch":["main"]}'), null);
-    assert.strictEqual(readWith('{"base_branch":""}'), null);
-    assert.strictEqual(readWith('{"base_branch":"   "}'), null);
-  });
-
-  test('config parses cleanly but carries neither key → null (distinct from an absent file)', () => {
-    // The absent-file path returns null after reading an empty string and never
-    // reaches JSON.parse. This one parses a real object and falls all the way
-    // through both key lookups to the final return.
-    assert.strictEqual(readWith('{"other":1}'), null);
-    assert.strictEqual(readWith('{}'), null);
-    assert.strictEqual(readWith(''), null, 'absent file (empty read) also yields null');
-  });
-
-  test('positive controls: values are trimmed, and the nested key outranks the flat one', () => {
-    assert.strictEqual(readWith('{"git":{"base_branch":"  develop  "}}'), 'develop');
-    assert.strictEqual(readWith('{"base_branch":"  release\\n"}'), 'release');
-    assert.strictEqual(readWith('{"git":{"base_branch":"nested"},"base_branch":"flat"}'), 'nested');
-  });
-});
 
 describe('#3057 W3: trySymbolicRef — tier-2 output that resolves to nothing', () => {
   test('stdout is exactly "origin/" → null (prefix strip leaves an empty name)', () => {

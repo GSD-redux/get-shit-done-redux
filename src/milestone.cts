@@ -82,6 +82,16 @@ interface MilestoneCompleteOptions {
   force?: boolean;
   archivePhases?: boolean;
   dryRun?: boolean;
+  // #3726: explicit mutation opt-in. `milestone complete` is a one-way door
+  // (ROADMAP/REQUIREMENTS archived, every phase directory in the milestone
+  // MOVED, STATE.md rewritten) that used to run unconditionally on first
+  // invocation — including through the `query` meta-prefix, whose name reads
+  // as a read. Without --confirm (and without --dry-run) the command now
+  // refuses before any mutation. Deliberately NOT folded into `force`:
+  // --force bypasses the narrow TRUNCATED-scope and unstarted-phase guards
+  // and must keep exactly that meaning (#3726 AC 4) — intent-to-mutate and
+  // intent-to-override-a-guard are different declarations.
+  confirm?: boolean;
   // #2142: opt-in quick-task archival. Default OFF (unlike archivePhases,
   // which is default-ON since #1871) — acceptance criterion 1 is explicit
   // that Skip/absent must preserve today's behavior. Do NOT mirror
@@ -554,7 +564,7 @@ function applyQuickTasksReset(content: string): { content: string; warning: { fi
 
 function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCompleteOptions, raw: boolean): void {
   if (!version) {
-    error('version required for milestone complete (e.g., v1.0)');
+    error('version required for milestone complete (e.g., v1.0) — and --confirm to mutate');
   }
   // #2288 security: `version` is a CLI positional that is interpolated into
   // multiple filesystem sinks below — `path.join(archiveDir, `${version}-ROADMAP.md`)`,
@@ -564,6 +574,26 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   // version cannot write or relocate content outside `.planning/milestones/`.
   if (!ARCHIVE_VERSION_LABEL_RE.test(version)) {
     error(`milestone complete: version "${version}" is invalid — a milestone version label may contain only letters, digits, '.', '-' and '_', and must not contain path separators or "..".`);
+  }
+
+  // #3726: confirmation gate — refuse before ANY read of the tree beyond the
+  // arg checks above, so an unconfirmed invocation is a guaranteed no-op on
+  // disk. The threat model is the NEVER_VALID_FLAGS one (gsd-tools.cjs): a
+  // caller supplies a token it believes is inert and a destructive operation
+  // proceeds unchecked — here the caller-side belief was that the `query`
+  // meta-prefix implies a read, and `query milestone.complete <v>` archived
+  // the milestone with no confirmation. The prefix is an intentional
+  // invocation-compatibility mechanism, not a permission boundary, so the
+  // gate lives on the destructive command itself and covers every invocation
+  // path. --dry-run needs no confirmation (it mutates nothing and is the
+  // recommended first step); --force does NOT imply it (see
+  // MilestoneCompleteOptions.confirm).
+  if (!options.dryRun && !options.confirm) {
+    error(
+      `milestone complete is irreversible: it archives ROADMAP.md and REQUIREMENTS.md, MOVES every phase ` +
+        `directory for ${version} into .planning/milestones/, and rewrites STATE.md. ` +
+        `Nothing has been changed. Re-run with --confirm to proceed, or --dry-run to preview exactly what would move.`,
+    );
   }
 
   const roadmapPath = planningPaths(cwd).roadmap;

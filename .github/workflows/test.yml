@@ -244,6 +244,9 @@ jobs:
           persist-credentials: true
           token: ${{ github.token }}
 
+      - name: Record job start time (near-cap check)
+        run: node -e 'require("fs").appendFileSync(process.env.GITHUB_ENV, "CI_JOB_START_EPOCH_MS=" + Date.now() + "\n")'
+
       - name: Guard — require GitHub-hosted runner
         run: node scripts/ci-guard-runner.cjs
 
@@ -348,6 +351,14 @@ jobs:
       - name: Run slow tests
         if: matrix.scope == 'full' && matrix.shard == '1/3' && needs.changes.outputs.full_matrix == 'true'
         run: npm run test:slow
+
+      - name: Check job budget (near-cap advisory)
+        if: always()
+        continue-on-error: true
+        env:
+          CI_JOB_LABEL: "test (${{ matrix.os }}, ${{ matrix.node-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})"
+          CI_JOB_TIMEOUT_MINUTES: '15'
+        run: node scripts/ci-check-job-near-cap.cjs
 
   test-inert:
     name: test (inert CI)
@@ -501,6 +512,9 @@ jobs:
           persist-credentials: true
           token: ${{ github.token }}
 
+      - name: Record job start time (near-cap check)
+        run: node -e 'require("fs").appendFileSync(process.env.GITHUB_ENV, "CI_JOB_START_EPOCH_MS=" + Date.now() + "\n")'
+
       - name: Guard — require GitHub-hosted runner
         run: node scripts/ci-guard-runner.cjs
 
@@ -561,6 +575,14 @@ jobs:
       - name: Run security tests
         if: matrix.shard == 1
         run: npm run test:security
+
+      - name: Check job budget (near-cap advisory)
+        if: always()
+        continue-on-error: true
+        env:
+          CI_JOB_LABEL: "full test (${{ matrix.os }}, ${{ matrix.node-version }}, shard ${{ matrix.shard }}/3)"
+          CI_JOB_TIMEOUT_MINUTES: '45'
+        run: node scripts/ci-check-job-near-cap.cjs
 
   # #2952: the coverage gate that the `test` lane used to run inline. Sharding
   # the unit suite means no single runner sees the whole picture, so the gate

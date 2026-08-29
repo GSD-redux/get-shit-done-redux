@@ -41,7 +41,7 @@
     {
       "at": "ship:post",
       "run": [
-        ["milestone", "complete", "1.0", "--force"]
+        ["milestone", "complete", "1.0", "--force", "--confirm"]
       ]
     },
     {

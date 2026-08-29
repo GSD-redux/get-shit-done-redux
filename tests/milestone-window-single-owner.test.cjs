@@ -1046,7 +1046,7 @@ test('milestone complete refuses to archive a truncated window', (t) => {
   t.after(() => cleanup(cwd));
   buildTruncatedFixture(cwd);
 
-  const result = runGsdTools(['milestone', 'complete', 'v3.0', '--cwd', cwd, '--raw'], cwd);
+  const result = runGsdTools(['milestone', 'complete', 'v3.0', '--cwd', cwd, '--raw', '--confirm'], cwd);
   assert.strictEqual(result.success, false);
   assert.notStrictEqual(result.exitCode, 0);
 });
@@ -1057,7 +1057,7 @@ test('refusal leaves the phases directory untouched', (t) => {
   buildTruncatedFixture(cwd);
 
   const before = fs.readdirSync(path.join(cwd, '.planning', 'phases')).sort();
-  const result = runGsdTools(['milestone', 'complete', 'v3.0', '--cwd', cwd, '--raw'], cwd);
+  const result = runGsdTools(['milestone', 'complete', 'v3.0', '--cwd', cwd, '--raw', '--confirm'], cwd);
   assert.strictEqual(result.success, false);
   const after = fs.readdirSync(path.join(cwd, '.planning', 'phases')).sort();
   assert.deepStrictEqual(after, before);
@@ -1068,7 +1068,7 @@ test('--force overrides the truncation refusal', (t) => {
   t.after(() => cleanup(cwd));
   buildTruncatedFixture(cwd);
 
-  const result = runGsdTools(['milestone', 'complete', 'v3.0', '--force', '--cwd', cwd, '--raw'], cwd);
+  const result = runGsdTools(['milestone', 'complete', 'v3.0', '--force', '--cwd', cwd, '--raw', '--confirm'], cwd);
   assert.strictEqual(result.success, true, result.error);
   const parsed = JSON.parse(result.output);
   assert.strictEqual(parsed.archived.phases, true);
@@ -1083,7 +1083,7 @@ test('genuinely empty milestone still completes', (t) => {
   const filter = getMilestonePhaseFilter(cwd, 'v1.0');
   assert.strictEqual(filter.scope, SCOPE.COMPLETE);
 
-  const result = runGsdTools(['milestone', 'complete', 'v1.0', '--cwd', cwd, '--raw'], cwd);
+  const result = runGsdTools(['milestone', 'complete', 'v1.0', '--cwd', cwd, '--raw', '--confirm'], cwd);
   assert.strictEqual(result.success, true, result.error);
 });
 
