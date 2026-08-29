@@ -39,6 +39,9 @@ Answer in this order:
    is loaded, so this is the cheapest correct answer for a top-level workflow.
 2. **Is it a fragment under `<workflow>/{modes,steps,templates}/`?** Then check whether
    `<workflow>.md` dispatches this exact path from a read/execute context *and* is itself covered.
+   The catalog writes that stub two ways — rooted at `gsd-core/workflows/`, or relative to the
+   catalog — and either one counts; a path with no read/execute/run verb ahead of it on the same
+   line is a mention, not a dispatch, and proves nothing.
    If both hold, the fragment **inherits** — add nothing. The parent's directive is already in the
    loaded context by the time the fragment is read, so a second copy buys no coverage and gives the
    wording somewhere to drift.

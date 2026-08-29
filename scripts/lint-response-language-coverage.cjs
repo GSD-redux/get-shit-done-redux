@@ -77,7 +77,6 @@ const EXACT_INLINE_DIRECTIVE_WORKFLOWS = new Set([
   'discuss-phase/templates/context.md',
   'discuss-phase/templates/discussion-log.md',
   'execute-phase/steps/codebase-drift-gate.md',
-  'execute-phase/steps/executor-isolation-dispatch.md',
   'execute-phase/steps/regression-gate-run.md',
   'execute-phase/steps/worktree-recovery-policy.md',
   'help/modes/brief.md',
@@ -125,7 +124,7 @@ const EXACT_INLINE_DIRECTIVE_WORKFLOWS = new Set([
 // and names the file to fix.
 const FRAGMENT_DIRS = new Set(['modes', 'steps', 'templates']);
 const DIRECTIVE_ACTION_RE = /\b(?:apply|present|render|respond|translate|use|write|must|should)\b/i;
-const USER_OUTPUT_RE = /\b(?:explanations?|language|narration|output|prompts?|prose|questions?|templates?|user-facing)\b/i;
+const USER_OUTPUT_RE = /\b(?:explanations?|language|narration|outputs?|prompts?|prose|questions?|templates?|user-facing)\b/i;
 // The defect #2529 reports is NARRATION, not the question/answer surface: a
 // directive worded as "all user-facing questions, prompts, and explanations" is
 // read as covering what the user is asked and told at a turn boundary, and the
@@ -331,11 +330,13 @@ const ENTRY_POINT_VERB_RE = new RegExp(`\\b(?:read|execute|run)\\b.{0,${ENTRY_PO
  * nothing about how the fragment is reached — but a bare substring test cannot
  * tell those apart, so before this check any mention at all granted coverage.
  *
- * The catalog emits exactly one shape, in four spellings: ``read and execute
- * `<path>` ``, ``Read+execute `<path>` ``, ``Read `<path>` if <condition>``, and
+ * The catalog emits exactly one shape, in five spellings: ``read and execute
+ * `<path>` ``, ``Read+execute `<path>` ``, ``Read `<path>` if <condition>``,
  * ``run `<path>` to <effect>`` (the spelling #1689's per-plan executor routing
- * introduced). A read/execute/run verb within `ENTRY_POINT_VERB_WINDOW`
- * characters ahead of the path on the SAME LINE covers all four.
+ * introduced), and the same stub written with the path RELATIVE to the catalog
+ * rather than rooted at `gsd-core/workflows/` (#3552's `branching_strategy:
+ * none` arm). A read/execute/run verb within `ENTRY_POINT_VERB_WINDOW`
+ * characters ahead of the path on the SAME LINE covers all five.
  *
  * LIMITATION, stated rather than papered over: this reads Markdown as text, not
  * as a parsed document. A dispatch stub that a future edit comments out with
@@ -358,11 +359,20 @@ const ENTRY_POINT_VERB_RE = new RegExp(`\\b(?:read|execute|run)\\b.{0,${ENTRY_PO
  * The gap is a soundness one, worth naming rather than implying.
  */
 function namesFragmentAsEntryPoint(parent, relative) {
-  const needle = `gsd-core/workflows/${relative}`;
-  return parent.split(/\r?\n/).some((line) => {
+  // Two spellings of the same dispatch: catalog-rooted and catalog-RELATIVE.
+  // #3552's `"none"` arm introduced the second one — `Read and execute
+  // `execute-phase/steps/protected-branch.md`` — and a rooted-only needle read
+  // that live dispatch as no dispatch at all.
+  const needles = [`gsd-core/workflows/${relative}`, relative];
+  return parent.split(/\r?\n/).some((line) => needles.some((needle) => {
     const at = line.indexOf(needle);
-    return at !== -1 && ENTRY_POINT_VERB_RE.test(line.slice(0, at));
-  });
+    // A path character immediately before the match means this is the TAIL of
+    // some longer path, not the fragment itself: `vendor/<relative>` must not
+    // grant `<relative>` coverage. The rooted needle carries its own prefix and
+    // is matched on its own, so nothing legitimate is lost here.
+    if (at === -1 || (at > 0 && /[\w/.-]/.test(line.charAt(at - 1)))) return false;
+    return ENTRY_POINT_VERB_RE.test(line.slice(0, at));
+  }));
 }
 
 /**

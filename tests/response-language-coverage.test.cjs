@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { cleanup } = require('./helpers.cjs');
+const fc = require('./helpers/fast-check-setup.cjs');
 
 const {
   EXACT_INLINE_DIRECTIVE_WORKFLOWS,
@@ -162,6 +163,10 @@ describe('response-language workflow coverage lint (#2529)', () => {
       'Read `gsd-core/workflows/a/steps/b.md` if planning freezes on Windows.',
       // #1689's per-plan executor routing dispatches with `run`, not read/execute.
       '**Executor routing.** Per plan, run `gsd-core/workflows/a/steps/b.md` to set `EXECUTOR_TYPE`.',
+      // #3552's `branching_strategy: none` arm dispatches with the path written
+      // RELATIVE to the catalog. A rooted-only needle read that live dispatch as
+      // no dispatch, and the fragment it reaches read as uncovered.
+      '**"none":** Read and execute `a/steps/b.md`.',
     ];
     for (const line of dispatches) {
       assert.strictEqual(
@@ -180,6 +185,9 @@ describe('response-language workflow coverage lint (#2529)', () => {
       // The verb is on the same line but a whole clause away, so it belongs to a
       // different sentence — the window is what keeps it from vouching.
       'Read the roadmap first, then decide whether any of this still applies to `gsd-core/workflows/a/steps/b.md`.',
+      // The relative form matches on a path boundary, so a DIFFERENT file whose
+      // path merely ends with this one dispatches itself, not this fragment.
+      'Read and execute `vendor/a/steps/b.md`.',
     ];
     for (const line of mentions) {
       assert.strictEqual(
@@ -761,5 +769,118 @@ describe('response-language workflow coverage lint (#2529)', () => {
       findViolations(weakened.workflows, weakened.root).map((file) => path.basename(file)).sort(),
       [pinned, 'takes-the-reference.md'].sort(),
     );
+  });
+});
+
+/**
+ * Property tests for the four-predicate directive-line matcher.
+ *
+ * `carriesInlineDirective` accepts a document when ONE line carries all four
+ * signals at once: the config field, an action verb, a user-output term, and
+ * the narration class. The cases above pin particular phrasings; these pin the
+ * rule those phrasings are instances of.
+ *
+ * Per CONTRIBUTING.md "Fixture provenance (#2371)" the vocabulary below is
+ * written out here rather than read back from the script's own regexes. A
+ * generator seeded from the matcher can only re-derive what the matcher already
+ * believes — spelled out independently, these properties fail when a predicate
+ * is widened, dropped, or allowed to span lines. That independence paid for
+ * itself immediately: the plural forms below are what caught `output` being the
+ * one term in its class without an `s?`, so "translate all outputs, including
+ * narration between tool calls" read as uncovered.
+ */
+describe('response-language directive line: matcher properties (#2529)', () => {
+  const FIELD = 'response_language';
+  const NARRATION = 'between tool calls';
+  // The output pool deliberately EXCLUDES narration-class words. "narration" is
+  // in both classes, so one token would satisfy two predicates and the
+  // necessity property below could no longer tell them apart.
+  const ACTIONS = [
+    'apply', 'present', 'render', 'respond', 'translate', 'use', 'write', 'must', 'should',
+  ];
+  const OUTPUTS = [
+    'explanation', 'explanations', 'language', 'output', 'outputs', 'prompt', 'prompts',
+    'prose', 'question', 'questions', 'template', 'templates', 'user-facing',
+  ];
+  const FILLER = ['the', 'and', 'of', 'in', 'for', 'each', 'step', 'file', 'then', 'this'];
+
+  const cased = (word, mode) => {
+    if (mode === 'upper') return word.toUpperCase();
+    if (mode === 'title') return word.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+    return word;
+  };
+
+  const partsArb = fc.record({
+    action: fc.constantFrom(...ACTIONS),
+    output: fc.constantFrom(...OUTPUTS),
+    order: fc.shuffledSubarray([0, 1, 2, 3], { minLength: 4, maxLength: 4 }),
+    mode: fc.constantFrom('lower', 'upper', 'title'),
+    gaps: fc.array(fc.array(fc.constantFrom(...FILLER), { maxLength: 4 }), {
+      minLength: 5, maxLength: 5,
+    }),
+  });
+
+  const signals = ({ action, output }) => [FIELD, action, output, NARRATION];
+
+  // One line, the four signals in generated order, arbitrary neutral filler
+  // between them. `omit` drops exactly one signal for the necessity property.
+  const buildLine = (parts, omit = -1) => {
+    const tokens = signals(parts);
+    const words = [];
+    parts.order
+      .filter((index) => index !== omit)
+      .forEach((index, position) => {
+        words.push(...parts.gaps[position], cased(tokens[index], parts.mode));
+      });
+    words.push(...parts.gaps[4]);
+    return words.join(' ').trim();
+  };
+
+  test('property: one line carrying all four signals is coverage, wherever it sits', () => {
+    fc.assert(fc.property(
+      partsArb,
+      fc.array(fc.constantFrom(...FILLER), { maxLength: 4 }),
+      fc.array(fc.constantFrom(...FILLER), { maxLength: 4 }),
+      (parts, before, after) => {
+        const line = buildLine(parts);
+        const document = [...before, line, ...after].join('\n');
+        assert.equal(
+          carriesInlineDirective(document), true,
+          `read as uncovered: ${JSON.stringify(line)}`,
+        );
+      },
+    ));
+  });
+
+  test('property: dropping any one of the four signals is not coverage', () => {
+    fc.assert(fc.property(partsArb, fc.integer({ min: 0, max: 3 }), (parts, omit) => {
+      const line = buildLine(parts, omit);
+      assert.equal(
+        carriesInlineDirective(line), false,
+        `read as covered without ${JSON.stringify(signals(parts)[omit])}: ${JSON.stringify(line)}`,
+      );
+    }));
+  });
+
+  test('property: the four signals spread across lines are not coverage', () => {
+    fc.assert(fc.property(
+      partsArb,
+      fc.array(fc.boolean(), { minLength: 3, maxLength: 3 }),
+      (parts, breaks) => {
+        // No break at all is the single-line case above, not this property.
+        fc.pre(breaks.some(Boolean));
+        const tokens = signals(parts);
+        const document = parts.order.reduce(
+          (text, index, position) => (position === 0
+            ? cased(tokens[index], parts.mode)
+            : text + (breaks[position - 1] ? '\n' : ' ') + cased(tokens[index], parts.mode)),
+          '',
+        );
+        assert.equal(
+          carriesInlineDirective(document), false,
+          `read as covered across lines: ${JSON.stringify(document)}`,
+        );
+      },
+    ));
   });
 });
