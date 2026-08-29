@@ -65,6 +65,36 @@ describe('#3817: audit-open counts include the truncation remainder', () => {
     assert.ok(detailFiles.length <= 5, `display stays truncated; got ${detailFiles.length}`);
   });
 
+  test('#3817 boundary: exactly 5 files → no marker, counts exact; 6 files → remainder 1', (t) => {
+    const tmpDir = createTempProject('gsd-3817-boundary-');
+    t.after(() => cleanup(tmpDir));
+    const pendingDir = path.join(tmpDir, '.planning', 'todos', 'pending');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const seed = (n) => fs.writeFileSync(path.join(pendingDir, `todo-${n}.md`), [
+      '---',
+      'title: T ' + n,
+      'area: general',
+      'created: 2026-08-01',
+      '---',
+      '',
+      'Body',
+      '',
+    ].join('\n'));
+
+    for (let i = 1; i <= 5; i++) seed(i);
+    let out = runAuditOpen(tmpDir);
+    assert.equal(out.counts.todos, 5, 'exactly at the cap: no marker, count exact');
+    const markers5 = (out.items.todos || []).filter((i) => i && typeof i._remainder_count === 'number');
+    assert.equal(markers5.length, 0, 'no marker emitted at exactly 5');
+
+    seed(6);
+    out = runAuditOpen(tmpDir);
+    assert.equal(out.counts.todos, 6, 'one past the cap: remainder 1 counted');
+    const marker = (out.items.todos || []).find((i) => i && typeof i._remainder_count === 'number');
+    assert.ok(marker, 'marker present at 6');
+    assert.equal(marker._remainder_count, 1, 'marker records exactly the dropped count');
+  });
+
   test('#3817 control: 5 or fewer todo files → counts unchanged', (t) => {
     const tmpDir = createTempProject('gsd-3817-few-');
     t.after(() => cleanup(tmpDir));

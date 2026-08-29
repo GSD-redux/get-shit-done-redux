@@ -257,10 +257,11 @@
         "audit-command-cutover.test.cjs",
         "audit-fix-command.test.cjs",
         "audit-milestone-filename-guard.test.cjs",
+        "audit-open-remainder-count.test.cjs",
         "audit-uat-acknowledged.test.cjs",
         "audit-workstream-layouts.test.cjs"
       ],
-      "issue": "#3804/#3805 \u2014 audit-layout and acknowledged-marker suites drive the real audit-uat CLI against on-disk fixtures"
+      "issue": "#3804/#3805 \u2014 audit-layout and acknowledged-marker suites drive the real audit-uat CLI against on-disk fixtures | #3817 \u2014 regression suite proving countReal counts the truncation remainder marker instead of treating it as one phantom item"
     }
   }
 }
