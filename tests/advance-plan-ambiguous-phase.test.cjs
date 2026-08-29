@@ -66,8 +66,8 @@ describe('#3807: advance-plan refuses an ambiguous multi-entry Current Position'
     // own convention for parse errors — assert on the payload, not the code).
     const out = JSON.parse(r.output);
     assert.ok(
-      out.error && /ambiguous/i.test(String(out.error)),
-      `#3807: the error must name the ambiguity; got ${r.output}`,
+      out.error && out.reason === 'ambiguous_position_phase' && /more than one Phase/i.test(String(out.error)),
+      `#3807: the error must name the multi-Phase condition with the typed reason; got ${r.output}`,
     );
     assert.ok(
       Array.isArray(out.phase_candidates) && out.phase_candidates.length === 2,
