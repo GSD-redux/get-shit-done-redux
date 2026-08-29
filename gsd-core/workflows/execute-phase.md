@@ -199,10 +199,36 @@ Offer these recovery options:
 if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
   IS_BEHAVIOR_ADDING=$(gsd_run query task.is-behavior-adding "$TASK_FILE" --pick is_behavior_adding)
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
-    RED_COMMIT=$(git log --oneline --grep="^test(${PHASE_NUMBER}-${PLAN_ID}):" -- "**/*.test.*" "**/*.spec.*" "tests/" | head -1)
-    if [ -z "$RED_COMMIT" ]; then
+    BASE_BRANCH=$(gsd_run query git.base-branch 2>/dev/null || echo "")
+    RED_RANGE="HEAD"
+    if [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
+      RED_RANGE="${BASE_BRANCH}..HEAD"
+    fi
+TAB=$(printf '\t')
+    # One pass: SHA<TAB>red-evidence trailer<TAB>subject, newest-first. Scoped to
+    # test files (dropping this pathspec would authorize a source-only decoy) and
+    # bounded to RED_RANGE (a same-numbered plan from a prior milestone must not
+    # supply the evidence). Subject pattern is intentionally unwidened — padding
+    # normalization across N-P and N-PP belongs to upstream #4003, not this gate.
+    RED_RECORD=$(git log "$RED_RANGE" --format='%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s' \
+      -- "**/*.test.*" "**/*.spec.*" "tests/" \
+      | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]+${TAB}test\(${PHASE_NUMBER}-${PLAN_ID}\):" || true)
+    RED_SHA=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f1)
+    if [ -z "$RED_SHA" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
-      echo "MVP+TDD GATE TRIPPED: missing RED commit for ${PLAN_ID}/${TASK_ID}"
+      if git log "$RED_RANGE" --format='%H %s' -- "**/*.test.*" "**/*.spec.*" "tests/" \
+        | grep -qE "^[0-9a-f]+ test\(${PHASE_NUMBER}-${PLAN_ID}\):"; then
+        echo "MVP+TDD GATE TRIPPED: missing_red_evidence for ${PLAN_ID}/${TASK_ID}"
+      else
+        echo "MVP+TDD GATE TRIPPED: missing_red_commit for ${PLAN_ID}/${TASK_ID}"
+      fi
+      exit 1
+    fi
+    RED_TRAILER=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f2)
+    RED_VERDICT=$(gsd_run query task.red-evidence-verdict --task-file "$TASK_FILE" --trailer "$RED_TRAILER" --pick verdict) || exit 1
+    if [ "$RED_VERDICT" != "authorize" ]; then
+      gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
+      echo "MVP+TDD GATE TRIPPED: ${RED_VERDICT} for ${PLAN_ID}/${TASK_ID}"
       exit 1
     fi
   fi
