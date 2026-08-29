@@ -442,20 +442,9 @@ IS_WORKTREE=$([ -f .git ] && echo "true" || echo "false")
 if [ "$IS_WORKTREE" != "true" ]; then
   # Advance plan counter (handles last-plan edge case).
   #
-  # #3830/#3862: advance-plan REFUSES to advance when `## Current Position`
-  # disagrees with the plans on disk, reporting that on stdout at exit 0. It has to
-  # be READ: running the steps below against a position that did not move is what
-  # makes the divergence invisible — progress and a metric are recorded for a plan
-  # never advanced past, and every later plan re-runs against the frozen counter.
-  #
-  # The arms are an ALLOW-LIST, deliberately. Only two answers moved the phase
-  # forward and owe the recording below: a real advance, and the ordinary last plan
-  # (`advanced: false` WITH `reason: last_plan` — the very edge case this step's own
-  # heading names, so branching on `advanced` alone would skip the final plan's
-  # recording on every phase). Everything else stops: a divergence refusal, an
-  # exit-0 `{"error": ...}`, a reason added to the verb later, and a NON-ANSWER — a
-  # crash or a missing binary leaves the capture empty, matching nothing. A
-  # deny-list would write on every shape it had not been taught about.
+  # #3830/#3862: advance-plan can REFUSE at exit 0 — read its answer. ALLOW-LIST:
+  # only the two shapes below advanced; a refusal, an exit-0 {"error": ...}, a reason
+  # added later, or an empty capture all stop. Enforced by tests/state.test.cjs.
   ADVANCE_OUT=$(gsd_run query state.advance-plan)
   ADVANCE_RC=$?
   case "${ADVANCE_OUT}" in
@@ -469,23 +458,19 @@ if [ "$IS_WORKTREE" != "true" ]; then
         --tasks "${TASK_COUNT}" --files "${FILE_COUNT}"
       ;;
     *'"reason": "position_diverged"'*)
-      echo "STOP: state.advance-plan refused to advance — STATE.md's ## Current Position" >&2
-      echo "disagrees with the plans on disk (see the [gsd-tools] WARNING on stderr)." >&2
-      echo "Reconcile it before re-running: 'gsd_run query phase-plan-index' shows the" >&2
-      echo "real plan set. Do NOT record progress or metrics against a frozen position." >&2
+      echo "STOP: advance-plan refused — ## Current Position disagrees with the plans" >&2
+      echo "on disk (see the [gsd-tools] WARNING). Reconcile STATE.md; do NOT record." >&2
       ;;
     *)
-      echo "STOP: no advance reported (exit ${ADVANCE_RC}) — the counter did NOT move." >&2
-      echo "Do NOT record progress or metrics against a position that did not change." >&2
+      echo "STOP: no advance reported (exit ${ADVANCE_RC}) — counter did NOT move; do NOT record." >&2
       printf '%s\n' "${ADVANCE_OUT}" >&2
       ;;
   esac
 fi
 ```
-**If the block above printed `STOP:`, halt this workflow here.** The plan counter did not move, so
-every step after this one would record state against a position that is still wrong. Reconcile
-STATE.md first, then re-run this step. (The guard suppresses this step's own writes; it cannot stop
-the steps that follow, so that is your call to make, not the shell's.)
+**If the block above printed `STOP:`, halt this workflow here.** The counter did not move, so every
+later step would record against a wrong position. (The guard suppresses this step's own writes; it
+cannot stop the steps that follow.)
 
 </step>
 
