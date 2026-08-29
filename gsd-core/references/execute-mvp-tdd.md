@@ -40,7 +40,7 @@ The executor MUST:
    ```
 ### MVP+TDD GATE TRIPPED — Plan {plan_id}, Task {task_id}
 
-   Reason: {missing_red_commit | missing_red_evidence | red_commit_not_failing | feat_before_test}
+   Reason: {missing_red_commit | missing_red_evidence | red_commit_not_failing | unexpected_pass | feat_before_test}
 
    Behavior expected to be tested:
    - {first behavior bullet}
@@ -50,6 +50,11 @@ The executor MUST:
    2. Commit it as: test({phase}-{plan}): {short description}
    3. Re-run /gsd execute-phase
    ```
+
+   `unexpected_pass` differs from the other four: it means the run the executor performed exited
+   0, so the declared behavior already holds. The required next step above does not apply — writing
+   another failing test or retrying loops forever against a test that already passes. Halt and
+   reconcile the declaration with reality instead.
 
 3. Exit the current execution wave cleanly. Do NOT roll back any prior commits in the same wave.
 4. Update `STATE.md` with `last_gate_trip: {plan_id}/{task_id}` so the user can resume after writing the test.
