@@ -511,6 +511,52 @@ All checks passed.
   // Regression: #2286 — parseUatItems never scanned a `## Gaps` section, so a
   // *-UAT.md file recording its only outstanding findings there returned
   // total_items: 0 (false-clean). Boundary: 0 / 1 / 2+ unresolved entries.
+  describe('Gaps separator lines are not items (#3898)', () => {
+    // The reporter's exact measurement table: every separator shape must
+    // yield ONLY the real entry. A spaced hyphen break matched the item
+    // opener regex (/^(\s*)-\s/) and fabricated a gap named '- -' with
+    // result 'unknown' — unfixable by editing any entry, because there is
+    // no entry, only the separator the author put there deliberately.
+    const mkDoc = (sep) => [
+      '---', 'status: partial', 'phase: 01-x', '---', '',
+      '## Gaps', '',
+      sep,
+      '- truth: real', '  status: open', '',
+    ].join('\n');
+
+    const SEPARATORS = [
+      '- - -',
+      '- -',
+      '-  -  -',
+      '- - - -',
+      '  - - -',
+      // unaffected forms stay unaffected (accidentally today, by handling after the fix)
+      '---',
+      '----',
+      '* * *',
+      '___',
+    ];
+    for (const sep of SEPARATORS) {
+      test(`separator ${JSON.stringify(sep)} yields only the real entry`, () => {
+        const items = parseUatItems(mkDoc(sep));
+        assert.deepStrictEqual(
+          items.map((i) => i.name),
+          ['real'],
+          `a thematic break must be a separator, not an entry (#3898); got ${JSON.stringify(items.map((i) => i.name))}`,
+        );
+      });
+    }
+
+    test('a real entry whose text starts with a hyphen is still an entry (no over-skip)', () => {
+      const items = parseUatItems([
+        '---', 'status: partial', 'phase: 01-x', '---', '',
+        '## Gaps', '',
+        '- truth: "-5 error budget remaining"', '  status: open', '',
+      ].join('\n'));
+      assert.deepStrictEqual(items.map((i) => i.name), ['-5 error budget remaining']);
+    });
+  });
+
   describe('Gaps section scanning (#2286)', () => {
     test('a Gaps-only UAT file with 0 unresolved entries (all resolved) yields no items', () => {
       const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
