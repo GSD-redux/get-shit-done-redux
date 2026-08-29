@@ -2558,10 +2558,15 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     const rest = ref.indexOf('\n## ', start + 1);
     const checks = rest > -1 ? ref.slice(start, rest) : ref.slice(start);
 
-    assert.ok(checks.includes('is not yet mechanised'),
-      'the gate checks must say that judging the recorded run against the RED predicate is not '
-      + 'yet mechanised. tdd.md says so in as many words and defers that judgment to the coded '
-      + 'gate; an executor told otherwise reports a verdict it never computed. See #3770.');
+    assert.ok(!checks.includes('is not yet mechanised'),
+      'the gate checks must NOT still say the RED-predicate judgment is unmechanised. That '
+      + 'deferral was true only until Phase 3 shipped the coded gate; execute-phase.md now sets '
+      + 'RED_VERDICT from `task.red-evidence-verdict` and halts unless it is `authorize`. An '
+      + 'executor told the judgment is unmechanised believes a gate it is actually subject to '
+      + 'does not exist — the exact class of stale-contract defect #3770 is about. See #3770.');
+    assert.ok(checks.includes('task.red-evidence-verdict'),
+      'the gate checks must name the verb that computes the verdict, so the executor knows the '
+      + 'judgment is mechanised and by what. See #3770.');
     assert.ok(!checks.includes('satisfies the RED predicate'),
       'the gate checks must not claim the trailer\'s recorded run satisfies the RED predicate. '
       + 'The region is scoped to the checks so the escalation section below stays free to '
