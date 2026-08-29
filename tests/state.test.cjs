@@ -2632,7 +2632,11 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
   // instruction this guard also checks lives in the prose AFTER the fence, not in it.
   const invocationBlocks = (text) => {
     const out = [];
-    for (const m of text.matchAll(/^```bash\r?\n([\s\S]*?)^```/gm)) {
+    // Rule widened to tests/**/*.cjs by #3951 (15af0f553), so this pre-existing helper is
+    // linted now. stripFencedCode() is the wrong shape here: it REMOVES fenced blocks, and
+    // this needs to keep them with their end offsets so each assertion can be scoped to the
+    // invocation's own fence.
+    for (const m of text.matchAll(/^```bash\r?\n([\s\S]*?)^```/gm)) { // allow-adhoc-markdown: needs the fences kept + located, not stripped
       if (INVOKES.test(m[1])) out.push({ block: m[1], end: m.index + m[0].length });
     }
     return out;
@@ -2896,7 +2900,8 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
         + patterns.map((p, i) => `${p}) echo ${i};;`).join('\n')
         + '\nesac\n';
       for (const [label, payload, want] of EXPECT) {
-        const got = execFileSync('bash', ['-c', script, '_', payload], { encoding: 'utf-8' }).trim();
+        const got = execFileSync('bash', ['-c', script, '_', payload],
+          { encoding: 'utf-8', timeout: 30_000 }).trim();
         const expected = want === 'last' ? String(patterns.length - 1) : String(want);
         assert.strictEqual(got, expected,
           `${name}: ${label} matched arm ${got || '(none)'}, expected arm ${expected}. `
