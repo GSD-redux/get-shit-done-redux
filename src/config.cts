@@ -167,6 +167,34 @@ function validateKnownConfigKeyPath(keyPath: string): void {
   }
 }
 
+/**
+ * Is `value` an acceptable `git.protected_branches` list (#3552)?
+ *
+ * A non-empty array whose every element is a string with non-whitespace
+ * content. Exported so a property test can pin this predicate against the
+ * resolver's own per-entry filter in `git-base-branch.cts` — `config-set` must
+ * only accept lists the resolver will honour in full, with nothing rejected.
+ * The two are deliberately different shapes (all-or-nothing here, per-entry
+ * there, because a direct file edit bypasses this check), so nothing keeps them
+ * agreeing except a test that asks both.
+ */
+function isValidProtectedBranches(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  const entries = value as unknown[];
+  // Index, do NOT use `.every()`. `.every()` SKIPS holes, so a sparse array
+  // (`["main", , "develop"]`) passed this check while the resolver's `for...of`
+  // — which yields `undefined` for a hole — rejected that element. The two
+  // surfaces then disagreed about the same value. JSON cannot express a hole,
+  // so neither surface meets one in production, but "unreachable" is not a
+  // reason to leave two definitions of the same predicate contradicting each
+  // other (round-4 external review).
+  for (let i = 0; i < entries.length; i += 1) {
+    const branch = entries[i];
+    if (typeof branch !== 'string' || branch.trim().length === 0) return false;
+  }
+  return true;
+}
+
 function validateShipPrBodySections(value: unknown): void {
   if (!Array.isArray(value)) {
     error('Invalid ship.pr_body_sections value. Expected a JSON array of section objects.');
@@ -844,6 +872,12 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
     }
   }
 
+  if (kp === 'git.protected_branches') {
+    if (!isValidProtectedBranches(parsedValue)) {
+      error(`Invalid git.protected_branches '${val}'. Must be a non-empty array of non-empty branch names.`);
+    }
+  }
+
   if (kp === 'ship.pr_body_sections') {
     validateShipPrBodySections(parsedValue);
   }
@@ -1280,4 +1314,5 @@ export = {
   // Exported for programmatic use by capability-writer and tests
   setConfigValue,
   setConfigValues,
+  isValidProtectedBranches,
 };

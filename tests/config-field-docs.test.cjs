@@ -17,6 +17,15 @@ const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const REFERENCE_PATH = path.join(__dirname, '..', 'gsd-core', 'references', 'planning-config.md');
 const CORE_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'config-loader.cjs');
+const DOCS_CONFIG_PATH = path.join(__dirname, '..', 'docs', 'CONFIGURATION.md');
+const CONFIG_SCHEMA_MANIFEST_PATH = path.join(
+  __dirname,
+  '..',
+  'gsd-core',
+  'bin',
+  'shared',
+  'config-schema.manifest.json',
+);
 
 /** Find the markdown table row whose first cell is `` `key` `` and return its cells. */
 function tableRowForKey(content, key) {
@@ -153,6 +162,46 @@ describe('config-field-docs', () => {
       [],
       `Git fields missing from planning-config.md: ${missing.join(', ')}`
     );
+  });
+
+  test('git.protected_branches canonical field has synchronized type and examples', () => {
+    const manifest = JSON.parse(fs.readFileSync(CONFIG_SCHEMA_MANIFEST_PATH, 'utf-8'));
+    assert.ok(
+      manifest.validKeys.includes('git.protected_branches'),
+      'config schema manifest must register git.protected_branches',
+    );
+
+    const publicDocs = fs.readFileSync(DOCS_CONFIG_PATH, 'utf-8');
+    const references = [
+      ['docs/CONFIGURATION.md', publicDocs],
+      ['gsd-core/references/planning-config.md', content],
+    ];
+    const example = /"protected_branches"\s*:\s*\[\s*"develop"\s*,\s*"staging"\s*\]/;
+
+    for (const [name, reference] of references) {
+      const row = reference
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('| `git.protected_branches` |'));
+      assert.ok(row, `${name} must document the canonical git.protected_branches key`);
+      assert.match(row, /array of non-empty strings/i,
+        `${name} must document the non-empty string-array contract`);
+      assert.match(row, /\| \(none\) \|/,
+        `${name} must document that the optional field has no persisted default`);
+      assert.match(reference, example,
+        `${name} must show the synchronized multi-branch JSON example`);
+      assert.match(reference, /extends the resolved base branch/i,
+        `${name} must state that configured names extend the resolved base`);
+      assert.match(reference, /execute-phase and ship/i,
+        `${name} must name both advisory warning boundaries`);
+      assert.match(reference, /does not\s+change\s+`git\.branching_strategy: "none"`/i,
+        `${name} must preserve branching_strategy none behavior`);
+      assert.match(reference, /exact branch name/i,
+        `${name} must state that matching is by exact name`);
+      assert.match(reference, /no glob or prefix/i,
+        `${name} must say globs and prefixes are unsupported, so git-flow layouts enumerate`);
+      assert.match(reference, /remaining names\s+still apply/i,
+        `${name} must state that an invalid entry drops only itself`);
+    }
   });
 
   test('documents KNOWN_TOP_LEVEL internal fields not in CONFIG_DEFAULTS', () => {

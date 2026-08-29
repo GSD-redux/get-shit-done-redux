@@ -15682,7 +15682,7 @@ describe('fix #1580 — milestone complete ignores the 999 backlog sentinel', ()
 
   test('completes WITHOUT --force despite a Phase 999 backlog heading', () => {
     const result = runGsdTools(
-      ['milestone', 'complete', 'v1.0', '--name', 'Regression'],
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression', '--confirm'],
       tmpDir,
     );
     assert.ok(

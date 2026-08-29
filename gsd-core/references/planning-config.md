@@ -12,6 +12,7 @@ Configuration options for `.planning/` directory behavior.
 "git": {
   "branching_strategy": "none",
   "base_branch": null,
+  "protected_branches": ["develop", "staging"],
   "phase_branch_template": "gsd/phase-{phase}-{slug}",
   "milestone_branch_template": "gsd/{milestone}-{slug}",
   "quick_branch_template": null
@@ -32,6 +33,7 @@ Configuration options for `.planning/` directory behavior.
 | `search_gitignored` | `false` | Add `--no-ignore` to broad rg searches |
 | `git.branching_strategy` | `"none"` | Git branching approach: `"none"`, `"phase"`, or `"milestone"` |
 | `git.base_branch` | `null` (auto-detect) | Target branch for PRs and merges (e.g. `"master"`, `"develop"`). When `null`, auto-detects from `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"main"`. |
+| `git.protected_branches` | (none) | Optional array of non-empty strings naming additional shared branches that should trigger protected-branch warnings |
 | `git.create_tag` | `true` | Create git tags on milestone completion |
 | `git.phase_branch_template` | `"gsd/phase-{phase}-{slug}"` | Branch template for phase strategy |
 | `git.milestone_branch_template` | `"gsd/{milestone}-{slug}"` | Branch template for milestone strategy |
@@ -47,6 +49,26 @@ Configuration options for `.planning/` directory behavior.
 | `manager.flags.execute` | `""` | Flags passed to execute workflow when dispatched from manager |
 | `response_language` | `null` | Language for user-facing questions and prompts across all phases/subagents (e.g. `"Portuguese"`, `"Japanese"`, `"Spanish"`). When set, all spawned agents include a directive to respond in this language. |
 </config_schema>
+
+`git.protected_branches` has no persisted default. When it is absent, only the resolved base branch
+is protected, preserving existing project behavior. Every configured item must be a non-empty
+string. The configured list extends the resolved base branch; it never replaces the base or changes
+the resolution ladder. A match produces an advisory warning at execute-phase and ship and does not
+change `git.branching_strategy: "none"`.
+
+Matching is by exact branch name — there is no glob or prefix support, so a git-flow
+layout must name each `release/*` or `hotfix/*` branch it wants protected. An entry that
+is not a non-empty string is ignored with a warning naming it, and the remaining names
+still apply.
+
+```json
+{
+  "git": {
+    "branching_strategy": "none",
+    "protected_branches": ["develop", "staging"]
+  }
+}
+```
 
 <commit_docs_behavior>
 
@@ -306,6 +328,7 @@ Set via `git.*` namespace (e.g., `"git": { "branching_strategy": "phase" }`).
 |-----|------|---------|----------------|-------------|
 | `git.branching_strategy` | string | `"none"` | `"none"`, `"phase"`, `"milestone"` | Git branching approach for phase/milestone isolation |
 | `git.base_branch` | string\|null | `null` (auto-detect) | Any branch name | Target branch for PRs and merges; auto-detects from `origin/HEAD` when `null` |
+| `git.protected_branches` | array of non-empty strings | (none) | Non-empty branch names | Optional protected names added to the resolved base branch for execute-phase and ship warnings |
 | `git.create_tag` | boolean | `true` | `true`, `false` | Create git tags on milestone completion |
 | `git.phase_branch_template` | string | `"gsd/phase-{phase}-{slug}"` | Template with `{phase}`, `{slug}` | Branch naming template for `phase` strategy |
 | `git.milestone_branch_template` | string | `"gsd/{milestone}-{slug}"` | Template with `{milestone}`, `{slug}` | Branch naming template for `milestone` strategy |

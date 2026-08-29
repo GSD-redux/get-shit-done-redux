@@ -323,7 +323,7 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 ```bash
 # 归档里程碑
-node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases]
+node gsd-tools.cjs milestone complete <version> (--confirm | --dry-run) [--name <name>] [--no-archive-phases] [--force] [--archive-quick]
 
 # 将需求标记为完成
 node gsd-tools.cjs requirements mark-complete <ids>

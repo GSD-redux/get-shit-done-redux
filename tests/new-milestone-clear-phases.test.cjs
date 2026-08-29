@@ -469,7 +469,7 @@ describe('milestone complete: version path-traversal guard (#2288 security)', ()
     // `version` is interpolated into `${version}-ROADMAP.md`, `${version}-phases`,
     // etc. as a MOVED/written path component — a traversal value must be rejected
     // before any filesystem mutation.
-    const result = runGsdTools('milestone complete ../../../gsd-ms-escape', tmpDir);
+    const result = runGsdTools('milestone complete ../../../gsd-ms-escape --confirm', tmpDir);
     assert.ok(!result.success, 'milestone complete must FAIL on a path-traversal version');
 
     // No artifact created outside the project via traversal.
@@ -491,7 +491,7 @@ describe('milestone complete: version path-traversal guard (#2288 security)', ()
     fs.mkdirSync(phase1, { recursive: true });
     fs.writeFileSync(path.join(phase1, '01-01-PLAN.md'), '# Plan');
 
-    const result = runGsdTools('milestone complete v1\\\\..\\\\evil', tmpDir);
+    const result = runGsdTools('milestone complete v1\\\\..\\\\evil --confirm', tmpDir);
     assert.ok(!result.success, 'milestone complete must FAIL on a backslash-separator version');
     assert.ok(fs.existsSync(phase1), 'phase dir must remain in place');
   });
