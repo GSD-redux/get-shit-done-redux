@@ -262,8 +262,8 @@ Hooks de runtime que se integram ao agente de IA anfitrião:
 | `gsd-read-injection-scanner.js` | `PostToolUse` | Escaneia saídas da ferramenta Read em busca de instruções injetadas em conteúdo não confiável |
 | `gsd-workflow-guard.js` | `PreToolUse` | Detecta edições de arquivos fora do contexto de workflow do GSD (consultivo, ativado via `hooks.workflow_guard`) |
 | `gsd-read-guard.js` | `PreToolUse` | Guarda consultivo que impede Edit/Write em arquivos ainda não lidos na sessão |
-| `gsd-session-state.sh` | `PostToolUse` | Rastreamento de estado de sessão para runtimes baseados em shell |
-| `gsd-validate-commit.sh` | `PostToolUse` | Validação de commit para aplicação de commits convencionais |
+| `gsd-session-state.sh` | `SessionStart` | Rastreamento de estado de sessão para runtimes baseados em shell |
+| `gsd-validate-commit.sh` | `PreToolUse` | Validação de commit para aplicação de commits convencionais |
 | `gsd-phase-boundary.sh` | `PostToolUse` | Detecção de limite de fase para transições de workflow |
 
 Consulte [`docs/INVENTORY.md`](INVENTORY.md#hooks-11-shipped) para o roster oficial de 11 hooks.

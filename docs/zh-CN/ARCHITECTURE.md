@@ -247,8 +247,8 @@ GSD Core 是一个**元提示框架**，位于用户与 AI 编码 Agent（Claude
 | `gsd-read-injection-scanner.js` | `PostToolUse` | 扫描 Read 工具输出中不受信任内容里的注入指令 |
 | `gsd-workflow-guard.js` | `PreToolUse` | 检测 GSD 工作流上下文之外的文件编辑（建议性，通过 `hooks.workflow_guard` 选择启用） |
 | `gsd-read-guard.js` | `PreToolUse` | 建议性防护，防止对本会话中尚未读取的文件执行 Edit/Write |
-| `gsd-session-state.sh` | `PostToolUse` | 基于 shell 的运行时的会话状态跟踪 |
-| `gsd-validate-commit.sh` | `PostToolUse` | 用于规范提交格式执行的提交验证 |
+| `gsd-session-state.sh` | `SessionStart` | 基于 shell 的运行时的会话状态跟踪 |
+| `gsd-validate-commit.sh` | `PreToolUse` | 用于规范提交格式执行的提交验证 |
 | `gsd-phase-boundary.sh` | `PostToolUse` | 工作流转换的阶段边界检测 |
 
 请参阅 [`docs/INVENTORY.md`](INVENTORY.md#hooks-11-shipped) 获取权威的 11 个 hook 列表。
