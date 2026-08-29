@@ -43,19 +43,20 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GSD_BOT_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           if git status --porcelain -- tests/ci-timeout-budget-history.jsonl | grep -q .; then
-            BR="automation/ci-timeout-report-${{ github.run_id }}"
+            BR="automation/ci-timeout-report-$RUN_ID"
             git checkout -b "$BR"
             git add tests/ci-timeout-budget-history.jsonl
             git -c user.name="gsd-bot" -c user.email="gsd-bot@users.noreply.github.com" \
-              commit -m "chore: CI timeout budget report — run ${{ github.run_id }}"
+              commit -m "chore: CI timeout budget report — run $RUN_ID"
             git push origin "$BR"
             gh pr create \
               --base next \
               --head "$BR" \
-              --title "chore: CI timeout budget report — run ${{ github.run_id }}" \
+              --title "chore: CI timeout budget report — run $RUN_ID" \
               --body "Automated, data-only update to \`tests/ci-timeout-budget-history.jsonl\` — new shard/job wall-clock vs. \`timeout-minutes\` records collected by \`.github/workflows/ci-timeout-report.yml\` (#4036). No source changes; safe to merge once CI passes." \
               --label "automation" \
               --label "no-changelog"

@@ -100,6 +100,7 @@ test('parseJobRecord', async (t) => {
         started_at: '2026-08-29T00:00:00Z',
         run_id: 1,
         head_sha: 'abc123',
+        runEvent: 'pull_request',
       },
       workflowFile: 'test.yml',
       workflowYamlText: 'jobs:\n  test:\n    timeout-minutes: 15\n',
@@ -118,6 +119,7 @@ test('parseJobRecord', async (t) => {
           started_at: '2026-08-29T00:00:00Z',
           run_id: 1,
           head_sha: 'abc123',
+          runEvent: 'pull_request',
         },
         workflowFile: 'test.yml',
         workflowYamlText: 'jobs:\n  test:\n    timeout-minutes: 15\n',
@@ -143,6 +145,7 @@ test('parseJobRecord', async (t) => {
         completed_at: '2026-08-29T00:06:00Z',
         run_id: 42,
         head_sha: 'deadbeef',
+        runEvent: 'push',
       },
       workflowFile: 'install-smoke.yml',
       workflowYamlText: yamlText,
@@ -154,6 +157,7 @@ test('parseJobRecord', async (t) => {
     assert.equal(result.workflowFile, 'install-smoke.yml');
     assert.equal(result.runId, 42);
     assert.equal(result.sha, 'deadbeef');
+    assert.equal(result.runEvent, 'push');
     assert.equal(result.timeoutMinutes, 12);
     assert.equal(typeof result.pct, 'number');
   });
@@ -214,7 +218,7 @@ test('buildReportLines', async (t) => {
 
     const runs = [
       {
-        run: { id: 1, head_sha: 'sha1' },
+        run: { id: 1, head_sha: 'sha1', event: 'pull_request' },
         jobs: [
           {
             name: 'test (ubuntu-latest, 24, shard 1/3)',
@@ -234,7 +238,7 @@ test('buildReportLines', async (t) => {
         ],
       },
       {
-        run: { id: 2, head_sha: 'sha2' },
+        run: { id: 2, head_sha: 'sha2', event: 'push' },
         jobs: [
           {
             name: 'test (ubuntu-latest, 24, shard 3/3)',

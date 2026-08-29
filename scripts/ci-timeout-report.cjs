@@ -7,7 +7,11 @@
  * API for recently completed jobs across test.yml, mutation.yml, and
  * install-smoke.yml, resolves each job's declared `timeout-minutes` budget,
  * computes elapsed-vs-cap via scripts/lib/ci-job-timing.cjs, and appends
- * new (never-before-seen) records to a JSONL history file.
+ * new (never-before-seen) records to a JSONL history file. Every record also
+ * carries the triggering `runEvent` (e.g. `push`/`pull_request`) so entries
+ * for jobs whose matrix genuinely differs by trigger (e.g. `smoke`'s
+ * push-only macOS row) can be told apart in the persisted trend — records
+ * are never filtered by event, only labeled.
  *
  * Invoked from a GitHub Actions workflow via actions/github-script, e.g.:
  *   const report = require(`${process.env.GITHUB_WORKSPACE}/scripts/ci-timeout-report.cjs`);
@@ -51,6 +55,12 @@ function resolveJobTimeoutMinutes({ jobName, workflowFile, workflowYamlText, cov
   return typeof budget === 'number' ? budget : null;
 }
 
+/**
+ * @param {{job: object, workflowFile: string, workflowYamlText: ?string, covered: ?object}} args
+ *   `job.runEvent` is the triggering event (e.g. `push`/`pull_request`) — carried through to
+ *   the returned record so entries whose matrix genuinely differs by trigger (e.g. `smoke`'s
+ *   push-only macOS row) can be distinguished in the persisted history.
+ */
 function parseJobRecord({ job, workflowFile, workflowYamlText, covered }) {
   if (!job.completed_at) return null;
 
@@ -66,6 +76,7 @@ function parseJobRecord({ job, workflowFile, workflowYamlText, covered }) {
     jobName: job.name,
     workflowFile,
     sha: job.head_sha,
+    runEvent: job.runEvent,
     completedAt: job.completed_at,
     elapsedMs,
     timeoutMinutes,
@@ -78,7 +89,9 @@ function buildReportLines(runs, { workflowFile, workflowYamlText, covered }) {
   for (const { run, jobs } of runs) {
     for (const job of jobs) {
       const rec = parseJobRecord({
-        job: { ...job, run_id: run.id, head_sha: run.head_sha },
+        job: {
+          ...job, run_id: run.id, head_sha: run.head_sha, runEvent: run.event,
+        },
         workflowFile,
         workflowYamlText,
         covered,

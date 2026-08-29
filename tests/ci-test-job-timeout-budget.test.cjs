@@ -226,3 +226,51 @@ test('mutation.yml mutate job timeout budgets (#4036)', async (t) => {
     );
   });
 });
+
+test('near-cap check CI_JOB_TIMEOUT_MINUTES literals match each job\'s own timeout-minutes (#4036)', async (t) => {
+  const staticLanes = [
+    { workflowFile: 'test.yml', jobKey: 'test', envLiteral: '15' },
+    { workflowFile: 'test.yml', jobKey: 'test-full', envLiteral: '45' },
+    { workflowFile: 'install-smoke.yml', jobKey: 'smoke', envLiteral: '12' },
+  ];
+
+  for (const lane of staticLanes) {
+    await t.test(`${lane.workflowFile} jobs.${lane.jobKey}: CI_JOB_TIMEOUT_MINUTES matches timeout-minutes`, () => {
+      const workflow = loadWorkflow(lane.workflowFile);
+      const declared = workflow.jobs[lane.jobKey]['timeout-minutes'];
+      assert.equal(
+        String(declared), lane.envLiteral,
+        `.github/workflows/${lane.workflowFile} jobs.${lane.jobKey}.timeout-minutes is ${declared}, `
+        + `but the near-cap check step's CI_JOB_TIMEOUT_MINUTES literal is hardcoded to '${lane.envLiteral}' `
+        + '— these two must be updated together (GH Actions has no expression to read a sibling job-level '
+        + 'key from within a step\'s env, so this parity test is the drift guard instead). Update BOTH the '
+        + 'literal in this test AND the CI_JOB_TIMEOUT_MINUTES env value in the workflow step when the cap changes.',
+      );
+    });
+  }
+
+  await t.test('ci-timeout-report.cjs JOB_RULES prefixes still match each job\'s declared name: template', () => {
+    const { JOB_RULES } = require('../scripts/ci-timeout-report.cjs');
+    const testWorkflow = loadWorkflow('test.yml');
+
+    const testRule = JOB_RULES.find((r) => r.workflowFile === 'test.yml' && r.jobKey === 'test');
+    assert.ok(testWorkflow.jobs.test.name.startsWith('test ('),
+      'test.yml jobs.test.name no longer starts with "test (" — update JOB_RULES in scripts/ci-timeout-report.cjs to match');
+    assert.equal(testRule.test('test (ubuntu-latest, 24, shard 1/3)'), true);
+
+    const testFullRule = JOB_RULES.find((r) => r.workflowFile === 'test.yml' && r.jobKey === 'test-full');
+    assert.ok(testWorkflow.jobs['test-full'].name.startsWith('full test ('),
+      'test.yml jobs.test-full.name no longer starts with "full test (" — update JOB_RULES to match');
+    assert.equal(testFullRule.test('full test (windows-latest, 24, shard 1/3)'), true);
+
+    const testInertRule = JOB_RULES.find((r) => r.workflowFile === 'test.yml' && r.jobKey === 'test-inert');
+    assert.equal(testWorkflow.jobs['test-inert'].name, 'test (inert CI)',
+      'test.yml jobs.test-inert.name changed — update JOB_RULES to match');
+    assert.equal(testInertRule.test('test (inert CI)'), true);
+
+    const coverageGateRule = JOB_RULES.find((r) => r.workflowFile === 'test.yml' && r.jobKey === 'coverage-gate');
+    assert.equal(testWorkflow.jobs['coverage-gate'].name, 'Coverage gate (merged shards)',
+      'test.yml jobs.coverage-gate.name changed — update JOB_RULES to match');
+    assert.equal(coverageGateRule.test('Coverage gate (merged shards)'), true);
+  });
+});

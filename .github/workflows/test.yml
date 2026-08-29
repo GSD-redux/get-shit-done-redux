@@ -250,8 +250,8 @@ jobs:
 
       - name: Record job start time (near-cap check, Windows)
         if: runner.os == 'Windows'
-        run: "'CI_JOB_START_EPOCH_MS=' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() >> $env:GITHUB_ENV"
         shell: pwsh
+        run: echo "CI_JOB_START_EPOCH_MS=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" >> $env:GITHUB_ENV
 
       - name: Guard — require GitHub-hosted runner
         run: node scripts/ci-guard-runner.cjs
@@ -524,8 +524,8 @@ jobs:
 
       - name: Record job start time (near-cap check, Windows)
         if: runner.os == 'Windows'
-        run: "'CI_JOB_START_EPOCH_MS=' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() >> $env:GITHUB_ENV"
         shell: pwsh
+        run: echo "CI_JOB_START_EPOCH_MS=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" >> $env:GITHUB_ENV
 
       - name: Guard — require GitHub-hosted runner
         run: node scripts/ci-guard-runner.cjs
