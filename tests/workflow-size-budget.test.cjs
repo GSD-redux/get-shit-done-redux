@@ -624,6 +624,24 @@ describe('workflow progressive disclosure — MVP bodies lazy-loaded (#720)', ()
         'else, so the prefixed form is the portable one and the bare form resolves only ' +
         'inside this repository. See #720, #3770.'
       );
+
+      // The three IMPERATIVE consumers must carry no BARE backticked citation
+      // at all. execute-mvp-tdd.md is excluded by name: its two references are
+      // passive cross-references, and the 02-03 decision keeps them bare.
+      //
+      // The positive assertion above is satisfied by ANY prefixed occurrence
+      // anywhere in the file, so each of these files passed it on an unrelated
+      // line while its own RED-contract citation stayed bare — and a bare path
+      // is rewritten by nothing in src/runtime-artifact-conversion.cts, so it
+      // ships literally and resolves only inside this repository.
+      if (path.basename(file) === 'execute-mvp-tdd.md') continue;
+      assert.ok(
+        !content.includes('`gsd-core/references/tdd.md`'),
+        `${path.basename(file)} still carries a BARE \`gsd-core/references/tdd.md\` citation. ` +
+        'The old guard was file-scoped, so this file passed on an unrelated prefixed line ' +
+        'while the citation an executor actually follows stayed unresolvable at the user\'s ' +
+        'install (T-02-05-10). See #720, #3770.'
+      );
     }
   });
 });

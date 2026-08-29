@@ -434,6 +434,18 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         `${side} must hold exactly phase, class_or_mode and subject`,
       );
     }
+
+    // STATIC BOUNDS CHECK — this assertion passes against baseline text and has
+    // no honest RED, because the shipped exemplar's `command` is already
+    // credential-free. It is a fence against a FUTURE edit, not evidence that
+    // anything was repaired, and it is deliberately NOT counted among this
+    // plan's mutation-killed assertions.
+    assert.doesNotMatch(parsed.command,
+      /\bsk-[A-Za-z0-9]|:\/\/[^/\s:]+:[^/\s@]+@|--?(token|password|secret|api[-_]?key)[= ]\S/i,
+      'the contract must not teach a leak by example: the shipped `command` exemplar must ' +
+      'carry no credential-shaped value. `command` lands in a git trailer, and a git trailer ' +
+      'lands in permanent published history that `git commit --amend` cannot unpublish once ' +
+      'pushed. See #3770 (CR-10).');
   });
 
   test("the contract's shipped definitions, outcome rows and obligations are each pinned", () => {
@@ -550,6 +562,14 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         verdict: null,
         why: 'without the stated limitation a coded-gate implementer reads `command` as '
           + 'validated input bound to `target_test`, which nothing in the predicate makes it',
+      },
+      {
+        section: 'Evidence',
+        needle: 'a credential typed literally has no originating variable to name',
+        verdict: null,
+        why: 'the obligation\'s only remedy was to substitute the originating variable\'s '
+          + 'placeholder name, which has no meaning for a credential typed literally — so the '
+          + 'shipped remedy covered neither of the two positions the review reproduced',
       },
       {
         section: 'RED Predicate',
@@ -1041,6 +1061,98 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'this case fall through to an exit-0 tail. See #3770.');
     assert.ok(r5.stdout.includes('missing_red_commit'),
       'the snippet must echo `missing_red_commit` verbatim when no subject matches');
+  });
+
+  test('every surface that instructs on the unexpected pass defers to the RED Contract', () => {
+    const EXECUTOR = fs.readFileSync(AGENT, 'utf-8');
+    const EXECUTE_PLAN = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-plan.md'), 'utf-8',
+    );
+
+    // Region-scoped, never file-scoped: `## RED Contract`'s own Outcomes table
+    // and its halt rule legitimately discuss the unexpected pass, and a
+    // file-wide negative would forbid the contract's own statement of it.
+    const region = (source, from, to, label) => {
+      const start = source.indexOf(from);
+      assert.ok(start > -1, `${label}: missing region start marker ${from}`);
+      const end = source.indexOf(to, start + from.length);
+      assert.ok(end > -1, `${label}: missing region end marker ${to}`);
+      return source.slice(start, end);
+    };
+
+    // The FIRST region is the `**Test doesn't fail in RED phase:**` SUBSECTION,
+    // not the whole <error_handling> block. That block also contains
+    // `**Unrelated tests break:**`, which legitimately ends in the same
+    // fix-and-proceed guidance — a broken unrelated test is NOT an unexpected
+    // pass, and that guidance is correct and stays. A negative over the whole
+    // block would either fail permanently or be weakened until it caught
+    // nothing.
+    const redPhaseSubsection = region(TDD_SOURCE,
+      "**Test doesn't fail in RED phase:**", '**Test doesn\'t pass in GREEN phase:**', 'tdd.md RED-phase subsection');
+    assert.ok(redPhaseSubsection.includes("**Test doesn't fail in RED phase:**"),
+      'the slice must start at the RED-phase heading');
+    assert.ok(!redPhaseSubsection.includes('**Unrelated tests break:**'),
+      'the slice must EXCLUDE the unrelated-tests subsection, whose fix-and-proceed guidance is ' +
+      'correct. A later reflow that silently widens this slice must fail HERE, rather than ' +
+      'quietly degrading the negative below into one that catches nothing. See #3770.');
+
+    const regions = [
+      { label: 'tdd.md RED-phase subsection', text: redPhaseSubsection },
+      {
+        label: 'tdd.md ### Fail-Fast Rules',
+        text: region(TDD_SOURCE, '### Fail-Fast Rules', '### Executor Gate Validation', 'tdd.md fail-fast'),
+      },
+      {
+        label: 'gsd-executor.md <tdd_execution>',
+        text: region(EXECUTOR, '<tdd_execution>', '</tdd_execution>', 'executor tdd_execution'),
+        consumer: true,
+      },
+      {
+        label: 'execute-plan.md <tdd_plan_execution>',
+        text: region(EXECUTE_PLAN, '<tdd_plan_execution>', '</tdd_plan_execution>', 'execute-plan tdd_plan_execution'),
+        consumer: true,
+      },
+    ];
+
+    for (const { label, text } of regions) {
+      // POSITIVE anchor: deleting the section must not satisfy the negative.
+      assert.match(text, /RED Contract|red_contract_spec|RED contract/,
+        `${label} must CITE the RED Contract for the unexpected-pass case. Without this ` +
+        'anchor the negative below is satisfied by deleting the section. See #3770.');
+      // NEGATIVE, region-scoped.
+      assert.ok(!/fix the test and continue|Fix before proceeding|Investigate and fix the test before proceeding|investigate test\/existing feature/.test(text),
+        `${label} still instructs the executor to repair the test and CONTINUE on an ` +
+        'unexpected pass. That is the exact retry loop the contract\'s `halt` verdict forbids: ' +
+        'an executor that continues authorizes GREEN on a test that never failed ' +
+        '(T-02-05-08). See #3770.');
+    }
+
+    for (const { label, text } of regions.filter((r) => r.consumer)) {
+      assert.ok(text.includes('<red_contract>'),
+        `${label} must name the literal <red_contract> element the executor reads. Both ` +
+        'consuming surfaces are covered by their own row here, so neither is protected by a ' +
+        'one-time acceptance grep. See #3770 (CR-05, CR-06).');
+      // The halt VERDICT itself, anchored inside the sentence that names the
+      // element, so softening `halt` to `continue` on either surface — or
+      // letting the two drift apart — turns the suite red.
+      assert.match(text, /<red_contract>[^.]*halts|halts[^.]*<red_contract>/,
+        `${label} must state that a tdd="true" task carrying NO <red_contract> HALTS. ` +
+        'Fail-closed, on the actor that actually hits the case. Asserting the element name ' +
+        'alone would let `halt` soften to `continue` unnoticed. See #3770 (CR-05).');
+    }
+
+    const executorRegion = regions.find((r) => r.label.startsWith('gsd-executor')).text;
+    assert.match(executorRegion, /red-evidence:/,
+      'gsd-executor.md gate-sequence item 1 must require the `test(...)` commit to CARRY the ' +
+      '`red-evidence:` trailer, not merely to exist. This is the inline checklist the executor ' +
+      'follows without resolving any citation, so REDC-06 is unmet while it still carries the ' +
+      'pre-#3770 rule (T-02-05-07). See #3770 (CR-06).');
+    assert.match(executorRegion, /credential/i,
+      'gsd-executor.md must carry the credential-redaction clause on the surface that actually ' +
+      'WRITES the trailer. A git trailer lands in permanent published history and cannot be ' +
+      'unpublished once pushed; reaching the obligation only through a citation that did not ' +
+      'resolve is T-02-05-09. Positive presence assertion, so the executor-side obligation is ' +
+      'guarded against deletion exactly as the tdd.md-side one already is. See #3770 (CR-10).');
   });
 
   test('the MVP+TDD gate reference does not claim a capability the contract disclaims', () => {
