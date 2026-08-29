@@ -252,10 +252,26 @@ values instead; and the target arm's `actual.subject == plan.target_test` become
 `selected_count` and `target_executed` are conditions of the target-test arm **only**: an
 outside-in RED fails before its target test is ever collected, so it reports 0 and false by
 construction, and hoisting those two above the disjunction blocks exactly the case the outside-in
-arm exists to admit. The arm applies no condition proving the target test exists; the MVP+TDD gate
-supplies that separately by requiring the RED commit to touch a test file, per
-`gsd-core/references/execute-mvp-tdd.md`, because the predicate alone cannot tell whether the
-target test was ever written.
+arm exists to admit. The arm applies no condition proving the target test exists; **Executor Gate
+Validation** below supplies that separately by requiring the RED commit to touch a test file, and
+it fires for every `type: tdd` plan. `gsd-core/references/execute-mvp-tdd.md` repeats the same
+condition, but only under MVP+TDD, so it is not the live path on a project that sets `tdd_mode`
+alone. The predicate itself cannot tell whether the target test was ever written.
+
+What arm 2 proves and what it does not: it proves the run failed, at the declared phase, with the
+declared class, reported against the declared test file, from a declaration that pre-committed to
+outside-in mode. It does not prove that the missing entity is the declared `implementation_target`
+— that identity appears only in the diagnostic message, and this contract keeps identity out of
+message text. The admitted case is therefore an unrelated missing dependency in the declared test
+file, failing at the same declared phase with the same declared class. Two controls compensate:
+**Executor Gate Validation** requires the RED commit to touch a test file, and
+`implementation_target` stays declared, so a human or a later coded gate can compare it against the
+recorded `command` and the message. Closing the residual is Phase 3's, because it needs either
+message-derived identity or a new declared field, and both are decisions an implementation can
+validate and prose cannot. Note that this state is strictly NARROWER than the one it replaces:
+arm 2 was previously unsatisfiable and admitted nothing at all, correctly or otherwise, so
+anchoring it on the declared test file admits legitimate outside-in RED while bounding what else
+it lets through.
 
 One rule sits outside the predicate: `exit_status == 0` is an unexpected pass. It fails the first
 conjunct, and it is neither valid RED nor an invalid RED to retry — halt the cycle. Every other way
@@ -437,17 +453,39 @@ When `workflow.tdd_mode` is enabled in config, the RED/GREEN/REFACTOR gate seque
 
 After completing a `type: tdd` plan, the executor validates the git log:
 ```bash
-# Check for RED gate commit, then read its red-evidence: trailer
-RED_SHA=$(git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ test\(${PHASE}-${PLAN}\):" | cut -d' ' -f1)
+STATUS=0
+TAB=$(printf '\t')
+# Check for the RED gate commit and read its red-evidence: trailer in ONE pass.
+# Each candidate is formatted once as SHA<TAB>trailer<TAB>subject, so a single
+# grep expresses the whole selection rule; git logs newest-first, so -m1 is
+# "the newest candidate that is BOTH plan-scoped AND evidence-bearing".
+RED_RECORD=$(git log --format='%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s' \
+  | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]+${TAB}test\(${PHASE}-${PLAN}\):" || true)
+RED_SHA=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f1 || true)
 if [ -z "$RED_SHA" ]; then
-  echo "missing_red_commit"
+  # The two RED failures need different remedies, so they stay distinct.
+  if git log --format='%H %s' | grep -qE "^[0-9a-f]+ test\(${PHASE}-${PLAN}\):"; then
+    echo "matching test(${PHASE}-${PLAN}) commits exist but none carries a red-evidence: trailer — amend the trailer onto the commit you already made"
+    STATUS=1
+  else
+    echo "missing_red_commit"
+    STATUS=1
+  fi
 else
-  git log -1 --format='%(trailers:key=red-evidence,valueonly)' "$RED_SHA"
+  printf '%s\n' "$RED_RECORD" | cut -d"$TAB" -f2 || true
+  git show --name-only --format= "$RED_SHA" | grep -qE '(^|/)tests?/|\.(test|spec)\.' || {
+    echo "the RED commit $RED_SHA touches no test file"
+    STATUS=1
+  }
 fi
-# Check for GREEN gate commit
-git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ feat\(${PHASE}-${PLAN}\):"
+# Check for GREEN gate commit — reported, never gated: this block also runs
+# mid-cycle, between RED and GREEN, so an absent feat commit is not a violation.
+GREEN_HIT=$(git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ feat\(${PHASE}-${PLAN}\):" || true)
+[ -n "$GREEN_HIT" ] || echo "no feat(${PHASE}-${PLAN}) commit yet — reported into the SUMMARY's ## TDD Gate Compliance section, not a gate failure"
 # Check for optional REFACTOR gate commit
-git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ refactor\(${PHASE}-${PLAN}\):"
+REFACTOR_HIT=$(git log --format='%H %s' | grep -m1 -E "^[0-9a-f]+ refactor\(${PHASE}-${PLAN}\):" || true)
+[ -n "$REFACTOR_HIT" ] || echo "no refactor(${PHASE}-${PLAN}) commit — REFACTOR is optional and its absence is not a violation"
+exit "$STATUS"
 ```
 
 Every search matches the commit **subject**, never the message body: a commit that quotes a `test(...)` subject in its body would otherwise match, and since git logs newest-first the decoy would be selected over the real RED commit.

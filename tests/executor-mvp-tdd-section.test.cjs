@@ -876,12 +876,22 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'git logs newest-first — so the executor reads the wrong commit\'s trailer. Reproduced ' +
       'on git 2.55.0. See #3770.');
 
-    for (const kind of ['test', 'feat', 'refactor']) {
+    for (const kind of ['feat', 'refactor']) {
       const anchored = `grep -m1 -E "^[0-9a-f]+ ${kind}\\(`;
       assert.ok(snippet.includes(anchored),
         `the ${kind}(...) search must be anchored to the commit subject via \`${anchored}\`. ` +
         'All three searches share the same defect, so all three carry the fix. See #3770.');
     }
+
+    // The RED search is split out of the loop above because its record gained
+    // fields: it now selects on the trailer as well as the subject, in one
+    // pass. This is STRICTLY MORE SPECIFIC than the shared `^[0-9a-f]+ test\(`
+    // prefix it replaces — the subject anchor is still required, and a
+    // non-empty trailer field is required alongside it. See #3770.
+    assert.ok(snippet.includes(`grep -m1 -E "^[0-9a-f]+\${TAB}[^\${TAB}]+\${TAB}test\\(`),
+      'the RED search must select the newest candidate that is BOTH anchored to this plan\'s ' +
+      'commit subject AND carries a non-empty red-evidence: trailer field. Selecting on ' +
+      'position alone (CR-04) lets a newer trailerless same-plan commit shadow the real RED.');
 
     assert.match(snippet, /if \[ -z "\$RED_SHA" \]/,
       'the snippet must guard the empty RED_SHA. Unguarded, `git log -1 --format=… ""` exits ' +
