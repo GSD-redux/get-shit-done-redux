@@ -40,6 +40,7 @@ import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 import configLoader = require('./config-loader.cjs');
 const { loadConfig } = configLoader;
 import { normalizeContent, retryRenameSync } from './shell-command-projection.cjs';
+import { load as yamlLoad, FAILSAFE_SCHEMA } from './vendor/js-yaml.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -464,10 +465,13 @@ function quoteUatValue(value: string): string {
 
 function hasMeaningfulReason(reason: string | null): boolean {
   if (reason === null) return false;
-  const trimmed = reason.trim();
-  const quoted = trimmed.match(/^(['"])([\s\S]*)\1$/);
-  const value = (quoted?.[2] ?? trimmed).trim();
-  return value !== '' && !/^(?:null|~)$/i.test(value);
+  try {
+    const parsed = yamlLoad(`value: ${reason}`, { schema: FAILSAFE_SCHEMA, json: true });
+    const value = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).value : null;
+    return typeof value === 'string' && value.trim() !== '' && !/^(?:null|~)$/i.test(value.trim());
+  } catch {
+    return false;
+  }
 }
 
 function inferIssueSeverity(note: string): 'blocker' | 'major' | 'minor' | 'cosmetic' {
@@ -510,6 +514,7 @@ function strictAtomicWrite(filePath: string, content: string): void {
     const normalized = normalizeContent(filePath, content);
     const mode = fs.statSync(filePath).mode & 0o7777;
     fs.writeFileSync(tmpPath, normalized.content, { encoding: normalized.encoding, flag: 'wx', mode });
+    fs.chmodSync(tmpPath, mode);
     retryRenameSync(tmpPath, filePath);
   } catch (cause) {
     try { fs.rmSync(tmpPath, { force: true }); } catch { /* best-effort cleanup */ }
