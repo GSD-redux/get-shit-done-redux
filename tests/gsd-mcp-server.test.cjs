@@ -131,10 +131,13 @@ test('notification (no id): returns null (no response per JSON-RPC)', () => {
 });
 
 test('runServer: line-delimited JSON-RPC round-trip over injectable streams', async () => {
+  const initialize = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' });
+  const list = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
   const input = Readable.from([
-    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) + '\n',
-    'not json\n',
-    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n',
+    initialize.slice(0, 17),
+    initialize.slice(17) + '\nnot ',
+    'json\n' + list.slice(0, 9),
+    list.slice(9), // final valid frame deliberately has no newline
   ]);
   const out = [];
   const output = { write: (s) => { out.push(s); return true; } };

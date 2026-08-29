@@ -54,3 +54,9 @@ test('gsd-mcp-server bin: empty/whitespace-only stdin → clean exit, no output'
   assert.strictEqual(res.status, 0);
   assert.strictEqual(res.stdout.trim(), '', 'no requests → no responses');
 });
+
+test('gsd-mcp-server bin: handles a final frame without a newline', () => {
+  const res = run(JSON.stringify({ jsonrpc: '2.0', id: 11, method: 'initialize' }));
+  assert.strictEqual(res.status, 0, `clean exit; stderr: ${res.stderr}`);
+  assert.strictEqual(JSON.parse(res.stdout).id, 11);
+});

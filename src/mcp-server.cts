@@ -103,6 +103,8 @@ const INTERNAL_ERROR = -32603;
 
 export interface McpContext {
   cwd?: string;
+  /** Test seam; production always uses the shared CLI dispatcher. */
+  dispatch?: typeof dispatchGsdCommand;
 }
 
 export interface JsonRpcRequest {
@@ -166,7 +168,6 @@ const TOOLS = [
   {
     name: 'gsd_record_uat_result',
     description: 'Record a pass or issue for one pending UAT test, then refresh the workbench.',
-    _meta: { ui: { resourceUri: 'ui://gsd/uat-workbench-v1.html' }, 'ui/resourceUri': 'ui://gsd/uat-workbench-v1.html' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -241,8 +242,8 @@ function projectPath(value: unknown): string | null {
   }
 }
 
-function parsedDispatch(family: string, subcommand: string, args: string[], cwd: string): { value?: unknown; error?: string } {
-  const res = dispatchGsdCommand({ family, subcommand, args, cwd });
+function parsedDispatch(family: string, subcommand: string, args: string[], cwd: string, dispatch = dispatchGsdCommand): { value?: unknown; error?: string } {
+  const res = dispatch({ family, subcommand, args, cwd });
   if (!res.ok) return { error: res.stderr || res.stdout || `dispatch failed (exit ${res.code})` };
   try {
     return { value: JSON.parse(res.stdout) };
@@ -259,9 +260,29 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function validPlanningSnapshot(value: unknown): value is Record<string, unknown> {
+  const record = asRecord(value);
+  return record !== null
+    && record.schema_version === 1
+    && asRecord(record.generated_from) !== null
+    && asRecord(record.milestone) !== null
+    && asRecord(record.active) !== null
+    && Array.isArray(record.phases)
+    && Array.isArray(record.orphan_phase_dirs)
+    && Array.isArray(record.requirements)
+    && asRecord(record.progress) !== null
+    && Array.isArray(record.diagnostics);
+}
+
+function validWorkbench(value: unknown): value is Record<string, unknown> {
+  const record = asRecord(value);
+  return record !== null && Array.isArray(record.results) && asRecord(record.summary) !== null;
+}
+
 function callTool(name: string, args: unknown, ctx: McpContext): { content: Array<{ type: string; text: string }>; isError?: boolean; structuredContent?: unknown } {
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
   const cwd = asString(ctx.cwd) || process.cwd();
+  const dispatch = ctx.dispatch ?? dispatchGsdCommand;
   try {
     if (name === 'gsd_invoke_command') {
       const family = asString(a.family);
@@ -269,7 +290,7 @@ function callTool(name: string, args: unknown, ctx: McpContext): { content: Arra
       if (!family || !subcommand) {
         return { isError: true, content: [{ type: 'text', text: 'gsd_invoke_command requires string "family" and "subcommand".' }] };
       }
-      const res = dispatchGsdCommand({ family, subcommand, args: Array.isArray(a.args) ? (a.args as string[]) : [], cwd });
+      const res = dispatch({ family, subcommand, args: Array.isArray(a.args) ? (a.args as string[]) : [], cwd });
       if (!res.ok) {
         return { isError: true, content: [{ type: 'text', text: res.stderr || res.stdout || `dispatch failed (exit ${res.code})` }] };
       }
@@ -279,42 +300,52 @@ function callTool(name: string, args: unknown, ctx: McpContext): { content: Arra
       const project = projectPath(a.project_path);
       if (!project) return toolError(`${name} requires an existing absolute "project_path" directory.`);
       if (name === 'gsd_control_center') {
-        const result = parsedDispatch('planning', 'inspect', [], project);
-        const planning = asRecord(result.value);
-        return result.error || !planning ? toolError(result.error || 'planning inspect returned invalid JSON.') : structured({ project_path: project, ...planning });
+        const result = parsedDispatch('planning', 'inspect', [], project, dispatch);
+        return result.error || !validPlanningSnapshot(result.value)
+          ? toolError(result.error || 'planning inspect returned an invalid schema-v1 snapshot.')
+          : structured({ ...result.value, project_path: project });
       }
       if (name === 'gsd_uat_workbench') {
-        const result = parsedDispatch('audit-uat', 'run', [], project);
-        const workbench = asRecord(result.value);
-        return result.error || !workbench ? toolError(result.error || 'audit-uat returned invalid JSON.') : structured({ project_path: project, ...workbench });
+        const result = parsedDispatch('audit-uat', 'run', [], project, dispatch);
+        return result.error || !validWorkbench(result.value)
+          ? toolError(result.error || 'audit-uat returned an invalid workbench.')
+          : structured({ ...result.value, project_path: project });
       }
       const file = asString(a.file_path);
       const test = a.test_number;
       const result = asString(a.result);
       const note = asString(a.note);
-      if (!file || !Number.isInteger(test) || (result !== 'pass' && result !== 'issue') || (a.note !== undefined && note === null)) {
+      if (!file || !Number.isInteger(test) || Number(test) < 1 || (result !== 'pass' && result !== 'issue') || (a.note !== undefined && note === null)) {
         return toolError('gsd_record_uat_result requires string "file_path", integer "test_number", result "pass" or "issue", and optional string "note".');
       }
-      const mutation = parsedDispatch('uat', 'record-result', ['--file', file, '--test', String(test), '--result', result, ...(note === null ? [] : ['--note', note])], project);
+      if (result === 'issue' && (!note || !note.trim())) return toolError('gsd_record_uat_result requires a nonblank "note" for issue results.');
+      const mutation = parsedDispatch('uat', 'record-result', ['--file', file, '--test', String(test), '--result', result, ...(note === null ? [] : ['--note', note])], project, dispatch);
       if (mutation.error) return toolError(mutation.error);
-      const workbench = parsedDispatch('audit-uat', 'run', [], project);
       const mutationData = asRecord(mutation.value);
-      const workbenchData = asRecord(workbench.value);
-      if (workbench.error || !mutationData || !workbenchData) return toolError(workbench.error || 'GSD command returned invalid JSON.');
+      if (!mutationData) return toolError('uat record-result returned invalid JSON.');
       const mutationStatus = mutationData.status;
       const nextTest = mutationData.next_test;
       if ((mutationStatus !== 'partial' && mutationStatus !== 'complete') || !(nextTest === null || Number.isInteger(nextTest))) {
         return toolError('uat record-result returned invalid JSON.');
       }
+      const mutationResult = {
+        file_path: file,
+        test_number: test,
+        result,
+        status: mutationStatus,
+        next_test: nextTest,
+      };
+      const workbench = parsedDispatch('audit-uat', 'run', [], project, dispatch);
+      if (workbench.error || !validWorkbench(workbench.value)) {
+        return structured({
+          mutation: mutationResult,
+          workbench: null,
+          refresh_error: workbench.error || 'audit-uat returned an invalid workbench.',
+        });
+      }
       return structured({
-        mutation: {
-          file_path: file,
-          test_number: test,
-          result,
-          status: mutationStatus,
-          next_test: nextTest,
-        },
-        workbench: { project_path: project, ...workbenchData },
+        mutation: mutationResult,
+        workbench: { ...workbench.value, project_path: project },
       });
     }
     if (name === 'gsd_read_state') {
@@ -439,25 +470,33 @@ export async function runServer({
   output: NodeJS.WritableStream;
   ctx?: McpContext;
 }): Promise<void> {
-  for await (const chunk of input as AsyncIterable<Buffer>) {
-    const lines = chunk.toString('utf-8').split(/\r?\n/);
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        output.write(JSON.stringify(errorResponse(null, PARSE_ERROR, 'Parse error.')) + '\n');
-        continue;
-      }
-      try {
-        const response = handleMessage(parsed as JsonRpcRequest, ctx);
-        if (response) output.write(JSON.stringify(response) + '\n');
-      } catch (e) {
-        output.write(JSON.stringify(errorResponse(null, INTERNAL_ERROR, e instanceof Error ? e.message : 'Internal error.')) + '\n');
-      }
+  const processLine = (line: string) => {
+    if (!line.trim()) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      output.write(JSON.stringify(errorResponse(null, PARSE_ERROR, 'Parse error.')) + '\n');
+      return;
+    }
+    try {
+      const response = handleMessage(parsed as JsonRpcRequest, ctx);
+      if (response) output.write(JSON.stringify(response) + '\n');
+    } catch (e) {
+      output.write(JSON.stringify(errorResponse(null, INTERNAL_ERROR, e instanceof Error ? e.message : 'Internal error.')) + '\n');
+    }
+  };
+  let buffer = '';
+  for await (const chunk of input as AsyncIterable<Buffer | string>) {
+    buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+    let newline: number;
+    while ((newline = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newline).replace(/\r$/, '');
+      buffer = buffer.slice(newline + 1);
+      processLine(line);
     }
   }
+  processLine(buffer.replace(/\r$/, ''));
 }
 
 // handleMessage + runServer are exported above (export function); PROTOCOL_VERSION

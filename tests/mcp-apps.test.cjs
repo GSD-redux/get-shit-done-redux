@@ -13,6 +13,31 @@ function call(name, arguments_) {
   });
 }
 
+function callWithDispatch(name, arguments_, dispatch) {
+  return handleMessage({
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: arguments_ },
+  }, { dispatch });
+}
+
+function dispatchResult(value) {
+  return { ok: true, stdout: JSON.stringify(value), stderr: '', code: 0, timedOut: false };
+}
+
+function planningSnapshot(overrides = {}) {
+  return {
+    schema_version: 1,
+    generated_from: {},
+    milestone: {},
+    active: {},
+    phases: [],
+    orphan_phase_dirs: [],
+    requirements: [],
+    progress: {},
+    diagnostics: [],
+    ...overrides,
+  };
+}
+
 test('Codex app tools require an absolute project_path', () => {
   for (const name of ['gsd_control_center', 'gsd_uat_workbench', 'gsd_record_uat_result']) {
     const res = call(name, { project_path: 'relative-project' });
@@ -25,9 +50,86 @@ test('Codex app tools declare the UI resource each host should render', () => {
   const byName = Object.fromEntries(res.result.tools.map((tool) => [tool.name, tool]));
   assert.equal(byName.gsd_control_center._meta.ui.resourceUri, 'ui://gsd/control-center-v1.html');
   assert.equal(byName.gsd_uat_workbench._meta.ui.resourceUri, 'ui://gsd/uat-workbench-v1.html');
-  assert.equal(byName.gsd_record_uat_result._meta.ui.resourceUri, 'ui://gsd/uat-workbench-v1.html');
+  assert.equal(byName.gsd_record_uat_result._meta, undefined);
   assert.deepEqual(byName.gsd_record_uat_result.inputSchema.required, ['project_path', 'file_path', 'test_number', 'result']);
   assert.deepEqual(Object.keys(byName.gsd_record_uat_result.inputSchema.properties).sort(), ['file_path', 'note', 'project_path', 'result', 'test_number']);
+});
+
+test('Codex read tools reject malformed command schemas and cannot have project_path spoofed', () => {
+  const dir = createTempDir();
+  try {
+    for (const malformed of [
+      planningSnapshot({ schema_version: 2 }),
+      planningSnapshot({ phases: {} }),
+      planningSnapshot({ diagnostics: 'none' }),
+    ]) {
+      const res = callWithDispatch('gsd_control_center', { project_path: dir }, () => dispatchResult(malformed));
+      assert.equal(res.result.isError, true);
+    }
+    const control = callWithDispatch('gsd_control_center', { project_path: dir }, () => dispatchResult(planningSnapshot({ project_path: '/spoofed' })));
+    assert.equal(control.result.structuredContent.project_path, dir);
+
+    for (const malformed of [{ results: {}, summary: {} }, { results: [], summary: [] }]) {
+      const res = callWithDispatch('gsd_uat_workbench', { project_path: dir }, () => dispatchResult(malformed));
+      assert.equal(res.result.isError, true);
+    }
+    const workbench = callWithDispatch('gsd_uat_workbench', { project_path: dir }, () => dispatchResult({ results: [], summary: {}, project_path: '/spoofed' }));
+    assert.equal(workbench.result.structuredContent.project_path, dir);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('gsd_record_uat_result rejects a blank issue note before dispatch', () => {
+  const dir = createTempDir();
+  try {
+    let calls = 0;
+    const res = callWithDispatch('gsd_record_uat_result', {
+      project_path: dir,
+      file_path: '.planning/phases/01-test/01-UAT.md',
+      test_number: 1,
+      result: 'issue',
+      note: '   ',
+    }, () => { calls += 1; return dispatchResult({}); });
+    assert.equal(res.result.isError, true);
+    assert.match(res.result.content[0].text, /nonblank "note"/);
+    assert.equal(calls, 0);
+
+    const invalidTest = callWithDispatch('gsd_record_uat_result', {
+      project_path: dir,
+      file_path: '.planning/phases/01-test/01-UAT.md',
+      test_number: 0,
+      result: 'pass',
+    }, () => { calls += 1; return dispatchResult({}); });
+    assert.equal(invalidTest.result.isError, true);
+    assert.equal(calls, 0);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('gsd_record_uat_result reports refresh failure without denying the durable mutation', () => {
+  const dir = createTempDir();
+  try {
+    let calls = 0;
+    const dispatch = () => {
+      calls += 1;
+      if (calls === 1) return dispatchResult({ status: 'partial', next_test: 2 });
+      return { ok: false, stdout: '', stderr: 'refresh unavailable', code: 1, timedOut: false };
+    };
+    const res = callWithDispatch('gsd_record_uat_result', {
+      project_path: dir,
+      file_path: '.planning/phases/01-test/01-UAT.md',
+      test_number: 1,
+      result: 'pass',
+    }, dispatch);
+    assert.equal(res.result.isError, undefined);
+    assert.equal(res.result.structuredContent.mutation.result, 'pass');
+    assert.equal(res.result.structuredContent.workbench, null);
+    assert.match(res.result.structuredContent.refresh_error, /refresh unavailable/);
+  } finally {
+    cleanup(dir);
+  }
 });
 
 test('gsd_control_center returns matching structured data and JSON text', () => {
