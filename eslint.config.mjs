@@ -273,6 +273,8 @@ export default tseslint.config(
       // ADR-2313 Phase 3 (#3243): tsc-generated runtime artifact — lint the src/codex-agent-toml.cts source.
       'gsd-core/bin/lib/codex-agent-toml.cjs',
       'gsd-core/bin/lib/task-command-router.cjs',
+      // #3770: tsc-generated runtime artifact — lint the src/red-evidence-predicate.cts source.
+      'gsd-core/bin/lib/red-evidence-predicate.cjs',
       'gsd-core/bin/lib/validate-command-router.cjs',
       'gsd-core/bin/lib/workstream-inventory.cjs',
       'gsd-core/bin/lib/roadmap-command-router.cjs',

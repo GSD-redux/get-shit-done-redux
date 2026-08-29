@@ -33,7 +33,7 @@ describe('gsd-executor — MVP+TDD gate section', () => {
 
   test('the halt-reason enum lists exactly the five tokens the three producers emit', () => {
     const refContent = fs.readFileSync(REF, 'utf-8');
-    const reasonLineMatch = refContent.match(/Reason:\s*\{([^}]+)\}/);
+    const reasonLineMatch = refContent.match(/Reason:\s{0,5}\{([^}]{1,300})\}/);
     assert.ok(reasonLineMatch, 'execute-mvp-tdd.md must carry a `Reason: {...}` vocabulary line');
     const shippedTokens = reasonLineMatch[1].split('|').map((t) => t.trim()).sort();
     const frozenFive = [
