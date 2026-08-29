@@ -1670,6 +1670,19 @@ blocked: 0
     if (process.platform !== 'win32') assert.equal(fs.statSync(uatPath).mode & 0o777, 0o666);
   });
 
+  test('treats a decoded multiline skip reason as meaningful', () => {
+    fs.writeFileSync(uatPath, fs.readFileSync(uatPath, 'utf8')
+      .replace('result: pending\n\n## Summary', 'result: skipped\nreason: |\n  Deferred by review\n  Waiting for approval\n\n## Summary'));
+
+    const result = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '1', '--result', 'pass', '--raw',
+    ], tmpDir);
+
+    assert.equal(result.success, true, result.error);
+    assert.equal(JSON.parse(result.output).status, 'complete');
+  });
+
   test('rejecting a missing UAT file does not create a planning directory', () => {
     const emptyProject = createTempDir();
     try {

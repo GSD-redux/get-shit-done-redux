@@ -465,6 +465,7 @@ function quoteUatValue(value: string): string {
 
 function hasMeaningfulReason(reason: string | null): boolean {
   if (reason === null) return false;
+  if (reason.includes('\n')) return reason.trim() !== '';
   try {
     const parsed = yamlLoad(`value: ${reason}`, { schema: FAILSAFE_SCHEMA, json: true });
     const value = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).value : null;
