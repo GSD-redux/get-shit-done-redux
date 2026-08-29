@@ -513,7 +513,7 @@ For checkpoint writing guidelines (DO/DON'T), anti-patterns, specificity compari
 
 ## TDD Plan Structure and Cycle
 
-Plan shape, the RED-GREEN-REFACTOR cycle and the commit pattern: `gsd-core/references/tdd.md`. That file is canonical; do not restate it here.
+Plan shape, the RED-GREEN-REFACTOR cycle and the commit pattern: `~/.claude/gsd-core/references/tdd.md`. That file is canonical; do not restate it here.
 
 Every `tdd="true"` task carries a `<red_contract>` element as a **sibling** of `<behavior>`, declaring which failure counts as RED. Shape per the same path.
 

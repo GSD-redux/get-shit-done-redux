@@ -1142,7 +1142,14 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     }
 
     const executorRegion = regions.find((r) => r.label.startsWith('gsd-executor')).text;
-    assert.match(executorRegion, /red-evidence:/,
+    // Scoped to the gate-sequence CHECKLIST, not the whole region: the RED step
+    // above it also mentions the trailer, so a region-wide match passes while
+    // item 1 still carries the pre-#3770 commit-existence rule — which is
+    // exactly the surface CR-06 is about. Caught by mutation T9.
+    const gateSeqStart = executorRegion.indexOf('**Gate sequence validation:**');
+    assert.ok(gateSeqStart > -1, 'gsd-executor.md must carry the gate-sequence checklist');
+    const gateItem1 = executorRegion.slice(gateSeqStart).split('\n').find((l) => l.trim().startsWith('1.'));
+    assert.ok(gateItem1 && gateItem1.includes('red-evidence:'),
       'gsd-executor.md gate-sequence item 1 must require the `test(...)` commit to CARRY the ' +
       '`red-evidence:` trailer, not merely to exist. This is the inline checklist the executor ' +
       'follows without resolving any citation, so REDC-06 is unmet while it still carries the ' +

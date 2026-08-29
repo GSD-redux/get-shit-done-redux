@@ -399,22 +399,22 @@ When executing task with `tdd="true"`:
 
 **1. Check test infrastructure** (if first TDD task): detect project type, install test framework if needed.
 
-**2. RED:** Read `<behavior>`, create test file, write failing tests, run until the failure satisfies the RED contract in `~/.claude/gsd-core/references/tdd.md`, commit with that contract's `red-evidence:` trailer: `test({phase}-{plan}): add failing test for [feature]`
+**2. RED:** Read `<behavior>` and the task's `<red_contract>`, create test file, write failing tests, run until the failure satisfies the RED contract in `~/.claude/gsd-core/references/tdd.md`, commit with that contract's `red-evidence:` trailer: `test({phase}-{plan}): add failing test for [feature]`. Record no credential value in the trailer's `command` — it lands in permanent published history. A `tdd="true"` task carrying no `<red_contract>` halts; do not invent one.
 
 **3. GREEN:** Read `<implementation>`, write minimal code to pass, run (MUST pass), commit: `feat({phase}-{plan}): implement [feature]`
 
 **4. REFACTOR (if needed):** Clean up, run tests (MUST still pass), commit only if changes: `refactor({phase}-{plan}): clean up [feature]`
 
-**Error handling:** RED doesn't fail ��� investigate. GREEN doesn't pass → debug/iterate. REFACTOR breaks → undo.
+**Error handling:** RED doesn't fail → the RED Contract's halt verdict applies. GREEN doesn't pass → debug/iterate. REFACTOR breaks → undo.
 
 ## Plan-Level TDD Gate Enforcement (type: tdd plans)
 
 When the plan frontmatter has `type: tdd`, the entire plan follows the RED/GREEN/REFACTOR cycle as a single feature. Gate sequence is mandatory:
 
-**Fail-fast rule:** If a test passes unexpectedly during the RED phase (before any implementation), STOP. The feature may already exist or the test is not testing what you think. Investigate and fix the test before proceeding to GREEN. Do NOT skip RED by proceeding with a passing test.
+**Fail-fast rule:** An unexpected pass in the RED phase is the RED Contract's `halt` verdict in `~/.claude/gsd-core/references/tdd.md`. Apply it there.
 
 **Gate sequence validation:** After completing the plan, verify in git log:
-1. A `test(...)` commit exists (RED gate)
+1. A `test(...)` commit exists AND carries a `red-evidence:` trailer whose contents satisfy the RED Predicate in `~/.claude/gsd-core/references/tdd.md` (RED gate). A commit that merely exists is not RED evidence.
 2. A `feat(...)` commit exists after it (GREEN gate)
 3. Optionally a `refactor(...)` commit exists after GREEN (REFACTOR gate)
 

@@ -196,8 +196,9 @@ Two further obligations:
 
 - **`command` lands in permanent published Git history.** Record no credential value in any
   position — environment prefix, flag argument, URL, header — substituting the variable's
-  placeholder name. This is an obligation, not a pattern list, so no unlisted position leaks by
-  omission.
+  placeholder name. Where a credential typed literally has no originating variable to name,
+  substitute a bracketed descriptor of what it was, never the value.
+  This is an obligation, not a pattern list, so no unlisted position leaks by omission.
 - **`expected` and `target_test` are the executor's echoes, so the predicate pins both to the
   declaration before comparing anything against them.** `trailer.expected == plan.expected_failure`
   and `trailer.target_test == plan.target_test` are shared conjuncts that must hold first; only
@@ -370,9 +371,7 @@ Framework setup is a one-time cost included in the first TDD plan's RED phase.
 ## Error Handling
 
 **Test doesn't fail in RED phase:**
-- Feature may already exist - investigate
-- Test may be wrong (not testing what you think)
-- Fix before proceeding
+- This is an unexpected pass. The RED Contract's `halt` verdict decides it; apply it there.
 
 **Test doesn't pass in GREEN phase:**
 - Debug implementation
@@ -445,7 +444,7 @@ When `workflow.tdd_mode` is enabled in config, the RED/GREEN/REFACTOR gate seque
 
 ### Fail-Fast Rules
 
-1. **Unexpected GREEN in RED phase:** If the test passes before any implementation code is written, STOP. The feature may already exist or the test is wrong. Investigate before proceeding.
+1. **Unexpected GREEN in RED phase:** an unexpected pass. The RED Contract's `halt` verdict decides it; apply it there.
 2. **Missing RED commit:** If no `test(...)` commit precedes the `feat(...)` commit, the TDD discipline was violated. Flag in SUMMARY.md.
 3. **REFACTOR breaks tests:** Undo the refactor immediately. Commit was premature — refactor in smaller steps.
 
