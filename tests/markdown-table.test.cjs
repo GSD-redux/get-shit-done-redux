@@ -1232,7 +1232,10 @@ describe('Quick Tasks heading tolerance (#3860)', () => {
       result.value.content.indexOf('second v1.1 task') > v11 && result.value.content.indexOf('second v1.1 task') < v10,
       'the row lands in the v1.1+ section (the one whose table matched the canonical schema), not the v1.0 section'
     );
-    assert.ok(!result.value.content.includes('| 2 | second v1.1 task'), 'v1.0 section untouched (row numbering continues its own table)');
+    assert.ok(
+      result.value.content.includes('| 1 | legacy v1.0 task | 2024-06-01 | old1234 | — |'),
+      'the v1.0 row is present byte-identical (only the v1.1+ table gained a row)'
+    );
   });
 
   test('a legacy-schema section first in document order does not shadow a usable one', () => {

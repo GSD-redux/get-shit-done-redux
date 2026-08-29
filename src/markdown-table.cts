@@ -10,7 +10,8 @@
  * {ok,data|kind}; the two never mix (different modules).
  */
 
-import { collectSection, replaceSection } from './markdown-sectionizer.cjs';
+import { collectSections, replaceSection } from './markdown-sectionizer.cjs';
+import type { HeadingToken, Section } from './markdown-sectionizer.cjs';
 import type { Result } from './write-set.cjs';
 export type { Result } from './write-set.cjs';
 
@@ -732,6 +733,36 @@ export function escapeCell(value: string): string {
  */
 export const QUICK_TASKS_SECTION_ABSENT = 'no Quick Tasks Completed section';
 
+/**
+ * #3860: heading predicate for STATE.md's Quick Tasks Completed section(s).
+ * The heading is a section LABEL, not data — milestone-scoped files
+ * legitimately carry suffixed headings (`### Quick Tasks Completed (v1.1+)`
+ * beside an archived `(v1.0)`), so the match is prefix-anchored with a word
+ * boundary, never exact: `Quick Tasks Completedness` must NOT match. Hoisted
+ * beside QUICK_TASKS_SECTION_ABSENT so `appendQuickTaskRow` and
+ * `resetQuickTaskRows` cannot drift apart again.
+ */
+const isQuickTasksHeading = (h: HeadingToken): boolean =>
+  /^quick tasks completed\b/i.test(h.text.trim());
+
+/**
+ * #3860: among ALL heading-matching sections, pick the first whose body is a
+ * table with a recognized Quick Tasks schema — a legacy/unparseable table
+ * first in document order no longer shadows a usable one further down. When
+ * NO section is usable, return the FIRST match so the caller's downstream
+ * error describes the real problem (unparseable/legacy table) instead of a
+ * false QUICK_TASKS_SECTION_ABSENT.
+ */
+function selectQuickTasksSection(stateContent: string): Section | null {
+  const sections = collectSections(stateContent, isQuickTasksHeading);
+  if (sections.length === 0) return null;
+  for (const s of sections) {
+    const parsed = parseMarkdownTable(s.body);
+    if (parsed.ok && matchTableSchema(parsed.value.columns)?.id === 'QuickTasks') return s;
+  }
+  return sections[0];
+}
+
 /** Fields needed to render one "Quick Tasks Completed" row (schema-driven). */
 export interface QuickTaskFields {
   description: string;
@@ -775,7 +806,7 @@ export function appendQuickTaskRow(
   stateContent: string,
   fields: QuickTaskFields,
 ): Result<{ content: string; row: string; variant: string }> {
-  const section = collectSection(stateContent, (h) => /^quick tasks completed$/i.test(h.text.trim()));
+  const section = selectQuickTasksSection(stateContent);
   if (!section) {
     return { ok: false, reason: QUICK_TASKS_SECTION_ABSENT };
   }
@@ -867,7 +898,7 @@ export function resetQuickTaskRows(
     return { ok: false, reason: 'empty or non-string input' };
   }
 
-  const section = collectSection(stateContent, (h) => /^quick tasks completed$/i.test(h.text.trim()));
+  const section = selectQuickTasksSection(stateContent);
   if (!section) {
     return { ok: false, reason: QUICK_TASKS_SECTION_ABSENT };
   }
