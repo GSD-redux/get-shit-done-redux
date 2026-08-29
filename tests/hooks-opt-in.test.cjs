@@ -694,6 +694,32 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
       assert.strictEqual(runHookCmd(cmd).status, 0,
         `${label}: git strips the trailing whitespace here, so the real subject is a conforming 72`);
     }
+
+    // SCOPE (review of #3816, round 5 — BLOCKER). The guard scanned the whole
+    // command, and the heredoc BODY sits verbatim inside it, so a conforming
+    // message that merely MENTIONED the token was refused and fell back to the
+    // opener line — blocked with CONVENTIONAL_COMMITS_VIOLATION. These are
+    // ordinary English in this repository, whose own hooks and docs discuss
+    // cleanup modes constantly. Every row is a valid Conventional Commit that
+    // git would accept without complaint.
+    for (const [label, subject] of [
+      ['commit.cleanup= in the subject', 'fix: document commit.cleanup=strip behavior'],
+      ['--cleanup= in the subject', 'docs: explain --cleanup=verbatim in the hook guide'],
+      ['the token on a later body line', 'fix: correct the guard scope\n\nIt scanned --cleanup=verbatim in the body.'],
+    ]) {
+      const result = runHookCmd(`git commit -m "$(cat <<'EOF'\n${subject}\nEOF\n)"`);
+      assert.strictEqual(result.status, 0,
+        `${label}: the token is message TEXT, not a flag git will act on — refusing to resolve `
+        + 'here blocks a commit git would accept');
+    }
+
+    // The scope fix must not shrink to $MSG_PREFIX alone. git accepts the flag
+    // on EITHER side of -m, so a trailing occurrence is a real mode change and
+    // must still refuse — this row reds against a prefix-only scoping and is
+    // what keeps the round-4 length-gate bypass closed from both directions.
+    assert.strictEqual(
+      runHookCmd(`git commit --allow-empty -m ${heredocBody} --cleanup=verbatim`).status, 2,
+      'a --cleanup after the message changes the mode just as one before it does');
   });
 
   test('validate-commit does not trust a relative path ending in cat (round-4 Codex MAJOR)', () => {

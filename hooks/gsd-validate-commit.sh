@@ -176,6 +176,11 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # which is what lets the two guards below scan for tokens that would also
       # be legal inside a commit message.
       MSG_PREFIX="${CMD%%"$MSG_MATCH"*}"
+      # Text after it. Together, PREFIX and SUFFIX are the whole command MINUS
+      # the message — the window a guard must use when the token it scans for
+      # is also legal English inside a commit message, but may legally appear
+      # on EITHER side of the message on the command line.
+      MSG_SUFFIX="${CMD#*"$MSG_MATCH"}"
 
       # ADJACENCY GUARD (review of #3816): text glued to the CLOSING quote —
       # `-m "$(cat <<'EOF' ... )"suffix` — is concatenated by bash into the SAME
@@ -212,7 +217,20 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # strips trailing whitespace in its own output and hides it).
       # Any named mode other than `whitespace` refuses. A mode set persistently
       # in git config is invisible here and stays a documented residual limit.
-      if [[ "$CMD" =~ (--cleanup|commit\.cleanup)[=[:space:]]+([^[:space:]]+) ]]; then
+      # SCOPE (review of #3816, round 5 — BLOCKER). This scan must exclude the
+      # message. `--cleanup=` and `commit.cleanup=` are ordinary English inside
+      # a commit message — this repository's own hooks and docs discuss them
+      # constantly — and the heredoc BODY sits verbatim inside $CMD, so
+      # scanning $CMD refused to resolve any conforming message that merely
+      # MENTIONED the token, blocking it with CONVENTIONAL_COMMITS_VIOLATION.
+      # Scanning $MSG_PREFIX alone (the fix as first prescribed) would reopen
+      # the bypass this guard exists for: git accepts the flag on either side
+      # of -m, and `git commit -m "<heredoc>" --cleanup=verbatim` is caught
+      # today only because the scan is command-wide. PREFIX + SUFFIX keeps both
+      # positions covered while excluding the one span that is message text.
+      # The two are joined with a space so a token cannot be forged across the
+      # seam out of a prefix tail and a suffix head.
+      if [[ "$MSG_PREFIX $MSG_SUFFIX" =~ (--cleanup|commit\.cleanup)[=[:space:]]+([^[:space:]]+) ]]; then
         if [ "${BASH_REMATCH[2]}" != "whitespace" ]; then RESOLVE=0; fi
       fi
     fi
