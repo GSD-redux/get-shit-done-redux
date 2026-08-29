@@ -160,11 +160,11 @@ run, and the RED commit records what was actually observed.
 
 ### Evidence
 
-The RED commit carries what was observed as a Git trailer — one line of JSON with exactly seven
+The RED commit carries what was observed as a Git trailer — one line of JSON with exactly eight
 top-level fields:
 
 ```text
-red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"}}
+red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"location":{"declared":{"file":"tests/test_pricing.py","line":8},"observed":{"file":"/srv/build/tests/test_pricing.py","line":8}}}
 ```
 
 | Field | Meaning |
@@ -176,6 +176,7 @@ red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_to
 | `target_executed` | Whether the declared target test was executed and reported — defined below. |
 | `expected` | The declared `expected_failure`, echoed back: `phase`, `class_or_mode`, `subject`. |
 | `actual` | What was observed, in the same three fields. |
+| `location` | Where the failure was declared to occur and where it was observed to occur: `declared` and `observed`, each a `{file, line}` pair. Compared by `locationsAgree`, defined below. |
 
 > `target_executed` is true when some member of the run's executed-and-reported set `id_matches`
 > the declared `target_test`. It does **not** mean "the test function's body ran," and it is not a
@@ -192,6 +193,24 @@ red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_to
 `id_matches` relates the observed subject to `plan.target_test` in both arms; the arms differ in
 whether the target test was executed, not in what the observed subject is compared against.
 
+> `locationsAgree(declared, observed)` compares `declared.file` and `observed.file` by basename
+> only, never by full path, and compares `declared.line` and `observed.line` by strict equality;
+> no column ever enters the comparison, because two of the four probed runners emit none, and a
+> compare-if-present rule for it would be asymmetric across ecosystems. `declared.file`/`line`
+> name the INNERMOST frame the runner will report — where the failing assertion actually
+> executes, not the test body's own line — so a failure raised inside a shared helper or a custom
+> matcher is declared at the helper's own site. Every runner probed reports that innermost frame
+> (`03-RESEARCH.md`'s node:test transcript reports `pricing.test.js:4:10`, not the test body's own
+> line), and helper-based assertions are common across all four target ecosystems, so without this
+> declaration rule the conjunct would block legitimate RED. `observed.file` is recorded verbatim
+> from the runner's own path; the evaluator, not the trailer, normalizes it before comparing.
+>
+> This is a different obligation from `target_test`'s (`tdd.md:153`): a position there is excluded
+> from node identity because a node's identity must survive edits across a plan's whole life, while
+> `location` is not identity at all — it is the declared-versus-observed pair inside a single RED
+> commit, compared minutes apart and never used as a reference afterward. `tdd.md:153` itself stays
+> untouched.
+
 Two further obligations:
 
 - **`command` lands in permanent published Git history.** Record no credential value in any
@@ -206,11 +225,12 @@ Two further obligations:
   mis-copied trailer from approving itself by agreeing with its own echo, and what stops a
   self-reported id from being bent to fit whatever the run produced.
 
-No `version` field. The top-level key set must equal exactly these seven, and that equality is
+No `version` field. The top-level key set must equal exactly these eight, and that equality is
 itself the fail-closed mechanism: a foreign or future schema fails it instead of being partly
 honoured. Extending the vector is therefore a change to THIS CONTRACT, never a runtime one:
 a vector carrying additional keys is not this vector and fails the equality by construction.
-The residuals named under **RED Predicate** are what such a superseding vector would exist to close.
+The residuals named under **RED Predicate** are narrowed, not closed, by the `location` conjunct
+below.
 
 ### RED Predicate
 
@@ -225,6 +245,7 @@ valid_red =
   AND actual.phase == expected.phase
   AND actual.class_or_mode == expected.class_or_mode
   AND trailer.target_test == plan.target_test
+  AND location.observed == location.declared
   AND (
     selected_count > 0
     AND target_executed
@@ -262,33 +283,33 @@ condition, but only under MVP+TDD, so it is not the live path on a project that 
 alone. The predicate itself cannot tell whether the target test was ever written.
 
 What arm 2 proves and what it does not: it proves the run failed, at the declared phase, with the
-declared class, reported against the declared test file, from a declaration that pre-committed to
-outside-in mode. It does not prove that the missing entity is the declared `implementation_target`
+declared class, reported against the declared test file, at the declared location, from a
+declaration that pre-committed to outside-in mode. It does not prove the missing entity is the declared `implementation_target`
 — that identity appears only in the diagnostic message, and this contract keeps identity out of
-message text. The admitted case is therefore an unrelated missing dependency in the declared test
-file, failing at the same declared phase with the same declared class. Two controls compensate:
-**Executor Gate Validation** requires the RED commit to touch a test file, and
-`implementation_target` stays declared, so a human or a later coded gate can compare it against the
-recorded `command` and the message. Closing the residual is Phase 3's, because it needs a
-SUPERSEDING evidence vector — either message-derived identity or a new declared field, neither of
-which this vector's key set can carry, since **Evidence** fixes it at exactly seven — and both are
-decisions an implementation can validate and prose cannot. Note that this state is strictly NARROWER than the one it replaces:
-arm 2 was previously unsatisfiable and admitted nothing at all, correctly or otherwise, so
-anchoring it on the declared test file admits legitimate outside-in RED while bounding what else
-it lets through.
+message text. The admitted case is narrower than before: an unrelated missing dependency in the
+declared test file, at the same declared phase, the same declared class, and the same declared file
+and line — a same-basename, same-line collision the `location` conjunct alone does not distinguish
+from the plan's own declared failure site. Two controls compensate: **Executor Gate Validation**
+requires the RED commit to touch a test file, and `implementation_target` stays declared, so a
+human or a later coded gate can compare it against the recorded `command` and the message. Note
+that this state is strictly NARROWER than the one it replaces: arm 2 was previously unsatisfiable
+and admitted nothing at all, correctly or otherwise, so anchoring it on the declared test file
+admits legitimate outside-in RED while bounding what else it lets through.
 
 What arm 1 proves and what it does not: it proves that a test whose id `id_matches` the declared
 `target_test` was selected, executed and reported as failing, at the declared phase, with the
-declared class. It does not prove that the assertion which failed is the one the plan's
-`<behavior>` describes, because the predicate never consumes `<behavior>` and the `actual` triple
-is the finest granularity this vector has. The admitted case is therefore an unrelated assertion
-earlier in the body of the declared test, failing at the same declared phase with the same declared
-class — and, at a fixture phase, an unrelated fixture in the target's dependency chain crashing
-with the declared class, which no field distinguishes from the fixture the plan declared as the
-behavior under test. The same two controls compensate: **Executor Gate Validation** requires the
-RED commit to touch a test file, and `implementation_target` stays declared for a human or a later
-coded gate to compare against. Closing these residuals is Phase 3's, on the same terms as arm 2's:
-they are one root cause with three surfaces, and all three need the superseding vector named above.
+declared class, at the declared location. It does not prove that the assertion which failed is the
+one the plan's `<behavior>` describes, because the predicate never consumes `<behavior>` and the
+`actual` triple is the finest granularity this vector has. The admitted case is narrower than
+before: an unrelated assertion earlier in the body of the declared test, failing at the same
+declared phase, the same declared class, and the same declared file and line — and, at a fixture
+phase, an unrelated fixture crash at that same declared file and line, which the `location`
+conjunct alone does not distinguish from the fixture the plan declared as the behavior under test.
+The same two controls compensate: **Executor Gate Validation** requires the RED commit to touch a
+test file, and `implementation_target` stays declared for a human or a later coded gate to compare
+against. These residuals remain admitted, narrower than before, on the same terms as arm 2's: they
+are one root cause with three surfaces, bound by the same declared-versus-observed collision the
+`location` conjunct checks for.
 
 One rule sits outside the predicate: `exit_status == 0` is an unexpected pass. It fails the first
 conjunct, and it is neither valid RED nor an invalid RED to retry — halt the cycle. Every other way
@@ -305,11 +326,11 @@ Each row is a consequence of the predicate, and each names the field that decide
 | Fixture or setup crashed before the target assertion | `actual.phase` differs from `expected.phase` | block |
 | A different test failed | neither arm holds — `actual.subject` does not `id_matches` `plan.target_test` | block |
 | Genuine target-behavior failure | the shared comparisons hold and the target-test arm holds | authorize |
-| Unrelated assertion in the target test | identical to the row above: no field of the vector says WHICH assertion failed, so a different one failing first at the same phase and class is indistinguishable. Known residual, closed by a superseding vector — Phase 3's | authorize |
+| Unrelated assertion in the target test | `location.observed` differs from `location.declared` — a different assertion failing first at the same phase and class reports a different declared-versus-observed file or line | block |
 | Outside-in: the declared implementation target is missing | the shared comparisons hold and the outside-in arm holds — `actual.subject` `id_matches` `plan.target_test` and `plan.expected_failure` is an outside-in missing-target mode, with no selection or execution condition applied | authorize |
-| Unrelated missing dependency in the target test file | identical to the row above: the arm anchors on the declared test FILE, and no field says which import was missing. Known residual, closed by a superseding vector — Phase 3's | authorize |
+| Unrelated missing dependency in the target test file | `location.observed` differs from `location.declared` — the arm anchors on the declared test FILE, and the location conjunct anchors further, on the declared line within it | block |
 | Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and the target-test arm holds | authorize |
-| Unrelated fixture crash at the declared fixture phase | identical to the row above: no field says which fixture crashed, so one in the target's dependency chain is indistinguishable from the declared one. Known residual, closed by a superseding vector — Phase 3's | authorize |
+| Unrelated fixture crash at the declared fixture phase | `location.observed` differs from `location.declared` — a fixture crash elsewhere in the target's dependency chain reports a different file or line than the one declared | block |
 | Unexpected pass | `exit_status` is 0 | halt |
 </red_contract_spec>
 
@@ -420,7 +441,7 @@ test(08-02): add failing test for discount reducing order total
 - Tests a discount larger than the total floors at zero
 - Tests an absent discount leaves the total unchanged
 
-red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"}}
+red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"location":{"declared":{"file":"tests/test_pricing.py","line":8},"observed":{"file":"/srv/build/tests/test_pricing.py","line":8}}}
 
 feat(08-02): implement discount reduction on order total
 

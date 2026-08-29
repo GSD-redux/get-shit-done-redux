@@ -11,6 +11,10 @@ import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output, error, ERROR_REASON } = ioMod;
+import { parseNamedArgsOrExit } from './command-arg-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import redEvidencePredicateMod = require('./red-evidence-predicate.cjs');
+const { evaluateRedEvidence } = redEvidencePredicateMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planDocumentMod = require('./plan-document.cjs');
 const { parsePlanDocument } = planDocumentMod;
@@ -219,15 +223,60 @@ function routeResolveContent(
   }
 }
 
+/**
+ * `task red-evidence-verdict --task-file <path> --trailer <json> --pick verdict`
+ * (#3770 Phase 3). Reads the task file and forwards its raw text, plus the
+ * raw `--trailer` text, to `evaluateRedEvidence` — this arm does argument
+ * parsing, the call and printing, nothing else (D-17); every JSON parse and
+ * key-set check lives in the pure evaluator module.
+ */
+function routeRedEvidenceVerdict({ args, cwd, raw }: RouteTaskCommandOptions): void {
+  const opts = parseNamedArgsOrExit(
+    args,
+    { valueFlags: ['task-file', 'trailer'], positionals: 2 },
+    error,
+  );
+  const taskFile = opts['task-file'];
+  const trailer = opts['trailer'];
+  if (typeof taskFile !== 'string' || taskFile.length === 0) {
+    error('--task-file <path> is required for `task red-evidence-verdict`', ERROR_REASON.USAGE);
+    return;
+  }
+  if (typeof trailer !== 'string') {
+    error('--trailer <json> is required for `task red-evidence-verdict`', ERROR_REASON.USAGE);
+    return;
+  }
+
+  const projectRoot = path.resolve(cwd || process.cwd());
+  const resolvedTaskPath = path.resolve(projectRoot, taskFile);
+  const rel = path.relative(projectRoot, resolvedTaskPath);
+  if (rel === '..' || rel.startsWith(`..${path.sep}`)) {
+    error(`Task file is outside project scope: ${taskFile}`, ERROR_REASON.USAGE);
+    return;
+  }
+  if (!fs.existsSync(resolvedTaskPath)) {
+    error(`Task file not found: ${taskFile}`, ERROR_REASON.USAGE);
+    return;
+  }
+  const taskContent = fs.readFileSync(resolvedTaskPath, 'utf-8');
+
+  output(evaluateRedEvidence(taskContent, trailer), raw, undefined);
+}
+
 function routeTaskCommand({ args, cwd, raw }: RouteTaskCommandOptions): void {
   const subcommand = args[1];
   if (subcommand === 'resolve-content') {
     routeResolveContent({ args, cwd, raw });
     return;
   }
+  if (subcommand === 'red-evidence-verdict') {
+    routeRedEvidenceVerdict({ args, cwd, raw });
+    return;
+  }
   if (subcommand !== 'is-behavior-adding') {
     error(
-      'Unknown task subcommand. Available: is-behavior-adding, resolve-content',
+      'Unknown task subcommand. Available: is-behavior-adding, resolve-content, '
+        + 'red-evidence-verdict',
       ERROR_REASON.SDK_UNKNOWN_COMMAND,
     );
   }
@@ -260,4 +309,5 @@ export = {
   isBehaviorAddingTaskContent,
   routeTaskCommand,
   routeResolveContent,
+  routeRedEvidenceVerdict,
 };

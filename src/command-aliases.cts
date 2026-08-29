@@ -877,6 +877,13 @@ export const NON_FAMILY_COMMAND_ALIASES: NonFamilyCommandAlias[] = [
     "mutation": false
   },
   {
+    "canonical": "task.red-evidence-verdict",
+    "aliases": [
+      "task red-evidence-verdict"
+    ],
+    "mutation": false
+  },
+  {
     "canonical": "template.fill",
     "aliases": [],
     "mutation": true
