@@ -586,6 +586,39 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
           + 'false the moment arm 2 uses it; a stale scoping sentence is how a reader concludes '
           + 'the two arms compare different things',
       },
+      // The three residual-family rows. Each guards text that NOTHING COMPUTES:
+      // row existence and row verdict are both computed by the Outcomes
+      // agreement test above, which is why the seven pinned Outcomes rows were
+      // dropped rather than extended. These three are prose and a clause.
+      {
+        section: 'RED Predicate',
+        needle: 'What arm 1 proves and what it does not',
+        verdict: null,
+        why: 'arm 2 has carried a named residual since 02-04 and arm 1 has not, yet arm 1 admits '
+          + 'the same class of unrelated failure: the predicate never consumes the plan\'s '
+          + '<behavior>, so an unrelated assertion failing first in the declared test, at the '
+          + 'declared phase with the declared class, produces a vector identical to the genuine '
+          + 'one. Without the paragraph the contract silently claims a guarantee it does not '
+          + 'provide, and Phase 3 builds a coded gate from that claim',
+      },
+      {
+        section: 'Evidence',
+        needle: 'a vector carrying additional keys is not this vector',
+        verdict: null,
+        why: 'the exact-seven-key equality is fail-closed BY DESIGN, which means the residuals '
+          + 'above cannot be closed by adding a field at runtime. Without the sentence naming '
+          + 'the extension path, the schema reads as having designed its own discriminator out, '
+          + 'and Phase 3 inherits a contract it cannot extend without appearing to break it',
+      },
+      {
+        section: 'Outcomes',
+        needle: 'unless the declaration names that class itself',
+        verdict: null,
+        why: 'the unscoped clause asserts something FALSE for the one declaration that names '
+          + '`SyntaxError` as its own `class_or_mode`: there the classes agree, this row\'s '
+          + 'condition does not hold, and the outside-in row governs instead. The verdict and '
+          + 'the row title are untouched — only the illustrative clause was over-general',
+      },
     ];
 
     for (const row of rows) {
