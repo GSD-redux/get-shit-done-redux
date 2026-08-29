@@ -753,6 +753,64 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         `not the ${sharedIndent.length} of \`exit_status != 0\`. Depth is the only thing ` +
         'distinguishing a shared conjunct from an arm conjunct in this block. See #3770.');
     }
+
+    // ── CONJUNCT-COMPLETE PINNING ────────────────────────────────────────
+    // This REPLACES the 02-01 byte-freeze on the fence, which cannot survive a
+    // plan that changes one of its lines. The freeze existed for one observed
+    // reason: four successive paraphrases of this block EACH silently dropped a
+    // conjunct. The freeze caught that only indirectly, by forbidding all
+    // change. What replaces it must make a dropped conjunct fail BY NAME, and
+    // an added one fail too.
+    //
+    // Deliberately NOT the shape at the target-arm anchor above, which has no
+    // `^`, no `$` and no `m` flag: that assertion kills a named operator
+    // mutation but survives its line being replaced by a superset string.
+    const statements = soleFencedBlock(CONTRACT, 'RED Predicate')
+      .split('\n').filter((line) => line.trim() !== '');
+
+    const EXPECTED_STATEMENTS = [
+      'valid_red =',
+      '  exit_status != 0',
+      '  AND trailer.expected == plan.expected_failure',
+      '  AND actual.phase == expected.phase',
+      '  AND actual.class_or_mode == expected.class_or_mode',
+      '  AND trailer.target_test == plan.target_test',
+      '  AND (',
+      '    selected_count > 0',
+      '    AND target_executed',
+      '    AND id_matches(actual.subject, plan.target_test)',
+      '    OR',
+      '    id_matches(actual.subject, plan.target_test)',
+      '    AND plan.expected_failure is an outside-in missing-target mode',
+      '  )',
+    ];
+
+    // One anchored, full-expression assertion PER STATEMENT LINE, driven from
+    // the table above so the failure message NAMES the missing conjunct rather
+    // than reporting that "the block does not match".
+    //
+    // These run BEFORE the count assertion deliberately. node:test stops a test
+    // at its first failed assertion, so a count checked first would mask every
+    // by-name message behind "13 lines, not 14" — which is the report the
+    // byte-freeze already gave and the reason it was a poor control.
+    const block = statements.join('\n');
+    for (const statement of EXPECTED_STATEMENTS) {
+      assert.match(block, new RegExp(`^${escapeRegex(statement)}$`, 'm'),
+        `the RED Predicate statement \`${statement.trim()}\` is missing, reordered, ` +
+        're-operatored or re-indented. Matched as a WHOLE LINE under `^…$` with the `m` flag, ' +
+        'including its exact leading whitespace: depth is what distinguishes a shared conjunct ' +
+        'from an arm conjunct here, and a substring match would accept a superset line. ' +
+        'This assertion is what replaces the 02-01 byte-freeze. See #3770 (CR-11).');
+    }
+
+    // The COUNT is the only control that catches an ADDED conjunct: every
+    // per-line assertion above still passes when a fifteenth line is inserted.
+    assert.strictEqual(statements.length, EXPECTED_STATEMENTS.length,
+      `the RED Predicate block carries ${statements.length} statement lines, not ` +
+      `${EXPECTED_STATEMENTS.length}. A changed count means a conjunct was ADDED or REMOVED. ` +
+      'Every prior paraphrase of this block removed one, unnoticed. If the change is ' +
+      'intended, update this table and say in the plan which conjunct moved and why. ' +
+      'See #3770 (CR-11).');
   });
 
   test(
@@ -908,10 +966,30 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     // pass. This is STRICTLY MORE SPECIFIC than the shared `^[0-9a-f]+ test\(`
     // prefix it replaces — the subject anchor is still required, and a
     // non-empty trailer field is required alongside it. See #3770.
-    assert.ok(snippet.includes(`grep -m1 -E "^[0-9a-f]+\${TAB}[^\${TAB}]+\${TAB}test\\(`),
+    // Pinned IN FULL, through the closing `\):` — not as a prefix. CR-11 M1 is
+    // narrowing this needle to a bare `test\(`, which selects a cross-plan
+    // decoy; a prefix-only pin cannot see that. Killed by execution in the
+    // five-scenario test above; this literal is the guard that still fires on a
+    // lane where bash or git is unavailable and that test is skipped.
+    assert.ok(snippet.includes(`grep -m1 -E "^[0-9a-f]+\${TAB}[^\${TAB}]+\${TAB}test\\(\${PHASE}-\${PLAN}\\):"`),
       'the RED search must select the newest candidate that is BOTH anchored to this plan\'s ' +
       'commit subject AND carries a non-empty red-evidence: trailer field. Selecting on ' +
-      'position alone (CR-04) lets a newer trailerless same-plan commit shadow the real RED.');
+      'position alone (CR-04) lets a newer trailerless same-plan commit shadow the real RED; ' +
+      'dropping the plan scope (CR-11 M1) lets an unrelated plan\'s RED authorize this ' +
+      'plan\'s GREEN. See #3770.');
+
+    // Pinned INDEPENDENTLY of the subject needle above: `%s`, `%B` and
+    // `%(trailers:…)` are three different git format operations, so an
+    // assertion about the subject field says nothing about the trailer field.
+    // `separator=%x20` is inside the pin because it is BEHAVIOUR, not
+    // formatting — without it git appends a newline after the value, each
+    // record splits across two lines, and the whole single-pass selection
+    // breaks. This is CR-11 M4's literal guard, for the skipped-fixture lane.
+    assert.ok(snippet.includes('%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s'),
+      'the RED record must read the red-evidence TRAILER, in full, with its explicit ' +
+      'separator. Reading `%B` instead reintroduces the body-match class the subject anchor ' +
+      'was added to close — a commit that merely QUOTES a red-evidence: line would be read as ' +
+      'evidence — and its embedded newlines also destroy the record shape. See #3770 (CR-11 M4).');
 
     assert.match(snippet, /if \[ -z "\$RED_SHA" \]/,
       'the snippet must guard the empty RED_SHA. Unguarded, `git log -1 --format=… ""` exits ' +
