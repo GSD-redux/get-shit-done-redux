@@ -1601,3 +1601,75 @@ describe('regressions — #3760 loader never expands or persists a non-object se
     assert.equal(config.branching_strategy, 'none', 'the hoisted value still resolves');
   });
 });
+
+// ─── #3894: workflow.research_before_questions resolves from global defaults ──
+
+describe('#3894 research_before_questions global-defaults forwarding', () => {
+  test('nested workflow.research_before_questions in ~/.gsd/defaults.json resolves', () => {
+    const homeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894-home-'));
+    const origGsdHome = process.env['GSD_HOME'];
+    try {
+      const gsdDir = path.join(homeTmp, '.gsd');
+      fs.mkdirSync(gsdDir, { recursive: true });
+      // The reporter's exact shape: same nesting as the forwarded
+      // workflow.post_planning_gaps, one resolves and one did not.
+      fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify({
+        workflow: { post_planning_gaps: true, research_before_questions: true },
+      }), 'utf-8');
+      process.env['GSD_HOME'] = homeTmp;
+      const noPlanning = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894-noplanning-'));
+      try {
+        const result = loadConfigResolved(noPlanning);
+        assert.equal(result.config.post_planning_gaps, true, 'control: the already-forwarded key resolves');
+        assert.equal(
+          result.config.research_before_questions, true,
+          '#3894: same file, same nesting — the quick-path key must resolve too, not just post_planning_gaps'
+        );
+      } finally {
+        cleanup(noPlanning);
+      }
+    } finally {
+      if (origGsdHome === undefined) delete process.env['GSD_HOME'];
+      else process.env['GSD_HOME'] = origGsdHome;
+      cleanup(homeTmp);
+    }
+  });
+
+  test('flat top-level research_before_questions in ~/.gsd/defaults.json also resolves (Branch D alias parity)', () => {
+    const homeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894b-home-'));
+    const origGsdHome = process.env['GSD_HOME'];
+    try {
+      const gsdDir = path.join(homeTmp, '.gsd');
+      fs.mkdirSync(gsdDir, { recursive: true });
+      fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify({ research_before_questions: true }), 'utf-8');
+      process.env['GSD_HOME'] = homeTmp;
+      const noPlanning = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894b-noplanning-'));
+      try {
+        const result = loadConfigResolved(noPlanning);
+        assert.equal(result.config.research_before_questions, true);
+      } finally {
+        cleanup(noPlanning);
+      }
+    } finally {
+      if (origGsdHome === undefined) delete process.env['GSD_HOME'];
+      else process.env['GSD_HOME'] = origGsdHome;
+      cleanup(homeTmp);
+    }
+  });
+
+  test('unset resolves to the documented default (false), never undefined', () => {
+    const noPlanning = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894c-'));
+    const homeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894c-home-'));
+    const origGsdHome = process.env['GSD_HOME'];
+    try {
+      process.env['GSD_HOME'] = homeTmp; // no .gsd/defaults.json — builtin defaults
+      const result = loadConfigResolved(noPlanning);
+      assert.equal(result.config.research_before_questions, false, 'CANONICAL_CONFIG_DEFAULTS.workflow.research_before_questions is false');
+    } finally {
+      if (origGsdHome === undefined) delete process.env['GSD_HOME'];
+      else process.env['GSD_HOME'] = origGsdHome;
+      cleanup(homeTmp);
+      cleanup(noPlanning);
+    }
+  });
+});
