@@ -302,3 +302,21 @@ test('MCP App resources honor the planning schema and iframe trust boundary', ()
   assert.match(control, /percent==null\?'withheld'/);
   assert.match(control, />Roadmap acceptance</);
 });
+
+test('MCP App scripts parse and preserve error states', () => {
+  const control = fs.readFileSync(path.join(__dirname, '..', 'assets', 'mcp-apps', 'control-center.html'), 'utf8');
+  const workbench = fs.readFileSync(path.join(__dirname, '..', 'assets', 'mcp-apps', 'uat-workbench.html'), 'utf8');
+
+  for (const source of [control, workbench]) {
+    const script = source.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    assert.ok(script, 'inline app script must exist');
+    assert.doesNotThrow(() => new Function(script));
+  }
+
+  assert.match(control, /if\(message\.error\)/);
+  assert.match(control, /if\(data\?\.isError\)/);
+  assert.match(workbench, /data\?\.mutation&&data\.workbench===null&&data\.refresh_error/);
+  assert.match(workbench, /reloadRequired=true/);
+  assert.match(workbench, /!ready\|\|inFlight\|\|reloadRequired/);
+  assert.match(workbench, /pass\.disabled=inFlight/);
+});

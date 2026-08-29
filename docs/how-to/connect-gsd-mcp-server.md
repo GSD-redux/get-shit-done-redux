@@ -190,6 +190,11 @@ selected project's `.planning/` directory. An `issue` requires a nonblank
 `note`. Recording an issue creates UAT evidence only; diagnosis and fix
 planning intentionally remain with `$gsd-verify-work`.
 
+If recording succeeds but the authoritative workbench refresh fails, the tool
+returns `{mutation, workbench: null, refresh_error}` without `isError`. The
+mutation is durable; clients must report the refresh failure and prevent
+another result from being recorded until the workbench is reloaded.
+
 Errors from a tool are returned as MCP tool errors (`isError: true`), not as
 JSON-RPC protocol errors — the host surfaces them in its normal tool-failure UX.
 
