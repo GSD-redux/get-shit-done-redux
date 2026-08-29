@@ -273,6 +273,108 @@ and it is the property ADR-2980's declined Option 3 lacked.
 `n/no-process-exit: 'off'` exemption block, and the duplicated `scripts/lib/cli-exit.cjs`;
 **added** one rule (`local/require-registered-exit`) plus the registry's own `--check`. Net **−2**.
 
+> **Amendment — 2026-08-28: the ledger above is superseded (#3913).**
+>
+> Three of its terms did not survive contact with the code, and the net it states was never
+> achievable. It is left in place unedited so the drift is legible; the measured ledger is below.
+>
+> 1. **`scripts/lib/cli-exit.cjs` was not deleted.** Phase 0 changed it from a duplicated module
+>    into a *generated* one, so the line retires a copy that still exists. The epic body was
+>    corrected to net **−1** at the time; this ADR's line was not.
+> 2. **"their four baseline entries" was five** — four `soft-error-exit-zero` and one
+>    `untyped-success`, counted directly off `tests/qa/smell-baseline.json`. Issue #3913 repeated
+>    the figure of four, and so did the first recon pass of this phase. This is the second
+>    documented count in this epic to drift, after [ADR-2980](2980-payload-carried-error-is-a-degraded-result.md)'s
+>    60-versus-64 `output({error})` sites.
+> 3. **Only one of the two oracles was retired.** `soft-error-exit-zero` is deleted: its condition
+>    is now *declared* by the exit contract (`output({error})` → `DEGRADED`, 0 under v1 and 80
+>    under v2), so an inert SMELL restating it is ledger inflation. `untyped-success` is **not**
+>    deleted — it asserts that a `KIND.PROSE` command exposes no typed surface, which has nothing
+>    to do with exit codes, and neither the registry nor `local/require-registered-exit` replaces
+>    it. The clause this ADR and #3913 both rely on — *"the registry and the ESLint rule enforce
+>    the same property by construction"* — is simply false for it. Rather than drop the property,
+>    it was **promoted from SMELL to VIOLATION**, so it can now fail a build, which it never could
+>    before (`runOracles`'s `get failed()` returns `violations` only).
+>
+> **Measured ledger for the epic as delivered** (corrected again by #3914's audit — the version
+> first written here was wrong twice over, see below):
+>
+> | | |
+> |---|--:|
+> | −1 oracle (`soft-error-exit-zero`) | −1 |
+> | ~~−1 `n/no-process-exit: 'off'` hooks exemption block~~ — **0, see below** | 0 |
+> | +1 rule (`local/require-registered-exit`) | +1 |
+> | +4 `lint:generated-sync --check` arms: `gen-scripts-cli-exit`, `gen-hooks-cli-exit`, `gen-exit-code-registry`, `gen-exit-code-docs` | +4 |
+> | **Net** | **+4** |
+>
+> **The exemption-block term was a fourth error, corrected here.** Every prior version of this ledger
+> counted removing the `n/no-process-exit: 'off'` entry from the hooks block as **−1**. Measured:
+> `n/no-process-exit` is **not registered at all** on `hooks/**` — `ESLint.calculateConfigForFile`
+> returns `undefined` for it there, not `error`. No broader block sets it globally. So the `'off'`
+> entry was overriding nothing, and removing it changed no enforcement whatsoever. It is a **no-op
+> removal, not a guard removal**, and counting it as −1 is the same category error as counting
+> baseline acknowledgement entries: a thing that is not a guard, in guard units.
+>
+> It is also **misattributed** — that block came down in `d98b55562` (#3910), already on `next`
+> before #3914 existed.
+>
+> **The epic ADDED four guards. It did not remove one.** That is the honest result, and it is worth
+> stating without softening: an epic whose thesis is consolidation ended with a larger guard surface
+> than it started with. The additions are defensible individually — a rule and four drift checks that
+> did not exist — but "net −1" was never true.
+>
+> One further guard changed strength rather than count: `untyped-success` SMELL → VIOLATION. Two
+> mis-scoped oracles were corrected in passing (`routing-validity`, `value-hygiene`) — see #3913.
+>
+> **Two corrections to what this paragraph previously claimed, both mine:**
+>
+> 1. It said **"Net −1 by count"** above a term list reading `−1 −1 +1 +1 +1`. That sums to **+1**.
+>    A plain arithmetic error, in the paragraph immediately below the sentence arguing that an ADR
+>    about honest accounting must not pad its own ledger.
+> 2. The term list also **omitted two of the four `--check` arms** (`gen-scripts-cli-exit` from P0
+>    and `gen-hooks-cli-exit` from P7), which is what turns +1 into the real +4.
+>
+> Recorded rather than quietly rewritten, because the failure this epic exists to close is a written
+> claim nobody checked against the thing it describes — and this ledger has now been wrong four
+> times, three of them mine: the original "Net −2"; the "Net −1" that replaced it above a term list
+> summing to +1; and the "Net +3" that replaced that, stated before the exemption-block term above
+> was re-checked and found to be a no-op removal rather than a −1. Each of the four was found by
+> someone checking the ledger against the tree, not by re-reading the ledger itself.
+>
+> The −4 first written here counted the five pruned `smell-baseline.json` entries in the same units
+> as oracles and lint rules. They are not guards — they are *acknowledgements* that a guard fired.
+> Removing them strengthens the surface rather than removing anything from it, and folding them into
+> the count inflates the negative by five. An ADR about honest accounting should not pad its own
+> ledger, so the entries are recorded as what they are and excluded from the count.
+>
+> **Two limits on how strong this is, stated rather than implied:**
+>
+> - **`soft-error-exit-zero`'s condition is now declared, not enforced.** No oracle references
+>   `KIND.SOFT_ERROR` after its deletion, and the corpus still contains four soft-error steps that
+>   nothing observes. Under `v1` — the default — those sites still exit `0`. The condition is
+>   modelled in the contract and projects to `80` only under the opt-in `v2`. That is a deliberate
+>   trade, not an equivalent replacement, and "the registry enforces the same property" would be too
+>   strong a claim for it.
+> - **`untyped-success` is promoted against a corpus that no longer exercises the case.** Its
+>   `KIND.PROSE` count reached 0 because the sole prose-producing step was changed to
+>   `smart-entry --json`. The promotion is real and the guard now fails a build — but what it
+>   currently guards is that no *new* prose-only step appears, not that an existing one is caught.
+>
+> **The epic's criterion 5 ("retire the predecessor guard the new rule supersedes") does not apply
+> to `n/no-process-exit` and `local/require-registered-exit`.** #3914 originally turned
+> `n/no-process-exit` off on `gsd-core/bin/**/*.cjs` and `scripts/**/*.cjs`, on the premise that
+> `local/require-registered-exit` was a strict superset there. It is not: the two rules are
+> **complementary**, each catching constructs the other misses. Measured directly (successor vs.
+> predecessor flag counts): `process['exit'](1)` and `process?.[k]?.(1)` are successor-only (a
+> string-literal or optional-chained computed property the predecessor's Identifier-only property
+> match never reaches); a function parameter, a destructured binding, a reassign-to-the-same-value
+> binding, a `for`-of loop variable, a `var` redeclaration, a catch param, and an undeclared global
+> — all literally named `exit` — are predecessor-only (the predecessor's esquery selector matches on
+> the AST node's own `.name`, not a resolved value, while the successor only resolves a computed
+> property through a single never-reassigned string-literal initializer). Retiring either rule on
+> that shared surface loses real coverage. Criterion 5 assumed a replacement relationship that does
+> not exist for this pair; both rules remain registered everywhere they were before.
+
 ## Revisit if
 
 - Domain allocations exceed roughly a dozen. That means the generic four are wrong, not that the

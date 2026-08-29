@@ -31,7 +31,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocator = require('./phase-locator.cjs');
-const { getArchivedPhaseDirs } = phaseLocator;
+const { getAllArchivedPhaseDirs } = phaseLocator;
 import { requireSafePath, sanitizeForDisplay, sanitizeLabel } from './security.cjs';
 import { platformWriteSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -956,8 +956,11 @@ function listAuditPhaseTargets(planDir: string, cwd: string): { targets: AuditPh
     }
   }
 
+  // #3804: the audit is cross-workstream by design — the shared
+  // getAllArchivedPhaseDirs helper (root + every workstream, distinct
+  // '<ws>/<version>' labels) owns that walk.
   try {
-    for (const archived of getArchivedPhaseDirs(cwd)) {
+    for (const archived of getAllArchivedPhaseDirs(cwd)) {
       targets.push({ dir: archived.name, fullPath: archived.fullPath, milestone: archived.milestone });
     }
   } catch {
@@ -1334,9 +1337,17 @@ function auditOpenArtifacts(cwd: string): AuditResult {
     try { return scanDeferredItems(planDir, cwd); } catch { return { items: [{ scan_error: true, phase: '', file: '', text: '' }], acknowledged: 0 }; }
   })();
 
-  // Count real items (not scan_error sentinels)
+  // Count real items (not scan_error sentinels). #3817: a `_remainder_count`
+  // marker is not a phantom — it RECORDS real items the detail list truncated
+  // away for display, so its value counts toward the total. Truncation limits
+  // display, never counting; only scan_error (a read failure, not an item)
+  // contributes zero.
   const countReal = (arr: Array<{ scan_error?: boolean; _remainder_count?: number }>) =>
-    arr.filter(i => !i.scan_error && !i._remainder_count).length;
+    arr.reduce((sum, i) => {
+      if (i.scan_error) return sum;
+      if (typeof i._remainder_count === 'number') return sum + i._remainder_count;
+      return sum + 1;
+    }, 0);
 
   const counts: AuditCounts = {
     debug_sessions: countReal(debugSessions.items),
@@ -1786,6 +1797,13 @@ export = {
   formatAuditReport,
   listAuditPhaseTargets,
   cmdAuditAcknowledge,
+  // #3805: exported so uat.cts's cmdAuditUat routes the SAME artifacts'
+  // suppression through the ONE predicate instead of hand-rolling a tenth
+  // copy outside this file's visibility (the exact defect class the
+  // predicate's own header warns about). The snapshot derivations ride
+  // along so the snapshotKeys cannot drift between the two consumers.
+  isAuditItemAcknowledged,
+  deriveUatGapSnapshotValue,
   // #2142: exported so src/milestone.cts's archiveQuickTaskDirectories README
   // index generator shares this ONE discovery rule rather than re-deriving it.
   resolveQuickTaskSummaryFile,

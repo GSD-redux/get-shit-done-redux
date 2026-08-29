@@ -693,6 +693,43 @@ walkthrough: [Consume the planning snapshot](how-to/consume-the-planning-snapsho
 
 ---
 
+### `task resolve-content --plan <path> --task-id <id> --raw`
+
+Resolves one task's content (`action`/`verify`/`acceptance_criteria`/`read_first`/`done`) from an
+external issue tracker instead of reading it inline from a task's `PLAN.md` body. Called by
+`execute-plan.md`'s per-task loop, once per task carrying a `tracker-id` attribute, before that
+task's read_first gate. See [ADR-3646](adr/3646-per-task-content-resolution-seam.md) and
+[Develop a task-content resolver capability](how-to/develop-a-task-content-resolver-capability.md).
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--plan` | **Yes** | Path to the `PLAN.md` the task belongs to |
+| `--task-id` | **Yes** | The task's `tracker-id` attribute value, e.g. `beads:GSD-42` |
+| `--raw` | No | Machine-readable JSON output |
+
+**Exit codes:**
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Resolution attempted (or not needed) — see `resolved`/`reason` below |
+| non-zero | **Hard halt.** A resolver was found and invoked but failed (tracker unreachable, id not found, timeout, malformed JSON output). stderr names the tracker-id, the tracker prefix, and the resolver's error. Never fall back to inline `PLAN.md` content on this outcome. |
+
+**Output fields (JSON, exit 0 only):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resolved` | `boolean` | `true` only when a resolver was found, invoked, and returned non-empty content |
+| `reason` | `string` | Present when `resolved` is `false`: `"no-resolver"` (task has a `tracker-id` but no installed capability declares a matching `trackerPrefix`) or `"empty"` (the resolver ran successfully but returned empty/absent content — the one legitimate pre-migration fallback case) |
+| `content` | `object` | Present when `resolved` is `true`. Supersedes this task's inline `<action>`/`<verify>`/`<acceptance_criteria>`/`<read_first>`/`<done>` for every downstream gate in the execute step |
+
+```bash
+node gsd-tools.cjs task resolve-content --plan .planning/phases/03-name/03-1-PLAN.md --task-id beads:GSD-42 --raw
+```
+
+`execute-plan.md` only invokes this command when the task carries a `tracker-id` attribute; a task with no `tracker-id` is unaffected.
+
+---
+
 ## Navigation Commands
 
 ### `/gsd-next`

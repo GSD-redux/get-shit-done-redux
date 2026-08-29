@@ -36,6 +36,7 @@ const DOCS_GUARD_EXEMPT_BASELINE = [
   'agent-marker-documentation-guard.test.cjs',
   'antigravity-upgrades.test.cjs',
   'capability-cli.test.cjs',
+  'capability-validator-task-content-resolver.test.cjs',
   'ci-docs-guard-registry.test.cjs',
   'ci-test-scope.test.cjs',
   'cline-install.test.cjs',
@@ -107,6 +108,10 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'agent-marker-documentation-guard.test.cjs': ['docs/reference', 'docs/reference/workflow-fragments.md'],
   'antigravity-upgrades.test.cjs': ['docs/cli', 'docs/cli/gcli-migration', 'docs/cli/permissions'],
   'capability-cli.test.cjs': ['docs/reference/gsd-capability-command.md'],
+  // #3970: cites docs/adr/3646-per-task-content-resolution-seam.md in an
+  // explanatory comment describing ADR-3646's Decision 3; the file never
+  // reads that (or any) docs/ file.
+  'capability-validator-task-content-resolver.test.cjs': ['docs/adr/3646-per-task-content-resolution-seam.md'],
   'ci-docs-guard-registry.test.cjs': [
     'docs/AGENTS.md', 'docs/COMMANDS.md', 'docs/INVENTORY.md', 'docs/a.md', 'docs/adr',
     'docs/adr/0001-example.md', 'docs/adrenaline.md', 'docs/bar.md', 'docs/foo.md', 'docs/how-to/foo.md',
@@ -134,7 +139,10 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'declarative-reference-antigravity.test.cjs': ['docs/cli/features'],
   'declarative-reference-zcode.test.cjs': ['docs/reference/host-integration-capability-matrix.md'],
   'emitted-attribution.test.cjs': ['docs/README.md', 'docs/tests', 'docs/tests/helpers/install-shared.cjs'],
-  'eslint-rules.test.cjs': ['docs/readme.md'],
+  // #3914: cites docs/adr/3889-process-exit-contract.md ~:350-362 in an
+  // explanatory comment describing the intentional computed-property
+  // boundary move; the file never reads that (or any) docs/ file.
+  'eslint-rules.test.cjs': ['docs/adr/3889-process-exit-contract.md', 'docs/readme.md'],
   'estimate-calibrate.test.cjs': [
     'docs/adr', 'docs/adr/2629-phase-effort-estimation-calibration.md', 'docs/reference',
     'docs/reference/planning-artifacts.md',
@@ -178,7 +186,7 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
   'runtime-name-policy.test.cjs': ['docs/customize/skills'],
   'security-prompt-injection.security.test.cjs': ['docs/notes.md'],
   'shipped-reference-cites.test.cjs': [],
-  'state.test.cjs': ['docs/CONFIGURATION.md'],
+  'state.test.cjs': ['docs/CONFIGURATION.md', 'docs/reference/state-md.md'],
   'worktree-safety.test.cjs': ['docs/SUMMARY.md'],
 };
 

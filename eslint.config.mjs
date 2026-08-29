@@ -32,6 +32,7 @@ import requireSubprocessTimeout from './eslint-rules/require-subprocess-timeout.
 import noExternalRequireInBin from './eslint-rules/no-external-require-in-bin.cjs';
 import noPrivateBinaryResolution from './eslint-rules/no-private-binary-resolution.cjs';
 import requireRegisteredExit from './eslint-rules/require-registered-exit.cjs';
+import noSwallowedPrecondition from './eslint-rules/no-swallowed-precondition.cjs';
 import noExactCaseEnvAccess from './eslint-rules/no-exact-case-env-access.cjs';
 
 const localPlugin = {
@@ -59,6 +60,7 @@ const localPlugin = {
     'no-external-require-in-bin': noExternalRequireInBin,
     'no-private-binary-resolution': noPrivateBinaryResolution,
     'require-registered-exit': requireRegisteredExit,
+    'no-swallowed-precondition': noSwallowedPrecondition,
     'no-exact-case-env-access': noExactCaseEnvAccess,
   },
 };
@@ -345,6 +347,11 @@ export default tseslint.config(
       // src/pattern.cts — module resolution for a .cts source is relative to
       // src/, not the output dir). Same verbatim-third-party exemption.
       'src/vendor/**',
+      // #3970 (ADR-3646 Phase 1): tsc-generated runtime artifact — the
+      // default `import childProcess from 'node:child_process'` import emits
+      // tsc's `__importDefault` helper (uses `var`), same class as 007/009/010
+      // above. Lint the src/task-content-resolution.cts source, not this.
+      'gsd-core/bin/lib/task-content-resolution.cjs',
       // #3904 (ADR-3889 Phase 0): tsc-generated runtime artifact — generated
       // by scripts/gen-scripts-cli-exit.cjs from a fresh compile of
       // src/cli-exit.cts, and byte-guarded by `npm run lint:generated-sync`
@@ -426,6 +433,14 @@ export default tseslint.config(
       // eslint-ignored (ADR-457), so a rule registered only on the emitted
       // surface never sees the real .cts sources (#3496).
       'local/require-registered-exit': 'error',
+      // #3987 (issue #1884 class): flag a swallowed mkdirSync/openSync/
+      // platformEnsureDir failure inside a function that also references a
+      // *_ERRNOS retry/tolerate set — a fatal EACCES/ENOSPC/EROFS creating a
+      // precondition can be laundered into a retryable errno downstream. See
+      // eslint-rules/no-swallowed-precondition.cjs for the measured predicate
+      // and its known gap (inline-literal errno classification is not caught;
+      // fixed directly at the call site instead — capability-lock.cts).
+      'local/no-swallowed-precondition': 'error',
       // #3624 (epic #3411 Phase 4): flag an exact-case env-var read off a
       // non-process.env receiver. See CONTEXT.md DEFECT.WINDOWS-EXACT-CASE-ENV-ACCESS.
       'local/no-exact-case-env-access': 'error',

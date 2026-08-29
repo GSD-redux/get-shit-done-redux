@@ -894,6 +894,16 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   }, cwd, { divergedFields, preWriteState });
 
   if (!resultData || resultData['error']) {
+    // #3807: a multi-`Phase:` Current Position section carries its own cause
+    // and its own remedy (name the candidates; the caller resolves them).
+    if (resultData && resultData['reason'] === 'ambiguous_position_phase') {
+      output({
+        error: 'Current Position section contains more than one Phase: entry — refusing to silently advance the first. Resolve the section to a single current entry and re-run.',
+        reason: resultData['reason'],
+        phase_candidates: resultData['phase_candidates'],
+      }, raw, undefined);
+      return;
+    }
     output({ error: 'Cannot parse Current Plan or Total Plans in Phase from STATE.md' }, raw, undefined);
     return;
   }

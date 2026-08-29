@@ -158,10 +158,63 @@ function parseCallsAgents(content: string): string[] {
  * Also derives calls_agents for each skill by scanning the body text for
  * `gsd-*` agent name references. Agent stems are stored under the special
  * key `_calls_agents_<stem>` so they don't conflict with skill stems.
+ *
+ * #3798: command bodies are thin delegators — the actual `subagent_type=`
+ * spawns live in the workflow files each command references
+ * (`@…/workflows/<name>.md`). The agent derivation therefore ALSO reads every
+ * workflow file the command references (plus the workflow's steps/ fragments
+ * when it is split per the progressive-disclosure pattern) and unions their
+ * `gsd-*` tokens into the same `_calls_agents_<stem>` set. Without this,
+ * tiered profiles omitted agents their own installed skills spawn
+ * (gsd-verifier at execute-phase's verify_phase_goal was the filed repro).
+ * Over-inclusion fails safe: a tiered profile installing one extra agent
+ * costs bytes, never a broken spawn.
  */
 const DEFAULT_COMMANDS_DIR = path.resolve(__dirname, '..', '..', '..', 'commands', 'gsd');
+const DEFAULT_WORKFLOWS_DIR = path.resolve(__dirname, '..', '..', 'workflows');
 
-function loadSkillsManifest(commandsDir: string = DEFAULT_COMMANDS_DIR): Map<string, string[]> {
+/**
+ * Collect the `gsd-*` agent tokens from every workflow file a command body
+ * references. References are the `workflows/<name>.md` path suffixes the
+ * delegating commands embed (`@…/gsd-core/workflows/<name>.md`). A
+ * split workflow (workflows/<name>/steps/*.md) contributes its fragments as
+ * well, because the parent dispatches into them and the spawns live there.
+ */
+function workflowAgentRefs(content: string, workflowsDir: string): string[] {
+  const refs = content.match(/workflows\/([a-z0-9][a-z0-9-]*)\.md/g) || [];
+  const names = [...new Set(refs.map((r) => r.slice('workflows/'.length)))];
+  const tokens = new Set<string>();
+  for (const name of names) {
+    const direct = path.join(workflowsDir, name);
+    let body: string | null = null;
+    try { body = fs.readFileSync(direct, 'utf8'); } catch { body = null; }
+    if (body === null) continue;
+    for (const tok of parseCallsAgents(body)) tokens.add(tok);
+    // Split workflow: union EVERY fragment under the workflow's directory
+    // (steps/, modes/, templates/…) — the parent dispatches into these per
+    // the progressive-disclosure pattern, and spawns live in all of them
+    // (#3798 review: modes/ carried gsd-advisor-researcher's spawn while the
+    // parent only named it incidentally in prose).
+    const fragDir = path.join(workflowsDir, name.slice(0, -3));
+    const walk = (dir: string): void => {
+      let frags: fs.Dirent[];
+      try { frags = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const frag of frags) {
+        const full = path.join(dir, frag.name);
+        if (frag.isDirectory()) { walk(full); continue; }
+        if (!frag.isFile() || !frag.name.endsWith('.md')) continue;
+        try {
+          const fragBody = fs.readFileSync(full, 'utf8');
+          for (const tok of parseCallsAgents(fragBody)) tokens.add(tok);
+        } catch { /* unreadable fragment — skip */ }
+      }
+    };
+    walk(fragDir);
+  }
+  return [...tokens];
+}
+
+function loadSkillsManifest(commandsDir: string = DEFAULT_COMMANDS_DIR, workflowsDir: string = DEFAULT_WORKFLOWS_DIR): Map<string, string[]> {
   const manifest = new Map<string, string[]>();
   if (!fs.existsSync(commandsDir)) return manifest;
   const entries = fs.readdirSync(commandsDir, { withFileTypes: true });
@@ -172,9 +225,12 @@ function loadSkillsManifest(commandsDir: string = DEFAULT_COMMANDS_DIR): Map<str
     try {
       const content = fs.readFileSync(path.join(commandsDir, entry.name), 'utf8');
       manifest.set(stem, parseRequires(content));
-      // Derive agent references from body text
-      const agentRefs = parseCallsAgents(content);
-      manifest.set(`_calls_agents_${stem}`, agentRefs);
+      // Derive agent references from body text + the workflows it delegates to
+      const agentRefs = [
+        ...parseCallsAgents(content),
+        ...workflowAgentRefs(content, workflowsDir),
+      ];
+      manifest.set(`_calls_agents_${stem}`, [...new Set(agentRefs)]);
     } catch {
       manifest.set(stem, []);
       manifest.set(`_calls_agents_${stem}`, []);
@@ -1220,6 +1276,7 @@ export = {
   // Shared internals
   parseRequires,
   parseCallsAgents,
+  workflowAgentRefs,
   cleanupStagedSkills,
   // #2322: capability-skill security seams — exported for direct unit-testing
   // and for surface.cts's prune pass (CAPABILITY_SKILL_MARKER parity).
