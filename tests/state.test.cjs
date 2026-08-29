@@ -3018,12 +3018,16 @@ describe('#3830 facet 2: state advance-plan rejects options instead of discardin
     // assertion that actually pins "was accepted"; the message check now just
     // localises a regression when it fires.
     //
-    // And the list is widened to the whole splice set (self-found alongside that
-    // finding): main() removes --json-errors, --cwd, --cwd=, --raw, --pick and
-    // --default, and resolveActiveWorkstream removes --ws/--ws=. This test is the
-    // only guard that the router's now-stricter index-2 rule cannot falsely
-    // reject one of them, and it was covering two of the seven.
-    for (const flag of ['--json-errors', '--ws default', `--cwd ${tmpDir}`, `--cwd=${tmpDir}`, '--default x']) {
+    // The list is the whole splice set. It claimed to be that once before and was not:
+    // the #3862 RV6.5 review found `--project-dir`/`--project-dir=` and
+    // `--exit-contract=` also spliced by main() and covered by nothing here, so the
+    // "whole splice set" comment was asserting its own completeness while short of it.
+    // Now: --json-errors, --cwd, --cwd=, --default, --project-dir, --project-dir=,
+    // --exit-contract= in the loop; --raw and --pick in their own tests below;
+    // --ws/--ws= spliced by resolveActiveWorkstream. This test is the only guard that
+    // the router's strict index-2 rule cannot falsely reject one of them.
+    for (const flag of ['--json-errors', '--ws default', `--cwd ${tmpDir}`, `--cwd=${tmpDir}`, '--default x',
+                        `--project-dir ${tmpDir}`, `--project-dir=${tmpDir}`, '--exit-contract=v1']) {
       seedSimpleState();
       const result = runGsdTools(`state advance-plan ${flag}`, tmpDir);
       const combined = `${result.output || ''}${result.error || ''}`;
