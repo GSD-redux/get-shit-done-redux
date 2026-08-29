@@ -19,9 +19,10 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { RuleTester, ESLint } = require('eslint');
+const { RuleTester, ESLint, Linter } = require('eslint');
 const path = require('node:path');
 const fc = require('fast-check');
+const pluginN = require('eslint-plugin-n');
 
 const noSourceGrep = require('../eslint-rules/no-source-grep.cjs');
 const noMagicSleepInTests = require('../eslint-rules/no-magic-sleep-in-tests.cjs');
@@ -3563,5 +3564,123 @@ describe('require-registered-exit rule', () => {
         `expected local/require-registered-exit to remain error for ${path.relative(REPO_ROOT, p)}`,
       );
     }
+  });
+
+  // ── #3914 Finding 3: construct-parity matrix ────────────────────────────
+  //
+  // The severity-registration tests above prove n/no-process-exit is 'off'
+  // where local/require-registered-exit is 'error' — they never prove the
+  // successor's AST REACH actually covers what the predecessor caught. This
+  // is the gap the security review found: n/no-process-exit's esquery
+  // selector `[property.name="exit"]` has no `computed=false` guard, so it
+  // also matches a computed property node whose AST `.name` happens to be
+  // literally `exit` (e.g. `process[exit](1)` where the variable is named
+  // `exit`) — a case the pre-fix local rule's `callee.computed` early return
+  // missed entirely. This matrix lints each shape through BOTH rules
+  // directly (via `Linter`, not the project's flat config — n/no-process-exit
+  // is 'off' there by design) and asserts the superset relationship.
+  describe('construct parity with n/no-process-exit', () => {
+    const FILES_GLOB = ['**/*.js', '**/*.cjs', '**/*.cts'];
+
+    function lintLocal(ruleModule, code, filename) {
+      const linter = new Linter();
+      const config = {
+        files: FILES_GLOB,
+        languageOptions: { ecmaVersion: 2022, sourceType: 'commonjs' },
+        plugins: { local: { rules: { 'require-registered-exit': ruleModule } } },
+        rules: { 'local/require-registered-exit': 'error' },
+      };
+      return linter.verify(code, config, { filename });
+    }
+
+    function lintPredecessor(code, filename) {
+      const linter = new Linter();
+      const config = {
+        files: FILES_GLOB,
+        languageOptions: { ecmaVersion: 2022, sourceType: 'commonjs' },
+        plugins: { n: pluginN },
+        rules: { 'n/no-process-exit': 'error' },
+      };
+      return linter.verify(code, config, { filename });
+    }
+
+    test('process.exit(1) — both n/no-process-exit and local/require-registered-exit flag', () => {
+      const code = 'process.exit(1);';
+      assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 1);
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 1);
+    });
+
+    test("process['exit'](1) — successor flags; predecessor does not (successor is strictly stronger)", () => {
+      const code = "process['exit'](1);";
+      assert.strictEqual(
+        lintPredecessor(code, 'x.cjs').length,
+        0,
+        'n/no-process-exit is not expected to catch a computed string-literal property',
+      );
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 1);
+    });
+
+    test("const exit = 'exit'; process[exit](1); — the regression: successor must flag, matching the predecessor", () => {
+      const code = "const exit = 'exit'; process[exit](1);";
+      // Predecessor flags this today — not because it resolves the variable's
+      // value, but because its esquery selector matches on the computed
+      // property node's own AST `.name`, which happens to read `exit` here.
+      assert.strictEqual(lintPredecessor(code, 'x.cjs').length, 1);
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 1);
+    });
+
+    test('process[someRuntimeValue](1) with a genuinely dynamic value — successor must NOT flag (no over-firing)', () => {
+      const code =
+        'function pick(v) { return v; } '
+        + 'const someRuntimeValue = pick("exit"); '
+        + 'process[someRuntimeValue](1);';
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'x.cjs').length, 0);
+    });
+
+    test('a sanctioned process.exit() inside terminateNow in cli-exit.cts is still not flagged (allowlist unaffected)', () => {
+      const code = 'function terminateNow(outcome, payload) {\n  process.exit(2);\n}';
+      assert.strictEqual(lintLocal(requireRegisteredExit, code, 'src/cli-exit.cts').length, 0);
+    });
+
+    // ── RED (pre-fix) → GREEN (post-fix) evidence ──────────────────────────
+    //
+    // A structural reproduction of the pre-fix CallExpression handler (the
+    // exact defect the security review found: an early `return` on
+    // `callee.computed`, so a computed `process[x](...)` was never even
+    // considered). Inlined here — rather than loading
+    // `eslint-rules/require-registered-exit.cjs` at a historical git ref —
+    // so this regression pin is self-contained and portable (no dependency
+    // on git history or an external scratch file surviving into the sandbox
+    // this test runs in). Verbatim results captured live against BOTH the
+    // real pre-fix file (`git show HEAD:eslint-rules/require-registered-exit.cjs`
+    // before this change) and this inlined reproduction, confirming they
+    // agree:
+    //   process['exit'](1);                      PRE=0  POST=1
+    //   const exit = 'exit'; process[exit](1);   PRE=0  POST=1
+    const preFixRule = {
+      meta: { type: 'problem', schema: [], messages: { rawProcessExit: 'flagged' } },
+      create(context) {
+        return {
+          CallExpression(node) {
+            const callee = node.callee;
+            if (callee.type !== 'MemberExpression' || callee.computed) return;
+            if (callee.object.type !== 'Identifier' || callee.object.name !== 'process') return;
+            if (callee.property.type !== 'Identifier' || callee.property.name !== 'exit') return;
+            context.report({ node, messageId: 'rawProcessExit' });
+          },
+        };
+      },
+    };
+
+    test('pre-fix rule shape reproduces both regressions RED; current module is GREEN', () => {
+      const literalCase = "process['exit'](1);";
+      const identifierCase = "const exit = 'exit'; process[exit](1);";
+
+      assert.strictEqual(lintLocal(preFixRule, literalCase, 'x.cjs').length, 0, "RED: pre-fix rule misses process['exit'](1)");
+      assert.strictEqual(lintLocal(preFixRule, identifierCase, 'x.cjs').length, 0, "RED: pre-fix rule misses the const exit = 'exit' regression");
+
+      assert.strictEqual(lintLocal(requireRegisteredExit, literalCase, 'x.cjs').length, 1, "GREEN: fixed rule catches process['exit'](1)");
+      assert.strictEqual(lintLocal(requireRegisteredExit, identifierCase, 'x.cjs').length, 1, 'GREEN: fixed rule catches the regression');
+    });
   });
 });
