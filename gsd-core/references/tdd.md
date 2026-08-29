@@ -208,7 +208,9 @@ Two further obligations:
 
 No `version` field. The top-level key set must equal exactly these seven, and that equality is
 itself the fail-closed mechanism: a foreign or future schema fails it instead of being partly
-honoured.
+honoured. Extending the vector is therefore a change to THIS CONTRACT, never a runtime one:
+a vector carrying additional keys is not this vector and fails the equality by construction.
+The residuals named under **RED Predicate** are what such a superseding vector would exist to close.
 
 ### RED Predicate
 
@@ -267,12 +269,26 @@ message text. The admitted case is therefore an unrelated missing dependency in 
 file, failing at the same declared phase with the same declared class. Two controls compensate:
 **Executor Gate Validation** requires the RED commit to touch a test file, and
 `implementation_target` stays declared, so a human or a later coded gate can compare it against the
-recorded `command` and the message. Closing the residual is Phase 3's, because it needs either
-message-derived identity or a new declared field, and both are decisions an implementation can
-validate and prose cannot. Note that this state is strictly NARROWER than the one it replaces:
+recorded `command` and the message. Closing the residual is Phase 3's, because it needs a
+SUPERSEDING evidence vector — either message-derived identity or a new declared field, neither of
+which this vector's key set can carry, since **Evidence** fixes it at exactly seven — and both are
+decisions an implementation can validate and prose cannot. Note that this state is strictly NARROWER than the one it replaces:
 arm 2 was previously unsatisfiable and admitted nothing at all, correctly or otherwise, so
 anchoring it on the declared test file admits legitimate outside-in RED while bounding what else
 it lets through.
+
+What arm 1 proves and what it does not: it proves that a test whose id `id_matches` the declared
+`target_test` was selected, executed and reported as failing, at the declared phase, with the
+declared class. It does not prove that the assertion which failed is the one the plan's
+`<behavior>` describes, because the predicate never consumes `<behavior>` and the `actual` triple
+is the finest granularity this vector has. The admitted case is therefore an unrelated assertion
+earlier in the body of the declared test, failing at the same declared phase with the same declared
+class — and, at a fixture phase, an unrelated fixture in the target's dependency chain crashing
+with the declared class, which no field distinguishes from the fixture the plan declared as the
+behavior under test. The same two controls compensate: **Executor Gate Validation** requires the
+RED commit to touch a test file, and `implementation_target` stays declared for a human or a later
+coded gate to compare against. Closing these residuals is Phase 3's, on the same terms as arm 2's:
+they are one root cause with three surfaces, and all three need the superseding vector named above.
 
 One rule sits outside the predicate: `exit_status == 0` is an unexpected pass. It fails the first
 conjunct, and it is neither valid RED nor an invalid RED to retry — halt the cycle. Every other way
@@ -285,12 +301,15 @@ Each row is a consequence of the predicate, and each names the field that decide
 | Outcome | Decided by | Verdict |
 |---|---|---|
 | Zero tests selected | the target-test arm's `selected_count` is 0, and `plan.expected_failure` is not an outside-in missing-target mode | block |
-| Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target — and the target-test arm's `selected_count` is 0 | block |
+| Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target, unless the declaration names that class itself, in which case the classes agree, this row does not hold, and the outside-in row below decides — and the target-test arm's `selected_count` is 0 | block |
 | Fixture or setup crashed before the target assertion | `actual.phase` differs from `expected.phase` | block |
 | A different test failed | neither arm holds — `actual.subject` does not `id_matches` `plan.target_test` | block |
 | Genuine target-behavior failure | the shared comparisons hold and the target-test arm holds | authorize |
-| Outside-in: the declared implementation target is missing | `actual.subject` `id_matches` `plan.target_test` and `plan.expected_failure` is an outside-in missing-target mode, with no selection or execution condition applied | authorize |
+| Unrelated assertion in the target test | identical to the row above: no field of the vector says WHICH assertion failed, so a different one failing first at the same phase and class is indistinguishable. Known residual, closed by a superseding vector — Phase 3's | authorize |
+| Outside-in: the declared implementation target is missing | the shared comparisons hold and the outside-in arm holds — `actual.subject` `id_matches` `plan.target_test` and `plan.expected_failure` is an outside-in missing-target mode, with no selection or execution condition applied | authorize |
+| Unrelated missing dependency in the target test file | identical to the row above: the arm anchors on the declared test FILE, and no field says which import was missing. Known residual, closed by a superseding vector — Phase 3's | authorize |
 | Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and the target-test arm holds | authorize |
+| Unrelated fixture crash at the declared fixture phase | identical to the row above: no field says which fixture crashed, so one in the target's dependency chain is indistinguishable from the declared one. Known residual, closed by a superseding vector — Phase 3's | authorize |
 | Unexpected pass | `exit_status` is 0 | halt |
 </red_contract_spec>
 

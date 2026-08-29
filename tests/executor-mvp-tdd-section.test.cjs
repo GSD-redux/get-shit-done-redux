@@ -1258,8 +1258,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     },
     {
       id: 'unrelated-assertion-in-target-test',
-      // Wired to its `### Outcomes` row by 02-06 Task 4, which adds the row.
-      outcome_row: null,
+      outcome_row: 'Unrelated assertion in the target test',
       verdict: 'authorize',
       why: 'RESIDUAL (arm 1). Field-identical to `genuine`, yet the assertion that failed is not '
         + "the one the plan's <behavior> describes — an unrelated assertion earlier in the same "
@@ -1271,8 +1270,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     },
     {
       id: 'unrelated-missing-dep-in-target-file',
-      // Wired to its `### Outcomes` row by 02-06 Task 4, which adds the row.
-      outcome_row: null,
+      outcome_row: 'Unrelated missing dependency in the target test file',
       verdict: 'authorize',
       why: 'RESIDUAL (arm 2). Field-identical to `outside-in`, yet the import that failed is an '
         + 'unrelated third-party dependency, not the declared `implementation_target`. Arm 2 '
@@ -1282,8 +1280,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     },
     {
       id: 'unrelated-fixture-crash',
-      // Wired to its `### Outcomes` row by 02-06 Task 4, which adds the row.
-      outcome_row: null,
+      outcome_row: 'Unrelated fixture crash at the declared fixture phase',
       verdict: 'authorize',
       why: 'RESIDUAL (arm 1 at the fixture phase). Field-identical to '
         + '`fixture-is-the-behavior`, yet the fixture that crashed is an unrelated one, not the '
