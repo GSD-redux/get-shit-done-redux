@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "gsd": {
-      "command": "npx",
-      "args": ["-y", "@opengsd/gsd-core", "gsd-mcp-server"]
+      "command": "node",
+      "args": ["./bin/gsd-mcp-server.js"],
+      "cwd": "."
     }
   }
 }

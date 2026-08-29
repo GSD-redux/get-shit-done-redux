@@ -17,6 +17,6 @@
     "category": "Productivity",
     "capabilities": ["Interactive", "Write"],
     "websiteURL": "https://github.com/open-gsd/gsd-core",
-    "defaultPrompt": ["Show me my GSD project status and next steps", "Run a GSD UAT audit for this project", "Record a UAT result for this project"]
+    "defaultPrompt": ["Show my GSD project control center.", "Review outstanding UAT checks.", "What is blocking this milestone?"]
   }
 }
