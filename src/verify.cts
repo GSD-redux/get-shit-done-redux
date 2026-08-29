@@ -1424,12 +1424,16 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
   // A pending link (from: file promised by a same-or-later-wave plan) is not a
   // hard failure — it should not count against the all_verified gate (#1202).
   const hardFailed = results.filter((r) => !r['verified'] && !r['pending']).length;
-  // Positive-evidence floor (#3956): an all-string / from-less key_links block
-  // skips every item, leaving results empty; `hardFailed === 0` would then be a
-  // vacuous GREEN over zero checks. Require at least one checked link. A pending
-  // link IS pushed to results (with pending: true), so an all-pending block still
-  // satisfies results.length > 0 and its #1202 non-hard-failing semantics are
-  // unchanged — the floor only rejects the zero-result case.
+  // Positive-evidence floor (#3956): an all-bare-string key_links block skips
+  // every item (only `typeof link === 'string'` items are continue-skipped
+  // above), leaving results empty; `hardFailed === 0` would then be a vacuous
+  // GREEN over zero checks. Require at least one checked link. (A `from:`-less
+  // object is NOT skipped, unlike a path-less object on the artifacts side — it
+  // falls through to a `verified: false` result and hard-fails, so it was never
+  // part of the vacuous-pass surface; only the all-bare-string case is.) A
+  // pending link IS pushed to results (with pending: true), so an all-pending
+  // block still satisfies results.length > 0 and its #1202 non-hard-failing
+  // semantics are unchanged — the floor only rejects the zero-result case.
   const allVerified = results.length > 0 && hardFailed === 0;
   output(
     {
