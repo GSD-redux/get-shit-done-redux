@@ -151,6 +151,7 @@ export interface CatalogResourceEntry {
   readonly title: string;
   readonly description: string;
   readonly mimeType: string;
+  readonly _meta?: { readonly 'ui.prefersBorder': true };
   /** POSIX-normalized path relative to `root` (e.g. `gsd-core/workflows/plan-phase.md`). */
   readonly relPath: string;
 }
@@ -429,6 +430,29 @@ function indexPromptSegment(
   }
 }
 
+const MCP_APP_RESOURCES = [
+  { file: 'control-center.html', uri: 'ui://gsd/control-center-v1.html', name: 'gsd-control-center', title: 'GSD Control Center', description: 'GSD planning overview.', },
+  { file: 'uat-workbench.html', uri: 'ui://gsd/uat-workbench-v1.html', name: 'gsd-uat-workbench', title: 'GSD UAT Workbench', description: 'Record GSD UAT results.', },
+] as const;
+
+function indexMcpApps(root: string, readDir: (absPath: string) => DirEntryLike[], out: Map<string, CatalogResourceEntryInternal>): void {
+  const appsAbs = path.join(root, 'assets', 'mcp-apps');
+  const entries = tryReadDir(readDir, appsAbs);
+  if (entries === null) return;
+  const names = new Set(entries.filter((entry) => !entry.isDirectory()).map((entry) => entry.name));
+  for (const app of MCP_APP_RESOURCES) {
+    if (!names.has(app.file)) continue;
+    const relPath = `assets/mcp-apps/${app.file}`;
+    out.set(app.uri, {
+      ...app,
+      mimeType: 'text/html;profile=mcp-app',
+      _meta: { 'ui.prefersBorder': true },
+      relPath,
+      absPath: path.join(appsAbs, app.file),
+    });
+  }
+}
+
 /**
  * Build the immutable catalog index over `root` (or, if omitted, this
  * module's own package location — never `ctx.cwd`; design row 16).
@@ -447,6 +471,7 @@ export function buildCatalog(opts: BuildCatalogOptions = {}): Catalog {
 
   indexResourceSegments(root, readDir, resources);
   indexPromptSegment(root, readDir, prompts, resources);
+  indexMcpApps(root, readDir, resources);
 
   return { resources, prompts, root, readFile };
 }

@@ -34,7 +34,7 @@ test('gsd-mcp-server bin: initialize handshake + tools/list over stdio, then cle
   assert.strictEqual(lines.length, 2, 'one response per request');
   assert.strictEqual(lines[0].id, 1);
   assert.strictEqual(lines[0].result.protocolVersion, PROTOCOL_VERSION, 'initialize returns the protocol version');
-  assert.ok(Array.isArray(lines[1].result.tools) && lines[1].result.tools.length === 3, 'tools/list advertises the 3 tools');
+  assert.ok(Array.isArray(lines[1].result.tools) && lines[1].result.tools.length === 6, 'tools/list advertises the 6 tools');
 });
 
 test('gsd-mcp-server bin: a malformed line surfaces a JSON-RPC parse error; the server keeps running', () => {

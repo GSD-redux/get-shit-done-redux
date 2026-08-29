@@ -147,6 +147,38 @@ const TOOLS = [
       required: ['path', 'content'],
     },
   },
+  {
+    name: 'gsd_control_center',
+    description: 'Read the selected project planning snapshot for the GSD Control Center.',
+    _meta: { 'ui/resourceUri': 'ui://gsd/control-center-v1.html' },
+    inputSchema: {
+      type: 'object', properties: { project_path: { type: 'string', description: 'Absolute project directory.' } }, required: ['project_path'],
+    },
+  },
+  {
+    name: 'gsd_uat_workbench',
+    description: 'Read unresolved UAT items for the selected project.',
+    _meta: { 'ui/resourceUri': 'ui://gsd/uat-workbench-v1.html' },
+    inputSchema: {
+      type: 'object', properties: { project_path: { type: 'string', description: 'Absolute project directory.' } }, required: ['project_path'],
+    },
+  },
+  {
+    name: 'gsd_record_uat_result',
+    description: 'Record a pass or issue for one pending UAT test, then refresh the workbench.',
+    _meta: { 'ui/resourceUri': 'ui://gsd/uat-workbench-v1.html' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_path: { type: 'string', description: 'Absolute project directory.' },
+        file: { type: 'string', description: 'UAT file path under the project .planning directory.' },
+        test: { type: 'integer', minimum: 1, description: 'Pending UAT test number.' },
+        result: { type: 'string', enum: ['pass', 'issue'] },
+        note: { type: 'string' },
+      },
+      required: ['project_path', 'file', 'test', 'result'],
+    },
+  },
 ];
 
 function errorResponse(id: unknown, code: number, message: string, data?: unknown) {
@@ -186,15 +218,44 @@ function catalogErrorCode(err: unknown): number {
   return catalogErrorReason(err) === REASON.READ_FAILED ? INTERNAL_ERROR : INVALID_PARAMS;
 }
 
-function wireResource(entry: { uri: string; name: string; title: string; description: string; mimeType: string }) {
-  return { uri: entry.uri, name: entry.name, title: entry.title, description: entry.description, mimeType: entry.mimeType };
+function wireResource(entry: { uri: string; name: string; title: string; description: string; mimeType: string; _meta?: { 'ui.prefersBorder': true } }) {
+  return entry._meta === undefined
+    ? { uri: entry.uri, name: entry.name, title: entry.title, description: entry.description, mimeType: entry.mimeType }
+    : { uri: entry.uri, name: entry.name, title: entry.title, description: entry.description, mimeType: entry.mimeType, _meta: entry._meta };
 }
 
 function wirePrompt(entry: { name: string; title: string; description: string }) {
   return { name: entry.name, title: entry.title, description: entry.description };
 }
 
-function callTool(name: string, args: unknown, ctx: McpContext): { content: Array<{ type: string; text: string }>; isError?: boolean } {
+function toolError(text: string) {
+  return { isError: true, content: [{ type: 'text', text }] };
+}
+
+function projectPath(value: unknown): string | null {
+  if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
+  try {
+    return fs.statSync(value).isDirectory() ? path.resolve(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function parsedDispatch(family: string, subcommand: string, args: string[], cwd: string): { value?: unknown; error?: string } {
+  const res = dispatchGsdCommand({ family, subcommand, args, cwd });
+  if (!res.ok) return { error: res.stderr || res.stdout || `dispatch failed (exit ${res.code})` };
+  try {
+    return { value: JSON.parse(res.stdout) };
+  } catch {
+    return { error: 'GSD command returned invalid JSON.' };
+  }
+}
+
+function structured(value: unknown) {
+  return { structuredContent: value, content: [{ type: 'text', text: JSON.stringify(value) }] };
+}
+
+function callTool(name: string, args: unknown, ctx: McpContext): { content: Array<{ type: string; text: string }>; isError?: boolean; structuredContent?: unknown } {
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
   const cwd = asString(ctx.cwd) || process.cwd();
   try {
@@ -209,6 +270,29 @@ function callTool(name: string, args: unknown, ctx: McpContext): { content: Arra
         return { isError: true, content: [{ type: 'text', text: res.stderr || res.stdout || `dispatch failed (exit ${res.code})` }] };
       }
       return { content: [{ type: 'text', text: res.stdout }] };
+    }
+    if (name === 'gsd_control_center' || name === 'gsd_uat_workbench' || name === 'gsd_record_uat_result') {
+      const project = projectPath(a.project_path);
+      if (!project) return toolError(`${name} requires an existing absolute "project_path" directory.`);
+      if (name === 'gsd_control_center') {
+        const result = parsedDispatch('planning', 'inspect', [], project);
+        return result.error ? toolError(result.error) : structured(result.value);
+      }
+      if (name === 'gsd_uat_workbench') {
+        const result = parsedDispatch('audit-uat', 'run', [], project);
+        return result.error ? toolError(result.error) : structured(result.value);
+      }
+      const file = asString(a.file);
+      const test = a.test;
+      const result = asString(a.result);
+      const note = asString(a.note);
+      if (!file || !Number.isInteger(test) || (result !== 'pass' && result !== 'issue') || (a.note !== undefined && note === null)) {
+        return toolError('gsd_record_uat_result requires string "file", integer "test", result "pass" or "issue", and optional string "note".');
+      }
+      const mutation = parsedDispatch('uat', 'record-result', ['--file', file, '--test', String(test), '--result', result, ...(note === null ? [] : ['--note', note])], project);
+      if (mutation.error) return toolError(mutation.error);
+      const workbench = parsedDispatch('audit-uat', 'run', [], project);
+      return workbench.error ? toolError(workbench.error) : structured({ mutation: mutation.value, workbench: workbench.value });
     }
     if (name === 'gsd_read_state') {
       const p = asString(a.path);
@@ -284,7 +368,8 @@ export function handleMessage(request: JsonRpcRequest, ctx: McpContext = {}): Re
       const params = (request.params && typeof request.params === 'object' ? request.params : {}) as Record<string, unknown>;
       try {
         const read = readResource(getCatalog(), params.uri);
-        result = { contents: [{ uri: read.uri, mimeType: read.mimeType, text: read.text }] };
+        const entry = getCatalog().resources.get(read.uri);
+        result = { contents: [{ uri: read.uri, mimeType: read.mimeType, text: read.text, ...(entry?._meta === undefined ? {} : { _meta: entry._meta }) }] };
       } catch (e) {
         return errorResponse(id, catalogErrorCode(e), catalogErrorMessage(e));
       }

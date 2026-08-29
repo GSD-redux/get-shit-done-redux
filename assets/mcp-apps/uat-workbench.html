@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GSD UAT Workbench</title></head>
+<body><main><h1>GSD UAT Workbench</h1><label>Project path <input id="project" type="text" autocomplete="off"></label><button id="load" type="button">Load UAT</button><form id="record"><label>UAT file <input id="file" required></label><label>Test <input id="test" type="number" min="1" required></label><label>Result <select id="status"><option>pass</option><option>issue</option></select></label><label>Note <input id="note"></label><button>Record result</button></form><output id="result" aria-live="polite"></output></main>
+<script>
+'use strict';
+let requestId = 0;
+const result = document.getElementById('result');
+parent.postMessage({ jsonrpc: '2.0', method: 'ui/initialize', params: {} }, '*');
+function callTool(name, args) { const id = ++requestId; parent.postMessage({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }, '*'); return id; }
+function render(value) { result.textContent = JSON.stringify(value, null, 2); }
+function project() { return document.getElementById('project').value; }
+document.getElementById('load').addEventListener('click', () => { result.textContent = 'Loading…'; callTool('gsd_uat_workbench', { project_path: project() }); });
+document.getElementById('record').addEventListener('submit', (event) => { event.preventDefault(); result.textContent = 'Recording…'; callTool('gsd_record_uat_result', { project_path: project(), file: document.getElementById('file').value, test: Number(document.getElementById('test').value), result: document.getElementById('status').value, note: document.getElementById('note').value }); });
+window.addEventListener('message', (event) => { const message = event.data; if (!message || typeof message !== 'object') return; if (message.method === 'ui/notifications/tool-result') render(message.params); else if (message.id && (message.result || message.error)) render(message.result || message.error); });
+</script></body></html>

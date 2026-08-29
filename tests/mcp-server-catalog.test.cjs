@@ -48,11 +48,18 @@ describe('initialize / capabilities', () => {
     assert.equal(Object.prototype.hasOwnProperty.call(resourcesCap, 'listChanged'), false, 'resources capability must not declare listChanged — nothing ever sends the notification');
   });
 
-  test('catalog addition does not disturb the tool surface (row 3)', () => {
+  test('catalog addition retains the full tool surface (row 3)', () => {
     const res = handleMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     assert.ok(res.result, 'tools/list must succeed');
     const names = res.result.tools.map((tool) => tool.name).sort();
-    assert.deepEqual(names, ['gsd_invoke_command', 'gsd_read_state', 'gsd_write_state']);
+    assert.deepEqual(names, [
+      'gsd_control_center',
+      'gsd_invoke_command',
+      'gsd_read_state',
+      'gsd_record_uat_result',
+      'gsd_uat_workbench',
+      'gsd_write_state',
+    ]);
   });
 });
 

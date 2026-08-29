@@ -28,10 +28,17 @@ test('initialize: returns protocolVersion + capabilities + serverInfo', () => {
   assert.strictEqual(res.result.serverInfo.name, SERVER_NAME);
 });
 
-test('tools/list: advertises the 3 interface-point tools', () => {
+test('tools/list: advertises the interface-point and Codex app tools', () => {
   const res = handleMessage({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
   const names = res.result.tools.map((t) => t.name);
-  assert.deepStrictEqual(names.sort(), ['gsd_invoke_command', 'gsd_read_state', 'gsd_write_state']);
+  assert.deepStrictEqual(names.sort(), [
+    'gsd_control_center',
+    'gsd_invoke_command',
+    'gsd_read_state',
+    'gsd_record_uat_result',
+    'gsd_uat_workbench',
+    'gsd_write_state',
+  ]);
 });
 
 test('tools/call gsd_read_state + gsd_write_state: round-trip through the stateIO seam (point 5)', () => {
