@@ -138,72 +138,21 @@ function routeStateCommand({ state, args, cwd, raw, error }: RouteStateCommandOp
       'advance-plan': () => {
         // #3830 facet 2: reject unrecognized options instead of discarding them.
         //
-        // `parseNamedArgs` is an ALLOWLIST PROJECTION — it reads only the flags
-        // a caller names and silently drops every other token. This verb named
-        // none and took none, so `--plan 10 --total 10` (flags a caller might
-        // reasonably believe bind the very value the verb got wrong) parsed as
-        // nothing at all, and the verb returned a confident result those flags
-        // had not touched. That silence is what let the first diagnosis of the
-        // incident behind #3830 mis-attribute an unrelated corruption here.
+        // Routed to the canonical owner rather than hand-rolled. `parseNamedArgsOrExit`
+        // (#3884, src/command-arg-projection.cts) is what every other arm in this file
+        // uses, and `positionals: 2` states what this verb is: the two command words,
+        // then nothing. It rejects `--plan 10` as an unknown flag, `5` / `01` / `-x` /
+        // `-p 10` as unexpected positional arguments, and a bare `--` as an unknown flag
+        // — one usage contract and one `ERROR_REASON.USAGE` code across every arm here.
         //
-        // Safe to be strict at this layer: `main()` splices every global flag
-        // out of argv before any router runs (`--json-errors`, `--cwd`/`--cwd=`,
-        // `--ws`, `--raw`, `--pick`, `--default`), so a `--`-prefixed token that
-        // survives to here is command-scoped and genuinely unrecognized. The
-        // filter is index-independent on purpose — the leading tokens are
-        // command words and can never be `--`-prefixed, so it reads the same
-        // whether this verb was reached as `state advance-plan` or
-        // `state.advance-plan`.
-        //
-        // Rejected rather than bound: this verb's defect is mutating on an
-        // unvalidated position, and an operator-supplied `--plan`/`--total`
-        // would be an unvalidated position arriving at a different port. To be
-        // useful as an escape hatch it would have to BYPASS the disk
-        // cross-check added above — i.e. ship a documented way to write a
-        // fabricated plan position. The repair path for a genuinely diverged
-        // STATE.md is the existing one: `state rebuild`, `state sync`, or
+        // Rejected rather than bound: this verb's defect is mutating on an unvalidated
+        // position, and an operator-supplied `--plan`/`--total` would be an unvalidated
+        // position arriving at a different port. To be useful as an escape hatch it
+        // would have to BYPASS the disk cross-check added above — i.e. ship a documented
+        // way to write a fabricated plan position. The repair path for a genuinely
+        // diverged STATE.md is the existing one: `state rebuild`, `state sync`, or
         // `state patch`.
-        // #3862 review (Minor x2): the previous filter was
-        // `args.filter((t) => t !== '--' && t.startsWith('--'))`, which had two
-        // defects that share one cause — it screened TOKEN SHAPES rather than
-        // scoping the caller-supplied REGION.
-        //
-        // (1) It caught only `--`-prefixed tokens, so `state advance-plan 5`,
-        //     `01`, `-x` and `-p 10` were still silently discarded: the exact
-        //     #3830-facet-2 defect this arm exists to close, at a different
-        //     token shape. This verb takes no options AND no operands, so all
-        //     of those are unambiguously invalid input being accepted.
-        // (2) Its comment invoked POSIX end-of-options while implementing a
-        //     whole-array `!== '--'` exclusion, which is not the same rule.
-        //     `state advance-plan -- --plan` errored on `--plan` as an OPTION —
-        //     precisely the invocation POSIX says must be read as an operand.
-        //
-        // Both are closed by slicing instead of filtering. The command words
-        // occupy indices 0-1 in BOTH invocation forms — gsd-tools.cjs splits the
-        // dotted canonical form into `[head, rest, ...args.slice(1)]` before any
-        // router runs — so everything from index 2 on is caller-supplied, the
-        // same boundary the sibling handlers above rely on when they read their
-        // first operand at `args[2]`.
-        //
-        // Then honour `--` as POSIX actually specifies: drop the FIRST one and
-        // read what follows as operands. A bare `state advance-plan --` stays
-        // legal (nothing follows it). `-- --plan` is still rejected — this verb
-        // takes no operands either — but as the operand it is, rather than
-        // mislabelled an option. Safe to be this strict here because `main()`
-        // splices every global flag out of argv first (`--json-errors`, `--cwd`
-        // and `--cwd=`, `--ws` and `--ws=`, `--raw`, `--pick`, `--default`), and
-        // `--help` / version flags short-circuit ahead of dispatch, so nothing
-        // legitimate survives to index 2.
-        const supplied = args.slice(2);
-        const endOfOptions = supplied.indexOf('--');
-        const unrecognized =
-          endOfOptions === -1
-            ? supplied
-            : [...supplied.slice(0, endOfOptions), ...supplied.slice(endOfOptions + 1)];
-        if (unrecognized.length > 0) {
-          error(`state advance-plan takes no options or arguments; unrecognized: ${unrecognized.join(' ')}`);
-          return;
-        }
+        parseNamedArgsOrExit(args, { positionals: 2 }, error);
         state.cmdStateAdvancePlan(cwd, raw);
       },
       'record-metric': () => {
