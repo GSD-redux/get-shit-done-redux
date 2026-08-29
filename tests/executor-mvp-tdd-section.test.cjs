@@ -555,7 +555,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       },
       {
         section: 'RED Predicate',
-        needle: 'does not prove that the missing entity is the declared `implementation_target`',
+        needle: 'does not prove the missing entity is the declared `implementation_target`',
         verdict: null,
         why: 'arm 2 proves the failure belongs to the declared TEST FILE, not that it concerns '
           + 'the declared implementation target — an unrelated missing dependency in that same '
