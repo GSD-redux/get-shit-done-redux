@@ -2440,6 +2440,23 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     assert.ok(!/matches neither count/.test(ranged.stderr),
       `and it must not carry the total-mismatch wording; got: ${ranged.stderr}`);
 
+    // Total matches the ALL-FILES count rather than the live one. Pass 4 of the round
+    // review found the fixtures above exercise only `plan_count`, so a branch that
+    // checked that count alone would pass every assertion here. 12 files, 8 live,
+    // prose total 12: matches planCountAll and not planCount, position out of range.
+    fs.rmSync(phaseDir, { recursive: true, force: true });
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= 12; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`),
+        `---\nstatus: ${i <= 8 ? 'complete' : 'superseded'}\n---\n# Plan\n`);
+    }
+    writeState('Plan: 15 of 12');
+    const allFiles = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(allFiles.exitCode, 0, `must still exit 0: ${allFiles.stderr}`);
+    assert.match(allFiles.stderr, /total agrees with the plans on disk, but the position is outside it/,
+      `a total matching plan_count_all also agrees; got: ${allFiles.stderr}`);
+
     // Total matches NEITHER count — the original case, still worded that way.
     seedPhase('01-demo', 12);
     writeState('Plan: 2 of 7');

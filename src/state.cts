@@ -1161,10 +1161,16 @@ function warnPositionDiverged(data: Record<string, unknown>): void {
   // NOT `Number()`. These arrive as `unknown`, and `Number('')` and `Number(null)`
   // are both 0 — so a blank or null prose total against a zero disk count would take
   // the "total agrees" branch and tell the operator the wrong half of the line is
-  // wrong. Production emits numbers, so the bad shapes are unreachable today; that is
-  // a reason to state the narrowing accurately, not to skip it. Anything that is not
-  // a finite number falls to the "matches neither" branch, which is the honest
-  // default when the payload cannot be read.
+  // wrong. Anything that is not a finite number falls to the "matches neither"
+  // branch, the honest default when the payload cannot be read.
+  //
+  // HARDENING, and declared as such: this narrowing has NO reversion control, for the
+  // same structural reason as the scrub below. `resultData` is built by
+  // advancePlanCore and every field it carries is a number, so no CLI input produces
+  // `''`, `null`, `NaN` or a numeric string here — reverting to `Number()` leaves the
+  // warning-wording test green because the test can only reach the shapes that are
+  // reachable. Two behavioural changes in this round are hardening rather than fixes
+  // (this and the scrub), and both say so rather than being counted as covered.
   const asFiniteNumber = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? v : null;
   const proseTotal = asFiniteNumber(prose['total_plans']);
