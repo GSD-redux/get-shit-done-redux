@@ -9,7 +9,7 @@
  * GSD Tools Tests - Commands
  */
 
-const { test, describe, beforeEach, afterEach } = require('node:test');
+const { test, describe, before, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -2905,6 +2905,29 @@ describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
   let tmpDir;
   let hookPath;
 
+  // #3901: a developer's GLOBAL core.hooksPath (~/.gitconfig) applies to every
+  // fresh repo — the guard correctly refuses to install a hook git would never
+  // run, which used to fail this suite's beforeEach (18 tests) on machines that
+  // centralize commit hooks. Pin GIT_CONFIG_GLOBAL to an empty file for the
+  // whole suite (runGsdTools and the git helpers propagate process.env to every
+  // child), making the fixtures independent of the host's git configuration.
+  // A LOCAL repo value cannot isolate this: `git config --get` returns any
+  // non-empty local value (same refusal), and an empty local value makes
+  // `rev-parse --git-path hooks` resolve to `./` — not `.git/hooks`.
+  let globalCfgFile;
+  let prevGitConfigGlobal;
+  before(() => {
+    globalCfgFile = createTempDir('gsd-3901-gitconfig-');
+    prevGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = path.join(globalCfgFile, 'global.gitconfig');
+    fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, '');
+  });
+  after(() => {
+    if (prevGitConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = prevGitConfigGlobal;
+    cleanup(globalCfgFile);
+  });
+
   beforeEach(() => {
     tmpDir = createTempGitProject();
     const enableResult = runGsdTools('commit-docs-guard enable --raw', tmpDir);
@@ -2912,19 +2935,29 @@ describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
     hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
   });
 
-  test('#3901: enable succeeds even when a GLOBAL core.hooksPath is configured', () => {
-    // Simulate the developer machine via GIT_CONFIG_GLOBAL pointing at a
-    // hostile file (a fresh repo still inherits ~/.gitconfig): the guard
-    // correctly refuses to install a hook git would never run — the fixture
-    // must isolate the suite from the host's git config instead of failing
-    // 18 tests that read as a commit-docs-guard regression.
-    const globalCfg = path.join(tmpDir, '..', 'gsd-3901-global.gitconfig');
-    fs.writeFileSync(globalCfg, '[core]\n\thooksPath = /definitely/not/.git/hooks\n');
-    const result = runGsdTools('commit-docs-guard enable --raw', tmpDir, {
-      GIT_CONFIG_GLOBAL: globalCfg,
+  test('#3901: the suite isolates children from the host git config (global core.hooksPath)', () => {
+    // The developer-machine scenario this suite must survive: a hostile
+    // ~/.gitconfig with core.hooksPath set. The before() hook pins
+    // GIT_CONFIG_GLOBAL to an empty file; this pins the seam is actually
+    // armed and reaching children — a child git sees NO hooksPath from the
+    // host, so the guard never refuses and the 18 tests never fail. (A child
+    // given an explicitly hostile GIT_CONFIG_GLOBAL still refuses — that is
+    // the guard being correct, and it is covered where the refusal is
+    // asserted.)
+    assert.ok(
+      process.env.GIT_CONFIG_GLOBAL && fs.existsSync(process.env.GIT_CONFIG_GLOBAL),
+      'the isolation file is armed for this suite',
+    );
+    assert.equal(fs.readFileSync(process.env.GIT_CONFIG_GLOBAL, 'utf-8'), '',
+      'the isolation file is empty — children inherit no host config');
+    const { spawnSync } = require('node:child_process');
+    const probe = spawnSync('git', ['config', '--get', 'core.hooksPath'], {
+      cwd: tmpDir,
+      encoding: 'utf-8',
+      timeout: 15_000,
     });
-    assert.ok(result.success, `enable failed under a global core.hooksPath: ${result.error}`);
-    assert.ok(fs.existsSync(hookPath), 'the hook is installed at the repo-local default path');
+    assert.notEqual(probe.status, 0, `a child git must not see a host core.hooksPath; got: ${probe.stdout}`);
+    assert.ok(fs.existsSync(hookPath), 'the beforeEach enable installed the hook at the repo-local default path');
   });
 
   afterEach(() => {
