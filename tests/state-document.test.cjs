@@ -132,6 +132,53 @@ describe('stateReplaceField — CRLF (#2880)', () => {
   });
 });
 
+// #4010: when a STATE.md body field is empty, the label-to-value gap `\s*` in
+// stateReplaceField's bold/plain patterns crossed the newline and `(.*)` ate the
+// following line, which the rebuild then discarded — silent data-loss. The fix
+// confines the gap to same-line whitespace (`[ \t]*`, mirroring the already-
+// correct read side at stateExtractField) and pins the separator to a single
+// space when the label line had none (no glued `**Status:**value`). These assert
+// the EXACT output so the glued shape cannot pass (ADR-3180 §7.7 same-line owner).
+describe('stateReplaceField — empty field preserves the following line (#4010)', () => {
+  test('bold empty field: value lands on the label line, next line survives, no glue', () => {
+    const input = '**Status:**\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('plain empty field: value lands on the label line, next line survives, no glue', () => {
+    const input = 'Status:\nCurrent Plan: 2 of 5';
+    const expected = 'Status: Executing Phase 5\nCurrent Plan: 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('bold empty field on a CRLF document preserves the following line', () => {
+    const input = '**Status:**\r\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\r\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('plain empty field on a CRLF document preserves the following line', () => {
+    const input = 'Status:\r\nCurrent Plan: 2 of 5';
+    const expected = 'Status: Executing Phase 5\r\nCurrent Plan: 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('non-empty bold field stays byte-identical to prior behaviour', () => {
+    const input = '**Status:** Planning\n**Current Plan:** 2 of 5';
+    const expected = '**Status:** Executing Phase 5\n**Current Plan:** 2 of 5';
+    assert.equal(stateReplaceField(input, 'Status', 'Executing Phase 5'), expected);
+  });
+
+  test('E2E: transitionCore update of an empty field preserves the next line (ADR-3180 Decision 4(c))', () => {
+    const { transitionCore } = require('../gsd-core/bin/lib/state-transition.cjs');
+    const content = '## Current Position\n\n**Status:**\n**Current Plan:** 2 of 5';
+    const result = transitionCore(content, { kind: 'update', field: 'Status', value: 'Executing Phase 5' });
+    assert.equal(result.content, '## Current Position\n\n**Status:** Executing Phase 5\n**Current Plan:** 2 of 5');
+    assert.deepEqual(result.updated, ['Status']);
+  });
+});
+
 describe('stateExtractField (#2880)', () => {
   test('extracts from a two-cell row', () => {
     const input = '| Current Phase | 3 |';
