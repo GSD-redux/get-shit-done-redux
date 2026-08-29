@@ -1119,8 +1119,27 @@ function warnPositionDiverged(data: Record<string, unknown>): void {
   // the one place a silently wrong value is worst. `@typescript-eslint/no-base-to-string`
   // flags it, and the flag is right; `?` is the honest rendering of a field the
   // refusal did not carry.
+  // #3862 review (Minor 8): strip C0/DEL before rendering. HARDENING, not a bug
+  // fix, and the distinction is stated because the review's premise does not hold
+  // as written: I could not reach this render with a control character.
+  //
+  // `disk.phase` is `normalized` from resolvePlanSetForPhase, and reaching the
+  // warning at all requires that value to BOTH survive normalizePhaseName AND
+  // match a real phase directory via matchPhaseDirs. Those two conditions exclude
+  // control characters between them — a numeric phase keeps only its digits
+  // (`01<ESC>[31m (Demo)` -> `01`), a project-code phase is stripped to its number
+  // (`PROJ-42<ESC>[31m` -> `42`), and an escape placed INSIDE the token normalizes
+  // to something no directory matches, so the scan returns ok:false and the gate
+  // abstains before any warning is emitted. Driven across all five shapes.
+  //
+  // Kept anyway, because it costs one line and normalizePhaseName's final branch
+  // is a genuine as-is passthrough (`return str`) — a future widening of
+  // matchPhaseDirs would open what only the matcher currently closes. Deliberately
+  // NOT pinned by a test: no input reaches the branch, so any test would assert
+  // over an unreachable state and pass whatever this line did.
+  const scrub = (v: string): string => v.replace(/[\x00-\x1f\x7f]/g, '');
   const scalar = (v: unknown): string =>
-    typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'bigint' ? v.toString() : '?';
+    typeof v === 'string' ? scrub(v) : typeof v === 'number' || typeof v === 'bigint' ? v.toString() : '?';
   const prose = (data['prose'] ?? {}) as Record<string, unknown>;
   const disk = (data['disk'] ?? {}) as Record<string, unknown>;
   const phase = disk['phase'] == null ? 'the current phase' : `phase ${scalar(disk['phase'])}`;
