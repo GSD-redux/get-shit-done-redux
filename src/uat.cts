@@ -462,6 +462,14 @@ function quoteUatValue(value: string): string {
   return JSON.stringify(value);
 }
 
+function hasMeaningfulReason(reason: string | null): boolean {
+  if (reason === null) return false;
+  const trimmed = reason.trim();
+  const quoted = trimmed.match(/^(['"])([\s\S]*)\1$/);
+  const value = (quoted?.[2] ?? trimmed).trim();
+  return value !== '' && !/^(?:null|~)$/i.test(value);
+}
+
 function inferIssueSeverity(note: string): 'blocker' | 'major' | 'minor' | 'cosmetic' {
   if (/crash|error|exception|fails completely|unusable/i.test(note)) return 'blocker';
   if (/color|font|spacing|alignment|visual|looks off/i.test(note)) return 'cosmetic';
@@ -500,7 +508,8 @@ function strictAtomicWrite(filePath: string, content: string): void {
   const tmpPath = `${filePath}.tmp-${process.pid}-${++strictAtomicWriteCounter}`;
   try {
     const normalized = normalizeContent(filePath, content);
-    fs.writeFileSync(tmpPath, normalized.content, { encoding: normalized.encoding, flag: 'wx' });
+    const mode = fs.statSync(filePath).mode & 0o7777;
+    fs.writeFileSync(tmpPath, normalized.content, { encoding: normalized.encoding, flag: 'wx', mode });
     retryRenameSync(tmpPath, filePath);
   } catch (cause) {
     try { fs.rmSync(tmpPath, { force: true }); } catch { /* best-effort cleanup */ }
@@ -525,6 +534,7 @@ function cmdRecordResult(
 
   const candidate = requireSafePath(options.file, cwd, 'UAT file', { allowAbsolute: true });
   const resolvedPath = requireSafePath(candidate, planningDir(cwd), 'UAT file', { allowAbsolute: true });
+  if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) error(`UAT file not found: ${options.file}`);
   const mutation = withPlanningLock(cwd, () => {
     if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) error(`UAT file not found: ${options.file}`);
 
@@ -573,7 +583,7 @@ function cmdRecordResult(
     }
     const next = updatedRecords.find((test) => test.result === 'pending');
     const partial = counts.pending > 0 || counts.blocked > 0
-      || updatedRecords.some((test) => test.result === 'skipped' && !test.reason?.trim());
+      || updatedRecords.some((test) => test.result === 'skipped' && !hasMeaningfulReason(test.reason));
     const status = partial ? 'partial' : 'complete';
     updated = replaceSectionBody(updated, 'Current Test', renderCurrentTest(next));
     updated = replaceSectionBody(updated, 'Summary', [

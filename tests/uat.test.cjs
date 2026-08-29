@@ -1642,6 +1642,49 @@ blocked: 0
     assert.match(fs.readFileSync(uatPath, 'utf8'), /^status: complete$/m);
   });
 
+  test('treats YAML-lite empty and null skip reasons as unexplained', () => {
+    for (const reason of ['""', "''", 'null', 'NULL', '~', '"null"']) {
+      writeUat();
+      fs.writeFileSync(uatPath, fs.readFileSync(uatPath, 'utf8')
+        .replace('result: pending\n\n## Summary', `result: skipped\nreason: ${reason}\n\n## Summary`));
+
+      const result = runGsdTools([
+        'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+        '--test', '1', '--result', 'pass', '--raw',
+      ], tmpDir);
+
+      assert.equal(result.success, true, result.error);
+      assert.equal(JSON.parse(result.output).status, 'partial', `${reason} must not explain a skipped check`);
+    }
+  });
+
+  test('preserves the UAT file mode across atomic replacement', () => {
+    fs.chmodSync(uatPath, 0o640);
+
+    const result = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '1', '--result', 'pass', '--raw',
+    ], tmpDir);
+
+    assert.equal(result.success, true, result.error);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(uatPath).mode & 0o777, 0o640);
+  });
+
+  test('rejecting a missing UAT file does not create a planning directory', () => {
+    const emptyProject = createTempDir();
+    try {
+      const result = runGsdTools([
+        'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+        '--test', '1', '--result', 'pass', '--raw',
+      ], emptyProject);
+
+      assert.equal(result.success, false);
+      assert.equal(fs.existsSync(path.join(emptyProject, '.planning')), false);
+    } finally {
+      cleanup(emptyProject);
+    }
+  });
+
   test('rejects ambiguous rows, duplicate test numbers, and unsafe integers byte-identically', () => {
     const mutations = [
       (content) => content.replace('result: pending\n\n### 2.', 'result: pending\nresult: pass\n\n### 2.'),
