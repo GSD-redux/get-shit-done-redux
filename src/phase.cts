@@ -1164,7 +1164,11 @@ function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
     porcelain = execFileSync('git', ['worktree', 'list', '--porcelain'], {
       cwd,
       encoding: 'utf-8',
-      timeout: 4000,
+      // Same subprocess band as the other git call sites (smart-entry, check-command-router):
+      // inside the 5-30s git window, hidden console window on Windows, bounded buffer.
+      timeout: 10_000,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
     });
   } catch {
     return; // not a git repo / git unavailable — unchanged behavior

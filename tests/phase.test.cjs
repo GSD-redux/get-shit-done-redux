@@ -2504,7 +2504,7 @@ describe('phase add allocation vs sibling git worktrees (#3849)', () => {
   const activeDirs = [];
 
   function git(args, cwd) {
-    return execFileSync('git', args, { cwd, encoding: 'utf-8' });
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15_000 });
   }
 
   function initRepo(repoDir) {
@@ -2541,6 +2541,7 @@ describe('phase add allocation vs sibling git worktrees (#3849)', () => {
     const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-bare-'));
     git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
     activeWorktrees.push({ repoDir, worktreeDir });
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- fixture SETUP, not teardown: strips the tracked .planning/ so this worktree has none; cleanup() owns the dir's removal with the Windows retry budget
     fs.rmSync(path.join(worktreeDir, '.planning'), { recursive: true, force: true });
     return worktreeDir;
   }
@@ -2607,6 +2608,35 @@ describe('phase add allocation vs sibling git worktrees (#3849)', () => {
 
     const output = JSON.parse(result.output);
     assert.strictEqual(output.phase_number, 441, 'no sibling numbers visible — max+1 from the local 440');
+  });
+
+  test('allocation FROM a linked worktree counts the main checkout too (the incident topology)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-linked-'));
+    activeDirs.push(repoDir);
+    initRepo(repoDir);
+    // The real incident ran the other direction: cwd is a linked worktree and
+    // the MAIN checkout (scanned as a sibling here) holds the higher number.
+    const sha = git(['rev-parse', 'HEAD'], repoDir).trim();
+    const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-linked-wt-'));
+    git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
+    activeWorktrees.push({ repoDir, worktreeDir });
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- fixture SETUP, not teardown: strips the tracked .planning/ so this worktree has none; cleanup() owns the dir's removal with the Windows retry budget
+    fs.rmSync(path.join(worktreeDir, '.planning'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(worktreeDir, '.planning', 'phases'), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktreeDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap v1.0', '', '### Phase 440: base', '**Goal:** Setup', '', '---', ''].join('\n')
+    );
+
+    const result = runGsdTools('phase add from linked', worktreeDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      441,
+      '#3849: the main checkout (440) must be visible when allocating from a linked worktree'
+    );
   });
 
   test('phase add-batch counts bullet-only Phase N rows (#1229 reached the batch path)', () => {
