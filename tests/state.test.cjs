@@ -2503,6 +2503,66 @@ describe('#3830: state advance-plan checks its prose position against the plans 
       'advance-plan and phase-plan-index must agree on the plan count');
   });
 
+  // #3862 review (Major 3): the total agreeing with disk says nothing about where
+  // the position sits inside it. Each case below has a prose total that MATCHES the
+  // twelve plans on disk, so the total test passes and only the range check stands
+  // between the input and a write.
+  test('a current_plan outside the plan set is a divergence, even when the TOTAL agrees', () => {
+    for (const planLine of ['Plan: 20 of 12', 'Plan: 13 of 12', 'Plan: 0 of 12', 'Plan: -1 of 12']) {
+      seedPhase('01-demo', 12);
+      writeState(planLine);
+      const before = stateText();
+
+      const result = runGsdTools('state advance-plan', tmpDir);
+      assert.ok(result.success, `the refusal must still exit 0: ${result.error}`);
+      const output = JSON.parse(result.output);
+
+      assert.strictEqual(output.advanced, false, `${planLine} must not advance`);
+      assert.strictEqual(output.reason, 'position_diverged',
+        `${planLine} is out of range and must be reported as a divergence`);
+      assert.strictEqual(output.status, undefined,
+        `${planLine} must not be allowed to claim ready_for_verification`);
+      assert.strictEqual(stateText(), before,
+        `${planLine} must leave STATE.md byte-identical`);
+    }
+  });
+
+  test('the range check does not fire on an all-superseded phase positioned past the LIVE count', () => {
+    // The bound is planCountAll, not planCount, and this is the negative control
+    // for that choice: eight plan FILES of which none is live, prose positioned at
+    // 5 of 8. Bounding on the live count would manufacture a divergence out of
+    // ordinary supersession — the same reason the total test accepts either count.
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= 8; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`), '---\nstatus: superseded\n---\n# Plan\n');
+    }
+    writeState('Plan: 5 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `must not fail: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true,
+      'a position inside the full plan set is in range, whatever the live count is');
+    assert.strictEqual(output.current_plan, 6);
+  });
+
+  test('the boundary is inclusive: current_plan == the plan count still advances', () => {
+    // limit-1 / limit / limit+1 for the NEW predicate specifically. `12 of 12` is
+    // the ordinary last plan and must reach last_plan, not the divergence arm — an
+    // off-by-one in `currentPlan > planCountAll` would swallow every phase's final
+    // plan into a refusal.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 12 of 12');
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `must not fail: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, false);
+    assert.strictEqual(output.reason, 'last_plan',
+      'the last plan is in range — it must reach last_plan, never position_diverged');
+  });
+
   test('divergence is reported instead of a premature phase completion', () => {
     // Without the check this took the currentPlan >= totalPlans branch and
     // declared ready_for_verification on a phase holding twelve plans.

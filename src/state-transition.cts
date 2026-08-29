@@ -1882,7 +1882,23 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     const totalDiverged =
       totalPlans !== planSet.planCount && totalPlans !== planSet.planCountAll;
 
-    if (totalDiverged) {
+    // #3862 review (Major 3): a total that agrees with disk says nothing about
+    // where the position sits INSIDE it. `Plan: 20 of 12` against twelve plans on
+    // disk passes the total test, then satisfies `currentPlan >= totalPlans` below
+    // and declares the phase ready_for_verification from a position that provably
+    // exceeds the plan set; `Plan: 0 of 12` and `Plan: -1 of 12` sail through the
+    // same way. This is pure arithmetic over two integers the provider already
+    // returns — it derives no completion predicate and re-reads no `scan.completed`,
+    // so scripts/lint-completion-predicate-drift.cjs does not bite and no
+    // FUNCTION_SCOPED_EXEMPTIONS entry is needed.
+    //
+    // The upper bound is `planCountAll`, never `planCount`: a phase whose plans are
+    // every one of them superseded is legitimately positioned past the LIVE count,
+    // and bounding on that would manufacture a divergence out of ordinary
+    // supersession — the same reason the total test accepts either count.
+    const rangeDiverged = currentPlan < 1 || currentPlan > planSet.planCountAll;
+
+    if (totalDiverged || rangeDiverged) {
       return {
         // The ORIGINAL bytes, not a `reassemble(stripFrontmatter(content))`
         // round-trip: a refusal must not mutate, and frontmatter reconstruction
