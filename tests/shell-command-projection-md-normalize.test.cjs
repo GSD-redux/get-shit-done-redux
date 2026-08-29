@@ -3,7 +3,7 @@
 // exported seam (normalizeContent / platformWriteSync) — no source grepping.
 
 /**
- * Tight-list preservation in markdown write normalization — md-normalize-tight-list.test.cjs
+ * Tight-list preservation in markdown write normalization — shell-command-projection-md-normalize.test.cjs
  *
  * #3854: `phase.complete` (any .md write, really) injected one blank line
  * before every bullet that follows a multi-line item's indented continuation
@@ -27,7 +27,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('node:os');
 const path = require('path');
-const { normalizeContent } = require('../gsd-core/bin/lib/shell-command-projection.cjs');
+const { normalizeContent, platformWriteSync } = require('../gsd-core/bin/lib/shell-command-projection.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const MD = 'roadmap.md';
@@ -101,7 +101,6 @@ describe('#3854: write normalization preserves tight multi-line lists', () => {
     try {
       const target = path.join(osTmp, 'ROADMAP.md');
       const tight = '# Roadmap v1.0\n\n- item one wraps\n  continuation one\n- item two wraps\n  continuation two\n';
-      const { platformWriteSync } = require('../gsd-core/bin/lib/shell-command-projection.cjs');
       platformWriteSync(target, tight);
       const onDisk = fs.readFileSync(target, 'utf-8');
       assert.strictEqual(onDisk, tight, 'platformWriteSync must not convert the tight list to a loose one');
