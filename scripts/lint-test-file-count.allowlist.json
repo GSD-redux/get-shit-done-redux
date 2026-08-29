@@ -263,6 +263,14 @@
         "audit-workstream-layouts.test.cjs"
       ],
       "issue": "#3804/#3805 \u2014 audit-layout and acknowledged-marker suites drive the real audit-uat CLI against on-disk fixtures | #3817 \u2014 regression suite proving countReal counts the truncation remainder marker instead of treating it as one phantom item"
+    },
+    "shell-command-projection": {
+      "files": [
+        "shell-command-projection-dispatch.test.cjs",
+        "shell-command-projection-md-normalize.test.cjs",
+        "shell-command-projection-path-sep.test.cjs"
+      ],
+      "issue": "#3854 \u2014 the tight-list suite pins the markdown write-normalizer's blank-line policy through the exported normalizeContent/platformWriteSync seam; a distinct concern from dispatch routing and path separation"
     }
   }
 }
