@@ -36,6 +36,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Diagnose which gsd-tools is running](how-to/diagnose-a-foreign-gsd-tools.md) — tell this package's tool apart from the predecessor's colliding binary and from a gsd-core too old to identify itself
 - [Resolve an ESLint glob-coverage finding](how-to/resolve-eslint-coverage-findings.md) — bring a source file that matches no lint rule under coverage, or record a reasoned exemption
 - [Resolve a raw-terminator finding](how-to/resolve-a-raw-terminator-finding.md) — pick `runMain`/`ExitError`, `terminateNow`, or `process.exitCode` for a `local/require-registered-exit` finding, and know the two allowlist entries and the rule's documented evasions
+- [Adopt the v2 exit contract](how-to/adopt-the-v2-exit-contract.md) — turn on `gsd-tools`'s versioned exit-code projection, read the code table including what `80` (`DEGRADED`) means, and migrate a CI gate that treats any non-zero exit as fatal
 - [Read the statusline freshness marker](how-to/read-the-statusline-freshness-marker.md) — turn on `state ~N commits back`, and tell "STATE.md is fresh" apart from "freshness could not be established"
 - [Consume the planning snapshot](how-to/consume-the-planning-snapshot.md) — read `planning inspect` from a dashboard or harness, and tell "nothing to report" apart from "could not look"
 - [Consume the state contract](how-to/consume-the-state-contract.md) — read `.planning/state.json` from a workbench or editor extension, gate on the contract version, and tell "nothing to show" apart from "could not look"
@@ -63,6 +64,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Design a UI phase](how-to/design-a-ui-phase.md) — use the UI phase loop for frontend and visual work
 - [Enable live-DOM verification](how-to/enable-live-dom-verification.md) — opt a project into browser-backed UI acceptance checks during execution, handle the browser-profile lock, and tell "nothing to report" apart from "could not look"
 - [Develop a Capability for GSD 1.5+](how-to/develop-a-capability.md) — add feature Capabilities, hook fragments, and registry entries
+- [Develop a task-content resolver capability](how-to/develop-a-task-content-resolver-capability.md) — declare a `taskContentResolver` so `execute-plan.md` resolves per-task content from your external issue tracker instead of `PLAN.md`
 - [Ship a reviewer lane in your capability](how-to/ship-a-reviewer-lane.md) — declare a `reviewer` body so `/gsd-review` discovers, invokes, and renders your external review CLI or model endpoint
 - [List your reviewer lane in the registry](how-to/list-your-reviewer-lane.md) — publish a lane you have built to the Reviewer Lane Registry so other people can find and install it
 - [Take over a capability or EoS integration](how-to/take-over-a-capability-or-eos.md) — assume maintainership of an existing third-party capability, reviewer lane, or EoS host integration through a handoff, an adoption fork, first-party absorption, or a de-listing
@@ -94,6 +96,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Review and verification capabilities](reference/review-verification-capabilities.md) — code review, security, and Nyquist capability ownership and hook contracts
 - [Gate predicates](reference/gate-predicates.md) — canonical specification of the phase-gate predicate vocabulary
 - [Capability matrix](reference/capability-matrix.md) — generated catalogue of every capability's role, tier, extension points, hook kinds, and `engines.gsd`
+- [Exit code reference](reference/exit-codes.md) — generated catalogue of every registered process exit code, its name, meaning, and owning module, plus the reserved bands and the v1/v2 exit contract
 - [Capability manifest](reference/capability-manifest.md) — the full `capability.json` schema and validation rules
 - [`gsd capability` command](reference/gsd-capability-command.md) — install / update / remove / list reference for third-party capabilities
 - [Workflow fragments](reference/workflow-fragments.md) — in-file `<!-- gsd:section -->` marker grammar for fragmentizing workflow markdown at emission time

@@ -13,6 +13,7 @@ const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
+const { ensureScriptsOut } = require('./helpers/exit-code-artifact-flags.cjs');
 
 // Paths to the compiled product seam (src/cli-exit.cts → gsd-core/bin/lib/cli-exit.cjs)
 // used for json-error mode regression tests which require io.cjs integration.
@@ -1120,6 +1121,123 @@ describe('#3906: ambient GSD_EXIT_CONTRACT/--exit-contract wiring (acceptance cr
   });
 });
 
+// ─── #3912 regression: `--exit-contract=<v>` in LEADING argv position ──────
+//
+// resolveContractVersion() scans argv non-destructively (findExitContractFlag,
+// gsd-core/bin/lib/cli-exit.cjs). Nothing previously spliced the flag out of
+// the `gsd-tools` CLI dispatcher's own argv before it fell through to command
+// dispatch — the `--json-errors` block did this splice for itself, but
+// `--exit-contract=<v>` never got the same treatment. The dispatcher treats
+// argv[0] as the command name, so:
+//   `gsd-tools --exit-contract=v2 state validate --strict` (leading) died
+//   with "Unknown command: --exit-contract=v2" (exit 64) — the flag was never
+//   consumed and squatted on the command-name slot.
+//   `gsd-tools state-snapshot --exit-contract=v2` (trailing) worked, because
+//   the flag landed after the command name and never collided with dispatch.
+describe('#3912: gsd-tools dispatcher splices --exit-contract=<v> regardless of argv position', () => {
+  const GSD_TOOLS_BIN = path.resolve(__dirname, '../gsd-core/bin/gsd-tools.cjs');
+
+  function run(args, options = {}) {
+    return toLegacyResult(runNode([GSD_TOOLS_BIN, ...args], { timeoutMs: PROBE_TIMEOUT_MS, ...options }));
+  }
+
+  // Fixture: a temp dir with a `.planning/` directory but no `STATE.md`, so
+  // `state-snapshot` takes the "STATE.md not found" branch — which the
+  // outcome cell resolves to exit 80 under v2 and exit 0 under v1. Pinning
+  // these exact numbers (rather than "not 64" / "leading == trailing")
+  // catches the case where both positions dispatch but land on the SAME
+  // wrong contract.
+  let fixtureDir;
+  afterEach(() => {
+    if (fixtureDir) {
+      cleanup(fixtureDir);
+      fixtureDir = undefined;
+    }
+  });
+  function makeFixture() {
+    fixtureDir = createTempDir();
+    fs.mkdirSync(path.join(fixtureDir, '.planning'), { recursive: true });
+    return fixtureDir;
+  }
+
+  test('leading position dispatches (no "Unknown command", not exit 64)', () => {
+    const r = run(['--exit-contract=v2', 'state', 'validate', '--strict']);
+    assert.notEqual(r.status, 64, `must not fall into the unknown-command path; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `leading --exit-contract=v2 must not be treated as the command name; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('trailing position still dispatches (no regression)', () => {
+    const r = run(['state-snapshot', '--exit-contract=v2']);
+    assert.notEqual(r.status, 64, `must not regress into the unknown-command path; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `trailing --exit-contract=v2 must keep dispatching; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('leading and trailing position agree on the SAME pinned exit code, per contract version', () => {
+    const dir = makeFixture();
+    const leadingV2 = run(['--exit-contract=v2', 'state-snapshot', `--cwd=${dir}`]);
+    const trailingV2 = run(['state-snapshot', `--cwd=${dir}`, '--exit-contract=v2']);
+    const leadingV1 = run(['--exit-contract=v1', 'state-snapshot', `--cwd=${dir}`]);
+    const trailingV1 = run(['state-snapshot', `--cwd=${dir}`, '--exit-contract=v1']);
+    assert.equal(leadingV2.status, 80, `leading v2 must exit 80; stderr: ${leadingV2.stderr}`);
+    assert.equal(trailingV2.status, 80, `trailing v2 must exit 80; stderr: ${trailingV2.stderr}`);
+    assert.equal(leadingV1.status, 0, `leading v1 must exit 0; stderr: ${leadingV1.stderr}`);
+    assert.equal(trailingV1.status, 0, `trailing v1 must exit 0; stderr: ${trailingV1.stderr}`);
+  });
+
+  test('an invalid leading value (v3) fails loudly rather than silently defaulting to v1', () => {
+    const r = run(['--exit-contract=v3', 'state-snapshot']);
+    assert.notEqual(r.status, 80, 'an invalid contract version must not silently resolve to a valid v2 exit code');
+    assert.ok(
+      /unrecognized exit-contract version/.test(r.stderr),
+      `expected the resolveContractVersion rejection message on stderr; got: ${r.stderr.slice(0, 300)}`,
+    );
+    // Distinguishes this from the PRE-FIX build, where the leading flag was
+    // never spliced: pre-fix stderr contains BOTH "Unknown command:
+    // --exit-contract=v3" (from the dispatcher rejecting the leading token)
+    // AND the resolve error (raised lazily via error() -> getContractVersion
+    // later in the same run). Post-fix, the flag is spliced before dispatch,
+    // so only the resolve error appears.
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `leading --exit-contract=v3 must be spliced before dispatch, not treated as the command name; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('multiple --exit-contract= tokens: first match wins, no leftover token reaches the dispatcher', () => {
+    const dir = makeFixture();
+    const r = run(['--exit-contract=v2', '--exit-contract=v1', 'state-snapshot', `--cwd=${dir}`]);
+    assert.equal(r.status, 80, `first-match (v2) must win; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `every --exit-contract= token must be spliced, not just the first; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('leading --exit-contract=v2 does not break run-with-timeout dispatch (#3912 P1 regression)', () => {
+    const r = run(['--exit-contract=v2', 'run-with-timeout', '5', '--', 'node', '-e', 'process.exit(0)']);
+    assert.equal(r.status, 0, `child must run and exit 0, not die with Unknown command; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `leading --exit-contract=v2 must not intercept run-with-timeout's own dispatch; stderr: ${r.stderr}`,
+    );
+  });
+
+  test('leading --json-errors does not break run-with-timeout dispatch (#3912 P1 regression)', () => {
+    const r = run(['--json-errors', 'run-with-timeout', '5', '--', 'node', '-e', 'process.exit(0)']);
+    assert.equal(r.status, 0, `child must run and exit 0, not die with Unknown command; stderr: ${r.stderr}`);
+    assert.ok(
+      !/Unknown command/.test(r.stderr),
+      `leading --json-errors must not intercept run-with-timeout's own dispatch; stderr: ${r.stderr}`,
+    );
+  });
+});
+
 describe('#3906: terminateNow', () => {
   function spawnTerminateNow(lines) {
     return toLegacyResult(runNode(['-e', lines.join('\n')], { timeoutMs: PROBE_TIMEOUT_MS }));
@@ -1707,57 +1825,270 @@ describe('#3911: hooks/lib/cli-exit.js loads and terminates with no build presen
 // ─── #3911 A3: the --check generator guards can actually fail ──────────────
 //
 // CONTEXT.md's prove-it-can-fail rule: a guard that has never been observed
-// to fail is not a guard. For BOTH new committed artifacts, corrupt the
-// committed file, run the generator's --check, assert it fails and names the
-// file, then restore in a `finally` (so a failing assertion here can never
-// leave a committed artifact corrupted) and re-run --check to confirm the
-// restore actually cleared the guard.
+// to fail is not a guard. For BOTH new committed artifacts, corrupt a
+// DISPOSABLE TMPDIR COPY of the artifact (never the committed file itself —
+// test files in this repo run in parallel, and a sibling test
+// (tests/exit-code-registry.test.cjs) asserts byte-equality on the real
+// hooks/lib/exit-code-registry.js concurrently), run the generator's --check
+// redirected at that tmpdir copy via its output-path override flag(s),
+// assert it fails and names the file, then re-run --check against a
+// freshly-restored tmpdir copy to confirm the guard actually clears. Nothing
+// under hooks/ in the repo is ever written by either test.
 describe('#3911: the --check guards for the new hooks/lib artifacts can actually fail (A3)', () => {
   const REPO_ROOT = path.resolve(__dirname, '..');
   const GEN_HOOKS_CLI_EXIT = path.join(REPO_ROOT, 'scripts', 'gen-hooks-cli-exit.cjs');
   const GEN_EXIT_CODE_REGISTRY = path.join(REPO_ROOT, 'scripts', 'gen-exit-code-registry.cjs');
+  const registryGenerator = require(GEN_EXIT_CODE_REGISTRY);
   // gen-hooks-cli-exit.cjs --check runs a real tsc compile of the whole
   // project to a throwaway outDir (see its own COMPILE_TIMEOUT_MS=60000) —
   // this needs a longer bound than a plain probe.
   const CHECK_TIMEOUT_MS = 90000;
 
-  test('gen-hooks-cli-exit.cjs --check fails on a corrupted hooks/lib/cli-exit.js, names the file, and clears on restore', () => {
+  test('gen-hooks-cli-exit.cjs --check fails on a corrupted TMPDIR copy of hooks/lib/cli-exit.js, names the file, and clears on restore', (t) => {
+    const dir = createTempDir('gsd-3911-hooks-cli-exit-check-');
+    t.after(() => cleanup(dir));
+    const copiedOut = path.join(dir, 'cli-exit.js');
     const original = fs.readFileSync(HOOKS_CLI_EXIT_PATH);
-    let corrupted = false;
-    try {
-      fs.appendFileSync(HOOKS_CLI_EXIT_PATH, '\n// corrupted-by-A3-test\n');
-      corrupted = true;
-      const r = toLegacyResult(runNode([GEN_HOOKS_CLI_EXIT, '--check'], { timeoutMs: CHECK_TIMEOUT_MS }));
-      assert.notEqual(r.status, 0, `--check must fail on a corrupted committed artifact; stderr: ${r.stderr}`);
-      assert.ok(
-        r.stderr.includes('cli-exit.js'),
-        `expected the failure to name the drifted file; got: ${r.stderr.slice(0, 400)}`,
-      );
-    } finally {
-      if (corrupted) fs.writeFileSync(HOOKS_CLI_EXIT_PATH, original);
-    }
+    fs.writeFileSync(copiedOut, original);
 
-    const restored = toLegacyResult(runNode([GEN_HOOKS_CLI_EXIT, '--check'], { timeoutMs: CHECK_TIMEOUT_MS }));
+    fs.appendFileSync(copiedOut, '\n// corrupted-by-A3-test\n');
+    const r = toLegacyResult(runNode(
+      [GEN_HOOKS_CLI_EXIT, '--check', '--out', copiedOut],
+      { timeoutMs: CHECK_TIMEOUT_MS },
+    ));
+    assert.notEqual(r.status, 0, `--check must fail on a corrupted artifact; stderr: ${r.stderr}`);
+    assert.ok(
+      r.stderr.includes('cli-exit.js'),
+      `expected the failure to name the drifted file; got: ${r.stderr.slice(0, 400)}`,
+    );
+
+    fs.writeFileSync(copiedOut, original);
+    const restored = toLegacyResult(runNode(
+      [GEN_HOOKS_CLI_EXIT, '--check', '--out', copiedOut],
+      { timeoutMs: CHECK_TIMEOUT_MS },
+    ));
     assert.equal(restored.status, 0, `--check must pass again once the artifact is restored; stderr: ${restored.stderr}`);
+
+    // The property this whole test exists to prove: the committed file was
+    // never touched, at any point, by any of the above.
+    assert.deepEqual(fs.readFileSync(HOOKS_CLI_EXIT_PATH), original, 'committed hooks/lib/cli-exit.js must be untouched');
   });
 
-  test('gen-exit-code-registry.cjs --check fails on a corrupted hooks/lib/exit-code-registry.js, names the file, and clears on restore', () => {
-    const original = fs.readFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH);
-    let corrupted = false;
-    try {
-      fs.appendFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH, '\n// corrupted-by-A3-test\n');
-      corrupted = true;
-      const r = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check'], { timeoutMs: PROBE_TIMEOUT_MS }));
-      assert.notEqual(r.status, 0, `--check must fail on a corrupted committed artifact; stderr: ${r.stderr}`);
-      assert.ok(
-        r.stderr.includes('exit-code-registry.js'),
-        `expected the failure to name the drifted file; got: ${r.stderr.slice(0, 400)}`,
-      );
-    } finally {
-      if (corrupted) fs.writeFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH, original);
-    }
+  test('gen-exit-code-registry.cjs --check fails on a corrupted TMPDIR copy of hooks/lib/exit-code-registry.js, names the file, and clears on restore', (t) => {
+    const dir = createTempDir('gsd-3911-exit-code-registry-check-');
+    t.after(() => cleanup(dir));
 
-    const restored = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check'], { timeoutMs: PROBE_TIMEOUT_MS }));
+    // Copy all FIVE generated artifacts into the tmpdir so --check compares
+    // entirely against tmpdir copies — no write to any real committed path.
+    // `--declaration` stays pointed at the REAL committed declaration
+    // (read-only; never written) rather than a tmpdir copy: the generator's
+    // banner embeds `path.relative(REPO_ROOT, declarationPath)`
+    // (scripts/gen-exit-code-registry.cjs:324), so a tmpdir declaration path
+    // (outside REPO_ROOT) would itself make freshly-derived content diverge
+    // from the real committed artifacts' banners — a false drift unrelated
+    // to the corruption this test injects. The secondary/hooks/dts/sh paths
+    // are derived by the SAME ensureScriptsOut seam
+    // tests/exit-code-registry.test.cjs uses, not a second hand-rolled copy.
+    const copiedOut = path.join(dir, 'exit-code-registry.cjs');
+    const args = ensureScriptsOut(['--declaration', registryGenerator.DEFAULT_DECLARATION_PATH, '--out', copiedOut]);
+    const copiedScriptsOut = args[args.indexOf('--scripts-out') + 1];
+    const copiedHooksOut = args[args.indexOf('--hooks-out') + 1];
+    const copiedDtsOut = args[args.indexOf('--dts-out') + 1];
+    const copiedShOut = args[args.indexOf('--sh-out') + 1];
+
+    fs.copyFileSync(registryGenerator.DEFAULT_OUTPUT_PATH, copiedOut);
+    fs.copyFileSync(registryGenerator.DEFAULT_SCRIPTS_OUTPUT_PATH, copiedScriptsOut);
+    const original = fs.readFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH);
+    fs.writeFileSync(copiedHooksOut, original);
+    fs.copyFileSync(registryGenerator.DEFAULT_DTS_OUTPUT_PATH, copiedDtsOut);
+    fs.copyFileSync(registryGenerator.DEFAULT_SH_OUTPUT_PATH, copiedShOut);
+
+    fs.appendFileSync(copiedHooksOut, '\n// corrupted-by-A3-test\n');
+    const r = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check', ...args], { timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.notEqual(r.status, 0, `--check must fail on a corrupted artifact; stderr: ${r.stderr}`);
+    assert.ok(
+      r.stderr.includes(copiedHooksOut) && r.stderr.includes('hooks'),
+      `expected the failure to name the drifted hooks artifact (${copiedHooksOut}); got: ${r.stderr.slice(0, 400)}`,
+    );
+
+    fs.writeFileSync(copiedHooksOut, original);
+    const restored = toLegacyResult(runNode([GEN_EXIT_CODE_REGISTRY, '--check', ...args], { timeoutMs: PROBE_TIMEOUT_MS }));
     assert.equal(restored.status, 0, `--check must pass again once the artifact is restored; stderr: ${restored.stderr}`);
+
+    // The property this whole test exists to prove: the committed file was
+    // never touched, at any point, by any of the above.
+    assert.deepEqual(fs.readFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH), original, 'committed hooks/lib/exit-code-registry.js must be untouched');
+  });
+});
+
+// ─── #3912 (ADR-3889 §4, P8): the pending-outcome cell ──────────────────────
+//
+// output()'s payload-carried-error detection lives in io.cts and is tested
+// there; these tests exercise the cell + runMain projection mechanics that
+// live in cli-exit.cts itself: precedence (test matrix row C5) and cross-copy
+// parity (row C6).
+
+describe('#3912: pending-outcome cell (runMain precedence + parity)', () => {
+  // E1: for every registered outcome name and version, projectOutcome is a
+  // non-negative integer, and is 0 ONLY for PASS, or for DEGRADED under v1.
+  // The existing "every projection... is a non-negative integer" test above
+  // does not pin the ZERO-ONLY-FOR half of this; this test is what makes an
+  // accidental future zero for some OTHER outcome fail loudly.
+  test('E1 (fast-check): 0 is produced only by PASS, or by DEGRADED under v1', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('PASS', 'FAIL', ...REGISTERED_NAMES),
+        fc.constantFrom(...VERSIONS),
+        (outcome, version) => {
+          const result = projectOutcome(outcome, version);
+          assert.equal(Number.isInteger(result), true);
+          assert.ok(result >= 0);
+          if (result === 0) {
+            const isPass = outcome === 'PASS';
+            const isDegradedV1 = outcome === 'DEGRADED' && version === 'v1';
+            assert.ok(
+              isPass || isDegradedV1,
+              `outcome=${outcome} version=${version} projected to 0 but is neither PASS nor DEGRADED/v1`,
+            );
+          } else {
+            assert.notEqual(outcome, 'PASS', 'PASS must always project to 0');
+          }
+        },
+      ),
+      { seed: 3912, numRuns: 300 },
+    );
+  });
+
+  // C5: an explicit main() return beats a recorded DEGRADED cell. Without
+  // this, a caller that both returns an explicit code AND had a stale
+  // DEGRADED left in the cell (e.g. from an earlier output({error}) call in
+  // the same process) would get the CELL's projection instead of its own
+  // explicit decision — exactly backwards from "the cell is a fallback for
+  // the absence of a decision".
+  test('C5: an explicit main() return wins over a pending DEGRADED cell', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.setPendingOutcome('DEGRADED');`,
+      `c.runMain(() => 'PASS');`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    // Under v2, DEGRADED alone would project to 80; PASS must win with 0.
+    const r = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
+    }));
+    assert.equal(r.status, 0, `explicit PASS return must win over the pending DEGRADED cell; stderr: ${r.stderr}`);
+  });
+
+  test('C5 (numeric arm): an explicit numeric return also wins over a pending DEGRADED cell', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.setPendingOutcome('DEGRADED');`,
+      `c.runMain(() => 42);`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    const r = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS,
+      env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
+    }));
+    assert.equal(r.status, 42, `explicit numeric return must win over the pending DEGRADED cell; stderr: ${r.stderr}`);
+  });
+
+  test('a void return with NO pending outcome set leaves exit code untouched (v1 unchanged)', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.runMain(() => undefined);`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    const r = toLegacyResult(runNode(['-e', script], { timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  });
+
+  test('a void return WITH a pending DEGRADED cell projects it under v1 (0) and v2 (80)', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.setPendingOutcome('DEGRADED');`,
+      `c.runMain(() => undefined);`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    const v1 = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v1' },
+    }));
+    assert.equal(v1.status, 0, `stderr: ${v1.stderr}`);
+    const v2 = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
+    }));
+    assert.equal(v2.status, 80, `stderr: ${v2.stderr}`);
+  });
+
+  // Regression (fail-open, found live in `state validate --strict` on a
+  // missing STATE.md): a void-returning main() that ALREADY set
+  // process.exitCode to a non-zero value itself (e.g. `emit()` setting 1
+  // directly on the STATE.md-not-found early return) must have that value
+  // survive a pending DEGRADED cell — the cell must never LOWER an exit
+  // code main() itself already raised. Before the fix, this arm
+  // unconditionally overwrote process.exitCode with the cell's projection,
+  // clobbering an already-set 1 down to DEGRADED's v1 projection (0) — a
+  // real declared failure silently turned into success.
+  test('a void return with an ALREADY-SET non-zero exitCode beats a pending DEGRADED cell (regression)', () => {
+    const script = [
+      `const c = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `c.setPendingOutcome('DEGRADED');`,
+      `c.runMain(() => { process.exitCode = 1; });`,
+      `setImmediate(() => {});`,
+    ].join('\n');
+    const v1 = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v1' },
+    }));
+    assert.equal(v1.status, 1, `an already-set non-zero exitCode must not be clobbered down to DEGRADED's v1 projection (0); stderr: ${v1.stderr}`);
+    const v2 = toLegacyResult(runNode(['-e', script], {
+      timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: 'v2' },
+    }));
+    assert.equal(v2.status, 1, `an already-set non-zero exitCode must not be clobbered by DEGRADED's v2 projection (80) either; stderr: ${v2.stderr}`);
+  });
+
+  // C6: extends the existing three-copy parity coverage (json-error-mode cell,
+  // tested above at "both copies of the exit module share one json-error-mode
+  // cell") to the pending-outcome cell, across all THREE emitted copies —
+  // built (gsd-core/bin/lib), scripts/lib, and hooks/lib — not just two.
+  test('C6: all three emitted copies of cli-exit share ONE pending-outcome cell', () => {
+    const r = toLegacyResult(runNode(['-e', [
+      `const built = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});`,
+      `const scripts = require(${JSON.stringify(SCRIPTS_CLI_EXIT_PATH)});`,
+      `const hooks = require(${JSON.stringify(HOOKS_CLI_EXIT_PATH)});`,
+      `if (built === scripts || built === hooks || scripts === hooks) throw new Error('expected three distinct module instances');`,
+      `built.setPendingOutcome('DEGRADED');`,
+      `process.stdout.write(JSON.stringify({`,
+      `  viaBuilt: built.getPendingOutcome(),`,
+      `  viaScripts: scripts.getPendingOutcome(),`,
+      `  viaHooks: hooks.getPendingOutcome(),`,
+      `}));`,
+    ].join('\n')], { timeoutMs: PROBE_TIMEOUT_MS }));
+    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    assert.deepStrictEqual(
+      JSON.parse(r.stdout),
+      { viaBuilt: 'DEGRADED', viaScripts: 'DEGRADED', viaHooks: 'DEGRADED' },
+      'all three copies must read one shared cell — three independent module-level flags would diverge here',
+    );
+  });
+
+  test('C6: all three copies also agree on the PROJECTED exit code via runMain', () => {
+    for (const version of VERSIONS) {
+      for (const modulePath of [BUILT_CLI_EXIT_PATH, SCRIPTS_CLI_EXIT_PATH, HOOKS_CLI_EXIT_PATH]) {
+        const r = toLegacyResult(runNode(['-e', [
+          `const c = require(${JSON.stringify(modulePath)});`,
+          `c.setPendingOutcome('DEGRADED');`,
+          `c.runMain(() => undefined);`,
+          `setImmediate(() => {});`,
+        ].join('\n')], {
+          timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_EXIT_CONTRACT: version },
+        }));
+        const expected = version === 'v1' ? 0 : 80;
+        assert.equal(
+          r.status, expected,
+          `${modulePath} under ${version} expected ${expected}, got ${r.status}; stderr: ${r.stderr}`,
+        );
+      }
+    }
   });
 });

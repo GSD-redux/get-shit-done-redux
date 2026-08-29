@@ -202,7 +202,9 @@
   - [Runtime Marker Resolution, Derived Codex Sandbox, and In-Phase Short-Form Dependencies](#3897-runtime-marker-resolution-derived-codex-sandbox-and-in-phase-short-form-dependencies)
   - [The Raw Terminator Is Banned by Construction](#3910-the-raw-terminator-is-banned-by-construction)
   - [Hooks Declare Their Crash Policy](#3911-hooks-declare-their-crash-policy)
+  - [gsd-tools Declares Outcomes, Pinned at v1](#3912-gsd-tools-declares-outcomes-pinned-at-v1)
   - [Reachable Lint Rules and a Non-Destructive Quick-Task Append](#3951-reachable-lint-rules-and-a-non-destructive-quick-task-append)
+  - [Per-Task External-Tracker Content-Resolution Seam](#3970-per-task-external-tracker-content-resolution-seam)
 
 ---
 
@@ -4028,6 +4030,69 @@ this vocabulary is layered over.
 
 ---
 
+### 3912. gsd-tools Declares Outcomes, Pinned at v1
+
+**Purpose:** Give every `gsd-tools` terminating path a declared outcome name, and project that
+declaration through the versioned exit contract ([ADR-3889](../adr/3889-process-exit-contract.md)
+§4) — without changing a single exit code for a caller that has not opted in.
+
+**Reference — what changed (ADR-3889 Phase 8, #3912):**
+
+- `error(message, reason)` now maps its `reason` argument onto a declared outcome name (`USAGE`,
+  `NO_INPUT`, `UNAVAILABLE`, `INTERNAL`, `FAIL`) via a fixed table closed over all 25
+  `ERROR_REASON` members (`src/io.cts`'s `REASON_TO_OUTCOME`). Under the default contract version
+  `v1`, the declaration is recorded but `error()` still throws `ExitError(1)` unconditionally,
+  byte-identical to every prior release. Under `v2` (`--exit-contract=v2` /
+  `GSD_EXIT_CONTRACT=v2`), it throws `ExitError(projectOutcome(outcome, 'v2'))` instead — e.g.
+  `SDK_MISSING_ARG`/`SDK_UNKNOWN_COMMAND` project to `64` (`USAGE`), `CONFIG_KEY_NOT_FOUND` to `66`
+  (`NO_INPUT`). All 278 call sites are untouched; 226 pass no reason and default to `UNKNOWN` ->
+  `FAIL` -> exit `1` under both versions.
+- `output()` now declares `DEGRADED` whenever its payload carries a **serializable** `error` value
+  (any key order — `{found:false, error}` counts the same as `{error, found:false}`). The
+  discriminator is survives-`JSON.stringify`, not mere key presence: `{ error: undefined }` does
+  **not** declare `DEGRADED`, because `JSON.stringify` drops an `undefined`-valued property before
+  the payload reaches the wire.
+- A third `globalThis` cell (`src/cli-exit.cts`'s `PENDING_OUTCOME_KEY`) holds the pending declared
+  outcome between `output()` and `runMain`. Semantics: **last declaration wins, cleared on
+  consumption** — a later clean `output()` call in the same invocation undoes an earlier degraded
+  one, and `runMain` clears the cell on every exit so a second `runMain` in the same process never
+  inherits a stale declaration.
+- **Precedence** for the code a void-returning `main()` ends up with, highest first: (1) an explicit
+  `main()` return, (2) a non-zero `process.exitCode` `main()` already set directly, (3) the pending
+  declared outcome, (4) otherwise `0`. Projection may only ever **set** a code, never **lower** one
+  — a review pass wrongly concluded the cell was fail-closed by construction; without rule 2, `state
+  validate --strict` briefly exited `0` where it must exit `1`.
+- **`v1` is byte-identical.** `DEGRADED` projects to `0` under `v1` and to `80`
+  (`exitCodeFor('DEGRADED')`) under `v2` — that asymmetry is
+  [ADR-2980](../adr/2980-payload-carried-error-is-a-degraded-result.md)'s compatibility boundary,
+  deliberately preserved, not a bug to reconcile.
+
+**Explanation — why this is the shape it is:**
+
+ADR-2980 ratified `output({error})`'s exit-0 population on measured blast radius (`output` has 170
+direct callers) and Hyrum's Law grounds — a CLI exit code has no `/v2/` of its own, so normalizing
+it in place would have broken every caller already treating exit `0` as a soft signal. Its own
+"Revisit if" clause named the missing piece: *"a future `gsd-tools` major version provides a
+compatibility boundary that a CLI exit code otherwise lacks."* ADR-3889 §4 built exactly that
+boundary — a versioned projection selected by flag or env var, defaulting to today's behavior — and
+this phase is what wires `error()` and `output()` onto it. Declaring an outcome is unconditional and
+immediate; only its *projection* onto an integer is deferred behind the version switch, so the
+population ADR-2980 ratified keeps exiting `0` until a caller explicitly asks for something else.
+
+The count matters here too: an AST re-measure for this phase found **64** `output({error})` call
+sites across the same nine modules ADR-2980 named — not the 60 that ADR itself recorded, the drift
+concentrated in `frontmatter.cts`, `phase.cts`, and `roadmap.cts`. The `v2` projection is asserted
+over the enumerated 64, not a restated 60; see ADR-2980's amendment for the module-by-module
+breakdown.
+
+See [Adopt the v2 exit contract](../how-to/adopt-the-v2-exit-contract.md) for how to opt in and what
+it means for a CI gate, [`docs/json-errors.md`](../json-errors.md#outcome-declaration-and-the-versioned-exit-contract-adr-3889-4-3912)
+for the full reference, and
+[ADR-2980](../adr/2980-payload-carried-error-is-a-degraded-result.md) /
+[ADR-3889](../adr/3889-process-exit-contract.md) for the decisions.
+
+---
+
 ### 3951. Reachable Lint Rules and a Non-Destructive Quick-Task Append
 
 **Purpose:** Make two ESLint rules cover the code they were written to govern, and stop
@@ -4075,6 +4140,47 @@ regressing to the old seconds-based default had been inert. It is now row-scoped
 - The `src/` subdirectory hole was **latent** — zero violations existed there when it was fixed. It is
   closed because "no violations today" is not a property that keeps holding, not because it was
   hiding anything.
+
+---
+
+### 3970. Per-Task External-Tracker Content-Resolution Seam
+
+**Purpose:** Let a capability declare that an external issue tracker — beads, Linear, Jira,
+GitHub Issues — owns a task's *content* (`<action>`/`<verify>`/`<acceptance_criteria>`/
+`<read_first>`/`<done>`), not just its status, so `execute-plan.md` can resolve that content
+from the tracker at execution time instead of reading it inline out of `PLAN.md`.
+
+**What changed (ADR-3646, #3970):**
+
+- A new optional feature-body manifest field, `taskContentResolver`, declares a `trackerPrefix`
+  (matched against a task's `<task tracker-id="beads:GSD-42">` attribute — everything before the
+  first `:`) and a bounded `invoke` (`binary`, `args` carrying the `{{id}}` placeholder,
+  `timeoutMs`).
+- `execute-plan.md`'s per-task loop gains one new, unconditional call before that task's
+  `read_first` gate: `gsd_run task resolve-content --plan <path> --task-id <tracker-id> --raw`.
+  A task with no `tracker-id` attribute is unaffected — the call is only made when the attribute
+  is present, and resolves instantly to a no-op for every project that declares none.
+- **The safety property is a real process exit code, not a prose dispatch.** No capability
+  registered for the tracker, or resolution succeeds with empty content, exits `0` with
+  `resolved: false` and falls back to inline `PLAN.md` — the one legitimate pre-migration
+  boundary case. Resolution succeeding with non-empty content exits `0` with `resolved: true` and
+  its `content` supersedes the task's inline fields for every downstream gate in the execute step.
+  A resolver that is declared but fails — tracker unreachable, id not found, timeout, malformed
+  JSON — makes `task resolve-content` itself **exit non-zero**, which `execute-plan.md` treats as
+  a **hard halt**: stop, surface the tracker-id/prefix/stderr, never fall back to stale
+  `PLAN.md` content.
+- `execute:task` is a new dispatch shape below wave granularity, deliberately **not** one of the
+  12 existing loop extension points (`discuss:pre` … `ship:post`) and not routed through
+  `gsd_run loop render-hooks <point>` / `activeHooks`. It exists because the existing
+  `step`/`gate` prose-dispatch mechanism cannot deliver a hard-halt guarantee while dispatch
+  reliability at that layer is an open concern (#3647) — see ADR-3646's Context and Rejected
+  Alternatives for the full reasoning.
+
+See [Develop a task-content resolver capability](../how-to/develop-a-task-content-resolver-capability.md)
+for the authoring walkthrough, [Capability manifest → `taskContentResolver`](../reference/capability-manifest.md#taskcontentresolver)
+for the field reference, and
+[`loop-hook-dispatch.md`](../../gsd-core/references/loop-hook-dispatch.md#the-executetask-point-a-different-shape)
+for how `execute:task` differs from the twelve prose-dispatched points.
 
 ---
 

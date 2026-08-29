@@ -1930,7 +1930,7 @@ describe('W024 — STATE.md commit-age freshness advisory (#2573)', () => {
   const os = require('node:os');
   const path = require('node:path');
   const { runGsdTools, cleanup } = require('./helpers.cjs');
-  const { runGit } = require('./helpers/process-seam.cjs');
+  const { runGit, OUTCOME } = require('./helpers/process-seam.cjs');
   const {
     STATE_HEAD_ADVISORY_COMMITS,
   } = require('../gsd-core/bin/lib/verify.cjs');
@@ -1938,6 +1938,25 @@ describe('W024 — STATE.md commit-age freshness advisory (#2573)', () => {
   const dirs = [];
   const track = (d) => { dirs.push(d); return d; };
   after(() => { while (dirs.length) cleanup(dirs.pop()); });
+
+  // `runGit` (tests/helpers/process-seam.cjs) reports a failed spawn as DATA,
+  // never as a throw — by design, so retry-aware callers can inspect it. A
+  // fixture builder that ignores that return value swallows the failure and
+  // silently produces a WEAKER input (e.g. one fewer commit, a blank
+  // `state_head`) than what the test asked for: the exact "swallowed
+  // precondition laundered into a plausible downstream outcome" shape that
+  // eslint-rules/no-swallowed-precondition.cjs exists to catch, just in test
+  // code instead of source. `mustGit` closes that gap for this builder.
+  function mustGit(args, options) {
+    const r = runGit(args, options);
+    if (r.outcome !== OUTCOME.EXITED || r.exitCode !== 0) {
+      throw new Error(
+        `mustGit: \`git ${args.join(' ')}\` did not succeed ` +
+        `(outcome=${r.outcome}, exitCode=${r.exitCode}): ${r.stderr.trim()}`
+      );
+    }
+    return r;
+  }
 
   function project({ commitsAhead, stateHead = 'BASE' }) {
     const base = track(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-h-')));
@@ -1953,13 +1972,15 @@ describe('W024 — STATE.md commit-age freshness advisory (#2573)', () => {
       '# Roadmap\n\n## Milestone v1.0\n\n### Phase 1: One\n**Goal:** g\n',
     );
 
-    runGit(['init', '-q'], { cwd: base });
-    runGit(['config', 'user.email', 't@t.com'], { cwd: base });
-    runGit(['config', 'user.name', 'T'], { cwd: base });
-    runGit(['config', 'commit.gpgsign', 'false'], { cwd: base });
-    runGit(['add', '-A'], { cwd: base });
-    runGit(['commit', '-q', '-m', 'seed'], { cwd: base });
-    const head = runGit(['rev-parse', 'HEAD'], { cwd: base }).stdout.trim();
+    mustGit(['init', '-q'], { cwd: base });
+    mustGit(['config', 'user.email', 't@t.com'], { cwd: base });
+    mustGit(['config', 'user.name', 'T'], { cwd: base });
+    mustGit(['config', 'commit.gpgsign', 'false'], { cwd: base });
+    mustGit(['add', '-A'], { cwd: base });
+    mustGit(['commit', '-q', '-m', 'seed'], { cwd: base });
+    const seed = mustGit(['rev-parse', 'HEAD'], { cwd: base }).stdout.trim();
+    const head = seed;
+    assert.ok(head.length > 0, 'FIXTURE ERROR: `git rev-parse HEAD` for the seed commit returned empty');
 
     fs.writeFileSync(
       path.join(planningDir, 'STATE.md'),
@@ -1979,9 +2000,26 @@ describe('W024 — STATE.md commit-age freshness advisory (#2573)', () => {
 
     for (let i = 0; i < commitsAhead; i++) {
       fs.writeFileSync(path.join(base, `f${i}.txt`), `${i}\n`);
-      runGit(['add', '-A'], { cwd: base });
-      runGit(['commit', '-q', '-m', `c${i}`], { cwd: base });
+      mustGit(['add', '-A'], { cwd: base });
+      mustGit(['commit', '-q', '-m', `c${i}`], { cwd: base });
     }
+
+    // Precondition check: prove the fixture built what it claims rather than
+    // trusting the loop above ran to completion. A silently-failed `git
+    // commit` here previously dropped one commit off the count with no
+    // signal, which was enough to move `readStateHeadFreshness`
+    // (src/state.cts) across the W024 threshold and produce a false negative
+    // (#2573 flake). Fail as a FIXTURE error, not as the assertion under test.
+    const actualCommitsAhead = Number(
+      mustGit(['rev-list', '--count', `${seed}..HEAD`], { cwd: base }).stdout.trim()
+    );
+    assert.strictEqual(
+      actualCommitsAhead,
+      commitsAhead,
+      `FIXTURE ERROR: requested commitsAhead=${commitsAhead} but ` +
+      `\`git rev-list --count ${seed}..HEAD\` reports ${actualCommitsAhead}`
+    );
+
     return base;
   }
 

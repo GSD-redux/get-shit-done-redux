@@ -61,17 +61,43 @@ const SKIP_DIR_NAMES = new Set(['node_modules', 'dist', '.git']);
  *     previous regex silently MISSED every re-derivation using a
  *     cross-platform path-separator class for exactly this reason.
  */
+// Deterministic regression seam for the MAJOR-2 bound (issue #3951/#3987): a
+// counter of how many characters this tokenizer has actually examined, so a
+// test can assert the bound HOLDS (total work stays a small linear multiple
+// of the number of scan attempts × MAX_REGEX_LITERAL_LEN) without resorting
+// to a wall-clock elapsed-time assertion, which this repo's test rules ban
+// ("Clock Seams: Do not assert on wall-clock time.") and which is exactly
+// what flaked on a slow shared CI runner. `resetRegexScanStats`/
+// `getRegexScanStats` are read-modify-reset around a single scan under test;
+// they are process-global and NOT safe under concurrent scans, which is fine
+// for this synchronous, single-threaded CLI tool and its tests.
+let regexScanStats = { calls: 0, charsExamined: 0 };
+
+function resetRegexScanStats() {
+  regexScanStats = { calls: 0, charsExamined: 0 };
+}
+
+function getRegexScanStats() {
+  return { ...regexScanStats };
+}
+
 function readRegexLiteralAt(line, start) {
   if (line[start] !== '/') return null;
+  regexScanStats.calls++;
   const limit = Math.min(line.length, start + MAX_REGEX_LITERAL_LEN);
   let inClass = false;
-  for (let i = start + 1; i < limit; i++) {
+  let i = start + 1;
+  for (; i < limit; i++) {
     const ch = line[i];
     if (ch === '\\') {
       i++; // escape consumes the next character, whatever it is
       continue;
     }
-    if (ch === '\r' || ch === '\n') return null; // a literal cannot span lines
+    if (ch === '\r' || ch === '\n') {
+      // a literal cannot span lines
+      regexScanStats.charsExamined += i - start;
+      return null;
+    }
     if (ch === '[') {
       inClass = true;
     } else if (ch === ']') {
@@ -83,9 +109,11 @@ function readRegexLiteralAt(line, start) {
       // MAX_REGEX_LITERAL_LEN either.
       let end = i + 1;
       while (end < limit && line[end] >= 'a' && line[end] <= 'z') end++;
+      regexScanStats.charsExamined += end - start;
       return { text: line.slice(start, end), end };
     }
   }
+  regexScanStats.charsExamined += limit - start;
   return null;
 }
 
@@ -275,4 +303,6 @@ module.exports = {
   MAX_REGEX_LITERAL_LEN,
   sanitizeForReport,
   scanTree,
+  resetRegexScanStats,
+  getRegexScanStats,
 };

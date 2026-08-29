@@ -215,6 +215,20 @@ const DOCS_GUARD_TESTS = {
   // Walks docs/*.md and every docs/<locale>/*.md dir dynamically
   // (docs-parity-live-registry.test.cjs:42, 428) — deliberately generic.
   'tests/docs-parity-live-registry.test.cjs': ['*'],
+  // #3839: pins every hook-table Event cell in the five locales' ARCHITECTURE
+  // and INVENTORY files against src/runtime-hooks-surface.cts registrations.
+  'tests/docs-hooks-table-parity.test.cjs': [
+    'docs/ARCHITECTURE.md',
+    'docs/INVENTORY.md',
+    'docs/ja-JP/ARCHITECTURE.md',
+    'docs/ja-JP/INVENTORY.md',
+    'docs/zh-CN/ARCHITECTURE.md',
+    'docs/zh-CN/INVENTORY.md',
+    'docs/ko-KR/ARCHITECTURE.md',
+    'docs/ko-KR/INVENTORY.md',
+    'docs/pt-BR/ARCHITECTURE.md',
+    'docs/pt-BR/INVENTORY.md',
+  ],
   'tests/docs-state-md-locale-parity.test.cjs': [
     'docs/reference/state-md.md',
     'docs/ja-JP/reference/state-md.md',
@@ -234,6 +248,9 @@ const DOCS_GUARD_TESTS = {
     'docs/reference/host-integration-capability-matrix.md',
   ],
   'tests/execute-phase-wave.test.cjs': ['docs/COMMANDS.md'],
+  // #3913 (ADR-3889 terminal phase): reads the generated docs/reference/exit-codes.md
+  // (content invariants, F1/F3) and docs/README.md (F4, the index link).
+  'tests/exit-code-registry.test.cjs': ['docs/reference/exit-codes.md', 'docs/README.md'],
   'tests/external-job-waiting.test.cjs': ['docs/reference/planning-artifacts.md'],
   // Rows 8/9 (negative controls) read real docs/registries/eos.json and
   // docs/adr/0001-dispatch-policy-module.md and assert on their EXACT

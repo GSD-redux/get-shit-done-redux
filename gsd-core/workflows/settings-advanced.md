@@ -51,7 +51,7 @@ Planning Tuning:
 - `workflow.plan_bounce_passes` (default: `2`)
 - `workflow.plan_bounce_script` (default: `null`)
 - `workflow.subagent_timeout` (default: `300000`)
-- `workflow.inline_plan_threshold` (default: `3`)
+- `workflow.inline_plan_threshold` (default: `2`)
 
 Execution Tuning:
 - `workflow.node_repair` (default: `true`)

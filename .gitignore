@@ -302,6 +302,7 @@ build/
 /gsd-core/bin/lib/audit.cjs
 /gsd-core/bin/lib/git-base-branch.cjs
 /gsd-core/bin/lib/host-runtime-detection.cjs
+/gsd-core/bin/lib/task-content-resolution.cjs
 __pycache__/
 *.pyc
 .venv/

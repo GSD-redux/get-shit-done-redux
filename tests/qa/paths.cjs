@@ -27,6 +27,24 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 /**
+ * Realpath implementation used by `realpathNearestAncestor` / `resolveForCompare` by default.
+ * Prefers `fs.realpathSync.native`, which — unlike plain `fs.realpathSync` — expands Windows
+ * DOS 8.3 short-name aliases (e.g. `RUNNER~1` -> `runneradmin`). Plain `fs.realpathSync` does
+ * NOT perform that expansion, so the two forms of the same directory compare as different paths
+ * (verified from real `windows-latest` CI output: `git_worktree_root` resolved to
+ * `.../runneradmin/...` while `ctx.projectDir` resolved to `.../RUNNER~1/...` — same directory,
+ * spelled two ways). Falls back to `fs.realpathSync` when `.native` is unavailable (older Node)
+ * so this stays a pure enhancement, never a hard dependency.
+ *
+ * @param {string} candidate
+ * @returns {string}
+ */
+function defaultRealpath(candidate) {
+  const native = fs.realpathSync && fs.realpathSync.native;
+  return typeof native === 'function' ? native(candidate) : fs.realpathSync(candidate);
+}
+
+/**
  * Realpath-resolves `candidate` by walking up to its nearest EXISTING ancestor and rejoining
  * the non-existent suffix, rather than requiring the whole path to exist. Plain
  * `fs.realpathSync` throws ENOENT for the *entire* path when any segment is missing, which is
@@ -38,18 +56,23 @@ const path = require('node:path');
  * (verified: `.planning/NOT-YET.md` under an mkdtemp'd macOS `/var/...` dir was flagged as
  * outside a `/private/var/...`-resolved project root). Resolving the nearest existing ancestor
  * and rejoining the missing suffix keeps the comparison correct without requiring the leaf to
- * exist.
+ * exist. `.native` throws ENOENT for a missing path exactly like plain `realpathSync`, so this
+ * walk-up applies identically regardless of which realpath implementation is injected.
  *
  * @param {string} candidate absolute path (may or may not exist on disk)
+ * @param {(p: string) => string} [realpathFn] injectable realpath implementation — defaults to
+ *   `defaultRealpath` (`.native`-preferring). Tests use this seam to simulate the Windows 8.3
+ *   short-name case on any platform, since `.native`'s short-name expansion only actually
+ *   occurs on a real Windows host.
  * @returns {string} realpath-resolved path, with any non-existent suffix rejoined
  */
-function realpathNearestAncestor(candidate) {
+function realpathNearestAncestor(candidate, realpathFn = defaultRealpath) {
   try {
-    return fs.realpathSync(candidate);
+    return realpathFn(candidate);
   } catch {
     const parent = path.dirname(candidate);
     if (parent === candidate) return candidate; // reached a root that itself doesn't exist
-    return path.join(realpathNearestAncestor(parent), path.basename(candidate));
+    return path.join(realpathNearestAncestor(parent, realpathFn), path.basename(candidate));
   }
 }
 
@@ -69,13 +92,15 @@ function realpathNearestAncestor(candidate) {
  * will regress it.
  *
  * @param {string} candidate absolute path (may or may not exist on disk)
+ * @param {(p: string) => string} [realpathFn] injectable realpath implementation, forwarded to
+ *   `realpathNearestAncestor` — see that function's doc for why this seam exists.
  * @returns {string} realpath-resolved (nearest-ancestor fallback) path, backslash-normalized
  */
-function resolveForCompare(candidate) {
+function resolveForCompare(candidate, realpathFn = defaultRealpath) {
   // Unconditional: backslash-separated path strings can arrive as *data* (e.g. a
   // Windows-style path embedded in JSON) even when running on Linux/macOS, not only when
   // `fs.realpathSync` itself returns a drive-letter path on native Windows.
-  return realpathNearestAncestor(candidate).replace(/\\/g, '/');
+  return realpathNearestAncestor(candidate, realpathFn).replace(/\\/g, '/');
 }
 
 /**
@@ -224,4 +249,5 @@ module.exports = {
   isUnderProjectDir,
   isAbsoluteLike,
   hasTraversalSegment,
+  defaultRealpath,
 };

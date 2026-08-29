@@ -517,6 +517,7 @@
       "state.cjs",
       "surface.cjs",
       "task-command-router.cjs",
+      "task-content-resolution.cjs",
       "teams-status.cjs",
       "template.cjs",
       "text-lines.cjs",

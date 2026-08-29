@@ -42,7 +42,7 @@ This ensures project-specific patterns, conventions, and best practices are appl
 - Apply goal-backward thinking at phase level
 - Create success criteria (2-5 observable behaviors per phase)
 - Initialize STATE.md (project memory)
-- Return structured draft for user approval
+- Write ROADMAP.md and STATE.md immediately (durability — artifacts persist even if context is lost), then return a structured summary for the orchestrator to present; approval is the orchestrator's gate, revision is a re-run (#3797)
 </role>
 
 <downstream_consumer>
@@ -446,12 +446,18 @@ Key sections:
 - Accumulated Context (decisions, todos, blockers)
 - Session Continuity
 
-## Draft Presentation Format
+## Summary Preview Format
 
-When presenting to user for approval:
+The post-write `## ROADMAP CREATED` return carries this preview block (renamed from the pre-#3797 draft format — the orchestrator branches only on `ROADMAP CREATED`/`ROADMAP BLOCKED`, presents the roadmap, and owns the approval gate):
 
 ```markdown
-## ROADMAP DRAFT
+## ROADMAP CREATED
+
+**Files written:**
+- .planning/ROADMAP.md
+- .planning/STATE.md
+
+### Roadmap Preview
 
 **Phases:** [N]
 **Granularity:** [from config]
@@ -483,10 +489,9 @@ When presenting to user for approval:
 ✓ All [X] v1 requirements mapped
 ✓ No orphaned requirements
 
-### Awaiting
-
-Approve roadmap or provide feedback for revision.
 ```
+
+The orchestrator presents this roadmap and collects approval or feedback; revisions are applied on re-run (Step 9).
 
 </output_formats>
 
@@ -751,10 +756,9 @@ Roadmap is complete when:
 - [ ] ROADMAP.md structure complete
 - [ ] STATE.md structure complete
 - [ ] REQUIREMENTS.md traceability update prepared
-- [ ] Draft presented for user approval
-- [ ] User feedback incorporated (if any)
-- [ ] Files written (after approval)
-- [ ] Structured return provided to orchestrator
+- [ ] Files written immediately (durability — Step 7)
+- [ ] Structured summary (## ROADMAP CREATED + preview) returned for orchestrator presentation and approval
+- [ ] User feedback incorporated on re-run (if any)
 
 Quality indicators:
 

@@ -16,7 +16,7 @@
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback, stateReplaceFieldInSession } from './state-document.cjs';
+import { stateReplaceField, stateExtractField, stateReplaceFieldIfTemplate, stateReplaceFieldWithFallback, stateReplaceFieldInSession, stateCurrentPositionSlice } from './state-document.cjs';
 import { KNOWN_TEMPLATE_DEFAULTS, toFiniteNumber } from './state-document.cjs';
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
@@ -1381,6 +1381,34 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
   // HIGH blocking finding — same pattern beginPhaseCore already handles).
   const { body: initialBody, reassemble } = beginFrontmatterReassembly(content, deps.sourcePath);
   let body = initialBody;
+
+  // #3807: refuse a Current Position section carrying more than one `Phase:`
+  // entry BEFORE mutating. The plan fields below come from document-wide
+  // first-match extraction, so in a wave-log style section (one entry per
+  // completed wave) the FIRST entry's plan counter silently advanced — in the
+  // reporting incident, a hard-gated final plan 7→8 of 8 — while the entry
+  // the caller meant sat untouched below it, with advanced:true and no
+  // ambiguity signal. advance-plan now refuses before acting. Scoped via the
+  // #2956 canonical locator (stateCurrentPositionSlice — H2 or H3 heading,
+  // the same one cmdStateAdvancePlan's own milestone read uses); NO whole-body
+  // fallback — a legacy-format document with unrelated `Phase:` history lines
+  // elsewhere has no section to disambiguate and must keep its current
+  // behavior rather than be falsely refused.
+  const positionScope = stateCurrentPositionSlice(body);
+  if (positionScope !== null) {
+    const phaseCandidates = (positionScope.match(/^Phase:.*$/gm) || []);
+    if (phaseCandidates.length > 1) {
+      return {
+        content,
+        updated: [],
+        data: {
+          error: true,
+          reason: 'ambiguous_position_phase',
+          phase_candidates: phaseCandidates.map((l) => l.trim()),
+        },
+      };
+    }
+  }
 
   // Parse plan number — legacy first, then compound.
   const legacyPlan = stateExtractField(content, 'Current Plan');

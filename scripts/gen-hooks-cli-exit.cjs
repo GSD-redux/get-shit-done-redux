@@ -22,6 +22,15 @@
  *   node scripts/gen-hooks-cli-exit.cjs            # same as --write
  *   node scripts/gen-hooks-cli-exit.cjs --write     # write hooks/lib/cli-exit.js
  *   node scripts/gen-hooks-cli-exit.cjs --check     # exit 1 if committed file is stale
+ *   node scripts/gen-hooks-cli-exit.cjs --out <path>   # override the output path (default: hooks/lib/cli-exit.js) — honoured by BOTH --write and --check
+ *
+ * `--out` restores parity with the sibling scripts/gen-exit-code-registry.cjs,
+ * which already supports `--out`/`--scripts-out`/`--hooks-out`/`--dts-out`/
+ * `--sh-out` overrides honoured by its own `--check`. This script hardcoding
+ * `OUTPUT_PATH` with no override was an inconsistency between two sibling
+ * generators, not an intentionally narrower surface — tests need to redirect
+ * `--check` at a disposable tmpdir copy instead of corrupting the real
+ * committed artifact in place.
  */
 
 'use strict';
@@ -45,10 +54,11 @@ const REASON = Object.freeze({
 });
 
 const USAGE_MESSAGE = [
-  'Usage: node scripts/gen-hooks-cli-exit.cjs [--write|--check]',
+  'Usage: node scripts/gen-hooks-cli-exit.cjs [--write|--check] [--out <path>]',
   '  (no flag)  same as --write',
   '  --write    write hooks/lib/cli-exit.js',
   '  --check    exit 1 if the committed file is stale',
+  '  --out      override the output artifact path (default: hooks/lib/cli-exit.js)',
 ].join('\n');
 
 const BANNER = [
@@ -135,20 +145,20 @@ function buildExpectedContent() {
   }
 }
 
-function doWrite() {
+function doWrite(outPath) {
   const result = buildExpectedContent();
   if (!result.ok) {
     console.error(`FAIL gen-hooks-cli-exit: ${result.reason}`);
     if (result.detail) console.error(result.detail);
     return 1;
   }
-  fs.mkdirSync(path.dirname(OUTPUT_PATH), { recursive: true });
-  fs.writeFileSync(OUTPUT_PATH, result.content, 'utf8');
-  console.log(`ok gen-hooks-cli-exit: wrote ${path.relative(REPO_ROOT, OUTPUT_PATH)}`);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, result.content, 'utf8');
+  console.log(`ok gen-hooks-cli-exit: wrote ${path.relative(REPO_ROOT, outPath)}`);
   return 0;
 }
 
-function doCheck() {
+function doCheck(outPath) {
   const result = buildExpectedContent();
   if (!result.ok) {
     console.error(`FAIL gen-hooks-cli-exit: ${result.reason}`);
@@ -156,18 +166,18 @@ function doCheck() {
     return 1;
   }
 
-  if (!fs.existsSync(OUTPUT_PATH)) {
+  if (!fs.existsSync(outPath)) {
     console.error(`FAIL gen-hooks-cli-exit: ${REASON.MISSING_EMIT}`);
-    console.error(`  ${path.relative(REPO_ROOT, OUTPUT_PATH)} does not exist. Run:`);
+    console.error(`  ${path.relative(REPO_ROOT, outPath)} does not exist. Run:`);
     console.error('  node scripts/gen-hooks-cli-exit.cjs --write');
     return 1;
   }
 
-  const committed = fs.readFileSync(OUTPUT_PATH, 'utf8');
+  const committed = fs.readFileSync(outPath, 'utf8');
   if (committed !== result.content) {
     console.error(`FAIL gen-hooks-cli-exit: ${REASON.DRIFTED}`);
     console.error(
-      `  ${path.relative(REPO_ROOT, OUTPUT_PATH)} (${committed.length} bytes) != ` +
+      `  ${path.relative(REPO_ROOT, outPath)} (${committed.length} bytes) != ` +
       `compile of src/cli-exit.cts (${result.content.length} bytes)`,
     );
     console.error('');
@@ -176,30 +186,52 @@ function doCheck() {
     return 1;
   }
 
-  console.log(`ok gen-hooks-cli-exit: ${path.relative(REPO_ROOT, OUTPUT_PATH)} matches src/cli-exit.cts`);
+  console.log(`ok gen-hooks-cli-exit: ${path.relative(REPO_ROOT, outPath)} matches src/cli-exit.cts`);
   return 0;
 }
 
+/**
+ * @returns {{mode:'write'|'check', outPath:?string}}
+ */
+function parseArgs(argv) {
+  let mode = null;
+  let outPath = null;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--write' || arg === '--check') {
+      if (mode !== null) {
+        throw new Error(`conflicting mode flags: --${mode} and ${arg}`);
+      }
+      mode = arg === '--write' ? 'write' : 'check';
+    } else if (arg === '--out') {
+      const value = argv[++i];
+      if (value === undefined) throw new Error('--out requires a value');
+      outPath = value;
+    } else if (arg.startsWith('--out=')) {
+      outPath = arg.slice('--out='.length);
+    } else {
+      throw new Error(`unrecognized argument: ${arg}`);
+    }
+  }
+
+  return { mode: mode || 'write', outPath };
+}
+
 function main() {
-  const flag = process.argv[2];
-  const extra = process.argv[3];
-
-  if (flag !== undefined && flag !== '--write' && flag !== '--check') {
+  let args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
     console.error(`FAIL gen-hooks-cli-exit: ${REASON.USAGE}`);
-    console.error(`  unrecognized argument: ${flag}`);
+    console.error(`  ${err.message}`);
     console.error(USAGE_MESSAGE);
     return 1;
   }
 
-  if (extra !== undefined) {
-    console.error(`FAIL gen-hooks-cli-exit: ${REASON.USAGE}`);
-    console.error(`  unexpected extra argument: ${extra}`);
-    console.error(USAGE_MESSAGE);
-    return 1;
-  }
+  const outPath = args.outPath || OUTPUT_PATH;
 
-  if (flag === '--check') return doCheck();
-  return doWrite();
+  return args.mode === 'check' ? doCheck(outPath) : doWrite(outPath);
 }
 
 if (require.main === module) process.exitCode = main();

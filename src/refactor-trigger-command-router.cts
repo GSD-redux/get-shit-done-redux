@@ -481,54 +481,22 @@ function resolveLedgerWindow(
 
 const EVALUATE_USAGE = 'Usage: gsd-tools refactor evaluate --phase <N> [--since <ref>] [--raw]';
 
-function handleEvaluate(
-  args: string[],
+/**
+ * Step 5 of `evaluate`: filter `touched` with `isAnalyzablePath`, read each
+ * survivor and classify it into `analyzed`. A read failure (or a path that
+ * escapes the project root) skips that one file with
+ * `REFACTOR_FILE_UNREADABLE` and the loop continues — never aborts the
+ * evaluation. Only files that were SUCCESSFULLY analyzed feed
+ * `successfullyAnalyzedFiles` — an unreadable file must never wipe that
+ * file's baseline history via nextBaseline's "file in analyzedFiles but
+ * function missing" prune rule.
+ */
+function analyzeTouchedFiles(
   cwd: string,
-  raw: boolean,
-  c: CoreModule,
+  touched: string[],
   complexity: ComplexityModule,
-  git: GitModule,
-  windowsOverride: WindowsModule | undefined,
-): unknown {
-  const rest = args.slice(2);
-  const phaseCheck = requirePhaseArg(rest, complexity, EVALUATE_USAGE);
-  if (!phaseCheck.ok) return phaseCheck.result;
-
-  // Step 3: resolve PHASE_DIR + anchor (phaseStartCommit, or --since override).
-  const resolved = resolvePhaseDirForArg(cwd, phaseCheck.phase);
-  if (resolved === null) {
-    c.output({ verdict: complexity.VERDICT.SKIPPED, reason: complexity.REASON.REFACTOR_INVALID_PHASE, phase: phaseCheck.phase }, raw);
-    return undefined;
-  }
-  const { phaseDir, padded } = resolved;
-
-  const sinceFlag = readFlag(rest, '--since');
-  const sinceOverride = sinceFlag.present && !sinceFlag.flagShaped ? sinceFlag.value.trim() : '';
-  const sinceRef = sinceOverride !== '' ? sinceOverride : git.phaseStartCommit(cwd, phaseDir);
-  if (sinceRef === null) {
-    c.output({ verdict: complexity.VERDICT.SKIPPED, reason: complexity.REASON.REFACTOR_GIT_UNAVAILABLE, phase: padded }, raw);
-    return undefined;
-  }
-
-  const touched = git.changedFilesSince(cwd, sinceRef);
-  if (touched === null) {
-    c.output({ verdict: complexity.VERDICT.SKIPPED, reason: complexity.REASON.REFACTOR_GIT_UNAVAILABLE, phase: padded }, raw);
-    return undefined;
-  }
-
-  // Step 4: empty touched set.
-  if (touched.length === 0) {
-    c.output({ verdict: complexity.VERDICT.BELOW_THRESHOLD, reason: complexity.REASON.REFACTOR_NO_TOUCHED_FILES, phase: padded }, raw);
-    return undefined;
-  }
-
-  // Step 5: filter with isAnalyzablePath; read each survivor. A read failure
-  // (or a path that escapes the project root) skips that one file with a
-  // reason and the run continues — never aborts the evaluation.
+): { analyzed: AnalyzedFile[]; successfullyAnalyzedFiles: string[] } {
   const analyzed: AnalyzedFile[] = [];
-  // Only files that were SUCCESSFULLY analyzed feed nextBaseline's prune set
-  // — an unreadable file must never wipe that file's baseline history via
-  // the "file in analyzedFiles but function missing" prune rule.
   const successfullyAnalyzedFiles: string[] = [];
   for (const relFile of touched) {
     if (!complexity.isAnalyzablePath(relFile)) continue;
@@ -552,17 +520,36 @@ function handleEvaluate(
       successfullyAnalyzedFiles.push(relFile);
     }
   }
+  return { analyzed, successfullyAnalyzedFiles };
+}
 
-  // Step 6.
-  const planningDirPath = planningDir(cwd);
-  const baselineRead = complexity.readBaseline(planningDirPath);
-  const evalConfig = readEvalConfig(cwd);
-  const evaluation: Evaluation = complexity.evaluateCandidates({
-    analyzed,
-    baseline: baselineRead.baseline,
-    threshold: evalConfig.threshold,
-    jumpDelta: evalConfig.jumpDelta,
-  });
+interface FinalizeEvaluationOptions {
+  cwd: string;
+  phaseDir: string;
+  padded: string;
+  planningDirPath: string;
+  complexity: ComplexityModule;
+  evaluation: Evaluation;
+  evalConfig: { threshold: unknown; jumpDelta: unknown; strict: boolean; windowsEnforce: boolean };
+  baselineRead: ReturnType<ComplexityModule['readBaseline']>;
+  analyzed: AnalyzedFile[];
+  successfullyAnalyzedFiles: string[];
+  windowsOverride: WindowsModule | undefined;
+}
+
+/**
+ * Steps 7-9 of `evaluate`: write the proposal artifact when TRIGGERED, write
+ * the next baseline (failure is reported but never fails the command),
+ * record the strict-mode ledger window when applicable, and assemble the
+ * final result object. Pure orchestration over the side-effecting helpers —
+ * every degrade path (artifact write throw, baseline write failure, ledger
+ * unavailable) keeps its existing reason code and result shape.
+ */
+function finalizeEvaluation(opts: FinalizeEvaluationOptions): Record<string, unknown> {
+  const {
+    cwd, phaseDir, padded, planningDirPath, complexity, evaluation, evalConfig,
+    baselineRead, analyzed, successfullyAnalyzedFiles, windowsOverride,
+  } = opts;
 
   // Step 7.
   let artifactWritten = false;
@@ -632,6 +619,70 @@ function handleEvaluate(
   if (ledgerRecorded !== undefined) result.ledger_recorded = ledgerRecorded;
   if (ledgerNote !== undefined) result.ledger_note = ledgerNote;
   if (warnings.length > 0) result.warnings = warnings;
+
+  return result;
+}
+
+function handleEvaluate(
+  args: string[],
+  cwd: string,
+  raw: boolean,
+  c: CoreModule,
+  complexity: ComplexityModule,
+  git: GitModule,
+  windowsOverride: WindowsModule | undefined,
+): unknown {
+  const rest = args.slice(2);
+  const phaseCheck = requirePhaseArg(rest, complexity, EVALUATE_USAGE);
+  if (!phaseCheck.ok) return phaseCheck.result;
+
+  // Step 3: resolve PHASE_DIR + anchor (phaseStartCommit, or --since override).
+  const resolved = resolvePhaseDirForArg(cwd, phaseCheck.phase);
+  if (resolved === null) {
+    c.output({ verdict: complexity.VERDICT.SKIPPED, reason: complexity.REASON.REFACTOR_INVALID_PHASE, phase: phaseCheck.phase }, raw);
+    return undefined;
+  }
+  const { phaseDir, padded } = resolved;
+
+  const sinceFlag = readFlag(rest, '--since');
+  const sinceOverride = sinceFlag.present && !sinceFlag.flagShaped ? sinceFlag.value.trim() : '';
+  const sinceRef = sinceOverride !== '' ? sinceOverride : git.phaseStartCommit(cwd, phaseDir);
+  if (sinceRef === null) {
+    c.output({ verdict: complexity.VERDICT.SKIPPED, reason: complexity.REASON.REFACTOR_GIT_UNAVAILABLE, phase: padded }, raw);
+    return undefined;
+  }
+
+  const touched = git.changedFilesSince(cwd, sinceRef);
+  if (touched === null) {
+    c.output({ verdict: complexity.VERDICT.SKIPPED, reason: complexity.REASON.REFACTOR_GIT_UNAVAILABLE, phase: padded }, raw);
+    return undefined;
+  }
+
+  // Step 4: empty touched set.
+  if (touched.length === 0) {
+    c.output({ verdict: complexity.VERDICT.BELOW_THRESHOLD, reason: complexity.REASON.REFACTOR_NO_TOUCHED_FILES, phase: padded }, raw);
+    return undefined;
+  }
+
+  // Step 5: filter, read, and classify each touched file.
+  const { analyzed, successfullyAnalyzedFiles } = analyzeTouchedFiles(cwd, touched, complexity);
+
+  // Step 6.
+  const planningDirPath = planningDir(cwd);
+  const baselineRead = complexity.readBaseline(planningDirPath);
+  const evalConfig = readEvalConfig(cwd);
+  const evaluation: Evaluation = complexity.evaluateCandidates({
+    analyzed,
+    baseline: baselineRead.baseline,
+    threshold: evalConfig.threshold,
+    jumpDelta: evalConfig.jumpDelta,
+  });
+
+  // Steps 7-9: artifact write, baseline persistence, strict-mode ledger.
+  const result = finalizeEvaluation({
+    cwd, phaseDir, padded, planningDirPath, complexity, evaluation, evalConfig,
+    baselineRead, analyzed, successfullyAnalyzedFiles, windowsOverride,
+  });
 
   c.output(result, raw);
   return undefined;

@@ -35,6 +35,7 @@ const path = require('node:path');
 const fc = require('fast-check');
 
 const { createTempProject, createTempDir, cleanup, runGsdTools, toPosixPath } = require('./helpers.cjs');
+const { generateSlugInternal } = require('../gsd-core/bin/lib/core-utils.cjs');
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -91,9 +92,16 @@ function writeUatDoc(phaseDir, phaseToken, bodyLines, eol = '\n') {
   writeAbs(path.join(phaseDir, `${phaseToken}-UAT.md`), bodyLines.join(eol));
 }
 
-/** Slugify a phase name the same way `getPhaseDirFromPhaseId` (`src/phase-id.cts`) does. */
+/**
+ * Slugify a phase name the same way `getPhaseDirFromPhaseId` (`src/phase-id.cts`)
+ * does. Routed through the canonical `generateSlugInternal` seam (issue #3987)
+ * instead of a hand-rolled copy: `getPhaseDirFromPhaseId` does not truncate,
+ * so `maxLen: null` is what makes the parity claim in this comment true —
+ * the prior copy also never transliterated non-Latin phase names, unlike the
+ * real seam it claims to match.
+ */
 function slugify(name) {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return generateSlugInternal(name, null) ?? '';
 }
 
 /**
