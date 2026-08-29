@@ -1896,19 +1896,24 @@ function advancePlanCore(content: string, deps: StateTransitionDeps): StateTrans
     // every one of them superseded is legitimately positioned past the LIVE count,
     // and bounding on that would manufacture a divergence out of ordinary
     // supersession — the same reason the total test accepts either count.
-    // Two bounds, and they answer different questions — #3862 RV6.5 review caught the
-    // second missing. `planCountAll` bounds the position against DISK. `totalPlans`
-    // bounds it against the prose's OWN declared total, which disk agreement does not
-    // imply: with 12 plan files of which 8 are live, `Plan: 10 of 8` matches planCount
-    // on the total, sits under planCountAll on the position, and was therefore accepted
-    // — then satisfied `currentPlan >= totalPlans` below and returned
+    // ONE upper bound, and it is the prose total — not a disk count. Reaching here means
+    // `totalDiverged` is false, so `totalPlans` already equals `planCount` or
+    // `planCountAll`; since `planCount <= planCountAll`, it follows that
+    // `totalPlans <= planCountAll` and therefore `currentPlan > planCountAll` implies
+    // `currentPlan > totalPlans`. A `planCountAll` term is strictly redundant — driven
+    // exhaustively over the bounded space, zero decisions change without it. An earlier
+    // draft shipped both and justified them with a counterexample (`20 of 12`) that in
+    // fact trips both, which is how a redundant clause acquires a confident comment.
+    //
+    // The bound that actually does the work: `Plan: 10 of 8` against 12 plan files of
+    // which 8 are live. The total (8) matches `planCount`, so the total test passes;
+    // the position (10) then satisfied `currentPlan >= totalPlans` below and returned
     // `{reason: "last_plan", status: "ready_for_verification"}` while WRITING the phase
-    // to complete. A position past its own total is incoherent whatever disk says.
-    // Neither bound subsumes the other: planCountAll catches `20 of 12` (total agrees
-    // with disk, position does not), totalPlans catches `10 of 8` (position agrees with
-    // disk, total does not). The all-superseded `5 of 8` case passes both, as it must.
-    const rangeDiverged =
-      currentPlan < 1 || currentPlan > planSet.planCountAll || currentPlan > totalPlans;
+    // complete, from a position past its own declared total. Driven before the fix.
+    //
+    // `>` is strict, so `12 of 12` is in range and still reaches `last_plan`, and the
+    // all-superseded `5 of 8` still advances.
+    const rangeDiverged = currentPlan < 1 || currentPlan > totalPlans;
 
     if (totalDiverged || rangeDiverged) {
       return {
