@@ -2897,6 +2897,28 @@ describe('check-commit command', () => {
 // commit-docs-guard: opt-in pre-commit hook (#3588)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// #3901: a developer's GLOBAL core.hooksPath (~/.gitconfig) applies to every
+// fresh repo — the guard correctly refuses to install a hook git would never
+// run, which used to fail the guard suites' beforeEach (18 tests across the
+// A/B/D suites) on machines that centralize commit hooks. Pin
+// GIT_CONFIG_GLOBAL to an empty file (runGsdTools and the git helpers
+// propagate process.env to every child), making the fixtures independent of
+// the host's git configuration. A LOCAL repo value cannot isolate this:
+// `git config --get` returns any non-empty local value (same refusal), and an
+// empty local value makes rev-parse --git-path hooks resolve to `./` — not
+// `.git/hooks`. Returns a restore function for the suite's after().
+function isolateGlobalGitConfig() {
+  const dir = createTempDir('gsd-3901-gitconfig-');
+  const prev = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = path.join(dir, 'global.gitconfig');
+  fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, '');
+  return () => {
+    if (prev === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = prev;
+    cleanup(dir);
+  };
+}
+
 describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
   const { createTempGitProject, TEST_ENV_BASE } = require('./helpers.cjs');
   const { runHook } = require('./helpers/process-seam.cjs');
@@ -2905,28 +2927,9 @@ describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
   let tmpDir;
   let hookPath;
 
-  // #3901: a developer's GLOBAL core.hooksPath (~/.gitconfig) applies to every
-  // fresh repo — the guard correctly refuses to install a hook git would never
-  // run, which used to fail this suite's beforeEach (18 tests) on machines that
-  // centralize commit hooks. Pin GIT_CONFIG_GLOBAL to an empty file for the
-  // whole suite (runGsdTools and the git helpers propagate process.env to every
-  // child), making the fixtures independent of the host's git configuration.
-  // A LOCAL repo value cannot isolate this: `git config --get` returns any
-  // non-empty local value (same refusal), and an empty local value makes
-  // `rev-parse --git-path hooks` resolve to `./` — not `.git/hooks`.
-  let globalCfgFile;
-  let prevGitConfigGlobal;
-  before(() => {
-    globalCfgFile = createTempDir('gsd-3901-gitconfig-');
-    prevGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
-    process.env.GIT_CONFIG_GLOBAL = path.join(globalCfgFile, 'global.gitconfig');
-    fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, '');
-  });
-  after(() => {
-    if (prevGitConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
-    else process.env.GIT_CONFIG_GLOBAL = prevGitConfigGlobal;
-    cleanup(globalCfgFile);
-  });
+  // #3901: see isolateGlobalGitConfig — shared by all three guard suites.
+  const restoreGitConfig = isolateGlobalGitConfig();
+  after(restoreGitConfig);
 
   beforeEach(() => {
     tmpDir = createTempGitProject();
@@ -3007,6 +3010,11 @@ describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
 describe('commit-docs-guard enable/disable (#3588 B1-B15)', () => {
   const { createTempGitProject } = require('./helpers.cjs');
   let tmpDir;
+
+  // #3901: this suite also runs `enable` against fresh repos — the same
+  // hostile-global exposure as the A suite (review finding).
+  const restoreGitConfigB = isolateGlobalGitConfig();
+  after(restoreGitConfigB);
 
   afterEach(() => {
     if (tmpDir) cleanup(tmpDir);
@@ -3209,6 +3217,11 @@ describe('commit-docs-guard real git commit wiring (#3588 D1-D3)', () => {
   const { runGit } = require('./helpers/process-seam.cjs');
   const REPO_ROOT = path.join(__dirname, '..');
   let tmpDir;
+
+  // #3901: the D suite's premise is the hook firing from .git/hooks/pre-commit
+  // — a hostile global core.hooksPath broke its beforeEach identically.
+  const restoreGitConfigD = isolateGlobalGitConfig();
+  after(restoreGitConfigD);
 
   beforeEach(() => {
     tmpDir = createTempGitProject();
