@@ -1396,7 +1396,112 @@ ${Array(redContractCount).fill(block).join('\n')}
         + '`location.observed == location.declared` and the predicate blocks it.',
       vector: UNRELATED_FIXTURE_CRASH,
     },
+    {
+      id: 'outside-in-build-phase',
+      outcome_row: 'Outside-in: the declared implementation target is missing',
+      verdict: 'authorize',
+      why: 'a second legitimate outside-in RED, reached in an ecosystem with no collection '
+        + 'phase at all: a compiled-language link failure (REGR-04). `selected_count` is 0 and '
+        + '`target_executed` is false BY CONSTRUCTION here too, exactly as in `outside-in`, but '
+        + 'the location conjunct sits ABOVE the disjunction without acquiring arm 1\'s selection '
+        + 'and execution conditions when the outside-in arm is the one that holds — this vector '
+        + 'proves that for a phase and class distinct from `outside-in`\'s Python ones, so the '
+        + 'shared row cannot be an artifact of one ecosystem\'s vocabulary.',
+      vector: vector({
+        plan: {
+          target_test: 'oi.cpp',
+          implementation_target: 'apply_discount(int, double)',
+          expected_failure: {
+            phase: 'build',
+            class_or_mode: 'undefined reference',
+            subject: 'apply_discount(int, double)',
+          },
+        },
+        trailer: {
+          command: 'g++ -g -o oi oi.cpp -lgtest -lgtest_main -pthread',
+          exit_status: 1,
+          target_test: 'oi.cpp',
+          selected_count: 0,
+          target_executed: false,
+          expected: {
+            phase: 'build',
+            class_or_mode: 'undefined reference',
+            subject: 'apply_discount(int, double)',
+          },
+          actual: {
+            phase: 'build',
+            class_or_mode: 'undefined reference',
+            subject: 'oi.cpp',
+          },
+          location: {
+            declared: { file: 'oi.cpp', line: 4 },
+            observed: { file: '/srv/build/oi.cpp', line: 4 },
+          },
+        },
+      }),
+    },
+    {
+      id: 'same-basename-different-directory',
+      outcome_row: null,
+      verdict: 'authorize',
+      why: '`path.win32.basename` reduces `tests/unit/test_pricing.py` and '
+        + '`tests/integration/test_pricing.py` to the same name, the lines agree, so the vector '
+        + 'passes; this is the same-basename, same-line collision the contract already names as '
+        + 'the narrowed residual, and the control that would close it is the anti-backfill '
+        + 'verification recorded in CONTEXT.md\'s Deferred Ideas. Deliberately NOT a '
+        + 'legitimate-RED case and NOT in the frozen five (REGR-04) — it documents a known gap '
+        + 'in the discriminator, it does not certify one. Do not "fix" this row by changing the '
+        + 'comparison: `normObs.endsWith(\'/\' + normDec) || normDec.endsWith(\'/\' + normObs)` '
+        + '— proposed in review — is a strict NARROWING of basename equality that would BLOCK '
+        + '`outside-in` and `fixture-is-the-behavior`, manufacturing the exact REGR-04 '
+        + 'regression this plan exists to prevent.',
+      vector: vector({
+        trailer: {
+          location: {
+            declared: { file: 'tests/unit/test_pricing.py', line: 8 },
+            observed: { file: 'tests/integration/test_pricing.py', line: 8 },
+          },
+        },
+      }),
+    },
   ];
+
+  test('the five legitimate-RED cases are frozen by id and split by fence-verdict domain '
+    + '(REGR-04)', () => {
+    const LEGITIMATE_CASE_IDS = [
+      'genuine',
+      'exit-zero',
+      'outside-in',
+      'outside-in-build-phase',
+      'fixture-is-the-behavior',
+    ];
+    assert.strictEqual(LEGITIMATE_CASE_IDS.length, 5,
+      'REGR-04 names exactly five legitimate-RED cases; a shorter or longer frozen list '
+      + 'silently drops or invents one. See #3770.');
+
+    const byId = new Map(EVIDENCE_VECTORS.map((c) => [c.id, c]));
+    for (const id of LEGITIMATE_CASE_IDS) {
+      assert.ok(byId.has(id),
+        `the frozen legitimate-RED case "${id}" is missing from the case table. See #3770.`);
+    }
+
+    for (const id of LEGITIMATE_CASE_IDS) {
+      const testCase = byId.get(id);
+      if (id === 'exit-zero') {
+        assert.strictEqual(testCase.verdict, 'block',
+          'the `exit-zero` (unexpected-pass) case must declare the fence\'s only other value, '
+          + '`block` — `evaluateFence` is two-valued and carries no `halt` token, so `block` is '
+          + 'the only value a zero-exit-status vector can carry in this domain. Its halt '
+          + 'MEANING is asserted at the module level against `unexpected_pass` elsewhere, not '
+          + 'restated here.');
+      } else {
+        assert.strictEqual(testCase.verdict, 'authorize',
+          `REDC-05: the legitimate-RED case "${id}" must declare fence verdict \`authorize\`. `
+          + 'A block here is a REGR-04 over-strictness regression: the remedy is correcting the '
+          + 'vector data against the probe transcript, never widening the location comparison.');
+      }
+    }
+  });
 
   test('the RED Predicate fence composes exactly the atoms this evaluator evaluates', () => {
     const parsed = parsePredicateFence();
