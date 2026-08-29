@@ -7,6 +7,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const AGENT = path.join(__dirname, '..', 'agents', 'gsd-executor.md');
 const REF = path.join(__dirname, '..', 'gsd-core', 'references', 'execute-mvp-tdd.md');
@@ -674,7 +675,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     const outsideInArm = lines.slice(disjunctions[0] + 1).join('\n');
     const arm2Anchor = '    id_matches(actual.subject, plan.target_test)';
     assert.match(outsideInArm,
-      new RegExp(`^${arm2Anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'),
+      new RegExp(`^${escapeRegex(arm2Anchor)}$`, 'm'),
       'the outside-in arm must anchor the observed subject on the DECLARED TARGET TEST. ' +
       '`actual.subject == plan.implementation_target` is unsatisfiable: no runner reports an ' +
       'outside-in miss against the implementation symbol — pytest reports it against the test ' +

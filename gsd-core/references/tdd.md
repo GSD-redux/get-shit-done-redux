@@ -150,11 +150,11 @@ run, and the RED commit records what was actually observed.
 
 | Field | Meaning |
 |---|---|
-| `target_test` | The runner-native id of the test that must fail. Matched by `id_matches`, defined under **Evidence**. |
-| `implementation_target` | The production module or symbol GREEN will create. Always present, so an outside-in failure that never reaches the test body is still bound to a declared production intent. |
+| `target_test` | The runner-native id of the test that must fail. Matched by `id_matches`, defined under **Evidence**. For an outside-in missing-target declaration, declare it at the granularity the runner reports the missing target against — for a compile-time or collection-time failure that is the test FILE, since a module that never imports collects no tests and so offers no single test id to select — and record `expected_failure.subject`, `target_test` and the observed `actual.subject` at that same granularity, each excluding any position suffix (line, column) the runner appends, because a position is not part of the node's identity and moves as edits leave the declaration correct. |
+| `implementation_target` | The production module or symbol GREEN will create or change. Always present, so an outside-in failure that never reaches the test body is still bound to a declared production intent. Recorded for audit only: the predicate reads no field of it. |
 | `expected_failure.phase` | The runner-native lifecycle phase the failure occurs in. **Open vocabulary, not an enum.** pytest's `collection`/`setup`/`call`/`teardown` are one runner's examples; a compiled language has no collection phase at all and declares `build`. The contract compares declared against observed and never validates the value against a list. |
 | `expected_failure.class_or_mode` | The runner-native exception class or failure mode. Never a message substring. For a compiler, the diagnostic's own class, not its wording. |
-| `expected_failure.subject` | What the failure is reported against: normally `target_test`; for an outside-in missing target, `implementation_target`. A declaration whose `expected_failure.subject` equals its `implementation_target` is an outside-in missing-target mode; that equality is the definition the predicate's second arm tests, and there is no separate mode flag and no mode taxonomy. The predicate compares the observed subject against the plan's declared values and never routes on the observed `actual.subject` — an echo may not choose the arm that judges it. |
+| `expected_failure.subject` | What the failure is reported against: normally `target_test`; for an outside-in missing target, `implementation_target`. A declaration whose `expected_failure.subject` equals its `implementation_target` is an outside-in missing-target mode; that equality is the definition the predicate's second arm tests, and there is no separate mode flag and no mode taxonomy. The predicate compares the observed subject against the plan's declared values and never routes on the observed `actual.subject` — an echo may not choose the arm that judges it. For an outside-in declaration the declared subject is a mode marker naming production intent, not a prediction of what the runner will print: the runner reports an outside-in miss against the test file, and the predicate's second arm compares the observed subject against `plan.target_test`. |
 
 `<red_contract>` is a **sibling** of `<behavior>`, never an attribute on it.
 
@@ -189,8 +189,8 @@ red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_to
 > case — pytest's `[`, as in `[100-10-90]`. A bare prefix with no delimiter is not a match, so
 > `test_discount` never matches `test_discount_v2`.
 
-`id_matches` applies to the target-test arm only; the implementation-target arm keeps exact
-equality, because a symbol name is never a near-miss.
+`id_matches` relates the observed subject to `plan.target_test` in both arms; the arms differ in
+whether the target test was executed, not in what the observed subject is compared against.
 
 Two further obligations:
 
@@ -227,7 +227,7 @@ valid_red =
     AND target_executed
     AND id_matches(actual.subject, plan.target_test)
     OR
-    actual.subject == plan.implementation_target
+    id_matches(actual.subject, plan.target_test)
     AND plan.expected_failure is an outside-in missing-target mode
   )
 ```
@@ -267,12 +267,12 @@ Each row is a consequence of the predicate, and each names the field that decide
 
 | Outcome | Decided by | Verdict |
 |---|---|---|
-| Zero tests selected | the target-test arm's `selected_count` is 0, and no failure is anchored to `plan.implementation_target` | block |
+| Zero tests selected | the target-test arm's `selected_count` is 0, and `plan.expected_failure` is not an outside-in missing-target mode | block |
 | Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target — and the target-test arm's `selected_count` is 0 | block |
 | Fixture or setup crashed before the target assertion | `actual.phase` differs from `expected.phase` | block |
-| A different test failed | neither arm holds — `actual.subject` does not `id_matches` `plan.target_test`, nor equal `plan.implementation_target` | block |
+| A different test failed | neither arm holds — `actual.subject` does not `id_matches` `plan.target_test` | block |
 | Genuine target-behavior failure | the shared comparisons hold and the target-test arm holds | authorize |
-| Outside-in: the declared implementation target is missing | `actual.subject` equals `plan.implementation_target` and `plan.expected_failure` is an outside-in missing-target mode, with no selection or execution condition applied | authorize |
+| Outside-in: the declared implementation target is missing | `actual.subject` `id_matches` `plan.target_test` and `plan.expected_failure` is an outside-in missing-target mode, with no selection or execution condition applied | authorize |
 | Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and the target-test arm holds | authorize |
 | Unexpected pass | `exit_status` is 0 | halt |
 </red_contract_spec>
