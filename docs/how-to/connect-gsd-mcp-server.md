@@ -7,9 +7,9 @@ commands and read/write `.planning/` state — through the companion MCP server,
 with no bespoke plugin.
 
 Once connected, the GSD tools appear in the host alongside its others:
-`gsd_invoke_command`, `gsd_read_state`, `gsd_write_state`, plus the project
-control-center and UAT workbench tools in current packages. The server also
-serves a read-only **catalog** of GSD's own content — workflows and
+`gsd_invoke_command`, `gsd_read_state`, `gsd_write_state`,
+`gsd_control_center`, `gsd_uat_workbench`, and `gsd_record_uat_result`. The
+server also serves a read-only **catalog** of GSD's own content — workflows and
 references as MCP resources, and the `/gsd-*` commands as MCP prompts — so a
 host can browse and pull that content directly instead of shelling out to the
 CLI. (For the tool contracts, see the reference section below; for *why* this
@@ -24,7 +24,9 @@ server exists and its trust model, see
 The npm package includes a native Codex plugin manifest and companion
 `.mcp.json`. Loading the package as a Codex plugin registers the `gsd` server
 automatically; no marketplace entry is required. Manual registration uses the
-same `gsd` entry below. Pass an absolute project path to project-aware tools.
+same `gsd` entry below for other hosts. The plugin is local: project-aware
+tools operate only on the existing absolute `project_path` supplied with each
+call, regardless of the plugin installation directory.
 
 The entry shape is the same everywhere; only the config file and key differ by
 host.
@@ -84,7 +86,7 @@ OpenCode (and Kilo, which shares OpenCode's config schema) use a
 ## 2. Restart the host
 
 On startup the host performs the MCP `initialize` handshake. The response
-advertises `tools`, `resources`, and `prompts` capabilities, so the three GSD
+advertises `tools`, `resources`, and `prompts` capabilities, so the six GSD
 tools become callable and the host can also list the served catalog
 (resources and prompts) described below. The server never advertises
 `resources.subscribe` or `listChanged` — the catalog is fixed for the life of
@@ -168,16 +170,25 @@ rather than a real marker.
 - **The host lists no GSD tools** — confirm the server starts in isolation:
   `npx @opengsd/gsd-core gsd-mcp-server` then send an `initialize` request on
   stdin; it writes a `protocolVersion` response and exits on EOF.
-- **You manage multiple projects** — register one `gsd` entry per project with a
-  distinct name and `cwd`; the server is stateless across projects.
+- **You manage multiple projects** — pass the intended absolute `project_path`
+  to each control-center or UAT tool. Legacy command and state tools still use
+  the server's configured `cwd` or their explicit file path.
 
-## Reference — the three tools
+## Reference — the six tools
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
 | `gsd_invoke_command` | `{family: string, subcommand: string, args?: unknown[]}` | the command-routing hub result (`{ok, …}`) as JSON text |
 | `gsd_read_state` | `{path: string}` | the file contents as text |
 | `gsd_write_state` | `{path: string, content: string}` | `{ok: true, path}` as JSON text |
+| `gsd_control_center` | `{project_path: absolute string}` | the `planning inspect` snapshot in `structuredContent` and as JSON text |
+| `gsd_uat_workbench` | `{project_path: absolute string}` | the existing `audit-uat run` `results` and `summary`, with `project_path`, in `structuredContent` and as JSON text |
+| `gsd_record_uat_result` | `{project_path: absolute string, file_path: string, test_number: integer, result: "pass" \| "issue", note?: string}` | the recorded `mutation` and refreshed authoritative `workbench` in `structuredContent` and as JSON text |
+
+`file_path` must be the path returned by the workbench and remain inside the
+selected project's `.planning/` directory. An `issue` requires a nonblank
+`note`. Recording an issue creates UAT evidence only; diagnosis and fix
+planning intentionally remain with `$gsd-verify-work`.
 
 Errors from a tool are returned as MCP tool errors (`isError: true`), not as
 JSON-RPC protocol errors — the host surfaces them in its normal tool-failure UX.
@@ -193,4 +204,4 @@ JSON-RPC protocol errors — the host surfaces them in its normal tool-failure U
 
 Errors from the catalog (unknown URI, unknown prompt name, malformed cursor,
 a refused path-traversal attempt) are returned as JSON-RPC protocol errors,
-not MCP tool errors — unlike the three tools above.
+not MCP tool errors — unlike the six tools above.

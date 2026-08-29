@@ -124,3 +124,17 @@ test('MCP App resources expose semantic dashboards, not a manual JSON console', 
   assert.doesNotMatch(control, /Load planning/);
   assert.doesNotMatch(workbench, /Load UAT/);
 });
+
+test('MCP App resources honor the planning schema and iframe trust boundary', () => {
+  const control = fs.readFileSync(path.join(__dirname, '..', 'assets', 'mcp-apps', 'control-center.html'), 'utf8');
+  const workbench = fs.readFileSync(path.join(__dirname, '..', 'assets', 'mcp-apps', 'uat-workbench.html'), 'utf8');
+
+  for (const source of [control, workbench]) {
+    assert.match(source, /event\.source!==parent/);
+    assert.match(source, /message\.id===initId.*message\.error/s);
+  }
+  assert.match(control, /phase\.phase_id\|\|phase\.dir/);
+  assert.match(control, /roadmap_acceptance\?\.checkbox/);
+  assert.match(control, /percent==null\?'withheld'/);
+  assert.match(control, />Roadmap acceptance</);
+});
