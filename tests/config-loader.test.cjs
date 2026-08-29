@@ -1299,7 +1299,7 @@ describe('#2997: phase_id_convention is not silently dropped on a clean read', (
 // would be false for the channel users control via effort sync.
 const GLOBAL_KEYS_SHADOWED_UNDER_PROJECT = [
   'model_profile', 'commit_docs', 'research', 'plan_checker', 'verifier',
-  'nyquist_validation', 'post_planning_gaps', 'parallelization', 'text_mode',
+  'nyquist_validation', 'post_planning_gaps', 'research_before_questions', 'parallelization', 'text_mode',
   'resolve_model_ids', 'context_window', 'subagent_timeout', 'model_overrides',
   'models', 'granularity', 'granularities', 'planning', 'dynamic_routing',
   'fast_mode', 'agent_skills', 'response_language', 'runtime',
