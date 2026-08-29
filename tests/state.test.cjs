@@ -3026,7 +3026,12 @@ describe('#3830 facet 2: state advance-plan rejects options instead of discardin
     // --exit-contract= in the loop; --raw and --pick in their own tests below;
     // --ws/--ws= spliced by resolveActiveWorkstream. This test is the only guard that
     // the router's strict index-2 rule cannot falsely reject one of them.
-    for (const flag of ['--json-errors', '--ws default', `--cwd ${tmpDir}`, `--cwd=${tmpDir}`, '--default x',
+    // #3862 RV6.5 review: `result.success` + "no rejection message" was VACUOUS, and
+    // the review demonstrated it on this very list. `--ws default` redirects the read
+    // to an unseeded workstream, so it exits 0 with `{"error":"STATE.md not found"}` —
+    // the flag was accepted, `advance-plan` never ran, and both old assertions passed.
+    // "Was not rejected" is not "did the work". Assert the ADVANCE.
+    for (const flag of ['--json-errors', `--cwd ${tmpDir}`, `--cwd=${tmpDir}`, '--default x',
                         `--project-dir ${tmpDir}`, `--project-dir=${tmpDir}`, '--exit-contract=v1']) {
       seedSimpleState();
       const result = runGsdTools(`state advance-plan ${flag}`, tmpDir);
@@ -3034,6 +3039,37 @@ describe('#3830 facet 2: state advance-plan rejects options instead of discardin
       assert.ok(result.success, `${flag} must still be accepted; got: ${combined}`);
       assert.ok(!/unknown flag|unexpected positional argument/.test(combined),
         `${flag} must not be rejected as a command option; got: ${combined}`);
+      const parsed = JSON.parse(result.output);
+      assert.strictEqual(parsed.advanced, true,
+        `${flag} must be spliced out and let the verb actually RUN, not merely be accepted; got: ${result.output}`);
+    }
+  });
+
+  test('--ws and --ws= are spliced out, and the verb runs in the selected workstream', () => {
+    // Split from the loop above because these two do not read the project root: they
+    // redirect to .planning/workstreams/<name>/, which has to exist and carry its own
+    // STATE.md or the verb legitimately reports "STATE.md not found" — the exact shape
+    // that made the old assertion vacuous. Seed it, then assert the advance.
+    for (const form of ['--ws wsone', '--ws=wsone']) {
+      const dir = createFixture();
+      seedWorkstream(dir, {
+        name: 'wsone',
+        state: [
+          '# Project State', '', '## Current Position', '',
+          'Phase: 01 (Demo Phase)', 'Plan: 2 of 5', 'Status: Ready to execute',
+          'Last Activity: 2026-08-01', '',
+        ].join('\n'),
+      });
+
+      const result = runGsdTools(`state advance-plan ${form}`, dir);
+      const combined = `${result.output || ''}${result.error || ''}`;
+      assert.ok(result.success, `${form} must be accepted; got: ${combined}`);
+      assert.ok(!/unknown flag|unexpected positional argument/.test(combined),
+        `${form} must not be rejected as a command option; got: ${combined}`);
+      const parsed = JSON.parse(result.output);
+      assert.strictEqual(parsed.advanced, true,
+        `${form} must reach the workstream's own STATE.md and advance it; got: ${result.output}`);
+      assert.strictEqual(parsed.current_plan, 3);
     }
   });
 
