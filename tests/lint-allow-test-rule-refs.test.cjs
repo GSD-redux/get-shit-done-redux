@@ -251,23 +251,47 @@ describe('lint-allow-test-rule-refs', () => {
 
   test('repo baseline passes (real tests/ dir against real allowlist + ceilings)', async () => {
     // In-process: no subprocess, no spawnSync `timeout` to race against CI
-    // load (see the header comment above this describe block). Capture
-    // console.log the same way the CLI's own stdout is asserted on below,
-    // restored in `finally` regardless of outcome so a thrown/rejected call
-    // can never leak a patched console.log into a later test.
+    // load (see the header comment above this describe block). Capture BOTH
+    // console.log and process.stderr.write — main()'s only diagnostic output
+    // on a real failure is a bare `throw new ExitError(1)` with NO message
+    // (scripts/lint-allow-test-rule-refs.cjs:824-832); every actual detail
+    // (which files/violations) goes to process.stderr.write, not the thrown
+    // error. The old subprocess-based assertion embedded both r.stderr and
+    // r.stdout in its failure message; capturing only console.log here would
+    // silently regress that — a real failure would surface as an opaque,
+    // messageless ExitError with no clue which allowlist/ceiling tripped.
+    // Both patches are restored in `finally` regardless of outcome so a
+    // thrown/rejected call can never leak into a later test.
     const originalLog = console.log;
+    const originalStderrWrite = process.stderr.write;
     let stdout = '';
+    let stderr = '';
     console.log = (...args) => {
       stdout += `${args.join(' ')}\n`;
     };
+    process.stderr.write = (chunk, encoding, callback) => {
+      stderr += typeof chunk === 'string' ? chunk : chunk.toString(typeof encoding === 'string' ? encoding : 'utf8');
+      const cb = typeof encoding === 'function' ? encoding : callback;
+      if (typeof cb === 'function') cb();
+      return true;
+    };
     try {
       await scriptUnderTest.main([]);
+    } catch (err) {
+      // Re-throw with the captured streams attached so a real gate failure
+      // (allowlist/ceiling trip) is diagnosable from the test output alone,
+      // matching what the old subprocess assertion's message provided.
+      const wrapped = new Error(`${err.message}\nstderr: ${stderr}\nstdout: ${stdout}`);
+      wrapped.cause = err;
+      throw wrapped;
     } finally {
       console.log = originalLog;
+      process.stderr.write = originalStderrWrite;
     }
-    assert.match(stdout, /effective exemptions:/);
-    assert.match(stdout, /unverified markers:/);
-    assert.match(stdout, /Known limit:/);
+    const context = `stderr: ${stderr}\nstdout: ${stdout}`;
+    assert.match(stdout, /effective exemptions:/, context);
+    assert.match(stdout, /unverified markers:/, context);
+    assert.match(stdout, /Known limit:/, context);
   });
 
   test('repo baseline: main() still rejects unknown argv in-process (boundary on the new argv contract)', async () => {
