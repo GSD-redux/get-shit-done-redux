@@ -2631,8 +2631,17 @@ function splitGapsEntriesCore(sectionBody: string): GapsEntrySpan[] {
   rawLines.forEach((rawLine, idx) => {
     const line = rawLine.replace(/\r$/, '');
     const bulletMatch = line.match(/^(\s*)-\s/);
-    if (bulletMatch && isSeparatorShaped(line, bulletMatch[0].length)) {
-      return; // separator line — neither an opener nor a continuation
+    // Narrowed skip (review disposition a): a separator-shaped line is skipped
+    // only when it sits BETWEEN entries (nothing open yet, or it would open a
+    // top-level entry — where the phantom came from). One landing strictly
+    // INSIDE a live entry (indent > baseIndent) folds back as a continuation
+    // line, so the entry's GapsEntrySpan stays byte-contiguous — the span
+    // invariant below and the ack writer's identity re-verification both hold.
+    if (
+      bulletMatch && isSeparatorShaped(line, bulletMatch[0].length) &&
+      (current === null || bulletMatch[1].length <= (baseIndent ?? 0))
+    ) {
+      return; // separator line between entries — neither an opener nor a continuation
     }
     if (bulletMatch) {
       const indent = bulletMatch[1].length;

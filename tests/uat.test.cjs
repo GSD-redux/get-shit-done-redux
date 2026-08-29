@@ -547,6 +547,34 @@ All checks passed.
       });
     }
 
+    test('property: any bullet line whose remainder is only hyphens/spaces (>=2 hyphens) yields no item', () => {
+      // CLAUDE.md's parser-contract convention: table coverage above, property
+      // coverage here — arbitrary spacings and counts, not just the table's nine.
+      fc.assert(fc.property(
+        fc.integer({ min: 2, max: 6 }),        // extra hyphens
+        fc.integer({ min: 0, max: 3 }),        // leading indent
+        fc.integer({ min: 1, max: 3 }),        // spaces between hyphens
+        (hyphens, indent, gap) => {
+          const pad = ' '.repeat(indent);
+          const sep = pad + Array(hyphens + 1).fill('-').join(' '.repeat(gap));
+          const items = parseUatItems(mkDoc(sep));
+          return items.length === 1 && items[0].name === 'real';
+        },
+      ), { seed: 20260829, numRuns: 60 });
+    });
+
+    test('#3898 review: a separator inside a live entry keeps its span contiguous (ack-able)', () => {
+      // Disposition (a): a separator deeper than baseIndent folds back as a
+      // continuation line, so entry lines and the entry's byte span agree —
+      // the ack writer's identity re-verification still matches.
+      const items = parseUatItems([
+        '---', 'status: partial', 'phase: 01-x', '---', '',
+        '## Gaps', '',
+        '- truth: real', '  - - -', '  status: open', '',
+      ].join('\n'));
+      assert.deepStrictEqual(items.map((i) => i.name), ['real']);
+    });
+
     test('a real entry whose text starts with a hyphen is still an entry (no over-skip)', () => {
       const items = parseUatItems([
         '---', 'status: partial', 'phase: 01-x', '---', '',
