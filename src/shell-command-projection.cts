@@ -56,6 +56,11 @@ export function posixNormalize(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
+/** #1460: Quote an arbitrary value as one POSIX shell token. */
+export function shellSingleQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
 /**
  * #3663 — comparison key for a path that must equal another path regardless
  * of spelling: separator form (forward slashes via posixNormalize), relative

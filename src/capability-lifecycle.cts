@@ -83,9 +83,10 @@ const lockMod = require('./capability-lock.cjs') as {
   _setLockProbes: (probes: Partial<{ isPidAlive: (pid: number) => boolean; getProcessStartTime: (pid: number) => string | null }>) => void;
   _resetLockProbes: () => void;
 };
-const { platformWriteSync, retryRenameSync } = require('./shell-command-projection.cjs') as {
+const { platformWriteSync, retryRenameSync, shellSingleQuote } = require('./shell-command-projection.cjs') as {
   platformWriteSync: (filePath: string, content: string) => void;
   retryRenameSync: (fromPath: string, toPath: string) => void;
+  shellSingleQuote: (value: string) => string;
 };
 // #1463: numeric major.minor.patch comparison for the outdated check (the SAME compare the resolver
 // and capability list use). -1 (a<b), 0 (equal), 1 (a>b).
@@ -450,18 +451,6 @@ function isSafeHookScriptPath(script: string): boolean {
   if (PYCACHE_SEGMENT_RE.test(script)) return false;
   if (PYCACHE_SUFFIX_RE.test(path.basename(script))) return false;
   return true;
-}
-
-/**
- * #1460 (R) HIGH: POSIX single-quote an arbitrary string for safe inclusion in a shell command.
- * The emitted hook `command` is the ABSOLUTE confined script path, which begins with the
- * (non-manifest) install-prefix — commonly a home dir containing spaces/special chars (e.g.
- * "/Users/Bob Smith/.claude/..."). Written unquoted it would word-split (and, with a hostile
- * prefix, could inject). Wrapping in single quotes — with each embedded `'` escaped as `'\''` —
- * makes the whole path a single shell token that no metacharacter inside it can break.
- */
-function shellSingleQuote(value: string): string {
-  return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
 /**
