@@ -2380,22 +2380,41 @@ describe('#3830: state advance-plan checks its prose position against the plans 
       `the last plan is not a refusal and must not warn; got: ${JSON.stringify(result.stderr)}`);
   });
 
-  test('--pick reason is the discriminator callers branch on', () => {
-    // The three outcomes a first-party caller must tell apart, through the exact
-    // projection `workflows/execute-plan.md` and `agents/gsd-executor.md` use.
+  // #3862 review (Blocker 2): the first assertion here was VACUOUS — it checked
+  // only that stdout was empty, so it passed just as readily when the command
+  // FAILED. That mattered more than a style nit, because #3884 changed what this
+  // invocation does: `--pick` on an absent field is now a hard failure
+  // (`ERROR_REASON.PICK_FIELD_ABSENT`, gsd-core/bin/gsd-tools.cjs), and a normal
+  // advance emits no `reason` key at all. So after the rebase this command exits
+  // NON-ZERO on the advance case — and the old assertion stayed green over it.
+  //
+  // The contract is restated rather than deleted, because absence became a
+  // SIGNAL under #3884 instead of an empty string. Every case now asserts the
+  // exit status as well as the projection, so none of them can pass by failing.
+  //
+  // Note for callers: this is not how the first-party callers discriminate. Both
+  // invoke the verb BARE and match the full JSON — pinned by the caller-guard
+  // test and by the parity test below — so `--pick reason` is an operator
+  // convenience here, not a caller contract.
+  test('--pick reason: absence is a failure, and each reason projects exactly', () => {
     seedPhase('01-demo', 12);
 
     writeState('Plan: 3 of 12');
-    assert.strictEqual(runGsdTools('state advance-plan --pick reason', tmpDir).output.trim(), '',
-      'a normal advance carries no reason');
+    const advance = runGsdTools('state advance-plan --pick reason', tmpDir);
+    assert.ok(!advance.success,
+      `#3884: a normal advance carries no reason, so --pick reason must FAIL, not return empty; got: ${advance.output}`);
+    assert.ok(`${advance.output || ''}${advance.error || ''}`.includes('field not found'),
+      'the failure must name the absent field rather than any other error');
 
     writeState('Plan: 12 of 12');
-    assert.strictEqual(runGsdTools('state advance-plan --pick reason', tmpDir).output.trim(), 'last_plan',
-      'the last plan reports last_plan');
+    const last = runGsdTools('state advance-plan --pick reason', tmpDir);
+    assert.ok(last.success, `the last plan must still project: ${last.error}`);
+    assert.strictEqual(last.output.trim(), 'last_plan');
 
     writeState('Plan: 2 of 8');
-    assert.strictEqual(runGsdTools('state advance-plan --pick reason', tmpDir).output.trim(), 'position_diverged',
-      'only a divergence reports position_diverged');
+    const diverged = runGsdTools('state advance-plan --pick reason', tmpDir);
+    assert.ok(diverged.success, `a divergence must still project: ${diverged.error}`);
+    assert.strictEqual(diverged.output.trim(), 'position_diverged');
   });
 
   test('a normal advance emits no divergence warning', () => {
