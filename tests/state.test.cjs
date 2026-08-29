@@ -2808,6 +2808,103 @@ describe('#3830/#3862: every markdown caller of state.advance-plan discriminates
         `${name}'s halt instruction must say why the shell cannot enforce it — a \`case\` arm cannot stop a later fenced block, and that is the reason this prose exists`);
     }
   });
+
+  // #3862 review (Major 5): every assertion above is SOURCE-TEXT — they prove the
+  // arms exist and are shaped correctly, and prove nothing about whether they match
+  // what the verb actually prints. The arms glob on the literal bytes
+  // `"advanced": true`, with exactly one space, produced by serializeForOutput ->
+  // JSON.stringify(result, null, 2) (src/io.cts). Switch output() to compact JSON,
+  // add a space-stripping post-processor, or route this payload through a form the
+  // wrapper does not re-expand, and BOTH first-party callers fall into the
+  // catch-all on every successful advance — permanently, silently, and with no test
+  // red anywhere. That is strictly worse than the bug being fixed, and it is the
+  // same class the "invoke the verb BARE" test above was written to prevent: a
+  // constant shared across parallel surfaces with no parity assertion.
+  //
+  // So execute the pairing rather than asserting about it. Produce each answer
+  // shape from the REAL verb, then run each caller's OWN `case` block against that
+  // real stdout under a REAL shell. Re-implementing glob matching in JS would test
+  // this file's matcher instead of theirs; the arms are shell, so bash is the only
+  // faithful matcher available.
+  test('each caller\'s case arms match the verb\'s REAL output, shape by shape', () => {
+    const { execFileSync } = require('child_process');
+
+    const projectDir = createFixture();
+    const stateWith = (planLine) => [
+      '# Project State', '', '## Current Position', '',
+      'Phase: 01 (Demo Phase) — EXECUTING', planLine,
+      'Status: Ready to execute', 'Last Activity: 2026-08-01', '',
+    ].join('\n');
+    const seed = (planCount) => {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-demo');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      for (let i = 1; i <= planCount; i++) {
+        const id = String(i).padStart(2, '0');
+        fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
+        fs.writeFileSync(path.join(phaseDir, `01-${id}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+      }
+    };
+    const put = (planLine) =>
+      fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), stateWith(planLine));
+    const advanceOut = () => runGsdTools('state advance-plan', projectDir).output;
+
+    seed(12);
+
+    // The five shapes, each from the real binary except the non-answer, which is
+    // BY DEFINITION what a crashed `gsd_run` leaves in the capture.
+    put('Plan: 3 of 12');  const OUT_ADVANCED = advanceOut();
+    put('Plan: 12 of 12'); const OUT_LAST     = advanceOut();
+    put('Plan: 2 of 8');   const OUT_DIVERGED = advanceOut();
+    put('Status: no plan line at all'); const OUT_ERROR = advanceOut();
+    const OUT_EMPTY = '';
+
+    // Sanity: the fixtures really did produce the shapes this test is about. Without
+    // this, a fixture that silently stopped producing (say) a divergence would make
+    // every arm assertion below pass against an empty string.
+    assert.match(OUT_ADVANCED, /"advanced":\s*true/, 'fixture did not produce a real advance');
+    assert.match(OUT_LAST, /"reason":\s*"last_plan"/, 'fixture did not produce last_plan');
+    assert.match(OUT_DIVERGED, /"reason":\s*"position_diverged"/, 'fixture did not produce a divergence');
+    assert.match(OUT_ERROR, /"error"/, 'fixture did not produce an exit-0 error object');
+
+    // Lift the caller's own `case` block and replace each arm BODY with an echo of
+    // its index, leaving every PATTERN byte-identical to what ships.
+    const armPatterns = (block) => {
+      const m = block.match(/case\s+"\$\{ADVANCE_OUT\}"\s+in\r?\n([\s\S]*?)\r?\n\s*esac/);
+      assert.ok(m, 'could not locate the case block — the source-text guards above should have caught this first');
+      return m[1].split(';;')
+        .map((seg) => seg.split(/\r?\n/).map((l) => l.trim())
+          .find((l) => l && !l.startsWith('#') && l.endsWith(')')))
+        .filter(Boolean)
+        .map((l) => l.slice(0, -1));
+    };
+
+    // Arm 0 records (advance + last_plan); arm 1 is the named divergence stop; the
+    // final arm is the catch-all. An answer the callers were never taught must reach
+    // the catch-all — that is the allow-list property, checked against real bytes.
+    const EXPECT = [
+      ['a real advance',        OUT_ADVANCED, 0],
+      ['the last plan',         OUT_LAST,     0],
+      ['a divergence refusal',  OUT_DIVERGED, 1],
+      ['an exit-0 error object', OUT_ERROR,   'last'],
+      ['a non-answer (crash)',  OUT_EMPTY,    'last'],
+    ];
+
+    for (const { name, block } of callerFiles()) {
+      const patterns = armPatterns(block);
+      assert.ok(patterns.length >= 3, `${name}: expected at least three arms, got ${patterns.length}`);
+      const script = 'case "$1" in\n'
+        + patterns.map((p, i) => `${p}) echo ${i};;`).join('\n')
+        + '\nesac\n';
+      for (const [label, payload, want] of EXPECT) {
+        const got = execFileSync('bash', ['-c', script, '_', payload], { encoding: 'utf-8' }).trim();
+        const expected = want === 'last' ? String(patterns.length - 1) : String(want);
+        assert.strictEqual(got, expected,
+          `${name}: ${label} matched arm ${got || '(none)'}, expected arm ${expected}. `
+          + `The caller's arms and the verb's real output have drifted apart.`);
+      }
+    }
+  });
+
 });
 
 describe('#3830 facet 2: state advance-plan rejects options instead of discarding them', () => {
