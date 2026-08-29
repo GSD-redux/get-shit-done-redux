@@ -255,9 +255,10 @@
       "files": [
         "audit-command-cutover.test.cjs",
         "audit-fix-command.test.cjs",
-        "audit-milestone-filename-guard.test.cjs"
+        "audit-milestone-filename-guard.test.cjs",
+        "audit-workstream-layouts.test.cjs"
       ],
-      "issue": "#3796 \u2014 the third file is a structural guard over the shipped audit-milestone workflow text (writer/reader filename agreement), not a behavior suite of the audit module; consolidation into the CLI suites would put a source-text scan behind spawn-heavy fixtures."
+      "issue": "#3804 \u2014 the layout tests drive the real audit-uat CLI against on-disk workstream fixtures; the existing audit suites cover the CLI cutover and the filename contract, and this covers phase-directory enumeration"
     }
   }
 }

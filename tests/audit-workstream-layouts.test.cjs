@@ -29,17 +29,19 @@ function seedPhaseArtifact(dir, kind) {
       '',
     ].join('\n'));
   } else {
+    // The canonical UAT.md shape the parser reads: `### N. <name>` test
+    // blocks with expected/result field lines (see tests/uat.test.cjs's
+    // fixtures) — the numbered-list form parses to zero items.
     fs.writeFileSync(path.join(dir, `${path.basename(dir)}-UAT.md`), [
       '---',
-      'status: gaps_found',
+      'status: testing',
       '---',
       '',
-      '# UAT',
+      '## Tests',
       '',
-      '## Verification',
-      '',
-      '1. **Test:** something',
-      '   - **Result:** pending',
+      '### 1. Boot Flow',
+      'expected: Workstream phase boots',
+      'result: pending',
       '',
     ].join('\n'));
   }
@@ -101,19 +103,21 @@ describe('#3804: audit-uat sees all three phase layouts', () => {
     );
   });
 
-  test('#3804: a phase reachable via two roots reports once', (t) => {
-    const tmpDir = createTempProject('gsd-3804-dup-');
+  test('#3804 review: root and workstream v1.0 archives carry DISTINCT milestone labels', (t) => {
+    // Two v1.0-phases trees (root + workstream) must not both label 'v1.0' —
+    // audit acknowledge resolves --archived-milestone by strict label
+    // equality, first-wins, so an ambiguous label can write the marker into
+    // the wrong root's phase dir (#2237 class).
+    const tmpDir = createTempProject('gsd-3804-labels-');
     t.after(() => cleanup(tmpDir));
-    const dirName = '42-shared';
-    seedPhaseArtifact(path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', dirName), 'deferred');
-    seedPhaseArtifact(path.join(tmpDir, '.planning', 'workstreams', 'alpha', 'milestones', 'v1.0-phases', dirName), 'deferred');
+    seedPhaseArtifact(path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '42-root'), 'deferred');
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'workstreams', 'alpha'), { recursive: true });
+    seedPhaseArtifact(path.join(tmpDir, '.planning', 'workstreams', 'alpha', 'milestones', 'v1.0-phases', '42-alpha'), 'deferred');
 
     const out = runAudit(tmpDir);
-    const phase42 = out.results.filter((r) => String(r.phase).startsWith('42'));
-    assert.ok(phase42.length >= 1, 'the phase surfaces');
-    // The count assertion is on summary consistency, not a hard 1 (two roots
-    // legitimately carry the same phase number for different projects).
-    assert.equal(out.summary.total_files, out.results.filter((r) => (r.items || []).length > 0 || r.parse_gap).length,
-      'summary.total_files must agree with the per-result files actually reporting');
+    const labels = out.results.map((r) => r.archived_milestone).filter(Boolean);
+    assert.ok(labels.includes('v1.0'), `the root label stays the bare version; got ${JSON.stringify(labels)}`);
+    assert.ok(labels.includes('alpha/v1.0'), `the workstream label is prefixed; got ${JSON.stringify(labels)}`);
+    assert.equal(new Set(labels).size, labels.length, 'labels must be unique across roots');
   });
 });

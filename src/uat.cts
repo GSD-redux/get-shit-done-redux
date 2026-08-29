@@ -34,7 +34,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocator = require('./phase-locator.cjs');
-const { getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocator;
+const { listMilestonePhaseDirs, getAllArchivedPhaseDirs } = phaseLocator;
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 import configLoader = require('./config-loader.cjs');
@@ -146,10 +146,13 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
   // mattering when a milestone closes: a deferred human-UAT scenario or a
   // `skipped` live-stack test is exactly what gets archived still-open.
   //
-  // Reuses the canonical `getArchivedPhaseDirs` seam (phase-locator.cts), which
+  // Reuses the canonical `getAllArchivedPhaseDirs` seam (phase-locator.cts), which
   // `findPhaseInternal` already uses for this same fallback, so the archive
   // layout convention stays owned by one module.
-  const archivedDirs = getArchivedPhaseDirs(cwd);
+  // #3804: the guard AND the scan use the cross-workstream enumeration —
+  // a project whose only phases live in workstream milestone trees is a
+  // fully-populated audit, not a broken install.
+  const archivedDirs = getAllArchivedPhaseDirs(cwd);
   if (!hasActivePhases && archivedDirs.length === 0) {
     error('No phases directory found in planning directory');
   }

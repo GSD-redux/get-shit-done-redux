@@ -31,7 +31,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocator = require('./phase-locator.cjs');
-const { getArchivedPhaseDirs } = phaseLocator;
+const { getAllArchivedPhaseDirs } = phaseLocator;
 import { requireSafePath, sanitizeForDisplay, sanitizeLabel } from './security.cjs';
 import { platformWriteSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -956,8 +956,11 @@ function listAuditPhaseTargets(planDir: string, cwd: string): { targets: AuditPh
     }
   }
 
+  // #3804: the audit is cross-workstream by design — the shared
+  // getAllArchivedPhaseDirs helper (root + every workstream, distinct
+  // '<ws>/<version>' labels) owns that walk.
   try {
-    for (const archived of getArchivedPhaseDirs(cwd)) {
+    for (const archived of getAllArchivedPhaseDirs(cwd)) {
       targets.push({ dir: archived.name, fullPath: archived.fullPath, milestone: archived.milestone });
     }
   } catch {
