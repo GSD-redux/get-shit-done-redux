@@ -813,6 +813,728 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       'See #3770 (CR-11).');
   });
 
+  // ── THE SHIPPED PREDICATE, EVALUATED RATHER THAN PINNED ──────────────────
+  // Everything above this line proves the fence CONTAINS certain text. None of
+  // it proves what the fence DECIDES. That gap is #3770: a conjunct can be
+  // present, correctly spelled and correctly indented while the contract it
+  // composes authorizes a run it must block. The block below reads the shipped
+  // fence as STRUCTURED INPUT to an evaluator and asserts the VERDICT it
+  // computes for a table of evidence vectors, so deleting `AND target_executed`
+  // stops being a broken string match and becomes `target-not-executed`
+  // flipping from `block` to `authorize` — which is the defect, stated as the
+  // defect. See #3770.
+
+  /**
+   * The `### RED Predicate` fence, split into its shared conjuncts and its two
+   * arms BY POSITION — the group opener, the `OR`, the closer — which is the
+   * reading rule the section itself ships two lines above the fence: `AND`
+   * binds tighter than `OR`, so the parenthesised group is exactly two arms.
+   * Indentation is never consulted; it is presentation, and position is the
+   * grammar.
+   *
+   * Every structural expectation THROWS with the observed count rather than
+   * degrading to a permissive parse. A reader that silently treated every atom
+   * as shared, or every atom as arm 1, would compute a verdict for every vector
+   * below and agree with the table by accident — a green suite proving nothing.
+   * See #3770 (T-02-06-01).
+   */
+  function parsePredicateFence() {
+    const lines = soleFencedBlock(CONTRACT, 'RED Predicate')
+      .split('\n').map((line) => line.trim()).filter(Boolean);
+
+    assert.strictEqual(lines[0], 'valid_red =',
+      `the RED Predicate block must open with its \`valid_red =\` header. Observed: `
+      + `"${lines[0]}". Without the assignment the block is an expression fragment, and every `
+      + 'arm below is read from an offset that has shifted by one. See #3770.');
+
+    const indicesWhere = (match) => lines
+      .map((line, i) => (match(line) ? i : -1)).filter((i) => i !== -1);
+    const openers = indicesWhere((line) => line.endsWith('('));
+    const disjunctions = indicesWhere((line) => line === 'OR');
+    const closers = indicesWhere((line) => line === ')');
+
+    assert.strictEqual(openers.length, 1,
+      `the predicate must open exactly one parenthesised group; found ${openers.length}. `
+      + 'The two-arm reading this evaluator implements is not defined for any other shape, so '
+      + 'it refuses to guess rather than falling back to a permissive parse. See #3770.');
+    assert.strictEqual(disjunctions.length, 1,
+      `the parenthesised group must carry exactly one \`OR\`; found ${disjunctions.length}. `
+      + 'See #3770.');
+    assert.strictEqual(closers.length, 1,
+      `the parenthesised group must be closed exactly once; found ${closers.length}. `
+      + 'See #3770.');
+    assert.ok(openers[0] < disjunctions[0] && disjunctions[0] < closers[0],
+      `the group must open (line ${openers[0] + 1}), disjoin (line ${disjunctions[0] + 1}) and `
+      + `close (line ${closers[0] + 1}) in that order. See #3770.`);
+
+    const atom = (line) => line.replace(/^AND /, '');
+    return {
+      shared: lines.slice(1, openers[0]).map(atom),
+      arm1: lines.slice(openers[0] + 1, disjunctions[0]).map(atom),
+      arm2: lines.slice(disjunctions[0] + 1, closers[0]).map(atom),
+    };
+  }
+
+  /** `id_matches`, exactly as the `### Evidence` blockquote at tdd.md:187-190 defines it. */
+  function idMatches(observed, declared) {
+    if (observed === declared) return true;
+    return observed.startsWith(declared) && observed.slice(declared.length).startsWith('[');
+  }
+
+  /** `expected_failure` structural equality over the three fields the schema declares. */
+  const sameTriple = (a, b) => a.phase === b.phase
+    && a.class_or_mode === b.class_or_mode
+    && a.subject === b.subject;
+
+  /**
+   * One evaluator per DISTINCT atom, keyed by the atom's text exactly as the
+   * fence carries it with a leading `AND ` stripped. NINE keys for fourteen
+   * statement lines: `valid_red =`, `AND (`, `OR` and `)` are structure, and
+   * `id_matches(actual.subject, plan.target_test)` occupies one line in each
+   * arm as a single atom.
+   *
+   * A key that no longer appears in the fence, or a fence atom with no key
+   * here, is caught by the set equality in its OWN test below. Separating that
+   * test from the verdict test is deliberate: node:test stops a test at its
+   * first failed assertion, so a set equality sharing a test with the case loop
+   * would mask every named case flip behind "the atom set drifted" — the same
+   * masking the byte-freeze gave, and the reason it was a poor control. Split,
+   * a deleted conjunct reports BOTH the drift and the case it flips.
+   * See #3770 (T-02-06-02).
+   */
+  const PREDICATE_ATOMS = new Map([
+    ['exit_status != 0', (v) => v.trailer.exit_status !== 0],
+    ['trailer.expected == plan.expected_failure',
+      (v) => sameTriple(v.trailer.expected, v.plan.expected_failure)],
+    ['actual.phase == expected.phase',
+      (v) => v.trailer.actual.phase === v.trailer.expected.phase],
+    ['actual.class_or_mode == expected.class_or_mode',
+      (v) => v.trailer.actual.class_or_mode === v.trailer.expected.class_or_mode],
+    ['trailer.target_test == plan.target_test',
+      (v) => v.trailer.target_test === v.plan.target_test],
+    ['selected_count > 0', (v) => v.trailer.selected_count > 0],
+    ['target_executed', (v) => v.trailer.target_executed === true],
+    ['id_matches(actual.subject, plan.target_test)',
+      (v) => idMatches(v.trailer.actual.subject, v.plan.target_test)],
+    ['plan.expected_failure is an outside-in missing-target mode',
+      (v) => v.plan.expected_failure.subject === v.plan.implementation_target],
+  ]);
+
+  /**
+   * The verdict the SHIPPED fence produces for one evidence vector, with the
+   * atoms that failed, so a disagreement names the conjunct that decided it.
+   *
+   * Atoms are evaluated EAGERLY, never through a short-circuiting `every`: an
+   * unresolvable atom must always reach its `throw`. A `Map.get` miss that
+   * short-circuited past the lookup, or that defaulted to `true`, would turn
+   * every future paraphrase of this fence into a silent authorization — the
+   * exact failure #3770 documents. The throw is the fail-closed FLOOR; the set
+   * equality above it is the readable report that names both halves of the
+   * drift. See #3770 (T-02-06-02).
+   */
+  function evaluateFence(parsed, vector) {
+    const truths = (atoms) => atoms.map((text) => {
+      const evaluator = PREDICATE_ATOMS.get(text);
+      if (!evaluator) {
+        throw new Error(
+          `the RED Predicate carries an atom with no evaluator: "${text}". An unresolved atom `
+          + 'is never treated as satisfied — a permissive default would convert a reworded '
+          + 'conjunct into an authorization. Add the evaluator, or revert the reword. See #3770.');
+      }
+      return [text, evaluator(vector)];
+    });
+    const shared = truths(parsed.shared);
+    const arm1 = truths(parsed.arm1);
+    const arm2 = truths(parsed.arm2);
+    const holds = (pairs) => pairs.every(([, ok]) => ok);
+    return {
+      verdict: holds(shared) && (holds(arm1) || holds(arm2)) ? 'authorize' : 'block',
+      failed: [...shared, ...arm1, ...arm2].filter(([, ok]) => !ok).map(([text]) => text),
+    };
+  }
+
+  /**
+   * An evidence vector in the shape `### Evidence` ships — the seven trailer
+   * keys plus the plan's `<red_contract>` declaration — with the genuine
+   * target-behavior failure as its base and one field overridden per case, so
+   * each blocking case blocks for exactly ONE reason and deleting the conjunct
+   * that decides it FLIPS the verdict.
+   *
+   * The six cases that participate in a residual identity pair do NOT use this
+   * factory: they are written out as full literals below, twice, on purpose.
+   */
+  function vector({ plan = {}, trailer = {} }) {
+    return {
+      plan: {
+        target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+        implementation_target: 'pricing.apply_discount',
+        expected_failure: {
+          phase: 'call',
+          class_or_mode: 'AssertionError',
+          subject: 'tests/test_pricing.py::test_discount_reduces_total',
+        },
+        ...plan,
+      },
+      trailer: {
+        command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
+        exit_status: 1,
+        target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+        selected_count: 1,
+        target_executed: true,
+        expected: {
+          phase: 'call',
+          class_or_mode: 'AssertionError',
+          subject: 'tests/test_pricing.py::test_discount_reduces_total',
+        },
+        actual: {
+          phase: 'call',
+          class_or_mode: 'AssertionError',
+          subject: 'tests/test_pricing.py::test_discount_reduces_total',
+        },
+        ...trailer,
+      },
+    };
+  }
+
+  // ── THE THREE RESIDUAL PAIRS ─────────────────────────────────────────────
+  // Each pair below is TWO SEPARATELY WRITTEN OBJECT LITERALS with identical
+  // fields: a legitimate case, and an illegitimate one the contract cannot
+  // tell apart from it. They are deliberately NOT a shared constant, a spread
+  // copy or one reference asserted against itself — `deepStrictEqual(x, x)`
+  // asserts nothing, and the whole point of these pairs is that adding ONE
+  // field to the residual literal is a real one-line mutation that turns the
+  // pair red. Phase 3 cannot add a working discriminator and leave them green.
+  // Do not compress them. See #3770 (F-1, BL-1).
+
+  const GENUINE = {
+    plan: {
+      target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+      implementation_target: 'pricing.apply_discount',
+      expected_failure: {
+        phase: 'call',
+        class_or_mode: 'AssertionError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+    },
+    trailer: {
+      command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
+      exit_status: 1,
+      target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+      selected_count: 1,
+      target_executed: true,
+      expected: {
+        phase: 'call',
+        class_or_mode: 'AssertionError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+      actual: {
+        phase: 'call',
+        class_or_mode: 'AssertionError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+    },
+  };
+
+  const UNRELATED_ASSERTION_IN_TARGET_TEST = {
+    plan: {
+      target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+      implementation_target: 'pricing.apply_discount',
+      expected_failure: {
+        phase: 'call',
+        class_or_mode: 'AssertionError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+    },
+    trailer: {
+      command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
+      exit_status: 1,
+      target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+      selected_count: 1,
+      target_executed: true,
+      expected: {
+        phase: 'call',
+        class_or_mode: 'AssertionError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+      actual: {
+        phase: 'call',
+        class_or_mode: 'AssertionError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+    },
+  };
+
+  const OUTSIDE_IN = {
+    plan: {
+      target_test: 'tests/test_pricing.py',
+      implementation_target: 'pricing.apply_discount',
+      expected_failure: {
+        phase: 'collection',
+        class_or_mode: 'ImportError',
+        subject: 'pricing.apply_discount',
+      },
+    },
+    trailer: {
+      command: 'pytest tests/test_pricing.py -q',
+      exit_status: 2,
+      target_test: 'tests/test_pricing.py',
+      selected_count: 0,
+      target_executed: false,
+      expected: {
+        phase: 'collection',
+        class_or_mode: 'ImportError',
+        subject: 'pricing.apply_discount',
+      },
+      actual: {
+        phase: 'collection',
+        class_or_mode: 'ImportError',
+        subject: 'tests/test_pricing.py',
+      },
+    },
+  };
+
+  const UNRELATED_MISSING_DEP_IN_TARGET_FILE = {
+    plan: {
+      target_test: 'tests/test_pricing.py',
+      implementation_target: 'pricing.apply_discount',
+      expected_failure: {
+        phase: 'collection',
+        class_or_mode: 'ImportError',
+        subject: 'pricing.apply_discount',
+      },
+    },
+    trailer: {
+      command: 'pytest tests/test_pricing.py -q',
+      exit_status: 2,
+      target_test: 'tests/test_pricing.py',
+      selected_count: 0,
+      target_executed: false,
+      expected: {
+        phase: 'collection',
+        class_or_mode: 'ImportError',
+        subject: 'pricing.apply_discount',
+      },
+      actual: {
+        phase: 'collection',
+        class_or_mode: 'ImportError',
+        subject: 'tests/test_pricing.py',
+      },
+    },
+  };
+
+  const FIXTURE_IS_THE_BEHAVIOR = {
+    plan: {
+      target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+      implementation_target: 'pricing.apply_discount',
+      expected_failure: {
+        phase: 'setup',
+        class_or_mode: 'RuntimeError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+    },
+    trailer: {
+      command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
+      exit_status: 1,
+      target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+      selected_count: 1,
+      target_executed: true,
+      expected: {
+        phase: 'setup',
+        class_or_mode: 'RuntimeError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+      actual: {
+        phase: 'setup',
+        class_or_mode: 'RuntimeError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+    },
+  };
+
+  const UNRELATED_FIXTURE_CRASH = {
+    plan: {
+      target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+      implementation_target: 'pricing.apply_discount',
+      expected_failure: {
+        phase: 'setup',
+        class_or_mode: 'RuntimeError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+    },
+    trailer: {
+      command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
+      exit_status: 1,
+      target_test: 'tests/test_pricing.py::test_discount_reduces_total',
+      selected_count: 1,
+      target_executed: true,
+      expected: {
+        phase: 'setup',
+        class_or_mode: 'RuntimeError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+      actual: {
+        phase: 'setup',
+        class_or_mode: 'RuntimeError',
+        subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+    },
+  };
+
+  /**
+   * Fifteen evidence vectors with HARDCODED verdicts. Nine isolate one conjunct
+   * each, so deleting that conjunct flips exactly this case; three are the
+   * authorizing cases the contract exists to admit; three are the residuals it
+   * admits and should not.
+   *
+   * `outcome_row` names the `### Outcomes` row this case IS, or null where the
+   * table has no row for it. Where it is non-null the row's shipped verdict is
+   * COMPARED against the verdict computed here, so the table can no longer
+   * drift from the predicate the way the outside-in row did.
+   */
+  const EVIDENCE_VECTORS = [
+    {
+      id: 'exit-zero',
+      outcome_row: null,
+      verdict: 'block',
+      why: 'isolates `exit_status != 0`. Every other conjunct holds, so deleting the first '
+        + 'shared conjunct authorizes a PASSING run — the halt rule at the foot of the section '
+        + 'is what catches it afterwards, and the predicate must still refuse it.',
+      vector: vector({ trailer: { exit_status: 0 } }),
+    },
+    {
+      id: 'trailer-expected-not-pinned',
+      outcome_row: null,
+      verdict: 'block',
+      why: 'isolates `trailer.expected == plan.expected_failure`. The trailer is internally '
+        + 'consistent — `actual` agrees with the trailer\'s own `expected` — so the two '
+        + 'field comparisons below it both hold and only the pin fails. Without the pin a '
+        + 'mis-copied trailer approves itself by agreeing with its own echo.',
+      vector: vector({
+        trailer: {
+          expected: {
+            phase: 'call',
+            class_or_mode: 'TypeError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+          actual: {
+            phase: 'call',
+            class_or_mode: 'TypeError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+        },
+      }),
+    },
+    {
+      id: 'fixture-crash',
+      outcome_row: 'Fixture or setup crashed before the target assertion',
+      verdict: 'block',
+      why: 'isolates `actual.phase == expected.phase`. The declared behavior was a call-phase '
+        + 'assertion; the run died in setup, so nothing was proved about the target behavior.',
+      vector: vector({
+        trailer: {
+          actual: {
+            phase: 'setup',
+            class_or_mode: 'AssertionError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+        },
+      }),
+    },
+    {
+      id: 'collect-parse-error',
+      outcome_row: 'Suite failed to collect or parse',
+      verdict: 'block',
+      why: 'isolates `actual.class_or_mode == expected.class_or_mode`. The phase is held equal '
+        + 'deliberately so the class comparison alone decides: a case that blocked for two '
+        + 'reasons would survive deleting either one, and would prove neither.',
+      vector: vector({
+        trailer: {
+          actual: {
+            phase: 'call',
+            class_or_mode: 'SyntaxError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+        },
+      }),
+    },
+    {
+      id: 'target-test-not-pinned',
+      outcome_row: null,
+      verdict: 'block',
+      why: 'isolates `trailer.target_test == plan.target_test`. The trailer names a shorter id '
+        + 'than the plan declared while `actual.subject` still carries the full one, so every '
+        + '`id_matches` conjunct holds and only the pin fails. This is the second half of the '
+        + 'pinning pair: an executor that widened its own target id would otherwise pass.',
+      vector: vector({
+        trailer: { target_test: 'tests/test_pricing.py::test_discount' },
+      }),
+    },
+    {
+      id: 'zero-tests-selected',
+      outcome_row: 'Zero tests selected',
+      verdict: 'block',
+      why: "isolates arm 2's outside-in mode conjunct. pytest reports `not found:` against the "
+        + 'requested node id, so arm 2\'s `id_matches` holds; the declaration is not an '
+        + 'outside-in one, so the mode conjunct alone stops the arm. Delete it and a run that '
+        + 'selected NO tests authorizes GREEN.',
+      vector: vector({
+        plan: {
+          expected_failure: {
+            phase: 'collection',
+            class_or_mode: 'UsageError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+        },
+        trailer: {
+          exit_status: 4,
+          selected_count: 0,
+          target_executed: false,
+          expected: {
+            phase: 'collection',
+            class_or_mode: 'UsageError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+          actual: {
+            phase: 'collection',
+            class_or_mode: 'UsageError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+        },
+      }),
+    },
+    {
+      id: 'target-not-executed',
+      outcome_row: null,
+      verdict: 'block',
+      why: 'isolates `AND target_executed`. One test was selected and the error was attributed '
+        + 'to its node id, but the session aborted before any test result was reported, so no '
+        + "member of the run's executed-and-reported set matches the declared target. This is "
+        + "the case `target_executed`'s definition exists for, and the conjunct is the only "
+        + 'thing blocking it.',
+      vector: vector({
+        plan: {
+          expected_failure: {
+            phase: 'setup',
+            class_or_mode: 'RuntimeError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+        },
+        trailer: {
+          target_executed: false,
+          expected: {
+            phase: 'setup',
+            class_or_mode: 'RuntimeError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+          actual: {
+            phase: 'setup',
+            class_or_mode: 'RuntimeError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total',
+          },
+        },
+      }),
+    },
+    {
+      id: 'different-test-failed',
+      outcome_row: 'A different test failed',
+      verdict: 'block',
+      why: "isolates the target-test arm's `id_matches` anchor. Two tests ran, the declared "
+        + 'target among them and passing, and a DIFFERENT test failed at the declared phase '
+        + "with the declared class. This IS #3770's original defect: without the anchor the "
+        + 'arm reduces to selection plus execution, which this run satisfies.',
+      vector: vector({
+        trailer: {
+          selected_count: 2,
+          actual: {
+            phase: 'call',
+            class_or_mode: 'AssertionError',
+            subject: 'tests/test_pricing.py::test_tax_is_applied',
+          },
+        },
+      }),
+    },
+    {
+      id: 'outside-in-wrong-file',
+      outcome_row: null,
+      verdict: 'block',
+      why: "isolates arm 2's `id_matches` anchor. A legitimate outside-in declaration, but the "
+        + 'collection failure was reported against a DIFFERENT test file. Delete the anchor and '
+        + 'arm 2 reduces to the declared mode alone — a declaration, not evidence, authorizing '
+        + 'itself.',
+      vector: vector({
+        plan: {
+          target_test: 'tests/test_pricing.py',
+          expected_failure: {
+            phase: 'collection',
+            class_or_mode: 'ImportError',
+            subject: 'pricing.apply_discount',
+          },
+        },
+        trailer: {
+          command: 'pytest tests/test_pricing.py -q',
+          exit_status: 2,
+          target_test: 'tests/test_pricing.py',
+          selected_count: 0,
+          target_executed: false,
+          expected: {
+            phase: 'collection',
+            class_or_mode: 'ImportError',
+            subject: 'pricing.apply_discount',
+          },
+          actual: {
+            phase: 'collection',
+            class_or_mode: 'ImportError',
+            subject: 'tests/test_checkout.py',
+          },
+        },
+      }),
+    },
+    {
+      id: 'genuine',
+      outcome_row: 'Genuine target-behavior failure',
+      verdict: 'authorize',
+      why: 'the one outcome the whole contract exists to admit: the declared test was selected, '
+        + 'executed, and failed at the declared phase with the declared class.',
+      vector: GENUINE,
+    },
+    {
+      id: 'outside-in',
+      outcome_row: 'Outside-in: the declared implementation target is missing',
+      verdict: 'authorize',
+      why: 'the legitimate outside-in RED. It reports 0 selected and false executed BY '
+        + 'CONSTRUCTION, which is why those two conjuncts are scoped to arm 1: hoisted above '
+        + 'the group they block exactly the case arm 2 exists to admit, and this vector is what '
+        + 'turns that hoist red.',
+      vector: OUTSIDE_IN,
+    },
+    {
+      id: 'fixture-is-the-behavior',
+      outcome_row: 'Fixture is itself the behavior under test',
+      verdict: 'authorize',
+      why: 'a setup-phase failure is legitimate RED when the fixture IS the declared behavior — '
+        + 'the declared and observed phases agree, so the phase comparison never fires.',
+      vector: FIXTURE_IS_THE_BEHAVIOR,
+    },
+    {
+      id: 'unrelated-assertion-in-target-test',
+      // Wired to its `### Outcomes` row by 02-06 Task 4, which adds the row.
+      outcome_row: null,
+      verdict: 'authorize',
+      why: 'RESIDUAL (arm 1). Field-identical to `genuine`, yet the assertion that failed is not '
+        + "the one the plan's <behavior> describes — an unrelated assertion earlier in the same "
+        + 'test body, at the same phase with the same class. The predicate never consumes '
+        + '<behavior>, so nothing in the vector distinguishes the two. Authorizing is what the '
+        + 'shipped predicate DOES; the row records it as a known residual rather than pretending '
+        + 'the contract blocks it.',
+      vector: UNRELATED_ASSERTION_IN_TARGET_TEST,
+    },
+    {
+      id: 'unrelated-missing-dep-in-target-file',
+      // Wired to its `### Outcomes` row by 02-06 Task 4, which adds the row.
+      outcome_row: null,
+      verdict: 'authorize',
+      why: 'RESIDUAL (arm 2). Field-identical to `outside-in`, yet the import that failed is an '
+        + 'unrelated third-party dependency, not the declared `implementation_target`. Arm 2 '
+        + 'anchors on the declared TEST FILE and the symbol\'s identity appears only in a '
+        + 'diagnostic message the contract deliberately keeps out of the vector.',
+      vector: UNRELATED_MISSING_DEP_IN_TARGET_FILE,
+    },
+    {
+      id: 'unrelated-fixture-crash',
+      // Wired to its `### Outcomes` row by 02-06 Task 4, which adds the row.
+      outcome_row: null,
+      verdict: 'authorize',
+      why: 'RESIDUAL (arm 1 at the fixture phase). Field-identical to '
+        + '`fixture-is-the-behavior`, yet the fixture that crashed is an unrelated one, not the '
+        + 'fixture the plan declared as the behavior under test. Nothing in the vector says '
+        + 'WHICH fixture crashed.',
+      vector: UNRELATED_FIXTURE_CRASH,
+    },
+  ];
+
+  test('the RED Predicate fence composes exactly the atoms this evaluator evaluates', () => {
+    const parsed = parsePredicateFence();
+
+    // Its OWN test, not a first assertion inside the verdict test below. A
+    // REWORDED or ADDED conjunct reports here as what it is — naming the
+    // unknown text and any orphaned key — while a DELETED conjunct reports
+    // here AND flips its named case in the next test, because neither can
+    // mask the other. See #3770.
+    assert.deepStrictEqual(
+      [...new Set([...parsed.shared, ...parsed.arm1, ...parsed.arm2])].sort(),
+      [...PREDICATE_ATOMS.keys()].sort(),
+      'the RED Predicate fence carries an atom this evaluator cannot evaluate, or this '
+      + 'evaluator carries a key the fence no longer contains. Either is a semantic change to '
+      + 'the shipped contract: a reworded conjunct is a NEW conjunct as far as anything reading '
+      + 'the fence is concerned, and the four successive paraphrases that each silently dropped '
+      + 'one are why this equality exists. Update the fence and this map together, and say in '
+      + 'the plan which atom moved and why. See #3770.');
+
+    // The set equality above passes when a conjunct is deleted from BOTH the
+    // fence and this map. The hardcoded count is what does not.
+    assert.strictEqual(PREDICATE_ATOMS.size, 9,
+      `the predicate must compose exactly nine distinct atoms; this map carries `
+      + `${PREDICATE_ATOMS.size}. Deleting a conjunct from the fence AND its evaluator here `
+      + 'satisfies the set equality above and would otherwise pass unnoticed. See #3770.');
+  });
+
+  test('the shipped predicate computes the verdict each evidence vector must receive', () => {
+    const parsed = parsePredicateFence();
+
+    for (const testCase of EVIDENCE_VECTORS) {
+      const { verdict, failed } = evaluateFence(parsed, testCase.vector);
+      assert.strictEqual(verdict, testCase.verdict,
+        `the shipped RED Predicate ${verdict}s the \`${testCase.id}\` evidence vector; the `
+        + `contract requires it to ${testCase.verdict}. ${testCase.why} `
+        + `Conjuncts that failed: ${failed.length ? failed.join(' | ') : '(none)'}. `
+        + 'This assertion evaluates the fence rather than matching its text, so it fails when '
+        + 'the contract\'s MEANING changes and not only when its wording does. See #3770.');
+    }
+  });
+
+  test('every Outcomes row verdict agrees with what the shipped predicate computes', () => {
+    const parsed = parsePredicateFence();
+    const outcomes = sliceH3(CONTRACT, 'Outcomes').split('\n');
+
+    for (const testCase of EVIDENCE_VECTORS) {
+      if (testCase.outcome_row === null) continue;
+      const hits = outcomes.filter((line) => line.includes(testCase.outcome_row));
+      assert.strictEqual(hits.length, 1,
+        `### Outcomes must carry exactly one row containing "${testCase.outcome_row}", the row `
+        + `the \`${testCase.id}\` evidence vector IS. Found ${hits.length}. A deleted row is a `
+        + 'deleted requirement, and a row title that CONTAINS another row title breaks the '
+        + 'shadowed row\'s lookup rather than its own. See #3770.');
+
+      const { verdict } = evaluateFence(parsed, testCase.vector);
+      assert.ok(hits[0].trim().endsWith(`| ${verdict} |`),
+        `the "${testCase.outcome_row}" row must carry the verdict the predicate actually `
+        + `computes for it, which is \`${verdict}\`. Observed row: ${hits[0].trim()}. The row `
+        + 'verdict is COMPUTED here, not pinned as text, so the table cannot drift from the '
+        + 'predicate the way the outside-in row did. See #3770 (F-4).');
+    }
+  });
+
+  test('the residual evidence vectors are field-identical to the cases they shadow', () => {
+    // Each pair is two separately written literals, so this is a real
+    // constraint and not `assert.deepStrictEqual(x, x)`. Adding one field to a
+    // residual literal — which is what a discriminator IS — turns the pair red.
+    // That is the forcing function: Phase 3 cannot land a discriminator and
+    // leave these green, and cannot land a NON-discriminating one and claim it
+    // closed the residual. See #3770 (F-1).
+    const shadows = 'the two vectors are field-identical because the contract has no field that '
+      + 'distinguishes them. If this assertion now fails, a discriminator was added: keep it, '
+      + 'and flip the corresponding ### Outcomes row from `authorize` to `block` in the same '
+      + 'change. If it fails because the two literals were merged into one shared object, '
+      + 'revert that — a reference asserted against itself proves nothing. See #3770 (F-1).';
+
+    assert.deepStrictEqual(UNRELATED_ASSERTION_IN_TARGET_TEST, GENUINE,
+      `arm 1's residual: an unrelated assertion in the target test. ${shadows}`);
+    assert.deepStrictEqual(UNRELATED_MISSING_DEP_IN_TARGET_FILE, OUTSIDE_IN,
+      `arm 2's residual: an unrelated missing dependency in the target test file. ${shadows}`);
+    assert.deepStrictEqual(UNRELATED_FIXTURE_CRASH, FIXTURE_IS_THE_BEHAVIOR,
+      `arm 1's residual at the fixture phase: an unrelated fixture crash. ${shadows}`);
+  });
+
   test(
     "the predicate's prose names the pinning pair and claims nothing the predicate does not do",
     () => {
