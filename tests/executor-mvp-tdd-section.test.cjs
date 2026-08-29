@@ -2620,3 +2620,79 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     }
   });
 });
+
+describe('MVP+TDD gate — the plan\'s two test-verified prohibitions (#3770)', () => {
+  test('the gate ships no newly introduced escape hatch', () => {
+    const gate = extractGateSnippet(EXECUTE_PHASE_SRC);
+
+    // `--force-mvp-gate` is documented-but-unimplemented and overrides the
+    // end-of-phase blocking TDD review, NOT this per-task gate. The prohibition
+    // is that this plan must not extend it to reach here.
+    assert.ok(!gate.includes('force-mvp-gate') && !gate.includes('FORCE_MVP_GATE'),
+      'the per-task gate must not reach `--force-mvp-gate`. It overrides the end-of-phase '
+      + 'blocking TDD review; extending it to the per-task RED-evidence check would be '
+      + 'indistinguishable in effect from the defect #3770 reports. See 03-03-PLAN.md.');
+
+    // Whitelist the variables the gate may READ, rather than blacklisting
+    // hatch-sounding names. A blacklist cannot work here: `GSD_SKIP_TDD_GATE`
+    // defeats a `\bSKIP` word-boundary probe (the preceding `_` is a word
+    // character), and a hatch is naturally written as an assignment to the
+    // predicate variable it subverts, so any name-based exemption for
+    // IS_BEHAVIOR_ADDING exempts the hatch too. Reads are enumerable and
+    // closed; a new env-var hatch necessarily adds one.
+    const ALLOWED_READS = [
+      'BASE_BRANCH', 'IS_BEHAVIOR_ADDING', 'MVP_MODE', 'PHASE_NUMBER', 'PLAN_ID',
+      'RED_RANGE', 'RED_RECORD', 'RED_SHA', 'RED_TRAILER', 'RED_VERDICT',
+      'TAB', 'TASK_FILE', 'TASK_ID', 'TDD_MODE',
+    ];
+    const reads = [...new Set(
+      [...gate.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
+    )].sort();
+    assert.ok(reads.length > 0, 'the gate must read at least one variable — a zero-length '
+      + 'read set would make this assertion vacuous.');
+    assert.deepStrictEqual(reads.filter((v) => !ALLOWED_READS.includes(v)), [],
+      'the gate read a variable outside its closed set, which is how a newly introduced '
+      + 'environment-variable escape hatch enters. No env var, flag, or config key added by '
+      + 'this plan may skip the per-task RED-evidence check for a behavior-adding task. If a '
+      + 'read is legitimately new, add it here deliberately. See #3770.');
+
+    // The predicate must be established once, from the query, and never
+    // reassigned — an `IS_BEHAVIOR_ADDING=false` override is a hatch whatever
+    // guards it.
+    // Unanchored on purpose: a hatch is written inline as
+    // `if [ ... ]; then IS_BEHAVIOR_ADDING=false; fi`, so a `^\s*` anchor
+    // would look only where a hatch never appears.
+    const behaviorAssigns = [...gate.matchAll(/IS_BEHAVIOR_ADDING=/g)];
+    assert.strictEqual(behaviorAssigns.length, 1,
+      'IS_BEHAVIOR_ADDING must be assigned exactly once, from '
+      + '`gsd_run query task.is-behavior-adding`. A second assignment reopens the gate for '
+      + 'a behavior-adding task without touching the check itself. See #3770.');
+    assert.ok(gate.includes("IS_BEHAVIOR_ADDING=$(gsd_run query task.is-behavior-adding"),
+      'the sole IS_BEHAVIOR_ADDING assignment must come from the query verb, not a literal.');
+  });
+
+  test('the verdict-capture line neither swallows, redirects, nor defaults around failure', () => {
+    const gate = extractGateSnippet(EXECUTE_PHASE_SRC);
+
+    const verdictLines = gate.split('\n').filter((l) => l.includes('task.red-evidence-verdict'));
+    assert.strictEqual(verdictLines.length, 1,
+      'the gate must capture the verdict on exactly one line — zero would make this test '
+      + 'vacuous, two would leave one of them unchecked.');
+    const verdictLine = verdictLines[0];
+
+    // Scoped EXACTLY to the verdict line. These idioms stay correct on the
+    // pre-existing `state.update last_gate_trip` call (which records a trip and
+    // must not itself abort the report) and on best-effort base-ref derivation
+    // (which degrades to today's behavior, not to an authorization).
+    for (const idiom of ['2>/dev/null', '|| true', '|| echo']) {
+      assert.ok(!verdictLine.includes(idiom),
+        `the verdict-capture line must not use \`${idiom}\`. On a configuration read a default `
+        + 'is genuinely correct; on the line that captures the verdict it converts a fail-closed '
+        + 'gate into a fail-open one — the gate would authorize GREEN precisely when the '
+        + 'evaluator could not be consulted. See #3770.');
+    }
+    assert.ok(verdictLine.includes('|| exit 1'),
+      'the verdict-capture line must carry `|| exit 1` so a failed evaluator invocation halts '
+      + 'rather than leaving RED_VERDICT empty and falling through. See #3770.');
+  });
+});
