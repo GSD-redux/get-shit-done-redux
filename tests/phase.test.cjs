@@ -2590,7 +2590,7 @@ describe('phase add allocation vs sibling git worktrees (#3849)', () => {
 
     const output = JSON.parse(result.output);
     assert.strictEqual(
-      output.results[0].phase_number,
+      output.phases[0].phase_number,
       442,
       '#3849: the batch allocator must widen its horizon the same way the single-add allocator does'
     );
@@ -2620,7 +2620,7 @@ describe('phase add allocation vs sibling git worktrees (#3849)', () => {
       assert.ok(result.success, `Command failed: ${result.error}`);
       const output = JSON.parse(result.output);
       assert.strictEqual(
-        output.results[0].phase_number,
+        output.phases[0].phase_number,
         12,
         '#3849 secondary: a bullet-only Phase 11 must not be re-allocated by add-batch'
       );
