@@ -248,6 +248,15 @@ const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs')
 const TDD_REF = path.join(__dirname, '..', 'gsd-core', 'references', 'tdd.md');
 const PLANNER = path.join(__dirname, '..', 'agents', 'gsd-planner.md');
 
+// `gsd-core/bin/lib/red-evidence-predicate.cjs` does not exist while this
+// commit is RED — a top-level `require` of it would abort module load and
+// mask every other assertion in this file behind one `MODULE_NOT_FOUND`. The
+// path is resolved here; the module itself is required lazily, inside the
+// body of each test that needs it. See #3770 (D-24).
+const RED_EVIDENCE_PREDICATE_PATH = path.join(
+  __dirname, '..', 'gsd-core', 'bin', 'lib', 'red-evidence-predicate.cjs',
+);
+
 /** The h2 whose body carries the whole contract. */
 const CONTRACT_HEADING = 'RED Contract';
 
@@ -415,22 +424,35 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     }
   });
 
-  test('### Evidence names exactly the seven trailer fields', () => {
+  test('### Evidence names exactly the eight trailer fields', () => {
     const line = trailerLine();
     const parsed = JSON.parse(line.slice(line.indexOf(':') + 1));
     assert.deepStrictEqual(
       Object.keys(parsed).sort(),
-      ['actual', 'command', 'exit_status', 'expected', 'selected_count',
+      ['actual', 'command', 'exit_status', 'expected', 'location', 'selected_count',
         'target_executed', 'target_test'],
-      'the trailer must carry exactly the seven evidence fields — the exact-seven ' +
+      'the trailer must carry exactly the eight evidence fields — the exact-eight ' +
       'key set is itself the fail-closed mechanism: a foreign or future schema ' +
-      'fails equality rather than being partially honoured. See #3770.',
+      'fails equality rather than being partially honoured. See #3770 (D-03).',
     );
     for (const side of ['expected', 'actual']) {
       assert.deepStrictEqual(
         Object.keys(parsed[side]).sort(),
         ['class_or_mode', 'phase', 'subject'],
         `${side} must hold exactly phase, class_or_mode and subject`,
+      );
+    }
+    assert.deepStrictEqual(
+      Object.keys(parsed.location).sort(),
+      ['declared', 'observed'],
+      '`location` must hold exactly declared and observed, named — not `expected`/`actual` — ' +
+      'because both sides are executor-declared and executor-observed, never plan-declared. See #3770 (D-05).',
+    );
+    for (const side of ['declared', 'observed']) {
+      assert.deepStrictEqual(
+        Object.keys(parsed.location[side]).sort(),
+        ['file', 'line'],
+        `location.${side} must hold exactly file and line — no column. See #3770 (D-06).`,
       );
     }
 
@@ -728,8 +750,35 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     && a.subject === b.subject;
 
   /**
+   * `location` equality: file compared by basename only, line compared strictly.
+   * `path.win32.basename` per D-08 — it normalizes BOTH `/` and `\` separators,
+   * so a POSIX-reported path and a Windows-reported path for the same file
+   * still compare equal; `path.posix.basename` would leave a `\`-separated
+   * path's basename as the whole string.
+   */
+  const sameLocation = (a, b) =>
+    path.win32.basename(a.file) === path.win32.basename(b.file) && a.line === b.line;
+
+  /**
+   * The set of `plan`/`trailer` top-level field names whose value differs
+   * between two vector objects, computed structurally (never hardcoded).
+   * Used to prove a residual literal and its legitimate twin differ on
+   * `location` and nothing else (D-31).
+   */
+  const differingTopLevelKeys = (a, b) => {
+    const keys = new Set();
+    for (const section of ['plan', 'trailer']) {
+      const allKeys = new Set([...Object.keys(a[section]), ...Object.keys(b[section])]);
+      for (const key of allKeys) {
+        if (JSON.stringify(a[section][key]) !== JSON.stringify(b[section][key])) keys.add(key);
+      }
+    }
+    return [...keys].sort();
+  };
+
+  /**
    * One evaluator per DISTINCT atom, keyed by the atom's text exactly as the
-   * fence carries it with a leading `AND ` stripped. NINE keys for fourteen
+   * fence carries it with a leading `AND ` stripped. TEN keys for fifteen
    * statement lines: `valid_red =`, `AND (`, `OR` and `)` are structure, and
    * `id_matches(actual.subject, plan.target_test)` occupies one line in each
    * arm as a single atom.
@@ -753,6 +802,8 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       (v) => v.trailer.actual.class_or_mode === v.trailer.expected.class_or_mode],
     ['trailer.target_test == plan.target_test',
       (v) => v.trailer.target_test === v.plan.target_test],
+    ['location.observed == location.declared',
+      (v) => sameLocation(v.trailer.location.observed, v.trailer.location.declared)],
     ['selected_count > 0', (v) => v.trailer.selected_count > 0],
     ['target_executed', (v) => v.trailer.target_executed === true],
     ['id_matches(actual.subject, plan.target_test)',
@@ -832,9 +883,37 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
           class_or_mode: 'AssertionError',
           subject: 'tests/test_pricing.py::test_discount_reduces_total',
         },
+        location: {
+          declared: { file: 'tests/test_pricing.py', line: 8 },
+          observed: { file: 'tests/test_pricing.py', line: 8 },
+        },
         ...trailer,
       },
     };
+  }
+
+  /**
+   * A minimal `tdd="true"` behavior-adding task body carrying one `<red_contract>`
+   * built from a vector's `plan` fields, for the module-vs-fence differential
+   * test and the fail-closed-floor assertions below. `redContractCount` lets a
+   * test deliberately produce zero or two blocks to exercise the cardinality
+   * guard (D-24).
+   */
+  function buildTaskContent(plan, { redContractCount = 1 } = {}) {
+    const block = `<red_contract>
+  <target_test>${plan.target_test}</target_test>
+  <implementation_target>${plan.implementation_target}</implementation_target>
+  <expected_failure>
+    <phase>${plan.expected_failure.phase}</phase>
+    <class_or_mode>${plan.expected_failure.class_or_mode}</class_or_mode>
+    <subject>${plan.expected_failure.subject}</subject>
+  </expected_failure>
+</red_contract>`;
+    return `<task tdd="true">
+  <behavior>Applies a discount and asserts the resulting total.</behavior>
+  <files>src/pricing.py</files>
+${Array(redContractCount).fill(block).join('\n')}
+</task>`;
   }
 
   // ── THE THREE RESIDUAL PAIRS ─────────────────────────────────────────────
@@ -873,6 +952,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         class_or_mode: 'AssertionError',
         subject: 'tests/test_pricing.py::test_discount_reduces_total',
       },
+      location: {
+        declared: { file: 'tests/test_pricing.py', line: 8 },
+        observed: { file: '/srv/build/tests/test_pricing.py', line: 8 },
+      },
     },
   };
 
@@ -901,6 +984,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         phase: 'call',
         class_or_mode: 'AssertionError',
         subject: 'tests/test_pricing.py::test_discount_reduces_total',
+      },
+      location: {
+        declared: { file: 'tests/test_pricing.py', line: 12 },
+        observed: { file: 'tests/test_pricing.py', line: 8 },
       },
     },
   };
@@ -931,6 +1018,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         class_or_mode: 'ImportError',
         subject: 'tests/test_pricing.py',
       },
+      location: {
+        declared: { file: 'test_oi.py', line: 3 },
+        observed: { file: 'test_oi.py', line: 3 },
+      },
     },
   };
 
@@ -959,6 +1050,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         phase: 'collection',
         class_or_mode: 'ImportError',
         subject: 'tests/test_pricing.py',
+      },
+      location: {
+        declared: { file: 'test_oi.py', line: 3 },
+        observed: { file: 'test_oi.py', line: 2 },
       },
     },
   };
@@ -989,6 +1084,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         class_or_mode: 'RuntimeError',
         subject: 'tests/test_pricing.py::test_discount_reduces_total',
       },
+      location: {
+        declared: { file: 'test_pricing.py', line: 5 },
+        observed: { file: 'test_pricing.py', line: 5 },
+      },
     },
   };
 
@@ -1018,6 +1117,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         class_or_mode: 'RuntimeError',
         subject: 'tests/test_pricing.py::test_discount_reduces_total',
       },
+      location: {
+        declared: { file: 'test_pricing.py', line: 5 },
+        observed: { file: 'conftest.py', line: 5 },
+      },
     },
   };
 
@@ -1039,7 +1142,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       verdict: 'block',
       why: 'isolates `exit_status != 0`. Every other conjunct holds, so deleting the first '
         + 'shared conjunct authorizes a PASSING run — the halt rule at the foot of the section '
-        + 'is what catches it afterwards, and the predicate must still refuse it.',
+        + 'is what catches it afterwards, and the predicate must still refuse it. This is the '
+        + 'unexpected-pass case: it short-circuits at `exit_status != 0` and never reaches the '
+        + '`location` conjunct, so the vector\'s default `location` pair (D-28) proves nothing '
+        + 'here — it exists only to satisfy key-set equality.',
       vector: vector({ trailer: { exit_status: 0 } }),
     },
     {
@@ -1259,33 +1365,35 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     {
       id: 'unrelated-assertion-in-target-test',
       outcome_row: 'Unrelated assertion in the target test',
-      verdict: 'authorize',
-      why: 'RESIDUAL (arm 1). Field-identical to `genuine`, yet the assertion that failed is not '
-        + "the one the plan's <behavior> describes — an unrelated assertion earlier in the same "
-        + 'test body, at the same phase with the same class. The predicate never consumes '
-        + '<behavior>, so nothing in the vector distinguishes the two. Authorizing is what the '
-        + 'shipped predicate DOES; the row records it as a known residual rather than pretending '
-        + 'the contract blocks it.',
+      verdict: 'block',
+      why: 'field-identical to `genuine` on every OTHER field — the assertion that failed is not '
+        + "the one the plan's <behavior> describes, an unrelated assertion earlier in the same "
+        + 'test body, at the same phase with the same class. `location` is what tells the two '
+        + "apart: the declared line is the plan's assertion (12), the observed line is where the "
+        + 'run actually failed (8), so `location.observed == location.declared` fails and the '
+        + 'predicate blocks it.',
       vector: UNRELATED_ASSERTION_IN_TARGET_TEST,
     },
     {
       id: 'unrelated-missing-dep-in-target-file',
       outcome_row: 'Unrelated missing dependency in the target test file',
-      verdict: 'authorize',
-      why: 'RESIDUAL (arm 2). Field-identical to `outside-in`, yet the import that failed is an '
-        + 'unrelated third-party dependency, not the declared `implementation_target`. Arm 2 '
-        + 'anchors on the declared TEST FILE and the symbol\'s identity appears only in a '
-        + 'diagnostic message the contract deliberately keeps out of the vector.',
+      verdict: 'block',
+      why: 'field-identical to `outside-in` on every OTHER field — the import that failed is an '
+        + 'unrelated third-party dependency, not the declared `implementation_target`. `location` '
+        + "is what tells the two apart: the declared import line (3) is the plan's, the observed "
+        + 'line (2) is a different import in the same file, so `location.observed == '
+        + 'location.declared` fails and the predicate blocks it.',
       vector: UNRELATED_MISSING_DEP_IN_TARGET_FILE,
     },
     {
       id: 'unrelated-fixture-crash',
       outcome_row: 'Unrelated fixture crash at the declared fixture phase',
-      verdict: 'authorize',
-      why: 'RESIDUAL (arm 1 at the fixture phase). Field-identical to '
-        + '`fixture-is-the-behavior`, yet the fixture that crashed is an unrelated one, not the '
-        + 'fixture the plan declared as the behavior under test. Nothing in the vector says '
-        + 'WHICH fixture crashed.',
+      verdict: 'block',
+      why: 'field-identical to `fixture-is-the-behavior` on every OTHER field — the fixture that '
+        + 'crashed is an unrelated one, not the fixture the plan declared as the behavior under '
+        + 'test. `location` is what tells the two apart: same line (5) but a DIFFERENT file '
+        + '(`conftest.py` vs the declared `test_pricing.py`), so basename comparison fails '
+        + '`location.observed == location.declared` and the predicate blocks it.',
       vector: UNRELATED_FIXTURE_CRASH,
     },
   ];
@@ -1310,13 +1418,13 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
 
     // The set equality above passes when a conjunct is deleted from BOTH the
     // fence and this map. The hardcoded count is what does not.
-    assert.strictEqual(PREDICATE_ATOMS.size, 9,
-      `the predicate must compose exactly nine distinct atoms; this map carries `
+    assert.strictEqual(PREDICATE_ATOMS.size, 10,
+      `the predicate must compose exactly ten distinct atoms; this map carries `
       + `${PREDICATE_ATOMS.size}. Deleting a conjunct from the fence AND its evaluator here `
       + 'satisfies the set equality above and would otherwise pass unnoticed. See #3770.');
   });
 
-  test('the four shared conjuncts are evaluated above the arms, not inside one', () => {
+  test('the five shared conjuncts are evaluated above the arms, not inside one', () => {
     // RETAINED-UNSUBSUMED. This is the one surviving fragment of the 02-05
     // shared-conjunct test, kept on evidence and not on argument: with it
     // removed, all four "move a shared conjunct inside the parenthesised group"
@@ -1339,13 +1447,17 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       'actual.phase == expected.phase',
       'actual.class_or_mode == expected.class_or_mode',
       'trailer.target_test == plan.target_test',
+      'location.observed == location.declared',
     ]) {
       assert.ok(parsed.shared.includes(conjunct),
         `the shared conjunct \`${conjunct}\` is not evaluated above the parenthesised group. `
-        + `The predicate's shared conjuncts are [${parsed.shared.join(', ')}]. All four are `
+        + `The predicate's shared conjuncts are [${parsed.shared.join(', ')}]. All five are `
         + 'unconditional: two pin the trailer\'s `expected` and `target_test` echoes to the plan '
-        + 'declaration, and the other two only carry meaning once that pinning holds. Pushed '
-        + 'into an arm, a shared conjunct stops guarding the arm it is not in. See #3770.');
+        + 'declaration, one binds the observed failure site to the declared one, and the '
+        + 'remaining two only carry meaning once that pinning holds. Pushed into an arm, a '
+        + 'shared conjunct stops guarding the arm it is not in — scoped into arm 1, '
+        + '`location.observed == location.declared` would stop guarding arm 2 and reopen the '
+        + 'unrelated-missing-dependency residual (D-11). See #3770.');
     }
   });
 
@@ -1385,25 +1497,96 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     }
   });
 
-  test('the residual evidence vectors are field-identical to the cases they shadow', () => {
+  test('the residual evidence vectors differ from the cases they shadow only on location', () => {
     // Each pair is two separately written literals, so this is a real
-    // constraint and not `assert.deepStrictEqual(x, x)`. Adding one field to a
-    // residual literal — which is what a discriminator IS — turns the pair red.
-    // That is the forcing function: Phase 3 cannot land a discriminator and
-    // leave these green, and cannot land a NON-discriminating one and claim it
-    // closed the residual. See #3770 (F-1).
-    const shadows = 'the two vectors are field-identical because the contract has no field that '
-      + 'distinguishes them. If this assertion now fails, a discriminator was added: keep it, '
-      + 'and flip the corresponding ### Outcomes row from `authorize` to `block` in the same '
-      + 'change. If it fails because the two literals were merged into one shared object, '
-      + 'revert that — a reference asserted against itself proves nothing. See #3770 (F-1).';
+    // constraint and not `assert.notDeepStrictEqual(x, x)`. The discriminator
+    // has landed: `location` now tells each residual apart from the
+    // legitimate case it shadows, and it must be the ONLY top-level field the
+    // pair differs on — merging the two literals into one shared object
+    // remains forbidden, since a reference asserted against itself proves
+    // nothing. See #3770 (D-31).
+    const shadows = 'the discriminator is `location`: the two vectors must differ, and the set '
+      + 'of top-level fields on which they differ, computed structurally, must be exactly '
+      + '`[\'location\']`. If it fails because the two literals were merged into one shared '
+      + 'object, revert that. See #3770 (D-31).';
 
-    assert.deepStrictEqual(UNRELATED_ASSERTION_IN_TARGET_TEST, GENUINE,
-      `arm 1's residual: an unrelated assertion in the target test. ${shadows}`);
-    assert.deepStrictEqual(UNRELATED_MISSING_DEP_IN_TARGET_FILE, OUTSIDE_IN,
-      `arm 2's residual: an unrelated missing dependency in the target test file. ${shadows}`);
-    assert.deepStrictEqual(UNRELATED_FIXTURE_CRASH, FIXTURE_IS_THE_BEHAVIOR,
-      `arm 1's residual at the fixture phase: an unrelated fixture crash. ${shadows}`);
+    for (const [residual, twin, label] of [
+      [UNRELATED_ASSERTION_IN_TARGET_TEST, GENUINE,
+        "arm 1's residual: an unrelated assertion in the target test"],
+      [UNRELATED_MISSING_DEP_IN_TARGET_FILE, OUTSIDE_IN,
+        "arm 2's residual: an unrelated missing dependency in the target test file"],
+      [UNRELATED_FIXTURE_CRASH, FIXTURE_IS_THE_BEHAVIOR,
+        "arm 1's residual at the fixture phase: an unrelated fixture crash"],
+    ]) {
+      assert.notDeepStrictEqual(residual, twin, `${label}. ${shadows}`);
+      assert.deepStrictEqual(differingTopLevelKeys(residual, twin), ['location'],
+        `${label}. ${shadows}`);
+    }
+  });
+
+  test('evaluateFence and the built module compute the same authorize/block verdict for '
+    + 'every evidence vector', () => {
+    // `gsd-core/bin/lib/red-evidence-predicate.cjs` does not exist while this
+    // commit is RED, so the require is inside the test body, never at file
+    // scope (D-24). See #3770 (D-22).
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    const parsed = parsePredicateFence();
+
+    for (const testCase of EVIDENCE_VECTORS) {
+      const { verdict: fenceVerdict } = evaluateFence(parsed, testCase.vector);
+      const taskContent = buildTaskContent(testCase.vector.plan);
+      const trailerText = `red-evidence: ${JSON.stringify(testCase.vector.trailer)}`;
+      const { verdict: moduleVerdict } = evaluateRedEvidence(taskContent, trailerText);
+
+      // The fence is two-valued (`authorize`/`block`); the module is
+      // three-valued (`authorize`/`unexpected_pass`/`red_commit_not_failing`),
+      // so token equality is the wrong comparison here — the `exit-zero`
+      // vector computes `block` on the fence side and `unexpected_pass` on
+      // the module side, and every other blocking vector collides the same
+      // way. Normalize both to a boolean and assert the three-token
+      // distinction separately, per token, below.
+      assert.strictEqual(moduleVerdict === 'authorize', fenceVerdict === 'authorize',
+        `evidence vector \`${testCase.id}\`: the fence computes \`${fenceVerdict}\` and the `
+        + `module computes \`${moduleVerdict}\`; normalized to authorize/not-authorize they `
+        + 'must agree. See #3770 (D-22).');
+    }
+
+    const zeroExit = EVIDENCE_VECTORS.find((c) => c.id === 'exit-zero');
+    const { verdict: zeroExitVerdict } = evaluateRedEvidence(
+      buildTaskContent(zeroExit.vector.plan),
+      `red-evidence: ${JSON.stringify(zeroExit.vector.trailer)}`,
+    );
+    assert.strictEqual(zeroExitVerdict, 'unexpected_pass',
+      'a zero-exit-status trailer must report `unexpected_pass`, not `red_commit_not_failing` '
+      + 'or `block` — the run passed, so nothing failed to evaluate. See #3770 (D-22).');
+  });
+
+  test('the built module fails closed on a malformed trailer or a malformed red-contract '
+    + 'declaration', () => {
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    const validTask = buildTaskContent(GENUINE.plan);
+    const validTrailerText = `red-evidence: ${JSON.stringify(GENUINE.trailer)}`;
+    const { location, ...sevenKeyTrailer } = GENUINE.trailer;
+    void location;
+
+    for (const [label, taskContent, trailerText] of [
+      ['an empty-string trailer', validTask, ''],
+      ['a non-JSON trailer', validTask, 'red-evidence: not json'],
+      ['a seven-key trailer missing `location`', validTask,
+        `red-evidence: ${JSON.stringify(sevenKeyTrailer)}`],
+      ['a behavior-adding task with no `<red_contract>` block',
+        validTask.replace(/<red_contract>[\s\S]*?<\/red_contract>\n?/, ''), validTrailerText],
+      ['a behavior-adding task with a duplicated `<red_contract>` block',
+        buildTaskContent(GENUINE.plan, { redContractCount: 2 }), validTrailerText],
+    ]) {
+      const { verdict, reason } = evaluateRedEvidence(taskContent, trailerText);
+      assert.strictEqual(verdict, 'red_commit_not_failing',
+        `${label} must fail closed to \`red_commit_not_failing\`, never \`authorize\` and `
+        + 'never a thrown exception. See #3770 (GATE-01).');
+      assert.ok(typeof reason === 'string' && reason.trim().length > 0,
+        `${label} must carry a non-empty \`reason\` explaining the fail-closed verdict. `
+        + 'See #3770.');
+    }
   });
 
   test(
