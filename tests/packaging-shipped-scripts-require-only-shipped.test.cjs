@@ -54,7 +54,18 @@ function resolveTarballFiles() {
  * extracted so the SHAPE contract is unit-testable without running npm.
  */
 function packListToPathSet(parsed) {
-  return new Set(parsed[0].files.map((f) => f.path.replace(/\\/g, '/')));
+  // #3902: npm <=11 emits an ARRAY of pack results; npm 12 (bundled with
+  // Node 26) emits an OBJECT keyed by package name. parsed[0] is undefined on
+  // the object shape — which threw in this file's before() hook and silently
+  // disabled the whole packaging guard, including both `does NOT ship`
+  // assertions. Resolve either shape; anything else fails loud.
+  const entry = Array.isArray(parsed)
+    ? parsed[0]
+    : parsed[Object.keys(parsed)[0]];
+  if (!entry || !Array.isArray(entry.files)) {
+    throw new Error(`npm pack --json returned an unrecognized shape: ${Object.prototype.toString.call(parsed)}`);
+  }
+  return new Set(entry.files.map((f) => f.path.replace(/\\/g, '/')));
 }
 
 /**
