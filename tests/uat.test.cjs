@@ -1591,6 +1591,40 @@ blocked: 0
       assert.equal(fs.readFileSync(uatPath, 'utf8'), before, 'rejected request must not modify the UAT file');
     }
   });
+
+  test('rejects a fake pending result inside fenced code without modifying the file', () => {
+    fs.writeFileSync(uatPath, fs.readFileSync(uatPath, 'utf8').replace(
+      'result: pending\n\n### 2. Profile',
+      '```md\nresult: pending\n```\n\n### 2. Profile',
+    ));
+    const before = fs.readFileSync(uatPath, 'utf8');
+
+    const result = runGsdTools([
+      'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+      '--test', '1', '--result', 'pass', '--raw',
+    ], tmpDir);
+
+    assert.equal(result.success, false, 'a fenced result must not satisfy the pending-result guard');
+    assert.equal(fs.readFileSync(uatPath, 'utf8'), before, 'rejected fenced result must not modify the UAT file');
+  });
+
+  test('rejects missing frontmatter fields even when body fields share their names', () => {
+    for (const field of ['status', 'updated']) {
+      writeUat();
+      fs.writeFileSync(uatPath, fs.readFileSync(uatPath, 'utf8')
+        .replace(new RegExp(`^${field}:.*\\n`, 'm'), '')
+        + `\n## Notes\n\n${field}: body-only\n`);
+      const before = fs.readFileSync(uatPath, 'utf8');
+
+      const result = runGsdTools([
+        'uat', 'record-result', '--file', '.planning/phases/01-test-phase/01-UAT.md',
+        '--test', '1', '--result', 'pass', '--raw',
+      ], tmpDir);
+
+      assert.equal(result.success, false, `missing frontmatter ${field} must be rejected`);
+      assert.equal(fs.readFileSync(uatPath, 'utf8'), before, `missing ${field} must not modify the UAT file`);
+    }
+  });
 });
 
 // ─── cmdAuditUat behavioral coverage (#2287 deferred-items.md) ─────────────

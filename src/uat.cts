@@ -390,6 +390,26 @@ interface UatTestRecord {
   result: string;
   start: number;
   end: number;
+  resultStart: number;
+  resultEnd: number;
+}
+
+function findTopLevelResult(block: string): { result: string; start: number; end: number } | null {
+  const lines = block.split('\n');
+  const hidden = new Set<number>();
+  for (const fence of scanFencedBlocks(lines)) {
+    const end = fence.closeLineIdx === -1 ? lines.length - 1 : fence.closeLineIdx;
+    for (let i = fence.openLineIdx; i <= end; i += 1) hidden.add(i);
+  }
+
+  let offset = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const match = !hidden.has(i) && line.match(/^result:\s*\[?([\w-]+)\]?\s*\r?$/i);
+    if (match) return { result: match[1].toLowerCase(), start: offset, end: offset + line.length };
+    offset += line.length + 1;
+  }
+  return null;
 }
 
 function parseUatTestRecords(content: string): UatTestRecord[] {
@@ -412,16 +432,18 @@ function parseUatTestRecords(content: string): UatTestRecord[] {
     const start = tests!.bodyStart + heading.offset;
     const end = next ? tests!.bodyStart + next.offset : tests!.bodyEnd;
     const block = content.slice(start, end);
-    const result = block.match(/^result:\s*\[?([\w-]+)\]?\s*$/im)?.[1]?.toLowerCase();
+    const result = findTopLevelResult(block);
     const expected = parseExpectedFromTestBlock(clipBlockAtFirstFence(block));
     if (!result || !expected) error(`UAT test ${parts.number} is malformed`);
     records.push({
       number: parts.number,
       name: parts.name,
       expected: expected!,
-      result: result!,
+      result: result!.result,
       start,
       end,
+      resultStart: start + result!.start,
+      resultEnd: start + result!.end,
     });
   }
   if (records.length === 0) error('UAT file has no parseable tests');
@@ -454,9 +476,15 @@ function replaceSectionBody(content: string, title: string, body: string): strin
 }
 
 function replaceRequiredFrontmatterField(content: string, field: string, value: string): string {
+  const frontmatterMatch = content.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
+  if (!frontmatterMatch) error(`UAT file is missing frontmatter ${field}`);
   const line = new RegExp(`^${field}:.*$`, 'm');
-  if (!line.test(content)) error(`UAT file is missing frontmatter ${field}`);
-  return content.replace(line, `${field}: ${value}`);
+  if (!line.test(frontmatterMatch![2])) error(`UAT file is missing frontmatter ${field}`);
+  return content.slice(0, frontmatterMatch!.index)
+    + frontmatterMatch![1]
+    + frontmatterMatch![2].replace(line, `${field}: ${value}`)
+    + frontmatterMatch![3]
+    + content.slice(frontmatterMatch!.index! + frontmatterMatch![0].length);
 }
 
 function cmdRecordResult(
@@ -490,11 +518,14 @@ function cmdRecordResult(
 
   const note = options.note ?? '';
   const severity = inferIssueSeverity(note);
-  const targetBlock = original.slice(pendingTarget.start, pendingTarget.end);
   const replacement = options.result === 'issue'
     ? `result: issue\nreported: ${quoteUatValue(note)}\nseverity: ${severity}`
     : 'result: pass';
-  let updated = original.slice(0, pendingTarget.start) + targetBlock.replace(/^result:\s*\[?pending\]?\s*$/im, `${replacement}\n`) + original.slice(pendingTarget.end);
+  const suffix = original.slice(pendingTarget.resultEnd);
+  let updated = original.slice(0, pendingTarget.resultStart)
+    + replacement
+    + (suffix.startsWith('\n') ? '' : '\n')
+    + suffix;
   const updatedRecords = parseUatTestRecords(updated);
   const counts = { passed: 0, issues: 0, pending: 0, skipped: 0, blocked: 0 };
   for (const test of updatedRecords) {
