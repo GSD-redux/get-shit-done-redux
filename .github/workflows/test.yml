@@ -244,14 +244,8 @@ jobs:
           persist-credentials: true
           token: ${{ github.token }}
 
-      - name: Record job start time (near-cap check, non-Windows)
-        if: runner.os != 'Windows'
-        run: echo "CI_JOB_START_EPOCH_MS=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
-
-      - name: Record job start time (near-cap check, Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: echo "CI_JOB_START_EPOCH_MS=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" >> $env:GITHUB_ENV
+      - name: Record job start time (near-cap check)
+        run: node -e 'require("fs").appendFileSync(process.env.GITHUB_ENV, "CI_JOB_START_EPOCH_MS=" + Date.now() + "\n")'
 
       - name: Guard — require GitHub-hosted runner
         run: node scripts/ci-guard-runner.cjs
@@ -518,14 +512,8 @@ jobs:
           persist-credentials: true
           token: ${{ github.token }}
 
-      - name: Record job start time (near-cap check, non-Windows)
-        if: runner.os != 'Windows'
-        run: echo "CI_JOB_START_EPOCH_MS=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
-
-      - name: Record job start time (near-cap check, Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: echo "CI_JOB_START_EPOCH_MS=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" >> $env:GITHUB_ENV
+      - name: Record job start time (near-cap check)
+        run: node -e 'require("fs").appendFileSync(process.env.GITHUB_ENV, "CI_JOB_START_EPOCH_MS=" + Date.now() + "\n")'
 
       - name: Guard — require GitHub-hosted runner
         run: node scripts/ci-guard-runner.cjs
