@@ -295,8 +295,8 @@ Runtime hooks that integrate with the host AI agent:
 | `gsd-read-injection-scanner.js` | `PostToolUse` | Scans Read tool output for injected instructions in untrusted content |
 | `gsd-workflow-guard.js` | `PreToolUse` | Detects file edits outside GSD workflow context (advisory, opt-in via `hooks.workflow_guard`) |
 | `gsd-read-guard.js` | `PreToolUse` | Advisory guard preventing Edit/Write on files not yet read in the session |
-| `gsd-session-state.sh` | `PostToolUse` | Session state tracking for shell-based runtimes |
-| `gsd-validate-commit.sh` | `PostToolUse` | Commit validation for conventional commit enforcement |
+| `gsd-session-state.sh` | `SessionStart` | Session state tracking for shell-based runtimes |
+| `gsd-validate-commit.sh` | `PreToolUse` | Commit validation for conventional commit enforcement |
 | `gsd-phase-boundary.sh` | `PostToolUse` | Phase boundary detection for workflow transitions |
 
 See [`docs/INVENTORY.md`](INVENTORY.md#hooks) for the authoritative hook roster.

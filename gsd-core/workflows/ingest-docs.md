@@ -256,7 +256,7 @@ On Abort: exit cleanly with "Ingest cancelled. Staged intel preserved at `.plann
 
 **If BLOCKERS = 0 and WARNINGS = 0:**
 
-Proceed to routing silently, or optionally display `GSD > No conflicts. Auto-resolved: {N}.`
+Optionally display `GSD > No conflicts. Auto-resolved: {N}.` Absence of conflicts is not authorization to write: proceed to the routing gate for the active mode — new mode's routing gate (next step) or merge mode's merge-diff approve-revise-abort gate — which decides whether destination files are created.
 
 </step>
 
@@ -265,6 +265,32 @@ Proceed to routing silently, or optionally display `GSD > No conflicts. Auto-res
 **Applies only when MODE=new.**
 
 Audit PROJECT.md field requirements that `gsd-roadmapper` expects. For fields derivable from `.planning/intel/SYNTHESIS.md` (project scope, goals/non-goals, constraints, locked decisions), synthesize from the intel. For fields NOT derivable (project name, developer-facing success metric, target runtime), prompt via `AskUserQuestion` one at a time — minimal question set, no interrogation.
+
+**Routing gate (#3827): approval to classify documents is not approval to write the planning scaffold.** Before delegating, display the exact destinations and require an explicit choice:
+
+```
+Routing — create the planning setup now?
+
+  .planning/PROJECT.md        (new)
+  .planning/REQUIREMENTS.md   (new)
+  .planning/ROADMAP.md        (new)
+  .planning/STATE.md          (new)
+```
+
+Use `AskUserQuestion`:
+- question: "Routing — create the planning setup now?"
+- header: "Routing"
+- options: Create planning setup | Keep synthesized intel only | Abort
+
+**Text mode:** numbered list (1/2/3) with the same three choices.
+
+On **Create planning setup**: continue to the `gsd-roadmapper` delegation below.
+
+On **Keep synthesized intel only**: analysis-only ingest. Do NOT invoke `gsd-roadmapper`; write no destination files. The staged intel under `.planning/intel/` is preserved and committed by `finalize` (substitute its actual file set — no PROJECT.md/REQUIREMENTS.md/ROADMAP.md/STATE.md lines). Display the completion banner with mode `new (intel only)`.
+
+On **Abort**: exit cleanly with "Ingest cancelled. Staged intel preserved at `.planning/intel/`."
+
+Any other response (freeform/"Other"): re-ask once; if still ambiguous, treat as Abort. Never infer Create from an ambiguous answer.
 
 Delegate to `gsd-roadmapper` (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze):
 
@@ -334,11 +360,11 @@ Display completion:
 ```
 
 Show:
-- Mode ran (new or merge)
+- Mode ran (new, new (intel only), or merge)
 - Docs ingested (count + type breakdown)
 - Decisions locked, requirements created, constraints captured
 - Conflict report path (`.planning/INGEST-CONFLICTS.md`)
-- Next step: `/gsd:plan-phase 1` (new mode) or `/gsd:plan-phase N` (merge, pointing at the first newly-added phase)
+- Next step: `/gsd:plan-phase 1` (new) or `/gsd:plan-phase N` (merge, pointing at the first newly-added phase); for intel-only runs there is no roadmap yet — point at `/gsd:new-project` (or a later re-run with `--mode merge` once scaffold files exist), never `/gsd:plan-phase`
 
 </step>
 

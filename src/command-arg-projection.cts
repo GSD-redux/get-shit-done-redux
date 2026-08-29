@@ -108,7 +108,10 @@ function assertValidSpec(spec: unknown): asserts spec is NamedArgSpec {
 
 // Single predicate reused for both extraction (a value beginning with a
 // single `-` is a value, not a flag) and validation (negative space N5).
-function isFlagToken(tok: string): boolean {
+// Exported for init-command-router's #3865 --phase alias normalization,
+// which needs the same flag-shape test before deciding whether args[2] is a
+// phase positional or a flag token.
+export function isFlagToken(tok: string): boolean {
   return tok.startsWith('--');
 }
 
