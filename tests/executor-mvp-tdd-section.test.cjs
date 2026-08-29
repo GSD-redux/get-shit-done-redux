@@ -247,6 +247,12 @@ const { createTempDir, createTempGitProject, cleanup } = require('./helpers.cjs'
 const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const TDD_REF = path.join(__dirname, '..', 'gsd-core', 'references', 'tdd.md');
 const PLANNER = path.join(__dirname, '..', 'agents', 'gsd-planner.md');
+// `executePhaseSrc` above (line ~135) is block-scoped inside the folded
+// #3097/#3099 describe block and is not visible here — re-read it under its
+// own name rather than reach across the block boundary.
+const EXECUTE_PHASE_SRC = fs.readFileSync(
+  path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md'), 'utf8',
+);
 
 // `gsd-core/bin/lib/red-evidence-predicate.cjs` does not exist while this
 // commit is RED — a top-level `require` of it would abort module load and
@@ -309,6 +315,24 @@ function fencedBlocks(text) {
 function soleFencedBlock(sectionText, h3) {
   const blocks = fencedBlocks(sliceH3(sectionText, h3));
   assert.strictEqual(blocks.length, 1, `### ${h3} must carry exactly one fenced block`);
+  return blocks[0];
+}
+
+/**
+ * The MVP+TDD gate's fenced bash block in `execute-phase.md`: the sentence
+ * that introduces it through the end of the fenced block that immediately
+ * follows. Asserts exactly one such block is found — a silent zero-or-two
+ * match would make every gate scenario vacuous (#3770 Phase 3).
+ */
+function extractGateSnippet(source) {
+  const markerIdx = source.indexOf('**MVP+TDD gate.**');
+  assert.notStrictEqual(markerIdx, -1,
+    'the **MVP+TDD gate.** prose marker was not found in execute-phase.md');
+  const endIdx = source.indexOf('</step>', markerIdx);
+  assert.notStrictEqual(endIdx, -1, 'no </step> closes the MVP+TDD gate section');
+  const blocks = fencedBlocks(source.slice(markerIdx, endIdx));
+  assert.strictEqual(blocks.length, 1,
+    'the MVP+TDD gate section must carry exactly one fenced bash block');
   return blocks[0];
 }
 
@@ -2178,6 +2202,204 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     assert.ok(r6.stdout.includes('# S6'),
       'the RED half of the gate must still pass and still emit its trailer: S6 must fail on ' +
       'GREEN alone, so a regression in RED selection cannot hide behind this scenario');
+  });
+
+  test("the extracted MVP+TDD gate block authorizes only on the evaluator's verdict", (t) => {
+    // SIBLING of the S1-S6 test above, not an extension of it: that test
+    // extracts `### Executor Gate Validation` out of tdd.md and runs it with
+    // PHASE/PLAN. This extracts the MVP+TDD gate's own fenced block out of
+    // execute-phase.md and runs it with PHASE_NUMBER/PLAN_ID/TASK_ID/TASK_FILE
+    // — a different snippet, a different file, its own scenarios. See #3770.
+    const snippet = extractGateSnippet(EXECUTE_PHASE_SRC);
+
+    const scriptDir = createTempDir('gsd-3770-execgate-sh-');
+    t.after(() => cleanup(scriptDir));
+    const writeScript = (name, body) => {
+      const p = path.join(scriptDir, name);
+      fs.writeFileSync(
+        p,
+        `#!/usr/bin/env bash\nset -e\ngsd_run() { node ${JSON.stringify(GSD_TOOLS)} "$@"; }\n${body}`,
+        { mode: 0o755 },
+      );
+      return p;
+    };
+    const scriptPath = writeScript('gate.sh', snippet);
+
+    const baseEnv = {
+      MVP_MODE: 'true', TDD_MODE: 'true', PHASE_NUMBER: '08', PLAN_ID: '02', TASK_ID: '1',
+    };
+    const runGate = (script, cwd, taskFile) => runHook(script, [], {
+      interpreter: 'bash',
+      cwd,
+      env: { ...process.env, ...baseEnv, TASK_FILE: taskFile },
+    });
+
+    const behaviorTask = (cwd) => {
+      const p = path.join(cwd, 'task.md');
+      fs.writeFileSync(p, CONTRACT_TASK_LINES.join('\n'));
+      return p;
+    };
+    const docOnlyTask = (cwd) => {
+      const p = path.join(cwd, 'task.md');
+      fs.writeFileSync(p, ['<task type="auto">', '  <files>docs/notes.md</files>', '</task>'].join('\n'));
+      return p;
+    };
+
+    const g1Trailer = trailerLine();
+    const mutateTrailer = (mutator) => {
+      const parsed = JSON.parse(g1Trailer.slice(g1Trailer.indexOf('{')));
+      mutator(parsed);
+      return `red-evidence: ${JSON.stringify(parsed)}`;
+    };
+    const g2Trailer = mutateTrailer((p) => { p.location.observed.line += 1; });
+    const g5Trailer = mutateTrailer((p) => { p.exit_status = 0; });
+
+    const commit = (cwd, file, subject, trailer) => {
+      const abs = path.join(cwd, file);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, `# ${subject}\n`);
+      runGit(['add', file], { cwd });
+      runGit(trailer ? ['commit', '-m', subject, '-m', trailer] : ['commit', '-m', subject], { cwd });
+      return runGit(['rev-parse', 'HEAD'], { cwd }).stdout.trim();
+    };
+
+    // git.base-branch's tier-4 fallback only recognizes local branches
+    // literally named `main`/`master`, which depends on this machine's
+    // `init.defaultBranch` and is not portable to CI. Pin the base
+    // explicitly via `.planning/config.json` (tier 1) instead, and land all
+    // task commits on a second branch forked off it, so RED_RANGE always
+    // gets a real, non-trivial boundary regardless of the host's git config.
+    const newRepo = () => {
+      const dir = createTempGitProject('gsd-3770-execgate-');
+      t.after(() => cleanup(dir));
+      runGit(['config', 'core.hooksPath', ''], { cwd: dir });
+      const baseBranch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir }).stdout.trim();
+      fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'),
+        JSON.stringify({ git: { base_branch: baseBranch } }));
+      runGit(['checkout', '-b', 'gsd-3770-work'], { cwd: dir });
+      return dir;
+    };
+
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+
+    // ── G1, valid evidence (characterization) ────────────────────────────
+    const s1 = newRepo();
+    const taskFile1 = behaviorTask(s1);
+    commit(s1, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g1Trailer);
+    const r1 = runGate(scriptPath, s1, taskFile1);
+    assert.strictEqual(r1.exitCode, 0,
+      'G1: valid evidence with agreeing declared and observed locations must authorize — the ' +
+      'paired control that makes the G2 failure attributable to the location mismatch, not to ' +
+      'the gate having become unconditionally strict. See #3770.');
+
+    // ── G2, mismatched evidence (RED) ─────────────────────────────────────
+    const s2 = newRepo();
+    const taskFile2 = behaviorTask(s2);
+    commit(s2, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g2Trailer);
+    const r2 = runGate(scriptPath, s2, taskFile2);
+    assert.notStrictEqual(r2.exitCode, 0,
+      'G2: a red-evidence trailer whose observed location disagrees with its declared location ' +
+      'must NOT authorize. Fails today: the unchanged gate never reads the trailer. See #3770.');
+    assert.strictEqual(
+      evaluateRedEvidence(CONTRACT_TASK_LINES.join('\n'), g2Trailer).verdict,
+      'red_commit_not_failing',
+      'G2 module-owned check: the verdict for this exact task and trailer pair must be ' +
+      'red_commit_not_failing.',
+    );
+
+    // ── G3, trailerless commit (RED) ──────────────────────────────────────
+    const s3 = newRepo();
+    const taskFile3 = behaviorTask(s3);
+    commit(s3, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', undefined);
+    const r3 = runGate(scriptPath, s3, taskFile3);
+    assert.notStrictEqual(r3.exitCode, 0,
+      'G3: a plan-scoped commit with no red-evidence: trailer must NOT authorize — it must ' +
+      'classify as missing_red_evidence, not missing_red_commit (D-14), which is a bash-owned ' +
+      'distinction asserted against the workflow text, not at runtime. Fails today: the gate ' +
+      'authorizes on any subject match. See #3770.');
+
+    // ── G4, no plan-scoped commit at all (characterization) ───────────────
+    const s4 = newRepo();
+    const taskFile4 = behaviorTask(s4);
+    const r4 = runGate(scriptPath, s4, taskFile4);
+    assert.notStrictEqual(r4.exitCode, 0,
+      'G4: with no matching commit at all the gate must trip — the regression guard on the one ' +
+      'blocking behavior that must survive this change.');
+
+    // ── G5, unexpected pass (RED) ──────────────────────────────────────────
+    const s5 = newRepo();
+    const taskFile5 = behaviorTask(s5);
+    commit(s5, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g5Trailer);
+    const r5 = runGate(scriptPath, s5, taskFile5);
+    assert.notStrictEqual(r5.exitCode, 0,
+      'G5: a red-evidence trailer recording exit_status 0 means the RED run PASSED — nothing ' +
+      'failed to evaluate — and must NOT authorize. Fails today: the gate never reads ' +
+      'exit_status. See #3770.');
+    assert.strictEqual(
+      evaluateRedEvidence(CONTRACT_TASK_LINES.join('\n'), g5Trailer).verdict,
+      'unexpected_pass',
+      'G5 module-owned check: the verdict for this exact task and trailer pair must be ' +
+      'unexpected_pass.',
+    );
+
+    // ── G6, exemption (characterization) ────────────────────────────────────
+    const s6 = createTempDir('gsd-3770-execgate-g6-');
+    t.after(() => cleanup(s6));
+    runGit(['init'], { cwd: s6 });
+    runGit(['config', 'core.hooksPath', ''], { cwd: s6 });
+    const taskFile6 = docOnlyTask(s6);
+    const r6b = runGate(scriptPath, s6, taskFile6);
+    assert.strictEqual(r6b.exitCode, 0,
+      'G6: a doc-only task must exempt outright, with no RED lookup attempted — a repository ' +
+      'with zero commits proves it, since any git log or merge-base call here would fail loudly ' +
+      '(GATE-04 regression guard).');
+
+    // ── G7, cross-milestone decoy (RED) ────────────────────────────────────
+    const s7 = createTempGitProject('gsd-3770-execgate-g7-');
+    t.after(() => cleanup(s7));
+    runGit(['config', 'core.hooksPath', ''], { cwd: s7 });
+    const taskFile7 = behaviorTask(s7);
+    const decoySha = commit(
+      s7, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g1Trailer,
+    );
+    runGit(['branch', 'gsd-3770-g7-base', decoySha], { cwd: s7 });
+    fs.mkdirSync(path.join(s7, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(s7, '.planning', 'config.json'),
+      JSON.stringify({ git: { base_branch: 'gsd-3770-g7-base' } }));
+    commit(s7, 'README.md', 'chore: advance past the decoy commit', undefined);
+    const r7 = runGate(scriptPath, s7, taskFile7);
+    assert.notStrictEqual(r7.exitCode, 0,
+      'G7: a plan-scoped, evidence-bearing commit that predates the derived base ref must NOT ' +
+      'authorize, with no qualifying commit after it. Fails today: the unbounded search selects ' +
+      'the decoy. See #3770 (Pitfall 5).');
+    const unboundedScript = writeScript('gate-unbounded.sh', snippet.replace(
+      /\nTAB=\$\(printf '\\t'\)/,
+      '\nRED_RANGE="HEAD" # G7 non-vacuity: force the unbounded range\nTAB=$(printf \'\\t\')',
+    ));
+    const r7Unbounded = runGate(unboundedScript, s7, taskFile7);
+    assert.strictEqual(r7Unbounded.exitCode, 0,
+      'G7 non-vacuity: the SAME fixture, without the range bound, must select the decoy and ' +
+      'authorize — otherwise G7 proves nothing about the bound specifically.');
+
+    // ── G8, source-only evidence (characterization) ─────────────────────────
+    const s8 = newRepo();
+    const taskFile8 = behaviorTask(s8);
+    commit(s8, 'src/pricing.py', 'test(08-02): add failing test for discount', g1Trailer);
+    const r8 = runGate(scriptPath, s8, taskFile8);
+    assert.notStrictEqual(r8.exitCode, 0,
+      'G8: a commit whose subject and trailer both qualify but which touches only a source ' +
+      "file must NOT authorize — execute-phase.md's existing test-file pathspec already " +
+      'excludes it. This is the regression guard on the pathspec, not a RED.');
+    const pathspecStrippedScript = writeScript(
+      'gate-no-pathspec.sh',
+      snippet.split('-- "**/*.test.*" "**/*.spec.*" "tests/"').join(''),
+    );
+    const r8Stripped = runGate(pathspecStrippedScript, s8, taskFile8);
+    assert.strictEqual(r8Stripped.exitCode, 0,
+      'G8 non-vacuity: the SAME fixture, with the pathspec stripped from a copy of the snippet ' +
+      'built in this test, must authorize — proving the guard is the pathspec and not ' +
+      'something else about this fixture.');
   });
 
   test('every surface that instructs on the unexpected pass defers to the RED Contract', () => {
