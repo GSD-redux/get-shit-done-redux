@@ -2417,6 +2417,40 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     assert.strictEqual(diverged.output.trim(), 'position_diverged');
   });
 
+  // #3862 RV6.5 pass 3 (CLAIM 7). The warning gained two explanatory branches and
+  // NOTHING asserted them: reverting it to the old unconditional "matches neither"
+  // sentence left every existing warning test green, so a behavioural fix was
+  // shipping uncontrolled. The wording is behaviour here — it is the only thing that
+  // tells an operator WHICH half of `Plan: N of M` to reconcile, and naming the wrong
+  // half sends them to edit the number that is already correct.
+  test('the divergence warning names which half of the position is wrong', () => {
+    // Total AGREES with the live count, position is out of range.
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-demo');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    for (let i = 1; i <= 12; i++) {
+      const id = String(i).padStart(2, '0');
+      fs.writeFileSync(path.join(phaseDir, `01-${id}-PLAN.md`),
+        `---\nstatus: ${i <= 8 ? 'complete' : 'superseded'}\n---\n# Plan\n`);
+    }
+    writeState('Plan: 10 of 8');
+    const ranged = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(ranged.exitCode, 0, `must still exit 0: ${ranged.stderr}`);
+    assert.match(ranged.stderr, /total agrees with the plans on disk, but the position is outside it/,
+      `a range refusal must not claim the total matches nothing; got: ${ranged.stderr}`);
+    assert.ok(!/matches neither count/.test(ranged.stderr),
+      `and it must not carry the total-mismatch wording; got: ${ranged.stderr}`);
+
+    // Total matches NEITHER count — the original case, still worded that way.
+    seedPhase('01-demo', 12);
+    writeState('Plan: 2 of 7');
+    const mismatched = runToolsWithStderr(['state', 'advance-plan'], tmpDir);
+    assert.strictEqual(mismatched.exitCode, 0, `must still exit 0: ${mismatched.stderr}`);
+    assert.match(mismatched.stderr, /prose total matches neither count/,
+      `a total mismatch must say so; got: ${mismatched.stderr}`);
+    assert.ok(!/position is outside it/.test(mismatched.stderr),
+      `and it must not claim the total agrees; got: ${mismatched.stderr}`);
+  });
+
   test('a normal advance emits no divergence warning', () => {
     // Negative control the other way: the warning must be specific to the
     // refusal, or it becomes noise every caller learns to ignore.

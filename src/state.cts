@@ -1158,9 +1158,20 @@ function warnPositionDiverged(data: Record<string, unknown>): void {
   // `Plan: 10 of 8` has a total agreeing with the live count and a position past it.
   // Telling an operator their total matches nothing when it matches exactly sends
   // them to reconcile the wrong half of the line.
-  const proseTotal = Number(prose['total_plans']);
+  // NOT `Number()`. These arrive as `unknown`, and `Number('')` and `Number(null)`
+  // are both 0 — so a blank or null prose total against a zero disk count would take
+  // the "total agrees" branch and tell the operator the wrong half of the line is
+  // wrong. Production emits numbers, so the bad shapes are unreachable today; that is
+  // a reason to state the narrowing accurately, not to skip it. Anything that is not
+  // a finite number falls to the "matches neither" branch, which is the honest
+  // default when the payload cannot be read.
+  const asFiniteNumber = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const proseTotal = asFiniteNumber(prose['total_plans']);
   const totalMatchesDisk =
-    proseTotal === Number(disk['plan_count']) || proseTotal === Number(disk['plan_count_all']);
+    proseTotal !== null &&
+    (proseTotal === asFiniteNumber(disk['plan_count']) ||
+      proseTotal === asFiniteNumber(disk['plan_count_all']));
   const because = totalMatchesDisk
     ? `The total agrees with the plans on disk, but the position is outside it, so `
     : `The prose total matches neither count, so `;
