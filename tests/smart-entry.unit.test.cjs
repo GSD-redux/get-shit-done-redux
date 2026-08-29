@@ -137,6 +137,23 @@ describe('smart-entry: situation coverage', () => {
     assert.equal(result.situation, 'complete');
   });
 
+  test('#3864: "Phase complete — ready for verification" at 5/5 stays complete (complete beats a verif-bearing status)', () => {
+    // A real handler-written Status default (state-document.cts). It carries
+    // the verif stem but names COMPLETION — isComplete must win over the
+    // verify-pending branch when the project is actually done.
+    const dir = track(makeProject({ state: state({ status: 'Phase complete — ready for verification', total_phases: 5, current_phase: 5 }), roadmap: true }));
+    const result = classifyProject(dir);
+    assert.equal(result.situation, 'complete');
+  });
+
+  test('#3864: "Phase complete — ready for verification" mid-project is verify-pending', () => {
+    // Same real status word, phases remaining: pre-fix this fell through to
+    // unknown/idle-stranded (no "verify" substring); the stem now routes it.
+    const dir = track(makeProject({ state: state({ status: 'Phase complete — ready for verification', total_phases: 5, current_phase: 2 }), roadmap: true }));
+    const result = classifyProject(dir);
+    assert.equal(result.situation, 'verify-pending');
+  });
+
   test('#3864: verify-failed still wins over the verify-pending stem (ordering pinned)', () => {
     const dir = track(makeProject({ state: state({ status: 'verify-failed', total_phases: 5, current_phase: 2 }), roadmap: true, verifyFail: true }));
     const result = classifyProject(dir);
