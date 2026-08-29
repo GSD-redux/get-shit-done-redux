@@ -433,6 +433,7 @@
   "scripts/lib/cli-exit.cjs",
   "scripts/lib/drift-scan.cjs",
   "scripts/lib/exit-code-registry.cjs",
+  "scripts/lib/ndjson-reporter.cjs",
   "skills/gsd/DESCRIPTION.md",
   "skills/gsd/gsd-ns-context/SKILL.md",
   "skills/gsd/gsd-ns-context/skills/docs-update/SKILL.md",

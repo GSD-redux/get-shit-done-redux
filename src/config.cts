@@ -111,6 +111,11 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   // manifest default rather than "Key not found". Derived from the defaults manifest so
   // the manifest stays the single source of truth.
   'planning.pr_strict': CONFIG_DEFAULTS.pr_strict,
+  // #3801: execute-plan reads this key on every run; an absent key must resolve
+  // to the manifest default (2) rather than "Key not Found" — previously the
+  // effective default existed only as the workflow's shell fallback and the
+  // docs disagreed (settings-advanced said 3). Manifest stays the one owner.
+  'workflow.inline_plan_threshold': CONFIG_DEFAULTS.inline_plan_threshold,
 };
 
 /**

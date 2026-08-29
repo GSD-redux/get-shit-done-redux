@@ -511,6 +511,80 @@ All checks passed.
   // Regression: #2286 — parseUatItems never scanned a `## Gaps` section, so a
   // *-UAT.md file recording its only outstanding findings there returned
   // total_items: 0 (false-clean). Boundary: 0 / 1 / 2+ unresolved entries.
+  describe('Gaps separator lines are not items (#3898)', () => {
+    // The reporter's exact measurement table: every separator shape must
+    // yield ONLY the real entry. A spaced hyphen break matched the item
+    // opener regex (/^(\s*)-\s/) and fabricated a gap named '- -' with
+    // result 'unknown' — unfixable by editing any entry, because there is
+    // no entry, only the separator the author put there deliberately.
+    const mkDoc = (sep) => [
+      '---', 'status: partial', 'phase: 01-x', '---', '',
+      '## Gaps', '',
+      sep,
+      '- truth: real', '  status: open', '',
+    ].join('\n');
+
+    const SEPARATORS = [
+      '- - -',
+      '- -',
+      '-  -  -',
+      '- - - -',
+      '  - - -',
+      // unaffected forms stay unaffected (accidentally today, by handling after the fix)
+      '---',
+      '----',
+      '* * *',
+      '___',
+    ];
+    for (const sep of SEPARATORS) {
+      test(`separator ${JSON.stringify(sep)} yields only the real entry`, () => {
+        const items = parseUatItems(mkDoc(sep));
+        assert.deepStrictEqual(
+          items.map((i) => i.name),
+          ['real'],
+          `a thematic break must be a separator, not an entry (#3898); got ${JSON.stringify(items.map((i) => i.name))}`,
+        );
+      });
+    }
+
+    test('property: any bullet line whose remainder is only hyphens/spaces (>=2 hyphens) yields no item', () => {
+      // CLAUDE.md's parser-contract convention: table coverage above, property
+      // coverage here — arbitrary spacings and counts, not just the table's nine.
+      fc.assert(fc.property(
+        fc.integer({ min: 2, max: 6 }),        // extra hyphens
+        fc.integer({ min: 0, max: 3 }),        // leading indent
+        fc.integer({ min: 1, max: 3 }),        // spaces between hyphens
+        (hyphens, indent, gap) => {
+          const pad = ' '.repeat(indent);
+          const sep = pad + Array(hyphens + 1).fill('-').join(' '.repeat(gap));
+          const items = parseUatItems(mkDoc(sep));
+          return items.length === 1 && items[0].name === 'real';
+        },
+      ), { seed: 20260829, numRuns: 60 });
+    });
+
+    test('#3898 review: a separator inside a live entry keeps its span contiguous (ack-able)', () => {
+      // Disposition (a): a separator deeper than baseIndent folds back as a
+      // continuation line, so entry lines and the entry's byte span agree —
+      // the ack writer's identity re-verification still matches.
+      const items = parseUatItems([
+        '---', 'status: partial', 'phase: 01-x', '---', '',
+        '## Gaps', '',
+        '- truth: real', '  - - -', '  status: open', '',
+      ].join('\n'));
+      assert.deepStrictEqual(items.map((i) => i.name), ['real']);
+    });
+
+    test('a real entry whose text starts with a hyphen is still an entry (no over-skip)', () => {
+      const items = parseUatItems([
+        '---', 'status: partial', 'phase: 01-x', '---', '',
+        '## Gaps', '',
+        '- truth: "-5 error budget remaining"', '  status: open', '',
+      ].join('\n'));
+      assert.deepStrictEqual(items.map((i) => i.name), ['-5 error budget remaining']);
+    });
+  });
+
   describe('Gaps section scanning (#2286)', () => {
     test('a Gaps-only UAT file with 0 unresolved entries (all resolved) yields no items', () => {
       const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');

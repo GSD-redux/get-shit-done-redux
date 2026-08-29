@@ -841,11 +841,11 @@ describe('#3912 A3-A5: output({error}) records DEGRADED — shape-exhaustive plu
       perFile,
       {
         'commands.cts': 5, 'frontmatter.cts': 7, 'gsd2-import.cts': 2, 'phase.cts': 4,
-        'roadmap.cts': 3, 'state.cts': 25, 'template.cts': 3, 'verify.cts': 8, 'workstream.cts': 7,
+        'roadmap.cts': 3, 'state.cts': 26, 'template.cts': 3, 'verify.cts': 8, 'workstream.cts': 7,  // +1 #3807: advance-plan's ambiguous-position error
       },
       `per-file output({error}) census drifted: ${JSON.stringify(perFile)}`,
     );
-    assert.strictEqual(total, 64, `enumerated output({error}) population drifted from the measured 64: got ${total}`);
+    assert.strictEqual(total, 65, `enumerated output({error}) population drifted from the measured 65 (64 + #3807's ambiguous-position error): got ${total}`);
   });
 });
 

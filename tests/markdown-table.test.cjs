@@ -1136,6 +1136,215 @@ describe('TABLE_SCHEMAS parity: registry headers must appear verbatim in their s
   });
 });
 
+// ─── Quick Tasks heading tolerance (#3860) ────────────────────────────────────
+
+describe('Quick Tasks heading tolerance (#3860)', () => {
+  // Byte-identical table body to the bare-heading control — only the heading
+  // suffix differs, which is exactly the reporter's isolation.
+  const suffixedState = [
+    '# STATE',
+    '',
+    '### Quick Tasks Completed (v1.1+)',
+    '',
+    '| # | Description | Date | Commit | Directory |',
+    '|---|-------------|------|--------|-----------|',
+    '| 1 | fix typo | 2026-01-01 | abc1234 | — |',
+    '',
+    '### Blockers/Concerns',
+    'None',
+  ].join('\n');
+
+  const multiMilestoneState = [
+    '# STATE',
+    '',
+    '### Quick Tasks Completed (v1.1+)',
+    '',
+    '| # | Description | Date | Commit | Directory |',
+    '|---|-------------|------|--------|-----------|',
+    '| 250101-abc | first v1.1 task | 2025-01-01 | 0123abc | [dir](./quick/250101-abc/) |',
+    '',
+    '### Quick Tasks Completed (v1.0)',
+    '',
+    '| # | Description | Date | Commit | Directory |',
+    '|---|-------------|------|--------|-----------|',
+    '| 1 | legacy v1.0 task | 2024-06-01 | old1234 | — |',
+  ].join('\n');
+
+  // v1.0 first in document order with a LEGACY (unrecognized) schema — the
+  // usable v1.1+ table below it must not be shadowed (#3860 "worth deciding
+  // deliberately rather than inheriting from document order").
+  const legacyFirstState = [
+    '# STATE',
+    '',
+    '### Quick Tasks Completed (v1.0)',
+    '',
+    '| Date | Slug | Scope | Artifacts |',
+    '|------|------|-------|-----------|',
+    '| 2024-06-01 | old | full | — |',
+    '',
+    '### Quick Tasks Completed (v1.1+)',
+    '',
+    '| # | Description | Date | Commit | Directory |',
+    '|---|-------------|------|--------|-----------|',
+    '| 1 | fix typo | 2026-01-01 | abc1234 | — |',
+  ].join('\n');
+
+  test('appendQuickTaskRow locates a milestone-suffixed heading', () => {
+    const result = appendQuickTaskRow(suffixedState, {
+      description: 'probe',
+      date: '2026-08-25',
+      commit: 'deadbee',
+    });
+    assert.equal(result.ok, true, `reason: ${result.reason}`);
+    assert.ok(result.value.content.includes('| 2 | probe | 2026-08-25 | deadbee | — |'));
+    assert.ok(result.value.content.includes('### Quick Tasks Completed (v1.1+)'), 'the suffixed heading itself is untouched');
+  });
+
+  test('resetQuickTaskRows clears a milestone-suffixed heading', () => {
+    const result = resetQuickTaskRows(suffixedState);
+    assert.equal(result.ok, true, `reason: ${result.reason}`);
+    assert.equal(result.value.cleared, 1);
+    assert.ok(!result.value.content.includes('fix typo'));
+    assert.ok(result.value.content.includes('### Quick Tasks Completed (v1.1+)'));
+  });
+
+  test('bare "Quick Tasks Completedness" is NOT matched (word boundary holds)', () => {
+    const notQuick = suffixedState.replace(
+      '### Quick Tasks Completed (v1.1+)',
+      '### Quick Tasks Completedness (v1.1+)',
+    );
+    const result = appendQuickTaskRow(notQuick, { description: 'x', date: '2026-08-25', commit: 'abc' });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, QUICK_TASKS_SECTION_ABSENT, 'a different section name must still be absent');
+  });
+
+  test('multiple milestone sections: appends to the one holding the canonical table', () => {
+    const result = appendQuickTaskRow(multiMilestoneState, {
+      description: 'second v1.1 task',
+      date: '2025-02-02',
+      commit: '0456def',
+    });
+    assert.equal(result.ok, true, `reason: ${result.reason}`);
+    assert.ok(result.value.content.includes('second v1.1 task'));
+    const v11 = result.value.content.indexOf('### Quick Tasks Completed (v1.1+)');
+    const v10 = result.value.content.indexOf('### Quick Tasks Completed (v1.0)');
+    assert.ok(
+      result.value.content.indexOf('second v1.1 task') > v11 && result.value.content.indexOf('second v1.1 task') < v10,
+      'the row lands in the v1.1+ section (the one whose table matched the canonical schema), not the v1.0 section'
+    );
+    assert.ok(
+      result.value.content.includes('| 1 | legacy v1.0 task | 2024-06-01 | old1234 | — |'),
+      'the v1.0 row is present byte-identical (only the v1.1+ table gained a row)'
+    );
+  });
+
+  test('a legacy-schema section first in document order does not shadow a usable one', () => {
+    const result = appendQuickTaskRow(legacyFirstState, {
+      description: 'new task',
+      date: '2026-08-25',
+      commit: 'deadbee',
+    });
+    assert.equal(result.ok, true, `reason: ${result.reason}`);
+    assert.ok(
+      result.value.content.includes('| 2 | new task | 2026-08-25 | deadbee | — |'),
+      'appends to the v1.1+ canonical table below the legacy v1.0 one'
+    );
+    assert.ok(!result.value.content.includes('unrecognized'), 'no schema complaint when a usable section exists');
+  });
+
+  test('when NO matching section is usable, the error names the real problem (first section\'s)', () => {
+    const onlyLegacy = legacyFirstState.slice(0, legacyFirstState.indexOf('### Quick Tasks Completed (v1.1+)'));
+    const result = appendQuickTaskRow(onlyLegacy, { description: 'x', date: '2026-08-25', commit: 'abc' });
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.reason.includes('unrecognized Quick Tasks schema'),
+      `the failure must describe the legacy table, not claim the section is absent; got: ${result.reason}`
+    );
+  });
+
+  test('#3860 review: a later ## Deferred Items pipe table is NOT the splice target', () => {
+    // The canonical STATE.md layout (templates/state.md + workflows/quick.md)
+    // puts a pipe table AFTER the Quick Tasks section. A section-body
+    // collection that only stops at the next matching heading would swallow
+    // it, and the append's last-table-line scan would splice the quick-task
+    // row into the Deferred Items table.
+    const canonicalLayout = [
+      '# STATE',
+      '',
+      '### Quick Tasks Completed (v1.1+)',
+      '',
+      '| # | Description | Date | Commit | Directory |',
+      '|---|-------------|------|--------|-----------|',
+      '| 1 | fix typo | 2026-01-01 | abc1234 | — |',
+      '',
+      '### Blockers/Concerns',
+      'None',
+      '',
+      '## Deferred Items',
+      '',
+      '| Category | Item | Status | Deferred At | Milestone |',
+      '|----------|------|--------|-------------|-----------|',
+      '| scope | extra thing | deferred | 2026-01-02 | v1.1 |',
+      '',
+    ].join('\n');
+    const result = appendQuickTaskRow(canonicalLayout, {
+      description: 'probe',
+      date: '2026-08-25',
+      commit: 'deadbee',
+    });
+    assert.equal(result.ok, true, `reason: ${result.reason}`);
+    const content = result.value.content;
+    const quickRow = '| 2 | probe | 2026-08-25 | deadbee | — |';
+    assert.ok(content.includes(quickRow), 'the new row exists');
+    assert.ok(
+      content.indexOf(quickRow) < content.indexOf('## Deferred Items'),
+      'the row lands INSIDE the Quick Tasks table, before the Deferred Items section'
+    );
+    assert.ok(
+      content.includes('| scope | extra thing | deferred | 2026-01-02 | v1.1 |'),
+      'the Deferred Items table is byte-identical (no row spliced after its last line)'
+    );
+    const deferred = content.slice(content.indexOf('## Deferred Items'));
+    assert.ok(!deferred.includes(quickRow), 'the Deferred Items section contains no quick-task row');
+  });
+
+  test('#3860 convention: several schema-valid sections — document order (newest-on-top) wins', () => {
+    // The archive flow preserves a recognized header-only table under the old
+    // heading (workflows/complete-milestone.md), so both sections can be
+    // schema-valid. This layer has no active-milestone signal; the pinned
+    // tie-break is document order — first section — matching the issue's own
+    // newest-on-top layout.
+    const bothValid = [
+      '# STATE',
+      '',
+      '### Quick Tasks Completed (v1.1+)',
+      '',
+      '| # | Description | Date | Commit | Directory |',
+      '|---|-------------|------|--------|-----------|',
+      '| 1 | current task | 2026-01-01 | abc1234 | — |',
+      '',
+      '### Quick Tasks Completed (v1.0)',
+      '',
+      '| # | Description | Date | Commit | Directory |',
+      '|---|-------------|------|--------|-----------|',
+      '| 99 | archived task | 2025-01-01 | old1234 | — |',
+    ].join('\n');
+    const result = appendQuickTaskRow(bothValid, {
+      description: 'new task',
+      date: '2026-08-25',
+      commit: 'deadbee',
+    });
+    assert.equal(result.ok, true, `reason: ${result.reason}`);
+    const v11 = result.value.content.indexOf('### Quick Tasks Completed (v1.1+)');
+    const v10 = result.value.content.indexOf('### Quick Tasks Completed (v1.0)');
+    assert.ok(
+      result.value.content.indexOf('| 2 | new task | 2026-08-25 | deadbee | — |') > v11
+        && result.value.content.indexOf('| 2 | new task | 2026-08-25 | deadbee | — |') < v10,
+      'the row lands in the FIRST (newest-on-top) section'
+    );
+  });
+});
+
 // ─── resetQuickTaskRows (#2142) ─────────────────────────────────────────────
 
 describe('resetQuickTaskRows (#2142)', () => {

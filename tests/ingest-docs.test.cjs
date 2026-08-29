@@ -188,6 +188,58 @@ describe('ingest-docs workflow content', () => {
     );
   });
 
+  test('#3827 gate: new mode requires a routing approval BEFORE the roadmapper delegation', () => {
+    // The gate text and the delegation must both exist, and the gate must
+    // come first — an approval gate placed after the subagent call would
+    // authorize nothing.
+    const gateIdx = content.indexOf('Routing — create the planning setup now?');
+    const delegateIdx = content.indexOf('subagent_type: "gsd-roadmapper"');
+    assert.ok(gateIdx !== -1, 'new mode must display a routing gate question before delegating');
+    assert.ok(delegateIdx !== -1, 'new mode must still delegate to gsd-roadmapper');
+    assert.ok(gateIdx < delegateIdx, 'the routing gate must precede the roadmapper delegation');
+
+    // The gate display must show the user exactly what will be written
+    // (#3827: the classification approval must not also authorize scaffold
+    // creation). Window is the DISPLAY BLOCK only (gate question → the
+    // AskUserQuestion spec), so the assertions can't pass off text from the
+    // option-disposition branches below.
+    const askIdx = content.indexOf('Use `AskUserQuestion`', gateIdx);
+    assert.ok(askIdx !== -1 && askIdx < delegateIdx, 'gate must specify its AskUserQuestion contract');
+    const displayBlock = content.slice(gateIdx, askIdx);
+    for (const dest of ['.planning/PROJECT.md', '.planning/REQUIREMENTS.md', '.planning/ROADMAP.md', '.planning/STATE.md']) {
+      assert.ok(
+        displayBlock.includes(dest),
+        `routing gate display block must name destination file ${dest}`
+      );
+    }
+
+    // Three-way choice, including the analysis-only exit the issue asks for.
+    const gateWindow = content.slice(gateIdx, delegateIdx);
+    assert.ok(gateWindow.includes('Create planning setup'), 'gate must offer to create the scaffold');
+    assert.ok(gateWindow.includes('Keep synthesized intel only'), 'gate must offer an analysis-only path');
+    assert.ok(gateWindow.includes('Abort'), 'gate must offer abort');
+    // "Keep intel only" must skip the roadmapper (no scaffold writes).
+    const keepIdx = content.indexOf('Keep synthesized intel only');
+    assert.ok(
+      keepIdx !== -1 && content.slice(keepIdx, delegateIdx).includes('Do NOT invoke'),
+      'the keep-intel-only branch must explicitly skip the roadmapper delegation'
+    );
+  });
+
+  test('#3827 gate: zero-conflict branch routes to the gate, never silently into writes', () => {
+    const zeroIdx = content.indexOf('If BLOCKERS = 0 and WARNINGS = 0');
+    assert.ok(zeroIdx !== -1, 'workflow must keep the zero-conflict branch');
+    const zeroWindow = content.slice(zeroIdx, zeroIdx + 400);
+    assert.ok(
+      !zeroWindow.toLowerCase().includes('silently'),
+      'the zero-conflict branch must not authorize silent routing; it hands control to the routing gate'
+    );
+    assert.ok(
+      zeroWindow.includes('proceed to the routing gate'),
+      'zero-conflict branch must hand control to the routing gate'
+    );
+  });
+
   test('rejects --resolve interactive in v1', () => {
     const lower = content.toLowerCase();
     assert.ok(
