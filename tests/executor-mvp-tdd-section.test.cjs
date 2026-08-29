@@ -30,6 +30,56 @@ describe('gsd-executor — MVP+TDD gate section', () => {
   test('referenced file exists on disk', () => {
     assert.ok(fs.existsSync(REF), `${REF} must exist`);
   });
+
+  test('the halt-reason enum lists exactly the five tokens the three producers emit', () => {
+    const refContent = fs.readFileSync(REF, 'utf-8');
+    const reasonLineMatch = refContent.match(/Reason:\s*\{([^}]+)\}/);
+    assert.ok(reasonLineMatch, 'execute-mvp-tdd.md must carry a `Reason: {...}` vocabulary line');
+    const shippedTokens = reasonLineMatch[1].split('|').map((t) => t.trim()).sort();
+    const frozenFive = [
+      'missing_red_commit', 'missing_red_evidence', 'red_commit_not_failing',
+      'unexpected_pass', 'feat_before_test',
+    ].sort();
+    assert.deepStrictEqual(shippedTokens, frozenFive,
+      'the Reason: enum must list exactly these five tokens, no more and no fewer. ' +
+      'Fails today: the shipped enum lists four, missing `unexpected_pass`. See #3770.');
+
+    // The five tokens have three producers, and no single site emits all of them —
+    // asserting all five against one source would find two and misreport the set
+    // as over- or under-wide.
+    const gateSnippet = extractGateSnippet(fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md'), 'utf8',
+    ));
+    // Bash-owned: literals the gate block itself echoes.
+    assert.ok(gateSnippet.includes('missing_red_commit'),
+      'missing_red_commit is bash-owned and must appear as a literal in the gate block');
+    assert.ok(gateSnippet.includes('missing_red_evidence'),
+      'missing_red_evidence is bash-owned and must appear as a literal in the gate block');
+
+    // Module-owned (D-14): taken from evaluateRedEvidence's own verdict domain, not
+    // scraped from the gate — the gate only ever echoes `${RED_VERDICT}`, a shell
+    // expansion, so grepping the snippet for these two would find nothing there.
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    const taskContent = CONTRACT_TASK_LINES.join('\n');
+    const mismatched = (() => {
+      const parsed = JSON.parse(trailerLine().slice(trailerLine().indexOf('{')));
+      parsed.location.observed.line += 1;
+      return `red-evidence: ${JSON.stringify(parsed)}`;
+    })();
+    const unexpectedPass = (() => {
+      const parsed = JSON.parse(trailerLine().slice(trailerLine().indexOf('{')));
+      parsed.exit_status = 0;
+      return `red-evidence: ${JSON.stringify(parsed)}`;
+    })();
+    assert.strictEqual(evaluateRedEvidence(taskContent, mismatched).verdict, 'red_commit_not_failing',
+      'red_commit_not_failing is module-owned; this fixture must produce it');
+    assert.strictEqual(evaluateRedEvidence(taskContent, unexpectedPass).verdict, 'unexpected_pass',
+      'unexpected_pass is module-owned; this fixture must produce it');
+
+    // feat_before_test is emitted by the executor's own sequencing check ("no
+    // feat({phase}-{plan}) commit before the failing-test commit"), not by this
+    // gate at all — it has no extractable source here, only its presence above.
+  });
 });
 
 describe('gsd-executor — state.* calls use the named-only router form (#1863 regression)', () => {
