@@ -221,6 +221,29 @@ function parseShardArg(value) {
   return { index, total };
 }
 
+// Parse RUN_TESTS_SHARD_RESERVE (#4070) — "<index>:<weight>", e.g. "1:77":
+// give shard `index` (1-based) a virtual head start of `weight` LPT weight
+// units before any real file is placed. This is an advisory operator knob,
+// not a CLI flag with a hard-error contract like --shard: it is set from a
+// GitHub Actions matrix expression (test.yml), so a malformed or absent value
+// must degrade to "no reserve" rather than take the whole job down — the same
+// fail-open precedent as positiveNumberEnv elsewhere in this file. Returns
+// `null` for anything malformed; the caller is responsible for checking
+// `index` against the shard total it actually has (this function has no
+// access to that).
+function parseShardReserve(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const m = /^(\d+):(-?\d+(?:\.\d+)?)$/.exec(trimmed);
+  if (!m) return null;
+  const index = Number(m[1]);
+  const weight = Number(m[2]);
+  if (!Number.isInteger(index) || index < 1) return null;
+  if (!Number.isFinite(weight) || weight < 0) return null;
+  return { index, weight };
+}
+
 // Deterministic partition of an ALREADY-SORTED file list. Without a weigher
 // this is the original round-robin (#1212):
 // Shard `index` (1-based) receives every file whose position k in the sorted
@@ -243,7 +266,20 @@ function parseShardArg(value) {
 // This is the same algorithm packChunks uses one level down (#2456/#2463), so
 // both layers now share one cost model. Omitting `weightOf` keeps the legacy
 // round-robin byte-identical — callers with no timing data lose nothing.
-function selectShard(sortedFiles, { index, total }, weightOf) {
+//
+// `initialWeights` (#4070, optional): per-bin starting weight, indexed 0..
+// total-1 (bin 0 = shard 1). Some shards carry a FIXED cost this function has
+// no other way to see — test.yml pins four aux suites to shard 1 only, so
+// shard 1's real cost is always "its LPT-balanced unit-test slice PLUS that
+// fixed aux cost," while shards 2..N carry only their slice. Giving bin 0 a
+// virtual head start before any file is placed makes LPT route FEWER files to
+// it, converging every bin's FINAL total (assigned weight + its initial
+// weight) toward equal instead of converging raw assigned weight toward
+// equal — which is what left shard 1 structurally overloaded. Only meaningful
+// on the weighted (LPT) path: the round-robin fallback below has no notion of
+// weight to rebalance around, so `initialWeights` is a no-op there — a caller
+// with no timing table has no basis to compute a meaningful reserve either.
+function selectShard(sortedFiles, { index, total }, weightOf, initialWeights) {
   if (total === 1) return sortedFiles;
   if (typeof weightOf !== 'function') {
     return sortedFiles.filter((_, k) => k % total === index - 1);
@@ -255,7 +291,15 @@ function selectShard(sortedFiles, { index, total }, weightOf) {
     const w = weightOf(file);
     return Number.isFinite(w) && w >= 0 ? w : 0;
   };
-  const bins = Array.from({ length: total }, () => ({ weight: 0, picks: [] }));
+  // Same clamp applied to a caller-supplied reserve: a hostile value (NaN,
+  // negative, Infinity — e.g. a malformed RUN_TESTS_SHARD_RESERVE) must
+  // degrade to "no reserve" rather than poisoning every subsequent
+  // lightest-bin comparison the same way an unclamped file weight would.
+  const safeInitial = (i) => {
+    const w = Array.isArray(initialWeights) ? initialWeights[i] : undefined;
+    return Number.isFinite(w) && w >= 0 ? w : 0;
+  };
+  const bins = Array.from({ length: total }, (_, i) => ({ weight: safeInitial(i), picks: [] }));
   // LPT: heaviest first, each into the currently-lightest bin. Ties break on
   // the caller's sort position, and the lightest-bin scan takes the FIRST
   // minimum, so the partition is byte-identical across Windows/macOS/Linux —
@@ -878,7 +922,32 @@ function main() {
   if (usingShard) {
     emptyBeforeShard = selectedNames.length === 0;
     shardInput = [...selectedNames].sort();
-    selectedNames = selectShard(shardInput, parsed.shard, fileWeightOf());
+    // #4070: RUN_TESTS_SHARD_RESERVE gives one shard a virtual head start in
+    // LPT weight units (same units fileWeightOf() already produces — no ms
+    // conversion needed) BEFORE any file is placed, so the packer routes
+    // fewer files to a shard that test.yml already knows carries a fixed
+    // extra cost outside this script's model (the aux suites pinned to shard
+    // 1 only). Every shard job of a run must build the IDENTICAL
+    // initialWeights array — the partition is recomputed independently in
+    // each shard's own process, so a value that differed between them would
+    // silently desync which files land where (the same hazard the `sig`
+    // cross-job fingerprint below already guards for the file list itself).
+    // Malformed/absent/out-of-range input degrades to no reserve — advisory,
+    // never gating, matching every other knob this script reads from the
+    // environment.
+    let initialWeights;
+    const reserve = parseShardReserve(process.env.RUN_TESTS_SHARD_RESERVE);
+    if (reserve && reserve.index <= parsed.shard.total) {
+      initialWeights = Array.from({ length: parsed.shard.total }, () => 0);
+      initialWeights[reserve.index - 1] = reserve.weight;
+    } else if (process.env.RUN_TESTS_SHARD_RESERVE) {
+      console.error(
+        `run-tests: RUN_TESTS_SHARD_RESERVE="${process.env.RUN_TESTS_SHARD_RESERVE}" is not a `
+        + `valid "<index>:<weight>" reserve for --shard total ${parsed.shard.total} — ignoring `
+        + '(no reserve applied)',
+      );
+    }
+    selectedNames = selectShard(shardInput, parsed.shard, fileWeightOf(), initialWeights);
   }
 
   const selected = selectedNames.map(f => join(testDir, f));
@@ -1379,6 +1448,7 @@ module.exports = {
   ensureBuiltArtifacts,
   ensureBuiltHooks,
   parseShardArg,
+  parseShardReserve,
   selectShard,
   positiveNumberEnv,
   loadTestTimings,
