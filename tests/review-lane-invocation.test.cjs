@@ -26,6 +26,7 @@ const {
 } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
 const {
   resolveLanePlan,
+  resolveTimeoutMs,
   isEmptyReview,
   normalizeHost,
   fileRefPrompt,
@@ -180,6 +181,15 @@ describe('#3274 — timeoutConfigKey resolves the outer wall-clock cap', () => {
     const r = resolveLanePlan({ lane, configGet: () => 900, runDir: RUN, repoRoot: ROOT });
     assert.equal(r.ok, true);
     assert.equal(r.plan.timeoutMs, lane.timeoutFloorMs);
+  });
+
+  test('resolveTimeoutMs: direct unit — unset falls back to floorMs', () => {
+    assert.equal(resolveTimeoutMs(null, 5000, () => undefined), 5000);
+    assert.equal(resolveTimeoutMs('some.key', 5000, () => undefined), 5000);
+  });
+
+  test('resolveTimeoutMs: direct unit — configured value overrides, seconds -> ms', () => {
+    assert.equal(resolveTimeoutMs('some.key', 5000, (k) => (k === 'some.key' ? 30 : undefined)), 30000);
   });
 
   test('boundary: 0 vs 1 vs a fractional second (row 8)', () => {

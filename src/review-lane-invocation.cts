@@ -255,6 +255,28 @@ export function normalizeHost(raw: string): string {
 }
 
 /**
+ * Resolve a lane's outer wall-clock timeout in milliseconds (#3274).
+ *
+ * `timeoutConfigKey` resolves in SECONDS — the user-facing convention this repo already uses for
+ * timeout-shaped config keys (`workflow.cross_ai_timeout`, `graphify.build_timeout`), distinct from
+ * the internal millisecond unit `timeoutFloorMs` carries. Anything that is not a positive finite
+ * number is treated as unset and falls back to `floorMs`, never coerced: a wrong-typed config value
+ * silently becoming a wrong-but-plausible timeout is worse than falling back cleanly. `0` and
+ * negative values are deliberately treated as unset too — a timeout has no legitimate zero or
+ * negative value, so no second sentinel (unlike the prompt-budget keys, which use -1) is needed.
+ */
+export function resolveTimeoutMs(
+  timeoutConfigKey: string | null | undefined,
+  floorMs: number,
+  configGet: (key: string) => unknown,
+): number {
+  const configuredSeconds = typeof timeoutConfigKey === 'string' ? configGet(timeoutConfigKey) : undefined;
+  return typeof configuredSeconds === 'number' && Number.isFinite(configuredSeconds) && configuredSeconds > 0
+    ? configuredSeconds * 1000
+    : floorMs;
+}
+
+/**
  * Classify a lane's output as a review or as empty.
  *
  * WHITESPACE-ONLY COUNTS AS EMPTY, for every lane. The bash tested `[ ! -s file ]`, which counts
@@ -366,21 +388,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
     typeof lane.timeoutFloorMs === 'number' && Number.isFinite(lane.timeoutFloorMs) && lane.timeoutFloorMs > 0
       ? lane.timeoutFloorMs
       : 900_000;
-  // #3274: `timeoutConfigKey` resolves in SECONDS (the user-facing convention this repo already
-  // uses for timeout-shaped config keys — workflow.cross_ai_timeout, graphify.build_timeout — vs.
-  // the internal millisecond unit `timeoutFloorMs` carries). Anything that is not a positive finite
-  // number is treated as unset and falls back to `floorMs`, never coerced: a wrong-typed config
-  // value silently becoming a wrong-but-plausible timeout is worse than falling back cleanly. `0`
-  // and negative values are deliberately treated as unset too — a timeout has no legitimate zero or
-  // negative value, so no second sentinel (unlike the prompt-budget keys, which use -1) is needed.
-  const configuredTimeoutSeconds =
-    typeof lane.timeoutConfigKey === 'string' ? input.configGet(lane.timeoutConfigKey) : undefined;
-  const timeoutMs =
-    typeof configuredTimeoutSeconds === 'number' &&
-    Number.isFinite(configuredTimeoutSeconds) &&
-    configuredTimeoutSeconds > 0
-      ? configuredTimeoutSeconds * 1000
-      : floorMs;
+  const timeoutMs = resolveTimeoutMs(lane.timeoutConfigKey, floorMs, input.configGet);
   const emptyOutput: EmptyOutputPolicy = lane.emptyOutput === 'handler-owned' ? 'handler-owned' : 'stub-with-stderr';
   // #3194: only an EXACT 'diff-only' declaration exempts a lane from evidence verification.
   // Anything else — including a missing or garbage value on a third-party overlay body —

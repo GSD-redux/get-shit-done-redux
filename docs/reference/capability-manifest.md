@@ -232,7 +232,7 @@ The shape is **hybrid**:
 
 Current role counts across `capabilities/`: `feature` 20, `runtime` 19, `reviewer` 5.
 
-All 12 shipped lane declarations carry all 13 fields below.
+All 12 shipped lane declarations carry all 14 fields below.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -242,6 +242,7 @@ All 12 shipped lane declarations carry all 13 fields below.
 | `probe` | object | Availability check. `probe.kind` is a closed enum: `command-exists` \| `command-capability` \| `http-reachable`. `command-capability` additionally takes `binary`, `needle`, and a **required** `timeoutMs` — it exists because a bare binary name can be ambiguous (`kimi` is claimed by both the Kimi Code CLI and the legacy Python `kimi-cli`), and the timeout bound is mandatory because an unbounded `--help \| grep` probe is this repo's named Unbounded Subprocesses defect. |
 | `invoke` | object | Shape is selected by `transport`. For `spawn`: `binary`, `args[]`, `promptChannel` (`stdin` \| `argv` \| `argv-file-ref` \| `none`), `outputChannel` (`stdout` \| `file-arg`), `outputArg` (required when `outputChannel` is `file-arg`), `modelArg` (string or `null`), `effortChannel` (`none` \| `argv` \| `env`), `env` (optional; an object of environment name/value pairs, string values only, merged over the inherited environment for that one spawn — keys must match the portable environment-name grammar `[A-Za-z_][A-Za-z0-9_]*`, which is a portability policy rather than an OS limit, and `__proto__` is refused because it would be dropped before reaching the child). For `openai-http`: `hostConfigKey`, `defaultHost`, `path`, `modelDiscovery` (`none` \| `first-from-models-endpoint`), `fallbackModel`, `effortChannel`. `args` supports the `{{model}}`, `{{prompt}}`, `{{effort}}`, and `{{output}}` placeholders. **Every field in this object is disclosed at install and bound to the consent signature** — `env` and `defaultHost` by name in the consent prompt, the rest through a residual, so any change to a declared `invoke` field forces re-consent. `env` additionally **refuses execution-primitive names** — `PATH`, `NODE_OPTIONS`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `BASH_ENV`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `GIT_SSH_COMMAND`, `JAVA_TOOL_OPTIONS` and siblings, matched case-insensitively (Windows environment lookup is). A lane needing a specific executable declares an absolute `binary` rather than reshaping the child's `PATH`. That denylist is defence in depth and not the boundary: it cannot be complete against an arbitrary child, and disclosure runs before validation, so install-time consent — which shows every declared pair and warns on execution-primitive names — is what actually gates them. |
 | `timeoutFloorMs` | number | Measured per-lane floor. Lane divergence here is real and correct — the descriptor's job is to declare divergence in one place, not to promise uniformity. |
+| `timeoutConfigKey` | string or `null` | Federated config key holding this lane's outer timeout override, in SECONDS, e.g. `review.timeouts.antigravity`. Falls back to `timeoutFloorMs` when unset or invalid (#3274). |
 | `emptyOutput` | closed enum | `stub-with-stderr` \| `handler-owned`. |
 | `reviewsSection` | string | The `REVIEWS.md` heading this lane renders under. Must be unique across the merged roster. |
 | `evidenceClass` | closed enum | `source-grounded` \| `diff-only` (diff-only findings are down-weighted in consensus). |
@@ -282,6 +283,7 @@ An unknown field inside a `reviewer` body is a **non-fatal warning on stderr, ne
       "effortChannel": "none"
     },
     "timeoutFloorMs": 360000,
+    "timeoutConfigKey": "review.timeouts.coderabbit",
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "CodeRabbit",
     "evidenceClass": "diff-only",

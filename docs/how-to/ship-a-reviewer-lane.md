@@ -51,6 +51,7 @@ Most lanes are `transport: "spawn"` — GSD runs a binary and reads its output. 
       "effortChannel": "none"
     },
     "timeoutFloorMs": 900000,
+    "timeoutConfigKey": "review.timeouts.acme",
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Acme",
     "evidenceClass": "source-grounded",
@@ -65,6 +66,11 @@ Most lanes are `transport: "spawn"` — GSD runs a binary and reads its output. 
       "type": "string",
       "default": "",
       "description": "Model passed to the Acme reviewer lane."
+    },
+    "review.timeouts.acme": {
+      "type": "number",
+      "default": -1,
+      "description": "Outer wall-clock timeout override (seconds) for the Acme reviewer lane."
     }
   }
 }
@@ -107,6 +113,7 @@ If your reviewer is a served model endpoint rather than a CLI, use `transport: "
     "effortChannel": "none"
   },
   "timeoutFloorMs": 120000,
+  "timeoutConfigKey": "review.timeouts.acme_local",
   "emptyOutput": "stub-with-stderr",
   "reviewsSection": "Acme Local",
   "evidenceClass": "source-grounded",
@@ -127,7 +134,7 @@ If your reviewer is a served model endpoint rather than a CLI, use `transport: "
 
 Declare the lane's keys in your own manifest `config` block, never in the central schema. A key present in both is a build failure, not a warning — federated ownership is exclusive.
 
-Name `modelConfigKey` and `promptBudgetKey` to match keys you actually declare. A lane pointing at a key nobody owns resolves to nothing, which reads to the user as "my model override is being ignored."
+Name `modelConfigKey`, `promptBudgetKey`, and `timeoutConfigKey` to match keys you actually declare. A lane pointing at a key nobody owns resolves to nothing, which reads to the user as "my model override is being ignored."
 
 Users then set them the ordinary way, in `.planning/config.json`:
 
