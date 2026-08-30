@@ -30,6 +30,7 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 120000,
+    "timeoutConfigKey": "review.timeouts.lm_studio",
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "LM Studio",
     "evidenceClass": "source-grounded",
@@ -53,6 +54,11 @@
       "type": "number",
       "default": -1,
       "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    },
+    "review.timeouts.lm_studio": {
+      "type": "number",
+      "default": -1,
+      "description": "Outer wall-clock timeout override (seconds) for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
     }
   }
 }

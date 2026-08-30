@@ -817,9 +817,13 @@ export function antigravityPrompt(promptPath: string, repoRoot: string): string 
  *    lane that fails to start is worse than one that runs on the prompt anchor alone.
  * 2. The self-report prompt variant above, swapped in for the standard file-ref text.
  *
- * Both are argv shape, so they belong here rather than in the descriptor: expressing "add this flag
- * only if the binary's --help mentions it" as data would need a conditional, which is precisely
- * what the named-handler seam exists to absorb (ADR-2782 D6).
+ * Both are argv shape, so they belong here rather than in the descriptor: expressing "add this
+ * flag only if the binary's --help mentions it" as data would need a conditional, which is
+ * precisely what the named-handler seam exists to absorb (ADR-2782 D6). The native
+ * `--print-timeout` VALUE (#3274) is NOT this handler's job — `resolveLanePlan`
+ * (review-lane-invocation.cts) resolves the `{{nativeTimeout}}` ARGV_PLACEHOLDER itself, exactly
+ * like `{{model}}`/`{{effort}}`/`{{output}}`/`{{prompt}}`, so `plan.argv` arrives here already fully
+ * resolved.
  */
 export function antigravityArgv(
   argv: readonly string[],

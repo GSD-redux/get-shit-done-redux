@@ -31,6 +31,7 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 360000,
+    "timeoutConfigKey": null,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "CodeRabbit",
     "evidenceClass": "diff-only",

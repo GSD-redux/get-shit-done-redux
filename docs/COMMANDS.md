@@ -1811,6 +1811,8 @@ Reviewers reached through `--all` or `review.default_reviewers` behave different
 
 Its frontmatter records the model each reviewer resolved to, as `models:` (the model id, or `unknown`, with a `(reasoning=<level>)` suffix when GSD applied a reasoning effort to that lane) and `model_sources:` (how each value was determined — `pinned`, `served`, `requested`, `banner`, `transcript`, or `unknown`). See [Resolved model recording](CONFIGURATION.md#resolved-model-recording-2295).
 
+**Plan coverage manifest (#3301):** the assembled prompt tells every prompt-fed reviewer exactly which plan ids exist in this review and the total count, and asks for one heading-verbatim section per id before any cross-plan or overall-risk content — so a review that silently stops partway through a multi-plan phase is no longer indistinguishable from one that covered every plan. A mechanical check grades each reviewer's output against that same id list and records an optional `plan_coverage:` frontmatter block, present only when a reviewer's output does not mention every id (diagnostic only — it never blocks the run). CodeRabbit is not graded — it is a diff-only reviewer that never receives the prompt carrying the manifest.
+
 ```bash
 # set project default reviewers for no-flag /gsd-review runs
 gsd config-set review.default_reviewers '["gemini","codex"]'

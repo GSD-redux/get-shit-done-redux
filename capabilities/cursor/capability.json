@@ -141,6 +141,7 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 900000,
+    "timeoutConfigKey": null,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Cursor",
     "evidenceClass": "source-grounded",
