@@ -273,9 +273,17 @@ that this state is strictly NARROWER than the one it replaces: the outside-in re
 previously unsatisfiable and admitted nothing at all, correctly or otherwise, so anchoring it on
 the declared test file admits legitimate outside-in RED while bounding what else it lets through.
 
-What the target-test residual admits and what it does not: it proves that a test whose id `id_matches` the declared
-`target_test` was selected, executed and reported as failing, at the declared phase, with the
-declared class, at the declared location. It does not prove that the assertion which failed is the
+What the target-test residual admits and what it does not: it proves that the trailer's
+self-reported `actual` triple and `location` agree with the plan's declaration and with each
+other — the declared phase, the declared class, a subject whose id `id_matches` the declared
+`target_test`, and an observed location equal to the declared one. It does NOT independently
+prove that the target test was collected or executed: with `selected_count` and `target_executed`
+removed (SIMP-01), no conjunct establishes execution, so a trailer whose target never ran but
+whose remaining fields agree is indistinguishable from one whose target ran and failed. That
+boundary is accepted deliberately — both removed fields were executor-authored inside the same
+self-reported record, so neither was independent evidence — and it is pinned by the
+`target-not-executed-fields-agree` evidence vector rather than left to drift.
+It does not prove that the assertion which failed is the
 one the plan's `<behavior>` describes, because the predicate never consumes `<behavior>` and the
 `actual` triple is the finest granularity this vector has. The admitted case is narrower than
 before: an unrelated assertion earlier in the body of the declared test, failing at the same
