@@ -1296,30 +1296,20 @@ ${Array(redContractCount).fill(block).join('\n')}
       id: 'zero-tests-selected',
       outcome_row: 'Zero tests selected',
       verdict: 'block',
-      why: "isolates arm 2's outside-in mode conjunct. pytest reports `not found:` against the "
-        + 'requested node id, so arm 2\'s `id_matches` holds; the declaration is not an '
-        + 'outside-in one, so the mode conjunct alone stops the arm. Delete it and a run that '
-        + 'selected NO tests authorizes GREEN.',
+      why: 'isolates `actual.phase == expected.phase`. The planner declared a call-phase failure '
+        + 'of the target behavior; the run never got that far and reported at collection '
+        + 'instead. The class is held equal deliberately — the same isolation device '
+        + '`collect-parse-error` uses in the mirror direction — so the phase comparison alone '
+        + 'decides it. This reaches the same conjunct `fixture-crash` reaches, from a second '
+        + 'reporter scenario: zero-test discovery, not a setup crash. That is not duplication; '
+        + 'the requirement is that the outcome be decided, not that it be decided by a conjunct '
+        + 'nothing else uses.',
       vector: vector({
-        plan: {
-          expected_failure: {
-            phase: 'collection',
-            class_or_mode: 'UsageError',
-            subject: 'tests/test_pricing.py::test_discount_reduces_total',
-          },
-        },
         trailer: {
           exit_status: 4,
-          selected_count: 0,
-          target_executed: false,
-          expected: {
-            phase: 'collection',
-            class_or_mode: 'UsageError',
-            subject: 'tests/test_pricing.py::test_discount_reduces_total',
-          },
           actual: {
             phase: 'collection',
-            class_or_mode: 'UsageError',
+            class_or_mode: 'AssertionError',
             subject: 'tests/test_pricing.py::test_discount_reduces_total',
           },
         },

@@ -321,7 +321,7 @@ Each row is a consequence of the predicate, and each names the field that decide
 
 | Outcome | Decided by | Verdict |
 |---|---|---|
-| Zero tests selected | the target-test arm's `selected_count` is 0, and `plan.expected_failure` is not an outside-in missing-target mode | block |
+| Zero tests selected | `actual.phase` differs from `expected.phase` — the run reported at collection, not at the declared call-phase failure | block |
 | Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target, unless the declaration names that class itself, in which case the classes agree, this row does not hold, and the outside-in row below decides — and the target-test arm's `selected_count` is 0 | block |
 | Fixture or setup crashed before the target assertion | `actual.phase` differs from `expected.phase` | block |
 | A different test failed | neither arm holds — `actual.subject` does not `id_matches` `plan.target_test` | block |
