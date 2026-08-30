@@ -54,6 +54,7 @@ const DOCS_GUARD_EXEMPT_BASELINE = [
   'emitted-attribution.test.cjs',
   'eslint-rules.test.cjs',
   'estimate-calibrate.test.cjs',
+  'executor-mvp-tdd-section.test.cjs',
   'gen-context-index.test.cjs',
   'gen-registry.test.cjs',
   'gsd-agent-isolation-guard.test.cjs',
@@ -152,6 +153,10 @@ const DOCS_GUARD_EXEMPT_DOCS_PATHS = {
     'docs/adr', 'docs/adr/2629-phase-effort-estimation-calibration.md', 'docs/reference',
     'docs/reference/planning-artifacts.md',
   ],
+  // #3770: the G6 doc-only-exemption scenario writes `<files>docs/notes.md</files>`
+  // into a scratch repo's task.md to prove a doc-only task never reaches the
+  // RED-evidence gate; the path is a fixture string, never a real docs/ file.
+  'executor-mvp-tdd-section.test.cjs': ['docs/notes.md'],
   'gen-context-index.test.cjs': ['docs/CONTEXT-INDEX.json', 'docs/INVENTORY-MANIFEST.json'],
   'gen-registry.test.cjs': ['docs/registries', 'docs/registries/reviewers.json'],
   'gsd-agent-isolation-guard.test.cjs': ['docs/adr/1239-...md', 'docs/adr/1239-gsd-embeddable-orchestration-engine.md'],

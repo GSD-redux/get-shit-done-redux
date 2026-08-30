@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/notes.md' is a synthetic fixture path written into a scratch repo's task.md for the G6 doc-only-exemption scenario, never a real repo doc read from disk.
 /**
  * gsd-executor agent — MVP+TDD gate section contract
  * Verifies the agent definition contains a section instructing the executor
