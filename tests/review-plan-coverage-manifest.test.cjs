@@ -86,7 +86,7 @@ function extractCoverageCheckBlock() {
   const stepIdx = content.indexOf('<step name="write_reviews">');
   assert.notEqual(stepIdx, -1, 'write_reviews step must exist');
   const fromStep = content.slice(stepIdx);
-  const anchorIdx = fromStep.indexOf('.plans-manifest.md');
+  const anchorIdx = fromStep.indexOf('MANIFEST="$RUN_DIR/.plans-manifest.md"');
   assert.notEqual(
     anchorIdx,
     -1,
