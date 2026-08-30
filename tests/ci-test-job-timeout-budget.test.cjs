@@ -55,11 +55,25 @@ const HEADROOM_FACTOR = 1.5;
 const LANE_COSTS = [
   {
     job: 'test',
-    measuredMinutes: 8,
+    // #4070: the `run 30677442953 — 7m12s` figure this entry carried before
+    // was stale — it predated the aux-suite growth this entry now tracks, and
+    // being stale meant this gate never caught the drift it exists to catch.
+    // Real measured cost from issue #4070's cited evidence (independently
+    // re-verified against the workflow's current step order): shard 1/3 hit
+    // 13m48s on run 33278340189 (successful) and was CANCELLED at ~14m51s (99%
+    // of the 15-minute cap) on run 33285384930. 14 minutes is the honest
+    // figure — rounded up from the higher, cancelled-run observation, since a
+    // cancelled run's own timestamp is still real elapsed time even though the
+    // job never finished.
+    measuredMinutes: 14,
     // Sharded three ways as of #2952, so this is ONE shard's cost, not the
-    // whole unit suite. Run 30677442953: shard 1/3 7m12s, 2/3 4m32s, 3/3 3m59s.
-    // Shard 1 is the long pole because the unsharded aux suites ride on it.
-    // Before sharding the same lane cost 15m20s and blew a 15-minute cap.
+    // whole unit suite. Shard 1 is the long pole because the unsharded aux
+    // suites (integration/security/install/slow) ride on it — #4070 fixed the
+    // LPT unit-test packer to reserve shard 1's aux-suite cost
+    // (RUN_TESTS_SHARD_RESERVE, see .github/workflows/test.yml and
+    // tests/ci-full-lane-sharding.test.cjs) so shard 1 gets a smaller
+    // unit-test share than shards 2/3. Before sharding the same lane cost
+    // 15m20s and blew a 15-minute cap (#2952).
     //
     // This one `timeout-minutes` also covers the `scope: windows` matrix
     // entries — GitHub applies a single job-level budget across every matrix
@@ -67,12 +81,11 @@ const LANE_COSTS = [
     // (#3057), but no post-sharding per-shard measurement exists yet: its only
     // recorded cost is the PRE-sharding whole-suite run that hit 15m05s and was
     // CANCELLED on PR #3094. Each of its three shards should now cost roughly a
-    // third of that (~5m), which is already comfortably under the 8m/12m this
-    // entry requires — so no separate LANE_COSTS entry is added on a number
-    // that has not actually been measured. Replace this estimate with a real
-    // measured shard cost once one exists, the same discipline every other
-    // entry here follows.
-    evidence: 'run 30677442953 — 7m12s slowest shard',
+    // third of that (~5m), comfortably under what this entry requires — so no
+    // separate LANE_COSTS entry is added on a number that has not actually
+    // been measured. Replace this estimate with a real measured shard cost
+    // once one exists, the same discipline every other entry here follows.
+    evidence: 'run 33278340189 — 13m48s completed; run 33285384930 — CANCELLED at ~14m51s (#4070)',
   },
   {
     job: 'test-full',
@@ -229,7 +242,7 @@ test('mutation.yml mutate job timeout budgets (#4036)', async (t) => {
 
 test('near-cap check CI_JOB_TIMEOUT_MINUTES literals match each job\'s own timeout-minutes (#4036)', async (t) => {
   const staticLanes = [
-    { workflowFile: 'test.yml', jobKey: 'test', envLiteral: '15' },
+    { workflowFile: 'test.yml', jobKey: 'test', envLiteral: '21' },
     { workflowFile: 'test.yml', jobKey: 'test-full', envLiteral: '45' },
     { workflowFile: 'install-smoke.yml', jobKey: 'smoke', envLiteral: '12' },
   ];
