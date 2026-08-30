@@ -201,7 +201,14 @@ if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
     BASE_BRANCH=$(gsd_run query git.base-branch 2>/dev/null || echo "")
     RED_RANGE="HEAD"
-    if [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "$BASE_BRANCH" >/dev/null 2>&1; then
+    # Prefer the remote-tracking ref. `git.base-branch` returns a LOCAL branch
+    # name, and a local base that has fallen behind its remote WIDENS this
+    # range — the opposite of what the bound below exists to do. Measured on
+    # this repo: local `next` 96 commits behind `origin/next` turned a
+    # 56-commit range into 152, re-admitting older history as RED evidence.
+    if [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
+      RED_RANGE="origin/${BASE_BRANCH}..HEAD"
+    elif [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "${BASE_BRANCH}" >/dev/null 2>&1; then
       RED_RANGE="${BASE_BRANCH}..HEAD"
     fi
 TAB=$(printf '\t')
