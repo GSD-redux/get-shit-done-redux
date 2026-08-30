@@ -215,8 +215,8 @@ issue:
 
 **Question:** Do two same-wave plans depend on each other through shared mutable state or
 execution order without declaring it? Dimension 3 checks *declared* edges and the wave guard
-checks `files_modified`/`files_deleted` overlap (#3003); neither sees an undeclared edge,
-which under parallel execution becomes an intermittent failure nobody can attribute.
+checks `files_modified`/`files_deleted` overlap (#3003); neither sees an undeclared edge, which under parallel
+execution becomes an intermittent failure nobody can attribute.
 
 **Scope: PLAN pairs, not tasks.** Tasks inside one plan run sequentially and cannot race.
 Compare same-wave plan pairs over the union of their tasks' `<files>` and `<action>`.
