@@ -1687,19 +1687,48 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         // not silent about where the work is landing (#3207 AC3).
         const verify = execGit(['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd });
         if (verify.exitCode !== 0) {
-          // Branch does not exist — CREATE AND SWITCH (the #1278 first-commit
-          // case). checkout -b cannot resurrect anything: the branch was just
-          // verified absent, so it is created fresh at HEAD.
-          const create = execGit(['checkout', '-b', branchName], { cwd });
-          if (create.exitCode === 0) {
+          // #4055: "does not currently exist" is NOT the same as "never
+          // existed" — a phase/milestone branch that was merged and then
+          // deleted also fails this verify, but checkout -b would silently
+          // RESURRECT it: a fresh branch of the same name, created at HEAD,
+          // that looks identical to the #1278 first-commit case but is
+          // actually a stale name being reused. Distinguish the two by asking
+          // whether HEAD's own ancestry already contains a merge commit for
+          // this branch name — that only happens if the branch existed and
+          // was merged. `--merges` limits the search to actual merge commits
+          // (a squash commit has one parent and never matches, but so does a
+          // never-created branch, so this errs toward the #1278 create path
+          // when it can't tell); `--fixed-strings` keeps branch names with
+          // `.` or other regex metacharacters (e.g. decimal phase slugs) from
+          // being misread as patterns.
+          const resurrection = execGit(
+            ['log', '--merges', '--fixed-strings', `--grep=${branchName}`, '--oneline', '-1'],
+            { cwd }
+          );
+          if (resurrection.exitCode === 0 && resurrection.stdout.trim() !== '') {
+            // Branch was merged into this history and deleted — do NOT
+            // resurrect it. Commit in place, surfaced non-silently like the
+            // other two cases (#4055 AC3).
             process.stderr.write(
-              `${branchingStrategy} branch "${branchName}" created; switched to it for this commit.\n`
+              `Warning: resolved ${branchingStrategy} branch "${branchName}" was previously merged and deleted; ` +
+              `not recreating it — committing on the current branch "${currentBranch.stdout.trim()}" instead.\n`
             );
           } else {
-            process.stderr.write(
-              `Warning: could not create ${branchingStrategy} branch "${branchName}" ` +
-              `(${create.stderr.trim()}); committing on the current branch "${currentBranch.stdout.trim()}".\n`
-            );
+            // Branch never existed — CREATE AND SWITCH (the #1278 first-commit
+            // case). checkout -b cannot resurrect anything here: the branch
+            // was verified absent AND no merge record for it exists, so it is
+            // created fresh at HEAD.
+            const create = execGit(['checkout', '-b', branchName], { cwd });
+            if (create.exitCode === 0) {
+              process.stderr.write(
+                `${branchingStrategy} branch "${branchName}" created; switched to it for this commit.\n`
+              );
+            } else {
+              process.stderr.write(
+                `Warning: could not create ${branchingStrategy} branch "${branchName}" ` +
+                `(${create.stderr.trim()}); committing on the current branch "${currentBranch.stdout.trim()}".\n`
+              );
+            }
           }
         } else {
           // Branch already exists — do NOT switch, commit on current branch.
