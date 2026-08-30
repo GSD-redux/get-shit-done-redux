@@ -532,7 +532,7 @@ exit "$STATUS"
 
 Every search matches the commit **subject**, never the message body: a commit that quotes a `test(...)` subject in its body would otherwise match, and since git logs newest-first the decoy would be selected over the real RED commit.
 
-The two RED failures are distinct. No commit whose subject matches `test({phase}-{plan}):` is `missing_red_commit` — there is nothing to read. A matching commit whose `red-evidence:` trailer value comes back empty is a missing RED gate — the commit exists but was made without evidence. Judging the trailer's contents against the RED Predicate is not yet mechanised — the coded gate is Phase 3's; until then the executor reads the trailer and reports it. The predicate is in **RED Contract** above.
+The two RED failures are distinct. No commit whose subject matches `test({phase}-{plan}):` is `missing_red_commit` — there is nothing to read. A matching commit whose `red-evidence:` trailer value comes back empty is a missing RED gate — the commit exists but was made without evidence. Judging the trailer's contents against the RED Predicate **is** mechanised: the gate passes the trailer to `gsd_run query task.red-evidence-verdict` and proceeds only on verdict `authorize`. Any other verdict — `red_commit_not_failing`, `unexpected_pass` — trips the gate under the verdict's own name. Existence of a subject-matching commit authorizes nothing on its own. The predicate is in **RED Contract** above.
 
 If RED or GREEN gate commits are missing, add a `## TDD Gate Compliance` section to SUMMARY.md with the violation details.
 </gate_enforcement>
