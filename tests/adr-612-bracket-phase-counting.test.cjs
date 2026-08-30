@@ -1,5 +1,14 @@
 'use strict';
 
+// docs-guard-exempt: this file performs no filesystem read of any docs/ path.
+// Its only docs/ occurrence is the ADR-612 Decision 1 citation inside a line
+// comment further down; every read call here targets a tmpdir .planning
+// fixture. It trips Detector 3 because an odd prose backtick in the comment
+// block above that citation opens a span the template-literal heuristic reads
+// as a literal containing the citation. Registering it in the docs-guard lane
+// would run this suite on docs/ changes whose content it never reads, so the
+// marker is the correct side of that trade per this lint's own guidance.
+
 /**
  * PR-2 (#2761 / epic #612) — total_phases counts bracket phase headings.
  *
