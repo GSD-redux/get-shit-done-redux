@@ -1026,10 +1026,32 @@ function unsummarizedPlansForPositionPhase(
  *   carrying drifted prose. If a resolvable window legitimately excludes the
  *   phase Current Position names, the match below simply misses and the check
  *   abstains — the safe direction.
+ *
+ *   One shape that argument does not cover, named so it is not mistaken for a
+ *   hole (#3862 round 3): a phase directory a SHIPPED milestone left behind,
+ *   whose bare number the current milestone reuses, when the current phase's
+ *   own directory does not exist yet. `matchPhaseDirs` then returns that one
+ *   stale directory and this lookup reads a prior milestone's plan set.
+ *   `milestone complete` archives phase directories by default, but
+ *   `--no-archive-phases` and an unreadable window both leave them in place,
+ *   so the state is reachable. What holds even there is narrower than a
+ *   parity guarantee, and stated at its real width: `phase-plan-index` lists
+ *   the phases directory raw and `find-phase` also walks archived milestones,
+ *   so the three share only `matchPhaseDirs`, not a listing. Under plain
+ *   numeric roadmap ids the window admits a directory by its phase number
+ *   (`getMilestonePhaseFilter`; hyphenated ids narrow that), so a reused
+ *   bare number is carried by every listing and the shared matcher picks
+ *   the same stale directory in all three. The refusal then reports the drift
+ *   the repo's own readers would report for that phase token; it is not this
+ *   check disagreeing with `phase-plan-index`. It writes nothing, names that
+ *   directory's counts, and dissolves once the stale directory is archived.
+ *   Pinned in tests/state.test.cjs ("a stale prior-milestone directory that
+ *   is the sole bare-number match").
  * - Phase SELECTION goes through `normalizePhaseName` + `matchPhaseDirs`, the
  *   canonical two-pass matcher (#2528) `cmdPhasePlanIndex` uses. That is what
  *   keeps the read-only plan-index verb and this writing verb from disagreeing
- *   about which directory a phase names, and it inherits the #2237 fail-loud
+ *   about which of the listed directories a phase names (the listings differ:
+ *   see the collision note above), and it inherits the #2237 fail-loud
  *   rule for a bare number matching several directories.
  * - Plan COUNTING goes through `scanPhasePlans` (#3199), which owns the
  *   canonical-plan-file predicate and the #2349 superseded-plan exclusion. A

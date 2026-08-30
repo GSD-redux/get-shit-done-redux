@@ -2559,6 +2559,105 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
   });
 
+  // #3862 round 3 (Minor): the fail-safe argument in resolvePlanSetForPhase's
+  // docblock — an unscoped listing can only cause a MISS — has one shape it did
+  // not name: a phase directory a SHIPPED milestone left behind, whose bare
+  // number the current milestone reuses, when the current phase's own directory
+  // does not exist yet. `matchPhaseDirs` then returns that one stale directory
+  // and the cross-check reads a prior milestone's plan set as ground truth.
+  //
+  // Reachable, and constructed here rather than argued away: `milestone complete`
+  // archives phase directories by default, but `--no-archive-phases` and an
+  // unreadable milestone window both leave them in place. What these pin is
+  // that the check does not DISAGREE with the repo's own readers about which
+  // directory that is. Not because they share a listing — phase-plan-index
+  // reads the phases directory raw, find-phase also walks archived milestones —
+  // but because under this ROADMAP's plain numeric ids the milestone window
+  // admits a directory by its phase number, so every listing carries the reused
+  // number and the shared matchPhaseDirs picks the same stale directory in all
+  // three. (Hyphenated ids narrow the window — getMilestonePhaseFilter — and are
+  // not what this fixture claims.) The refusal reports the drift those readers would
+  // report; it is non-mutating, and it dissolves the moment the stale directory
+  // is archived.
+  describe('a stale prior-milestone directory that is the sole bare-number match', () => {
+    const ROADMAP = [
+      '# Roadmap',
+      '',
+      '<details>',
+      '<summary>v1.0 — Old Milestone (Shipped)</summary>',
+      '',
+      '## Roadmap v1.0: Old Milestone',
+      '### Phase 1: Old Foundation',
+      '### Phase 2: Old API',
+      '### Phase 3: Old Deploy',
+      '',
+      '</details>',
+      '',
+      '## Roadmap v2.0: New Milestone',
+      '### Phase 1: New Foundation',
+      '### Phase 2: New API',
+      '### Phase 3: Payments',
+      '',
+    ].join('\n');
+    const stateAtPhase3 = (planLine) => [
+      '---',
+      'milestone: v2.0',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 03 (Payments) — EXECUTING',
+      planLine,
+      'Status: Ready to execute',
+      '',
+    ].join('\n');
+    // v1.0's phase 3, never archived. v2.0's phase 3 has no directory yet.
+    const seedStale = () => {
+      const dir = path.join(tmpDir, '.planning', 'phases', '03-old-deploy');
+      fs.mkdirSync(dir, { recursive: true });
+      for (let i = 1; i <= 5; i++) {
+        fs.writeFileSync(path.join(dir, `03-0${i}-PLAN.md`), '---\nstatus: complete\n---\n# Plan\n');
+        fs.writeFileSync(path.join(dir, `03-0${i}-SUMMARY.md`), '---\nstatus: complete\n---\n# Summary\n');
+      }
+      return dir;
+    };
+    const seedProject = (planLine) => {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), ROADMAP);
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateAtPhase3(planLine));
+    };
+
+    test('the cross-check and the read-only verbs select the SAME directory — the refusal is not a disagreement', () => {
+      seedStale();
+      seedProject('Plan: 1 of 3');
+      const before = stateText();
+
+      const advance = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      const index = JSON.parse(runGsdTools('query phase-plan-index 3', tmpDir).output);
+      const found = JSON.parse(runGsdTools('find-phase 3', tmpDir).output);
+
+      assert.strictEqual(advance.reason, 'position_diverged');
+      assert.strictEqual(advance.disk.plan_count, 5, 'the stale directory is what the cross-check read');
+      assert.strictEqual(index.plans.length, 5, 'phase-plan-index reads the same stale directory');
+      assert.match(found.directory, /03-old-deploy$/, 'find-phase selects it too, ahead of any archived milestone');
+      assert.strictEqual(found.plan_count_all, 5);
+      assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+    });
+
+    test('archiving the stale directory the way milestone-complete does dissolves the match — the verb abstains and advances', () => {
+      const stale = seedStale();
+      seedProject('Plan: 1 of 3');
+      const archive = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases');
+      fs.mkdirSync(archive, { recursive: true });
+      fs.renameSync(stale, path.join(archive, '03-old-deploy'));
+
+      const output = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+      assert.strictEqual(output.advanced, true, `no directory matches phase 03 now, so the check abstains; got ${JSON.stringify(output)}`);
+      assert.strictEqual(output.current_plan, 2);
+    });
+  });
+
   test('a non-canonically-named plan-shaped file does not inflate the count', () => {
     // scanPhasePlans's own planFiles carry isRootPlanFile's loose /PLAN/i
     // fallback; phase-plan-index intersects with the strict predicate (#2893).
