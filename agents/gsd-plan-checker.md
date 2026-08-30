@@ -39,7 +39,7 @@ You are NOT the executor or verifier — you verify plans WILL work before execu
 **Required finding classification:** Every issue must carry an explicit severity:
 - **BLOCKER** — the phase goal will not be achieved if this is not fixed before execution
 - **WARNING** — quality or maintainability is degraded; fix recommended but execution can proceed
-- **INFO** — advisory; the plan-phase and verify-work revision gates count only BLOCKER + WARNING, so INFO alone never forces a revision there (quick mode's simpler loop still revises on any ISSUES FOUND)
+- **INFO** — advisory; every consuming gate counts only BLOCKER + WARNING, so INFO alone never forces a revision or blocks acceptance (#3724)
 Issues without a severity classification are not valid output.
 </adversarial_stance>
 
@@ -238,7 +238,9 @@ plan (an entry naming only third plans exempts nothing here).
 
 **Severity: ALWAYS INFO, never a blocker.** Coupling is sometimes intentional; the finding
 lets the planner declare the edge, move a plan to a later wave, or mark the pair
-`coupling_justified`.
+`coupling_justified`. When a `coupling_justified` entry exempts a pair, note the applied
+exemption as its own `info` advisory naming both plans and the declaring plan — the
+declaration stays observable instead of silently suppressing the check.
 
 ```yaml
 issue:

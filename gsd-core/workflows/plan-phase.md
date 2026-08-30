@@ -1167,7 +1167,7 @@ Track `stall_reentry_count` (starts at 0; incremented each time "Adjust approach
 
 Parse issue count from checker return: count BLOCKER + WARNING entries in the YAML issues block (structured output from gsd-plan-checker); an entry whose severity is missing or unrecognized counts as a BLOCKER (fail closed). If the checker's return contains no YAML issues block (i.e., the plan was approved with no issues), treat `issue_count` as 0 and skip the stall check — the plan passed. Proceed to step 13 — likewise when every entry in the block is explicitly INFO (display them as advisories). Advisory format: `ℹ advisory — {dimension}: {description}` per INFO entry, listed once before the step-13 output.
 
-Display: `Revision iteration {N}/3 -- {blocker_count} blockers, {warning_count} warnings`
+Display (only when entering the revision loop — skip if the paragraph above already proceeded to step 13): `Revision iteration {N}/3 -- {blocker_count} blockers, {warning_count} warnings`
 
 **Stall detection:** If `issue_count >= prev_issue_count`:
   Display: `Revision loop stalled — issue count not decreasing ({issue_count} issues remain after {N} iterations)`
