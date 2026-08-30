@@ -22,7 +22,6 @@ import { safeJsonParse } from './security.cjs';
 
 interface RedContractPlan {
   target_test: string;
-  implementation_target: string;
   expected_failure: {
     phase: string;
     class_or_mode: string;
@@ -134,7 +133,6 @@ function extractPlan(block: string): RedContractPlan {
   const failureBlock = failureMatch ? failureMatch[1] : '';
   return {
     target_test: extractTag(block, 'target_test'),
-    implementation_target: extractTag(block, 'implementation_target'),
     expected_failure: {
       phase: extractTag(failureBlock, 'phase'),
       class_or_mode: extractTag(failureBlock, 'class_or_mode'),
@@ -260,7 +258,9 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
   const expected = trailer['expected'];
   const actual = trailer['actual'];
 
-  const sharedChecks: Array<[string, boolean]> = [
+  const actualSubject = isPlainObject(actual) ? actual['subject'] : undefined;
+
+  const checks: Array<[string, boolean]> = [
     ['trailer.expected == plan.expected_failure', sameTriple(expected, plan.expected_failure)],
     ['actual.phase == expected.phase',
       isPlainObject(actual) && isPlainObject(expected) && actual['phase'] === expected['phase']],
@@ -269,38 +269,21 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
         && actual['class_or_mode'] === expected['class_or_mode']],
     ['trailer.target_test == plan.target_test', trailer['target_test'] === plan.target_test],
     ['location.observed == location.declared', locationsAgree(declaredPoint, observedPoint)],
-  ];
-  const sharedFailed = sharedChecks.filter(([, ok]) => !ok).map(([name]) => name);
-  const sharedHolds = sharedFailed.length === 0;
-
-  const actualSubject = isPlainObject(actual) ? actual['subject'] : undefined;
-
-  const arm1Checks: Array<[string, boolean]> = [
     ['id_matches(actual.subject, plan.target_test)', idMatches(actualSubject, plan.target_test)],
   ];
-  const arm1Failed = arm1Checks.filter(([, ok]) => !ok).map(([name]) => name);
-  const arm1Holds = arm1Failed.length === 0;
+  const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
 
-  const arm2Checks: Array<[string, boolean]> = [
-    ['id_matches(actual.subject, plan.target_test)', idMatches(actualSubject, plan.target_test)],
-    ['plan.expected_failure is an outside-in missing-target mode',
-      plan.expected_failure.subject === plan.implementation_target],
-  ];
-  const arm2Failed = arm2Checks.filter(([, ok]) => !ok).map(([name]) => name);
-  const arm2Holds = arm2Failed.length === 0;
-
-  if (sharedHolds && (arm1Holds || arm2Holds)) {
+  if (failed.length === 0) {
     return {
       verdict: 'authorize',
-      reason: 'every shared conjunct holds and at least one arm holds',
+      reason: 'every conjunct of the RED Predicate holds',
     };
   }
 
   return {
     verdict: 'red_commit_not_failing',
-    reason: `the RED Predicate does not hold; failed conjuncts: `
-      + `${[...sharedFailed, ...arm1Failed, ...arm2Failed].join(' | ')}`,
-    failed: [...sharedFailed, ...arm1Failed, ...arm2Failed],
+    reason: `the RED Predicate does not hold; failed conjuncts: ${failed.join(' | ')}`,
+    failed,
   };
 }
 

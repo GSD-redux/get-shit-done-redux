@@ -462,43 +462,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     );
   });
 
-  test('the outside-in missing-target mode is defined by a declared-field equality', () => {
-    const declaration = sliceH3(CONTRACT, 'Declaration');
-    const opener = '| `expected_failure.subject` |';
-    const rows = declaration.split('\n').filter((line) => line.trim().startsWith(opener));
-    assert.strictEqual(rows.length, 1,
-      `### Declaration must carry exactly one "${opener}" field row to define the mode in`);
-    const row = rows[0];
-
-    assert.ok(row.includes('is an outside-in missing-target mode'),
-      'the subject row must name the mode with the predicate\'s own spelling. The second arm ' +
-      'reads `plan.expected_failure is an outside-in missing-target mode`; a definition that ' +
-      'spells it differently is not lexically bound to the conjunct it defines. See #3770.');
-    assert.match(row, /`expected_failure\.subject`[^|]*equals[^|]*`implementation_target`/,
-      'the mode must be defined as an equality between two declared fields — ' +
-      '`expected_failure.subject` equal to `implementation_target`. Phase 3 has to mechanize ' +
-      'the second arm from the declaration alone; a descriptive gloss is not decidable. ' +
-      'See #3770.');
-    assert.ok(row.includes('never routes on the observed'),
-      'the row must keep the true half of the routing claim: the predicate never routes on ' +
-      'the OBSERVED subject. See #3770.');
-    assert.ok(!row.includes('and never routes on it'),
-      'the row still claims the predicate never routes on `expected_failure.subject`. That ' +
-      'is false and it is what left the second arm unmechanizable: the declared equality is ' +
-      'the only decidable meaning the arm has. See #3770.');
-
-    for (const [where, text] of [
-      ['### Declaration', declaration],
-      ['the ### RED Predicate block', soleFencedBlock(CONTRACT, 'RED Predicate')],
-      ['### Outcomes', sliceH3(CONTRACT, 'Outcomes')],
-    ]) {
-      assert.ok(text.includes('outside-in missing-target mode'),
-        `${where} must spell the mode "outside-in missing-target mode". The predicate, its ` +
-        'definition and its outcome row have to name one thing one way, or the existing ' +
-        'outside-in assertion pins a spelling the rest of the file does not use. See #3770.');
-    }
-  });
-
   test('### Evidence names exactly the six trailer fields', () => {
     const line = trailerLine();
     const parsed = JSON.parse(line.slice(line.indexOf(':') + 1));
@@ -618,15 +581,15 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         section: 'RED Predicate',
         needle: 'no condition proving the target test exists',
         verdict: null,
-        why: 'the arm-2 scoping rationale must name the compensating condition, which lives in '
-          + 'execute-mvp-tdd.md, or the coded gate gets built with a real hole in it',
+        why: 'the outside-in-residual scoping rationale must name the compensating condition, '
+          + 'which lives in execute-mvp-tdd.md, or the coded gate gets built with a real hole in it',
       },
       {
         section: 'RED Predicate',
         needle: 'does not prove the missing entity is the declared `implementation_target`',
         verdict: null,
-        why: 'arm 2 proves the failure belongs to the declared TEST FILE, not that it concerns '
-          + 'the declared implementation target — an unrelated missing dependency in that same '
+        why: 'the outside-in residual proves the failure belongs to the declared TEST FILE, not '
+          + 'that it concerns the declared implementation target — an unrelated missing dependency in that same '
           + 'file, at the same declared phase and class, satisfies every conjunct. Deleting the '
           + 'note would leave the contract silently claiming a guarantee it does not provide, '
           + 'and Phase 3 would build a coded gate from that claim',
@@ -649,7 +612,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         needle: 'Recorded for audit only: the predicate reads no field of it',
         verdict: null,
         why: '`implementation_target` has no predicate role; a reader who believes the predicate '
-          + 'compares it will re-derive the unsatisfiable arm 2 this plan removed',
+          + 'compares it will re-derive the unsatisfiable outside-in conjunct this plan removed',
       },
       {
         section: 'Declaration',
@@ -665,26 +628,19 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
           + 'will print',
         verdict: null,
         why: 'with the observed subject always the test file, the declared equality is the ONLY '
-          + 'thing left that selects arm 2, and it selects from declared fields alone before any '
-          + 'run',
+          + 'thing left that selects the outside-in residual, and it selects from declared '
+          + 'fields alone before any run',
       },
-      {
-        section: 'Evidence',
-        needle: '`id_matches` relates the observed subject to `plan.target_test` in both arms',
-        verdict: null,
-        why: 'the sentence said the relation applies to the target-test arm only, which becomes '
-          + 'false the moment arm 2 uses it; a stale scoping sentence is how a reader concludes '
-          + 'the two arms compare different things',
-      },
-      // The three residual-family rows. Each guards text that NOTHING COMPUTES:
+      // The two residual-family rows. Each guards text that NOTHING COMPUTES:
       // row existence and row verdict are both computed by the Outcomes
       // agreement test above, which is why the seven pinned Outcomes rows were
-      // dropped rather than extended. These three are prose and a clause.
+      // dropped rather than extended. These two are prose and a clause.
       {
         section: 'RED Predicate',
-        needle: 'What arm 1 proves and what it does not',
+        needle: 'What the target-test residual admits and what it does not',
         verdict: null,
-        why: 'arm 2 has carried a named residual since 02-04 and arm 1 has not, yet arm 1 admits '
+        why: 'the outside-in residual has carried a named residual since 02-04 and the '
+          + 'target-test residual has not, yet the target-test residual admits '
           + 'the same class of unrelated failure: the predicate never consumes the plan\'s '
           + '<behavior>, so an unrelated assertion failing first in the declared test, at the '
           + 'declared phase with the declared class, produces a vector identical to the genuine '
@@ -756,16 +712,13 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
   // `authorize` — which is the defect, stated as the defect. See #3770.
 
   /**
-   * The `### RED Predicate` fence, split into its shared conjuncts and its two
-   * arms BY POSITION — the group opener, the `OR`, the closer — which is the
-   * reading rule the section itself ships two lines above the fence: `AND`
-   * binds tighter than `OR`, so the parenthesised group is exactly two arms.
-   * Indentation is never consulted; it is presentation, and position is the
-   * grammar.
+   * The `### RED Predicate` fence, split into its atoms BY LINE — one atom per
+   * line, in the order the fence declares them, with the `valid_red =` header
+   * consumed and the leading `AND ` stripped from every atom but the first.
    *
-   * Every structural expectation THROWS with the observed count rather than
-   * degrading to a permissive parse. A reader that silently treated every atom
-   * as shared, or every atom as arm 1, would compute a verdict for every vector
+   * Every structural expectation THROWS with the observed content rather than
+   * degrading to a permissive parse. A reader that silently accepted a
+   * disjunction, or dropped an atom, would compute a verdict for every vector
    * below and agree with the table by accident — a green suite proving nothing.
    * See #3770 (T-02-06-01).
    */
@@ -776,34 +729,15 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     assert.strictEqual(lines[0], 'valid_red =',
       `the RED Predicate block must open with its \`valid_red =\` header. Observed: `
       + `"${lines[0]}". Without the assignment the block is an expression fragment, and every `
-      + 'arm below is read from an offset that has shifted by one. See #3770.');
+      + 'atom below is read from an offset that has shifted by one. See #3770.');
 
-    const indicesWhere = (match) => lines
-      .map((line, i) => (match(line) ? i : -1)).filter((i) => i !== -1);
-    const openers = indicesWhere((line) => line.endsWith('('));
-    const disjunctions = indicesWhere((line) => line === 'OR');
-    const closers = indicesWhere((line) => line === ')');
-
-    assert.strictEqual(openers.length, 1,
-      `the predicate must open exactly one parenthesised group; found ${openers.length}. `
-      + 'The two-arm reading this evaluator implements is not defined for any other shape, so '
-      + 'it refuses to guess rather than falling back to a permissive parse. See #3770.');
-    assert.strictEqual(disjunctions.length, 1,
-      `the parenthesised group must carry exactly one \`OR\`; found ${disjunctions.length}. `
-      + 'See #3770.');
-    assert.strictEqual(closers.length, 1,
-      `the parenthesised group must be closed exactly once; found ${closers.length}. `
-      + 'See #3770.');
-    assert.ok(openers[0] < disjunctions[0] && disjunctions[0] < closers[0],
-      `the group must open (line ${openers[0] + 1}), disjoin (line ${disjunctions[0] + 1}) and `
-      + `close (line ${closers[0] + 1}) in that order. See #3770.`);
+    assert.ok(lines.every((line) => !line.endsWith('(') && line !== 'OR' && line !== ')'),
+      'the RED Predicate must be a single conjunction: no line may open a parenthesised group, '
+      + 'carry a bare `OR`, or close a group. Reintroducing a disjunction here is the SIMP-02 '
+      + 'regression. See #3770.');
 
     const atom = (line) => line.replace(/^AND /, '');
-    return {
-      shared: lines.slice(1, openers[0]).map(atom),
-      arm1: lines.slice(openers[0] + 1, disjunctions[0]).map(atom),
-      arm2: lines.slice(disjunctions[0] + 1, closers[0]).map(atom),
-    };
+    return lines.slice(1).map(atom);
   }
 
   /** `id_matches`, exactly as the `### Evidence` blockquote at tdd.md:187-190 defines it. */
@@ -846,10 +780,9 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
 
   /**
    * One evaluator per DISTINCT atom, keyed by the atom's text exactly as the
-   * fence carries it with a leading `AND ` stripped. EIGHT keys for thirteen
-   * statement lines: `valid_red =`, `AND (`, `OR` and `)` are structure, and
-   * `id_matches(actual.subject, plan.target_test)` occupies one line in each
-   * arm as a single atom.
+   * fence carries it with a leading `AND ` stripped. SEVEN keys for eight
+   * statement lines: `valid_red =` is the header, and each of the seven
+   * atoms below it occupies exactly one line.
    *
    * A key that no longer appears in the fence, or a fence atom with no key
    * here, is caught by the set equality in its OWN test below. Separating that
@@ -874,8 +807,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       (v) => sameLocation(v.trailer.location.observed, v.trailer.location.declared)],
     ['id_matches(actual.subject, plan.target_test)',
       (v) => idMatches(v.trailer.actual.subject, v.plan.target_test)],
-    ['plan.expected_failure is an outside-in missing-target mode',
-      (v) => v.plan.expected_failure.subject === v.plan.implementation_target],
   ]);
 
   /**
@@ -890,8 +821,8 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
    * equality above it is the readable report that names both halves of the
    * drift. See #3770 (T-02-06-02).
    */
-  function evaluateFence(parsed, vector) {
-    const truths = (atoms) => atoms.map((text) => {
+  function evaluateFence(atoms, vector) {
+    const truths = atoms.map((text) => {
       const evaluator = PREDICATE_ATOMS.get(text);
       if (!evaluator) {
         throw new Error(
@@ -901,13 +832,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       }
       return [text, evaluator(vector)];
     });
-    const shared = truths(parsed.shared);
-    const arm1 = truths(parsed.arm1);
-    const arm2 = truths(parsed.arm2);
-    const holds = (pairs) => pairs.every(([, ok]) => ok);
+    const holds = truths.every(([, ok]) => ok);
     return {
-      verdict: holds(shared) && (holds(arm1) || holds(arm2)) ? 'authorize' : 'block',
-      failed: [...shared, ...arm1, ...arm2].filter(([, ok]) => !ok).map(([text]) => text),
+      verdict: holds ? 'authorize' : 'block',
+      failed: truths.filter(([, ok]) => !ok).map(([text]) => text),
     };
   }
 
@@ -1295,10 +1223,10 @@ ${Array(redContractCount).fill(block).join('\n')}
       id: 'different-test-failed',
       outcome_row: 'A different test failed',
       verdict: 'block',
-      why: "isolates the target-test arm's `id_matches` anchor. Two tests ran, the declared "
+      why: "isolates the `id_matches` anchor. Two tests ran, the declared "
         + 'target among them and passing, and a DIFFERENT test failed at the declared phase '
         + "with the declared class. This IS #3770's original defect: without the anchor the "
-        + 'arm reduces to selection plus execution, which this run satisfies.',
+        + 'predicate reduces to selection plus execution, which this run satisfies.',
       vector: vector({
         trailer: {
           actual: {
@@ -1313,9 +1241,9 @@ ${Array(redContractCount).fill(block).join('\n')}
       id: 'outside-in-wrong-file',
       outcome_row: null,
       verdict: 'block',
-      why: "isolates arm 2's `id_matches` anchor. A legitimate outside-in declaration, but the "
+      why: "isolates the outside-in `id_matches` anchor. A legitimate outside-in declaration, but the "
         + 'collection failure was reported against a DIFFERENT test file. Delete the anchor and '
-        + 'arm 2 reduces to the declared mode alone — a declaration, not evidence, authorizing '
+        + 'the predicate reduces to the declared mode alone — a declaration, not evidence, authorizing '
         + 'itself.',
       vector: vector({
         plan: {
@@ -1355,10 +1283,10 @@ ${Array(redContractCount).fill(block).join('\n')}
       id: 'outside-in',
       outcome_row: 'Outside-in: the declared implementation target is missing',
       verdict: 'authorize',
-      why: 'the legitimate outside-in RED. It reports 0 selected and false executed BY '
-        + 'CONSTRUCTION, which is why those two conjuncts are scoped to arm 1: hoisted above '
-        + 'the group they block exactly the case arm 2 exists to admit, and this vector is what '
-        + 'turns that hoist red.',
+      why: 'the legitimate outside-in RED: the collection failure is reported against the '
+        + 'declared test FILE itself, so `id_matches(actual.subject, plan.target_test)` holds '
+        + 'even though no test inside that file ever ran, and this vector is what proves the '
+        + 'predicate must admit it.',
       vector: OUTSIDE_IN,
     },
     {
@@ -1409,10 +1337,9 @@ ${Array(redContractCount).fill(block).join('\n')}
       verdict: 'authorize',
       why: 'a second legitimate outside-in RED, reached in an ecosystem with no collection '
         + 'phase at all: a compiled-language link failure (REGR-04), exactly as in `outside-in` '
-        + 'but for a phase and class distinct from its Python ones. The location conjunct sits '
-        + 'ABOVE the disjunction without acquiring arm 1\'s own conditions when the outside-in '
-        + 'arm is the one that holds, so the shared row cannot be an artifact of one ecosystem\'s '
-        + 'vocabulary.',
+        + 'but for a phase and class distinct from its Python ones. The `location` conjunct '
+        + 'holds here without depending on any Python-specific vocabulary, so it cannot be an '
+        + 'artifact of one ecosystem\'s phase/class naming.',
       vector: vector({
         plan: {
           target_test: 'oi.cpp',
@@ -1516,7 +1443,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     // here AND flips its named case in the next test, because neither can
     // mask the other. See #3770.
     assert.deepStrictEqual(
-      [...new Set([...parsed.shared, ...parsed.arm1, ...parsed.arm2])].sort(),
+      [...new Set(parsed)].sort(),
       [...PREDICATE_ATOMS.keys()].sort(),
       'the RED Predicate fence carries an atom this evaluator cannot evaluate, or this '
       + 'evaluator carries a key the fence no longer contains. Either is a semantic change to '
@@ -1527,47 +1454,10 @@ ${Array(redContractCount).fill(block).join('\n')}
 
     // The set equality above passes when a conjunct is deleted from BOTH the
     // fence and this map. The hardcoded count is what does not.
-    assert.strictEqual(PREDICATE_ATOMS.size, 8,
-      `the predicate must compose exactly eight distinct atoms; this map carries `
+    assert.strictEqual(PREDICATE_ATOMS.size, 7,
+      `the predicate must compose exactly seven distinct atoms; this map carries `
       + `${PREDICATE_ATOMS.size}. Deleting a conjunct from the fence AND its evaluator here `
       + 'satisfies the set equality above and would otherwise pass unnoticed. See #3770.');
-  });
-
-  test('the five shared conjuncts are evaluated above the arms, not inside one', () => {
-    // RETAINED-UNSUBSUMED. This is the one surviving fragment of the 02-05
-    // shared-conjunct test, kept on evidence and not on argument: with it
-    // removed, all four "move a shared conjunct inside the parenthesised group"
-    // mutations left the suite GREEN, while every other assertion that test
-    // carried — presence, and a conjunct commented back out with a leading
-    // `# ` — was killed by the atom-set equality or by a named case flip.
-    //
-    // A move preserves the atom SET, so the equality above cannot see it, and
-    // no evidence vector can either: catching it needs a run that takes ARM 2
-    // while violating a shared conjunct, and the shared conjuncts are what make
-    // such a run impossible to construct honestly. The partition is therefore
-    // asserted directly. A shared conjunct inside arm 1 stops guarding arm 2 —
-    // an outside-in RED would no longer have its trailer pinned to the plan at
-    // all. The indentation assertion that sat beside this one is NOT retained:
-    // the reader splits by position, so depth is presentation now, and no
-    // semantic mutation kills it. See #3770.
-    const parsed = parsePredicateFence();
-    for (const conjunct of [
-      'trailer.expected == plan.expected_failure',
-      'actual.phase == expected.phase',
-      'actual.class_or_mode == expected.class_or_mode',
-      'trailer.target_test == plan.target_test',
-      'location.observed == location.declared',
-    ]) {
-      assert.ok(parsed.shared.includes(conjunct),
-        `the shared conjunct \`${conjunct}\` is not evaluated above the parenthesised group. `
-        + `The predicate's shared conjuncts are [${parsed.shared.join(', ')}]. All five are `
-        + 'unconditional: two pin the trailer\'s `expected` and `target_test` echoes to the plan '
-        + 'declaration, one binds the observed failure site to the declared one, and the '
-        + 'remaining two only carry meaning once that pinning holds. Pushed into an arm, a '
-        + 'shared conjunct stops guarding the arm it is not in — scoped into arm 1, '
-        + '`location.observed == location.declared` would stop guarding arm 2 and reopen the '
-        + 'unrelated-missing-dependency residual (D-11). See #3770.');
-    }
   });
 
   test('the shipped predicate computes the verdict each evidence vector must receive', () => {
@@ -1593,11 +1483,9 @@ ${Array(redContractCount).fill(block).join('\n')}
 
     assert.deepStrictEqual(failed, ['id_matches(actual.subject, plan.target_test)'],
       'the predicate is a single conjunction: `id_matches` must appear at most once in any '
-      + 'failure report. Today it is evaluated once per arm, so a vector whose only failing '
-      + 'conjunct is `id_matches` reports it twice, alongside a third atom from the arm that '
-      + 'was never going to hold — an exact-equality assertion is what catches the duplicate '
-      + 'and the spurious third entry; a length or `includes` check would not. See #3770 '
-      + '(SIMP-02).');
+      + 'failure report, never once per disjunction branch — an exact-equality assertion is '
+      + 'what catches a duplicated or spurious extra entry; a length or `includes` check would '
+      + 'not. See #3770 (SIMP-02).');
   });
 
   test('every Outcomes row verdict agrees with what the shipped predicate computes', () => {
@@ -1628,17 +1516,11 @@ ${Array(redContractCount).fill(block).join('\n')}
     const zeroTestsSelected = EVIDENCE_VECTORS.find((c) => c.id === 'zero-tests-selected');
     const { failed } = evaluateFence(parsed, zeroTestsSelected.vector);
 
-    assert.ok(failed.includes('actual.phase == expected.phase'),
+    assert.deepStrictEqual(failed, ['actual.phase == expected.phase'],
       'an honest zero-test run reports a `collection`-phase failure against a `call`-phase '
-      + 'declaration; the phase conjunct must be the one that blocks it, or removing the '
-      + 'selection counters in a later task would silently drop this requirement. See #3770 '
-      + '(REGR-02).');
-    assert.ok(!failed.includes('selected_count > 0'),
-      '`selected_count > 0` must NOT be why this vector blocks — the case is re-expressed onto '
-      + 'the phase discrimination precisely so the counter is no longer load-bearing. See #3770 '
-      + '(REGR-02).');
-    assert.ok(!failed.includes('target_executed'),
-      '`target_executed` must NOT be why this vector blocks, for the same reason. See #3770 '
+      + 'declaration; the phase conjunct must be the ONLY one that blocks it. Exact equality, '
+      + 'not membership: with no selection-counter conjuncts left in the flat fence, a second '
+      + 'failing conjunct here would satisfy an `includes` check but not this one. See #3770 '
       + '(REGR-02).');
 
     const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
@@ -1665,11 +1547,11 @@ ${Array(redContractCount).fill(block).join('\n')}
 
     for (const [residual, twin, label] of [
       [UNRELATED_ASSERTION_IN_TARGET_TEST, GENUINE,
-        "arm 1's residual: an unrelated assertion in the target test"],
+        "the target-test residual: an unrelated assertion in the target test"],
       [UNRELATED_MISSING_DEP_IN_TARGET_FILE, OUTSIDE_IN,
-        "arm 2's residual: an unrelated missing dependency in the target test file"],
+        "the outside-in residual: an unrelated missing dependency in the target test file"],
       [UNRELATED_FIXTURE_CRASH, FIXTURE_IS_THE_BEHAVIOR,
-        "arm 1's residual at the fixture phase: an unrelated fixture crash"],
+        "the target-test residual at the fixture phase: an unrelated fixture crash"],
     ]) {
       assert.notDeepStrictEqual(residual, twin, `${label}. ${shadows}`);
       assert.deepStrictEqual(differingTopLevelKeys(residual, twin), ['location'],
@@ -1941,9 +1823,9 @@ ${Array(redContractCount).fill(block).join('\n')}
 
       assert.ok(!prose.includes('strictly stronger'),
         'the prose must not claim that omitting the `subject` comparison is strictly stronger. '
-        + 'It is false in a reachable configuration: arm 1 never requires '
-        + '`expected.subject == plan.target_test`, so an outside-in declaration judged by arm 1 '
-        + 'is authorized with `actual.subject != expected.subject`. See 02-VERIFICATION.md '
+        + 'It is false in a reachable configuration: the predicate never requires '
+        + '`expected.subject == plan.target_test`, so an outside-in declaration can be '
+        + 'authorized with `actual.subject != expected.subject`. See 02-VERIFICATION.md '
         + 'Warning 5(a) and #3770.');
     },
   );

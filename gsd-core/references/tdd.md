@@ -154,7 +154,7 @@ run, and the RED commit records what was actually observed.
 | `implementation_target` | The production module or symbol GREEN will create or change. Always present, so an outside-in failure that never reaches the test body is still bound to a declared production intent. Recorded for audit only: the predicate reads no field of it. |
 | `expected_failure.phase` | The runner-native lifecycle phase the failure occurs in. **Open vocabulary, not an enum.** pytest's `collection`/`setup`/`call`/`teardown` are one runner's examples; a compiled language has no collection phase at all and declares `build`. The contract compares declared against observed and never validates the value against a list. |
 | `expected_failure.class_or_mode` | The runner-native exception class or failure mode. Never a message substring. For a compiler, the diagnostic's own class, not its wording. |
-| `expected_failure.subject` | What the failure is reported against: normally `target_test`; for an outside-in missing target, `implementation_target`. A declaration whose `expected_failure.subject` equals its `implementation_target` is an outside-in missing-target mode; that equality is the definition the predicate's second arm tests, and there is no separate mode flag and no mode taxonomy. The predicate compares the observed subject against the plan's declared values and never routes on the observed `actual.subject` — an echo may not choose the arm that judges it. For an outside-in declaration the declared subject is a mode marker naming production intent, not a prediction of what the runner will print: the runner reports an outside-in miss against the test file, and the predicate's second arm compares the observed subject against `plan.target_test`. |
+| `expected_failure.subject` | What the failure is reported against: normally `target_test`; for an outside-in missing target, `implementation_target`. A declaration whose `expected_failure.subject` equals its `implementation_target` is an outside-in missing-target mode; there is no separate mode flag and no mode taxonomy. The predicate compares the observed subject against the plan's declared values and never routes on the observed `actual.subject` — an echo may not choose the predicate that judges it. For an outside-in declaration the declared subject is a mode marker naming production intent, not a prediction of what the runner will print: the runner reports an outside-in miss against the test file. |
 
 `<red_contract>` is a **sibling** of `<behavior>`, never an attribute on it.
 
@@ -180,9 +180,6 @@ red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_to
 > `declared` followed **immediately** by a runner-native variant delimiter opening a parametrization
 > case — pytest's `[`, as in `[100-10-90]`. A bare prefix with no delimiter is not a match, so
 > `test_discount` never matches `test_discount_v2`.
-
-`id_matches` relates the observed subject to `plan.target_test` in both arms; the arms differ in
-whether the target test was executed, not in what the observed subject is compared against.
 
 > `locationsAgree(declared, observed)` compares `declared.file` and `observed.file` by basename
 > only, never by full path, and compares `declared.line` and `observed.line` by strict equality;
@@ -225,9 +222,8 @@ below.
 
 ### RED Predicate
 
-`plan.target_test`, `plan.implementation_target` and `plan.expected_failure` are the
+`plan.target_test` and `plan.expected_failure` are the
 **plan-declared** values from `<red_contract>`; every other symbol is a field of the trailer.
-`AND` binds tighter than `OR`, so the parenthesised group is exactly two arms.
 
 ```text
 valid_red =
@@ -237,12 +233,7 @@ valid_red =
   AND actual.class_or_mode == expected.class_or_mode
   AND trailer.target_test == plan.target_test
   AND location.observed == location.declared
-  AND (
-    id_matches(actual.subject, plan.target_test)
-    OR
-    id_matches(actual.subject, plan.target_test)
-    AND plan.expected_failure is an outside-in missing-target mode
-  )
+  AND id_matches(actual.subject, plan.target_test)
 ```
 
 This file is the block's only source. Reproduce it character-for-character wherever it is quoted:
@@ -258,8 +249,8 @@ leaving the `actual`-versus-`expected` comparisons above them as a self-comparis
 against its own echo.
 
 **Two refinements**, neither narrowing the shape: `actual == expected` is written out as its two
-field comparisons, omitting `subject` because the arms bind `actual.subject` to plan-declared
-values instead; and the target arm's `actual.subject == plan.target_test` becomes
+field comparisons, omitting `subject` because the predicate binds `actual.subject` to plan-declared
+values instead; and `actual.subject == plan.target_test` becomes
 `id_matches(...)`.
 
 The predicate applies no condition proving the target test exists; **Executor Gate
@@ -268,7 +259,7 @@ it fires for every `type: tdd` plan. `gsd-core/references/execute-mvp-tdd.md` re
 condition, but only under MVP+TDD, so it is not the live path on a project that sets `tdd_mode`
 alone. The predicate itself cannot tell whether the target test was ever written.
 
-What arm 2 proves and what it does not: it proves the run failed, at the declared phase, with the
+What the outside-in residual admits and what it does not: it proves the run failed, at the declared phase, with the
 declared class, reported against the declared test file, at the declared location, from a
 declaration that pre-committed to outside-in mode. It does not prove the missing entity is the declared `implementation_target`
 — that identity appears only in the diagnostic message, and this contract keeps identity out of
@@ -278,11 +269,11 @@ and line — a same-basename, same-line collision the `location` conjunct alone 
 from the plan's own declared failure site. Two controls compensate: **Executor Gate Validation**
 requires the RED commit to touch a test file, and `implementation_target` stays declared, so a
 human or a later coded gate can compare it against the recorded `command` and the message. Note
-that this state is strictly NARROWER than the one it replaces: arm 2 was previously unsatisfiable
-and admitted nothing at all, correctly or otherwise, so anchoring it on the declared test file
-admits legitimate outside-in RED while bounding what else it lets through.
+that this state is strictly NARROWER than the one it replaces: the outside-in residual was
+previously unsatisfiable and admitted nothing at all, correctly or otherwise, so anchoring it on
+the declared test file admits legitimate outside-in RED while bounding what else it lets through.
 
-What arm 1 proves and what it does not: it proves that a test whose id `id_matches` the declared
+What the target-test residual admits and what it does not: it proves that a test whose id `id_matches` the declared
 `target_test` was selected, executed and reported as failing, at the declared phase, with the
 declared class, at the declared location. It does not prove that the assertion which failed is the
 one the plan's `<behavior>` describes, because the predicate never consumes `<behavior>` and the
@@ -293,7 +284,8 @@ phase, an unrelated fixture crash at that same declared file and line, which the
 conjunct alone does not distinguish from the fixture the plan declared as the behavior under test.
 The same two controls compensate: **Executor Gate Validation** requires the RED commit to touch a
 test file, and `implementation_target` stays declared for a human or a later coded gate to compare
-against. These residuals remain admitted, narrower than before, on the same terms as arm 2's: they
+against. These residuals remain admitted, narrower than before, on the same terms as the outside-in
+residual's: they
 are one root cause with three surfaces, bound by the same declared-versus-observed collision the
 `location` conjunct checks for.
 
@@ -310,12 +302,12 @@ Each row is a consequence of the predicate, and each names the field that decide
 | Zero tests selected | `actual.phase` differs from `expected.phase` — the run reported at collection, not at the declared call-phase failure | block |
 | Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target, unless the declaration names that class itself, in which case the classes agree, this row does not hold, and the outside-in row below decides | block |
 | Fixture or setup crashed before the target assertion | `actual.phase` differs from `expected.phase` | block |
-| A different test failed | neither arm holds — `actual.subject` does not `id_matches` `plan.target_test` | block |
-| Genuine target-behavior failure | the shared comparisons hold and the target-test arm holds | authorize |
+| A different test failed | `id_matches(actual.subject, plan.target_test)` does not hold | block |
+| Genuine target-behavior failure | every conjunct holds | authorize |
 | Unrelated assertion in the target test | `location.observed` differs from `location.declared` — a different assertion failing first at the same phase and class reports a different declared-versus-observed file or line | block |
-| Outside-in: the declared implementation target is missing | the shared comparisons hold and the outside-in arm holds — `actual.subject` `id_matches` `plan.target_test` and `plan.expected_failure` is an outside-in missing-target mode | authorize |
-| Unrelated missing dependency in the target test file | `location.observed` differs from `location.declared` — the arm anchors on the declared test FILE, and the location conjunct anchors further, on the declared line within it | block |
-| Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and the target-test arm holds | authorize |
+| Outside-in: the declared implementation target is missing | every conjunct holds — `id_matches(actual.subject, plan.target_test)` and `plan.expected_failure` is an outside-in missing-target mode | authorize |
+| Unrelated missing dependency in the target test file | `location.observed` differs from `location.declared` — `id_matches` anchors on the declared test FILE, and the location conjunct anchors further, on the declared line within it | block |
+| Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and every conjunct holds | authorize |
 | Unrelated fixture crash at the declared fixture phase | `location.observed` differs from `location.declared` — a fixture crash elsewhere in the target's dependency chain reports a different file or line than the one declared | block |
 | Unexpected pass | `exit_status` is 0 | halt |
 </red_contract_spec>
