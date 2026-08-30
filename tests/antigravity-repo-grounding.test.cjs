@@ -40,7 +40,7 @@ const helpSaying = (text) => ({ spawn: () => ({ status: 0, stdout: text, stderr:
 describe('#2176 — agy receives the repo under review', () => {
   test('--add-dir is passed with the repo root when the binary supports it', () => {
     const p = planFor('antigravity');
-    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, helpSaying('--add-dir  --model'));
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, 600_000, helpSaying('--add-dir  --model'));
     const i = argv.indexOf('--add-dir');
     assert.ok(i !== -1, '--add-dir must be passed when supported');
     assert.equal(argv[i + 1], ROOT);
@@ -50,14 +50,14 @@ describe('#2176 — agy receives the repo under review', () => {
     // An older agy rejects an unknown flag outright. A lane that fails to start is worse than one
     // running on the prompt anchor alone, so support is probed rather than presumed.
     const p = planFor('antigravity');
-    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, helpSaying('no such flag here'));
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, 600_000, helpSaying('no such flag here'));
     assert.ok(!argv.includes('--add-dir'));
   });
 
   test('the probe is bounded', () => {
     const p = planFor('antigravity');
     const calls = [];
-    antigravityArgv(p.argv, p.promptPath, ROOT, {
+    antigravityArgv(p.argv, p.promptPath, ROOT, 600_000, {
       spawn: (b, a, o) => { calls.push(o); return { status: 0, stdout: '', stderr: '' }; },
     });
     assert.ok(calls.every((c) => c.timeoutMs > 0), 'every process-starting probe must be bounded');
@@ -65,14 +65,14 @@ describe('#2176 — agy receives the repo under review', () => {
 
   test('adding --add-dir keeps the prompt last', () => {
     const p = planFor('antigravity');
-    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, helpSaying('--add-dir'));
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, 600_000, helpSaying('--add-dir'));
     assert.equal(argv[argv.length - 2], '-p');
     assert.ok(argv[argv.length - 1].includes(RUN));
   });
 
   test('a probe that throws degrades to no flag rather than failing the lane', () => {
     const p = planFor('antigravity');
-    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, {
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, 600_000, {
       spawn: () => { throw new Error('spawn failed'); },
     });
     assert.ok(!argv.includes('--add-dir'));
@@ -95,7 +95,7 @@ describe('#2176 — the prompt is anchored and demands a self-report', () => {
 
   test('the self-report variant actually reaches argv', () => {
     const p = planFor('antigravity');
-    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, helpSaying(''));
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, 600_000, helpSaying(''));
     assert.ok(argv[argv.length - 1].includes('REVIEWED-WITHOUT-REPO-ACCESS'));
   });
 
@@ -136,5 +136,38 @@ describe('#2176 — blind-review marking', () => {
 
   test('an empty review is left alone', () => {
     assert.equal(stampBlindReview(''), '');
+  });
+});
+
+describe('#3274 — the native --print-timeout flag derives from the resolved outer timeout', () => {
+  test('an unconfigured (default) timeout produces the original 540s native flag (row 9, regression)', () => {
+    const p = planFor('antigravity');
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, p.timeoutMs, helpSaying(''));
+    assert.ok(argv.includes('540s'), `expected 540s in ${JSON.stringify(argv)}`);
+    assert.ok(!argv.some((a) => a === '{{nativeTimeout}}'), 'the marker token must never reach real argv');
+  });
+
+  test('a 900000ms outer timeout derives an 840s native flag (row 10)', () => {
+    const p = planFor('antigravity');
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, 900_000, helpSaying(''));
+    assert.ok(argv.includes('840s'), `expected 840s in ${JSON.stringify(argv)}`);
+  });
+
+  test('a native timeout below the 60s buffer clamps to 1s, never 0 or negative (row 11)', () => {
+    const p = planFor('antigravity');
+    const argv = antigravityArgv(p.argv, p.promptPath, ROOT, 30_000, helpSaying(''));
+    assert.ok(argv.includes('1s'), `expected clamped 1s in ${JSON.stringify(argv)}`);
+  });
+
+  test('boundary around the 60-second native buffer (row 12)', () => {
+    const p = planFor('antigravity');
+    // 59s outer: floor(59)-60 = -1 -> clamped to 1s
+    assert.ok(antigravityArgv(p.argv, p.promptPath, ROOT, 59_000, helpSaying('')).includes('1s'));
+    // 60s outer: floor(60)-60 = 0 -> clamped to 1s
+    assert.ok(antigravityArgv(p.argv, p.promptPath, ROOT, 60_000, helpSaying('')).includes('1s'));
+    // 61s outer: floor(61)-60 = 1 -> 1s (not clamped, real arithmetic)
+    assert.ok(antigravityArgv(p.argv, p.promptPath, ROOT, 61_000, helpSaying('')).includes('1s'));
+    // 121s outer: floor(121)-60 = 61 -> 61s
+    assert.ok(antigravityArgv(p.argv, p.promptPath, ROOT, 121_000, helpSaying('')).includes('61s'));
   });
 });

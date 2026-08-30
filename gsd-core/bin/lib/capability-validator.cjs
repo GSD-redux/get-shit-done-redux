@@ -1824,6 +1824,9 @@ const KNOWN_REVIEWER_FIELDS = new Set([
   // missed a configured model and silently disabled the pinned-model escape hatch
   // #2073 added. A convention one shipped lane already violates is not a contract.
   'modelConfigKey',
+  // `timeoutConfigKey` added by #3274, same optional/backward-compatible shape as
+  // `modelConfigKey` above: a manifest authored before this field existed must keep validating.
+  'timeoutConfigKey',
   'handler',
 ]);
 
@@ -2368,6 +2371,17 @@ function validateReviewerBodyFields(cap) {
     errors.push(
       ctx + ' reviewer.modelConfigKey must be a dotted config key or null ' +
       '(got: ' + describeValue(r.modelConfigKey) + ')',
+    );
+  }
+
+  // OPTIONAL, mirroring modelConfigKey's D4 forward/backward-compat treatment (#3274): a manifest
+  // authored before this field existed must keep validating. Absent/null means "no override for
+  // this lane, use timeoutFloorMs". An empty string is neither absent nor a key, and is rejected.
+  if (r.timeoutConfigKey !== undefined && r.timeoutConfigKey !== null &&
+      (typeof r.timeoutConfigKey !== 'string' || r.timeoutConfigKey.length === 0)) {
+    errors.push(
+      ctx + ' reviewer.timeoutConfigKey must be a dotted config key or null ' +
+      '(got: ' + describeValue(r.timeoutConfigKey) + ')',
     );
   }
 

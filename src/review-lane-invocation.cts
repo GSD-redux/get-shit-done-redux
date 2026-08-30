@@ -362,10 +362,25 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
   }
 
   const { promptPath, reviewPath, errPath } = artifactPaths(input.runDir, slug);
-  const timeoutMs =
+  const floorMs =
     typeof lane.timeoutFloorMs === 'number' && Number.isFinite(lane.timeoutFloorMs) && lane.timeoutFloorMs > 0
       ? lane.timeoutFloorMs
       : 900_000;
+  // #3274: `timeoutConfigKey` resolves in SECONDS (the user-facing convention this repo already
+  // uses for timeout-shaped config keys — workflow.cross_ai_timeout, graphify.build_timeout — vs.
+  // the internal millisecond unit `timeoutFloorMs` carries). Anything that is not a positive finite
+  // number is treated as unset and falls back to `floorMs`, never coerced: a wrong-typed config
+  // value silently becoming a wrong-but-plausible timeout is worse than falling back cleanly. `0`
+  // and negative values are deliberately treated as unset too — a timeout has no legitimate zero or
+  // negative value, so no second sentinel (unlike the prompt-budget keys, which use -1) is needed.
+  const configuredTimeoutSeconds =
+    typeof lane.timeoutConfigKey === 'string' ? input.configGet(lane.timeoutConfigKey) : undefined;
+  const timeoutMs =
+    typeof configuredTimeoutSeconds === 'number' &&
+    Number.isFinite(configuredTimeoutSeconds) &&
+    configuredTimeoutSeconds > 0
+      ? configuredTimeoutSeconds * 1000
+      : floorMs;
   const emptyOutput: EmptyOutputPolicy = lane.emptyOutput === 'handler-owned' ? 'handler-owned' : 'stub-with-stderr';
   // #3194: only an EXACT 'diff-only' declaration exempts a lane from evidence verification.
   // Anything else — including a missing or garbage value on a third-party overlay body —
