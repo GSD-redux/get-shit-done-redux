@@ -763,16 +763,10 @@ After SUMMARY.md, update STATE.md using `gsd-tools query` state handlers (named 
 
 ```bash
 # Advance the plan counter, then READ the answer: the steps below assume it moved.
-# advance-plan REFUSES to advance when `## Current Position` disagrees with the
-# plans on disk, and reports that on stdout at exit 0 (#3830/#3862).
-#
-# The arms are an ALLOW-LIST, deliberately. Only two answers moved the phase
-# forward and owe the recording below: a real advance, and the ordinary last plan
-# (`advanced: false` WITH `reason: last_plan` — branching on `advanced` alone would
-# skip the final plan's recording on every phase). Everything else stops: a
-# divergence refusal, an exit-0 `{"error": ...}`, a reason added to the verb later,
-# and a NON-ANSWER — a crash or missing binary leaves the capture empty, matching
-# nothing. A deny-list would write on every shape it had not been taught about.
+# advance-plan refuses when `## Current Position` disagrees with the plans on disk
+# (stdout, exit 0; #3830). ALLOW-LIST: only a real advance and the ordinary last
+# plan (`advanced: false` WITH `reason: last_plan`) owe the recording below; any
+# other answer stops — a refusal, an exit-0 `{"error": ...}`, an empty capture.
 ADVANCE_OUT=$(gsd_run query state.advance-plan)
 ADVANCE_RC=$?
 case "${ADVANCE_OUT}" in
@@ -795,22 +789,19 @@ case "${ADVANCE_OUT}" in
       --stopped-at "Completed ${PHASE}-${PLAN}-PLAN.md" --resume-file "None"
     ;;
   *'"reason": "position_diverged"'*)
-    echo "STOP: state.advance-plan refused — ## Current Position disagrees with the" >&2
-    echo "plans on disk (see the [gsd-tools] WARNING). 'gsd_run query phase-plan-index'" >&2
-    echo "shows the real set. Record nothing, and skip the ROADMAP/requirements block." >&2
+    echo "STOP: state.advance-plan refused — ## Current Position disagrees with the plans" >&2
+    echo "on disk (see the WARNING; phase-plan-index shows the real set). Record nothing." >&2
     ;;
   *)
-    echo "STOP: no advance reported (exit ${ADVANCE_RC}) — the counter did NOT move." >&2
-    echo "Record nothing, and skip the ROADMAP/requirements block below." >&2
+    echo "STOP: no advance reported (exit ${ADVANCE_RC}) — the counter did NOT move. Record nothing." >&2
     printf '%s\n' "${ADVANCE_OUT}" >&2
     ;;
 esac
 ```
 
 **If the block above printed `STOP:`, do not run the ROADMAP/requirements block that follows.** The
-counter did not move, so recording progress or completed requirements would write state against a
-position that is still wrong. Reconcile STATE.md, then re-run. A `case` arm suppresses only its own
-block, never a later fenced one — this one is yours to honor.
+counter did not move, so recording against it writes state to a wrong position. Reconcile STATE.md,
+then re-run. A `case` arm suppresses only its own block, never a later fenced one — this one is yours.
 
 ```bash
 # Update ROADMAP.md progress for this phase (plan counts, status)
