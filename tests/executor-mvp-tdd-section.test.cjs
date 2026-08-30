@@ -1879,6 +1879,18 @@ ${Array(redContractCount).fill(block).join('\n')}
     { name: '`exit_status` `true`',
       mutate: (t) => { t.exit_status = true; return t; },
       expected: 'red_commit_not_failing' },
+    { name: '`command` the empty string',
+      mutate: (t) => { t.command = ''; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`command` whitespace only ("   ")',
+      mutate: (t) => { t.command = '   '; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`command` `null`',
+      mutate: (t) => { t.command = null; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`command` a number (12345) rather than a string',
+      mutate: (t) => { t.command = 12345; return t; },
+      expected: 'red_commit_not_failing' },
   ];
 
   test('shape-check edges: empty, absent and malformed trailer values fail closed; '
