@@ -173,6 +173,7 @@
   "gsd-core/references/user-story-template.md",
   "gsd-core/references/verification-overrides.md",
   "gsd-core/references/verification-patterns.md",
+  "gsd-core/references/verifier-evidence-gate.md",
   "gsd-core/references/verifier-phase-gates.md",
   "gsd-core/references/verifier-wiring-patterns.md",
   "gsd-core/references/verify-command-path-resolvability.md",

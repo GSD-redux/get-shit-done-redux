@@ -303,6 +303,7 @@
       "user-story-template.md",
       "verification-overrides.md",
       "verification-patterns.md",
+      "verifier-evidence-gate.md",
       "verifier-phase-gates.md",
       "verifier-wiring-patterns.md",
       "verify-command-path-resolvability.md",
