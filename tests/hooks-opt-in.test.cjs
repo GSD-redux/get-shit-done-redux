@@ -722,6 +722,118 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
       'a --cleanup after the message changes the mode just as one before it does');
   });
 
+  test('the adjacency guard is scoped to the span it matched (round-6 MAJOR)', () => {
+    // Glue is a property of the ONE character following the MATCHED span, so
+    // that character is the whole window. Scanning $CMD for the shape anywhere
+    // refused any conforming commit whose command merely CONTAINED a glued -m
+    // elsewhere. Base blocks these too, because base blocks EVERY heredoc form
+    // (that is #3802), so this is the fix not reaching the shape rather than a
+    // regression: measured base=2 -> pre=2 -> post=0.
+    const conforming = "\"$(cat <<'EOF'\nfix: a perfectly ordinary conforming subject\nEOF\n)\"";
+
+    assert.strictEqual(
+      runHookCmd(`git commit -m ${conforming} && echo -m "test"z`).status, 0,
+      'a glued -m in a chained-after command is in another argv and cannot truncate this capture');
+
+    // Bash does not concatenate across a command separator or a redirection: in
+    // `-m "msg"&& echo hi` the argument ends at the quote, so there is no
+    // truncated capture and nothing to defend against. This row reds against a
+    // bare `^[^[:space:]]` test, which is why the class excludes `;&|()<>`.
+    assert.strictEqual(
+      runHookCmd(`git commit -m ${conforming}&& echo hi`).status, 0,
+      'a separator abutting the closing quote ends the argument; it does not glue onto it');
+
+    // A suffix that really is glued still refuses.
+    assert.strictEqual(
+      runHookCmd(`git commit -m ${conforming}zzzz`).status, 2,
+      'text glued to the closing quote means the capture holds only a prefix of the real message');
+  });
+
+  test('the cleanup guard scans wide on purpose — narrowing it reopened a length hole', () => {
+    // The window is the whole command minus the message. That is deliberately
+    // wider than git's own command, and the cost is a known false positive:
+    // a --cleanup= belonging to a DIFFERENT command refuses a commit git would
+    // accept. Narrowing it to git's own segment was tried and reverted, because
+    // deciding where git's command ends needs a shell parse and a substring
+    // scan is not one.
+    const long72 = `feat: ${'x'.repeat(66)}`;
+    const longHd = `"$(cat <<'EOF'\n${long72}   \nEOF\n)"`;
+
+    // These rows are the ACCEPT direction and are the reason the guard stays
+    // wide. Trimming the window at the first `;&|` cut it short whenever a
+    // separator sat inside an ordinary argument, hiding the real trailing
+    // --cleanup=verbatim: git then commits the trailing whitespace verbatim and
+    // the real subject is 75 bytes while the gate measured 72. Both the quoted
+    // and the backslash-escaped spelling must stay blocked; each reds against
+    // one of the two narrowings that were attempted.
+    for (const [label, author] of [
+      ['quoted separator', '"a&b"'],
+      ['quoted pipe', '"a|b"'],
+      ['quoted semicolon', '"a;b"'],
+      ['escaped separator', 'a\\&b'],
+      ['escaped pipe', 'a\\|b'],
+      ['escaped semicolon', 'a\\;b'],
+    ]) {
+      assert.strictEqual(
+        runHookCmd(`git commit --allow-empty -m ${longHd} --author ${author} --cleanup=verbatim`).status,
+        2,
+        `${label}: a separator inside an argument must not hide the --cleanup that follows it`);
+    }
+
+    // The documented false positive, pinned so the trade-off is visible rather
+    // than accidental. If this ever needs to pass, it needs a real shell parse.
+    assert.strictEqual(
+      runHookCmd(`git commit -m "$(cat <<'EOF'\nfix: a perfectly ordinary conforming subject\nEOF\n)" && echo --cleanup=verbatim`).status,
+      2,
+      'known limit: a --cleanup in a later command also refuses — fail-closed, and preferred '
+      + 'over the accept-direction hole that narrowing the window reopened');
+  });
+
+  test('option scans read the command the way bash hands it to git (round-6 accept direction)', () => {
+    // Three ways the same option can be spelled without matching a literal.
+    // Every row below was measured ACCEPTING a commit whose real subject git
+    // records as 75 bytes, or whose real subject is a different -m argument
+    // entirely — verified against real commits by reading the raw commit
+    // object, since `git log --pretty=%s` strips the trailing whitespace that
+    // makes the length wrong and hides it. All are base=2 -> pre=0, so each is
+    // an accept-direction regression this PR introduced before this round.
+    const long72 = `feat: ${'x'.repeat(66)}`;
+    const longHd = `"$(cat <<'EOF'\n${long72}   \nEOF\n)"`;
+    const conforming = "\"$(cat <<'EOF'\nfix: a perfectly ordinary conforming subject\nEOF\n)\"";
+
+    // git accepts any unambiguous prefix of a long option, so the mode is set
+    // by a token that is not the literal `--cleanup`. Reds against `--cleanup`.
+    for (const spelling of ['--cle', '--clea', '--clean', '--cleanu', '--cleanup']) {
+      assert.strictEqual(
+        runHookCmd(`git commit --allow-empty -m ${longHd} ${spelling}=verbatim`).status, 2,
+        `${spelling}=verbatim sets the mode as surely as the unabbreviated spelling does`);
+    }
+
+    // git splits `-am` into `-a -m`, making the FIRST message the subject and
+    // the heredoc merely the second. Reds against a standalone `-m` scan.
+    for (const cluster of ['-am', '-sm', '-anm']) {
+      assert.strictEqual(
+        runHookCmd(`git commit --allow-empty ${cluster} 'WIP first' -m ${conforming}`).status, 2,
+        `${cluster} carries git's first message, so the matched heredoc is not the subject`);
+    }
+
+    // Bash removes quotes before git sees the argument, so a spliced spelling
+    // is the same option. Reds unless the option-name scans are dequoted.
+    assert.strictEqual(
+      runHookCmd(`git commit --allow-empty -m ${longHd} --clean""up=verbatim`).status, 2,
+      'a quote spliced into the option name does not change the option git receives');
+    assert.strictEqual(
+      runHookCmd(`git commit --allow-empty -""m 'WIP first' -m ${conforming}`).status, 2,
+      'a quote spliced into -m does not stop it claiming the first message');
+
+    // Dequoting must not spill into the adjacency test, which asks about a
+    // literal character position rather than an option name. This is the
+    // round-6 MAJOR and must stay fixed.
+    assert.strictEqual(
+      runHookCmd(`git commit -m ${conforming} && echo -m "test"z`).status, 0,
+      'quotes in a chained-after command must not refuse the matched heredoc');
+  });
+
   test('validate-commit does not trust a relative path ending in cat (round-4 Codex MAJOR)', () => {
     // Recognition accepted any path ending in `/cat`, so a planted `./cat` or
     // `../evil/cat` was trusted to echo its stdin. With such an executable

@@ -182,11 +182,35 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # on EITHER side of the message on the command line.
       MSG_SUFFIX="${CMD#*"$MSG_MATCH"}"
 
+      # QUOTE-SPLICED SPELLINGS (independent review of #3816, round 6). Bash
+      # removes quotes before git ever sees an argument, so the same option has
+      # unboundedly many spellings on the command line: `--clean""up=verbatim`
+      # IS `--cleanup=verbatim` to git, and `-""m` IS `-m`. Both matched no
+      # literal and were measured ACCEPTING a 75-byte subject the length gate
+      # had recorded as 72. The guards below therefore scan a copy of their
+      # window with quote characters removed, which is what bash does to it.
+      # Only the two OPTION-NAME scans use it; the adjacency test deliberately
+      # does not, because it asks about a literal character position, and the
+      # message span itself is excluded from both windows either way.
+      MSG_PREFIX_DEQ="${MSG_PREFIX//[\"\']/}"
+      MSG_SUFFIX_DEQ="${MSG_SUFFIX//[\"\']/}"
+
       # ADJACENCY GUARD (review of #3816): text glued to the CLOSING quote —
       # `-m "$(cat <<'EOF' ... )"suffix` — is concatenated by bash into the SAME
       # argument, so the capture holds only a PREFIX of the real message, and
       # the length gate would measure a fraction of the real subject.
-      if [[ "$CMD" =~ -m[[:space:]]+\"[^\"]+\"[^[:space:]] ]]; then RESOLVE=0; fi
+      # SCOPE (review of #3816, round 6 — MAJOR). Glue is a property of the ONE
+      # character following the MATCHED span, so that character is the whole
+      # window. Scanning $CMD for the shape anywhere refused any conforming
+      # commit whose command merely CONTAINED a glued `-m` elsewhere —
+      # `git commit -m "<heredoc>" && echo -m "test"z` stayed blocked with
+      # CONVENTIONAL_COMMITS_VIOLATION. Base blocks it too, because base blocks
+      # EVERY heredoc form (that is #3802): this was the fix not reaching the
+      # shape, measured base=2 -> pre=2 -> post=0, not a regression.
+      # The separators and redirections are excluded because bash does NOT
+      # concatenate across them: in `-m "msg"&& echo hi` the argument ends at
+      # the quote, so there is no truncated capture to defend against.
+      if [[ "$MSG_SUFFIX" =~ ^[^[:space:]\;\&\|\(\)\<\>] ]]; then RESOLVE=0; fi
 
       # FIRST-MESSAGE GUARD (Codex review of #3816, round 4 — BLOCKER). The
       # capture is a SEARCH over the whole command and the double-quoted arm is
@@ -203,7 +227,13 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # enforcement bypass. Resolve only when nothing before the match could
       # have been an earlier message, an end-of-options marker, or another
       # command.
-      if [[ "$MSG_PREFIX" =~ (^|[[:space:]])(-m|--message)([[:space:]]|=) ]] \
+      # BUNDLED SHORT OPTIONS (independent review of #3816, round 6). git splits
+      # `-am 'WIP first'` into `-a -m`, so the real subject is `WIP first` and
+      # the heredoc is git's SECOND message — measured accepting the heredoc's
+      # subject while git recorded `WIP first`. A standalone `-m` is therefore
+      # not the only spelling that claims the message; any short-option cluster
+      # ending in `m` does.
+      if [[ "$MSG_PREFIX_DEQ" =~ (^|[[:space:]])(-[a-zA-Z]*m|--message)([[:space:]]|=) ]] \
         || [[ "$MSG_PREFIX" =~ (^|[[:space:]])--([[:space:]]|$) ]] \
         || [[ "$MSG_PREFIX" =~ [\;\&\|] ]]; then RESOLVE=0; fi
 
@@ -230,7 +260,26 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # positions covered while excluding the one span that is message text.
       # The two are joined with a space so a token cannot be forged across the
       # seam out of a prefix tail and a suffix head.
-      if [[ "$MSG_PREFIX $MSG_SUFFIX" =~ (--cleanup|commit\.cleanup)[=[:space:]]+([^[:space:]]+) ]]; then
+      # KNOWN LIMIT, deliberately fail-closed (#3816, round 6). This window is
+      # the whole command minus the message, so a `--cleanup=` that belongs to a
+      # DIFFERENT command — `git commit -m "<heredoc>" && echo --cleanup=verbatim`
+      # — also refuses, and a conforming commit git would accept stays blocked.
+      # Narrowing it to git's own segment was tried and reverted: deciding where
+      # git's command ends needs a shell parse, and a substring scan is not one.
+      # Trimming at the first `;&|` cut the window short whenever a separator sat
+      # inside an ordinary argument — `--author "a&b"`, and equally `--author
+      # a\&b` — which hid a REAL trailing `--cleanup=verbatim` and ACCEPTED a
+      # 75-byte subject the length gate had measured as 72. Two successive
+      # narrowings each reopened that hole on a shape the previous one missed, so
+      # the scan stays wide: refusing a commit git would take is recoverable,
+      # accepting an over-long subject is not.
+      # ABBREVIATIONS (independent review of #3816, round 6). git accepts any
+      # unambiguous prefix of a long option, so `--cle=verbatim` sets the mode
+      # while matching no literal `--cleanup` — measured accepting a 75-byte
+      # subject recorded as 72. The class is deliberately wider than git's own
+      # abbreviation set: over-matching only refuses more, which is the safe
+      # direction, and no other `--cl` option exists for git commit.
+      if [[ "$MSG_PREFIX_DEQ $MSG_SUFFIX_DEQ" =~ (--cl[a-z]*|commit\.cleanup)[=[:space:]]+([^[:space:]]+) ]]; then
         if [ "${BASH_REMATCH[2]}" != "whitespace" ]; then RESOLVE=0; fi
       fi
     fi
