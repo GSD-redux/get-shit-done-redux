@@ -187,61 +187,49 @@ function readCoverageJson(runDir, slug) {
 
 describe('#3301 build_prompt derives and appends a plan coverage manifest', () => {
   for (const shell of SHELLS) {
-    test(`[${shell.name}] zero plans: manifest reports Total plans: 0 and no ids`, () => {
+    test(`[${shell.name}] zero plans: manifest reports Total plans: 0 and no ids`, (t) => {
       const fx = buildPlanCopyFixture([]);
-      try {
-        const res = runScript(shell, extractPlanCopyBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const manifest = readIfPresent(path.join(fx.runDir, '.plans-manifest.md'));
-        assert.notEqual(manifest, null, '.plans-manifest.md must be written even with zero plans');
-        assert.match(manifest, /Total plans in this review: 0/);
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractPlanCopyBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const manifest = readIfPresent(path.join(fx.runDir, '.plans-manifest.md'));
+      assert.notEqual(manifest, null, '.plans-manifest.md must be written even with zero plans');
+      assert.match(manifest, /Total plans in this review: 0/);
     });
 
-    test(`[${shell.name}] one plan: manifest lists the single id and count 1`, () => {
+    test(`[${shell.name}] one plan: manifest lists the single id and count 1`, (t) => {
       const fx = buildPlanCopyFixture(['01-PLAN.md']);
-      try {
-        const res = runScript(shell, extractPlanCopyBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const manifest = readIfPresent(path.join(fx.runDir, '.plans-manifest.md'));
-        assert.match(manifest, /Total plans in this review: 1/);
-        assert.match(manifest, /^- 01$/m);
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractPlanCopyBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const manifest = readIfPresent(path.join(fx.runDir, '.plans-manifest.md'));
+      assert.match(manifest, /Total plans in this review: 1/);
+      assert.match(manifest, /^- 01$/m);
     });
 
-    test(`[${shell.name}] decimal-phase ids are preserved verbatim in the manifest`, () => {
+    test(`[${shell.name}] decimal-phase ids are preserved verbatim in the manifest`, (t) => {
       const fx = buildPlanCopyFixture(['12.6-01-PLAN.md', '12.6-02-PLAN.md']);
-      try {
-        const res = runScript(shell, extractPlanCopyBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const manifest = readIfPresent(path.join(fx.runDir, '.plans-manifest.md'));
-        assert.match(manifest, /Total plans in this review: 2/);
-        assert.match(manifest, /^- 12\.6-01$/m);
-        assert.match(manifest, /^- 12\.6-02$/m);
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractPlanCopyBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const manifest = readIfPresent(path.join(fx.runDir, '.plans-manifest.md'));
+      assert.match(manifest, /Total plans in this review: 2/);
+      assert.match(manifest, /^- 12\.6-01$/m);
+      assert.match(manifest, /^- 12\.6-02$/m);
     });
 
-    test(`[${shell.name}] manifest is appended to both gsd-review-instructions.md and gsd-review-prompt.md`, () => {
+    test(`[${shell.name}] manifest is appended to both gsd-review-instructions.md and gsd-review-prompt.md`, (t) => {
       const fx = buildPlanCopyFixture(['01-PLAN.md']);
+      t.after(() => cleanup(fx.root));
       // gsd-review-prompt.md is written earlier in build_prompt (the fenced
       // markdown template); simulate that so the append target pre-exists.
       fs.writeFileSync(path.join(fx.runDir, 'gsd-review-prompt.md'), '# prompt\n');
-      try {
-        const res = runScript(shell, extractPlanCopyBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const instructions = readIfPresent(path.join(fx.runDir, 'gsd-review-instructions.md'));
-        const prompt = readIfPresent(path.join(fx.runDir, 'gsd-review-prompt.md'));
-        assert.match(instructions, /Plan Coverage Manifest/);
-        assert.match(prompt, /Plan Coverage Manifest/);
-      } finally {
-        cleanup(fx.root);
-      }
+      const res = runScript(shell, extractPlanCopyBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const instructions = readIfPresent(path.join(fx.runDir, 'gsd-review-instructions.md'));
+      const prompt = readIfPresent(path.join(fx.runDir, 'gsd-review-prompt.md'));
+      assert.match(instructions, /Plan Coverage Manifest/);
+      assert.match(prompt, /Plan Coverage Manifest/);
     });
   }
 
@@ -269,122 +257,98 @@ describe('#3301 Review Instructions require one section per manifest id', () => 
 
 describe('#3301 write_reviews grades each lane against the plan coverage manifest', () => {
   for (const shell of SHELLS) {
-    test(`[${shell.name}] coverage check: complete when every id appears`, () => {
+    test(`[${shell.name}] coverage check: complete when every id appears`, (t) => {
       const fx = buildCoverageFixture(['01', '02'], {
         gemini: '## 01\n\nlooks good\n\n## 02\n\nlooks good too\n',
       });
-      try {
-        const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const cov = readCoverageJson(fx.runDir, 'gemini');
-        assert.deepEqual(cov, { complete: true, missing_ids: [], total: 2 });
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const cov = readCoverageJson(fx.runDir, 'gemini');
+      assert.deepEqual(cov, { complete: true, missing_ids: [], total: 2 });
     });
 
-    test(`[${shell.name}] coverage check: reports the specific missing id (the field-observed "6 of 7" case)`, () => {
+    test(`[${shell.name}] coverage check: reports the specific missing id (the field-observed "6 of 7" case)`, (t) => {
       const ids = ['01', '02', '03', '04', '05', '06', '07'];
       const body = ids
         .filter((id) => id !== '07')
         .map((id) => `## ${id}\n\ncovered\n`)
         .join('\n');
       const fx = buildCoverageFixture(ids, { qwen: body });
-      try {
-        const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const cov = readCoverageJson(fx.runDir, 'qwen');
-        assert.strictEqual(cov.complete, false);
-        assert.deepEqual(cov.missing_ids, ['07']);
-        assert.strictEqual(cov.total, 7);
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const cov = readCoverageJson(fx.runDir, 'qwen');
+      assert.strictEqual(cov.complete, false);
+      assert.deepEqual(cov.missing_ids, ['07']);
+      assert.strictEqual(cov.total, 7);
     });
 
-    test(`[${shell.name}] coverage check: unescaped dot cannot be satisfied by 12X6-01 (issue trap 1)`, () => {
+    test(`[${shell.name}] coverage check: unescaped dot cannot be satisfied by 12X6-01 (issue trap 1)`, (t) => {
       const fx = buildCoverageFixture(['12.6-01'], {
         codex: 'discussion of 12X6-01 but never the real id\n',
       });
-      try {
-        const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const cov = readCoverageJson(fx.runDir, 'codex');
-        assert.strictEqual(cov.complete, false, 'unescaped "." would let 12X6-01 wrongly satisfy 12.6-01');
-        assert.deepEqual(cov.missing_ids, ['12.6-01']);
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const cov = readCoverageJson(fx.runDir, 'codex');
+      assert.strictEqual(cov.complete, false, 'unescaped "." would let 12X6-01 wrongly satisfy 12.6-01');
+      assert.deepEqual(cov.missing_ids, ['12.6-01']);
     });
 
-    test(`[${shell.name}] coverage check: a hyphen-prefixed token (T-04-07) does not satisfy id 04-07 (issue trap 2)`, () => {
+    test(`[${shell.name}] coverage check: a hyphen-prefixed token (T-04-07) does not satisfy id 04-07 (issue trap 2)`, (t) => {
       const fx = buildCoverageFixture(['04-07'], {
         claude: 'six sections away, threat id T-04-07 is discussed at length\n',
       });
-      try {
-        const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const cov = readCoverageJson(fx.runDir, 'claude');
-        assert.strictEqual(cov.complete, false, 'a preceding hyphen must not count as a boundary for id 04-07');
-        assert.deepEqual(cov.missing_ids, ['04-07']);
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const cov = readCoverageJson(fx.runDir, 'claude');
+      assert.strictEqual(cov.complete, false, 'a preceding hyphen must not count as a boundary for id 04-07');
+      assert.deepEqual(cov.missing_ids, ['04-07']);
     });
 
-    test(`[${shell.name}] coverage check: a plain-prose mention counts as covered, no heading required`, () => {
+    test(`[${shell.name}] coverage check: a plain-prose mention counts as covered, no heading required`, (t) => {
       const fx = buildCoverageFixture(['12.6-01'], {
         gemini: 'This was already covered by plan 12.6-01 above, no separate section needed.\n',
       });
-      try {
-        const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        const cov = readCoverageJson(fx.runDir, 'gemini');
-        assert.strictEqual(cov.complete, true);
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      const cov = readCoverageJson(fx.runDir, 'gemini');
+      assert.strictEqual(cov.complete, true);
     });
 
-    test(`[${shell.name}] coverage check: a budget-skipped stub is not graded`, () => {
+    test(`[${shell.name}] coverage check: a budget-skipped stub is not graded`, (t) => {
       const fx = buildCoverageFixture(['01'], {
         ollama: 'ollama review skipped: prompt budget (500 tokens) too small for the minimum review set.\n',
       });
-      try {
-        const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        assert.strictEqual(readCoverageJson(fx.runDir, 'ollama'), null, 'a budget-skip stub must not be graded');
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      assert.strictEqual(readCoverageJson(fx.runDir, 'ollama'), null, 'a budget-skip stub must not be graded');
     });
 
-    test(`[${shell.name}] coverage check: an empty review file is not graded`, () => {
+    test(`[${shell.name}] coverage check: an empty review file is not graded`, (t) => {
       const fx = buildCoverageFixture(['01'], { codex: '' });
-      try {
-        const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        assert.strictEqual(readCoverageJson(fx.runDir, 'codex'), null, 'an empty review file must not be graded');
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      assert.strictEqual(readCoverageJson(fx.runDir, 'codex'), null, 'an empty review file must not be graded');
     });
 
-    test(`[${shell.name}] coverage check: coderabbit lane is exempt from plan-coverage grading`, () => {
+    test(`[${shell.name}] coverage check: coderabbit lane is exempt from plan-coverage grading`, (t) => {
       const fx = buildCoverageFixture(['01', '02'], {
         coderabbit: 'diff-only review, mentions nothing about plans\n',
       });
-      try {
-        const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        assert.strictEqual(
-          readCoverageJson(fx.runDir, 'coderabbit'),
-          null,
-          'coderabbit never receives the source-grounding prompt and must not be graded',
-        );
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      assert.strictEqual(
+        readCoverageJson(fx.runDir, 'coderabbit'),
+        null,
+        'coderabbit never receives the source-grounding prompt and must not be graded',
+      );
     });
   }
 
