@@ -877,6 +877,18 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **A working executor is never steered (#4218).** The threshold measures time WITHOUT
    PROGRESS, not total runtime. Before treating an executor as stalled — and before sending it
    any message — read and execute `execute-phase/steps/executor-progress-policy.md`.
+   If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
+
+   **This fallback applies to all runtimes.** Claude Code's Agent() backgrounds by
+   default: the completion signal may never arrive. Verify, never wait.
+   If the stalled executor ran in an isolated worktree, `kill and switch to inline execution` edits the primary checkout — see worktree recovery policy (`execute-phase/steps/worktree-recovery-policy.md`). Prefer `kill and retry` in a fresh worktree; inline execution requires explicit confirmation, never the default.
+
+   **This fallback applies to all runtimes.** Claude Code's default background
+   Agent() dispatch may not return a completion signal, so verify rather than
+   waiting indefinitely. When `SESSION_OUTLIVES_TURN` is `false`, the foreground
+   Agent() call returns synchronously; use that returned result as the primary
+   completion signal and only use these spot-checks if the host still reports no
+   result.
 
 5. **Post-wave hook validation (parallel mode only):** Hooks run on every executor commit by default (#2924); this post-wave run only fires when `workflow.worktree_skip_hooks=true` opted out of per-commit hooks:
    ```bash
