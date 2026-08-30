@@ -1,6 +1,6 @@
 # ADR-3473: Enforcement by Construction — One Owner per Invariant
 
-- **Status:** Accepted. Phase 0 ships this file alone; every rule in §8 is *Required — Phase N* until its phase lands.
+- **Status:** Accepted, and **all phases have landed** (2026-08-28). Phase 0 shipped this file alone; every rule in §8 now carries its delivered status and its measured executor — see §8's status amendment (#3984), which records that four rules are test-covered rather than guard-enforced.
 - **Date:** 2026-08-25
 - **Issue:** [#3473](https://github.com/open-gsd/gsd-core/issues/3473) is the **scope authority** (`epic` + `approved-enhancement` + `area: core`), which is why this ADR carries its number. [#3868](https://github.com/open-gsd/gsd-core/issues/3868) is the Phase-0 tracking sub-issue this PR closes — the epic stays open until the final phase merges. Convention follows [ADR-3180](3180-planning-semantic-model-single-owner.md) and [ADR-3408](3408-state-write-path-preservation.md).
 - **Supersedes:** nothing.
@@ -133,9 +133,25 @@ Decisions 1–7 answer *how* this epic is organized. This section says *what the
 - **Where this section and the code disagree, the code is the defect** — not this section, and not a caller's local expectation.
 - A behavior not stated here is **not decided**. It is recorded as an open question with a forcing function, never resolved silently inside an implementation PR.
 - Amending a rule here is an amendment to this ADR, not a code change with a comment.
-- Each rule carries a **status**: *Enforced* or *Required — Phase N*.
+- Each rule carries a **status**. See the amendment immediately below for the current vocabulary.
 
-#### 8.1 One YAML parser — *Required — Phase 4*
+> **AMENDMENT, 2026-08-28 (#3984) — the status column was never advanced, and a two-value vocabulary could not have been advanced honestly.**
+>
+> Every phase shipped and every sub-issue closed, yet all nine rules still carried their pre-implementation status: three read *"Required — phase unassigned"* for rules that Phases 5, 7 and 8 demonstrably delivered, and the word *Enforced* appeared exactly **once** in this document — in the sentence that defined it. A reader auditing coverage here would have concluded three of the nine contract rules had no owner. That is the orphan shape this epic exists to eliminate, sitting in the epic's own contract, and it is the same defect class as B6's guard ledger: **a status column is a claim, and it was false.**
+>
+> Flipping all nine to *Enforced* would have repeated the mistake in the other direction. Decision 2 says a declared policy with no executor is a loud failure, so *Enforced* asserts an executor exists — and measurement (2026-08-28) found the nine are **not equally enforced**. The vocabulary is therefore three values, not two:
+>
+> | status | means |
+> |---|---|
+> | ***Enforced*** | a standing guard — an ESLint rule or `scripts/lint-*` drift script wired into `lint:ci` or CI — fails the build on a violation. A new wrong call site cannot land. |
+> | ***Enforced (structural)*** | the wrong call site is unrepresentable: the only way to do the thing is through the single seam. |
+> | ***Shipped — test-covered*** | delivered, with regression and identity tests, but **no standing guard**. A regression in covered code is caught; a *new* wrong call site elsewhere is not. |
+>
+> The third value is not a euphemism for "done". It names precisely where this epic's own thesis — make the wrong call site unrepresentable — is **not yet achieved**, so the gap is visible instead of implied by a green suite. §8.3 and §8.5 were the thinnest rows at the time this was written: neither had any guard, and nothing then prevented a twelfth inline slug copy or a second silent swallow. **Update, #3987:** §8.3's slug half now has a guard (`scripts/lint-slug-derivation-drift.cjs`); its marker half remains unguarded. §8.5's candidate guard was measured and rejected — see its own status block for the 26/0/no-positive-control finding — so it stays *Shipped — test-covered*, enforced instead by the #1884 regression test.
+
+#### 8.1 One YAML parser — *Enforced* — Phase 4 (#3881)
+
+> Executor: `scripts/lint-vendored-deps.cjs` + `eslint-rules/no-external-require-in-bin.cjs`, both wired into `lint:ci`. Also structural (one vendored parser) and covered by a `fast-check` round-trip property test.
 
 **Question.** What parses and serializes `.planning/` frontmatter?
 
@@ -309,7 +325,9 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 > §8.1 closes both by construction. That is the payoff this rule actually has, and it is recorded
 > from measurement rather than inherited from a sentence.
 
-#### 8.2 Enumerations return correct values by construction — *Required — phase unassigned*
+#### 8.2 Enumerations return correct values by construction — *Enforced* — Phase 5 (#3882)
+
+> Executor: `scripts/lint-phase-enumeration-drift.cjs`, wired into `lint:ci`. **Partial:** that guard covers the sentinel-filtering arm only; the #3357 canonical-first verification resolver is *test-covered* (`tests/verification-status.test.cjs`) with no guard behind it.
 
 **Question.** What does an enumeration of phases, plans or artifacts return?
 
@@ -317,7 +335,11 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 **Rule.** Verification-file discovery has one resolver, **canonical-filename-first, never alphabetical** (#3357).
 
-#### 8.3 One implementation per rule — *Required — Phase 6*
+#### 8.3 One implementation per rule — *Shipped — test-covered* — Phase 6 (#3883) + rungs 2-4 (#3897)
+
+> **Update, #3987.** Structural at the seams (`src/commands.cts` delegates to `generateSlugInternal`; `runtime-slash.cts` owns the marker reader) and covered by `tests/core-utils.test.cjs` and `tests/runtime-marker-resolution.test.cjs`. **The slug half now has a guard**: `scripts/lint-slug-derivation-drift.cjs`, wired into `lint:ci`, measured at 5 flags on the real tree (2 TRUE — `scripts/qa-smell-ratchet.cjs`, `tests/planning-inspect.test.cjs` — both fixed by routing through `generateSlugInternal`; 3 SANCTIONED, allowlisted with a reason each; 0 FALSE). **No guard exists for marker re-derivation** — a fifth hand-rolled `readInstallRuntimeMarker` copy would not fail the build.
+>
+> **What the slug guard does and does not catch**, stated because an unqualified "guarded" would overclaim. It catches the copy-paste class — the shape all 11 deleted copies actually took — plus `replaceAll`, `{1,}`, `\s*`-wrapped classes, escaped `]`, a literal `new RegExp(...)`, five trim spellings, `.split().join()`, and multi-line arguments. **Two forms still evade, by decision:** a re-derivation split across two statements via a temporary variable, and `new RegExp` built from a variable. Both require data-flow analysis, and a heuristic that guesses at it is how a guard becomes noisy; each is pinned by a negative test so the gap is visible rather than assumed closed. §8.3's status therefore stays *Shipped — test-covered* rather than advancing to *Enforced*: the wrong call site is now much harder to write, but it is not yet unrepresentable.
 
 **Rule.** Every slug call site delegates to `core-utils`. `resolveRuntime` reads the install marker in one place with one cache. The Codex sandbox derives from the role's declared tool contract rather than a maintained subset map, and `validate agents` fails on semantic drift, not just on missing files.
 
@@ -347,19 +369,36 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 **Rule — consolidation carries invariants forward explicitly.** A lineage consolidation may not delete an invariant along with the surface that held it. The `shortFormToId` tier existed in the retired SDK lineage; the surviving lineage never received it, the gap was recorded only in an archived changeset and a `// KNOWN GAP:` comment, and both went away with the surface (#3427). **A parity note in an archived changeset is not a tracking mechanism.**
 
-#### 8.4 Failure is a value — *Required — phase unassigned*
+#### 8.4 Failure is a value — *Shipped — test-covered* — Phase 7 (#3884)
+
+> Structural for argv (`src/command-arg-projection.cts` — the spec object makes an undeclared shape a `TypeError`) and covered by `tests/command-arg-projection.test.cjs` / `tests/pick-flag.test.cjs`. No guard enforces the general "every fallible routine returns `Result`" rule.
 
 **Rule.** Every routine that can fail returns `Result`. `parseNamedArgs` rejects unrecognized and positional tokens with a non-zero exit — it is called by agents that will drift again.
 
 **Rule.** A count query returns `0`, not `""`, and never `""` with exit 0 (#3365).
 
-#### 8.5 No silent swallow, and no verdict manufactured from dropped data — *Required — phase unassigned*
+#### 8.5 No silent swallow, and no verdict manufactured from dropped data — *Enforced* — Phase 8 (#3885), guard by #3987
+
+> Executor: `eslint-rules/no-swallowed-precondition.cjs`, wired into the `src/**/*.cts` block and reached by `npm run lint` → `lint:ci`. Plus `tests/intel.test.cjs`, `tests/review-parallel-lanes.test.cjs`, and the #1884 regression test.
+>
+> **This entry previously said the rule was not guardable. That was wrong, and the way it was wrong is worth keeping.** #3987 first ran a candidate detector — a swallowing `catch` co-occurring with an errno-retry-set check in the same function — got **26 flags, 0 TRUE, 26 FALSE**, and concluded "not detectable at acceptable precision". An isolated reviewer overturned both halves of that conclusion:
+>
+> 1. **The false positives were uniformly CLEANUP verbs** — `rmSync` (54), `unlinkSync` (43), `closeSync` (17), `chmodSync` (12). A swallowed cleanup is legitimate best-effort. A swallowed **creation** is a precondition silently lost, which is the actual #1884 shape. That is a reason to *narrow the predicate*, not to abandon it. Narrowed, measured in three stages: swallowing catch **911** → try-block calls a creation verb (`mkdirSync`/`platformEnsureDir`/`openSync`) **24** → enclosing function references a `*_ERRNOS` set **0 flags, 0 false positives.** The naming key is empirically total: all 10 retry/tolerate sets in `src/` follow it.
+> 2. **"No positive control exists" was self-refuting.** The pre-#3885 blob is available as a fixture, and this repo's own guards prove-it-can-fail on synthetic trees. The control now exists and works in **both** directions: the rule flags `0c43d853e^:src/planning-workspace.cts` at **line 210** — the line the fix commit's own message cites — and reports zero on the post-fix code and on all of `src/**/*.cts`.
+>
+> The general lesson, which is why this is recorded rather than quietly amended: **a high false-positive count is evidence the predicate is wrong, not evidence the rule is unguardable** — and the first negative result is especially seductive when it is also the answer that means less work.
+>
+> **The guard immediately found a live defect of the same class.** `src/capability-lock.cts` swallowed a `mkdirSync` on the lock directory; `acquireLock` then classified the follow-on failure as `code !== 'EEXIST' → return null`, so a real EACCES/EROFS became `openSync(lockPath,'wx')` failing ENOENT — not EEXIST — and a fatal filesystem error was laundered into "lock unavailable". Same defect as #1884, different laundering target. Fixed in #3987 the way #3885 fixed #1884: the creation failure propagates.
+>
+> **Known gap, deliberate.** That defect's errno classification is an inline literal, not a named `*_ERRNOS` set, so the strict rule does not catch its shape. Broadening to any `err.code` comparison raises it to 3 flags with **2 false positives** — `capability-lock.cts:408` (the deliberate EEXIST steal protocol) and `commonjs-marker.cts:131` (which returns a distinct, documented outcome). The rule stays strict and the gap is recorded here, rather than trading a trustworthy guard for a noisy one.
 
 **Rule.** A swallowed `catch` may not fold a fatal errno into a retry set. A synthesis step may not emit its artifact when its inputs failed (#3352). A derived conclusion may not be reported as authoritative when the derivation dropped input it could not resolve (#3427).
 
 **Rule.** `searchJsonEntries` / `matchesInValue` restore the `MAX_JSON_SEARCH_DEPTH = 48` recursion bound lost in the ADR-0174 consolidation. `src/intel.cts` recurses through arrays and objects with **no depth parameter at all**, so deeply nested intel JSON overflows the stack. This has no issue of its own — it is tracked HERE and nowhere else.
 
-#### 8.6 The state transaction — *Required — Phase 1*
+#### 8.6 The state transaction — *Enforced (structural)* — Phase 1 (#3871)
+
+> Executor: the transaction type in `src/state-transition.cts` makes a snapshot-less construction unwritable, backed by `scripts/lint-state-write-path-drift.cjs` wired into `lint:ci`.
 
 **Question.** What may apply the STATE.md sync-and-preservation pipeline, and under what precondition?
 
@@ -381,7 +420,9 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 >
 > The retired axis was the **seam-bypass** scan, and only half of it was redundant. Its `writeStateMd(` arm is genuinely replaced by the type and is gone with its ratchet. Its **composition-bypass** arm — a new call site re-assembling `syncStateFrontmatter` + `applyPostSyncPreservation` instead of routing through the owned composition, which is ADR-3408 §8.3's rule and the exact shape #3469 found live in `cmdPhaseComplete` — is **not** replaced by the type, which gates one parameter of one function and nothing more. It is retained, made terminal rather than ratcheted, and carries its own reason code. Decision 6 sanctions retiring a guard the change makes **redundant**; deleting this arm would have been a silent coverage regression dressed as a guard-count win, which is precisely the Goodhart outcome Decision 6 exists to prevent.
 
-#### 8.7 What a command reports it wrote — *Required — Phase 2*
+#### 8.7 What a command reports it wrote — *Shipped — test-covered* — Phase 2 (#3872)
+
+> Structural via `reconcileReportedFields` (`src/state.cts`) and covered by `tests/state.test.cjs`. No standing guard.
 
 **Question.** Which fields appear in a command's `updated` array?
 
@@ -397,7 +438,9 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 
 **Prior art — the mechanism is already proven at one site.** `fix(#3685)` (`7b2f2c89f`, `src/phase.cts`) replaced `phase complete`'s `fs.existsSync`-derived `roadmap_updated` / `state_updated` flags with flags derived from the transaction's content diff, so a no-op write stopped being indistinguishable from a successful one. That is this rule at file granularity. Phase 2 applies the same derivation at **field** granularity in `reconcileReportedFields`, and should be read as generalizing #3685 rather than re-deriving it.
 
-#### 8.8 The STATE.md schema — *Required — Phase 3*
+#### 8.8 The STATE.md schema — *Enforced* — Phase 3 (#3873)
+
+> Executor: `scripts/gen-state-md-docs.cjs --check` in `lint:generated-sync`, plus `tests/docs-state-md-locale-parity.test.cjs`. `scripts/lint-state-field-drift.cjs` is retained under a different contract — see the Guard roster.
 
 **Question.** Where is the set of STATE.md keys, their types, enums, cardinality, preservation policy and accepted parse shapes declared?
 
@@ -419,7 +462,26 @@ Both close #3349 and #3360, which are **read-side** defects a real parser fixes 
 >
 > **This is the second guard-retirement claim in this ADR to rest on a wrong premise**, after §8.6's (see its own amendment). Both described a guard surface their author believed existed. The pattern is worth naming: a retirement claim in this ADR is a *hypothesis about a guard's contents*, and Decision 6's ledger requirement should be read as obliging the implementing phase to verify that hypothesis before acting on it — not merely to count the result.
 
-#### 8.9 Each subsumed child is driven fail-first — *Required — every phase*
+#### 8.9 Each subsumed child is driven fail-first — *Enforced (prospective)* — every phase, ledger completed by #3951
+
+> Executor: `scripts/lint-fix-has-regression-tests.cjs`, wired into `lint:ci`. **Read the scope precisely:** it fires on *new* `fix(#NNNN)` commits; it does not assert that the 19 children listed below are covered.
+>
+> **Correction, #3987 — and then a correction OF that correction, which is the more instructive one.**
+>
+> The 2026-08-28 amendment said "17 of 19; #3364 and #3812 have none". #3987 first "corrected" that to **19 of 19**. An isolated reviewer showed the correction was itself false, and false in a worse way than the original:
+>
+> **The original claim was CORRECT for the predicate it stated.** #3987 silently swapped the predicate from *cited* to *covered* and then declared the count fixed. #3812 appears in **zero** files under `tests/` — `tests/gen-state-md-docs.test.cjs:374` is a generic generated-docs test naming no issue. Changing what a word means in order to make a ledger read better is a worse failure than the miscount it claimed to repair, and it happened inside an amendment whose subject is that a text match is not a fact.
+>
+> **The measured truth, by predicate:**
+>
+> | predicate | count | detail |
+> |---|---|---|
+> | cites its issue number in `tests/` | **18 of 19** | **#3812 does not.** #3364 does — `tests/runtime-marker-resolution.test.cjs:107`, asserting `:115-119` (the earlier claim that it did not was the one genuine miscount). |
+> | behaviorally covered | 19 of 19 | #3812 by `tests/gen-state-md-docs.test.cjs:374` |
+>
+> §8.9 asks for a test **naming** each child, so **18 of 19 is the number that answers it.** The two predicates are not interchangeable and must not be reported as one.
+>
+> **#3812 is additionally PARTIALLY DELIVERED and has been RE-OPENED (2026-08-28).** The shipped fix declares cardinality for FRONTMATTER keys (`current_phase`/`current_plan` = optional, `docs/reference/state-md.md:89,91`); its stated acceptance was the `## Current Position` **body** section, and `:196-208` still has no normative single-valued/overwrite sentence and no pointer to `## Performance Metrics` for history. The first draft of this entry said it was "flagged here so it can be re-opened" and then did not re-open it — a note is not an action, so the issue is now actually open again with the evidence attached.
 
 **Rule.** #2986, #3372, #3364, #2540, #3231, #3349, #3360, #3358, #3365, #3356, #3352, #3427 — and the STATE.md set #3756, #3743, #3818, #3835, #3836, #3853, #3812 — each get a failing-first regression test driven green via `gsd-test`, **plus** a behavioral identity test asserting at the *consumer's* output per ADR-3180 Decision 4(b). A structural guard alone would not have caught these.
 
@@ -478,7 +540,7 @@ Net across the set: one guard retired, one increase recorded honestly. The incre
 | `scripts/lint-state-field-drift.cjs` | **RETAINED** — the Phase-3 retirement instruction rested on a wrong premise about what this guard does; see §8.8's amendment. It guards the ADR-3180 §7.7 / #3187 coercion ladder, which no schema makes unrepresentable. |
 | `scripts/lint-vendored-deps.cjs` | **not reusable as-is** — generalized to a manifest by §8.1; see the correction below |
 | `local/no-external-require-in-bin` | reused as-is; enforces §8.1's packaging rule |
-| `local/no-adhoc-markdown-parsing` | **DONE (#3951)** — self-gating filename check fixed (it made the glob widening inert) and reach extended to `tests/**`/`scripts/**`; 80 violations resolved. **#3426/#3239 are NOT closed by this** — they need new detectors, see the ledger amendment. |
+| `local/no-adhoc-markdown-parsing` | **DONE (#3951)** — self-gating filename check fixed (it made the glob widening inert) and reach extended to `tests/**`/`scripts/**`; 80 violations resolved. **#3426/#3239 were not closed by this** — the widening structurally could not reach them — but both closed separately via #3977, which rerouted the test's parsers onto the ADR-2143 seam rather than adding detectors. See the follow-up in the ledger amendment. |
 | `local/no-adhoc-regex-escape` | **DONE (#3951)** — widened to `MemberExpression` with a `.source`-aware exemption keyed on the property; 18 safe sites exempt, 3 provenance-exempt, 6 real findings marked. |
 | `scripts/lint-frontmatter-scalar-broad-grep.cjs` | **NOT a casualty of §8.1 — retained.** See the correction below. |
 | `scripts/lint-phase-enumeration-drift.cjs` | **RETAINED** — verified at Phase 5 and not retired. #3882 migrated 2 of 23 exemptions; `readdirSync` is a raw Node API no seam makes unwritable, and 21 exemptions remain wired. See the ledger amendment. |
@@ -544,8 +606,16 @@ Net across the set: one guard retired, one increase recorded honestly. The incre
 >
 > **And #3426/#3239 are NOT reachable by that widening.** `tests/package-legitimacy-gate.test.cjs`
 > yields **zero** violations even with the gate bypassed: its hand-rolled scans are real but built
-> from line filters and `split('|')`, not the regex-literal fingerprints this rule detects. They
-> need new detectors. The roster row above tracked them against the wrong mechanism.
+> from line filters and `split('|')`, not the regex-literal fingerprints this rule detects. The
+> roster row above tracked them against the wrong mechanism.
+>
+> > **FOLLOW-UP, 2026-08-28 — both are now CLOSED, and not by the route this amendment predicted.**
+> > The paragraph above concluded they "need new detectors". That was one valid path and it is not
+> > the one taken: #3977 rerouted the test's table parsers onto the ADR-2143 seam, so there is no
+> > longer any ad-hoc parse for a detector to find. Removing the violation beat teaching the rule to
+> > see it — cheaper, and it leaves one parser instead of two. Recorded because the measurement here
+> > was right (the widening genuinely could not reach them) while the prescription was not the best
+> > available, and a reader should not build new detectors on the strength of it.
 >
 > **What the widenings actually cost and bought.** `no-adhoc-regex-escape` widened to
 > `MemberExpression`: 27 sites by AST walk — 18 safe `X.source` (the "~10" estimate was an

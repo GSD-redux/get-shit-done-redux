@@ -44,6 +44,7 @@
     "ship.pr_body_sections",
     "git.branching_strategy",
     "git.base_branch",
+    "git.protected_branches",
     "git.create_tag",
     "git.phase_branch_template",
     "git.milestone_branch_template",

@@ -28,6 +28,7 @@ const estimateCli = require('../gsd-core/bin/lib/estimate-cli.cjs');
 // H1 below can assert a typed `reason`, mirroring tests/config-get-default.test.cjs's
 // established in-process CLI-error-path pattern.
 const io = require('../gsd-core/bin/lib/io.cjs');
+const { ExitError } = require('../gsd-core/bin/lib/cli-exit.cjs');
 
 /** Write a phase dir containing a PLAN with an estimate and a SUMMARY with actuals. */
 function writePhase(tmpDir, phaseDir, { estTokens, actTokens, tasks = 3, commits = 4 }) {
@@ -544,23 +545,17 @@ describe('sentinel phases must not skew calibration (#3882)', () => {
 // cross-platform IO-failure-injection rule) already used in
 // tests/phase-locator.test.cjs for `listAllPhaseDirs`'s own unreadable case.
 describe('unreadable phases directory refuses calibration (#3882, ADR-3473 §8.5)', () => {
-  class _ExitSignal extends Error {
-    constructor(code, message) {
-      super(message ?? `process.exit(${code})`);
-      this.code = code;
-    }
-  }
-
-  /** Runs cmdEstimateCalibrate in-process with process.exit + stderr(fd 2) captured. */
+  /** Runs cmdEstimateCalibrate in-process, catching the ExitError error()
+   * throws (ADR-3889 — error() no longer calls process.exit() directly) with
+   * stderr(fd 2) captured. */
   function runCalibrateExpectError(tmpDir) {
-    const origExit = process.exit;
     const origWriteSync = fs.writeSync;
     io.setJsonErrorMode(true);
-    let exitCount = 0;
-    let exitCode;
+    let writeCount = 0;
     let stderr = '';
     fs.writeSync = (fd, ...rest) => {
       if (fd !== 2) return origWriteSync.call(fs, fd, ...rest);
+      writeCount++;
       const [data, offset = 0, length] = rest;
       const chunk = Buffer.isBuffer(data)
         ? data.subarray(offset, offset + (length ?? data.length - offset)).toString('utf8')
@@ -572,22 +567,19 @@ describe('unreadable phases directory refuses calibration (#3882, ADR-3473 §8.5
       const parts = stderr.split('\n').filter(Boolean);
       try { return JSON.parse(parts[parts.length - 1]); } catch { return {}; }
     };
-    process.exit = (code) => {
-      exitCount++;
-      exitCode = code;
-      throw new _ExitSignal(code, lastError().message);
-    };
+    let exitCode;
     try {
       estimateCli.cmdEstimateCalibrate(tmpDir, [], false);
+      assert.fail('expected cmdEstimateCalibrate to throw ExitError');
     } catch (e) {
-      if (!(e instanceof _ExitSignal)) throw e;
+      if (!(e instanceof ExitError)) throw e;
+      exitCode = e.code;
     } finally {
-      process.exit = origExit;
       fs.writeSync = origWriteSync;
       io.setJsonErrorMode(false);
     }
     assert.ok(exitCode !== 0 && exitCode !== undefined, 'expected a non-zero exit code');
-    assert.equal(exitCount, 1, 'error() must fire exactly once (production process.exit terminates)');
+    assert.equal(writeCount, 1, 'error() must fire exactly once');
     return { status: exitCode, ...lastError() };
   }
 

@@ -476,8 +476,8 @@
 | `gsd-worktree-path-guard.js` | `PreToolUse` | 硬性阻止对 worktree 根目录之外绝对路径执行 Edit/Write/MultiEdit（PR #579，#260） |
 | `gsd-agent-isolation-guard.js` | `PreToolUse` | 当项目解析出的调度隔离模式为 `harness-worktree` 时，硬性阻止缺少隔离参数的 executor `Agent()` 调度（#3045） |
 | `gsd-write-guard.js` | `PreToolUse` | 硬性阻止将精选的 `.planning/` 工件（ROADMAP.md、里程碑路线图、STATE.md）灾难性缩减的整文件 `Write`；可通过一次性哨兵文件 `.planning/.gsd-allow-shrink`（工作流步骤）或 `GSD_ALLOW_PLANNING_SHRINK=1`（交互式）覆盖（#2255，#973 的修复 3） |
-| `gsd-session-state.sh` | `PostToolUse` | 基于 shell 运行时的会话状态跟踪 |
-| `gsd-validate-commit.sh` | `PostToolUse` | 常规提交强制执行的提交验证 |
+| `gsd-session-state.sh` | `SessionStart` | 基于 shell 运行时的会话状态跟踪 |
+| `gsd-validate-commit.sh` | `PreToolUse` | 常规提交强制执行的提交验证 |
 | `gsd-phase-boundary.sh` | `PostToolUse` | 工作流过渡的阶段边界检测 |
 | `gsd-graphify-update.sh` | `PostToolUse` | 在主 HEAD 推进后自动重建知识图谱（可选启用，默认关闭 — #3347） |
 

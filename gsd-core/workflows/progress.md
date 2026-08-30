@@ -246,22 +246,34 @@ Track:
 
 **Step 1.6: Cross-phase health check**
 
-Scan ALL phases in the current milestone for outstanding verification debt using the CLI (which respects milestone boundaries via `getMilestonePhaseFilter`):
+Scan ALL phases for outstanding verification debt using the CLI. Milestone scoping note (#3782): the audit milestone-filters the ACTIVE phase tree (`getMilestonePhaseFilter`), and deliberately adds ARCHIVED milestone trees unfiltered — each archived result carries an `archived_milestone` stamp. `summary.total_items` spans BOTH populations, so never read it as current-milestone debt.
 
 ```bash
 DEBT=$(gsd_run query audit-uat --raw 2>/dev/null)
+# A cross-population audit is exactly the payload that can exceed the CLI's
+# ~50KB stdout budget (io.cjs swaps in an `@file:<tmp>` pointer) — unwrap it
+# before jq, the same pattern Step 1's INIT fetch uses, or every counter
+# below silently reads 0.
+if [[ "$DEBT" == @file:* ]]; then DEBT=$(cat "${DEBT#@file:}"); fi
 ```
 
-Parse JSON for `summary.total_items`, `summary.total_files`, and `summary.parse_gap_files`.
+Segment the debt by population before counting (#3782):
 
-Track: `outstanding_debt` — `summary.total_items` from the audit. Track `parse_gap_files` — `summary.parse_gap_files` from the audit.
+```bash
+CURRENT_DEBT=$(printf '%s' "$DEBT" | jq '[.results[] | select(has("archived_milestone") | not)] | map(.items | length) | add // 0' 2>/dev/null || echo 0)
+ARCHIVED_DEBT=$(printf '%s' "$DEBT" | jq '[.results[] | select(has("archived_milestone"))] | map(.items | length) | add // 0' 2>/dev/null || echo 0)
+```
 
-`summary.parse_gap_files` counts EVERY file with `parse_gap: true`, archived or not — the same as `outstanding_debt` (`summary.total_items`), which has no archived split either. An outstanding item does not stop mattering because its phase belongs to an already-archived milestone: a deferred human-UAT scenario or a `skipped` live-stack test is exactly what gets archived still-open, so an archived parse gap is exactly as much unread outstanding work as an archived `result: pending` row.
+Track: `outstanding_debt` — `CURRENT_DEBT`, the non-archived (current-milestone) count. Track `archived_debt` — `ARCHIVED_DEBT`, the still-open items in already-archived milestones. Track `parse_gap_files` — `summary.parse_gap_files` from the audit.
 
-**If outstanding_debt > 0 OR parse_gap_files > 0:** Add a warning section to the progress report output (in the `report` step), placed between "## What's Next" and the route suggestion:
+Archived debt stays VISIBLE — an item archived still-open is still open (the archived set can include an unrun security-boundary test). Render it as its own labeled line; never fold it into the current-milestone total and never filter it away.
+
+`summary.parse_gap_files` counts EVERY file with `parse_gap: true`, archived or not — deliberately cross-population, unlike `outstanding_debt` (which #3782 scopes to non-archived results). An outstanding item does not stop mattering because its phase belongs to an already-archived milestone: a deferred human-UAT scenario or a `skipped` live-stack test is exactly what gets archived still-open, so an archived parse gap is exactly as much unread outstanding work as an archived `result: pending` row — it surfaces through `parse_gap_files` and the unparsed row below, keeping the whole cross-population picture visible.
+
+**If outstanding_debt > 0 OR archived_debt > 0 OR parse_gap_files > 0:** Add a warning section to the progress report output (in the `report` step), placed between "## What's Next" and the route suggestion:
 
 ```markdown
-## Verification Debt ({N} files across prior phases)
+## Verification Debt ({N} items across current-milestone phases; {M} items still open in archived milestones)
 
 | Phase | File | Issue |
 |-------|------|-------|

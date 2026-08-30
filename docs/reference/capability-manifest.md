@@ -117,6 +117,28 @@ Gates check a condition at a loop extension point and optionally block progressi
 | Predicate | `{ "predicate": { "kind": "artifact-exists" \| "config-equals" \| …, … } }` | Yes | Declarative; no code path. |
 | Agent verdict | `{ "agentVerdict": { "ref": …, "prompt": … } }` | No (forced advisory) | LLM evaluation; non-deterministic checks may not halt the loop. |
 
+### `taskContentResolver`
+
+Declares that this capability resolves per-task content (`<action>`/`<verify>`/
+`<acceptance_criteria>`/`<read_first>`/`<done>`) from an external issue tracker instead of
+`execute-plan.md`'s per-task loop reading it inline from a task's `PLAN.md` body. This is **not**
+one of `steps` / `contributions` / `gates`, and it does not use a `point` value from the closed
+12-point vocabulary above — it is dispatched directly, once per task, by `execute-plan.md` before
+that task's `read_first` gate, documented separately in
+[`loop-hook-dispatch.md`](../../gsd-core/references/loop-hook-dispatch.md#the-executetask-point-a-different-shape).
+See [ADR-3646](../adr/3646-per-task-content-resolution-seam.md) for the full design and
+[Develop a task-content resolver capability](../how-to/develop-a-task-content-resolver-capability.md)
+for the authoring walkthrough.
+
+| Sub-field | Type | Required | Description |
+|---|---|---|---|
+| `trackerPrefix` | string (kebab-case) | Yes | Matches the prefix of a task's `<task tracker-id="beads:GSD-42">` attribute — everything before the **first** `:`. Text after the first colon, including further colons, is passed through verbatim as the id. Must be unique across the merged first-party ∪ overlay capability set. |
+| `invoke.binary` | string | Yes | Executable name or path for the resolver subprocess. |
+| `invoke.args` | string[] | Yes | Argv passed to `invoke.binary`. Must contain the `{{id}}` placeholder at least once — GSD substitutes it with the task's tracker id (everything after the first `:`); an `args` array that never carries the placeholder fails validation, since the id could never reach the resolver. |
+| `invoke.timeoutMs` | number | Yes | Bound on the subprocess invocation. Required — an unbounded resolver subprocess is this repo's named Unbounded Subprocesses defect class. A resolver exceeding this bound is killed and `task resolve-content` exits non-zero. |
+
+`taskContentResolver` is feature-role only (`role: "feature"`); it is not admissible on `role: "runtime"` or `role: "reviewer"` bodies.
+
 ---
 
 ## Valid `point` values
@@ -289,6 +311,7 @@ The following invariants are enforced at **build time** by `scripts/gen-capabili
 - **`engines.gsd` is a hard gate.** A capability whose `engines.gsd` range does not satisfy the installed GSD version is blocked at install and skipped (with a warning) at load time.
 - **Path confinement.** Declared module paths may not use parent-directory traversal (`../`); modules are `require()`'d only from the capability's own install root.
 - **Reserved namespace.** Capability `id` values beginning with `gsd-`, `gsd-core-`, or `anthropic-` are reserved; third-party capabilities using these prefixes are rejected.
+- **`taskContentResolver.trackerPrefix` uniqueness, feature-only.** `trackerPrefix` must be unique across the merged first-party ∪ overlay capability set (mirrors `reviewsSection` uniqueness on the reviewer body above); a collision is a build-time violation. `taskContentResolver` is admissible only on `role: "feature"` bodies.
 
 ---
 

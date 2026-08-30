@@ -715,8 +715,12 @@ function _isFile(candidate: string, requireExecutable = false, platform: string 
  *
  * Exact match wins when present, so a caller who sets the canonical name pays
  * no scan.
+ *
+ * Exported so callers outside this seam can route an exact-case-sensitive env
+ * read through it instead of accessing a non-`process.env` object directly
+ * (see `local/no-exact-case-env-access`).
  */
-function _envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
+export function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const exact = env[name];
   if (exact !== undefined) return exact;
   const lower = name.toLowerCase();
@@ -818,7 +822,7 @@ export function resolveExecutableBinary(
     return _isFile(name, requireExecutable, platform) ? name : null;
   }
   const env = opts.env ?? process.env;
-  const rawPath = opts.pathOverride !== undefined ? opts.pathOverride : (_envGet(env, 'PATH') || '');
+  const rawPath = opts.pathOverride !== undefined ? opts.pathOverride : (envGet(env, 'PATH') || '');
   const pathSegments = String(rawPath).split(path.delimiter).filter(Boolean);
   const segments = [...(opts.prependPaths ?? []), ...pathSegments];
 
@@ -830,7 +834,7 @@ export function resolveExecutableBinary(
     return null;
   }
 
-  const exts = String(_envGet(env, 'PATHEXT') || DEFAULT_PATHEXT).split(';').filter(Boolean);
+  const exts = String(envGet(env, 'PATHEXT') || DEFAULT_PATHEXT).split(';').filter(Boolean);
   // A name already ending in a PATHEXT-listed extension is an address, not a stem:
   // probing `foo.exe` as `foo.exe.EXE` would miss the file sitting right there.
   // Compared case-insensitively because PATHEXT casing is not guaranteed.
@@ -935,7 +939,7 @@ export function projectSpawnInvocation(
     return resolved ? { command: resolved, args, resolved } : { command, args, resolved: null };
   }
   return {
-    command: String(_envGet(env, 'ComSpec') || 'cmd.exe'),
+    command: String(envGet(env, 'ComSpec') || 'cmd.exe'),
     args: ['/d', '/s', '/c', _buildVerbatimCmdLine(target, args)],
     resolved,
     windowsVerbatimArguments: true,
@@ -1147,7 +1151,11 @@ function _normalizeMd(content: string): string {
     if (isFenceLine && i > 0 && prevTrimmed !== '' && !insideFence[i] && (i === 0 || !insideFence[i - 1] || isFenceLine)) {
       if (i === 0 || !insideFence[i - 1]) result.push('');
     }
-    if (/^(\s*[-*+]\s|\s*\d+\.\s)/.test(line) && i > 0 && prevTrimmed !== '' && !/^(\s*[-*+]\s|\s*\d+\.\s)/.test(prev) && prevTrimmed !== '---') result.push('');
+    // #3854: the `!/^\s/.test(prev)` guard mirrors the after-a-bullet rule below —
+    // an indented non-bullet line is a CONTINUATION of the previous list item, not a
+    // preceding paragraph, so no separating blank may be injected before this bullet
+    // (that injection converted every tight multi-line list to a loose one on write).
+    if (/^(\s*[-*+]\s|\s*\d+\.\s)/.test(line) && i > 0 && prevTrimmed !== '' && !/^(\s*[-*+]\s|\s*\d+\.\s)/.test(prev) && !/^\s/.test(prev) && prevTrimmed !== '---') result.push('');
     result.push(line);
     if (/^#{1,6}\s/.test(trimmed) && i < lines.length - 1 && (lines[i + 1] ?? '').trimEnd() !== '') result.push('');
     if (/^```\s*$/.test(trimmed) && i > 0 && insideFence[i - 1] && i < lines.length - 1 && (lines[i + 1] ?? '').trimEnd() !== '') result.push('');

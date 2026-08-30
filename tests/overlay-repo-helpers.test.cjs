@@ -692,3 +692,59 @@ describe('placeVanishableLeaf: property coverage', () => {
     );
   });
 });
+
+// ─── #3900: non-regular working-tree files are not repository content ────────
+
+describe('buildOverlayRepo: non-regular files are skipped (#3900)', () => {
+  // A unix socket under the repo root (an MCP server, a language-server
+  // daemon, a watcher) made every suite built on the overlay fail in its
+  // before() hook: the walker classified anything not-a-directory as a file,
+  // and copyFileSync on a socket throws ENXIO (a FIFO would block). The
+  // reporter measured 32 failures across 6 files — none about the code under
+  // test. Unix-domain sockets bind only on POSIX; the Windows lane keeps the
+  // equivalence via a FIFO-shaped skip is impractical, so it verifies only
+  // the regular-file path.
+  const isPosix = process.platform !== 'win32';
+
+  test('a unix socket anywhere under the repo root does not break the overlay', { skip: !isPosix }, async () => {
+    // opts.root (also from this fix): a tiny synthetic root, so the test does
+    // not pay a full repo walk — the walker is the same either way.
+    const net = require('node:net');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3900-root-'));
+    const server = net.createServer();
+    await new Promise((resolve) => server.listen(path.join(root, 'daemon.sock'), resolve));
+    try {
+      fs.writeFileSync(path.join(root, 'real.txt'), 'x');
+      const overlay = buildOverlayRepo({}, { root });
+      try {
+        assert.equal(
+          fs.existsSync(path.join(overlay, 'daemon.sock')),
+          false,
+          'the socket is not repository content — it must not be copied',
+        );
+        assert.equal(fs.existsSync(path.join(overlay, 'real.txt')), true,
+          'regular files in the same tree still overlay');
+      } finally {
+        cleanup(overlay);
+      }
+    } finally {
+      server.close();
+      cleanup(root);
+    }
+  });
+
+  test('regular files still copy (control, synthetic root)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3900-ctrl-'));
+    try {
+      fs.writeFileSync(path.join(root, 'note.txt'), 'x');
+      const overlay = buildOverlayRepo({}, { root });
+      try {
+        assert.equal(fs.existsSync(path.join(overlay, 'note.txt')), true);
+      } finally {
+        cleanup(overlay);
+      }
+    } finally {
+      cleanup(root);
+    }
+  });
+});

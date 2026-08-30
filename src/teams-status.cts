@@ -28,6 +28,9 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output: coreOutput } = ioMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { ExitError } = cliExitModule;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -85,7 +88,7 @@ export function cmdTeamsStatus(cwd: string, opts: { active?: boolean }): void {
 
   if (opts.active) {
     // --active mode: no output, exit code encodes the boolean
-    process.exit(status.active ? 0 : 1);
+    throw new ExitError(status.active ? 0 : 1);
   }
 
   // Default: emit JSON to stdout via io.output, exit 0

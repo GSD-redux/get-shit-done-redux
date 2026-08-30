@@ -270,6 +270,8 @@ Store `$QUICK_DIR` for use in orchestration.
 
 ---
 
+**Step 4 ordering (#3894):** Check whether `workflow.research_before_questions` is enabled in `.planning/config.json` (or the config from init context) — the same check `/gsd:discuss-phase` and `/gsd:new-project` already make. When **enabled**, execute the research-phase section BELOW BEFORE the discussion-phase section: a gray-area answer given without research is written to `<quick_id>-CONTEXT.md` as a locked decision downstream agents are told not to revisit, so the evidence must come first. When **false or unset**, keep the written order (discussion, then research) — behavior unchanged.
+
 <!-- gsd:section id="discussion-phase" when="flag:--discuss" -->
 If `section_manifest` is `null` or `"discussion-phase"` is in its `included` list: read and execute `gsd-core/workflows/quick/steps/discussion-phase.md`. Otherwise skip — do not read the file.
 <!-- /gsd:section -->
@@ -315,6 +317,7 @@ ${AGENT_SKILLS_PLANNER}
 <constraints>
 - Create a SINGLE plan with 1-3 focused tasks
 - Quick tasks should be atomic and self-contained
+- MUTABLE-SCOPE AUTHORITY (#3786): when concrete edit or verification scope depends on mutable external state (a merge index, PR/base diffs, the working tree), authorize scope ONLY from a live observation made at planning time — for conflict resolution that is the fresh merge index via `git diff --name-only --diff-filter=U` — or keep `files`/`verify` CONDITIONAL on that observation. Historical STATE.md entries, recovery notes, and cached PR/base diff paths may guide investigation only; they are never edit or verification authority, and a plan must not enumerate them as authorized files "pending replacement".
 ${RESEARCH_MODE ? '- Research findings are available — use them to inform library/pattern choices' : '- No research phase'}
 ${VALIDATE_MODE ? '- Target ~40% context usage (structured for verification)' : '- Target ~30% context usage (simple, focused)'}
 ${VALIDATE_MODE ? '- MUST generate `must_haves` in plan frontmatter (truths, artifacts, key_links)' : ''}

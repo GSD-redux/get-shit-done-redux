@@ -232,7 +232,10 @@ const BOUNDARY_COMMANDS = [
   },
   {
     label: 'milestone complete',
-    argv: ['milestone', 'complete', 'v1.1', '--force'],
+    // --confirm is the mutation opt-in (#3726) — without it the command
+    // refuses before touching anything, and this fixture must genuinely
+    // succeed. --force alone does not imply it.
+    argv: ['milestone', 'complete', 'v1.1', '--force', '--confirm'],
     setup: (tmpDir) => {
       // --force bypasses both the TRUNCATED-scope guard and the
       // unstarted-phase (no_directory) guard, so this fixture only needs a

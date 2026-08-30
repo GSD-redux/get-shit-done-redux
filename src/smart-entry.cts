@@ -599,7 +599,13 @@ export function classify(s: SmartEntrySignals): Situation {
   if (isComplete(s)) return 'complete';
   if (/\bplanning|planned\b/i.test(s.status)) return 'planning';
   if (/\bexecut(e|ing)|active|in.progress|building\b/i.test(s.status)) return 'executing';
-  if (/\bverify|review|needs.review|pending.review\b/i.test(s.status)) return 'verify-pending';
+  // #3864: `verif` (not `verify`) — the same stem state-document's
+  // normalizeStateStatus matches. "verified" and "verification" contain no
+  // "verify" substring, so the exact word left them falling through to
+  // `unknown` (or idle-stranded on a clean unpushed tree — differently
+  // wrong). verify_failed is tested above, so a failed verification still
+  // wins over this branch.
+  if (/\bverif|review|needs.review|pending.review\b/i.test(s.status)) return 'verify-pending';
   if (isIdleStranded(s)) return 'idle-stranded';
   return 'unknown';
 }

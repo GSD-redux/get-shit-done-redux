@@ -35,8 +35,10 @@
 // See docs/TESTING-SUITES.md for full grouping policy.
 'use strict';
 
-const { readdirSync, readFileSync } = require('fs');
+const { readdirSync, readFileSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } = require('fs');
 const { join, basename } = require('path');
+const { tmpdir } = require('os');
+const { pathToFileURL } = require('url');
 const { execFileSync } = require('child_process');
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 const {
@@ -219,6 +221,29 @@ function parseShardArg(value) {
   return { index, total };
 }
 
+// Parse RUN_TESTS_SHARD_RESERVE (#4070) — "<index>:<weight>", e.g. "1:77":
+// give shard `index` (1-based) a virtual head start of `weight` LPT weight
+// units before any real file is placed. This is an advisory operator knob,
+// not a CLI flag with a hard-error contract like --shard: it is set from a
+// GitHub Actions matrix expression (test.yml), so a malformed or absent value
+// must degrade to "no reserve" rather than take the whole job down — the same
+// fail-open precedent as positiveNumberEnv elsewhere in this file. Returns
+// `null` for anything malformed; the caller is responsible for checking
+// `index` against the shard total it actually has (this function has no
+// access to that).
+function parseShardReserve(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const m = /^(\d+):(-?\d+(?:\.\d+)?)$/.exec(trimmed);
+  if (!m) return null;
+  const index = Number(m[1]);
+  const weight = Number(m[2]);
+  if (!Number.isInteger(index) || index < 1) return null;
+  if (!Number.isFinite(weight) || weight < 0) return null;
+  return { index, weight };
+}
+
 // Deterministic partition of an ALREADY-SORTED file list. Without a weigher
 // this is the original round-robin (#1212):
 // Shard `index` (1-based) receives every file whose position k in the sorted
@@ -241,7 +266,20 @@ function parseShardArg(value) {
 // This is the same algorithm packChunks uses one level down (#2456/#2463), so
 // both layers now share one cost model. Omitting `weightOf` keeps the legacy
 // round-robin byte-identical — callers with no timing data lose nothing.
-function selectShard(sortedFiles, { index, total }, weightOf) {
+//
+// `initialWeights` (#4070, optional): per-bin starting weight, indexed 0..
+// total-1 (bin 0 = shard 1). Some shards carry a FIXED cost this function has
+// no other way to see — test.yml pins four aux suites to shard 1 only, so
+// shard 1's real cost is always "its LPT-balanced unit-test slice PLUS that
+// fixed aux cost," while shards 2..N carry only their slice. Giving bin 0 a
+// virtual head start before any file is placed makes LPT route FEWER files to
+// it, converging every bin's FINAL total (assigned weight + its initial
+// weight) toward equal instead of converging raw assigned weight toward
+// equal — which is what left shard 1 structurally overloaded. Only meaningful
+// on the weighted (LPT) path: the round-robin fallback below has no notion of
+// weight to rebalance around, so `initialWeights` is a no-op there — a caller
+// with no timing table has no basis to compute a meaningful reserve either.
+function selectShard(sortedFiles, { index, total }, weightOf, initialWeights) {
   if (total === 1) return sortedFiles;
   if (typeof weightOf !== 'function') {
     return sortedFiles.filter((_, k) => k % total === index - 1);
@@ -253,7 +291,15 @@ function selectShard(sortedFiles, { index, total }, weightOf) {
     const w = weightOf(file);
     return Number.isFinite(w) && w >= 0 ? w : 0;
   };
-  const bins = Array.from({ length: total }, () => ({ weight: 0, picks: [] }));
+  // Same clamp applied to a caller-supplied reserve: a hostile value (NaN,
+  // negative, Infinity — e.g. a malformed RUN_TESTS_SHARD_RESERVE) must
+  // degrade to "no reserve" rather than poisoning every subsequent
+  // lightest-bin comparison the same way an unclamped file weight would.
+  const safeInitial = (i) => {
+    const w = Array.isArray(initialWeights) ? initialWeights[i] : undefined;
+    return Number.isFinite(w) && w >= 0 ? w : 0;
+  };
+  const bins = Array.from({ length: total }, (_, i) => ({ weight: safeInitial(i), picks: [] }));
   // LPT: heaviest first, each into the currently-lightest bin. Ties break on
   // the caller's sort position, and the lightest-bin scan takes the FIRST
   // minimum, so the partition is byte-identical across Windows/macOS/Linux —
@@ -682,6 +728,117 @@ function selectExplicitFiles(allFiles, filesValue, filesFrom) {
   return { files: [...new Set(selected)] };
 }
 
+// #3889: reads back the ndjson companion reporter's destination file for one
+// chunk and reduces it to "which file(s) were in flight" — a `test:dequeue`
+// with no matching `test:pass`/`test:fail` FOR THE SAME FILE. `test:dequeue`
+// is emitted by the RUNNER the moment it begins a spawned test-file child,
+// independent of whether anything inside that file ever completes — it is
+// the correct "in flight" signal precisely BECAUSE a hang never completes.
+// `test:start`/`test:pass`/`test:fail` are per-SUBTEST events that node:test
+// only surfaces to the parent once the child reports that subtest, which
+// happens on completion — a subtest that hangs forever inside `new
+// Promise(() => {})` never reports `test:start` either, so those three event
+// types alone can NEVER see a genuine hang (this was the root cause of the
+// feature never working: the three original event types are precisely the
+// ones a hang guarantees are never emitted). `test:start` is still tracked
+// here as a SECONDARY in-flight signal (a file can legitimately produce
+// both), never as the primary one. Tracked per FILE, not per (file, nesting,
+// testNumber) — dequeue/enqueue are file-level events with no subtest
+// identity, so file is the only key both event families share.
+//
+// Tolerant of a destination file that is missing (reporter never flushed
+// anything before the kill) or whose last line is truncated mid-write (the
+// child is SIGKILLed, not given a chance to finish a buffered write) — both
+// degrade to "no in-flight file identified" rather than throwing, since this
+// is a best-effort diagnostic layered on top of, never a precondition for,
+// the timeout it explains.
+function analyzeChunkEvents(eventsPath) {
+  let raw;
+  try {
+    raw = readFileSync(eventsPath, 'utf8');
+  } catch {
+    // The events file never existed — either GSD_RUN_TESTS_EVENTS_FILE never
+    // resolved to a writable path, or the reporter module never loaded in the
+    // child at all (the `reporter:init` marker below is the reporter's very
+    // FIRST action, before any test can run, so its absence pins the failure
+    // to reporter load/resolution, not to the tests). Distinct from "file
+    // exists but only the init marker was written" (readError=false,
+    // sawInitMarker=true, anyDequeued=false) so the diagnostic below can say
+    // explicitly WHICH of the two happened, rather than silently collapsing
+    // both into "no in-flight file identified".
+    return {
+      files: [],
+      staleMs: null,
+      sawAnyEvent: false,
+      sawInitMarker: false,
+      anyDequeued: false,
+      readError: true,
+    };
+  }
+  // Map preserves insertion order; re-`set`ting an existing key moves it to
+  // the END, so iterating this map's keys yields "most recently
+  // dequeued/started" LAST — reversed below to report most-recent-first.
+  const dequeuedAt = new Map(); // file -> last dequeue/start ts seen
+  const terminated = new Set(); // files with an observed test:pass/test:fail
+  let lastTs = null;
+  let sawInitMarker = false;
+  let sawAnyEvent = false;
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue;
+    let evt;
+    try {
+      evt = JSON.parse(line);
+    } catch {
+      continue; // truncated trailing line from a mid-write kill
+    }
+    if (typeof evt.ts === 'number') lastTs = evt.ts;
+    if (evt.type === 'reporter:init') {
+      sawInitMarker = true;
+      continue; // not a test event — never tracked in inFlight, never proof a test ran
+    }
+    sawAnyEvent = true;
+    if (!evt.file) continue; // defensive: every recorded type carries `file`
+    if (evt.type === 'test:dequeue' || evt.type === 'test:start') {
+      dequeuedAt.delete(evt.file); // move to most-recent position
+      dequeuedAt.set(evt.file, evt.ts);
+      terminated.delete(evt.file); // a re-dequeue (retry) puts it back in flight
+    } else if (evt.type === 'test:pass' || evt.type === 'test:fail') {
+      terminated.add(evt.file);
+    }
+    // test:enqueue is intentionally NOT a start signal here: "enqueued" means
+    // "queued to run", not "running" — test:dequeue is the runner actually
+    // picking the file up, which is the moment that matters for "in flight".
+  }
+  const files = [...dequeuedAt.keys()].filter((f) => !terminated.has(f)).reverse();
+  return {
+    files,
+    staleMs: lastTs !== null ? Date.now() - lastTs : null,
+    sawAnyEvent,
+    sawInitMarker,
+    anyDequeued: dequeuedAt.size > 0,
+    readError: false,
+  };
+}
+
+// #3889: ranks a killed chunk's files heaviest-first using the same weigher
+// the packer used to build the chunk, and flags any file the timings table
+// has no measurement for at all (as opposed to one that IS measured but
+// happens to be cheap) — an unmeasured file is an unknown quantity, not a
+// known-light one, and the table itself is advisory/stale (see the
+// loadTestTimings header), so this is presented as a hint, never a verdict.
+function rankChunkFilesByWeight(files, weightOf, timingsTable) {
+  return [...files]
+    .map((f) => ({ base: basename(f), weight: weightOf(f) }))
+    .sort((a, b) => b.weight - a.weight)
+    .map(({ base, weight }, idx) => {
+      const measured = timingsTable ? Object.hasOwn(timingsTable.timings, base) : false;
+      return `  ${idx + 1}. ${base} (weight=${weight.toFixed(2)}${
+        measured ? '' : ', UNMEASURED — absent from tests/test-timings.json (table is advisory'
+          + ' and stale; treat this file as an unknown cost, not a cheap one)'
+      })`;
+    });
+}
+
 function main() {
   const args = process.argv.slice(2);
   const parsed = parseArgs(args);
@@ -765,7 +922,32 @@ function main() {
   if (usingShard) {
     emptyBeforeShard = selectedNames.length === 0;
     shardInput = [...selectedNames].sort();
-    selectedNames = selectShard(shardInput, parsed.shard, fileWeightOf());
+    // #4070: RUN_TESTS_SHARD_RESERVE gives one shard a virtual head start in
+    // LPT weight units (same units fileWeightOf() already produces — no ms
+    // conversion needed) BEFORE any file is placed, so the packer routes
+    // fewer files to a shard that test.yml already knows carries a fixed
+    // extra cost outside this script's model (the aux suites pinned to shard
+    // 1 only). Every shard job of a run must build the IDENTICAL
+    // initialWeights array — the partition is recomputed independently in
+    // each shard's own process, so a value that differed between them would
+    // silently desync which files land where (the same hazard the `sig`
+    // cross-job fingerprint below already guards for the file list itself).
+    // Malformed/absent/out-of-range input degrades to no reserve — advisory,
+    // never gating, matching every other knob this script reads from the
+    // environment.
+    let initialWeights;
+    const reserve = parseShardReserve(process.env.RUN_TESTS_SHARD_RESERVE);
+    if (reserve && reserve.index <= parsed.shard.total) {
+      initialWeights = Array.from({ length: parsed.shard.total }, () => 0);
+      initialWeights[reserve.index - 1] = reserve.weight;
+    } else if (process.env.RUN_TESTS_SHARD_RESERVE) {
+      console.error(
+        `run-tests: RUN_TESTS_SHARD_RESERVE="${process.env.RUN_TESTS_SHARD_RESERVE}" is not a `
+        + `valid "<index>:<weight>" reserve for --shard total ${parsed.shard.total} — ignoring `
+        + '(no reserve applied)',
+      );
+    }
+    selectedNames = selectShard(shardInput, parsed.shard, fileWeightOf(), initialWeights);
   }
 
   const selected = selectedNames.map(f => join(testDir, f));
@@ -960,7 +1142,83 @@ function main() {
   const nodeMajor = Number(process.versions.node.split('.')[0]);
   const forceExit = nodeMajor >= 22 && !process.env.RUN_TESTS_NO_FORCE_EXIT;
 
-  const FIXED_OVERHEAD = process.execPath.length + '--test'.length + concurrency.length + (forceExit ? '--test-force-exit'.length + 1 : 0) + 8;
+  // #3889: a second, machine-readable reporter runs ALONGSIDE the normal
+  // human one so a chunk timeout can name the file that was in flight (see
+  // scripts/lib/ndjson-reporter.cjs for the full contract writeup, its
+  // Node-docs citation, and — load-bearing — why it writes via
+  // `fs.appendFileSync` to a path passed through GSD_RUN_TESTS_EVENTS_FILE
+  // instead of yielding strings for Node to pipe through
+  // `--test-reporter-destination`: that destination is backed by an
+  // `fs.WriteStream`, which BUFFERS, and execFileSync's timeout SIGKILLs the
+  // child — uncatchable, zero chance to flush — so a yield-based reporter can
+  // lose every event still sitting in the stream's buffer, which is exactly
+  // the case this feature exists to diagnose (confirmed live: chunk killed at
+  // 2006ms produced a timer-based "killed after 2006ms" line — which lives in
+  // this parent process — but zero usable in-flight-file events from the
+  // reporter, which lives in the child and never flushed). Passing
+  // --test-reporter at all replaces node's implicit default reporter
+  // entirely, so the human reporter must also be named explicitly,
+  // reproducing node's own default selection (spec on a TTY, tap otherwise)
+  // so visible stdout output is unchanged.
+  //
+  // Node's documented multi-reporter contract requires EVERY --test-reporter
+  // to be paired with its own --test-reporter-destination, even though the
+  // ndjson reporter yields nothing and ignores its own destination — so the
+  // pairing still needs a sink argument. Pointed at the OS null device (a
+  // FIXED-length constant, unlike the old per-chunk events path) rather than
+  // a real file: it stays empty by design, since the durable write path is
+  // now the env var below, not this destination.
+  //
+  // One tmp dir for the whole run (not per-chunk) to avoid mkdtemp churn;
+  // each chunk gets its own events file inside it so a diagnostic read never
+  // races with, or is polluted by, another chunk's events. Deleted on the
+  // success path; kept only long enough to read back on a timeout.
+  const eventsDir = mkdtempSync(join(tmpdir(), 'gsd-run-tests-events-'));
+  // #3889: Node documents `--test-reporter`'s value as "a string similar to
+  // those used in import() statements" (https://nodejs.org/api/test.html#--test-reporter),
+  // NOT a bare filesystem path — a bare absolute path is not a portable
+  // import specifier (notably on Windows, where `C:\...` is not valid
+  // import()able syntax). Converting through pathToFileURL is the fix that
+  // hardens reporter resolution against a possible root cause of #3889: the
+  // events file never being created at all because the reporter module
+  // itself never loaded in the child. This makes the resulting string
+  // LONGER than the bare path, which is why reporterOverhead/FIXED_OVERHEAD
+  // below are derived from the final reporterArgs strings, not a literal
+  // constant — they must reflect whatever this line actually produces.
+  const reporterModulePath = pathToFileURL(join(__dirname, 'lib', 'ndjson-reporter.cjs')).href;
+  const humanReporter = process.stdout.isTTY ? 'spec' : 'tap';
+  // Chunk index zero-padded to a fixed width so the events path's length is
+  // stable across chunks (kept for readability/debuggability; it no longer
+  // feeds FIXED_OVERHEAD since the path now travels via env, not argv). 3
+  // digits covers up to 999 chunks — this suite chunks into the tens, never
+  // close to that ceiling.
+  const eventsPathFor = (i) => join(eventsDir, `chunk-${String(i).padStart(3, '0')}.ndjson`);
+  // Fixed argv for every chunk: the events path moved to the environment
+  // (GSD_RUN_TESTS_EVENTS_FILE, set per-chunk below in execFileSync's `env`),
+  // which does NOT count toward the Windows 32,767-char argv ceiling — only
+  // this fixed sink destination does.
+  //
+  // The ndjson reporter yields nothing and ignores its own destination — the
+  // durable write path is GSD_RUN_TESTS_EVENTS_FILE above — but Node still
+  // opens this destination as a real fs.WriteStream and fsyncs it on close,
+  // so it MUST be a regular file. os.devNull (a character device on every
+  // platform) fails that fsync with EINVAL, crashing every chunk, not just
+  // the timeout path (confirmed live: 43/43 chunk failures, "EINVAL: invalid
+  // argument, fsync" on WriteStream close). Do not re-point this at devNull —
+  // it is the ONE destination flavor this feature cannot use. Pre-created
+  // once, alongside eventsDir, so it stays empty and its path length is
+  // identical across every chunk (see FIXED_OVERHEAD below).
+  const reporterSinkPath = join(eventsDir, 'reporter-sink.txt');
+  writeFileSync(reporterSinkPath, '');
+  const reporterArgs = [
+    `--test-reporter=${humanReporter}`,
+    '--test-reporter-destination=stdout',
+    `--test-reporter=${reporterModulePath}`,
+    `--test-reporter-destination=${reporterSinkPath}`,
+  ];
+  const reporterOverhead = reporterArgs.reduce((sum, a) => sum + a.length + 1, 0);
+
+  const FIXED_OVERHEAD = process.execPath.length + '--test'.length + concurrency.length + (forceExit ? '--test-force-exit'.length + 1 : 0) + reporterOverhead + 8;
   const chunks = packChunks(selected, {
     weightOf: fileWeightOf(),
     maxWeight: MAX_FILES_PER_CHUNK,
@@ -970,9 +1228,20 @@ function main() {
 
   // A chunk that still hangs (a leak the backstop somehow misses, or a wedged
   // subprocess) must fail loudly rather than silently burn the job's wall-clock
-  // budget until the CI runner cancels the whole job. Default 10 min per chunk:
-  // well above a healthy chunk (~4-5 min on the windows lane) but below the 20m
-  // job cap. Operator/test override via RUN_TESTS_CHUNK_TIMEOUT_MS.
+  // budget. Default 10 min per chunk. Operator/test override via
+  // RUN_TESTS_CHUNK_TIMEOUT_MS.
+  //
+  // Correction: this used to be justified as "below the 20m job cap" — that is
+  // stale. The full-test lane is now SHARDED 3x with `timeout-minutes: 45` in
+  // .github/workflows/test.yml, and that budget is asserted by
+  // tests/ci-test-job-timeout-budget.test.cjs. Consequence: the 600s
+  // per-chunk cap below is now the BINDING constraint, not the job cap.
+  // Evidence (measured 2026-08-28): windows shards ran 19m+ while every macos
+  // shard had already finished — nowhere near 45m — yet chunk 1/5 was killed
+  // at 600s on two separate runs (b351c83e0, c3e667df3), presenting as
+  // "# fail 0" with exit 1. Do not reason about a modern chunk kill using the
+  // old 20m silent-cancel model; they are different failure modes with
+  // different evidence.
   const chunkTimeoutMs = positiveNumberEnv(process.env.RUN_TESTS_CHUNK_TIMEOUT_MS, 600000);
 
   // #2665: snapshot GSD's install footprint in every LIVE runtime config dir
@@ -1003,32 +1272,107 @@ function main() {
     if (chunks.length > 1) {
       console.error(`run-tests: chunk ${i + 1}/${chunks.length} — ${chunks[i].length} files`);
     }
+    const chunkEventsPath = eventsPathFor(i);
+    const chunkStartedAt = process.hrtime.bigint();
     try {
       execFileSync(
         process.execPath,
-        ['--test', ...(forceExit ? ['--test-force-exit'] : []), concurrency, ...chunks[i]],
+        [
+          '--test',
+          ...(forceExit ? ['--test-force-exit'] : []),
+          concurrency,
+          ...reporterArgs,
+          ...chunks[i],
+        ],
         {
           stdio: 'inherit',
-          env: { ...process.env },
+          env: { ...process.env, GSD_RUN_TESTS_EVENTS_FILE: chunkEventsPath },
           timeout: chunkTimeoutMs,
         },
       );
+      const elapsedMs = Number(process.hrtime.bigint() - chunkStartedAt) / 1e6;
+      console.error(
+        `run-tests: chunk ${i + 1}/${chunks.length} completed in ${elapsedMs.toFixed(0)}ms`,
+      );
+      // Success path only (#3889): the events file has served its purpose —
+      // delete it now rather than let it accumulate across a multi-chunk run.
+      try {
+        unlinkSync(chunkEventsPath);
+      } catch {
+        // Best-effort; a missing/already-gone file is not an error here.
+      }
     } catch (err) {
+      const elapsedMs = Number(process.hrtime.bigint() - chunkStartedAt) / 1e6;
       // When the per-chunk timeout fires, execFileSync kills the child and
       // surfaces it as err.code === 'ETIMEDOUT' (POSIX) and/or err.killed === true
       // (platform-dependent). Check both so detection holds on Windows and POSIX.
       const timedOut = err.killed === true || err.code === 'ETIMEDOUT';
+      console.error(
+        `run-tests: chunk ${i + 1}/${chunks.length} ${timedOut ? 'was killed' : 'failed'} ` +
+          `after ${elapsedMs.toFixed(0)}ms`,
+      );
       if (timedOut) {
+        // #3889: name the file(s) in flight when the kill fired, using the
+        // ndjson companion reporter's destination file (stdio:'inherit' means
+        // this parent never saw the child's own stdout, so it cannot know
+        // otherwise). Falls back to "no file identified" rather than
+        // throwing when the reporter file is missing/empty/truncated.
+        const {
+          files: inFlightFiles,
+          staleMs,
+          sawInitMarker,
+          anyDequeued,
+          readError,
+        } = analyzeChunkEvents(chunkEventsPath);
+        const inFlightMsg = inFlightFiles.length > 0
+          ? `In flight when killed (test:dequeue with no matching pass/fail): ` +
+            `${inFlightFiles.map((f) => basename(f)).join(', ')} — last reporter event was ` +
+            `${staleMs !== null ? `${staleMs}ms` : 'an unknown time'} before this diagnostic ` +
+            `(small = output kept flowing until the kill = slow; large = it stopped early = hang).`
+          : anyDequeued
+            ? `No file was in flight when killed — every file the runner dequeued in this ` +
+              `chunk already terminated (test:pass/test:fail seen for each), so the CHILD ` +
+              `PROCESS itself hung after its last test finished (last reporter event was ` +
+              `${staleMs !== null ? `${staleMs}ms` : 'an unknown time'} before this ` +
+              `diagnostic); suspect a leaked handle outside any single test, or an ` +
+              `after-tests hook.`
+            : readError
+              ? `THE EVENTS FILE DOES NOT EXIST for this chunk — not even the reporter's own ` +
+                `\`reporter:init\` marker, which is the reporter module's first action before ` +
+                `it reads a single test event. Two possible causes, NOT distinguished by this ` +
+                `diagnostic: the ndjson reporter module never loaded in the child at all ` +
+                `(--test-reporter resolution failure), or the child was killed before the ` +
+                `reporter function was ever invoked (process/spawn startup stall). This ` +
+                `diagnostic could not identify an in-flight file.`
+              : sawInitMarker
+                ? `THE REPORTER LOADED BUT THE RUNNER NEVER DEQUEUED A SINGLE FILE — the events ` +
+                  `file contains only the reporter's own \`reporter:init\` marker (and possibly ` +
+                  `\`test:enqueue\` events with no matching \`test:dequeue\`), so the reporter ` +
+                  `module was invoked and ran, but node's test runner never began executing any ` +
+                  `file in this chunk before the kill. This is a genuinely surprising state — ` +
+                  `\`test:dequeue\` fires the instant the runner starts a file, independent of ` +
+                  `whether anything inside it ever completes. Two possible causes, NOT ` +
+                  `distinguished by this diagnostic: node --test itself stalled before ` +
+                  `dispatching any test file, or process/spawn startup stalled. This diagnostic ` +
+                  `could not identify an in-flight file.`
+                : `No reporter events were recorded before the kill — the companion reporter's ` +
+                  `events file exists but is empty/unparseable (no \`reporter:init\` marker and ` +
+                  `no test events), so even the reporter's first appendFileSync may not have ` +
+                  `completed. This diagnostic could not identify an in-flight file.`;
+
+        const table = loadTestTimings(process.env.RUN_TESTS_TIMINGS_FILE || DEFAULT_TIMINGS_PATH);
+        const ranked = rankChunkFilesByWeight(chunks[i], fileWeightOf(), table).join('\n');
+
         console.error(
           `run-tests: chunk ${i + 1}/${chunks.length} exceeded the per-chunk timeout ` +
             `of ${chunkTimeoutMs}ms and was killed. Two possible causes: (1) a test leaks ` +
             `an open handle (un-terminated Worker, un-killed child process, or ref'd timer) ` +
             `so node --test never exits — but --test-force-exit already guards that, so if it ` +
             `is enabled suspect (2) the chunk is legitimately too slow for the budget (too ` +
-            `many/too-heavy files packed together). Check whether output kept flowing until ` +
-            `the kill (slow) vs stopped early (hang) before assuming a leak. Files: ${chunks[i]
-              .map(f => f.split(/[\\/]/).pop())
-              .join(' ')}`,
+            `many/too-heavy files packed together).\n${inFlightMsg}\n` +
+            `Files in this chunk, heaviest-first by measured weight ` +
+            `(table last regenerated 2026-08-07; real Windows cost runs ~2.2x the recorded ` +
+            `figure, so treat every number as a floor):\n${ranked}`,
         );
       }
       const code = err.status || 1;
@@ -1063,6 +1407,17 @@ function main() {
       // and the first non-zero exit is reported at the end.
     }
   }
+  // #3889: sweep any events file the per-chunk success path didn't already
+  // delete (a timeout diagnostic read one but left it on disk; an aborted
+  // run may leave more that were never opened). All diagnostics that needed
+  // these files have already been printed above, so this is unconditional —
+  // best-effort, since a failure to remove a tmp dir must never mask the
+  // real chunk-loop exit code.
+  try {
+    rmSync(eventsDir, { recursive: true, force: true });
+  } catch {
+    // Non-fatal: an orphaned OS tmp dir is a cosmetic leak, not a test result.
+  }
   // #2665: post-suite hermeticity check. Runs even when tests failed — a leaked
   // global install is worth reporting alongside the failure that hid it, and
   // suppressing it on red would hide it exactly when the suite is least trusted.
@@ -1093,11 +1448,13 @@ module.exports = {
   ensureBuiltArtifacts,
   ensureBuiltHooks,
   parseShardArg,
+  parseShardReserve,
   selectShard,
   positiveNumberEnv,
   loadTestTimings,
   makeFileWeigher,
   packChunks,
+  analyzeChunkEvents,
   DEFAULT_TIMINGS_PATH,
   // Exported so callers (tests/ci-test-scope.test.cjs) can assert the
   // suite-token resolution contract in-process rather than through a timed

@@ -211,6 +211,11 @@ function linkOrCopyFile(src, dest) {
 function buildOverlayRepo(fileOverrides, opts = {}) {
   const mode = opts.mode || 'link';
   const warn = opts.warn || console.warn;
+  // #3900: test-only root override (mirrors cold-runtime-lib-fixture's
+  // repoRoot) — the #3900 regression tests build the overlay from a tiny
+  // synthetic root instead of walking the whole repo; every existing caller
+  // uses the default REPO_ROOT and is unaffected.
+  const root = opts.root || REPO_ROOT;
   const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2930-overlay-'));
   const entries = Object.entries(fileOverrides).map(([relPath, content]) => ({
     parts: relPath.split('/'),
@@ -255,6 +260,13 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
       }
       if (srcStat.isDirectory()) {
         place(srcPath, destPath, overridden || [], false);
+      } else if (!srcStat.isFile()) {
+        // #3900: sockets, FIFOs, device nodes are not repository content.
+        // Classifying them as files made copyFileSync throw ENXIO on a
+        // socket (a FIFO would block until a writer appears) — 32 local
+        // test failures from a daemon's working-tree socket, none about the
+        // code under test. Skip: the overlay mirrors files, not devices.
+        continue;
       } else if (mode === 'copy') {
         // Real independent inode — a write through this path in the overlay
         // can never alias back to REPO_ROOT's own tracked file (see
@@ -272,7 +284,7 @@ function buildOverlayRepo(fileOverrides, opts = {}) {
     }
   }
 
-  place(REPO_ROOT, tmpRepo, entries, true);
+  place(root, tmpRepo, entries, true);
 
   if (skipped.length > 0) {
     // Not thrown: a source that left the tree mid-walk is genuinely not part of

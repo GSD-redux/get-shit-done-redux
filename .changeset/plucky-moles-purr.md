@@ -1,5 +1,0 @@
----
-type: Changed
-pr: 3718
----
-**The phase researcher no longer treats missing metadata as a compatibility constraint** — a claim like "this library does not support that runtime version", drawn from an absent `python_requires`, `engines` field, per-version classifier, changelog entry, or support-matrix row, no longer earns `[VERIFIED]` however authoritative the registry or docs consulted. An absence says nothing about the version being ruled out and nothing about the version being standardized on, so the same evidence would "prove" both; the only route from an absence to `[VERIFIED]` is a positive falsification attempt with its failing output pasted, and everything short of that stays `[ASSUMED]`, which already routes through a confirmation checkpoint before it can lock a decision. A present declared constraint and an affirmatively documented incompatibility are untouched. Previously an honestly-tagged absence could lock a CONTEXT.md decision and produce a real version downgrade that no downstream stage re-derived. (#2951)

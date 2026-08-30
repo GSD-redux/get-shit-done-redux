@@ -16,7 +16,7 @@
 
 'use strict';
 
-const { describe, test, beforeEach, afterEach } = require('node:test');
+const { describe, test, before, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +24,7 @@ const path = require('path');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup, CONFIG_LOCATION_ENV_KEYS } = require('./helpers.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const HARNESS = path.join(__dirname, '..', 'scripts', 'run-tests.cjs');
 
@@ -54,6 +55,24 @@ function runHarness(testDir, args = [], extraEnv = {}) {
   // doesn't refuse to run with "recursive run() skipping running files".
   const env = { ...process.env, GSD_TEST_DIR: testDir, ...extraEnv };
   delete env.NODE_TEST_CONTEXT;
+  // #4070: strip RUN_TESTS_SHARD_RESERVE inherited from the OUTER job's own
+  // environment. test.yml sets it on the "Run unit tests" step for the real
+  // production shard 1 of the full-scope lane — and since these tests spawn
+  // run-tests.cjs as a CHILD of that same step, they inherit it via
+  // `...process.env` above like any other ambient var. Left unstripped, a
+  // reserve of 77 weight units utterly dwarfs these synthetic 9-file
+  // fixtures' combined weight (~0.3, since none of them are in the real
+  // timings table), so shard index 1 gets EVERY file routed away from it —
+  // a real, reproducible corruption of every test in this describe block,
+  // not a flake (confirmed live: CI run 33288554040, shard 2/3, 7 of these
+  // tests failed with exactly this signature). Deleted before `extraEnv` is
+  // applied above would be too late (spread order), so it is deleted here,
+  // AFTER composition, then only reinstated if a specific test opted in via
+  // extraEnv — preserving this file's one legitimate use (the #4070 E2E
+  // bounds-check test below, which sets it deliberately).
+  if (!Object.prototype.hasOwnProperty.call(extraEnv, 'RUN_TESTS_SHARD_RESERVE')) {
+    delete env.RUN_TESTS_SHARD_RESERVE;
+  }
   const r = runNode([HARNESS, ...args], {
     cwd: path.join(__dirname, '..'),
     env,
@@ -541,6 +560,56 @@ test('ambient GSD workstream vars are stripped by the runner', () => {
       assert.match(r.stderr, /sig=[0-9a-f]+/, 'shard diagnostics must emit an input fingerprint');
     });
 
+    // #4070 E2E: main()'s own bounds check on RUN_TESTS_SHARD_RESERVE — an
+    // index that does not exist for the shard total in play — is invisible to
+    // every pure in-memory selectShard/parseShardReserve test, because that
+    // check lives in main() itself (scripts/run-tests.cjs, the
+    // `reserve.index <= parsed.shard.total` guard and its console.error
+    // fallback), which only runs through the CLI subprocess seam. Proves both
+    // halves: the warning fires, AND the selection is provably unaffected
+    // (byte-identical to a control run with no RUN_TESTS_SHARD_RESERVE at
+    // all, both against the SAME injected timings table so the comparison
+    // isn't muddied by table drift).
+    test('RUN_TESTS_SHARD_RESERVE with an out-of-range index warns and is ignored (#4070)', () => {
+      seed(tmpDir, SHARD_NAMES);
+      const timings = {
+        schema_version: 1, unit: 'ms', timings: Object.fromEntries(
+          SHARD_NAMES.map((n, i) => [n, i % 3 === 0 ? 30000 : 100]),
+        ),
+      };
+      const tablePath = path.join(tmpDir, 'injected-timings-oob.json');
+      fs.writeFileSync(tablePath, JSON.stringify(timings));
+      try {
+        // --shard 1/3 → valid indices are 1..3. "5:999" is out of range.
+        const withBadReserve = runHarness(
+          tmpDir, ['--shard', '1/3'],
+          { RUN_TESTS_TIMINGS_FILE: tablePath, RUN_TESTS_SHARD_RESERVE: '5:999' },
+        );
+        assert.strictEqual(withBadReserve.status, 0, `stderr: ${withBadReserve.stderr}`);
+        assert.match(
+          withBadReserve.stderr,
+          /RUN_TESTS_SHARD_RESERVE="5:999" is not a valid .* for --shard total 3 — ignoring/,
+          `expected the out-of-range-index fallback warning; got stderr: ${withBadReserve.stderr}`,
+        );
+
+        const control = runHarness(
+          tmpDir, ['--shard', '1/3'],
+          { RUN_TESTS_TIMINGS_FILE: tablePath },
+        );
+        assert.strictEqual(control.status, 0, `stderr: ${control.stderr}`);
+        assert.doesNotMatch(control.stderr, /RUN_TESTS_SHARD_RESERVE/, 'control run must not warn — it sets no reserve at all');
+
+        const filesLine = (s) => (s.match(/files=\d+: (.*)$/m) || [])[1] || '';
+        assert.strictEqual(
+          filesLine(withBadReserve.stderr), filesLine(control.stderr),
+          'an out-of-range reserve index must select EXACTLY the same files as no reserve at all — '
+          + 'the fallback warning alone is not proof the reserve was actually ignored',
+        );
+      } finally {
+        try { fs.unlinkSync(tablePath); } catch { /* best effort */ }
+      }
+    });
+
     test('shard diagnostics report an identical input fingerprint across shards', () => {
       seed(tmpDir, SHARD_NAMES);
       // The cross-runner divergence guard: every shard of one run computes the
@@ -811,6 +880,274 @@ test('noop', () => {});
         r.status,
         0,
         `expected zero exit with force-exit enabled; got status=${r.status} signal=${r.signal}\nSTDERR:\n${r.stderr}`,
+      );
+    });
+  });
+
+  describe('chunk-timeout instrumentation (#3889)', () => {
+    // Consolidation (CI cost, #4015): this describe block used to spawn the
+    // harness once PER assertion group (3 success-path runs + 2 timeout-path
+    // runs = 5 subprocess boots). Each boot is expensive — run-tests.cjs
+    // starts, globs the suite, then spawns `node --test` children — so on a
+    // CI shard already within ~39s of its 15-minute cap, paying for 5 boots
+    // to check facts that all hold against the SAME run is wasted spend.
+    // Below, exactly ONE successful run and ONE timed-out run are captured
+    // once (via `before`) and every assertion group below reads from those
+    // captured results instead of spawning its own. This is the whole
+    // savings — no assertion is weakened or removed.
+    const HANGS_FOREVER_BODY = `'use strict';
+const { test } = require('node:test');
+test('hangs forever', () => new Promise(() => {}));
+`;
+
+    let successDir;
+    let successRun;
+    let eventsDirBefore;
+    let eventsDirAfter;
+    let timeoutDir;
+    let timeoutRun;
+
+    before(() => {
+      // Single SUCCESS-path run, reused by T2/T3/T5 below.
+      successDir = createTempDir('gsd-3889-success-');
+      seed(successDir, ['a.test.cjs']);
+      eventsDirBefore = fs.readdirSync(require('os').tmpdir())
+        .filter((n) => n.startsWith('gsd-run-tests-events-'));
+      successRun = runHarness(successDir, []);
+      eventsDirAfter = fs.readdirSync(require('os').tmpdir())
+        .filter((n) => n.startsWith('gsd-run-tests-events-'));
+
+      // Single TIMEOUT-path run, reused by T1/T4 below. 2000ms is kept —
+      // it is already the smallest value this suite used anywhere for the
+      // per-chunk timeout, and going lower risks flaking on a loaded CI
+      // box that has to boot node --test, register the hang, and observe
+      // the kill inside the window.
+      timeoutDir = createTempDir('gsd-3889-timeout-');
+      fs.writeFileSync(path.join(timeoutDir, 'hangs.test.cjs'), HANGS_FOREVER_BODY, 'utf8');
+      timeoutRun = runHarness(timeoutDir, [], {
+        RUN_TESTS_NO_FORCE_EXIT: '1',
+        RUN_TESTS_CHUNK_TIMEOUT_MS: '2000',
+      });
+    });
+
+    after(() => {
+      cleanup(successDir);
+      cleanup(timeoutDir);
+    });
+
+    // T2: per-chunk elapsed timing appears on the normal SUCCESS path, not
+    // only when something goes wrong — this is what makes "which chunk is
+    // drifting toward the cap" readable across ordinary green runs.
+    test('a successful chunk prints its elapsed time', () => {
+      assert.strictEqual(successRun.status, 0, `expected a clean pass; STDERR:\n${successRun.stderr}`);
+      assert.match(
+        successRun.stderr,
+        /run-tests: chunk 1\/1 completed in \d+ms/,
+        `expected a per-chunk completion timing line; STDERR:\n${successRun.stderr}`,
+      );
+    });
+
+    // T3: the ndjson companion reporter's destination file is a temp
+    // artifact of the instrumentation, not a product output — it must not
+    // survive a successful run. Assert against the OS temp root's own
+    // "gsd-run-tests-events-*" prefix (scripts/run-tests.cjs's mkdtemp
+    // prefix) rather than any run-tests-owned directory, since that IS the
+    // leak surface being guarded.
+    test('the ndjson reporter temp dir is cleaned up after a successful run', () => {
+      assert.strictEqual(successRun.status, 0, `expected a clean pass; STDERR:\n${successRun.stderr}`);
+      assert.deepStrictEqual(
+        eventsDirAfter,
+        eventsDirBefore,
+        `expected no leaked gsd-run-tests-events-* temp dir after a successful run; ` +
+          `before=${JSON.stringify(eventsDirBefore)} after=${JSON.stringify(eventsDirAfter)}`,
+      );
+    });
+
+    // T5 (regression): the human reporter's --test-reporter-destination
+    // pairing must be a regular file, not os.devNull. devNull is a character
+    // device; Node opens the reporter destination as an fs.WriteStream and
+    // fsyncs it on close, and fsync on a character device fails with EINVAL
+    // — surfaced as "Emitted 'error' event on WriteStream instance" /
+    // "EINVAL: invalid argument, fsync", which crashed EVERY chunk on the
+    // real remote run this regresses (43/43 failures), not only the timeout
+    // path. The argv construction lives entirely inside main() with no
+    // exported seam to unit-test directly (see NOTES), so this asserts the
+    // closest real, externally-observable consequence: a normal successful
+    // run must not surface that error text, and must still complete and
+    // exit 0 — both of which a reintroduced devNull destination would break
+    // on any platform where fsync(devNull) actually returns EINVAL (this
+    // suite's own bench platform, historically).
+    test('a successful run never surfaces the devNull fsync/EINVAL reporter crash', () => {
+      assert.strictEqual(successRun.status, 0, `expected a clean pass; STDERR:\n${successRun.stderr}`);
+      assert.doesNotMatch(
+        successRun.stderr,
+        /EINVAL|invalid argument, fsync|WriteStream instance/i,
+        `expected no reporter-destination fsync crash; STDERR:\n${successRun.stderr}`,
+      );
+    });
+
+    // T1: on a chunk timeout, the diagnostic must NAME the file that was
+    // still executing — not merely list every file the chunk contained (the
+    // pre-instrumentation behavior). A test that hangs INSIDE its own body
+    // (never resolving) keeps its test:start event unmatched by any
+    // test:pass/test:fail in the ndjson companion reporter's output, which
+    // is exactly the signal the diagnostic reads back on timeout.
+    test('a chunk timeout names the file that was in flight when killed', () => {
+      assert.notStrictEqual(
+        timeoutRun.status,
+        0,
+        `expected non-zero exit from a timed-out chunk; got status=${timeoutRun.status}\nSTDERR:\n${timeoutRun.stderr}`,
+      );
+      assert.match(
+        timeoutRun.stderr,
+        /In flight when killed.*hangs\.test\.cjs/s,
+        `expected the diagnostic to NAME the in-flight file, not just list the chunk; STDERR:\n${timeoutRun.stderr}`,
+      );
+    });
+
+    // Regression (#3889 recurrence): the reporter module itself, called
+    // directly with no subprocess, must return nully — this is the exact
+    // contract violation (`return []`) that crashed every chunk on the real
+    // remote run this file regresses ("Expected nully to be returned from
+    // the 'body' function but got an instance of Array", thrown by
+    // node:stream's `compose` when its async-function body returns an
+    // iterable instead of undefined/null). Also pins the NDJSON side effect:
+    // only the two handled event types are appended, verbatim, one per line.
+    test('the reporter returns nully and appends only the handled event types as NDJSON', async () => {
+      const reporter = require('../scripts/lib/ndjson-reporter.cjs');
+      const eventsFile = path.join(tmpDir, 'ndjson-reporter-events.ndjson');
+      const savedEventsFile = process.env.GSD_RUN_TESTS_EVENTS_FILE;
+      process.env.GSD_RUN_TESTS_EVENTS_FILE = eventsFile;
+      try {
+        async function* fakeEvents() {
+          yield { type: 'test:start', data: { file: 'a.test.cjs', name: 't', nesting: 0, testNumber: 1 } };
+          yield { type: 'test:diagnostic', data: { message: 'ignored' } };
+          yield { type: 'test:pass', data: { file: 'a.test.cjs', name: 't', nesting: 0, testNumber: 1 } };
+        }
+        const result = await reporter(fakeEvents());
+        assert.strictEqual(
+          result ?? null,
+          null,
+          `expected the reporter to return nully (undefined/null) per stream.compose's ` +
+            `async-function body contract; got ${JSON.stringify(result)}`,
+        );
+        const rawContent = fs.readFileSync(eventsFile, 'utf8');
+        const lines = splitLines(rawContent.trim()).filter((l) => l.length > 0);
+        assert.strictEqual(lines.length, 3, `expected exactly 3 NDJSON lines (init marker + 2 handled events); got:\n${lines.join('\n')}`);
+        const [init, start, pass] = lines.map((l) => JSON.parse(l));
+        assert.strictEqual(init.type, 'reporter:init');
+        assert.strictEqual(start.type, 'test:start');
+        assert.strictEqual(start.file, 'a.test.cjs');
+        assert.strictEqual(pass.type, 'test:pass');
+        assert.strictEqual(pass.file, 'a.test.cjs');
+      } finally {
+        if (savedEventsFile === undefined) {
+          delete process.env.GSD_RUN_TESTS_EVENTS_FILE;
+        } else {
+          process.env.GSD_RUN_TESTS_EVENTS_FILE = savedEventsFile;
+        }
+        cleanup(eventsFile);
+      }
+    });
+
+    // Regression (#3889 root cause): a hang inside a test body NEVER produces
+    // a `test:start`/`test:pass`/`test:fail` for that subtest (node:test only
+    // surfaces those to the parent once the child reports completion), so
+    // those three event types alone can never see a hang. `test:enqueue` and
+    // `test:dequeue` are emitted by the RUNNER as it queues/begins a file,
+    // independent of completion — this pins that the reporter now records
+    // both, verbatim, for exactly the "enqueue then dequeue, then nothing"
+    // shape a real hang produces.
+    test('the reporter records test:enqueue and test:dequeue for the hang shape (enqueue, dequeue, nothing else)', async () => {
+      const reporter = require('../scripts/lib/ndjson-reporter.cjs');
+      const eventsFile = path.join(tmpDir, 'ndjson-reporter-hang-shape.ndjson');
+      const savedEventsFile = process.env.GSD_RUN_TESTS_EVENTS_FILE;
+      process.env.GSD_RUN_TESTS_EVENTS_FILE = eventsFile;
+      try {
+        async function* hangShapeEvents() {
+          yield { type: 'test:enqueue', data: { file: 'hangs.test.cjs', name: 'hangs.test.cjs', nesting: 0 } };
+          yield { type: 'test:dequeue', data: { file: 'hangs.test.cjs', name: 'hangs.test.cjs', nesting: 0 } };
+          // Never yields test:start/test:pass/test:fail — this IS the hang.
+        }
+        const result = await reporter(hangShapeEvents());
+        assert.strictEqual(result ?? null, null);
+        const rawContent = fs.readFileSync(eventsFile, 'utf8');
+        const lines = splitLines(rawContent.trim()).filter((l) => l.length > 0);
+        assert.strictEqual(
+          lines.length,
+          3,
+          `expected exactly 3 NDJSON lines (init marker + enqueue + dequeue); got:\n${lines.join('\n')}`,
+        );
+        const [init, enqueue, dequeue] = lines.map((l) => JSON.parse(l));
+        assert.strictEqual(init.type, 'reporter:init');
+        assert.strictEqual(enqueue.type, 'test:enqueue');
+        assert.strictEqual(enqueue.file, 'hangs.test.cjs');
+        assert.strictEqual(dequeue.type, 'test:dequeue');
+        assert.strictEqual(dequeue.file, 'hangs.test.cjs');
+      } finally {
+        if (savedEventsFile === undefined) {
+          delete process.env.GSD_RUN_TESTS_EVENTS_FILE;
+        } else {
+          process.env.GSD_RUN_TESTS_EVENTS_FILE = savedEventsFile;
+        }
+        cleanup(eventsFile);
+      }
+    });
+
+    // #3889: the init marker is the reporter's FIRST action, written before
+    // the `for await` loop even begins — so it must land even when the
+    // source event stream yields ZERO events (e.g. the child is killed
+    // before node:test emits anything). This pins the marker's whole
+    // purpose: its presence alone proves the reporter module loaded and was
+    // invoked, independent of whether any test ever started.
+    test('the reporter writes only the init marker when the source yields zero events', async () => {
+      const reporter = require('../scripts/lib/ndjson-reporter.cjs');
+      const eventsFile = path.join(tmpDir, 'ndjson-reporter-init-only.ndjson');
+      const savedEventsFile = process.env.GSD_RUN_TESTS_EVENTS_FILE;
+      process.env.GSD_RUN_TESTS_EVENTS_FILE = eventsFile;
+      try {
+        async function* emptyEvents() {}
+        const result = await reporter(emptyEvents());
+        assert.strictEqual(
+          result ?? null,
+          null,
+          `expected the reporter to return nully even with zero source events; got ${JSON.stringify(result)}`,
+        );
+        const rawContent = fs.readFileSync(eventsFile, 'utf8');
+        const lines = splitLines(rawContent.trim()).filter((l) => l.length > 0);
+        assert.strictEqual(
+          lines.length,
+          1,
+          `expected exactly 1 NDJSON line (the init marker only); got:\n${lines.join('\n')}`,
+        );
+        const [init] = lines.map((l) => JSON.parse(l));
+        assert.strictEqual(init.type, 'reporter:init');
+        assert.strictEqual(typeof init.ts, 'number');
+      } finally {
+        if (savedEventsFile === undefined) {
+          delete process.env.GSD_RUN_TESTS_EVENTS_FILE;
+        } else {
+          process.env.GSD_RUN_TESTS_EVENTS_FILE = savedEventsFile;
+        }
+        cleanup(eventsFile);
+      }
+    });
+
+    // T4: the pre-existing timeout / abort / force-exit behavior (#1051)
+    // still holds with the reporter instrumentation wired in — the new
+    // --test-reporter flags must not change detection, the abort-on-timeout
+    // control flow, or the exit code.
+    test('existing timeout diagnostic and abort behavior are unchanged', () => {
+      assert.notStrictEqual(timeoutRun.status, 0, `expected non-zero exit; STDERR:\n${timeoutRun.stderr}`);
+      assert.match(
+        timeoutRun.stderr,
+        /exceeded the per-chunk timeout/,
+        `expected the original timeout diagnostic wording to survive; STDERR:\n${timeoutRun.stderr}`,
+      );
+      assert.match(
+        timeoutRun.stderr,
+        /run-tests: chunk 1\/1 was killed after \d+ms/,
+        `expected the new killed/elapsed line; STDERR:\n${timeoutRun.stderr}`,
       );
     });
   });
@@ -1146,6 +1483,149 @@ describe('selectShard weight-aware partition (#2472)', () => {
   });
 });
 
+// ─── #4070: reserved-weight shard partition ─────────────────────────────────
+//
+// `test.yml`'s `scope: full` lane tacks four unsharded aux suites
+// (integration/security/install/slow) onto shard 1 only, outside this
+// packer's model entirely — it balances the UNIT-TEST slice as if all three
+// shards carried equal fixed cost, when shard 1 actually carries a fixed
+// aux-suite overhead the other two do not. `initialWeights` lets a caller
+// give one (or more) bins a virtual head start before LPT places any real
+// file, so the algorithm converges on equalizing FINAL total cost (reserve +
+// assigned files) instead of raw assigned-file weight alone — the same
+// "greedy into the lightest bin" placement rule, just with non-zero starting
+// points.
+describe('selectShard reserved-weight partition (#4070)', () => {
+  const fc = require('fast-check');
+
+  const uniform = Array.from({ length: 30 }, (_, i) => `u${String(i).padStart(3, '0')}.test.cjs`);
+  const uniformWeight = () => 10;
+
+  const finalTotals = (files, total, weightOf, initialWeights) => {
+    const out = [];
+    for (let i = 1; i <= total; i++) {
+      const assigned = selectShard(files, { index: i, total }, weightOf, initialWeights)
+        .reduce((a, f) => a + weightOf(f), 0);
+      out.push(assigned + ((initialWeights && initialWeights[i - 1]) || 0));
+    }
+    return out;
+  };
+
+  // The regression: without reserve support, bin 0 gets an EQUAL share of
+  // files despite already carrying a head start, so its true final total
+  // (assigned + reserve) sits well above the other bins' — exactly the shard
+  // 1 overload this issue reports. With reserve support, LPT starts bin 0
+  // "already heavier" and hands it fewer files so all three converge.
+  test('REGRESSION: an initial reserve on one bin rebalances the rest (#4070)', () => {
+    const reserve = 80; // 8 average-cost files' worth, on a 30-file/300-weight suite
+    const totals = finalTotals(uniform, 3, uniformWeight, [reserve, 0, 0]);
+    const spread = Math.max(...totals) - Math.min(...totals);
+    assert.ok(
+      spread <= uniformWeight(),
+      `a reserved bin must converge toward the others' final totals (within one file's `
+      + `weight), not just add the reserve on top of an equal share; got totals=${totals} `
+      + `(spread=${spread})`,
+    );
+    // The reserved bin must have been handed FEWER files than an unreserved bin —
+    // otherwise "rebalancing" did nothing and the reserve is purely additive.
+    const reservedBinFiles = selectShard(uniform, { index: 1, total: 3 }, uniformWeight, [reserve, 0, 0]).length;
+    const unreservedBinFiles = selectShard(uniform, { index: 2, total: 3 }, uniformWeight, [reserve, 0, 0]).length;
+    assert.ok(
+      reservedBinFiles < unreservedBinFiles,
+      `the reserved bin (${reservedBinFiles} files) must receive fewer files than an `
+      + `unreserved bin (${unreservedBinFiles}) — otherwise the reserve had no effect on `
+      + 'placement',
+    );
+  });
+
+  test('back-compat: omitting initialWeights reproduces the unreserved partition exactly', () => {
+    for (let i = 1; i <= 3; i++) {
+      assert.deepStrictEqual(
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight),
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight, undefined),
+      );
+    }
+  });
+
+  test('a zero reserve is a no-op', () => {
+    for (let i = 1; i <= 3; i++) {
+      assert.deepStrictEqual(
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight),
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight, [0, 0, 0]),
+      );
+    }
+  });
+
+  test('a reserve applies to any bin index, not only the first', () => {
+    const reserve = 80;
+    const totals = finalTotals(uniform, 3, uniformWeight, [0, reserve, 0]);
+    const spread = Math.max(...totals) - Math.min(...totals);
+    assert.ok(spread <= uniformWeight(), `expected convergence around index 2; got ${totals}`);
+    const reservedBinFiles = selectShard(uniform, { index: 2, total: 3 }, uniformWeight, [0, reserve, 0]).length;
+    const otherBinFiles = selectShard(uniform, { index: 1, total: 3 }, uniformWeight, [0, reserve, 0]).length;
+    assert.ok(reservedBinFiles < otherBinFiles, `reserved bin 2 should get fewer files; got ${reservedBinFiles} vs ${otherBinFiles}`);
+  });
+
+  test('REGRESSION: a reserve larger than the whole suite still terminates and assigns every file', () => {
+    const reserve = 1e9;
+    const shards = [];
+    for (let i = 1; i <= 3; i++) shards.push(selectShard(uniform, { index: i, total: 3 }, uniformWeight, [reserve, 0, 0]));
+    const flat = shards.flat();
+    assert.deepStrictEqual([...flat].sort(), [...uniform].sort(), 'every file must still be placed exactly once');
+    // The massively-reserved bin should get the fewest (possibly zero) files.
+    assert.ok(shards[0].length <= shards[1].length && shards[0].length <= shards[2].length);
+  });
+
+  test('REGRESSION: a hostile reserve value clamps to zero instead of poisoning placement', () => {
+    for (const hostile of [NaN, -5, Infinity]) {
+      const shards = [];
+      for (let i = 1; i <= 3; i++) shards.push(selectShard(uniform, { index: i, total: 3 }, uniformWeight, [hostile, 0, 0]));
+      const sizes = shards.map((s) => s.length);
+      assert.ok(
+        Math.max(...sizes) - Math.min(...sizes) <= 1,
+        `a hostile reserve (${hostile}) must clamp to 0, not collapse/starve a bin; sizes=${sizes}`,
+      );
+    }
+  });
+
+  // Generalizes the existing "no shard exceeds average + heaviest file" bound
+  // (#2472) to include a single reserved bin — but the Graham-style proof
+  // (the max-load bin was the argmin, hence <= average, at the moment its
+  // LAST item was placed) only applies to a bin that actually received at
+  // least one item. A reserve large enough that its bin never receives any
+  // real item stays at EXACTLY its initial reserve forever — no amount of
+  // routing real items elsewhere can dilute a fixed head start below itself
+  // — so the true bound is the LARGER of the classic Graham term and the
+  // single biggest reserve. (Counterexample that falsified the original,
+  // reserve-blind-to-domination version of this bound: weights=[1,1,1],
+  // total=2, reserve=6 on bin 0 — bin 0 receives zero items and stays at 6,
+  // while (sum+reserve)/total+max = 4.5+1 = 5.5 < 6.)
+  test('property: no shard exceeds max(reserve, average(+reserve) + heaviest file)', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({ min: 1, max: 60000 }), { minLength: 3, maxLength: 60 }),
+        fc.integer({ min: 2, max: 6 }),
+        fc.integer({ min: 0, max: 200000 }),
+        fc.integer({ min: 0, max: 5 }),
+        (weights, total, reserve, reserveIdxRaw) => {
+          const files = weights.map((_, i) => `p${String(i).padStart(3, '0')}.test.cjs`);
+          const w = (f) => weights[Number(f.slice(1, 4))];
+          const reserveIdx = reserveIdxRaw % total;
+          const initialWeights = Array.from({ length: total }, (_, i) => (i === reserveIdx ? reserve : 0));
+          const sums = finalTotals(files, total, w, initialWeights);
+          const grahamBound = (weights.reduce((a, b) => a + b, 0) + reserve) / total + Math.max(...weights);
+          const bound = Math.max(reserve, grahamBound);
+          assert.ok(
+            Math.max(...sums) <= bound + 1e-9,
+            `bound violated: max=${Math.max(...sums)} bound=${bound} sums=${sums}`,
+          );
+        },
+      ),
+      { numRuns: 200, seed: 24724 },
+    );
+  });
+});
+
 describe('parseShardArg (#1212)', () => {
   test('parses i/n into { index, total }', () => {
     assert.deepStrictEqual(parseShardArg('2/3'), { index: 2, total: 3 });
@@ -1161,6 +1641,31 @@ describe('parseShardArg (#1212)', () => {
   }
 });
 
+// #4070: RUN_TESTS_SHARD_RESERVE env-var grammar — "<index>:<weight>", the
+// operator knob test.yml uses to tell the full-scope lane's unit-test shard
+// selection that shard 1 already carries a fixed aux-suite cost. Fail-open
+// on anything malformed (mirrors positiveNumberEnv's precedent elsewhere in
+// this file): a typo must degrade to "no reserve", never poison placement or
+// throw and take the whole CI job down with it.
+describe('parseShardReserve (#4070)', () => {
+  const { parseShardReserve } = require('../scripts/run-tests.cjs');
+
+  test('parses "<index>:<weight>" into { index, weight }', () => {
+    assert.deepEqual(parseShardReserve('1:77'), { index: 1, weight: 77 });
+    assert.deepEqual(parseShardReserve('2:0'), { index: 2, weight: 0 });
+    assert.deepEqual(parseShardReserve('3:12.5'), { index: 3, weight: 12.5 });
+  });
+
+  for (const v of [undefined, null, '', '  ', 'x', '1', '1:', ':77', '0:77', '-1:77', '1:-5', '1.5:77', '1:abc', 'a:b', '1:2:3']) {
+    test(`rejects malformed value ${JSON.stringify(v)}`, () => {
+      assert.equal(parseShardReserve(v), null, `expected null for ${JSON.stringify(v)}`);
+    });
+  }
+
+  test('whitespace around a valid value is tolerated', () => {
+    assert.deepEqual(parseShardReserve(' 1:77 '), { index: 1, weight: 77 });
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-969-test-infra-flake-hardening.test.cjs — consolidation epic #1969 (B6 #1975)
@@ -2137,5 +2642,133 @@ describe('chunk packing weights measured cost (#2456)', () => {
         .map(([file, value]) => `${file}=${value}`);
       assert.deepStrictEqual(invalid, [], 'every timing-table entry must be a finite non-negative number');
     });
+  });
+});
+
+// ─── analyzeChunkEvents (#3889 durability fix) ──────────────────────────────
+//
+// scripts/lib/ndjson-reporter.cjs now writes durably (fs.appendFileSync to a
+// GSD_RUN_TESTS_EVENTS_FILE path) instead of yielding strings for Node to
+// pipe through a buffered --test-reporter-destination WriteStream that a
+// SIGKILL can wipe out before it flushes. These tests exercise the READER
+// side (analyzeChunkEvents) directly against a hand-written events file, so
+// they pin the reader's contract independently of whether the writer side
+// managed to flush anything in a given subprocess run.
+const { analyzeChunkEvents } = require('../scripts/run-tests.cjs');
+
+describe('analyzeChunkEvents (#3889)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempDir('gsd-3889-events-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('a missing events file is reported as an explicit read error, not silently as "no events"', () => {
+    const missingPath = path.join(tmpDir, 'does-not-exist.ndjson');
+    const result = analyzeChunkEvents(missingPath);
+    assert.strictEqual(result.readError, true, 'a missing file must set readError=true');
+    assert.strictEqual(result.sawAnyEvent, false);
+    assert.deepStrictEqual(result.files, []);
+  });
+
+  test('an existing-but-empty events file is distinguished from a missing one (readError=false)', () => {
+    const emptyPath = path.join(tmpDir, 'empty.ndjson');
+    fs.writeFileSync(emptyPath, '', 'utf8');
+    const result = analyzeChunkEvents(emptyPath);
+    assert.strictEqual(result.readError, false, 'an existing empty file must NOT be reported as a read error');
+    assert.strictEqual(result.sawAnyEvent, false);
+    assert.deepStrictEqual(result.files, []);
+  });
+
+  test('a truncated final line does not crash the reader and earlier complete lines are still reported', () => {
+    const truncatedPath = path.join(tmpDir, 'truncated.ndjson');
+    const complete = [
+      JSON.stringify({ type: 'test:start', file: 'a.test.cjs', name: 'first', nesting: 0, testNumber: 1, ts: 1000 }),
+      JSON.stringify({ type: 'test:pass', file: 'a.test.cjs', name: 'first', nesting: 0, testNumber: 1, ts: 1010 }),
+      JSON.stringify({ type: 'test:start', file: 'b.test.cjs', name: 'hangs', nesting: 0, testNumber: 1, ts: 1020 }),
+    ].join('\n');
+    // Simulate a SIGKILL mid-appendFileSync: the trailing line is cut off
+    // partway through a JSON object, exactly as an unbuffered but non-atomic
+    // write can be interrupted.
+    const truncatedTrailer = '\n{"type":"test:start","file":"c.test.cjs","name":"cut off mid-writ';
+    fs.writeFileSync(truncatedPath, complete + truncatedTrailer, 'utf8');
+
+    const result = analyzeChunkEvents(truncatedPath);
+    assert.strictEqual(result.readError, false, 'a readable-but-truncated file must not be a read error');
+    // The complete test:start (b.test.cjs) with no matching pass/fail is
+    // still identified as in-flight despite the unparsable trailing line.
+    assert.deepStrictEqual(result.files, ['b.test.cjs']);
+    // a.test.cjs completed (start+pass), so it must NOT show as in-flight.
+    assert.ok(!result.files.includes('a.test.cjs'));
+    // c.test.cjs never parsed (truncated line), so it cannot appear either.
+    assert.ok(!result.files.includes('c.test.cjs'));
+    assert.strictEqual(result.sawAnyEvent, true, 'the complete lines before the truncation must still count as events');
+  });
+
+  // Regression (#3889 root cause): test:start/test:pass/test:fail are the
+  // exact three event types a genuine hang guarantees are never emitted —
+  // node:test only surfaces a subtest event to the parent once the child
+  // reports it, which happens on completion. test:dequeue is the RUNNER's
+  // own "began this file" signal and fires independent of completion; these
+  // four cases pin analyzeChunkEvents' dequeue-based in-flight rule directly
+  // against the synthetic event shapes a real hang, and a real finish, produce.
+  test('a dequeued file with no terminal event is reported as in flight', () => {
+    const eventsPath = path.join(tmpDir, 'dequeue-only.ndjson');
+    const lines = [
+      JSON.stringify({ type: 'reporter:init', ts: 900 }),
+      JSON.stringify({ type: 'test:enqueue', file: 'a.test.cjs', ts: 1000 }),
+      JSON.stringify({ type: 'test:dequeue', file: 'a.test.cjs', ts: 1010 }),
+    ].join('\n');
+    fs.writeFileSync(eventsPath, lines, 'utf8');
+
+    const result = analyzeChunkEvents(eventsPath);
+    assert.deepStrictEqual(result.files, ['a.test.cjs']);
+    assert.strictEqual(result.anyDequeued, true);
+    assert.strictEqual(result.sawInitMarker, true);
+  });
+
+  test('a dequeued file that also terminates reports nothing in flight (all files finished)', () => {
+    const eventsPath = path.join(tmpDir, 'dequeue-then-pass.ndjson');
+    const lines = [
+      JSON.stringify({ type: 'reporter:init', ts: 900 }),
+      JSON.stringify({ type: 'test:enqueue', file: 'a.test.cjs', ts: 1000 }),
+      JSON.stringify({ type: 'test:dequeue', file: 'a.test.cjs', ts: 1010 }),
+      JSON.stringify({ type: 'test:pass', file: 'a.test.cjs', ts: 1020 }),
+    ].join('\n');
+    fs.writeFileSync(eventsPath, lines, 'utf8');
+
+    const result = analyzeChunkEvents(eventsPath);
+    assert.deepStrictEqual(result.files, [], 'a terminated file must not show as in flight');
+    assert.strictEqual(result.anyDequeued, true, 'the file WAS dequeued — "all files finished" is a distinct state from "nothing ran"');
+  });
+
+  test('one terminated file followed by a second dequeued-but-unterminated file reports only the second', () => {
+    const eventsPath = path.join(tmpDir, 'two-files.ndjson');
+    const lines = [
+      JSON.stringify({ type: 'reporter:init', ts: 900 }),
+      JSON.stringify({ type: 'test:dequeue', file: 'a.test.cjs', ts: 1000 }),
+      JSON.stringify({ type: 'test:pass', file: 'a.test.cjs', ts: 1010 }),
+      JSON.stringify({ type: 'test:dequeue', file: 'b.test.cjs', ts: 1020 }),
+    ].join('\n');
+    fs.writeFileSync(eventsPath, lines, 'utf8');
+
+    const result = analyzeChunkEvents(eventsPath);
+    assert.deepStrictEqual(result.files, ['b.test.cjs']);
+    assert.ok(!result.files.includes('a.test.cjs'));
+  });
+
+  test('an init marker with no dequeue at all is distinguished (anyDequeued=false) from "all finished"', () => {
+    const eventsPath = path.join(tmpDir, 'init-only.ndjson');
+    fs.writeFileSync(eventsPath, JSON.stringify({ type: 'reporter:init', ts: 900 }), 'utf8');
+
+    const result = analyzeChunkEvents(eventsPath);
+    assert.deepStrictEqual(result.files, []);
+    assert.strictEqual(result.anyDequeued, false);
+    assert.strictEqual(result.sawInitMarker, true);
+    assert.strictEqual(result.sawAnyEvent, false);
   });
 });

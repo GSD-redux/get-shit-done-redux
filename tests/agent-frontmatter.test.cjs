@@ -246,6 +246,38 @@ describe('AGENT: required frontmatter fields', () => {
   }
 });
 
+// ─── Model resolution uniformity (#3895) ─────────────────────────────────────
+
+describe('MODEL: no agent hardcodes a model frontmatter pin', () => {
+  // Exactly one shipped agent (gsd-mempalace-curator) carried `model: sonnet`
+  // while the other 33 resolved through the model-profile system. The pin
+  // intercepted #2517's deliberate inherit case — the ship:post dispatch OMITS
+  // model= on inherit so the agent inherits the orchestrator's model, but the
+  // frontmatter pin silently forced sonnet there. The catalog entry
+  // (model-catalog.json: golden/balanced sonnet) preserves default-profile
+  // behavior; operators regain model_overrides + inherit authority.
+  test('no shipped agent frontmatter contains a model: pin', () => {
+    const offenders = [];
+    for (const agent of ALL_AGENTS) {
+      const content = fs.readFileSync(path.join(AGENTS_DIR, agent + '.md'), 'utf-8');
+      const frontmatter = content.split('---')[1] || '';
+      if (/^model:/m.test(frontmatter)) offenders.push(agent);
+    }
+    assert.deepEqual(
+      offenders, [],
+      `agents must resolve models via the model-profile system, not a frontmatter pin (#3895): ${offenders.join(', ')}`
+    );
+  });
+
+  test('the curator keeps its catalog entry (deleting the pin must not orphan the agent)', () => {
+    const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'bin', 'shared', 'model-catalog.json'), 'utf-8'));
+    const entry = catalog.agents && catalog.agents['gsd-mempalace-curator'];
+    assert.ok(entry, 'catalog entry for gsd-mempalace-curator must exist');
+    assert.equal(entry.golden, 'sonnet', 'golden profile preserves the pinned behavior');
+    assert.equal(entry.balanced, 'sonnet', 'balanced profile preserves the pinned behavior');
+  });
+});
+
 // ─── Color Value Validation ──────────────────────────────────────────────────
 
 const VALID_AGENT_COLORS = new Set(['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan']);

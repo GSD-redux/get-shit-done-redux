@@ -20,8 +20,16 @@
  * Invariants:
  *   - Hub always routes through CJS handlers. There is no SDK path (#175).
  *   - Hub never prints to stdout/stderr, never calls process.exit.
- *   - Hub never throws — all internal throws are caught and converted to
- *     { ok: false, kind: 'HandlerFailure', message, cause }.
+ *   - Hub never throws for an ordinary handler exception — those are caught
+ *     and converted to { ok: false, kind: 'HandlerFailure', message, cause }.
+ *   - EXCEPTION (ADR-3889): a thrown ExitError (the process-exit seam in
+ *     src/cli-exit.cts, e.g. from io.cts's error()) is deliberately
+ *     RE-THROWN, never converted — the throwing handler has already written
+ *     its own stderr and is terminating with a specific exit code; wrapping
+ *     it as a HandlerFailure would re-derive a generic message from
+ *     ExitError's constructor default and print a second, wrong stderr line.
+ *     It propagates through every caller up to the runMain() at the CLI
+ *     entrypoint, the only place ExitError is meant to be caught.
  *   - The kind taxonomy is closed. Callers switch on ERROR_KINDS values.
  *   - Each error variant carries ONLY its own typed payload (#176).
  *     No cross-variant `message`/`details` escape hatches.
@@ -35,6 +43,9 @@ import { makeDispatchEvent } from './observability/event.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import observabilityLogger = require('./observability/logger.cjs');
 const { createNoOpLogger } = observabilityLogger;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { ExitError } = cliExitModule;
 
 // ─── Error kind constants ─────────────────────────────────────────────────────
 
@@ -325,6 +336,24 @@ function createHub({ cjsRegistry, manifest, logger }: HubOptions = {}): { dispat
     try {
       result = _dispatch(req);
     } catch (err) {
+      // ADR-3889: a handler that calls io.cts's error() (or otherwise throws
+      // ExitError directly) is deliberately terminating the CLI with a
+      // specific exit code and a stderr write it has ALREADY performed
+      // itself. Swallowing that into a HandlerFailure and re-deriving a
+      // message from err.message (ExitError's generic "process exit N"
+      // constructor default, since error() passes no message) would both
+      // duplicate the stderr output and discard the real exit code — this
+      // was invisible before ADR-3889 because io.cts's error() called
+      // process.exit() directly, which this try/catch could never observe
+      // (a process.exit() call terminates synchronously; it does not throw
+      // and unwind through here). Re-throwing preserves that same
+      // non-observability now that the termination mechanism is a throw:
+      // it propagates past this hub, past every non-family-router caller,
+      // up to the runMain() at the CLI entrypoint, which is the ONLY place
+      // ExitError is meant to be caught.
+      if (err instanceof ExitError) {
+        throw err;
+      }
       if (err instanceof Error) {
         result = makeHandlerFailure(err.message, err);
       } else {

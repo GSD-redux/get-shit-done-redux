@@ -510,9 +510,9 @@ The marker never overwrites the artifact's own `status:` field for the eight fro
 
 > **Note:** the `deferred-items.md` category is the per-phase SCOPE BOUNDARY log a phase agent writes when it finds a defect it should not fix. It is a different artifact from the `## Deferred Items` section `[A]` writes into `STATE.md`, which records what you acknowledged at close.
 
-> **Truncated-window guard.** Archiving also refuses when the milestone's ROADMAP window is truncated — `Cannot mark milestone complete: the ROADMAP window for "<version>" is truncated`. This is the case where the milestone's heading is found but its section closes before reaching the roadmap's `### Phase N:` region (typically a closed-milestone heading sitting in between), which previously degraded to an over-inclusive filter and archived *every* phase directory in the project rather than the milestone's own. An unreadable ROADMAP.md or a version with no matching section at all are pre-existing, legitimately-handled states and are not refused here. Same override as below: `gsd-tools milestone complete <version> --force`. A window that is genuinely empty — a freshly-declared milestone with no phases yet — is *not* affected and still completes normally.
+> **Truncated-window guard.** Archiving also refuses when the milestone's ROADMAP window is truncated — `Cannot mark milestone complete: the ROADMAP window for "<version>" is truncated`. This is the case where the milestone's heading is found but its section closes before reaching the roadmap's `### Phase N:` region (typically a closed-milestone heading sitting in between), which previously degraded to an over-inclusive filter and archived *every* phase directory in the project rather than the milestone's own. An unreadable ROADMAP.md or a version with no matching section at all are pre-existing, legitimately-handled states and are not refused here. Same override as below: `gsd-tools milestone complete <version> --force --confirm` (#3726: `--confirm` is required for any mutating run; `--force` alone does not imply it). A window that is genuinely empty — a freshly-declared milestone with no phases yet — is *not* affected and still completes normally.
 
-> **Unstarted-phase guard.** Archiving refuses if the milestone's ROADMAP still lists a phase with no phase directory on disk — `Cannot mark milestone complete: ROADMAP lists N unstarted phase(s)`. If a phase was intentionally deferred or merged without a directory, run `gsd-tools milestone complete <version> --force` (the `/gsd-complete-milestone` workflow runs the underlying command without `--force`, so use the CLI directly to override). A `STATE.md` `milestone:` value that does not match `<version>` prints a WARNING and still runs the guard (#2946).
+> **Unstarted-phase guard.** Archiving refuses if the milestone's ROADMAP still lists a phase with no phase directory on disk — `Cannot mark milestone complete: ROADMAP lists N unstarted phase(s)`. If a phase was intentionally deferred or merged without a directory, run `gsd-tools milestone complete <version> --force --confirm` (the `/gsd-complete-milestone` workflow runs the underlying command without `--force`, so use the CLI directly to override; `--confirm` is required for any mutating run — #3726). A `STATE.md` `milestone:` value that does not match `<version>` prints a WARNING and still runs the guard (#2946).
 
 > **Sentinel directories stay put.** Moving phase directories into the archive (the default, unless `--no-archive-phases` is passed) now excludes `999.*` (backlog) and `0-*` (pre-milestone) directories via the same sentinel predicate the unstarted-phase guard already uses. Previously the archive move was scoped only by the milestone window, so a sentinel directory sitting inside that window could be archived along with the milestone's own phases.
 
@@ -690,6 +690,43 @@ Check `schema_version` before reading any other field, and branch on each value'
 `scope` — `complete` with an empty value is a real answer, `unreadable` is not.
 Full field reference: [CLI Tools](CLI-TOOLS.md#planning-inspect). Integration
 walkthrough: [Consume the planning snapshot](how-to/consume-the-planning-snapshot.md).
+
+---
+
+### `task resolve-content --plan <path> --task-id <id> --raw`
+
+Resolves one task's content (`action`/`verify`/`acceptance_criteria`/`read_first`/`done`) from an
+external issue tracker instead of reading it inline from a task's `PLAN.md` body. Called by
+`execute-plan.md`'s per-task loop, once per task carrying a `tracker-id` attribute, before that
+task's read_first gate. See [ADR-3646](adr/3646-per-task-content-resolution-seam.md) and
+[Develop a task-content resolver capability](how-to/develop-a-task-content-resolver-capability.md).
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--plan` | **Yes** | Path to the `PLAN.md` the task belongs to |
+| `--task-id` | **Yes** | The task's `tracker-id` attribute value, e.g. `beads:GSD-42` |
+| `--raw` | No | Machine-readable JSON output |
+
+**Exit codes:**
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Resolution attempted (or not needed) — see `resolved`/`reason` below |
+| non-zero | **Hard halt.** A resolver was found and invoked but failed (tracker unreachable, id not found, timeout, malformed JSON output). stderr names the tracker-id, the tracker prefix, and the resolver's error. Never fall back to inline `PLAN.md` content on this outcome. |
+
+**Output fields (JSON, exit 0 only):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resolved` | `boolean` | `true` only when a resolver was found, invoked, and returned non-empty content |
+| `reason` | `string` | Present when `resolved` is `false`: `"no-resolver"` (task has a `tracker-id` but no installed capability declares a matching `trackerPrefix`) or `"empty"` (the resolver ran successfully but returned empty/absent content — the one legitimate pre-migration fallback case) |
+| `content` | `object` | Present when `resolved` is `true`. Supersedes this task's inline `<action>`/`<verify>`/`<acceptance_criteria>`/`<read_first>`/`<done>` for every downstream gate in the execute step |
+
+```bash
+node gsd-tools.cjs task resolve-content --plan .planning/phases/03-name/03-1-PLAN.md --task-id beads:GSD-42 --raw
+```
+
+`execute-plan.md` only invokes this command when the task carries a `tracker-id` attribute; a task with no `tracker-id` is unaffected.
 
 ---
 
