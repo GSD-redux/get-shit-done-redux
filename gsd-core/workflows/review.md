@@ -633,15 +633,15 @@ for SLUG in $DISPATCH_SLUGS; do
 
   node -e '
     const fs = require("fs");
+    const { escapeRegex } = require("./gsd-core/bin/lib/pattern.cjs");
     const manifest = fs.readFileSync(process.argv[1], "utf8");
     const review = fs.readFileSync(process.argv[2], "utf8");
     const ids = manifest.split("\n")
       .filter((l) => l.startsWith("- "))
       .map((l) => l.slice(2).trim())
       .filter(Boolean);
-    const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const missing = ids.filter((id) => {
-      const re = new RegExp("(?<![\\w-])" + escapeRe(id) + "(?![\\w-])");
+      const re = new RegExp("(?<![\\w-])" + escapeRegex(id) + "(?![\\w-])");
       return !re.test(review);
     });
     process.stdout.write(JSON.stringify({ complete: missing.length === 0, missing_ids: missing, total: ids.length }));
