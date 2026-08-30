@@ -499,16 +499,15 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
     }
   });
 
-  test('### Evidence names exactly the eight trailer fields', () => {
+  test('### Evidence names exactly the six trailer fields', () => {
     const line = trailerLine();
     const parsed = JSON.parse(line.slice(line.indexOf(':') + 1));
     assert.deepStrictEqual(
       Object.keys(parsed).sort(),
-      ['actual', 'command', 'exit_status', 'expected', 'location', 'selected_count',
-        'target_executed', 'target_test'],
-      'the trailer must carry exactly the eight evidence fields — the exact-eight ' +
+      ['actual', 'command', 'exit_status', 'expected', 'location', 'target_test'],
+      'the trailer must carry exactly the six evidence fields — the exact-six ' +
       'key set is itself the fail-closed mechanism: a foreign or future schema ' +
-      'fails equality rather than being partially honoured. See #3770 (D-03).',
+      'fails equality rather than being partially honoured. See #3770 (D-03, SIMP-01).',
     );
     for (const side of ['expected', 'actual']) {
       assert.deepStrictEqual(
