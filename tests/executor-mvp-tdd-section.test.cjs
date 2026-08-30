@@ -1770,13 +1770,13 @@ ${Array(redContractCount).fill(block).join('\n')}
   });
 
   /**
-   * One row per shape obligation on `location`, so the next one costs one record here
+   * One row per shape obligation on a trailer field, so the next one costs one record here
    * rather than one new test — same rationale as the load-bearing-line table above.
    * `mutate` receives a deep clone of the shipped `### Evidence` exemplar (parsed through
    * `trailerLine()`, never retyped) and returns the trailer under test, so these cases track
    * the contract automatically and cannot drift from it. See #3770.
    */
-  const LOCATION_SHAPE_CASES = [
+  const TRAILER_SHAPE_CASES = [
     { name: '`location` absent from an otherwise valid eight-key trailer',
       mutate: (t) => { delete t.location; return t; }, expected: 'red_commit_not_failing' },
     { name: '`location` present but `declared` absent',
@@ -1858,16 +1858,37 @@ ${Array(redContractCount).fill(block).join('\n')}
         return t;
       },
       expected: 'authorize' },
+    { name: '`exit_status` `"0"` — a PASSING run, quoted as a string',
+      mutate: (t) => { t.exit_status = '0'; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`exit_status` `null`',
+      mutate: (t) => { t.exit_status = null; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`exit_status` `false`',
+      mutate: (t) => { t.exit_status = false; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`exit_status` the empty string',
+      mutate: (t) => { t.exit_status = ''; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`exit_status` `[0]`',
+      mutate: (t) => { t.exit_status = [0]; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`exit_status` `{}`',
+      mutate: (t) => { t.exit_status = {}; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`exit_status` `true`',
+      mutate: (t) => { t.exit_status = true; return t; },
+      expected: 'red_commit_not_failing' },
   ];
 
-  test('shape-check edges: empty, absent and malformed `location` values fail closed; '
+  test('shape-check edges: empty, absent and malformed trailer values fail closed; '
     + 'path-form differences alone still authorize (#3770)', () => {
     const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
     const exemplarLine = trailerLine();
     const shippedTrailer = JSON.parse(exemplarLine.slice(exemplarLine.indexOf('{')));
     const validTask = buildTaskContent(GENUINE.plan);
 
-    for (const { name, mutate, expected } of LOCATION_SHAPE_CASES) {
+    for (const { name, mutate, expected } of TRAILER_SHAPE_CASES) {
       const trailer = mutate(structuredClone(shippedTrailer));
       const { verdict, reason } = evaluateRedEvidence(
         validTask, `red-evidence: ${JSON.stringify(trailer)}`,
