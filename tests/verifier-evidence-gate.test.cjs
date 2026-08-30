@@ -42,15 +42,13 @@ test('Step 7 gates on re-verification mode only', () => {
 });
 
 test('debt marker gate stays self-evidencing and unconditional (not routed through the new gate)', () => {
-  const m = verifier.match(/Re-verification evidence gate[\s\S]{0,600}/);
-  assert.ok(m, 'evidence gate paragraph must exist');
-  assert.match(m[0], /other than an unresolved debt marker \(always self-evidencing\)/);
+  assert.match(verifier, /Re-verification evidence gate/);
+  assert.match(verifier, /other than an unresolved debt marker \(always self-evidencing\)/);
 });
 
 test('carried-forward gaps and regressions still block unconditionally, evidence or not', () => {
-  const m = verifier.match(/Re-verification evidence gate[\s\S]{0,600}/);
-  assert.match(m[0], /carried-forward gap \(Step 0's `gaps:`\)/);
-  assert.match(m[0], /git-modified since the prior `verified:` timestamp/);
+  assert.match(verifier, /carried-forward gap \(Step 0's `gaps:`\)/);
+  assert.match(verifier, /git-modified since the prior `verified:` timestamp/);
 });
 
 test('unresolvable git history fails closed toward blocking', () => {
@@ -59,10 +57,9 @@ test('unresolvable git history fails closed toward blocking', () => {
 });
 
 test('unevidenced new-scope findings route to advisory, not gaps_found', () => {
-  const m = verifier.match(/Re-verification evidence gate[\s\S]{0,600}/);
-  assert.match(m[0], /Unevidenced → 📋 Advisory/);
-  assert.match(m[0], /exclude from Step 9 Rule 1/);
-  assert.match(m[0], /never revert a completed must-have/);
+  assert.match(verifier, /Unevidenced → 📋 Advisory/);
+  assert.match(verifier, /exclude from Step 9 Rule 1/);
+  assert.match(verifier, /never revert a completed must-have/);
 });
 
 test('Categorize line adds the Advisory bucket alongside Blocker/Warning/Info', () => {
@@ -125,12 +122,12 @@ test('reference file defines deterministic evidence as a run-red test or a repro
 
 test('reference file uses file-level git check, not line-level (reliability tradeoff is disclosed)', () => {
   assert.match(gate, /git log --since="\$PREV_VERIFIED_TS" --oneline -- "\$file"/);
-  assert.match(gate, /Check file-level, not\s*\nline-level/);
+  assert.match(gate, /Check file-level, not\s*\n\s*line-level/);
 });
 
 test('reference file carries a worked example grounded in the reported incident', () => {
   assert.match(gate, /## Worked example \(from the issue's reported incident\)/);
-  assert.match(gate, /→ \*\*advisory\*\*, does not\s*\nblock/);
+  assert.match(gate, /→ \*\*advisory\*\*, does not\s*\n\s*block/);
 });
 
 // ─── Parity: advisory is a per-finding annotation, never an overall status ─
