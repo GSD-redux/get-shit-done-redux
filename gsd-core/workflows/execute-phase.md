@@ -886,7 +886,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **This fallback applies to all runtimes.** Claude Code's default background
    Agent() dispatch may not return a completion signal, so verify rather than
    waiting indefinitely. When `SESSION_OUTLIVES_TURN` is `false`, the foreground
-   Agent() call returns synchronously; use that returned result as the primary
+   Agent() call provides its result directly; use that result as the primary
    completion signal and only use these spot-checks if the host still reports no
    result.
 
