@@ -242,7 +242,7 @@ test('mutation.yml mutate job timeout budgets (#4036)', async (t) => {
 
 test('near-cap check CI_JOB_TIMEOUT_MINUTES literals match each job\'s own timeout-minutes (#4036)', async (t) => {
   const staticLanes = [
-    { workflowFile: 'test.yml', jobKey: 'test', envLiteral: '15' },
+    { workflowFile: 'test.yml', jobKey: 'test', envLiteral: '21' },
     { workflowFile: 'test.yml', jobKey: 'test-full', envLiteral: '45' },
     { workflowFile: 'install-smoke.yml', jobKey: 'smoke', envLiteral: '12' },
   ];

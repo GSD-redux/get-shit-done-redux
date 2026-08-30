@@ -39,6 +39,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const yaml = require('js-yaml');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', '.github', 'workflows');
 
@@ -228,7 +229,7 @@ test('shard 1\'s aux-suite cost is reserved out of the unit-test packer (#4070)'
       + 'runs no aux suites on its own shard 1 and must not be penalized for a cost it never pays',
     );
     assert.match(
-      String(reserveEnv), new RegExp(EXPECTED_RESERVE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      String(reserveEnv), new RegExp(escapeRegex(EXPECTED_RESERVE)),
       `RUN_TESTS_SHARD_RESERVE does not carry the documented reserve literal ${EXPECTED_RESERVE} — `
       + 'if the aux-suite cost was re-measured, update BOTH this literal and the derivation '
       + 'comment above (and the diagnosis doc) together, the same discipline LANE_COSTS uses',

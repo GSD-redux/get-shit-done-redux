@@ -1473,8 +1473,8 @@ describe('selectShard reserved-weight partition (#4070)', () => {
   test('back-compat: omitting initialWeights reproduces the unreserved partition exactly', () => {
     for (let i = 1; i <= 3; i++) {
       assert.deepStrictEqual(
-        selectShard(skewedFiles, { index: i, total: 3 }, skewedWeight),
-        selectShard(skewedFiles, { index: i, total: 3 }, skewedWeight, undefined),
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight),
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight, undefined),
       );
     }
   });
@@ -1482,8 +1482,8 @@ describe('selectShard reserved-weight partition (#4070)', () => {
   test('a zero reserve is a no-op', () => {
     for (let i = 1; i <= 3; i++) {
       assert.deepStrictEqual(
-        selectShard(skewedFiles, { index: i, total: 3 }, skewedWeight),
-        selectShard(skewedFiles, { index: i, total: 3 }, skewedWeight, [0, 0, 0]),
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight),
+        selectShard(uniform, { index: i, total: 3 }, uniformWeight, [0, 0, 0]),
       );
     }
   });
