@@ -39,6 +39,7 @@ const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const REVIEW_WORKFLOW = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
+const REPO_ROOT = path.join(__dirname, '..');
 
 function detectShells() {
   const shells = [{ name: 'bash', cmd: 'bash' }];
@@ -120,10 +121,10 @@ function stageScript(shell, body, root, runDir) {
   return scriptPath;
 }
 
-function runScript(shell, body, root, runDir, env) {
+function runScript(shell, body, root, runDir, env, cwd = root) {
   const scriptPath = stageScript(shell, body, root, runDir);
   return spawnSync(shell.cmd, [scriptPath], {
-    cwd: root,
+    cwd,
     env: { ...process.env, ...env },
     encoding: 'utf8',
     stdin: 'ignore',
@@ -262,7 +263,7 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
         gemini: '## 01\n\nlooks good\n\n## 02\n\nlooks good too\n',
       });
       t.after(() => cleanup(fx.root));
-      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env, REPO_ROOT);
       assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
       const cov = readCoverageJson(fx.runDir, 'gemini');
       assert.deepEqual(cov, { complete: true, missing_ids: [], total: 2 });
@@ -276,7 +277,7 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
         .join('\n');
       const fx = buildCoverageFixture(ids, { qwen: body });
       t.after(() => cleanup(fx.root));
-      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env, REPO_ROOT);
       assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
       const cov = readCoverageJson(fx.runDir, 'qwen');
       assert.strictEqual(cov.complete, false);
@@ -289,7 +290,7 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
         codex: 'discussion of 12X6-01 but never the real id\n',
       });
       t.after(() => cleanup(fx.root));
-      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env, REPO_ROOT);
       assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
       const cov = readCoverageJson(fx.runDir, 'codex');
       assert.strictEqual(cov.complete, false, 'unescaped "." would let 12X6-01 wrongly satisfy 12.6-01');
@@ -301,7 +302,7 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
         claude: 'six sections away, threat id T-04-07 is discussed at length\n',
       });
       t.after(() => cleanup(fx.root));
-      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env, REPO_ROOT);
       assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
       const cov = readCoverageJson(fx.runDir, 'claude');
       assert.strictEqual(cov.complete, false, 'a preceding hyphen must not count as a boundary for id 04-07');
@@ -313,7 +314,7 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
         gemini: 'This was already covered by plan 12.6-01 above, no separate section needed.\n',
       });
       t.after(() => cleanup(fx.root));
-      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env, REPO_ROOT);
       assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
       const cov = readCoverageJson(fx.runDir, 'gemini');
       assert.strictEqual(cov.complete, true);
@@ -324,7 +325,7 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
         ollama: 'ollama review skipped: prompt budget (500 tokens) too small for the minimum review set.\n',
       });
       t.after(() => cleanup(fx.root));
-      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env, REPO_ROOT);
       assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
       assert.strictEqual(readCoverageJson(fx.runDir, 'ollama'), null, 'a budget-skip stub must not be graded');
     });
@@ -332,7 +333,7 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
     test(`[${shell.name}] coverage check: an empty review file is not graded`, (t) => {
       const fx = buildCoverageFixture(['01'], { codex: '' });
       t.after(() => cleanup(fx.root));
-      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env, REPO_ROOT);
       assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
       assert.strictEqual(readCoverageJson(fx.runDir, 'codex'), null, 'an empty review file must not be graded');
     });
@@ -342,7 +343,7 @@ describe('#3301 write_reviews grades each lane against the plan coverage manifes
         coderabbit: 'diff-only review, mentions nothing about plans\n',
       });
       t.after(() => cleanup(fx.root));
-      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env);
+      const res = runScript(shell, extractCoverageCheckBlock(), fx.root, fx.runDir, fx.env, REPO_ROOT);
       assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
       assert.strictEqual(
         readCoverageJson(fx.runDir, 'coderabbit'),
