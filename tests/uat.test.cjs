@@ -8492,6 +8492,11 @@ human_verification:
     });
 
     test('B2: a bare bullet does not skew the entry list', () => {
+      // Round-3 Blocker. The original assertion matched `test: B` anywhere in a
+      // joined name string, so it passed while "B" was reported at position 2 —
+      // and would still have passed had the bare bullet been dropped entirely.
+      // The defect was never about the NAME surviving; it was about the ROW
+      // number and the row count. Assert both.
       const items = parseVerificationItems(`---
 status: human_needed
 human_verification:
@@ -8500,8 +8505,91 @@ human_verification:
   - test: "B"
 ---
 `, 'human_needed');
-      const names = items.map((i) => i.name).join(' | ');
-      assert.match(names, /\btest: B\b/, `the entry after a bare bullet must still surface; got ${JSON.stringify(names)}`);
+      assert.deepStrictEqual(
+        items.map((i) => [i.test, i.name]),
+        [[1, 'test: A'], [2, ''], [3, 'test: B']],
+        'every row surfaces at its own 1-based position, bare bullet included',
+      );
+    });
+
+    test('B2b: a mixed object/non-object list keeps every row at its true position', () => {
+      // The reviewer's own 6-entry fixture, verbatim. Against the filtered
+      // implementation this returned THREE items — "A", "D", "F" numbered
+      // 1, 2, 3 — with rows 2, 3 and 5 gone and no trace that anything had
+      // been dropped. That is #3850's defect reached through entry SHAPE
+      // rather than file STATUS, so it is pinned on `gaps_found` where the
+      // union path runs.
+      const items = parseVerificationItems(`---
+status: gaps_found
+human_verification:
+  - test: "A"
+  -
+  - bare scalar
+  - test: "D"
+  -
+    - nested
+  - test: "F"
+---
+`, 'gaps_found');
+      assert.deepStrictEqual(
+        items.map((i) => [i.test, i.name]),
+        [
+          [1, 'test: A'],
+          [2, ''],
+          [3, 'bare scalar'],
+          [4, 'test: D'],
+          [5, '[nested]'],
+          [6, 'test: F'],
+        ],
+        'all six rows surface, each at its own position, named as base named them',
+      );
+    });
+
+    test('B2c: skipped-because-resolved rows leave the survivors numbered by FILE row', () => {
+      // The property the positional index exists for, and the one a count-only
+      // assertion cannot see: rows 2 and 4 are closed, so 1, 3 and 5 surface
+      // with their own numbers rather than being renumbered 1, 2, 3.
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "A"
+  - test: "B"
+    resolution: done
+  -
+  - test: "D"
+    status: resolved
+  - test: "E"
+---
+`, 'human_needed');
+      assert.deepStrictEqual(
+        items.map((i) => [i.test, i.name]),
+        [[1, 'test: A'], [3, ''], [5, 'test: E']],
+        'closed rows are skipped and the survivors keep their file positions',
+      );
+    });
+
+    test('B2d: a non-object gaps entry surfaces instead of vanishing', () => {
+      // Same class, other reader. `gaps:` entries carry their own status, so a
+      // non-object one has none to read — this module's documented fail-safe
+      // (`parseGapsItems`' 'unknown' fallback) is to surface it rather than
+      // drop it. It is named by the same renderer every other reader uses, so
+      // a YAML null reads '' and not the string "null".
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "G1"
+    status: failed
+  -
+  - bare gap
+  - truth: "G3"
+    status: resolved
+---
+`, 'gaps_found');
+      assert.deepStrictEqual(
+        items.map((i) => [i.name, i.result]),
+        [['G1', 'failed'], ['', 'unknown'], ['bare gap', 'unknown']],
+        'every unresolved gaps row surfaces; the resolved one is skipped',
+      );
     });
 
     test('B1: a BOM does not make a gaps_found report vanish', () => {

@@ -28,7 +28,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter, frontmatterObjectListEntries, flattenObjectListItem } = frontmatter;
+const { extractFrontmatter, frontmatterListEntries, flattenObjectListItem } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
@@ -3484,6 +3484,37 @@ function isFrontmatterEntryResolved(entry: Record<string, unknown> | undefined):
  * its way to becoming the item's display name, which is a different string from
  * the one in the file.
  */
+function isFrontmatterObjectEntry(entry: unknown): entry is Record<string, unknown> {
+  return !!entry && typeof entry === 'object' && !Array.isArray(entry);
+}
+
+/**
+ * The PARSED object behind each element of a frontmatter array, positionally
+ * aligned with that array's DISPLAY renderings — `null` at any index whose
+ * entry is not an object (#3850).
+ *
+ * Both frontmatter readers below need the same two things about one array: the
+ * string each entry has always displayed as, and the fields it actually
+ * carries. `extractFrontmatter` gives the first, `frontmatterListEntries` the
+ * second, and the ONLY safe way to use them together is by index — so the
+ * pairing is done once, here, rather than open-coded twice.
+ *
+ * Alignment is checked, not assumed. Both arrays come from one parse of one
+ * region (they share a fence parser), so they agree in practice; if they ever
+ * did not, an index would name a DIFFERENT entry's fields and the resolved-skip
+ * would close the wrong row. All-`null` is the correct degradation: no entry is
+ * skipped as closed, which over-reports rather than mis-attributes.
+ */
+function parsedEntriesFor(
+  content: string,
+  key: string,
+  flattened: unknown[],
+): Array<Record<string, unknown> | null> {
+  const parsed = frontmatterListEntries(content, key);
+  if (!parsed || parsed.length !== flattened.length) return flattened.map(() => null);
+  return parsed.map((entry) => (isFrontmatterObjectEntry(entry) ? entry : null));
+}
+
 function entryField(entry: Record<string, unknown>, key: string): string | undefined {
   const v = entry[key];
   if (typeof v === 'string') return v.trim() === '' ? undefined : v;
@@ -3492,15 +3523,39 @@ function entryField(entry: Record<string, unknown>, key: string): string | undef
 }
 
 /**
- * One parsed entry -> one `UatItem`, shared by both frontmatter array readers
- * (#3850 review M3).
+ * One parsed `gaps:` entry -> one `UatItem`.
+ *
+ * ONE call site, `parseVerificationGapsItems` (#3850 review round 3, Minor 1 —
+ * an earlier revision's comment claimed both frontmatter readers shared this,
+ * and a dead `forcedResult` option existed to serve the second one; neither was
+ * ever true, and the claim made a deliberate difference read as an accident).
+ *
+ * WHY the two frontmatter readers derive fields differently, since they sit
+ * side by side and it is a fair question: each mirrors its OWN established
+ * sibling rather than each other.
+ *
+ *   - This one mirrors `parseGapsItems`, the `## Gaps` markdown reader, field
+ *     for field: `status:` supplies `result` with the module's documented
+ *     fail-safe `'unknown'` when absent (surface a questionable entry rather
+ *     than drop a real one), `test` is taken ONLY when the entry declares one,
+ *     and `reason` passes through. A `gaps:` entry carries its own status, so
+ *     inventing one would be a lie.
+ *   - `parseHumanVerificationItems` mirrors #2286's `human_verification:`
+ *     behaviour: the array IS the outstanding list, so every surviving entry is
+ *     `human_needed` by construction and its `test` is its ROW, because those
+ *     entries carry no number of their own.
+ *
+ * Converging them would mean changing one of those two established contracts
+ * for the convenience of symmetry. See `parseVerificationItems` for the one
+ * consequence that is genuinely open (a `test` number is unique per array, not
+ * per report).
  *
  * The display name falls back to `flattenObjectListItem` — the SAME renderer
  * `extractFrontmatter` applies — so an entry with no `truth:` reads exactly as
  * it always did, byte for byte.
  */
-function frontmatterEntryToUatItem(entry: Record<string, unknown>, opts: { forcedResult?: string } = {}): UatItem {
-  const status = opts.forcedResult ?? entryField(entry, 'status') ?? 'unknown';
+function frontmatterEntryToUatItem(entry: Record<string, unknown>): UatItem {
+  const status = entryField(entry, 'status') ?? 'unknown';
   const reason = entryField(entry, 'reason');
   const item: UatItem = {
     name: entryField(entry, 'truth') || flattenObjectListItem(entry),
@@ -3522,9 +3577,32 @@ function frontmatterEntryToUatItem(entry: Record<string, unknown>, opts: { force
  * template puts gaps in frontmatter, so no existing reader covers this shape.
  */
 function parseVerificationGapsItems(content: string): UatItem[] {
-  return (frontmatterObjectListEntries(content, 'gaps') ?? [])
-    .filter((entry) => !isFrontmatterEntryResolved(entry))
-    .map((entry) => frontmatterEntryToUatItem(entry));
+  const flattened = extractFrontmatter(content)['gaps'];
+  if (!Array.isArray(flattened)) return [];
+  const parsed = parsedEntriesFor(content, 'gaps', flattened);
+
+  const items: UatItem[] = [];
+  flattened.forEach((display, idx) => {
+    const entry = parsed[idx];
+    // A non-object entry (a bare scalar, a null from a `- ` with nothing after
+    // it, a nested sequence) still surfaces, named by the SAME renderer every
+    // other frontmatter reader names it by. Dropping it would be this module's
+    // wrong direction on a false-NEGATIVE bug: `parseGapsItems`' own
+    // 'unknown'-status fallback exists to surface a questionable entry rather
+    // than lose a real one, and an entry with no readable status is exactly
+    // that. It carries no fields, so it can never be skipped as closed.
+    if (!entry) {
+      items.push({
+        name: normalizeHumanVerificationEntry(display),
+        result: 'unknown',
+        category: categorizeItem('unknown'),
+      });
+      return;
+    }
+    if (isFrontmatterEntryResolved(entry)) return;
+    items.push(frontmatterEntryToUatItem(entry));
+  });
+  return items;
 }
 
 /**
@@ -3588,28 +3666,43 @@ function parseHumanVerificationItems(content: string, sourcePath?: string): UatI
     // (`flattenObjectListItem`), which is right for printing and wrong for
     // branching: `resolution:` is recoverable from that string only by matching
     // prose, and prose cannot tell a real field from the same text quoted
-    // inside `truth:`. `frontmatterObjectListEntries` returns the same entries
-    // one step earlier, off the same parse.
+    // inside `truth:`. `frontmatterListEntries` returns the same entries one
+    // step earlier, off the same parse.
     //
     // The flattened array stays the #2286 GATE — a non-empty
     // `human_verification:` fully bypasses the body-shape scan below — but the
-    // objects are the source of the items, so there is no second reader to
+    // raw entries are the source of the items, so there is no second reader to
     // desynchronise against.
     //
-    // A scalar (non-object) entry list yields no objects; those fall back to
-    // the flattened strings rather than disappearing, which is the failure mode
-    // this whole issue is about.
-    const objectEntries = frontmatterObjectListEntries(content, 'human_verification');
-    const entries: Array<Record<string, unknown> | string> =
-      objectEntries && objectEntries.length > 0 ? objectEntries : humanVerification.map(String);
-    entries.forEach((entry, idx) => {
-      const isObject = typeof entry === 'object';
-      if (skipResolved && isObject && isFrontmatterEntryResolved(entry)) return;
+    // WALK THE FLATTENED ARRAY, and use the parsed one only to answer "is this
+    // entry closed?" (#3850 review round 3, Blocker).
+    //
+    // This is base's loop — every element, at its own index, named by the
+    // renderer it has always been named by — plus one skip. It is deliberately
+    // NOT "iterate the parsed entries": an earlier revision did that against an
+    // object-FILTERED array, which compacted it, so a list mixing object and
+    // non-object entries lost the non-object rows outright and renumbered the
+    // survivors. That is the silently-vanishing row this issue exists to close,
+    // reintroduced by entry SHAPE instead of file STATUS. Numbering off the
+    // flattened array cannot drift from what the file says, because that array
+    // is the one #2286 already gated on.
+    //
+    // The name therefore stays byte-identical to base for every entry shape,
+    // including the ones with no object to read: a YAML null renders `''`, a
+    // nested sequence renders `[nested]`. Re-deriving those from the parsed
+    // value would have printed `["nested"]` — a rendering nobody asked this
+    // change to alter.
+    //
+    // `parsedEntriesFor` owns the pairing and its alignment check.
+    const parsed = parsedEntriesFor(content, 'human_verification', humanVerification);
+    humanVerification.forEach((flattened, idx) => {
+      const object = parsed[idx];
+      if (skipResolved && object && isFrontmatterEntryResolved(object)) return;
       items.push({
         // The entry's ORIGINAL 1-based position, so a surfaced item still
         // names its row in the file when a closed sibling was skipped.
         test: idx + 1,
-        name: normalizeHumanVerificationEntry(isObject ? flattenObjectListItem(entry) : entry),
+        name: normalizeHumanVerificationEntry(flattened),
         result: 'human_needed',
         category: 'human_uat',
       });
