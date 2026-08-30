@@ -43,6 +43,9 @@ const PLANNER_PATH = path.join(ROOT, 'agents', 'gsd-planner.md');
 const PLANNER_COUPLING_REF_PATH = path.join(ROOT, 'gsd-core', 'references', 'planner-coupling.md');
 
 const VERIFY_WORK_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'verify-work.md');
+const QUICK_LOOP_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'quick', 'steps', 'plan-checker-loop.md');
+const IMPORT_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'import.md');
+const AGENT_CONTRACTS_PATH = path.join(ROOT, 'gsd-core', 'references', 'agent-contracts.md');
 const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 
 const agentDoc = fs.readFileSync(AGENT_PATH, 'utf-8');
@@ -454,6 +457,65 @@ describe('gsd-plan-checker Dimension 3b — undeclared/temporal coupling (#1954)
       assert.ok(
         handler && handler.includes(CLAUSE),
         'the verify-work verify_gap_plans handler must carry the fail-closed clause verbatim'
+      );
+      // Round-7 Blocker + Major: the checker's INFO-only ## ISSUES FOUND contract is
+      // dimension-agnostic and reaches every consumer, so the two remaining
+      // severity-blind handlers get the same clause — quick mode (issue-named in
+      // #3724) and import's plan_validate (absent even from agent-contracts.md
+      // until this round).
+      const quickLoop = fs.readFileSync(QUICK_LOOP_PATH, 'utf-8');
+      const quickHandler = splitLines(quickLoop).find((line) => line.startsWith('- **`## ISSUES FOUND`:**'));
+      assert.ok(
+        quickHandler && quickHandler.includes(CLAUSE),
+        'the quick-mode plan-checker-loop handler must carry the fail-closed clause verbatim'
+      );
+      const importDoc = fs.readFileSync(IMPORT_PATH, 'utf-8');
+      const importHandler = splitLines(importDoc).find((line) => line.startsWith('Handle the checker return by severity'));
+      assert.ok(
+        importHandler && importHandler.includes(CLAUSE),
+        'the import plan_validate handler must carry the fail-closed clause verbatim'
+      );
+    });
+
+    test('quick mode and import accept an explicitly-INFO-only issues block', () => {
+      const quickLoop = fs.readFileSync(QUICK_LOOP_PATH, 'utf-8');
+      const quickHandler = splitLines(quickLoop).find((line) => line.startsWith('- **`## ISSUES FOUND`:**'));
+      assert.ok(quickHandler, 'plan-checker-loop.md must carry the ISSUES FOUND handler line');
+      assert.match(
+        quickHandler,
+        /every entry is explicitly INFO/,
+        'quick mode must accept only an explicitly-INFO issues block (whitelist, not count-zero)'
+      );
+      assert.match(
+        quickHandler,
+        /proceed to step 6/,
+        'an INFO-only result in quick mode must proceed, not enter the revision loop'
+      );
+      const importDoc = fs.readFileSync(IMPORT_PATH, 'utf-8');
+      const importHandler = splitLines(importDoc).find((line) => line.startsWith('Handle the checker return by severity'));
+      assert.ok(importHandler, 'import.md plan_validate must carry the severity-aware handler paragraph');
+      assert.match(
+        importHandler,
+        /never blocks an import/,
+        'an INFO-only checker return must not block an import'
+      );
+      const contracts = fs.readFileSync(AGENT_CONTRACTS_PATH, 'utf-8');
+      const checkerRow = splitLines(contracts).find((line) => line.startsWith('| gsd-plan-checker |'));
+      assert.ok(
+        checkerRow && checkerRow.includes('gsd-core/workflows/import.md'),
+        'agent-contracts.md must list import.md as a gsd-plan-checker sentinel consumer'
+      );
+    });
+
+    test('an applied coupling_justified exemption stays observable', () => {
+      // Round-7 Minor: the exemption fires from a one-sided, schema-unvalidated
+      // declaration; without a surfaced note, a stale or copy-pasted entry
+      // suppresses the check silently and permanently.
+      const span = sliceBetween(agentDoc, D3B_HEADING, D4_HEADING);
+      assert.match(
+        span,
+        /note the applied\s+exemption as its own `info` advisory/,
+        'Dimension 3b must surface an applied coupling_justified exemption as an info advisory'
       );
     });
 
