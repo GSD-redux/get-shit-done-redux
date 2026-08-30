@@ -238,6 +238,12 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
   const observedPoint = { file: observed['file'], line: observed['line'] };
 
   const exitStatus = trailer['exit_status'];
+  if (!Number.isInteger(exitStatus)) {
+    return {
+      verdict: 'red_commit_not_failing',
+      reason: '"exit_status" must be a JSON number and a non-integer cannot be compared against 0',
+    };
+  }
   if (exitStatus === 0) {
     return {
       verdict: 'unexpected_pass',
@@ -249,7 +255,6 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
   const actual = trailer['actual'];
 
   const sharedChecks: Array<[string, boolean]> = [
-    ['exit_status != 0', exitStatus !== 0],
     ['trailer.expected == plan.expected_failure', sameTriple(expected, plan.expected_failure)],
     ['actual.phase == expected.phase',
       isPlainObject(actual) && isPlainObject(expected) && actual['phase'] === expected['phase']],
