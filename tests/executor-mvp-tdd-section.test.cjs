@@ -608,10 +608,11 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       },
       {
         section: 'Evidence',
-        needle: 'Recorded for audit only: the predicate reads no field of it',
+        needle: 'still binds nothing about its content to `target_test`',
         verdict: null,
-        why: 'without the stated limitation a coded-gate implementer reads `command` as '
-          + 'validated input bound to `target_test`, which nothing in the predicate makes it',
+        why: 'the predicate now validates `command` for non-emptiness (GATE-06), but a reader '
+          + 'who believes it is validated AGAINST `target_test` will build a coded gate that '
+          + 'claims a binding the predicate does not make',
       },
       {
         section: 'Evidence',

@@ -237,6 +237,13 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
   const declaredPoint = { file: declared['file'], line: declared['line'] };
   const observedPoint = { file: observed['file'], line: observed['line'] };
 
+  if (!isNonEmptyString(trailer['command'])) {
+    return {
+      verdict: 'red_commit_not_failing',
+      reason: '"command" must be a non-empty string so the evidence names a reproducible run',
+    };
+  }
+
   const exitStatus = trailer['exit_status'];
   if (!Number.isInteger(exitStatus)) {
     return {

@@ -169,7 +169,7 @@ red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_to
 
 | Field | Meaning |
 |---|---|
-| `command` | The exact command whose run this is. Recorded for audit only: the predicate reads no field of it, and nothing binds it to `target_test`. |
+| `command` | The exact command whose run this is. The predicate reads `command` only to require a non-empty string, and still binds nothing about its content to `target_test`. |
 | `exit_status` | That command's process exit status, as a JSON number — never a quoted string. A bash-assembled trailer that interpolates `"$?"` inside quotes produces a string and fails the guard; interpolate it unquoted. |
 | `target_test` | The runner-native id the run was asked to produce. |
 | `selected_count` | How many tests the run selected. |
