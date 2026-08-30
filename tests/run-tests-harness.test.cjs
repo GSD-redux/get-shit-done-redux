@@ -55,6 +55,24 @@ function runHarness(testDir, args = [], extraEnv = {}) {
   // doesn't refuse to run with "recursive run() skipping running files".
   const env = { ...process.env, GSD_TEST_DIR: testDir, ...extraEnv };
   delete env.NODE_TEST_CONTEXT;
+  // #4070: strip RUN_TESTS_SHARD_RESERVE inherited from the OUTER job's own
+  // environment. test.yml sets it on the "Run unit tests" step for the real
+  // production shard 1 of the full-scope lane — and since these tests spawn
+  // run-tests.cjs as a CHILD of that same step, they inherit it via
+  // `...process.env` above like any other ambient var. Left unstripped, a
+  // reserve of 77 weight units utterly dwarfs these synthetic 9-file
+  // fixtures' combined weight (~0.3, since none of them are in the real
+  // timings table), so shard index 1 gets EVERY file routed away from it —
+  // a real, reproducible corruption of every test in this describe block,
+  // not a flake (confirmed live: CI run 33288554040, shard 2/3, 7 of these
+  // tests failed with exactly this signature). Deleted before `extraEnv` is
+  // applied above would be too late (spread order), so it is deleted here,
+  // AFTER composition, then only reinstated if a specific test opted in via
+  // extraEnv — preserving this file's one legitimate use (the #4070 E2E
+  // bounds-check test below, which sets it deliberately).
+  if (!Object.prototype.hasOwnProperty.call(extraEnv, 'RUN_TESTS_SHARD_RESERVE')) {
+    delete env.RUN_TESTS_SHARD_RESERVE;
+  }
   const r = runNode([HARNESS, ...args], {
     cwd: path.join(__dirname, '..'),
     env,
