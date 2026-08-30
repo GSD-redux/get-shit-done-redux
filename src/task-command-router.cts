@@ -247,18 +247,28 @@ function routeRedEvidenceVerdict({ args, cwd, raw }: RouteTaskCommandOptions): v
     return;
   }
 
-  const projectRoot = path.resolve(cwd || process.cwd());
-  const resolvedTaskPath = path.resolve(projectRoot, taskFile);
-  const rel = path.relative(projectRoot, resolvedTaskPath);
-  if (rel === '..' || rel.startsWith(`..${path.sep}`)) {
-    error(`Task file is outside project scope: ${taskFile}`, ERROR_REASON.USAGE);
-    return;
-  }
-  if (!fs.existsSync(resolvedTaskPath)) {
+  // Resolve symlinks on BOTH sides before comparing: `path.resolve` does not,
+  // so a symlink planted inside the repo would pass a containment check done on
+  // the unresolved path and then be read anyway. `statSync().isFile()` subsumes
+  // the existence check and additionally rejects a directory, which would
+  // otherwise reach `readFileSync` and throw EISDIR out of a module documented
+  // as never throwing.
+  let projectRoot: string;
+  let realTaskPath: string;
+  try {
+    projectRoot = fs.realpathSync(path.resolve(cwd || process.cwd()));
+    realTaskPath = fs.realpathSync(path.resolve(projectRoot, taskFile));
+    if (!fs.statSync(realTaskPath).isFile()) throw new Error('not a regular file');
+  } catch {
     error(`Task file not found: ${taskFile}`, ERROR_REASON.USAGE);
     return;
   }
-  const taskContent = fs.readFileSync(resolvedTaskPath, 'utf-8');
+  const rel = path.relative(projectRoot, realTaskPath);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    error(`Task file is outside project scope: ${taskFile}`, ERROR_REASON.USAGE);
+    return;
+  }
+  const taskContent = fs.readFileSync(realTaskPath, 'utf-8');
 
   output(evaluateRedEvidence(taskContent, trailer), raw, undefined);
 }
