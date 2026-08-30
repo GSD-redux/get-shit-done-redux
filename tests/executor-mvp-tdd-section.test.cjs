@@ -2026,6 +2026,20 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     assert.ok(!gates.includes('Test exists AND fails before implementation'),
       'the gate region still presents the commit-subject-only rule as the RED validation. ' +
       'Two versions of RED then coexist unqualified in the same canonical file. See #3770.');
+    // Same stale-mechanisation claim already inverted on execute-mvp-tdd.md.
+    // tdd.md carried a second copy, which that fix did not reach; an executor
+    // reading the canonical file was still told the gate it is subject to does
+    // not exist yet. Negative plus positive, so the claim cannot drift back by
+    // deleting the sentence outright.
+    assert.ok(!gates.includes('is not yet mechanised'),
+      'the gate region must NOT still say the RED-predicate judgment is unmechanised. That ' +
+      'deferral held only until Phase 3 shipped the coded gate; execute-phase.md now sets ' +
+      'RED_VERDICT from `task.red-evidence-verdict` and halts unless it is `authorize`. This ' +
+      'is the canonical RED source, so an executor reading it believes a gate that actually ' +
+      'blocks it does not exist. See #3770.');
+    assert.ok(gates.includes('task.red-evidence-verdict'),
+      'the gate region must name the verb that computes the verdict, so the executor reading ' +
+      'the canonical source knows the judgment is mechanised and by what. See #3770.');
   });
 
   test('the executor gate snippet matches on the commit subject and guards the empty SHA', () => {
