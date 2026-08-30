@@ -1275,8 +1275,26 @@ ${Array(redContractCount).fill(block).join('\n')}
       id: 'genuine',
       outcome_row: 'Genuine target-behavior failure',
       verdict: 'authorize',
-      why: 'the one outcome the whole contract exists to admit: the declared test was selected, '
-        + 'executed, and failed at the declared phase with the declared class.',
+      why: 'the one outcome the whole contract exists to admit: the trailer\'s `actual` triple '
+        + 'and `location` agree with the plan\'s declaration and with each other, at the '
+        + 'declared phase and class. The predicate does not independently prove the test was '
+        + 'collected or executed — see `target-not-executed-fields-agree`.',
+      vector: GENUINE,
+    },
+    {
+      id: 'target-not-executed-fields-agree',
+      outcome_row: null,
+      verdict: 'authorize',
+      why: 'the boundary SIMP-01 accepted, pinned so it cannot drift silently. Before the '
+        + 'six-key contract, `selected_count > 0` and `target_executed === true` were separate '
+        + 'conjuncts, and a trailer reporting a target that never ran was rejected on them. '
+        + 'Those fields are gone, so that trailer is now BYTE-IDENTICAL to `genuine` — there is '
+        + 'no field left to express the difference in — and it therefore authorizes. This is '
+        + 'accepted, not overlooked: both fields were executor-authored inside the same '
+        + 'self-reported record, so neither was independent evidence of execution. The vector '
+        + 'reuses GENUINE deliberately: that identity IS the claim. If a future change '
+        + 'reintroduces an execution conjunct, this vector stops computing `authorize` and '
+        + 'fails here, forcing the contract to be updated with it. See #3770 (SIMP-01, CR-01).',
       vector: GENUINE,
     },
     {
