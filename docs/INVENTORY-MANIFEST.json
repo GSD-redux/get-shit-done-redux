@@ -478,6 +478,7 @@
       "project-root.cjs",
       "prompt-budget.cjs",
       "real-home-guard.cjs",
+      "red-evidence-predicate.cjs",
       "refactor-trigger-command-router.cjs",
       "research-provider.cjs",
       "research-store.cjs",
