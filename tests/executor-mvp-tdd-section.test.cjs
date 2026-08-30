@@ -1678,6 +1678,34 @@ ${Array(redContractCount).fill(block).join('\n')}
     }
   });
 
+  test('zero-test discovery blocks GREEN on the declared-versus-observed phase, not on a '
+    + 'selection counter (REGR-02)', () => {
+    const parsed = parsePredicateFence();
+    const zeroTestsSelected = EVIDENCE_VECTORS.find((c) => c.id === 'zero-tests-selected');
+    const { failed } = evaluateFence(parsed, zeroTestsSelected.vector);
+
+    assert.ok(failed.includes('actual.phase == expected.phase'),
+      'an honest zero-test run reports a `collection`-phase failure against a `call`-phase '
+      + 'declaration; the phase conjunct must be the one that blocks it, or removing the '
+      + 'selection counters in a later task would silently drop this requirement. See #3770 '
+      + '(REGR-02).');
+    assert.ok(!failed.includes('selected_count > 0'),
+      '`selected_count > 0` must NOT be why this vector blocks — the case is re-expressed onto '
+      + 'the phase discrimination precisely so the counter is no longer load-bearing. See #3770 '
+      + '(REGR-02).');
+    assert.ok(!failed.includes('target_executed'),
+      '`target_executed` must NOT be why this vector blocks, for the same reason. See #3770 '
+      + '(REGR-02).');
+
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    const taskContent = buildTaskContent(zeroTestsSelected.vector.plan);
+    const trailerText = `red-evidence: ${JSON.stringify(zeroTestsSelected.vector.trailer)}`;
+    const { verdict } = evaluateRedEvidence(taskContent, trailerText);
+    assert.strictEqual(verdict, 'red_commit_not_failing',
+      'the built module must agree with the fence that an honest zero-test run does not '
+      + 'authorize GREEN. See #3770 (REGR-02).');
+  });
+
   test('the residual evidence vectors differ from the cases they shadow only on location', () => {
     // Each pair is two separately written literals, so this is a real
     // constraint and not `assert.notDeepStrictEqual(x, x)`. The discriminator
