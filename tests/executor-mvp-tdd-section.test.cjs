@@ -1584,6 +1584,22 @@ ${Array(redContractCount).fill(block).join('\n')}
     }
   });
 
+  test('a failing `id_matches` is reported once, from one conjunction with no arms', () => {
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    const differentTestFailed = EVIDENCE_VECTORS.find((c) => c.id === 'different-test-failed');
+    const taskContent = buildTaskContent(differentTestFailed.vector.plan);
+    const trailerText = `red-evidence: ${JSON.stringify(differentTestFailed.vector.trailer)}`;
+    const { failed } = evaluateRedEvidence(taskContent, trailerText);
+
+    assert.deepStrictEqual(failed, ['id_matches(actual.subject, plan.target_test)'],
+      'the predicate is a single conjunction: `id_matches` must appear at most once in any '
+      + 'failure report. Today it is evaluated once per arm, so a vector whose only failing '
+      + 'conjunct is `id_matches` reports it twice, alongside a third atom from the arm that '
+      + 'was never going to hold — an exact-equality assertion is what catches the duplicate '
+      + 'and the spurious third entry; a length or `includes` check would not. See #3770 '
+      + '(SIMP-02).');
+  });
+
   test('every Outcomes row verdict agrees with what the shipped predicate computes', () => {
     const parsed = parsePredicateFence();
     const outcomes = sliceH3(CONTRACT, 'Outcomes').split('\n');
