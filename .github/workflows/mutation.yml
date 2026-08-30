@@ -123,6 +123,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Record job start time (near-cap check)
+        run: echo "CI_JOB_START_EPOCH_MS=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
+
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
@@ -183,6 +186,14 @@ jobs:
           name: mutation-report-${{ matrix.name }}-${{ github.run_number }}
           path: reports/mutation/mutation.html
           retention-days: 14
+
+      - name: Check job budget (near-cap advisory)
+        if: always()
+        continue-on-error: true
+        env:
+          CI_JOB_LABEL: "Stryker (${{ matrix.name }})"
+          CI_JOB_TIMEOUT_MINUTES: ${{ matrix.timeoutMinutes }}
+        run: node scripts/ci-check-job-near-cap.cjs
 
   # ── Job 3: mutation-gate ───────────────────────────────────────────────────
   # Stable required-check name for branch protection.

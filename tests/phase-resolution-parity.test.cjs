@@ -480,7 +480,7 @@ describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs',
 
       // 8. milestone complete — mutating, own project. The guard blocks
       //    completion while any roadmap phase has no directory.
-      const completion = runGsdTools('milestone complete v1.0', project(dirs, query));
+      const completion = runGsdTools('milestone complete v1.0 --confirm', project(dirs, query));
       assert.strictEqual(
         completion.success,
         resolves,

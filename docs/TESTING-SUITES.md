@@ -527,6 +527,43 @@ drift costs chunk *balance*, never a red build. A count-based floor additionally
 guarantees the packer never produces fewer chunks than plain count-based packing
 would, so a badly stale table cannot collapse the suite into a few fat chunks.
 
+### CI job timeout budgets: report + near-cap warning (#4036)
+
+Every matrixed job — `test` and `test-full` in `test.yml`, `mutate` in
+`mutation.yml`, `smoke` in `install-smoke.yml` — declares a `timeout-minutes`
+cap. `tests/ci-test-job-timeout-budget.test.cjs` enforces that each checked-in
+cap stays at least the **headroom factor** (1.5x) above a documented,
+hand-measured cost for that job — now all four of the jobs above, not just
+`test`/`test-full`/`coverage-gate`/`test-inert` as before.
+
+Two runtime mechanisms sit on top of that static gate, both new in #4036:
+
+- **In-job near-cap check** (`scripts/ci-check-job-near-cap.cjs`) — the last
+  step of each of the four jobs computes elapsed-vs-cap from a start-time
+  marker recorded as that job's first step. At >=90% of budget it emits a
+  `::warning::` annotation (visible in the PR Checks UI) and a
+  `$GITHUB_STEP_SUMMARY` block. Advisory only — it never fails the job. Known
+  limit: it cannot fire for a job actually killed by the timeout, since a
+  killed job never reaches its last step. That case is caught by the second
+  mechanism instead.
+- **Scheduled trending report** (`.github/workflows/ci-timeout-report.yml`,
+  `scripts/ci-timeout-report.cjs`) — runs daily and on `workflow_dispatch`. It
+  polls GitHub's Actions REST API for recently completed jobs across
+  `test.yml`, `mutation.yml`, and `install-smoke.yml`, resolves each job's
+  declared cap (a literal `timeout-minutes` for `test`/`test-full`/`smoke`, or
+  `scripts/mutation-matrix.cjs`'s `COVERED[<module>].timeoutMinutes` for
+  `mutate`'s per-module shards), and appends any new `(runId, jobName)`
+  records to `tests/ci-timeout-budget-history.jsonl`. Unlike the in-job check,
+  this also catches jobs killed by an actual timeout breach — GitHub's Jobs
+  API still reports `started_at`/`completed_at` for a cancelled job. Each run
+  opens a small, data-only PR carrying that run's new rows, since `next` is a
+  protected branch and nothing pushes to it directly — the same constraint
+  `auto-backmerge.yml` already works within.
+
+This does not retune any `timeout-minutes` value, rebalance shard composition,
+or trim what runs in shard 1 — those stay maintainer policy calls made from
+the accumulated history, not something either mechanism decides on its own.
+
 ### How-to: regenerate the timing table
 
 Regenerate when the suite's cost profile has visibly drifted — after adding or

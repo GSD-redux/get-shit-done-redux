@@ -77,6 +77,10 @@ function buildColdInstallTree(opts = {}) {
   fs.mkdirSync(hooksDestDir, { recursive: true });
   for (const entry of fs.readdirSync(path.join(repoRoot, 'hooks'), { withFileTypes: true })) {
     if (!shouldCopyHookEntry(entry.name)) continue;
+    // #3900 (same-class guard, found in review): the live repo tree is walked
+    // here — a daemon's socket/FIFO inside hooks/ would reach cpSync and
+    // throw ENXIO (a FIFO would block). Dirent type check, not name-only.
+    if (!entry.isFile() && !entry.isDirectory()) continue;
     fs.cpSync(path.join(repoRoot, 'hooks', entry.name), path.join(hooksDestDir, entry.name), {
       recursive: true,
     });
