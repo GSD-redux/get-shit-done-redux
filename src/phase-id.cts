@@ -185,9 +185,12 @@ const PHASE_HEADING_PREFIX_SRC = '(?:\\[[^\\]]{1,200}\\]\\s*(?:Phase\\s+)?|Phase
 // now one source.
 //
 // The milestone width mirrors the EMIT grammar rather than accepting any digit
-// run: pad2() emits at least two digits, so `\d{2,}` is what toDir can produce.
-// Bare `0` is admitted alongside it because a 0.x sentinel is a legitimate
-// identity that predates padding. `[GSD.2] 05:` is therefore NOT a bracket id —
+// run: pad2() emits at least two digits, so two digits — or three-plus with no
+// leading zero — is what toDir can produce. A bare `0` is NOT admitted: the
+// padded `00` is the backlog sentinel's canonical identity and `\d{2}` already
+// covers it, so nothing needs the unpadded spelling. (An earlier revision of
+// this comment claimed the opposite; the constant below has always rejected it
+// — #2867 review, Minor 2.) `[GSD.2] 05:` is therefore NOT a bracket id —
 // which is the point: it is the shape that made the three spellings disagree.
 // Reconciled with BRACKET_CANONICAL_NUMERIC_SOURCE above — the width toDir
 // actually emits (pad2: 2 digits, or 3+ with no leading zero). The earlier
