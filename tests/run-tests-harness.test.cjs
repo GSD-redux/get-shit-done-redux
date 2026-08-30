@@ -1415,6 +1415,140 @@ describe('selectShard weight-aware partition (#2472)', () => {
   });
 });
 
+// ─── #4070: reserved-weight shard partition ─────────────────────────────────
+//
+// `test.yml`'s `scope: full` lane tacks four unsharded aux suites
+// (integration/security/install/slow) onto shard 1 only, outside this
+// packer's model entirely — it balances the UNIT-TEST slice as if all three
+// shards carried equal fixed cost, when shard 1 actually carries a fixed
+// aux-suite overhead the other two do not. `initialWeights` lets a caller
+// give one (or more) bins a virtual head start before LPT places any real
+// file, so the algorithm converges on equalizing FINAL total cost (reserve +
+// assigned files) instead of raw assigned-file weight alone — the same
+// "greedy into the lightest bin" placement rule, just with non-zero starting
+// points.
+describe('selectShard reserved-weight partition (#4070)', () => {
+  const fc = require('fast-check');
+
+  const uniform = Array.from({ length: 30 }, (_, i) => `u${String(i).padStart(3, '0')}.test.cjs`);
+  const uniformWeight = () => 10;
+
+  const finalTotals = (files, total, weightOf, initialWeights) => {
+    const out = [];
+    for (let i = 1; i <= total; i++) {
+      const assigned = selectShard(files, { index: i, total }, weightOf, initialWeights)
+        .reduce((a, f) => a + weightOf(f), 0);
+      out.push(assigned + ((initialWeights && initialWeights[i - 1]) || 0));
+    }
+    return out;
+  };
+
+  // The regression: without reserve support, bin 0 gets an EQUAL share of
+  // files despite already carrying a head start, so its true final total
+  // (assigned + reserve) sits well above the other bins' — exactly the shard
+  // 1 overload this issue reports. With reserve support, LPT starts bin 0
+  // "already heavier" and hands it fewer files so all three converge.
+  test('REGRESSION: an initial reserve on one bin rebalances the rest (#4070)', () => {
+    const reserve = 80; // 8 average-cost files' worth, on a 30-file/300-weight suite
+    const totals = finalTotals(uniform, 3, uniformWeight, [reserve, 0, 0]);
+    const spread = Math.max(...totals) - Math.min(...totals);
+    assert.ok(
+      spread <= uniformWeight(),
+      `a reserved bin must converge toward the others' final totals (within one file's `
+      + `weight), not just add the reserve on top of an equal share; got totals=${totals} `
+      + `(spread=${spread})`,
+    );
+    // The reserved bin must have been handed FEWER files than an unreserved bin —
+    // otherwise "rebalancing" did nothing and the reserve is purely additive.
+    const reservedBinFiles = selectShard(uniform, { index: 1, total: 3 }, uniformWeight, [reserve, 0, 0]).length;
+    const unreservedBinFiles = selectShard(uniform, { index: 2, total: 3 }, uniformWeight, [reserve, 0, 0]).length;
+    assert.ok(
+      reservedBinFiles < unreservedBinFiles,
+      `the reserved bin (${reservedBinFiles} files) must receive fewer files than an `
+      + `unreserved bin (${unreservedBinFiles}) — otherwise the reserve had no effect on `
+      + 'placement',
+    );
+  });
+
+  test('back-compat: omitting initialWeights reproduces the unreserved partition exactly', () => {
+    for (let i = 1; i <= 3; i++) {
+      assert.deepStrictEqual(
+        selectShard(skewedFiles, { index: i, total: 3 }, skewedWeight),
+        selectShard(skewedFiles, { index: i, total: 3 }, skewedWeight, undefined),
+      );
+    }
+  });
+
+  test('a zero reserve is a no-op', () => {
+    for (let i = 1; i <= 3; i++) {
+      assert.deepStrictEqual(
+        selectShard(skewedFiles, { index: i, total: 3 }, skewedWeight),
+        selectShard(skewedFiles, { index: i, total: 3 }, skewedWeight, [0, 0, 0]),
+      );
+    }
+  });
+
+  test('a reserve applies to any bin index, not only the first', () => {
+    const reserve = 80;
+    const totals = finalTotals(uniform, 3, uniformWeight, [0, reserve, 0]);
+    const spread = Math.max(...totals) - Math.min(...totals);
+    assert.ok(spread <= uniformWeight(), `expected convergence around index 2; got ${totals}`);
+    const reservedBinFiles = selectShard(uniform, { index: 2, total: 3 }, uniformWeight, [0, reserve, 0]).length;
+    const otherBinFiles = selectShard(uniform, { index: 1, total: 3 }, uniformWeight, [0, reserve, 0]).length;
+    assert.ok(reservedBinFiles < otherBinFiles, `reserved bin 2 should get fewer files; got ${reservedBinFiles} vs ${otherBinFiles}`);
+  });
+
+  test('REGRESSION: a reserve larger than the whole suite still terminates and assigns every file', () => {
+    const reserve = 1e9;
+    const shards = [];
+    for (let i = 1; i <= 3; i++) shards.push(selectShard(uniform, { index: i, total: 3 }, uniformWeight, [reserve, 0, 0]));
+    const flat = shards.flat();
+    assert.deepStrictEqual([...flat].sort(), [...uniform].sort(), 'every file must still be placed exactly once');
+    // The massively-reserved bin should get the fewest (possibly zero) files.
+    assert.ok(shards[0].length <= shards[1].length && shards[0].length <= shards[2].length);
+  });
+
+  test('REGRESSION: a hostile reserve value clamps to zero instead of poisoning placement', () => {
+    for (const hostile of [NaN, -5, Infinity]) {
+      const shards = [];
+      for (let i = 1; i <= 3; i++) shards.push(selectShard(uniform, { index: i, total: 3 }, uniformWeight, [hostile, 0, 0]));
+      const sizes = shards.map((s) => s.length);
+      assert.ok(
+        Math.max(...sizes) - Math.min(...sizes) <= 1,
+        `a hostile reserve (${hostile}) must clamp to 0, not collapse/starve a bin; sizes=${sizes}`,
+      );
+    }
+  });
+
+  // Generalizes the existing "no shard exceeds average + heaviest file" bound
+  // (#2472) to include a single reserved bin: the reserve is just more mass
+  // an early greedy choice has to route around, so the same Graham-style
+  // bound holds with the reserve folded into the total.
+  test('property: no shard exceeds average(+reserve) + heaviest file', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({ min: 1, max: 60000 }), { minLength: 3, maxLength: 60 }),
+        fc.integer({ min: 2, max: 6 }),
+        fc.integer({ min: 0, max: 200000 }),
+        fc.integer({ min: 0, max: 5 }),
+        (weights, total, reserve, reserveIdxRaw) => {
+          const files = weights.map((_, i) => `p${String(i).padStart(3, '0')}.test.cjs`);
+          const w = (f) => weights[Number(f.slice(1, 4))];
+          const reserveIdx = reserveIdxRaw % total;
+          const initialWeights = Array.from({ length: total }, (_, i) => (i === reserveIdx ? reserve : 0));
+          const sums = finalTotals(files, total, w, initialWeights);
+          const bound = (weights.reduce((a, b) => a + b, 0) + reserve) / total + Math.max(...weights);
+          assert.ok(
+            Math.max(...sums) <= bound + 1e-9,
+            `bound violated: max=${Math.max(...sums)} bound=${bound} sums=${sums}`,
+          );
+        },
+      ),
+      { numRuns: 200, seed: 24724 },
+    );
+  });
+});
+
 describe('parseShardArg (#1212)', () => {
   test('parses i/n into { index, total }', () => {
     assert.deepStrictEqual(parseShardArg('2/3'), { index: 2, total: 3 });
@@ -1430,6 +1564,31 @@ describe('parseShardArg (#1212)', () => {
   }
 });
 
+// #4070: RUN_TESTS_SHARD_RESERVE env-var grammar — "<index>:<weight>", the
+// operator knob test.yml uses to tell the full-scope lane's unit-test shard
+// selection that shard 1 already carries a fixed aux-suite cost. Fail-open
+// on anything malformed (mirrors positiveNumberEnv's precedent elsewhere in
+// this file): a typo must degrade to "no reserve", never poison placement or
+// throw and take the whole CI job down with it.
+describe('parseShardReserve (#4070)', () => {
+  const { parseShardReserve } = require('../scripts/run-tests.cjs');
+
+  test('parses "<index>:<weight>" into { index, weight }', () => {
+    assert.deepEqual(parseShardReserve('1:77'), { index: 1, weight: 77 });
+    assert.deepEqual(parseShardReserve('2:0'), { index: 2, weight: 0 });
+    assert.deepEqual(parseShardReserve('3:12.5'), { index: 3, weight: 12.5 });
+  });
+
+  for (const v of [undefined, null, '', '  ', 'x', '1', '1:', ':77', '0:77', '-1:77', '1:-5', '1.5:77', '1:abc', 'a:b', '1:2:3']) {
+    test(`rejects malformed value ${JSON.stringify(v)}`, () => {
+      assert.equal(parseShardReserve(v), null, `expected null for ${JSON.stringify(v)}`);
+    });
+  }
+
+  test('whitespace around a valid value is tolerated', () => {
+    assert.deepEqual(parseShardReserve(' 1:77 '), { index: 1, weight: 77 });
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-969-test-infra-flake-hardening.test.cjs — consolidation epic #1969 (B6 #1975)

@@ -186,6 +186,75 @@ test('the full test lane is sharded and complete (#2952)', async (t) => {
   });
 });
 
+// #4070: the aux suites (integration/security/install/slow) are pinned to
+// shard 1 only, but the LPT unit-test packer that balances shards 1/2/3 had
+// no visibility into that fixed cost — it balanced the unit-test slice as if
+// all three shards carried equal fixed cost, structurally overloading shard
+// 1. RUN_TESTS_SHARD_RESERVE tells scripts/run-tests.cjs's selectShard to
+// give shard 1 a virtual head start in weight equal to the aux suites'
+// measured cost, so the packer routes fewer unit-test files to it. See
+// tests/run-tests-harness.test.cjs's "selectShard reserved-weight partition
+// (#4070)" describe block for the packer-side math; this file only pins the
+// WORKFLOW wiring — that the reserve literal actually reaches the full-scope
+// shards and does NOT leak onto the unrelated windows lane.
+test('shard 1\'s aux-suite cost is reserved out of the unit-test packer (#4070)', async (t) => {
+  const workflow = loadWorkflow('test.yml');
+
+  // Reserve value derivation (see .gsd/bug/fix-4070-shard1-aux-suite-budget/
+  // 10-diagnosis.md "Rejected fixes" for the full computation): aux-suite
+  // fixed cost measured at ~216-224s combined across two real runs (issue
+  // #4070's cited evidence, runs 33278340189 and 33285384930); shard 1's
+  // current unit-only real cost (~584-615s, same issue) divided by its
+  // current unit-only LPT weight (209.46, computed locally against
+  // tests/test-timings.json) gives an empirical ~2.86s-per-weight-unit
+  // conversion; 220s / 2.86 ≈ 77 weight units — roughly 77 average-cost test
+  // files' worth of virtual head start.
+  const EXPECTED_RESERVE = '1:77';
+
+  await t.test('the unit-test step reserves shard 1\'s aux-suite cost for the full-scope lane', () => {
+    const unitStep = workflow.jobs.test.steps.find(
+      (s) => typeof s.run === 'string' && s.run.includes('test:coverage:unit:raw'),
+    );
+    assert.ok(unitStep, 'no step in the test job runs the raw unit coverage script');
+    const reserveEnv = unitStep.env && unitStep.env.RUN_TESTS_SHARD_RESERVE;
+    assert.ok(
+      reserveEnv,
+      'the unit-test step declares no RUN_TESTS_SHARD_RESERVE env var — shard 1 would carry '
+      + 'the aux-suite cost with no offsetting reduction in its unit-test share (#4070)',
+    );
+    assert.match(
+      String(reserveEnv), /matrix\.scope == 'full'/,
+      'RUN_TESTS_SHARD_RESERVE must be conditioned on `scope == \'full\'` — the windows lane '
+      + 'runs no aux suites on its own shard 1 and must not be penalized for a cost it never pays',
+    );
+    assert.match(
+      String(reserveEnv), new RegExp(EXPECTED_RESERVE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `RUN_TESTS_SHARD_RESERVE does not carry the documented reserve literal ${EXPECTED_RESERVE} — `
+      + 'if the aux-suite cost was re-measured, update BOTH this literal and the derivation '
+      + 'comment above (and the diagnosis doc) together, the same discipline LANE_COSTS uses',
+    );
+  });
+
+  await t.test('the windows lane is not given a reserve it does not need', () => {
+    // The reserve env is a single ternary string shared by every scope, so
+    // this is really the same assertion as above stated the other way: for
+    // any matrix entry that is NOT scope:full, the expression must resolve
+    // falsy. Evaluated structurally (parsing the ternary) rather than by
+    // simulating GitHub's expression engine.
+    const unitStep = workflow.jobs.test.steps.find(
+      (s) => typeof s.run === 'string' && s.run.includes('test:coverage:unit:raw'),
+    );
+    const reserveEnv = String((unitStep.env && unitStep.env.RUN_TESTS_SHARD_RESERVE) || '');
+    const ternary = /\$\{\{\s*matrix\.scope == 'full'\s*&&\s*'[^']*'\s*\|\|\s*'([^']*)'\s*\}\}/.exec(reserveEnv);
+    assert.ok(ternary, `RUN_TESTS_SHARD_RESERVE is not a scope-gated ternary: ${reserveEnv}`);
+    assert.equal(
+      ternary[1], '',
+      'the non-full-scope branch of the reserve ternary must resolve to an empty string, so '
+      + 'the windows and targeted lanes see no reserve at all',
+    );
+  });
+});
+
 test('the merged coverage gate survives sharding (#2952)', async (t) => {
   const workflow = loadWorkflow('test.yml');
 
