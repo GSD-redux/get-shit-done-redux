@@ -542,6 +542,56 @@ test('ambient GSD workstream vars are stripped by the runner', () => {
       assert.match(r.stderr, /sig=[0-9a-f]+/, 'shard diagnostics must emit an input fingerprint');
     });
 
+    // #4070 E2E: main()'s own bounds check on RUN_TESTS_SHARD_RESERVE — an
+    // index that does not exist for the shard total in play — is invisible to
+    // every pure in-memory selectShard/parseShardReserve test, because that
+    // check lives in main() itself (scripts/run-tests.cjs, the
+    // `reserve.index <= parsed.shard.total` guard and its console.error
+    // fallback), which only runs through the CLI subprocess seam. Proves both
+    // halves: the warning fires, AND the selection is provably unaffected
+    // (byte-identical to a control run with no RUN_TESTS_SHARD_RESERVE at
+    // all, both against the SAME injected timings table so the comparison
+    // isn't muddied by table drift).
+    test('RUN_TESTS_SHARD_RESERVE with an out-of-range index warns and is ignored (#4070)', () => {
+      seed(tmpDir, SHARD_NAMES);
+      const timings = {
+        schema_version: 1, unit: 'ms', timings: Object.fromEntries(
+          SHARD_NAMES.map((n, i) => [n, i % 3 === 0 ? 30000 : 100]),
+        ),
+      };
+      const tablePath = path.join(tmpDir, 'injected-timings-oob.json');
+      fs.writeFileSync(tablePath, JSON.stringify(timings));
+      try {
+        // --shard 1/3 → valid indices are 1..3. "5:999" is out of range.
+        const withBadReserve = runHarness(
+          tmpDir, ['--shard', '1/3'],
+          { RUN_TESTS_TIMINGS_FILE: tablePath, RUN_TESTS_SHARD_RESERVE: '5:999' },
+        );
+        assert.strictEqual(withBadReserve.status, 0, `stderr: ${withBadReserve.stderr}`);
+        assert.match(
+          withBadReserve.stderr,
+          /RUN_TESTS_SHARD_RESERVE="5:999" is not a valid .* for --shard total 3 — ignoring/,
+          `expected the out-of-range-index fallback warning; got stderr: ${withBadReserve.stderr}`,
+        );
+
+        const control = runHarness(
+          tmpDir, ['--shard', '1/3'],
+          { RUN_TESTS_TIMINGS_FILE: tablePath },
+        );
+        assert.strictEqual(control.status, 0, `stderr: ${control.stderr}`);
+        assert.doesNotMatch(control.stderr, /RUN_TESTS_SHARD_RESERVE/, 'control run must not warn — it sets no reserve at all');
+
+        const filesLine = (s) => (s.match(/files=\d+: (.*)$/m) || [])[1] || '';
+        assert.strictEqual(
+          filesLine(withBadReserve.stderr), filesLine(control.stderr),
+          'an out-of-range reserve index must select EXACTLY the same files as no reserve at all — '
+          + 'the fallback warning alone is not proof the reserve was actually ignored',
+        );
+      } finally {
+        try { fs.unlinkSync(tablePath); } catch { /* best effort */ }
+      }
+    });
+
     test('shard diagnostics report an identical input fingerprint across shards', () => {
       seed(tmpDir, SHARD_NAMES);
       // The cross-runner divergence guard: every shard of one run computes the
@@ -1521,10 +1571,18 @@ describe('selectShard reserved-weight partition (#4070)', () => {
   });
 
   // Generalizes the existing "no shard exceeds average + heaviest file" bound
-  // (#2472) to include a single reserved bin: the reserve is just more mass
-  // an early greedy choice has to route around, so the same Graham-style
-  // bound holds with the reserve folded into the total.
-  test('property: no shard exceeds average(+reserve) + heaviest file', () => {
+  // (#2472) to include a single reserved bin — but the Graham-style proof
+  // (the max-load bin was the argmin, hence <= average, at the moment its
+  // LAST item was placed) only applies to a bin that actually received at
+  // least one item. A reserve large enough that its bin never receives any
+  // real item stays at EXACTLY its initial reserve forever — no amount of
+  // routing real items elsewhere can dilute a fixed head start below itself
+  // — so the true bound is the LARGER of the classic Graham term and the
+  // single biggest reserve. (Counterexample that falsified the original,
+  // reserve-blind-to-domination version of this bound: weights=[1,1,1],
+  // total=2, reserve=6 on bin 0 — bin 0 receives zero items and stays at 6,
+  // while (sum+reserve)/total+max = 4.5+1 = 5.5 < 6.)
+  test('property: no shard exceeds max(reserve, average(+reserve) + heaviest file)', () => {
     fc.assert(
       fc.property(
         fc.array(fc.integer({ min: 1, max: 60000 }), { minLength: 3, maxLength: 60 }),
@@ -1537,7 +1595,8 @@ describe('selectShard reserved-weight partition (#4070)', () => {
           const reserveIdx = reserveIdxRaw % total;
           const initialWeights = Array.from({ length: total }, (_, i) => (i === reserveIdx ? reserve : 0));
           const sums = finalTotals(files, total, w, initialWeights);
-          const bound = (weights.reduce((a, b) => a + b, 0) + reserve) / total + Math.max(...weights);
+          const grahamBound = (weights.reduce((a, b) => a + b, 0) + reserve) / total + Math.max(...weights);
+          const bound = Math.max(reserve, grahamBound);
           assert.ok(
             Math.max(...sums) <= bound + 1e-9,
             `bound violated: max=${Math.max(...sums)} bound=${bound} sums=${sums}`,
