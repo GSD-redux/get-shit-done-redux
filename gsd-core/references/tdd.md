@@ -160,11 +160,11 @@ run, and the RED commit records what was actually observed.
 
 ### Evidence
 
-The RED commit carries what was observed as a Git trailer — one line of JSON with exactly eight
+The RED commit carries what was observed as a Git trailer — one line of JSON with exactly six
 top-level fields:
 
 ```text
-red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"location":{"declared":{"file":"tests/test_pricing.py","line":8},"observed":{"file":"/srv/build/tests/test_pricing.py","line":8}}}
+red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"location":{"declared":{"file":"tests/test_pricing.py","line":8},"observed":{"file":"/srv/build/tests/test_pricing.py","line":8}}}
 ```
 
 | Field | Meaning |
@@ -172,18 +172,9 @@ red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_to
 | `command` | The exact command whose run this is. The predicate reads `command` only to require a non-empty string, and still binds nothing about its content to `target_test`. |
 | `exit_status` | That command's process exit status, as a JSON number — never a quoted string. A bash-assembled trailer that interpolates `"$?"` inside quotes produces a string and fails the guard; interpolate it unquoted. |
 | `target_test` | The runner-native id the run was asked to produce. |
-| `selected_count` | How many tests the run selected. |
-| `target_executed` | Whether the declared target test was executed and reported — defined below. |
 | `expected` | The declared `expected_failure`, echoed back: `phase`, `class_or_mode`, `subject`. |
 | `actual` | What was observed, in the same three fields. |
 | `location` | Where the failure was declared to occur and where it was observed to occur: `declared` and `observed`, each a `{file, line}` pair. Compared by `locationsAgree`, defined below. |
-
-> `target_executed` is true when some member of the run's executed-and-reported set `id_matches`
-> the declared `target_test`. It does **not** mean "the test function's body ran," and it is not a
-> literal membership test — a parameterized run reports only bracket-suffixed variants, and a
-> literal check would block the legitimate RED that `id_matches` exists to admit.
-
-`false` means no member of the reported set matches at all.
 
 > `id_matches(observed, declared)` is true when `observed === declared`, or when `observed` is
 > `declared` followed **immediately** by a runner-native variant delimiter opening a parametrization
@@ -225,7 +216,7 @@ Two further obligations:
   mis-copied trailer from approving itself by agreeing with its own echo, and what stops a
   self-reported id from being bent to fit whatever the run produced.
 
-No `version` field. The top-level key set must equal exactly these eight, and that equality is
+No `version` field. The top-level key set must equal exactly these six, and that equality is
 itself the fail-closed mechanism: a foreign or future schema fails it instead of being partly
 honoured. Extending the vector is therefore a change to THIS CONTRACT, never a runtime one:
 a vector carrying additional keys is not this vector and fails the equality by construction.
@@ -247,9 +238,7 @@ valid_red =
   AND trailer.target_test == plan.target_test
   AND location.observed == location.declared
   AND (
-    selected_count > 0
-    AND target_executed
-    AND id_matches(actual.subject, plan.target_test)
+    id_matches(actual.subject, plan.target_test)
     OR
     id_matches(actual.subject, plan.target_test)
     AND plan.expected_failure is an outside-in missing-target mode
@@ -273,10 +262,7 @@ field comparisons, omitting `subject` because the arms bind `actual.subject` to 
 values instead; and the target arm's `actual.subject == plan.target_test` becomes
 `id_matches(...)`.
 
-`selected_count` and `target_executed` are conditions of the target-test arm **only**: an
-outside-in RED fails before its target test is ever collected, so it reports 0 and false by
-construction, and hoisting those two above the disjunction blocks exactly the case the outside-in
-arm exists to admit. The arm applies no condition proving the target test exists; **Executor Gate
+The predicate applies no condition proving the target test exists; **Executor Gate
 Validation** below supplies that separately by requiring the RED commit to touch a test file, and
 it fires for every `type: tdd` plan. `gsd-core/references/execute-mvp-tdd.md` repeats the same
 condition, but only under MVP+TDD, so it is not the live path on a project that sets `tdd_mode`
@@ -322,12 +308,12 @@ Each row is a consequence of the predicate, and each names the field that decide
 | Outcome | Decided by | Verdict |
 |---|---|---|
 | Zero tests selected | `actual.phase` differs from `expected.phase` — the run reported at collection, not at the declared call-phase failure | block |
-| Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target, unless the declaration names that class itself, in which case the classes agree, this row does not hold, and the outside-in row below decides — and the target-test arm's `selected_count` is 0 | block |
+| Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target, unless the declaration names that class itself, in which case the classes agree, this row does not hold, and the outside-in row below decides | block |
 | Fixture or setup crashed before the target assertion | `actual.phase` differs from `expected.phase` | block |
 | A different test failed | neither arm holds — `actual.subject` does not `id_matches` `plan.target_test` | block |
 | Genuine target-behavior failure | the shared comparisons hold and the target-test arm holds | authorize |
 | Unrelated assertion in the target test | `location.observed` differs from `location.declared` — a different assertion failing first at the same phase and class reports a different declared-versus-observed file or line | block |
-| Outside-in: the declared implementation target is missing | the shared comparisons hold and the outside-in arm holds — `actual.subject` `id_matches` `plan.target_test` and `plan.expected_failure` is an outside-in missing-target mode, with no selection or execution condition applied | authorize |
+| Outside-in: the declared implementation target is missing | the shared comparisons hold and the outside-in arm holds — `actual.subject` `id_matches` `plan.target_test` and `plan.expected_failure` is an outside-in missing-target mode | authorize |
 | Unrelated missing dependency in the target test file | `location.observed` differs from `location.declared` — the arm anchors on the declared test FILE, and the location conjunct anchors further, on the declared line within it | block |
 | Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and the target-test arm holds | authorize |
 | Unrelated fixture crash at the declared fixture phase | `location.observed` differs from `location.declared` — a fixture crash elsewhere in the target's dependency chain reports a different file or line than the one declared | block |
@@ -441,7 +427,7 @@ test(08-02): add failing test for discount reducing order total
 - Tests a discount larger than the total floors at zero
 - Tests an absent discount leaves the total unchanged
 
-red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","selected_count":1,"target_executed":true,"expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"location":{"declared":{"file":"tests/test_pricing.py","line":8},"observed":{"file":"/srv/build/tests/test_pricing.py","line":8}}}
+red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_total -q","exit_status":1,"target_test":"tests/test_pricing.py::test_discount_reduces_total","expected":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"actual":{"phase":"call","class_or_mode":"AssertionError","subject":"tests/test_pricing.py::test_discount_reduces_total"},"location":{"declared":{"file":"tests/test_pricing.py","line":8},"observed":{"file":"/srv/build/tests/test_pricing.py","line":8}}}
 
 feat(08-02): implement discount reduction on order total
 

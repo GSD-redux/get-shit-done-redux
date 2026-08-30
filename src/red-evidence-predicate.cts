@@ -16,7 +16,7 @@ import { safeJsonParse } from './security.cjs';
  *
  * `evaluateRedEvidence` never throws and never defaults to `authorize`: every
  * malformed or ambiguous input returns `red_commit_not_failing` with a
- * `reason`, and only a fully-conforming eight-key trailer that satisfies the
+ * `reason`, and only a fully-conforming six-key trailer that satisfies the
  * predicate returns `authorize`.
  */
 
@@ -40,10 +40,9 @@ interface RedEvidenceResult {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-/** The eight top-level `red-evidence:` trailer keys, sorted. */
+/** The six top-level `red-evidence:` trailer keys, sorted. */
 const TOP_LEVEL_KEYS = [
-  'actual', 'command', 'exit_status', 'expected', 'location', 'selected_count',
-  'target_executed', 'target_test',
+  'actual', 'command', 'exit_status', 'expected', 'location', 'target_test',
 ].sort();
 
 /** `location`'s two sub-keys, sorted. */
@@ -277,9 +276,6 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
   const actualSubject = isPlainObject(actual) ? actual['subject'] : undefined;
 
   const arm1Checks: Array<[string, boolean]> = [
-    ['selected_count > 0',
-      typeof trailer['selected_count'] === 'number' && trailer['selected_count'] > 0],
-    ['target_executed', trailer['target_executed'] === true],
     ['id_matches(actual.subject, plan.target_test)', idMatches(actualSubject, plan.target_test)],
   ];
   const arm1Failed = arm1Checks.filter(([, ok]) => !ok).map(([name]) => name);

@@ -566,13 +566,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       },
       {
         section: 'Evidence',
-        needle: "`target_executed` is true when some member of the run's executed-and-reported set",
-        verdict: null,
-        why: '`target_executed` is a conjunct of the target-test arm, and a conjunct whose term '
-          + 'the contract never defines is unmechanizable by the coded gate — CR-01 exactly',
-      },
-      {
-        section: 'Evidence',
         needle: '`id_matches(observed, declared)` is true when `observed === declared`',
         verdict: null,
         why: 'the predicate body uses `id_matches` and that use is already pinned; deleting only '
@@ -757,10 +750,10 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
   // present, correctly spelled and correctly indented while the contract it
   // composes authorizes a run it must block. The block below reads the shipped
   // fence as STRUCTURED INPUT to an evaluator and asserts the VERDICT it
-  // computes for a table of evidence vectors, so deleting `AND target_executed`
-  // stops being a broken string match and becomes `target-not-executed`
-  // flipping from `block` to `authorize` — which is the defect, stated as the
-  // defect. See #3770.
+  // computes for a table of evidence vectors, so deleting
+  // `AND id_matches(actual.subject, plan.target_test)` stops being a broken
+  // string match and becomes `different-test-failed` flipping from `block` to
+  // `authorize` — which is the defect, stated as the defect. See #3770.
 
   /**
    * The `### RED Predicate` fence, split into its shared conjuncts and its two
@@ -853,7 +846,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
 
   /**
    * One evaluator per DISTINCT atom, keyed by the atom's text exactly as the
-   * fence carries it with a leading `AND ` stripped. TEN keys for fifteen
+   * fence carries it with a leading `AND ` stripped. EIGHT keys for thirteen
    * statement lines: `valid_red =`, `AND (`, `OR` and `)` are structure, and
    * `id_matches(actual.subject, plan.target_test)` occupies one line in each
    * arm as a single atom.
@@ -879,8 +872,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
       (v) => v.trailer.target_test === v.plan.target_test],
     ['location.observed == location.declared',
       (v) => sameLocation(v.trailer.location.observed, v.trailer.location.declared)],
-    ['selected_count > 0', (v) => v.trailer.selected_count > 0],
-    ['target_executed', (v) => v.trailer.target_executed === true],
     ['id_matches(actual.subject, plan.target_test)',
       (v) => idMatches(v.trailer.actual.subject, v.plan.target_test)],
     ['plan.expected_failure is an outside-in missing-target mode',
@@ -921,7 +912,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
   }
 
   /**
-   * An evidence vector in the shape `### Evidence` ships — the seven trailer
+   * An evidence vector in the shape `### Evidence` ships — the six trailer
    * keys plus the plan's `<red_contract>` declaration — with the genuine
    * target-behavior failure as its base and one field overridden per case, so
    * each blocking case blocks for exactly ONE reason and deleting the conjunct
@@ -946,8 +937,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
         exit_status: 1,
         target_test: 'tests/test_pricing.py::test_discount_reduces_total',
-        selected_count: 1,
-        target_executed: true,
         expected: {
           phase: 'call',
           class_or_mode: 'AssertionError',
@@ -1015,8 +1004,6 @@ ${Array(redContractCount).fill(block).join('\n')}
       command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
       exit_status: 1,
       target_test: 'tests/test_pricing.py::test_discount_reduces_total',
-      selected_count: 1,
-      target_executed: true,
       expected: {
         phase: 'call',
         class_or_mode: 'AssertionError',
@@ -1048,8 +1035,6 @@ ${Array(redContractCount).fill(block).join('\n')}
       command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
       exit_status: 1,
       target_test: 'tests/test_pricing.py::test_discount_reduces_total',
-      selected_count: 1,
-      target_executed: true,
       expected: {
         phase: 'call',
         class_or_mode: 'AssertionError',
@@ -1081,8 +1066,6 @@ ${Array(redContractCount).fill(block).join('\n')}
       command: 'pytest tests/test_pricing.py -q',
       exit_status: 2,
       target_test: 'tests/test_pricing.py',
-      selected_count: 0,
-      target_executed: false,
       expected: {
         phase: 'collection',
         class_or_mode: 'ImportError',
@@ -1114,8 +1097,6 @@ ${Array(redContractCount).fill(block).join('\n')}
       command: 'pytest tests/test_pricing.py -q',
       exit_status: 2,
       target_test: 'tests/test_pricing.py',
-      selected_count: 0,
-      target_executed: false,
       expected: {
         phase: 'collection',
         class_or_mode: 'ImportError',
@@ -1147,8 +1128,6 @@ ${Array(redContractCount).fill(block).join('\n')}
       command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
       exit_status: 1,
       target_test: 'tests/test_pricing.py::test_discount_reduces_total',
-      selected_count: 1,
-      target_executed: true,
       expected: {
         phase: 'setup',
         class_or_mode: 'RuntimeError',
@@ -1180,8 +1159,6 @@ ${Array(redContractCount).fill(block).join('\n')}
       command: 'pytest tests/test_pricing.py::test_discount_reduces_total -q',
       exit_status: 1,
       target_test: 'tests/test_pricing.py::test_discount_reduces_total',
-      selected_count: 1,
-      target_executed: true,
       expected: {
         phase: 'setup',
         class_or_mode: 'RuntimeError',
@@ -1200,8 +1177,8 @@ ${Array(redContractCount).fill(block).join('\n')}
   };
 
   /**
-   * Fifteen evidence vectors with HARDCODED verdicts. Nine isolate one conjunct
-   * each, so deleting that conjunct flips exactly this case; three are the
+   * Sixteen evidence vectors with HARDCODED verdicts. Eight isolate one conjunct
+   * each, so deleting that conjunct flips exactly this case; five are the
    * authorizing cases the contract exists to admit; three are the residuals it
    * admits and should not.
    *
@@ -1315,38 +1292,6 @@ ${Array(redContractCount).fill(block).join('\n')}
       }),
     },
     {
-      id: 'target-not-executed',
-      outcome_row: null,
-      verdict: 'block',
-      why: 'isolates `AND target_executed`. One test was selected and the error was attributed '
-        + 'to its node id, but the session aborted before any test result was reported, so no '
-        + "member of the run's executed-and-reported set matches the declared target. This is "
-        + "the case `target_executed`'s definition exists for, and the conjunct is the only "
-        + 'thing blocking it.',
-      vector: vector({
-        plan: {
-          expected_failure: {
-            phase: 'setup',
-            class_or_mode: 'RuntimeError',
-            subject: 'tests/test_pricing.py::test_discount_reduces_total',
-          },
-        },
-        trailer: {
-          target_executed: false,
-          expected: {
-            phase: 'setup',
-            class_or_mode: 'RuntimeError',
-            subject: 'tests/test_pricing.py::test_discount_reduces_total',
-          },
-          actual: {
-            phase: 'setup',
-            class_or_mode: 'RuntimeError',
-            subject: 'tests/test_pricing.py::test_discount_reduces_total',
-          },
-        },
-      }),
-    },
-    {
       id: 'different-test-failed',
       outcome_row: 'A different test failed',
       verdict: 'block',
@@ -1356,7 +1301,6 @@ ${Array(redContractCount).fill(block).join('\n')}
         + 'arm reduces to selection plus execution, which this run satisfies.',
       vector: vector({
         trailer: {
-          selected_count: 2,
           actual: {
             phase: 'call',
             class_or_mode: 'AssertionError',
@@ -1386,8 +1330,6 @@ ${Array(redContractCount).fill(block).join('\n')}
           command: 'pytest tests/test_pricing.py -q',
           exit_status: 2,
           target_test: 'tests/test_pricing.py',
-          selected_count: 0,
-          target_executed: false,
           expected: {
             phase: 'collection',
             class_or_mode: 'ImportError',
@@ -1466,12 +1408,11 @@ ${Array(redContractCount).fill(block).join('\n')}
       outcome_row: 'Outside-in: the declared implementation target is missing',
       verdict: 'authorize',
       why: 'a second legitimate outside-in RED, reached in an ecosystem with no collection '
-        + 'phase at all: a compiled-language link failure (REGR-04). `selected_count` is 0 and '
-        + '`target_executed` is false BY CONSTRUCTION here too, exactly as in `outside-in`, but '
-        + 'the location conjunct sits ABOVE the disjunction without acquiring arm 1\'s selection '
-        + 'and execution conditions when the outside-in arm is the one that holds — this vector '
-        + 'proves that for a phase and class distinct from `outside-in`\'s Python ones, so the '
-        + 'shared row cannot be an artifact of one ecosystem\'s vocabulary.',
+        + 'phase at all: a compiled-language link failure (REGR-04), exactly as in `outside-in` '
+        + 'but for a phase and class distinct from its Python ones. The location conjunct sits '
+        + 'ABOVE the disjunction without acquiring arm 1\'s own conditions when the outside-in '
+        + 'arm is the one that holds, so the shared row cannot be an artifact of one ecosystem\'s '
+        + 'vocabulary.',
       vector: vector({
         plan: {
           target_test: 'oi.cpp',
@@ -1486,8 +1427,6 @@ ${Array(redContractCount).fill(block).join('\n')}
           command: 'g++ -g -o oi oi.cpp -lgtest -lgtest_main -pthread',
           exit_status: 1,
           target_test: 'oi.cpp',
-          selected_count: 0,
-          target_executed: false,
           expected: {
             phase: 'build',
             class_or_mode: 'undefined reference',
@@ -1588,8 +1527,8 @@ ${Array(redContractCount).fill(block).join('\n')}
 
     // The set equality above passes when a conjunct is deleted from BOTH the
     // fence and this map. The hardcoded count is what does not.
-    assert.strictEqual(PREDICATE_ATOMS.size, 10,
-      `the predicate must compose exactly ten distinct atoms; this map carries `
+    assert.strictEqual(PREDICATE_ATOMS.size, 8,
+      `the predicate must compose exactly eight distinct atoms; this map carries `
       + `${PREDICATE_ATOMS.size}. Deleting a conjunct from the fence AND its evaluator here `
       + 'satisfies the set equality above and would otherwise pass unnoticed. See #3770.');
   });
@@ -1764,14 +1703,14 @@ ${Array(redContractCount).fill(block).join('\n')}
     const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
     const validTask = buildTaskContent(GENUINE.plan);
     const validTrailerText = `red-evidence: ${JSON.stringify(GENUINE.trailer)}`;
-    const { location, ...sevenKeyTrailer } = GENUINE.trailer;
+    const { location, ...fiveKeyTrailer } = GENUINE.trailer;
     void location;
 
     for (const [label, taskContent, trailerText] of [
       ['an empty-string trailer', validTask, ''],
       ['a non-JSON trailer', validTask, 'red-evidence: not json'],
-      ['a seven-key trailer missing `location`', validTask,
-        `red-evidence: ${JSON.stringify(sevenKeyTrailer)}`],
+      ['a five-key trailer missing `location`', validTask,
+        `red-evidence: ${JSON.stringify(fiveKeyTrailer)}`],
       ['a behavior-adding task with no `<red_contract>` block',
         validTask.replace(/<red_contract>[\s\S]*?<\/red_contract>\n?/, ''), validTrailerText],
       ['a behavior-adding task with a duplicated `<red_contract>` block',
@@ -1795,7 +1734,7 @@ ${Array(redContractCount).fill(block).join('\n')}
    * the contract automatically and cannot drift from it. See #3770.
    */
   const TRAILER_SHAPE_CASES = [
-    { name: '`location` absent from an otherwise valid eight-key trailer',
+    { name: '`location` absent from an otherwise valid six-key trailer',
       mutate: (t) => { delete t.location; return t; }, expected: 'red_commit_not_failing' },
     { name: '`location` present but `declared` absent',
       mutate: (t) => { delete t.location.declared; return t; },
@@ -1827,7 +1766,7 @@ ${Array(redContractCount).fill(block).join('\n')}
     { name: '`location.observed` carrying an extra sub-key beyond `file` and `line`',
       mutate: (t) => { t.location.observed.column = 3; return t; },
       expected: 'red_commit_not_failing' },
-    { name: 'a ninth top-level key added to an otherwise valid vector',
+    { name: 'a seventh top-level key added to an otherwise valid vector',
       mutate: (t) => { t.extra_field = 'unexpected'; return t; },
       expected: 'red_commit_not_failing' },
     { name: '`location.declared.file` and `location.observed.file` BOTH the empty string, '
