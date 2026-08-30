@@ -120,7 +120,7 @@
       "binary": "agy",
       "args": [
         "--print-timeout",
-        "540s",
+        "{{nativeTimeout}}",
         "{{model}}",
         "-p",
         "{{prompt}}"

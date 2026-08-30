@@ -278,17 +278,19 @@ across lanes rather than one lane's behavior, so they remain central and are una
 
 ### Reviewer lane timeouts (`review.timeouts.*`, #3274)
 
-Every declared reviewer lane accepts an outer wall-clock timeout override, federated per-lane
-exactly like `review.max_prompt_tokens_per_reviewer.<slug>` above — the key is owned by that
-lane's own capability manifest, not a central schema. Keys are seconds: `review.timeouts.gemini`,
-`review.timeouts.claude`, `review.timeouts.codex`, `review.timeouts.coderabbit`,
-`review.timeouts.opencode`, `review.timeouts.qwen`, `review.timeouts.cursor`,
+Nine of the twelve declared reviewer lanes accept an outer wall-clock timeout override, federated
+per-lane exactly like `review.max_prompt_tokens_per_reviewer.<slug>` above — the key is owned by
+that lane's own capability manifest, not a central schema. Keys are seconds: `review.timeouts.gemini`,
+`review.timeouts.claude`, `review.timeouts.codex`, `review.timeouts.opencode`,
 `review.timeouts.antigravity`, `review.timeouts.kimi-code`, `review.timeouts.ollama`,
 `review.timeouts.lm_studio`, `review.timeouts.llama_cpp`. Unset (or `0`/negative/non-numeric)
 falls back to that lane's built-in floor. For the `antigravity` lane specifically, this value also
 derives its native `agy --print-timeout` flag (roughly 60 seconds under the configured outer
 value), so raising `review.timeouts.antigravity` raises both bounds together — this is how to fix
 a reviewer lane being killed mid-run on a large plan set: `gsd config-set review.timeouts.antigravity 900`.
+Three lanes — `qwen`, `cursor`, and `coderabbit` — take neither a model flag nor a host and do not
+federate a timeout key either, matching the same narrow key-ownership invariant their
+`review.models.*`/host keys already follow (each owns only its own prompt-budget key).
 
 ### Reviewer defaults for `/gsd-review`
 

@@ -214,7 +214,7 @@ const capabilities = {
         "binary": "agy",
         "args": [
           "--print-timeout",
-          "540s",
+          "{{nativeTimeout}}",
           "{{model}}",
           "-p",
           "{{prompt}}"
@@ -1058,7 +1058,7 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 360000,
-      "timeoutConfigKey": "review.timeouts.coderabbit",
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "CodeRabbit",
       "evidenceClass": "diff-only",
@@ -1072,11 +1072,6 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
-      },
-      "review.timeouts.coderabbit": {
-        "type": "number",
-        "default": -1,
-        "description": "Outer wall-clock timeout override (seconds) for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
@@ -1490,7 +1485,7 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
-      "timeoutConfigKey": "review.timeouts.cursor",
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
@@ -1504,11 +1499,6 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
-      },
-      "review.timeouts.cursor": {
-        "type": "number",
-        "default": -1,
-        "description": "Outer wall-clock timeout override (seconds) for the Cursor reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
@@ -3360,7 +3350,7 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
-      "timeoutConfigKey": "review.timeouts.qwen",
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
@@ -3374,11 +3364,6 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
-      },
-      "review.timeouts.qwen": {
-        "type": "number",
-        "default": -1,
-        "description": "Outer wall-clock timeout override (seconds) for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
@@ -4793,12 +4778,10 @@ const configKeys = {
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
   "review.max_prompt_tokens_per_reviewer.coderabbit": "coderabbit",
-  "review.timeouts.coderabbit": "coderabbit",
   "review.models.codex": "codex",
   "review.max_prompt_tokens_per_reviewer.codex": "codex",
   "review.timeouts.codex": "codex",
   "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
-  "review.timeouts.cursor": "cursor",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
@@ -4847,7 +4830,6 @@ const configKeys = {
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
   "review.max_prompt_tokens_per_reviewer.qwen": "qwen",
-  "review.timeouts.qwen": "qwen",
   "refactor.trigger_enabled": "refactor-trigger",
   "refactor.complexity_threshold": "refactor-trigger",
   "refactor.complexity_jump_delta": "refactor-trigger",
@@ -4970,12 +4952,6 @@ const configSchema = {
     "default": -1,
     "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
-  "review.timeouts.coderabbit": {
-    "owner": "coderabbit",
-    "type": "number",
-    "default": -1,
-    "description": "Outer wall-clock timeout override (seconds) for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
-  },
   "review.models.codex": {
     "owner": "codex",
     "type": "string",
@@ -4999,12 +4975,6 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
-  },
-  "review.timeouts.cursor": {
-    "owner": "cursor",
-    "type": "number",
-    "default": -1,
-    "description": "Outer wall-clock timeout override (seconds) for the Cursor reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
   "workflow.drift_threshold": {
     "owner": "drift",
@@ -5306,12 +5276,6 @@ const configSchema = {
     "default": -1,
     "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
-  "review.timeouts.qwen": {
-    "owner": "qwen",
-    "type": "number",
-    "default": -1,
-    "description": "Outer wall-clock timeout override (seconds) for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
-  },
   "refactor.trigger_enabled": {
     "owner": "refactor-trigger",
     "type": "boolean",
@@ -5522,7 +5486,7 @@ const runtimes = {
         "binary": "agy",
         "args": [
           "--print-timeout",
-          "540s",
+          "{{nativeTimeout}}",
           "{{model}}",
           "-p",
           "{{prompt}}"
@@ -6465,7 +6429,7 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
-      "timeoutConfigKey": "review.timeouts.cursor",
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
@@ -6479,11 +6443,6 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
-      },
-      "review.timeouts.cursor": {
-        "type": "number",
-        "default": -1,
-        "description": "Outer wall-clock timeout override (seconds) for the Cursor reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
@@ -7379,7 +7338,7 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
-      "timeoutConfigKey": "review.timeouts.qwen",
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
@@ -7393,11 +7352,6 @@ const runtimes = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
-      },
-      "review.timeouts.qwen": {
-        "type": "number",
-        "default": -1,
-        "description": "Outer wall-clock timeout override (seconds) for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },

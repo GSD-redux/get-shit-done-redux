@@ -283,7 +283,7 @@ An unknown field inside a `reviewer` body is a **non-fatal warning on stderr, ne
       "effortChannel": "none"
     },
     "timeoutFloorMs": 360000,
-    "timeoutConfigKey": "review.timeouts.coderabbit",
+    "timeoutConfigKey": null,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "CodeRabbit",
     "evidenceClass": "diff-only",

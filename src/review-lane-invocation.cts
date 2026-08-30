@@ -276,6 +276,22 @@ export function resolveTimeoutMs(
     : floorMs;
 }
 
+/** Buffer (seconds) a lane's native inner timeout sits under its resolved outer wall-clock cap
+ * (#3274). Matches the shipped 600s outer / 540s native relationship exactly when unconfigured:
+ * floor(600000/1000) - 60 = 540. */
+const NATIVE_TIMEOUT_BUFFER_SECONDS = 60;
+
+/**
+ * Render the `{{nativeTimeout}}` argv placeholder from a lane's resolved outer timeout (#3274).
+ *
+ * Clamped to a 1-second floor so a very small configured (or, today, only-ever-default) outer
+ * timeout never produces a zero or negative duration string a CLI would reject or misinterpret.
+ */
+export function nativeTimeoutToken(timeoutMs: number): string {
+  const seconds = Math.max(1, Math.floor(timeoutMs / 1000) - NATIVE_TIMEOUT_BUFFER_SECONDS);
+  return `${seconds}s`;
+}
+
 /**
  * Classify a lane's output as a review or as empty.
  *
@@ -526,6 +542,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
     '{{effort}}': effortExpansion,
     '{{output}}': outputExpansion,
     '{{prompt}}': promptExpansion,
+    '{{nativeTimeout}}': [nativeTimeoutToken(timeoutMs)],
   };
   const template = Array.isArray(inv.args)
     ? inv.args.filter((a): a is string => typeof a === 'string')

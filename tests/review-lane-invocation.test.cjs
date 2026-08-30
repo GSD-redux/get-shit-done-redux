@@ -86,8 +86,9 @@ const GOLDEN = [
   { slug: 'opencode', binary: 'opencode', argv: ['run', '--model', 'O', '--effort', 'high', '--format', 'json', '-'], stdin: true, out: 'stdout', timeout: 660000 },
   { slug: 'qwen', binary: 'qwen', argv: ['-'], stdin: true, out: 'stdout', timeout: 900000 },
   { slug: 'cursor', binary: 'cursor-agent', argv: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
-  // '{{nativeTimeout}}' is a handler-owned marker (#3274) resolveLanePlan does not expand — see antigravityArgv tests for the derived value.
-  { slug: 'antigravity', binary: 'agy', argv: ['--print-timeout', '{{nativeTimeout}}', '--model', 'A', '-p', FILE_REF], stdin: false, out: 'stdout', timeout: 600000 },
+  // resolveLanePlan fully resolves {{nativeTimeout}} itself (#3274) — this row proves the
+  // unconfigured default reproduces the original literal exactly.
+  { slug: 'antigravity', binary: 'agy', argv: ['--print-timeout', '540s', '--model', 'A', '-p', FILE_REF], stdin: false, out: 'stdout', timeout: 600000 },
   { slug: 'kimi-code', binary: 'kimi', argv: ['-m', 'K', '-p', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
 ];
 
@@ -236,6 +237,30 @@ describe('#3274 — timeoutConfigKey resolves the outer wall-clock cap', () => {
       }),
       FC,
     );
+  });
+
+  test('a configured antigravity timeout derives both the outer cap and the native flag (row 10)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 900 } });
+    assert.equal(r.plan.timeoutMs, 900_000);
+    const i = r.plan.argv.indexOf('--print-timeout');
+    assert.equal(r.plan.argv[i + 1], '840s');
+  });
+
+  test('a native timeout below the 60s buffer clamps to 1s, never 0 or negative (row 11)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 30 } });
+    const i = r.plan.argv.indexOf('--print-timeout');
+    assert.equal(r.plan.argv[i + 1], '1s');
+  });
+
+  test('boundary around the 60-second native buffer (row 12)', () => {
+    const nativeFor = (seconds) => {
+      const r = resolve('antigravity', { config: { [AGY_KEY]: seconds } });
+      return r.plan.argv[r.plan.argv.indexOf('--print-timeout') + 1];
+    };
+    assert.equal(nativeFor(59), '1s');   // floor(59)-60 = -1 -> clamped
+    assert.equal(nativeFor(60), '1s');   // floor(60)-60 = 0 -> clamped
+    assert.equal(nativeFor(61), '1s');   // floor(61)-60 = 1
+    assert.equal(nativeFor(121), '61s'); // floor(121)-60 = 61
   });
 });
 

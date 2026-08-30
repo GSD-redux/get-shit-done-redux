@@ -807,25 +807,8 @@ export function antigravityPrompt(promptPath: string, repoRoot: string): string 
   );
 }
 
-/** Buffer (seconds) agy's native `--print-timeout` sits under the resolved outer wall-clock cap
- * (#3274). Matches the shipped 600s outer / 540s native relationship exactly when no
- * `review.timeouts.antigravity` override is configured (floor(600000/1000) - 60 = 540). */
-const ANTIGRAVITY_NATIVE_TIMEOUT_BUFFER_SECONDS = 60;
-
 /**
- * Derive agy's native `--print-timeout` duration string from the resolved outer timeout (#3274).
- *
- * Clamped to a 1-second floor: a configured outer timeout smaller than the buffer would otherwise
- * produce a zero or negative duration, which agy would reject or misinterpret rather than the
- * intended "give this reviewer almost no time."
- */
-function antigravityNativeTimeout(timeoutMs: number): string {
-  const seconds = Math.max(1, Math.floor(timeoutMs / 1000) - ANTIGRAVITY_NATIVE_TIMEOUT_BUFFER_SECONDS);
-  return `${seconds}s`;
-}
-
-/**
- * Antigravity's argv adjustments — the three things data cannot express for this lane.
+ * Antigravity's argv adjustments — the two things data cannot express for this lane.
  *
  * 1. `--add-dir <repo>`, CAPABILITY-PROBED. Without it agy's permission context never receives the
  *    cwd repo: the agent anchors on its own `~/.gemini/antigravity-cli/scratch` dir and reviews the
@@ -833,31 +816,23 @@ function antigravityNativeTimeout(timeoutMs: number): string {
  *    probed rather than assumed because older agy builds reject the unknown flag outright, and a
  *    lane that fails to start is worse than one that runs on the prompt anchor alone.
  * 2. The self-report prompt variant above, swapped in for the standard file-ref text.
- * 3. The native `--print-timeout` VALUE (#3274), derived from the resolved outer `timeoutMs` so it
- *    can never drift out of sync with the outer wall-clock cap the runner's `spawn` call enforces.
- *    The descriptor declares WHERE the value goes (a `'{{nativeTimeout}}'` marker in `invoke.args`);
- *    this handler decides WHAT it is — computing a derived, formatted value is exactly the kind of
- *    expression the closed `ARGV_PLACEHOLDER` vocabulary deliberately excludes (see its docstring).
  *
- * All three are argv shape, so they belong here rather than in the descriptor: expressing "add this
- * flag only if the binary's --help mentions it", or "compute this value from that one", as data
- * would need a conditional or an expression, which is precisely what the named-handler seam exists
- * to absorb (ADR-2782 D6).
+ * Both are argv shape, so they belong here rather than in the descriptor: expressing "add this
+ * flag only if the binary's --help mentions it" as data would need a conditional, which is
+ * precisely what the named-handler seam exists to absorb (ADR-2782 D6). The native
+ * `--print-timeout` VALUE (#3274) is NOT this handler's job — `resolveLanePlan`
+ * (review-lane-invocation.cts) resolves the `{{nativeTimeout}}` ARGV_PLACEHOLDER itself, exactly
+ * like `{{model}}`/`{{effort}}`/`{{output}}`/`{{prompt}}`, so `plan.argv` arrives here already fully
+ * resolved.
  */
 export function antigravityArgv(
   argv: readonly string[],
   promptPath: string,
   repoRoot: string,
-  timeoutMs: number,
   deps: RunnerDeps,
 ): string[] {
   const standard = fileRefPromptText(promptPath, repoRoot);
-  const nativeTimeout = antigravityNativeTimeout(timeoutMs);
-  const out = argv.map((a) => {
-    if (a === standard) return antigravityPrompt(promptPath, repoRoot);
-    if (a === '{{nativeTimeout}}') return nativeTimeout;
-    return a;
-  });
+  const out = argv.map((a) => (a === standard ? antigravityPrompt(promptPath, repoRoot) : a));
 
   let supportsAddDir = false;
   try {
@@ -1099,7 +1074,7 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
 
   const argv =
     plan.handler === 'antigravity'
-      ? antigravityArgv(plan.argv, plan.promptPath, repoRoot, plan.timeoutMs, deps)
+      ? antigravityArgv(plan.argv, plan.promptPath, repoRoot, deps)
       : plan.argv;
 
   const out = deps.spawn(plan.binary, argv, {

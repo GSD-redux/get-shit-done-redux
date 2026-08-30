@@ -44,6 +44,9 @@
  *   4. `flags: string[]` — Antigravity is selected by BOTH `--antigravity` and
  *      `--agy`, which a single-valued field cannot express. This also flattens
  *      D8's uniqueness invariant across every lane's flags.
+ *   5. `NATIVE_TIMEOUT` — a lane whose CLI takes its own native inner timeout flag (today only
+ *      antigravity's `--print-timeout`) declares where the resolved value goes; `resolveLanePlan`
+ *      computes what it is from the same resolved outer `timeoutMs` (#3274).
  *
  * Phase 2 (#2795) implements the manifest validator against the amended
  * vocabulary, which is the point of amending rather than leaving it to be
@@ -110,7 +113,7 @@ export type LaneProbe =
  * and vanishes when it has nothing to contribute (no model configured, no effort channel, prompt on
  * stdin), which is what lets one template serve the configured and unconfigured cases.
  *
- * This is a closed four-member vocabulary with no expressions, no nesting and no conditionals — a
+ * This is a closed five-member vocabulary with no expressions, no nesting and no conditionals — a
  * placeholder set, deliberately not a template language. The moment it needs a conditional, the
  * lane wants a `handler` instead (D6).
  */
@@ -123,6 +126,9 @@ export const ARGV_PLACEHOLDER = Object.freeze({
   OUTPUT: '{{output}}',
   /** The argv-borne prompt, or nothing unless `promptChannel` is `argv`/`argv-file-ref`. */
   PROMPT: '{{prompt}}',
+  /** A lane's own CLI-native inner timeout duration, derived from the resolved outer `timeoutMs`
+   * (never independently configured) — see `resolveLanePlan`'s expansion of this token. */
+  NATIVE_TIMEOUT: '{{nativeTimeout}}',
 } as const);
 
 export interface SpawnInvoke {
@@ -187,8 +193,12 @@ interface ReviewerLaneCommon {
    * user's repository and model, not of the lane — a cap right for a three-plan phase is wrong
    * for a fifteen-plan one. Resolved at invocation time (`resolveLanePlan`); an unset key, or a
    * config value that is not a positive finite number, falls back to `timeoutFloorMs` unchanged.
-   * For a lane whose handler ALSO bakes a native tool-side timeout into argv (antigravity's
-   * `--print-timeout`), the resolved value feeds both levels — see `antigravityArgv`.
+   * For a lane whose `args` template ALSO carries a native tool-side timeout (antigravity's
+   * `--print-timeout`, via the `{{nativeTimeout}}` ARGV_PLACEHOLDER), the resolved value feeds both
+   * levels — see `resolveLanePlan`'s expansion of that token. Three lanes — `qwen`, `cursor`,
+   * `coderabbit` — accept neither a model flag nor a host and own no `review.timeouts.<slug>` key
+   * either, matching the same narrow key-ownership invariant `modelConfigKey` already follows for
+   * them (#3691 narrows #2797).
    */
   timeoutConfigKey: string | null;
   emptyOutput: EmptyOutputPolicy;
@@ -350,7 +360,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 360_000,
-    timeoutConfigKey: 'review.timeouts.coderabbit',
+    timeoutConfigKey: null,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'CodeRabbit',
     evidenceClass: 'diff-only',
@@ -402,7 +412,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 900_000,
-    timeoutConfigKey: 'review.timeouts.qwen',
+    timeoutConfigKey: null,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Qwen',
     evidenceClass: 'source-grounded',
@@ -428,7 +438,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 900_000,
-    timeoutConfigKey: 'review.timeouts.cursor',
+    timeoutConfigKey: null,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Cursor',
     evidenceClass: 'source-grounded',
@@ -448,12 +458,11 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'agy' },
     invoke: {
       binary: 'agy',
-      // '{{nativeTimeout}}' is NOT one of the four generic ARGV_PLACEHOLDER tokens above — it is a
-      // handler-owned marker (ADR-2782 D6) that `antigravityArgv` (review-lane-runner.cts)
-      // substitutes with a value DERIVED from the resolved outer timeoutMs (#3274), so the native
-      // `--print-timeout` and the outer wall-clock cap can never drift apart. The generic resolver
-      // in review-lane-invocation.cts passes any token it doesn't recognize through unchanged, so
-      // this is safe there too — it only means something to the antigravity handler.
+      // `{{nativeTimeout}}` is the fifth ARGV_PLACEHOLDER member (#3274) — `resolveLanePlan`
+      // (review-lane-invocation.cts) expands it to a value DERIVED from this same lane's resolved
+      // outer `timeoutMs`, so the native `--print-timeout` and the outer wall-clock cap can never
+      // drift apart. No other shipped lane's `args` template contains this token, so the expansion
+      // is inert everywhere else.
       args: ['--print-timeout', '{{nativeTimeout}}', '{{model}}', '-p', '{{prompt}}'],
       promptChannel: 'argv-file-ref',
       outputChannel: 'stdout',
