@@ -1132,8 +1132,14 @@ total_plans_in_phase: 3
     fs.writeFileSync(path.join(q, '05-01-PLAN.md'), '# plan\n', 'utf-8');
   };
 
+  // #3884 (e20744eac, "failure is a value") made argv strict: an unrecognized
+  // flag is now a hard `unknown flag ...; accepted: --strict` error on stderr
+  // with EMPTY stdout, where it was previously ignored. `state validate` never
+  // had a `--json` flag — JSON is its only output shape — so the token was a
+  // silent no-op that strict argv now rejects. Dropping it restores the same
+  // envelope this helper already parsed; the assertions below are unchanged.
   const validateState = () => {
-    const r = runGsdTools(['state', 'validate', '--json'], tmpDir);
+    const r = runGsdTools(['state', 'validate'], tmpDir);
     return JSON.parse(r.output);
   };
 
