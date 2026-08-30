@@ -74,9 +74,15 @@ Verify the work is ready to ship:
 
 3. **On correct branch?**
    ```bash
-   CURRENT_BRANCH=$(git branch --show-current)
+   CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
+   IS_PROTECTED=$(gsd_run query git.base-branch --is-protected "$CURRENT_BRANCH") || IS_PROTECTED=""
+   if [ "$IS_PROTECTED" = true ]; then
+     echo "⚠ Current branch '$CURRENT_BRANCH' is a protected branch; shipping should happen from a feature branch." >&2
+   elif [ -z "$IS_PROTECTED" ]; then
+     echo "⚠ Could not determine whether '$CURRENT_BRANCH' is protected — the query failed. Continuing." >&2
+   fi
    ```
-   If on `${BASE_BRANCH}`: warn — should be on a feature branch.
+   If `IS_PROTECTED` is `true`: warn — should be on a feature branch.
    If branching_strategy is `none`: offer to create a branch now.
 
 4. **Remote configured?**

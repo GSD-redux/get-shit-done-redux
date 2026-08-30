@@ -918,6 +918,69 @@ describe('init commands', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.phase_found, true);
     assert.strictEqual(output.phase_name, 'Details Block Regression');
+
+  });
+  // ─── #3865: --phase alias for the positional phase token ──────────────────
+
+  test('#3865: init execute-phase accepts --phase <N> as the positional alias', () => {
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+    writePlanningDocs(tmpDir);
+    const result = runGsdTools(['init', 'execute-phase', '--phase', '03'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_found, true, '--phase 03 must resolve the phase, not answer phase_found:false');
+    assert.strictEqual(output.plan_count, 1, 'the on-disk plan must be counted — the reported incident had 7 plans read as 0');
+  });
+
+  test('#3865: init execute-phase accepts the --phase=N form', () => {
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+    writePlanningDocs(tmpDir);
+    const result = runGsdTools(['init', 'execute-phase', '--phase=03'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).phase_found, true);
+  });
+
+  test('#3865: the positional form still works (control)', () => {
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+    writePlanningDocs(tmpDir);
+    const result = runGsdTools(['init', 'execute-phase', '03'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).phase_found, true);
+  });
+
+  test('#3865: init plan-phase accepts --phase <N>', () => {
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+    writePlanningDocs(tmpDir);
+    const result = runGsdTools(['init', 'plan-phase', '--phase', '03'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).phase_found, true);
+  });
+
+  test('#3865: init verify-work accepts --phase <N>', () => {
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+    writePlanningDocs(tmpDir);
+    const result = runGsdTools(['init', 'verify-work', '--phase', '03'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).phase_found, true);
+  });
+
+  test('#3865: init code-review accepts --phase <N>', () => {
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+    writePlanningDocs(tmpDir);
+    const result = runGsdTools(['init', 'code-review', '--phase', '03'], tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).phase_found, true);
+  });
+
+  test('#3865: --phase with no value is a usage error, never a silent phase_found:false', () => {
+    seedPhase(tmpDir, '03-api', { '03-01-PLAN.md': '# Plan' });
+    writePlanningDocs(tmpDir);
+    const result = runGsdTools(['init', 'execute-phase', '--phase'], tmpDir);
+    assert.strictEqual(result.success, false, 'a valueless --phase must exit non-zero with a diagnostic');
+    assert.ok(
+      (result.error || '').includes('--phase'),
+      `the diagnostic must name the flag; got: ${result.error}`
+    );
   });
 });
 
@@ -4877,3 +4940,5 @@ describe('init — GSD_PROJECT scoping (#3964)', () => {
     assert.equal(out['codebase_dir_exists'], true, 'unscoped probe of the root codebase dir');
   });
 });
+
+

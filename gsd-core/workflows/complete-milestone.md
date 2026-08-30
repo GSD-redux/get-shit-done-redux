@@ -520,8 +520,13 @@ If "Yes": set `ARCHIVE_QUICK_FLAG="--archive-quick"`. If "Skip" (or `.planning/q
 **Delegate archival to `gsd_run query milestone.complete`:**
 
 ```bash
-ARCHIVE=$(gsd_run query milestone.complete "v[X.Y]" --name "[Milestone Name]" $ARCHIVE_QUICK_FLAG)
+ARCHIVE=$(gsd_run query milestone.complete "v[X.Y]" --name "[Milestone Name]" --confirm $ARCHIVE_QUICK_FLAG)
 ```
+
+`--confirm` is required (#3726): the archive is irreversible (ROADMAP/REQUIREMENTS archived, phase
+directories MOVED, STATE.md rewritten), so `milestone complete` refuses to mutate without it. This
+workflow has already gathered the user's explicit intent by this step, so passing the flag here is
+correct; `--dry-run` previews the exact move list without mutating if a preview is ever needed first.
 
 The CLI handles:
 - Creating `.planning/milestones/` directory
@@ -545,7 +550,7 @@ Verify after `--archive-quick` was passed: `✅ Quick tasks archived to .plannin
 If the user explicitly wants to keep phase directories in place as raw execution history, invoke `milestone complete` with `--no-archive-phases`:
 
 ```bash
-gsd_run query milestone complete v[X.Y] --no-archive-phases
+gsd_run query milestone complete v[X.Y] --no-archive-phases --confirm
 ```
 
 Verify after a default (archived) completion: `✅ Phase directories archived to .planning/milestones/v[X.Y]-phases/`

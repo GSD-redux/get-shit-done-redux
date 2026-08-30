@@ -46,7 +46,37 @@ function resolveTarballFiles() {
     timeout: 120_000,
   });
   const parsed = JSON.parse(raw);
-  return new Set(parsed[0].files.map((f) => f.path.replace(/\\/g, '/')));
+  return packListToPathSet(parsed);
+}
+
+/**
+ * Pure projection from `npm pack --json` output to the tarball path set —
+ * extracted so the SHAPE contract is unit-testable without running npm.
+ */
+function packListToPathSet(parsed) {
+  // #3902: npm <=11 emits an ARRAY of pack results; npm 12 (bundled with
+  // Node 26) emits an OBJECT keyed by package name. parsed[0] is undefined on
+  // the object shape — which threw in this file's before() hook and silently
+  // disabled the whole packaging guard, including both `does NOT ship`
+  // assertions. Resolve either shape; anything else fails loud.
+  // Single-package assumption: this repo has no workspaces, so npm 12 emits
+  // exactly ONE key. If workspaces are ever adopted, first-key would silently
+  // validate only one package — recreate the silent-disarm this fix kills —
+  // so a multi-key object fails loud instead.
+  let entry;
+  if (Array.isArray(parsed)) {
+    entry = parsed[0];
+  } else {
+    const keys = Object.keys(parsed);
+    if (keys.length !== 1) {
+      throw new Error(`npm pack --json emitted ${keys.length} package keys; expected exactly 1 for this single-package repo`);
+    }
+    entry = parsed[keys[0]];
+  }
+  if (!entry || !Array.isArray(entry.files)) {
+    throw new Error(`npm pack --json returned an unrecognized shape: ${Object.prototype.toString.call(parsed)}`);
+  }
+  return new Set(entry.files.map((f) => f.path.replace(/\\/g, '/')));
 }
 
 /**
@@ -196,5 +226,38 @@ describe('#2858 — shipped scripts require only shipped paths', () => {
     const classification = classifyRequire('./lib/cli-exit.cjs', 'scripts/gen-adr-index.cjs', shippedFiles);
     assert.strictEqual(classification, 'shipped',
       `a sibling require within scripts/ must classify as 'shipped'; got '${classification}'`);
+  });
+});
+
+
+// ─── #3902: npm 12's pack --json shape must resolve like npm <=11's ──────────
+
+describe('#3902 packListToPathSet resolves both npm pack --json shapes', () => {
+  const FILES = [{ path: 'gsd-core/bin/gsd-tools.cjs' }, { path: 'lib/Backslash\\Case.cjs' }];
+
+  test('npm <=11 array shape', () => {
+    const set = packListToPathSet([{ files: FILES }]);
+    assert.ok(set.has('gsd-core/bin/gsd-tools.cjs'));
+    assert.ok(set.has('lib/Backslash/Case.cjs'), 'windows separators normalized');
+  });
+
+  test('npm 12 (Node 26) object-keyed shape', () => {
+    // npm 12 emits { "<pkg-name>": { files: [...] } } — parsed[0] is undefined
+    // there, which used to throw in the before() hook and silently disable
+    // the whole packaging guard, including both `does NOT ship` assertions.
+    const set = packListToPathSet({ '@opengsd/gsd-core': { files: FILES } });
+    assert.ok(set.has('gsd-core/bin/gsd-tools.cjs'));
+    assert.ok(set.has('lib/Backslash/Case.cjs'));
+  });
+
+  test('an unrecognized shape fails loud, never silently-empty', () => {
+    assert.throws(() => packListToPathSet({ weird: true }));
+  });
+
+  test('a multi-key object (workspaces) fails loud — first-key would silently validate one package', () => {
+    assert.throws(() => packListToPathSet({
+      'pkg-a': { files: FILES },
+      'pkg-b': { files: FILES },
+    }), /exactly 1/);
   });
 });

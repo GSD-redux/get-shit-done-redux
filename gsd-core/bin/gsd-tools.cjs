@@ -68,7 +68,12 @@
  *                                      gaps_found-only, never call on the pass path
  *
  * Milestone Operations:
- *   milestone complete <version>       Archive milestone, create MILESTONES.md
+ *   milestone complete <version> (--confirm | --dry-run)
+ *                                      Archive milestone, create MILESTONES.md — one of the two is required
+ *     --confirm                      REQUIRED to mutate (#3726): the archive is irreversible (ROADMAP/
+ *                                    REQUIREMENTS archived, phase dirs MOVED, STATE.md rewritten), so
+ *                                    without this flag the command refuses and mutates nothing
+ *     --dry-run                      Preview what would move, mutates nothing (no --confirm needed; #2118)
  *     [--name <name>]
  *     [--no-archive-phases]          Skip moving phase dirs to milestones/vX.Y-phases/ (archived by default)
  *     [--archive-quick]              Move .planning/quick/* dirs to milestones/vX.Y-quick/ + reset the
@@ -2521,7 +2526,11 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
             // --no-archive-phases' inverted shape, absence of this flag means
             // "do nothing" rather than "skip a default-on behavior".
             const archiveQuick = args.includes('--archive-quick');
-            milestone.cmdMilestoneComplete(cwd, args[2], { name: milestoneName, archivePhases, force, dryRun, archiveQuick }, raw);
+            // #3726: explicit mutation opt-in — without --confirm (and without
+            // --dry-run) the command refuses before touching anything. Distinct
+            // from --force, which bypasses the narrow scope guards only.
+            const confirm = args.includes('--confirm');
+            milestone.cmdMilestoneComplete(cwd, args[2], { name: milestoneName, archivePhases, force, dryRun, archiveQuick, confirm }, raw);
           } else if (subcommand === 'archive-quick') {
             // #2142 escalation: narrow archival-only entry point (does NOT
             // touch ROADMAP/REQUIREMENTS/MILESTONES.md, runs no completion

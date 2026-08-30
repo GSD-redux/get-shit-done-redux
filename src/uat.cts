@@ -2613,9 +2613,36 @@ function splitGapsEntriesCore(sectionBody: string): GapsEntrySpan[] {
     }
   };
 
+  // #3898: a spaced-hyphen thematic break (`- - -`, `- -`, `-  -  -`, …) is a
+  // SEPARATOR, not an entry. The opener regex below matches it (hyphen +
+  // whitespace), which fabricated a gap named `- -` with result 'unknown' —
+  // an item that cannot be cleared by editing any entry, because there is no
+  // entry, only the separator the author wrote deliberately. A line whose
+  // content after the opening marker consists solely of hyphens and spaces
+  // (with at least one further hyphen) is skipped entirely: it neither opens
+  // an entry nor is folded into the current one. This is deliberately NOT a
+  // full thematic-break concept (option 2 in the issue): a break does not
+  // close the Gaps list — entries after it keep parsing.
+  const isSeparatorShaped = (line: string, bulletPrefixLen: number): boolean => {
+    const remainder = line.slice(bulletPrefixLen);
+    return /^[-\s]*$/.test(remainder) && remainder.includes('-');
+  };
+
   rawLines.forEach((rawLine, idx) => {
     const line = rawLine.replace(/\r$/, '');
     const bulletMatch = line.match(/^(\s*)-\s/);
+    // Narrowed skip (review disposition a): a separator-shaped line is skipped
+    // only when it sits BETWEEN entries (nothing open yet, or it would open a
+    // top-level entry — where the phantom came from). One landing strictly
+    // INSIDE a live entry (indent > baseIndent) folds back as a continuation
+    // line, so the entry's GapsEntrySpan stays byte-contiguous — the span
+    // invariant below and the ack writer's identity re-verification both hold.
+    if (
+      bulletMatch && isSeparatorShaped(line, bulletMatch[0].length) &&
+      (current === null || bulletMatch[1].length <= (baseIndent ?? 0))
+    ) {
+      return; // separator line between entries — neither an opener nor a continuation
+    }
     if (bulletMatch) {
       const indent = bulletMatch[1].length;
       if (baseIndent === null) baseIndent = indent;

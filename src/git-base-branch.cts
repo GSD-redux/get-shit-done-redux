@@ -30,19 +30,35 @@
  * tests can run without touching the real filesystem or spawning real git.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import configLoader = require('./config-loader.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import io = require('./io.cjs');
+import { normalizeLegacyKeys } from './configuration.cjs';
+import { sanitizeLabel } from './security.cjs';
 import { execGit as execGitSeam } from './shell-command-projection.cjs';
+
+const { error, ERROR_REASON } = io;
+const { loadConfig: loadConfigSeam } = configLoader;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ExecGitFn = typeof execGitSeam;
+type LoadConfigFn = typeof loadConfigSeam;
 
 export interface BaseBranchDeps {
   /** Override the git runner (default: execGit from shell-command-projection) */
   execGit?: ExecGitFn;
-  /** Override filesystem reads (default: fs.readFileSync / fs.existsSync) */
+  /**
+   * Test-only low-level config-file seam for {@link readEffectiveGitConfig}.
+   * When supplied without `loadConfig`, reads only `<cwd>/.planning/config.json`,
+   * applies legacy-key normalization in memory, and performs no merge, defaults,
+   * warning, or write-back. Production callers must use `loadConfig` instead.
+   */
   readFile?: (p: string) => string | null;
+  /** Override effective configuration loading (default: config-loader.loadConfig) */
+  loadConfig?: LoadConfigFn;
   /** Inject the write function used by cmdGitBaseBranch (default: process.stdout.write) */
   write?: (s: string) => void;
   /**
@@ -56,36 +72,121 @@ export interface BaseBranchDeps {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Safely look up `git.base_branch` from the project's config.json.
- * Returns the configured value (a non-empty, non-null string) or null.
- */
-export function readConfigBaseBranch(
-  planningDir: string,
-  deps?: Pick<BaseBranchDeps, 'readFile'>
-): string | null {
-  const readFile: (p: string) => string | null = deps?.readFile ??
-    ((p: string) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } });
+interface EffectiveGitConfig {
+  baseBranch: string | null;
+  protectedBranches: string[];
+  /** Rendered form of every entry rejected as unusable, for the caller to report. */
+  rejectedProtectedBranches: string[];
+}
 
-  const configPath = path.join(planningDir, 'config.json');
-  const raw = readFile(configPath);
-  if (!raw) return null;
-
-  let cfg: unknown;
-  try { cfg = JSON.parse(raw); } catch { return null; }
-  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return null;
-
-  const top = cfg as Record<string, unknown>;
-  // Support both "git.base_branch" (nested) and "base_branch" (flat legacy)
-  const gitSection = top.git;
-  if (gitSection && typeof gitSection === 'object' && !Array.isArray(gitSection)) {
-    const nested = (gitSection as Record<string, unknown>).base_branch;
-    if (typeof nested === 'string' && nested.trim()) return nested.trim();
+/** Render a rejected config value for a diagnostic without throwing on exotic input. */
+function renderRejected(value: unknown): string {
+  try {
+    return sanitizeLabel(JSON.stringify(value) ?? String(value));
+  } catch {
+    return sanitizeLabel(String(value));
   }
-  const flat = top.base_branch;
-  if (typeof flat === 'string' && flat.trim()) return flat.trim();
+}
 
-  return null;
+/** Nested-only read of `git.<field>`, mirroring `loadConfigResolved`'s `getNested`. */
+export function _readGitNested(config: Record<string, unknown>, field: string): unknown {
+  const git = config['git'];
+  if (git !== null && typeof git === 'object' && !Array.isArray(git)) {
+    return (git as Record<string, unknown>)[field];
+  }
+  return undefined;
+}
+
+/**
+ * Flat-then-nested read, mirroring `loadConfigResolved`'s own `get()`.
+ *
+ * Used for `base_branch` ONLY, and only because it HAS a legacy flat spelling:
+ * `normalizeLegacyKeys` normally hoists it away, so a flat key that SURVIVED
+ * normalization is one the migration refused (a non-object `git` section,
+ * #3760) and is the user's last remaining expression of intent.
+ *
+ * `protected_branches` deliberately does NOT use this. It is new in #3552 with
+ * no legacy form, so honouring a top-level spelling would invent an
+ * undocumented alias that silently outranks the canonical nested key
+ * (round-4 external review).
+ */
+export function _readGitKey(config: Record<string, unknown>, field: string): unknown {
+  if (config[field] !== undefined) return config[field];
+  return _readGitNested(config, field);
+}
+
+/**
+ * Read the effective root/workstream configuration once for branch policy.
+ *
+ * Production takes the `loadConfig` branch, with `persist: false` — this is a
+ * PREDICATE, invoked on every `execute-phase` and every `ship` run, and a
+ * question must not rewrite the file it is asking about. Without it, any project
+ * carrying a legacy flat key (`base_branch`, `branching_strategy`, `depth`, …)
+ * has `.planning/config.json` silently normalized and rewritten by a call whose
+ * entire contract is to answer a boolean (#3648 review Blocker 1).
+ *
+ * The `readFile` branch is a unit-test seam, NOT a second production path, and
+ * it is deliberately narrower than `loadConfig`. It covers exactly two of
+ * production's steps — `normalizeLegacyKeys`, then the flat-then-nested lookup
+ * — over a single `<cwd>/.planning/config.json`. It does NOT apply
+ * root/workstream `_deepMergeConfig`, builtin or `~/.gsd/defaults.json`
+ * defaults, or `mergeFederatedConfig`. Tests that assert on any of those must
+ * drive `loadConfig` instead; the seam's own tests are scoped to normalization
+ * and shape validation, which is all it reproduces (#3648 review Major 3).
+ */
+function readEffectiveGitConfig(
+  cwd: string,
+  deps?: Pick<BaseBranchDeps, 'loadConfig' | 'readFile'>
+): EffectiveGitConfig {
+  let config: Record<string, unknown> = {};
+
+  if (deps?.readFile && !deps.loadConfig) {
+    const raw = deps.readFile(path.join(cwd, '.planning', 'config.json'));
+    if (raw) {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const { parsed: normalized } = normalizeLegacyKeys(parsed as Record<string, unknown>);
+          config = {
+            base_branch: _readGitKey(normalized, 'base_branch'),
+            protected_branches: _readGitNested(normalized, 'protected_branches'),
+          };
+        }
+      } catch { /* malformed direct edit contributes no policy values */ }
+    }
+  } else {
+    try {
+      config = (deps?.loadConfig ?? loadConfigSeam)(cwd, { persist: false });
+    } catch { /* configuration loading is fail-soft for branch resolution */ }
+  }
+
+  const rawBaseBranch = config.base_branch;
+  const baseBranch = typeof rawBaseBranch === 'string' && rawBaseBranch.trim()
+    ? rawBaseBranch.trim()
+    : null;
+  // A protection predicate must not fail OPEN. `config-set` validation is
+  // bypassable by a direct edit of .planning/config.json, so one bad element
+  // discarding the whole list would silently answer "not protected" for names
+  // the user believes are protected — the exact failure #3552 exists to close,
+  // reintroduced through a different door (#3648 review Blocker 3). Drop only
+  // the bad elements, and report every rejection so it cannot pass unnoticed.
+  const rawProtectedBranches = config.protected_branches;
+  const protectedBranches: string[] = [];
+  const rejectedProtectedBranches: string[] = [];
+  if (Array.isArray(rawProtectedBranches)) {
+    for (const branch of rawProtectedBranches) {
+      if (typeof branch === 'string' && branch.trim() !== '') {
+        protectedBranches.push(branch.trim());
+      } else {
+        rejectedProtectedBranches.push(renderRejected(branch));
+      }
+    }
+  } else if (rawProtectedBranches !== undefined && rawProtectedBranches !== null) {
+    // Not a list at all — contributes no names, but is still a misconfiguration.
+    rejectedProtectedBranches.push(renderRejected(rawProtectedBranches));
+  }
+
+  return { baseBranch, protectedBranches, rejectedProtectedBranches };
 }
 
 /**
@@ -202,9 +303,10 @@ export interface ResolvedBaseBranch {
  * Consults the full precedence ladder and always returns a non-empty string.
  * Never throws.
  */
-export function resolveBaseBranchDiagnostics(
+function resolveBaseBranchDiagnosticsWithConfig(
   cwd: string,
-  deps?: BaseBranchDeps
+  configured: string | null,
+  deps?: BaseBranchDeps,
 ): ResolvedBaseBranch {
   const rawExecGit: ExecGitFn = deps?.execGit ?? execGitSeam;
   // A genuine execGit failure (timeout, or the call could not even spawn —
@@ -221,11 +323,7 @@ export function resolveBaseBranchDiagnostics(
     return r;
   };
 
-  // Derive .planning dir relative to cwd (mirrors planningDir() in planning-workspace.cjs)
-  const planningDir = path.join(cwd, '.planning');
-
   // 1. Config override
-  const configured = readConfigBaseBranch(planningDir, deps);
   if (configured) return { branch: configured, verified: true };
 
   // 2. symbolic-ref (fast, no network)
@@ -247,6 +345,14 @@ export function resolveBaseBranchDiagnostics(
   return { branch: 'main', verified: !anyGitFailure };
 }
 
+export function resolveBaseBranchDiagnostics(
+  cwd: string,
+  deps?: BaseBranchDeps
+): ResolvedBaseBranch {
+  const { baseBranch } = readEffectiveGitConfig(cwd, deps);
+  return resolveBaseBranchDiagnosticsWithConfig(cwd, baseBranch, deps);
+}
+
 /**
  * Resolve the default/base branch for the repository at `cwd`.
  *
@@ -259,6 +365,37 @@ export function resolveBaseBranch(
   deps?: BaseBranchDeps
 ): string {
   return resolveBaseBranchDiagnostics(cwd, deps).branch;
+}
+
+export interface ProtectedBranchStatus {
+  baseBranch: string;
+  protectedBranches: string[];
+  /** Rendered `git.protected_branches` entries that were unusable and ignored. */
+  rejectedProtectedBranches: string[];
+  isProtected: boolean;
+  verified: boolean;
+}
+
+/** Resolve the base branch plus configured protected-branch extensions. */
+export function resolveProtectedBranchStatus(
+  cwd: string,
+  currentBranch: string,
+  deps?: BaseBranchDeps
+): ProtectedBranchStatus {
+  const effectiveConfig = readEffectiveGitConfig(cwd, deps);
+  const { branch: baseBranch, verified } = resolveBaseBranchDiagnosticsWithConfig(
+    cwd,
+    effectiveConfig.baseBranch,
+    deps,
+  );
+  const protectedBranches = [...new Set([baseBranch, ...effectiveConfig.protectedBranches])];
+  return {
+    baseBranch,
+    protectedBranches,
+    rejectedProtectedBranches: effectiveConfig.rejectedProtectedBranches,
+    isProtected: protectedBranches.includes(currentBranch),
+    verified,
+  };
 }
 
 // ─── gitWorktreeInfoInternal (moved from core.cjs, ADR-857 T0 #1268) ─────────
@@ -413,9 +550,60 @@ export function changedFilesSince(
  */
 export function cmdGitBaseBranch(
   cwd: string,
-  _args: string[],
+  args: string[],
   deps?: BaseBranchDeps
 ): string {
+  if (args[0] === '--is-protected') {
+    if (args.length > 2) {
+      error('Usage: git base-branch --is-protected [<branch>]', ERROR_REASON.USAGE);
+    }
+    const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
+    // `git branch --show-current` prints nothing on a detached HEAD, so the
+    // call sites legitimately pass an explicit empty string: no protected
+    // branch is named '', the answer is false, and that is not a fault worth
+    // reporting. The flag with NO argument is a different thing — a caller bug
+    // that `args[1] ?? ''` used to collapse into the detached-HEAD case. Same
+    // handling, but said out loud so the two can be told apart.
+    //
+    // This diagnostic deliberately does NOT state the answer. The empty branch
+    // matches no protected name, but the fail-closed guard below still renders
+    // `true` when the base branch could not be verified — so promising "false"
+    // here would contradict what this same call prints on stdout (#3648 review).
+    if (args.length < 2) {
+      writeDiagnostic(
+        `⚠ git-base-branch: --is-protected was called without a branch argument; ` +
+        `treating it as an empty branch name. Pass the branch to test, ` +
+        `e.g. --is-protected "$CURRENT_BRANCH".\n`
+      );
+    }
+    const status = resolveProtectedBranchStatus(cwd, args[1] ?? '', deps);
+    if (status.rejectedProtectedBranches.length > 0) {
+      writeDiagnostic(
+        `⚠ git-base-branch: ignoring ${status.rejectedProtectedBranches.length} unusable ` +
+        `git.protected_branches entr${status.rejectedProtectedBranches.length === 1 ? 'y' : 'ies'} ` +
+        `(${status.rejectedProtectedBranches.join(', ')}) — each must be a non-empty branch name. ` +
+        `The remaining names are still enforced. See #3552.\n`
+      );
+    }
+    // A protection guard must fail closed: if the base branch could not be
+    // verified against this repository (a git query timed out or failed to
+    // run — #3057 B4), report "protected" rather than silently trusting an
+    // unverified guess that might happen to not match the current branch.
+    const rendered = String(status.verified ? status.isProtected : true);
+    if (!status.verified) {
+      writeDiagnostic(
+        `⚠ git-base-branch: --is-protected could not verify repository branch metadata; ` +
+        `defaulting to protected (fail-closed). See #3057.\n`
+      );
+    }
+    const write = deps?.write ?? ((s: string) => process.stdout.write(s));
+    write(rendered + '\n');
+    return rendered;
+  }
+  if (args.length > 0) {
+    error(`Unknown flag for git.base-branch: ${args[0]}`, ERROR_REASON.USAGE);
+  }
+
   const { branch, verified } = resolveBaseBranchDiagnostics(cwd, deps);
   if (!verified) {
     const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));

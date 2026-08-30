@@ -1,0 +1,65 @@
+name: CI timeout budget report
+
+# Scheduled aggregator for #4036: polls GitHub's own Actions REST API for
+# recently completed jobs across test.yml / mutation.yml / install-smoke.yml,
+# computes elapsed-vs-timeout-minutes per job via scripts/ci-timeout-report.cjs,
+# and appends any new records to tests/ci-timeout-budget-history.jsonl. `next`
+# is a protected branch — nothing pushes to it directly, even from a scheduled
+# bot run (see auto-backmerge.yml for the same constraint) — so each run opens
+# a small, uniquely-branched, data-only PR carrying just that run's new rows,
+# rather than force-pushing one long-lived branch. Small PRs merge easily and
+# never go stale enough to need a rebase.
+
+on:
+  schedule:
+    - cron: '15 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: true
+          token: ${{ github.token }}
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        id: poll
+        with:
+          script: |
+            const report = require(`${process.env.GITHUB_WORKSPACE}/scripts/ci-timeout-report.cjs`);
+            const result = await report.main({ github, context, core });
+            core.info(`ci-timeout-report: added ${result.added} record(s), ${result.nearCap} near-cap`);
+            return result;
+
+      - name: Open a small PR with this run's new records, if any
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GSD_BOT_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if git status --porcelain -- tests/ci-timeout-budget-history.jsonl | grep -q .; then
+            BR="automation/ci-timeout-report-$RUN_ID"
+            git checkout -b "$BR"
+            git add tests/ci-timeout-budget-history.jsonl
+            git -c user.name="gsd-bot" -c user.email="gsd-bot@users.noreply.github.com" \
+              commit -m "chore: CI timeout budget report — run $RUN_ID"
+            git push origin "$BR"
+            gh pr create \
+              --base next \
+              --head "$BR" \
+              --title "chore: CI timeout budget report — run $RUN_ID" \
+              --body "Automated, data-only update to \`tests/ci-timeout-budget-history.jsonl\` — new shard/job wall-clock vs. \`timeout-minutes\` records collected by \`.github/workflows/ci-timeout-report.yml\` (#4036). No source changes; safe to merge once CI passes." \
+              --label "automation" \
+              --label "no-changelog"
+          else
+            echo "No new timeout-report records this run — nothing to commit."
+          fi

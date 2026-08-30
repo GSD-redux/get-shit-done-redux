@@ -646,7 +646,7 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
  */
 
 /** Upper bound on trailers read from one range. Real implementation throws above this. */
-const MAX_ACK_TRAILERS = 64;
+const MAX_ACK_TRAILERS = 128;
 
 /**
  * Parse trailer VALUES already extracted per trailer name (no git I/O — the two

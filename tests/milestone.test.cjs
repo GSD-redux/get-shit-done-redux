@@ -68,7 +68,7 @@ describe('milestone complete command', () => {
     // No ROADMAP.md — mirrors 'handles missing ROADMAP.md gracefully' so the
     // milestone-phase-filter guard never fires.
 
-    const result = runGsdTools('milestone complete v0.5 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v0.5 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
@@ -91,7 +91,7 @@ describe('milestone complete command', () => {
     writeState(tmpDir);
     mkPhaseDir(tmpDir, '01-foundation', { oneLiner: 'Set up project infrastructure' });
 
-    const result = runGsdTools('milestone complete v1.0 --name MVP Foundation', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name MVP Foundation --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -249,7 +249,7 @@ describe('milestone complete command', () => {
     writeRoadmap(tmpDir, `# Roadmap v1.0\n`);
     writeState(tmpDir);
 
-    const result = runGsdTools('milestone complete v1.0 --name Beta', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Beta --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const milestones = fs.readFileSync(path.join(tmpDir, '.planning', 'MILESTONES.md'), 'utf-8');
@@ -266,9 +266,9 @@ describe('milestone complete command', () => {
     writeRoadmap(tmpDir, `# Roadmap v1.1\n`);
     writeState(tmpDir);
 
-    assert.ok(runGsdTools('milestone complete v1.1 --name Second', tmpDir).success);
+    assert.ok(runGsdTools('milestone complete v1.1 --name Second --confirm', tmpDir).success);
     writeRoadmap(tmpDir, `# Roadmap v1.2\n`);
-    assert.ok(runGsdTools('milestone complete v1.2 --name Third', tmpDir).success);
+    assert.ok(runGsdTools('milestone complete v1.2 --name Third --confirm', tmpDir).success);
 
     const m = fs.readFileSync(path.join(tmpDir, '.planning', 'MILESTONES.md'), 'utf-8');
     const [i10, i11, i12] = ['v1.0 First', 'v1.1 Second', 'v1.2 Third'].map(s => m.indexOf(s));
@@ -282,7 +282,7 @@ describe('milestone complete command', () => {
     writeState(tmpDir);
     mkPhaseDir(tmpDir, '01-foundation', { oneLiner: 'Set up project infrastructure' });
 
-    const result = runGsdTools('milestone complete v1.0 --name MVP --archive-phases', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name MVP --archive-phases --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -299,7 +299,7 @@ describe('milestone complete command', () => {
     writeRoadmap(tmpDir, `# Roadmap v1.0\n`);
     writeState(tmpDir);
 
-    assert.ok(runGsdTools('milestone complete v1.0 --name MVP', tmpDir).success);
+    assert.ok(runGsdTools('milestone complete v1.0 --name MVP --confirm', tmpDir).success);
 
     const archivedReq = fs.readFileSync(
       path.join(tmpDir, '.planning', 'milestones', 'v1.0-REQUIREMENTS.md'), 'utf-8',
@@ -315,7 +315,7 @@ describe('milestone complete command', () => {
     writeRoadmap(tmpDir, `# Roadmap v1.0\n`);
     writeState(tmpDir);
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -333,7 +333,7 @@ describe('milestone complete command', () => {
       `# State\n\n**Status:** In progress\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working\n\n## Current Position\n\nPhase: 03 — EXECUTING\nPlan: 03-02\nStatus: Executing\nLast activity: 2025-01-01 — Running phase\n\n## Operator Next Steps\n\n- Re-run /gsd:complete-milestone v1.0\n`,
     );
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
@@ -347,7 +347,7 @@ describe('milestone complete command', () => {
     writeRoadmap(tmpDir, `# Roadmap v1.0\n`);
     writeState(tmpDir);
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
@@ -360,7 +360,7 @@ describe('milestone complete command', () => {
   test('handles missing ROADMAP.md gracefully', () => {
     writeState(tmpDir);
 
-    const result = runGsdTools('milestone complete v1.0 --name NoRoadmap', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name NoRoadmap --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -387,7 +387,7 @@ describe('milestone complete command', () => {
     fs.writeFileSync(path.join(p4, '04-02-PLAN.md'), '# Plan 2\n');
     fs.writeFileSync(path.join(p4, '04-01-SUMMARY.md'), '---\none-liner: Polished UI\n---\n# Summary\n');
 
-    const result = runGsdTools('milestone complete v1.1 --name "Second Release"', tmpDir);
+    const result = runGsdTools('milestone complete v1.1 --name "Second Release" --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -407,7 +407,7 @@ describe('milestone complete command', () => {
     mkPhaseDir(tmpDir, '01-old', { plan: true });
     mkPhaseDir(tmpDir, '02-current', { plan: true });
 
-    assert.ok(runGsdTools('milestone complete v1.1 --name Test --archive-phases', tmpDir).success);
+    assert.ok(runGsdTools('milestone complete v1.1 --name Test --archive-phases --confirm', tmpDir).success);
 
     assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.1-phases', '02-current')));
     assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'phases', '01-old')));
@@ -421,7 +421,7 @@ describe('milestone complete command', () => {
     mkPhaseDir(tmpDir, '01-foundation', { plan: true, oneLiner: 'Foundation work' });
     mkPhaseDir(tmpDir, '10-scaling', { plan: true, oneLiner: 'Scaling work' });
 
-    const result = runGsdTools('milestone complete v1.0 --name MVP', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name MVP --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -439,7 +439,7 @@ describe('milestone complete command', () => {
     fs.mkdirSync(misc, { recursive: true });
     fs.writeFileSync(path.join(misc, 'PLAN.md'), '# Not a phase\n');
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success);
 
     const output = JSON.parse(result.output);
@@ -456,7 +456,7 @@ describe('milestone complete command', () => {
     mkPhaseDir(tmpDir, '457-integration', { plan: true });
     mkPhaseDir(tmpDir, '45-old', { plan: true });
 
-    const result = runGsdTools('milestone complete v1.49 --name DACP', tmpDir);
+    const result = runGsdTools('milestone complete v1.49 --name DACP --confirm', tmpDir);
     assert.ok(result.success);
     assert.strictEqual(JSON.parse(result.output).phases, 2);
   });
@@ -471,7 +471,7 @@ describe('milestone complete command', () => {
       `---\none-liner: Built the foundation\n---\n\n# Phase 1: Foundation Summary\n\n**Built the foundation**\n\n## Performance\n\n- **Duration:** 28 min\n- **Tasks:** 7\n- **Files modified:** 12\n`,
     );
 
-    const result = runGsdTools('milestone complete v1.0 --name MVP', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name MVP --confirm', tmpDir);
     assert.ok(result.success);
     assert.strictEqual(JSON.parse(result.output).tasks, 7);
   });
@@ -486,7 +486,7 @@ describe('milestone complete command', () => {
       `---\nphase: "01"\n---\n\n# Phase 1: Foundation Summary\n\n**JWT auth with refresh rotation using jose library**\n\n## Performance\n`,
     );
 
-    const result = runGsdTools('milestone complete v1.0 --name MVP', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name MVP --confirm', tmpDir);
     assert.ok(result.success);
     assert.ok(JSON.parse(result.output).accomplishments.includes('JWT auth with refresh rotation using jose library'));
   });
@@ -498,7 +498,7 @@ describe('milestone complete command', () => {
       `# State\n\nStatus: In progress\nLast Activity: 2025-01-01\nLast Activity Description: Working\n`,
     );
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success);
     assert.ok(fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8').includes('v1.0 milestone complete'));
   });
@@ -507,7 +507,7 @@ describe('milestone complete command', () => {
     writeRoadmap(tmpDir, `# Roadmap v1.0\n`);
     writeState(tmpDir);
 
-    const result = runGsdTools('milestone complete v1.0 --name EmptyPhases', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name EmptyPhases --confirm', tmpDir);
     assert.ok(result.success);
 
     const output = JSON.parse(result.output);
@@ -534,7 +534,7 @@ describe('milestone complete command', () => {
       const statePath = path.join(tmpDir, '.planning', 'STATE.md');
       const stateBefore = fs.readFileSync(statePath, 'utf-8');
 
-      const result = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test'], tmpDir, PINNED_CLOCK_ENV);
+      const result = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test', '--confirm'], tmpDir, PINNED_CLOCK_ENV);
       assert.ok(result.success, `Command failed: ${result.error}`);
 
       const output = JSON.parse(result.output);
@@ -549,7 +549,7 @@ describe('milestone complete command', () => {
       writeState(tmpDir);
       const statePath = path.join(tmpDir, '.planning', 'STATE.md');
 
-      const run1 = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test', '--force'], tmpDir, PINNED_CLOCK_ENV);
+      const run1 = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test', '--force', '--confirm'], tmpDir, PINNED_CLOCK_ENV);
       assert.ok(run1.success, `first milestone complete failed: ${run1.error}`);
       const stateAfter1 = fs.readFileSync(statePath, 'utf-8');
 
@@ -558,7 +558,7 @@ describe('milestone complete command', () => {
       // genuine no-op for STATE.md content, even though MILESTONES.md still
       // gains a new (duplicate-looking) entry each call — the two flags are
       // independent and must not be conflated.
-      const run2 = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test', '--force'], tmpDir, PINNED_CLOCK_ENV);
+      const run2 = runGsdTools(['milestone', 'complete', 'v1.0', '--name', 'Test', '--force', '--confirm'], tmpDir, PINNED_CLOCK_ENV);
       assert.ok(run2.success, `second milestone complete failed: ${run2.error}`);
       const stateAfter2 = fs.readFileSync(statePath, 'utf-8');
 
@@ -622,7 +622,7 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
   test('B1: stale body Stopped at does not clobber a fresher curated frontmatter stopped_at', () => {
     writeStateWithSession(tmpDir, { fmStoppedAt: 'Phase 7 verified PASS', sessionStoppedAt: 'Phase 3 work' });
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
@@ -640,7 +640,7 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
   test('B2: the preserved frontmatter value is observable via a separate `state get` call', () => {
     writeStateWithSession(tmpDir, { fmStoppedAt: 'Phase 7 verified PASS', sessionStoppedAt: 'Phase 3 work' });
 
-    const complete = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const complete = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(complete.success, `Command failed: ${complete.error}`);
 
     const got = runGsdTools('state get stopped_at', tmpDir);
@@ -659,7 +659,7 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
   test('B3: a preserved divergence emits preservation_warnings[0].field === "stopped_at"', () => {
     writeStateWithSession(tmpDir, { fmStoppedAt: 'Phase 7 verified PASS', sessionStoppedAt: 'Phase 3 work' });
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -682,7 +682,7 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
     // derived result.
     writeStateWithSession(tmpDir, { fmStatus: 'executing', fmStoppedAt: undefined, sessionStoppedAt: undefined });
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -705,7 +705,7 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
     mkPhaseDir(tmpDir, '01-foundation', { oneLiner: 'Setup' });
     writeState(tmpDir); // no frontmatter at all — nothing curated to diverge from
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -721,7 +721,7 @@ describe('ADR-3408 §8.3 Matrix B: cmdMilestoneComplete preserves + warns (#3469
   test('B3 (#3471 regression pin): preservation_warnings shape and content unchanged by Phase 4', () => {
     writeStateWithSession(tmpDir, { fmStoppedAt: 'Phase 7 verified PASS', sessionStoppedAt: 'Phase 3 work' });
 
-    const result = runGsdTools('milestone complete v1.0 --name Test', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name Test --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -1739,7 +1739,7 @@ describe('milestone complete explicit version scope (#3043)', () => {
         fs.writeFileSync(path.join(p, 'SUMMARY.md'), `one-liner: ${liner}\n\n## Summary\n${liner.split(' ')[0]}\n`);
       }
 
-      const result = runGsdTools(['milestone', 'complete', 'v3.6', '--raw'], tmpDir);
+      const result = runGsdTools(['milestone', 'complete', 'v3.6', '--raw', '--confirm'], tmpDir);
       assert.equal(result.success, true, result.error || result.output);
       const payload = JSON.parse(result.output);
       assert.equal(payload.version, 'v3.6');
@@ -1757,7 +1757,7 @@ describe('milestone complete explicit version scope (#3043)', () => {
       fs.writeFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), '# Requirements\n');
       fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
 
-      const result = runGsdTools(['milestone', 'complete', 'v9.9', '--raw'], tmpDir);
+      const result = runGsdTools(['milestone', 'complete', 'v9.9', '--raw', '--confirm'], tmpDir);
       assert.equal(result.success, false, 'expected command to fail when no phases match explicit version');
       assert.match(result.error || '', /no phases|phase/i);
     } finally {
@@ -1789,7 +1789,7 @@ describe('#1911 — milestone complete --ws archives to the workstream', () => {
     // Root milestones dir pre-exists; it must NOT receive the workstream archive.
     fs.mkdirSync(path.join(tmpDir, '.planning', 'milestones'), { recursive: true });
 
-    const result = runGsdTools('milestone complete v2.0 --ws ws1 --force', tmpDir);
+    const result = runGsdTools('milestone complete v2.0 --ws ws1 --force --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     // Archive lands inside the workstream.
@@ -1820,7 +1820,7 @@ describe('#1911 — milestone complete --ws archives to the workstream', () => {
     fs.writeFileSync(path.join(wsBase, 'phases', '01-foo', '01-SUMMARY.md'), '---\none-liner: foo done\n---\n# Summary\n');
     fs.mkdirSync(path.join(tmpDir, '.planning', 'milestones'), { recursive: true });
 
-    const result = runGsdTools('milestone complete v2.0 --ws ws1 --force', tmpDir);
+    const result = runGsdTools('milestone complete v2.0 --ws ws1 --force --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const archivedReq = fs.readFileSync(
@@ -1858,7 +1858,7 @@ describe('#1871 — milestone complete archives phase dirs by default', () => {
 
   test('archives phase dirs by default (no --archive-phases flag needed)', () => {
     seedCompletableMilestone();
-    const result = runGsdTools('milestone complete v1.0 --name MVP', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name MVP --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
     const out = JSON.parse(result.output);
     assert.ok(out.archived.phases, 'phases should be archived by default');
@@ -1871,7 +1871,7 @@ describe('#1871 — milestone complete archives phase dirs by default', () => {
   test('--no-archive-phases opts out of default archiving', () => {
     seedCompletableMilestone();
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
-    const result = runGsdTools('milestone complete v1.0 --name MVP --no-archive-phases', tmpDir);
+    const result = runGsdTools('milestone complete v1.0 --name MVP --no-archive-phases --confirm', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
     const out = JSON.parse(result.output);
     assert.ok(!out.archived.phases, 'phases should NOT be archived with --no-archive-phases');
@@ -1945,7 +1945,7 @@ describe('bug-978: milestone complete --force overrides unstarted-phase guard', 
     makeGuardFixture(tmpDir, 'v1.0');
 
     const result = runGsdTools(
-      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test'],
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--confirm'],
       tmpDir,
     );
 
@@ -1960,7 +1960,7 @@ describe('bug-978: milestone complete --force overrides unstarted-phase guard', 
     makeGuardFixture(tmpDir, 'v1.0');
 
     const result = runGsdTools(
-      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--force'],
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--force', '--confirm'],
       tmpDir,
     );
 
@@ -2482,3 +2482,250 @@ describe('enhancement #72 — Business Context template section', () => {
 });
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3726: milestone complete requires --confirm before mutating
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3726: milestone complete refuses to mutate without --confirm', () => {
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempProject(); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  function seedMutableMilestone() {
+    writeRoadmap(tmpDir, `# Roadmap v1.0 MVP\n\n### Phase 1: Foundation\n**Goal:** Setup\n`);
+    writeState(tmpDir);
+    mkPhaseDir(tmpDir, '01-foundation', { plan: true, oneLiner: 'Set up foundation' });
+  }
+
+  // Full recursive content snapshot of .planning/ — "mutates nothing" is
+  // asserted as byte-identity of the whole tree, not spot checks.
+  function snapshotPlanning() {
+    const root = path.join(tmpDir, '.planning');
+    const out = {};
+    (function walk(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, entry.name);
+        if (entry.isDirectory()) { out[path.relative(root, p) + '/'] = '<dir>'; walk(p); }
+        else out[path.relative(root, p)] = fs.readFileSync(p, 'utf-8');
+      }
+    })(root);
+    return out;
+  }
+
+  // #3726 AC 1 + AC 5: the canonical form and the `query` meta-prefix form
+  // resolve to the same implementation, so one test exercises the gate
+  // through both. The query form is the one the original incident used —
+  // `query milestone.complete <v>` read as a query and archived the
+  // milestone.
+  test('bare invocation refuses, names --confirm, and mutates nothing (canonical + query forms)', () => {
+    seedMutableMilestone();
+    const before = snapshotPlanning();
+    for (const argv of [
+      ['milestone', 'complete', 'v1.0', '--name', 'MVP'],
+      ['query', 'milestone.complete', 'v1.0', '--name', 'MVP'],
+    ]) {
+      const result = runGsdTools(argv, tmpDir);
+      assert.strictEqual(result.success, false, `${argv.join(' ')} must refuse without --confirm`);
+      assert.match(result.error || '', /--confirm/, 'refusal must name the flag that proceeds');
+      assert.match(result.error || '', /irreversible/i, 'refusal must say why it refused');
+      assert.deepStrictEqual(snapshotPlanning(), before, `${argv.join(' ')} must leave .planning/ untouched`);
+    }
+  });
+
+  // #3726 AC 4 boundary: --force keeps its narrow meaning (bypass the
+  // TRUNCATED-scope / unstarted-phase guards) and does NOT double as the
+  // mutation opt-in.
+  test('--force alone does not satisfy the confirmation gate', () => {
+    seedMutableMilestone();
+    const before = snapshotPlanning();
+    const result = runGsdTools(['milestone', 'complete', 'v1.0', '--force'], tmpDir);
+    assert.strictEqual(result.success, false, '--force without --confirm must still refuse');
+    assert.match(result.error || '', /--confirm/);
+    assert.deepStrictEqual(snapshotPlanning(), before, '--force refusal must leave .planning/ untouched');
+  });
+
+  // #3726 boundary triple, third arm (review Minor 1): present-but-falsy.
+  // The gate is an exact-token match (`args.includes('--confirm')`), so
+  // `--confirm=false` / `--confirm=0` are not the token and refuse,
+  // fail-closed. Pinned so a future `=`-aware or prefix-matching arg parser
+  // cannot silently turn `--confirm=false` into a confirmed run of an
+  // irreversible command with no test going red.
+  test('--confirm=false / --confirm=0 do not satisfy the confirmation gate (canonical + query forms)', () => {
+    seedMutableMilestone();
+    const before = snapshotPlanning();
+    for (const argv of [
+      ['milestone', 'complete', 'v1.0', '--confirm=false'],
+      ['milestone', 'complete', 'v1.0', '--confirm=0'],
+      ['query', 'milestone.complete', 'v1.0', '--confirm=false'],
+      ['query', 'milestone.complete', 'v1.0', '--confirm=0'],
+    ]) {
+      const result = runGsdTools(argv, tmpDir);
+      assert.strictEqual(result.success, false, `${argv.join(' ')} must refuse — the exact token is absent`);
+      assert.match(result.error || '', /--confirm/, 'refusal must name the flag that proceeds');
+      assert.deepStrictEqual(snapshotPlanning(), before, `${argv.join(' ')} must leave .planning/ untouched`);
+    }
+  });
+
+  // #3726 AC 3: the preview needs no confirmation and still mutates nothing.
+  test('--dry-run previews without --confirm and mutates nothing', () => {
+    seedMutableMilestone();
+    const before = snapshotPlanning();
+    const result = runGsdTools(['milestone', 'complete', 'v1.0', '--dry-run', '--raw'], tmpDir);
+    assert.ok(result.success, `dry-run failed: ${result.error}`);
+    const preview = JSON.parse(result.output);
+    assert.strictEqual(preview.dry_run, true);
+    assert.deepStrictEqual(snapshotPlanning(), before, 'dry-run must leave .planning/ untouched');
+  });
+
+  // #3726 AC 2: --confirm is the explicit opt-in and the archive then runs
+  // exactly as before the gate existed.
+  test('--confirm proceeds through the archive (query form)', () => {
+    seedMutableMilestone();
+    const result = runGsdTools(['query', 'milestone.complete', 'v1.0', '--name', 'MVP', '--confirm'], tmpDir);
+    assert.ok(result.success, `--confirm run failed: ${result.error}`);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-ROADMAP.md')), 'ROADMAP archived');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'phases', '01-foundation')), 'phase dir moved');
+  });
+
+  // #3726 (PR #3774 review, Nit 1): the documented arg-discovery path is
+  // "invoke the command without args and the error lists what is required"
+  // (gsd-tools.cjs top-level usage). The version-required refusal is that
+  // error for `milestone complete`, so it must name --confirm too — otherwise
+  // discovering the flag takes a second round trip through the gate.
+  test('the version-required refusal names --confirm (arg-discovery path)', () => {
+    seedMutableMilestone();
+    const before = snapshotPlanning();
+    const result = runGsdTools(['milestone', 'complete'], tmpDir);
+    assert.strictEqual(result.success, false, 'bare `milestone complete` must refuse');
+    assert.match(result.error || '', /version required/, 'refusal must still name the missing version');
+    assert.match(result.error || '', /--confirm/, 'refusal must name --confirm so one invocation lists everything required');
+    assert.deepStrictEqual(snapshotPlanning(), before, 'a version-less invocation must leave .planning/ untouched');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #3726 docs pin (PR #3774 review, Minor 1). The changeset is `type: Fixed`,
+// which the docs-required lint exempts, so nothing in CI would notice a later
+// edit that reinstated the bare-`--force` override prose or dropped
+// `--confirm` from the synopsis — doc completeness for this command would
+// otherwise rest on review attention alone. This block is that gate. It is
+// registered in scripts/docs-guard-registry.cjs so it runs on the PR that
+// changes these docs, not only after merge.
+// ────────────────────────────────────────────────────────────────────────
+describe('#3726 milestone complete docs pin', () => {
+  const REPO_ROOT = path.join(__dirname, '..');
+  const readDoc = (...segs) => fs.readFileSync(path.join(REPO_ROOT, 'docs', ...segs), 'utf-8');
+  const SYNOPSIS = 'node gsd-tools.cjs milestone complete <version> (--confirm | --dry-run)';
+  const MIRRORS = [['CLI-TOOLS.md'], ['ja-JP', 'CLI-TOOLS.md'], ['ko-KR', 'CLI-TOOLS.md'], ['pt-BR', 'CLI-TOOLS.md'], ['zh-CN', 'CLI-TOOLS.md']];
+
+  test('the synopsis renders --confirm and --dry-run as alternatives in CLI-TOOLS.md and every localized mirror', () => {
+    for (const rel of MIRRORS) {
+      const synopsis = readDoc(...rel).split('\n').filter((l) => l.includes('milestone complete <version>'));
+      assert.strictEqual(synopsis.length, 1, `docs/${rel.join('/')}: expected exactly one synopsis line`);
+      assert.ok(synopsis[0].startsWith(SYNOPSIS), `docs/${rel.join('/')}: synopsis must begin "${SYNOPSIS}", got: ${synopsis[0]}`);
+    }
+  });
+
+  test('the flag table documents --confirm as required to mutate and not implied by --force', () => {
+    const row = readDoc('CLI-TOOLS.md').split('\n').find((l) => l.startsWith('| `--confirm` |'));
+    assert.ok(row, 'docs/CLI-TOOLS.md: `--confirm` flag row missing');
+    assert.ok(row.includes('Required to mutate'), '`--confirm` row must say it is required to mutate');
+    assert.ok(row.includes('Not implied by `--force`'), '`--confirm` row must say --force does not imply it');
+  });
+
+  // The milestone-complete sections of each doc, bounded by heading — a
+  // renamed heading fails loudly here instead of silently emptying the sweep.
+  function section(text, doc, startRe, endRe) {
+    const lines = text.split('\n');
+    const from = lines.findIndex((l) => startRe.test(l));
+    assert.ok(from >= 0, `docs/${doc}: section heading ${startRe} not found`);
+    let to = lines.findIndex((l, i) => i > from && endRe.test(l));
+    if (to < 0) to = lines.length;
+    return lines.slice(from, to).map((line, i) => ({ line, n: from + i + 1 }));
+  }
+  const SECTIONS = () => {
+    const cli = readDoc('CLI-TOOLS.md');
+    return [
+      { doc: 'CLI-TOOLS.md', rows: section(cli, 'CLI-TOOLS.md', /^### `milestone complete` refuses an untrustworthy window/, /^## /) },
+      { doc: 'CLI-TOOLS.md', rows: section(cli, 'CLI-TOOLS.md', /^## Milestone Commands/, /^## /) },
+      { doc: 'COMMANDS.md', rows: section(readDoc('COMMANDS.md'), 'COMMANDS.md', /^### `\/gsd-complete-milestone`/, /^### /) },
+    ];
+  };
+
+  // Prose is soft-wrapped, so a line is the wrong unit: `Pass \`--force --confirm\`
+  // to override … (\`--force\` alone does not imply it)` spans two lines in
+  // docs/CLI-TOOLS.md, and the second reads bare on its own. A table row is a
+  // paragraph on its own; every paragraph is joined and split at sentence
+  // boundaries. The unit reported is the paragraph's first line.
+  function units(rows) {
+    const out = [];
+    let para = [];
+    const flush = () => {
+      if (para.length === 0) return;
+      const n = para[0].n;
+      const text = para.map(({ line }) => line.trim()).join(' ');
+      // Clause-level: a semicolon-spliced instruction ("…to override; or pass
+      // `--force` alone…") must not coalesce with the compliant clause before it.
+      for (const sentence of text.split(/(?<=[.!?;])\s+/)) out.push({ n, unit: sentence });
+      para = [];
+    };
+    for (const row of rows) {
+      const line = row.line.trim();
+      if (line === '') { flush(); continue; }
+      // A table row is its own paragraph, but it is still sentence-split: a
+      // bare instruction appended inside the `--confirm` cell must not hide
+      // behind that cell's own `--confirm` token (reviewer-found escape).
+      if (line.startsWith('|')) { flush(); para.push({ line, n: row.n }); flush(); continue; }
+      para.push(row);
+    }
+    flush();
+    return out;
+  }
+
+  // Every --force unit that legitimately carries no --confirm, pinned EXACTLY —
+  // the identity-ratchet shape scripts/lib/allowlist-ratchet.cjs uses for the
+  // repo's lints. Classifying prose intent by regex is a snapshot of the shapes
+  // seen so far (the first version of this pin was one, and a reviewer refuted
+  // it with "re-run with `--force`"); pinning the benign set instead means a
+  // new --force sentence or clause without --confirm fails, whatever its
+  // wording, and an edit to a benign one fails loudly until the list is
+  // updated by hand. Named residual: a bare instruction spliced into the SAME
+  // clause as a compliant one ("…to override, or just `--force` if you like")
+  // coalesces with it and passes here; the test below pins the four known
+  // instructions by guard name (a substring match on each instruction's own
+  // `--force --confirm` text), so those cannot lose the pairing unnoticed.
+  const BENIGN_BARE_FORCE_UNITS = [
+    '| `--force` | Override the unstarted-phase guard (see below).',
+    'Not implied by `--force`, which only overrides the guards below.',
+    '`--force` alone does not imply it).',
+    "The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946).",
+  ];
+
+  test('inside the milestone complete sections, every --force unit without --confirm is a pinned benign one', () => {
+    const bare = [];
+    for (const { doc, rows } of SECTIONS()) {
+      for (const { n, unit } of units(rows)) {
+        if (unit.includes('--force') && !unit.includes('--confirm')) bare.push({ doc, n, unit });
+      }
+    }
+    const unexpected = bare.filter(({ unit }) => !BENIGN_BARE_FORCE_UNITS.includes(unit));
+    assert.deepStrictEqual(unexpected.map(({ doc, n, unit }) => `docs/${doc}:${n} ${unit.slice(0, 100)}`), [],
+      'a --force sentence without --confirm that is not in BENIGN_BARE_FORCE_UNITS — --force alone refuses since #3726; an override instruction must say --force --confirm, and a genuinely benign new sentence is added to the pinned list by hand');
+    const missing = BENIGN_BARE_FORCE_UNITS.filter((u) => !bare.some(({ unit }) => unit === u));
+    assert.deepStrictEqual(missing, [], 'a pinned benign unit no longer appears verbatim — update BENIGN_BARE_FORCE_UNITS to the edited text (or drop it) so the pin stays exact');
+  });
+
+  test('both guard-override instructions in each doc read --force --confirm', () => {
+    // Pinned by guard, not by count: a lost instruction cannot be masked by an
+    // unrelated new match. CLI-TOOLS.md carries one guard per section; the
+    // COMMANDS.md section carries both as blockquotes.
+    const has = (rows, re) => rows.some(({ line }) => re.test(line));
+    const [truncated, unstarted, commands] = SECTIONS();
+    assert.ok(has(truncated.rows, /Pass `--force --confirm` to override/), 'docs/CLI-TOOLS.md truncated-window guard: override instruction missing or not --force --confirm');
+    assert.ok(has(unstarted.rows, /Pass `--force --confirm` to override/), 'docs/CLI-TOOLS.md unstarted-phase guard: override instruction missing or not --force --confirm');
+    assert.ok(has(commands.rows, /\*\*Truncated-window guard\.\*\*.*milestone complete <version> --force --confirm/), 'docs/COMMANDS.md truncated-window guard: override instruction missing or not --force --confirm');
+    assert.ok(has(commands.rows, /\*\*Unstarted-phase guard\.\*\*.*milestone complete <version> --force --confirm/), 'docs/COMMANDS.md unstarted-phase guard: override instruction missing or not --force --confirm');
+  });
+});

@@ -309,6 +309,10 @@ function normalizeLegacyKeys(parsed: Record<string, unknown>): NormalizeLegacyKe
     delete result['depth'];
     normalizations.push({ from: 'depth', to: 'granularity', value: mapped });
   }
+  // 5. top-level base_branch → git.base_branch
+  if (Object.prototype.hasOwnProperty.call(result, 'base_branch')) {
+    hoistLegacyKey(result, normalizations, skipped, 'base_branch', 'git', 'base_branch');
+  }
   return { parsed: result, normalizations, skipped };
 }
 

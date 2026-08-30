@@ -610,6 +610,7 @@
       "execute-phase/steps/per-plan-executor-routing.md",
       "execute-phase/steps/per-plan-worktree-gate.md",
       "execute-phase/steps/post-merge-gate.md",
+      "execute-phase/steps/protected-branch.md",
       "execute-phase/steps/regression-gate-run.md",
       "execute-phase/steps/regression-gate.md",
       "execute-phase/steps/wave-post-gate-hooks.md",
