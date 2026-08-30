@@ -2525,6 +2525,40 @@ describe('#3830: state advance-plan checks its prose position against the plans 
     assert.strictEqual(output.reason, undefined);
   });
 
+  // #3862 round 3 (Minor): the one on-disk `scope` the provider's own docblock
+  // motivates by name — a nested `plans/` entry that exists but cannot be read —
+  // was pinned only through a stubbed provider. This drives it through the real
+  // CLI: a regular FILE named `plans` satisfies existsSync and makes readdirSync
+  // throw ENOTDIR, which is scanPhasePlans's TRUNCATED path with no chmod (root
+  // and Windows ignore it) and no mock (a child process cannot be mocked).
+  test('a TRUNCATED plan scan (unreadable nested plans/) is unknown, not divergence — the verb still advances', () => {
+    const phaseDir = seedPhase('01-demo', 3);
+    fs.writeFileSync(path.join(phaseDir, 'plans'), '');
+    writeState('Plan: 2 of 8');
+
+    const result = runGsdTools('state advance-plan', tmpDir);
+    assert.ok(result.success, `Command should exit 0: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.advanced, true,
+      `three plans the scan could see is a FLOOR, not proof that 8 is wrong; got ${result.output}`);
+    assert.strictEqual(output.current_plan, 3);
+  });
+
+  test('the same phase with a READABLE nested plans/ is a complete scan, and 3 vs 8 refuses', () => {
+    // The negative control for the test above: the identical fixture with
+    // `plans` a directory instead of a file. Without it the abstention above
+    // passes for any reason at all — including the cross-check never running.
+    const phaseDir = seedPhase('01-demo', 3);
+    fs.mkdirSync(path.join(phaseDir, 'plans'));
+    writeState('Plan: 2 of 8');
+    const before = stateText();
+
+    const output = JSON.parse(runGsdTools('state advance-plan', tmpDir).output);
+    assert.strictEqual(output.reason, 'position_diverged');
+    assert.strictEqual(output.disk.plan_count, 3);
+    assert.strictEqual(stateText(), before, 'a refusal must not write anything back');
+  });
+
   test('a non-canonically-named plan-shaped file does not inflate the count', () => {
     // scanPhasePlans's own planFiles carry isRootPlanFile's loose /PLAN/i
     // fallback; phase-plan-index intersects with the strict predicate (#2893).
