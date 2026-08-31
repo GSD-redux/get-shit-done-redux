@@ -69,6 +69,48 @@
 - MAYBE → Rule 4 (ask the user)
 - NO → Out of scope (log to deferred-items.md)
 
+### Writing `deferred-items.md`
+
+The file has no template — write it by hand, as a Markdown list under a
+`## Deferred Items` heading. What counts as one entry:
+
+- One entry per top-level list item. `-`, `*` and `+` all count, and so does a
+  dot-terminated ordered marker (`1.`) when the list starts at `0.` or `1.`, or
+  continues a list already open at that level — a sentence that merely opens
+  with a number (`2026. was a bad year`) is prose, not an item, and so is a
+  list numbered from `2.` upward until its first `0.`/`1.` line. `1)` is not a
+  marker here, and neither is an ordinal past nine digits (`999999999.`
+  counts, `1234567890.` does not).
+- Continuation lines indent beneath their entry. Fields go on those lines:
+  `status: resolved`, or the bolded `**Status:** resolved` convention. **The
+  BARE key is lower-case only** — write `Status: resolved` without the bold and
+  the field is not read, so the entry stays open with no warning. Bold it or
+  lower-case it. The bolded form matches the key case-insensitively, and the
+  VALUE is case-insensitive in both forms.
+- A `* * *` or `- - -` separator closes the list rather than opening an entry,
+  and nothing inside a fenced code block is an entry or a field — at any indent,
+  including one deeper than CommonMark's three-space cap, which is what a fence
+  written under a nested bullet looks like. A fence that is never closed runs to
+  the end of its own entry and no further, so an unclosed delimiter cannot hide
+  the entries after it — a closed pair of delimiters is a fence, whatever sits
+  between them.
+
+An entry is RESOLVED only if it carries an explicit `status: resolved`. Anything
+else — including an entry with no `status:` at all — stays open and will surface
+in `audit-open`, `audit-uat` and `complete-milestone`. That is deliberate: the
+scanner never silently drops a possibly-open item. What it reads as something
+other than an item is the short list above — a fenced line, a separator, and an
+ordered list numbered from `2.` upward at a paragraph position — and nothing
+else.
+
+```markdown
+## Deferred Items
+
+- Retry budget is hardcoded at 3
+  status: open
+  **What:** `fetchWithRetry` ignores the configured budget.
+```
+
 ## Checkpoint Examples
 
 ### Good checkpoint placement

@@ -20,7 +20,10 @@ const {
   acknowledgeDeferredItem,
   parseUatItems,
   parseUatItemsWithStats,
+  DEFERRED_MARKER_ALT,
+  DEFERRED_BULLET_MARKERS,
 } = require('../gsd-core/bin/lib/uat.cjs');
+const { iterateBullets } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 describe('audit-uat command', () => {
   let tmpDir;
@@ -1801,9 +1804,9 @@ describe('#2287 progress.md forensic_audit: deferred-items.md contract', () => {
   });
 });
 
-// ─── parseDeferredItems property test (#2287) ──────────────────────────────
+// ─── parseDeferredItems property test (#2287, widened by #3702 round 2) ─────
 
-describe('#2287 parseDeferredItems: property (status: resolved fail-safe)', () => {
+describe('#2287 parseDeferredItems: property (status: resolved fail-safe) × marker × shape × line ending', () => {
   // Single-line entry text: no newlines (would break bullet-entry splitting),
   // non-empty after trim, and never itself SHAPED like a `status:` field line
   // (that would be indistinguishable from a real field regardless of intent).
@@ -1818,43 +1821,88 @@ describe('#2287 parseDeferredItems: property (status: resolved fail-safe)', () =
   const decoyText = plainText.map((s) => `${s} status: resolved trailing note`);
 
   const textArb = fc.oneof(plainText, decoyText);
-  const entryArb = fc.record({ text: textArb, resolved: fc.boolean() });
+  // `statusFirst` matters on the heading shape: round 1's only CRLF test put
+  // `**Status:**` LAST, the one line `collectSection`'s `.trimEnd()` had
+  // already de-CR'd, and the B1 regression hid behind it.
+  // `decoy` adds a prose line that BEGINS with a non-1 ordinal (`7. …`): under
+  // the start-at-1 rule (B2) it is never an item, never evidence and never a
+  // field — round 1 read it as an opener. Placed where it cannot end a run:
+  // before the first headless entry, and first in a heading body.
+  const entryArb = fc.record({ text: textArb, resolved: fc.boolean(), statusFirst: fc.boolean(), decoy: fc.boolean() });
+  const decoyOrdinal = fc.integer({ min: 2, max: 999999999 });
+
+  // #3702 round 2 (B3): the marker set is an enumerated domain — exactly what a
+  // property is for. Ordered markers are numbered from 1 (the ordered-run
+  // rule, B2); the two shapes exercise both splitters; CRLF exercises the
+  // heading path's CR handling (B1).
+  const markerArb = fc.constantFrom('-', '*', '+', 'ordered');
+  const shapeArb = fc.constantFrom('headless', 'heading');
+  const eolArb = fc.constantFrom('\n', '\r\n');
+  const mk = (marker, i) => (marker === 'ordered' ? `${i + 1}.` : marker);
+
+  const render = (entries, marker, shape, eol, ordinal = 7) => {
+    const lines = ['## Deferred Items', ''];
+    if (shape === 'headless' && entries.some((e) => e.decoy)) {
+      // Pre-first-entry prose: a rejected ordinal is discarded, an accepted
+      // one (round 1) opens a phantom entry and breaks the count.
+      lines.push(`${ordinal}. ${entries.find((e) => e.decoy).text} status: resolved`, '');
+    }
+    entries.forEach((e, i) => {
+      if (shape === 'headless') {
+        lines.push(`${mk(marker, i)} ${e.text}`);
+        if (e.resolved) lines.push('  status: resolved');
+      } else {
+        lines.push(`### ${e.text}`, '');
+        // A decoy ordinal line FIRST in the body: never stripped, so the
+        // `status: resolved` after it can never become a field.
+        if (e.decoy) lines.push(`${ordinal}. ${e.text} status: resolved`);
+        const what = (n) => `${mk(marker, n)} **What:** ${e.text}`;
+        const status = (n) => `${mk(marker, n)} **Status:** resolved`;
+        if (!e.resolved) lines.push(what(0));
+        else if (e.statusFirst) lines.push(status(0), what(1));
+        else lines.push(what(0), status(1));
+        lines.push('');
+      }
+    });
+    return lines.join(eol);
+  };
+  const idOf = (name) => { const m = /E(\d+)_/.exec(name); return m ? Number(m[1]) : -1; };
 
   test('property: an entry is surfaced iff it is NOT marked status: resolved; surfaced count == non-resolved count', () => {
     fc.assert(
       fc.property(
-        fc.array(entryArb, { maxLength: 20 }),
-        (rawEntries) => {
+        fc.array(entryArb, { maxLength: 20 }), markerArb, shapeArb, eolArb, decoyOrdinal,
+        (rawEntries, marker, shape, eol, ordinal) => {
           // Index-prefix for uniqueness so surfaced items can be mapped back
           // to their source entry unambiguously even with colliding random text.
-          const entries = rawEntries.map((e, i) => ({ text: `E${i}_${e.text}`, resolved: e.resolved }));
-
-          const lines = ['## Deferred Items', ''];
-          for (const e of entries) {
-            lines.push(`- ${e.text}`);
-            if (e.resolved) lines.push('  status: resolved');
-          }
-          const content = lines.join('\n');
+          const entries = rawEntries.map((e, i) => ({ ...e, text: `E${i}_${e.text}` }));
+          const content = render(entries, marker, shape, eol, ordinal);
+          const where = `${shape} ${JSON.stringify(marker)} ${JSON.stringify(eol)} decoy=${ordinal}`;
 
           const items = parseDeferredItems(content);
-          const surfacedNames = new Set(items.map((it) => it.name));
+          const surfacedIds = new Set(items.map((it) => idOf(it.name)));
 
           const expectedUnresolved = entries.filter((e) => !e.resolved);
-          const expectedResolved = entries.filter((e) => e.resolved);
 
           // Total surfaced count equals the count of non-resolved entries.
-          assert.strictEqual(items.length, expectedUnresolved.length);
+          assert.strictEqual(items.length, expectedUnresolved.length, where);
 
           // Every non-resolved entry IS surfaced (including status:-shaped
           // decoy substrings embedded mid-line — those must not flip the
           // outcome).
-          for (const e of expectedUnresolved) {
-            assert.ok(surfacedNames.has(e.text), `expected unresolved entry to surface: ${e.text}`);
+          for (const [i, e] of entries.entries()) {
+            assert.strictEqual(surfacedIds.has(i), !e.resolved, `${where}: ${e.resolved ? 'resolved entry must never surface' : 'unresolved entry must surface'}: ${e.text}`);
           }
 
-          // No status:-resolved entry is EVER surfaced.
-          for (const e of expectedResolved) {
-            assert.ok(!surfacedNames.has(e.text), `status: resolved entry must never surface: ${e.text}`);
+          // Headless: the surfaced NAME is the entry text with the marker gone,
+          // whichever marker it was (the name is what acknowledge matches on).
+          if (shape === 'headless') {
+            for (const it of items) assert.strictEqual(it.name, entries[idOf(it.name)].text, where);
+          }
+          // A heading body carrying ONLY a decoy ordinal line is prose, not an entry.
+          if (shape === 'heading' && entries.length > 0) {
+            const decoyOnly = `## Deferred Items${eol}${eol}### only-decoy${eol}${eol}${ordinal}. ${entries[0].text} status: resolved${eol}`;
+            assert.deepStrictEqual(parseDeferredItems(decoyOnly), [], `${where}: decoy-only body`);
           }
 
           // Every returned item carries the fixed deferred category/result shape.
@@ -1862,6 +1910,39 @@ describe('#2287 parseDeferredItems: property (status: resolved fail-safe)', () =
             assert.strictEqual(item.result, 'unresolved');
             assert.strictEqual(item.category, 'deferred');
           }
+        }
+      )
+    );
+  });
+
+  test('property: acknowledge reaches and rewrites every unresolved headless entry, whichever marker or line ending', () => {
+    // The writer refuses the heading shape by design (`unsupported_heading_shape`),
+    // so this ranges over the headless shape only. It is the property that
+    // reaches M4 (CRLF rewrite reported ok and wrote nothing) and m2 (indent).
+    fc.assert(
+      fc.property(
+        fc.array(entryArb, { minLength: 1, maxLength: 12 }), markerArb, eolArb,
+        (rawEntries, marker, eol) => {
+          const entries = rawEntries.map((e, i) => ({ ...e, text: `E${i}_${e.text}` }));
+          let content = render(entries, marker, 'headless', eol);
+          const where = `${JSON.stringify(marker)} ${JSON.stringify(eol)}`;
+
+          for (const e of entries.filter((x) => !x.resolved)) {
+            const got = acknowledgeDeferredItem(content, e.text);
+            assert.strictEqual(got.status, 'ok', `${where}: ${e.text}`);
+            assert.notStrictEqual(got.content, content, `${where}: an ok must have written: ${e.text}`);
+            content = got.content;
+          }
+          const after = parseDeferredItemsWithStatus(content);
+          assert.strictEqual(after.length, entries.length, where);
+          for (const it of after) {
+            const e = entries[idOf(it.name)];
+            assert.strictEqual(it.status, e.resolved ? 'resolved' : 'acknowledged', `${where}: ${it.name}`);
+          }
+          // `acknowledged` is suppressed at the AUDIT layer, not the parser's:
+          // only `resolved` leaves the outstanding list here, so the count is
+          // unchanged by the writes above.
+          assert.strictEqual(parseDeferredItems(content).length, entries.filter((x) => !x.resolved).length, where);
         }
       )
     );
@@ -2310,6 +2391,1235 @@ describe('#3457 parseDeferredItems: heading-delimited entries', () => {
 
     assert.strictEqual(got.length, 1, JSON.stringify(got.map(i => i.name)));
     assert.strictEqual(got[0].result, 'unresolved');
+  });
+});
+
+describe('#3702 parseDeferredItems: list-marker grammar', () => {
+  // `deferred-items.md` has no template and no mandated shape, but the parser
+  // recognised only the hyphen marker — so `*`, `+` and ordered lists (all
+  // lists in CommonMark and GFM) contributed ZERO entries on both the headless
+  // and the heading-delimited path. A mixed file dropped its non-hyphen entries
+  // while keeping their hyphenated siblings, under-reporting without ever
+  // looking empty.
+  const SECTION = '## Deferred Items\n\n';
+  const names = (md) => parseDeferredItems(SECTION + md).map((i) => i.name);
+  const count = (md) => names(md).length;
+
+  // The marker set the ruling widened to. `1)` is deliberately absent — the
+  // paren-terminated ordered form is out of scope for this fix, and the
+  // `1) still yields zero` case below pins that as intended, not as an oversight.
+  const MARKERS = ['-', '*', '+', '1.'];
+
+  test('AC1 headless: every marker yields the same count as the hyphen form', () => {
+    const shape = (m) => `${m} alpha\n${m} beta\n`;
+    const hyphen = count(shape('-'));
+
+    assert.strictEqual(hyphen, 2, 'baseline: the hyphen form must yield 2');
+    for (const m of MARKERS) {
+      assert.strictEqual(count(shape(m)), hyphen, `marker ${JSON.stringify(m)}: ${JSON.stringify(names(shape(m)))}`);
+    }
+  });
+
+  test('AC1 headless: the entry NAME drops the marker, whichever marker it is', () => {
+    // rawGapEntryText renders the name acknowledgeDeferredItem later matches on,
+    // so a marker left in the rendered name would make the entry unreachable.
+    for (const m of MARKERS) {
+      assert.deepStrictEqual(names(`${m} alpha\n`), ['alpha'], `marker ${JSON.stringify(m)}`);
+    }
+  });
+
+  test('AC2 heading-delimited: a body carrying any marker is KEPT (was dropped)', () => {
+    const shape = (m) => `### Entry\n\n${m} **What:** x.\n`;
+
+    for (const m of MARKERS) {
+      assert.strictEqual(count(shape(m)), 1, `marker ${JSON.stringify(m)}: ${JSON.stringify(names(shape(m)))}`);
+    }
+  });
+
+  test('AC2 heading-delimited: a mixed file no longer drops its non-hyphen entry', () => {
+    // The row that bites hardest in the wild: the file never looks empty, it
+    // just silently under-reports.
+    const got = names('### Hyphen entry\n\n- x.\n\n### Asterisk entry\n\n* y.\n');
+
+    assert.strictEqual(got.length, 2, JSON.stringify(got));
+    assert.match(got[0], /^Hyphen entry/);
+    assert.match(got[1], /^Asterisk entry/);
+  });
+
+  test('AC3: a resolved-status field under any marker resolves its entry', () => {
+    // The lockstep property: widening what OPENS an entry without widening the
+    // marker STRIP feeding field extraction would surface the entry and then
+    // never resolve it — permanently unresolved, which is worse than dropped.
+    //
+    // Asserted through parseDeferredItemsWithStatus, NOT through an empty
+    // parseDeferredItems: "no outstanding item" is also what a DROPPED entry
+    // looks like, so the weaker form passes against the unfixed parser for
+    // precisely the reason under test. The entry must exist AND read resolved.
+    for (const m of MARKERS) {
+      for (const [shape, md] of [
+        ['heading', `${SECTION}### Entry\n\n${m} **What:** x.\n${m} **Status:** resolved\n`],
+        ['headless', `${SECTION}${m} alpha\n  status: resolved\n`],
+      ]) {
+        const where = `${shape} shape, marker ${JSON.stringify(m)}`;
+        const withStatus = parseDeferredItemsWithStatus(md);
+
+        assert.strictEqual(withStatus.length, 1, `${where}: entry must be parsed at all — ${JSON.stringify(withStatus)}`);
+        assert.strictEqual(withStatus[0].status, 'resolved', `${where}: ${JSON.stringify(withStatus)}`);
+        assert.deepStrictEqual(parseDeferredItems(md), [], `${where}: resolved entries are not outstanding`);
+      }
+    }
+  });
+
+  test('AC3: the acknowledge writer reaches an entry written under any marker', () => {
+    for (const m of MARKERS) {
+      const content = `${SECTION}${m} alpha\n`;
+      const got = acknowledgeDeferredItem(content, 'alpha');
+
+      assert.strictEqual(got.status, 'ok', `marker ${JSON.stringify(m)}`);
+      assert.match(got.content, /status: acknowledged/, `marker ${JSON.stringify(m)}`);
+      assert.strictEqual(
+        parseDeferredItemsWithStatus(got.content)[0].status,
+        'acknowledged',
+        `marker ${JSON.stringify(m)}: the written marker must parse back`,
+      );
+    }
+  });
+
+  test('AC3: an already-acknowledged entry under any marker is not double-written', () => {
+    for (const m of MARKERS) {
+      const original = `${SECTION}${m} alpha\n`;
+      const once = acknowledgeDeferredItem(original, 'alpha').content;
+      const twice = acknowledgeDeferredItem(once, 'alpha').content;
+
+      // Anti-vacuity: an unreachable entry is also idempotent, so pin that the
+      // first call actually wrote before pinning that the second did not.
+      assert.notStrictEqual(once, original, `marker ${JSON.stringify(m)}: first acknowledge must write`);
+      assert.strictEqual(twice, once, `marker ${JSON.stringify(m)}`);
+    }
+  });
+
+  test('AC4: prose-only and bare headings still contribute nothing', () => {
+    // The "prose is not an item" contract is untouched: an asterisk bullet is
+    // not prose, so widening the marker set cannot start counting prose.
+    assert.deepStrictEqual(names('### Musings\n\njust prose here.\n'), []);
+    assert.deepStrictEqual(names('### A bare heading with no body\n'), []);
+    assert.deepStrictEqual(names('### Notes\n\nwe considered * and + as options.\n'), []);
+  });
+
+  test('AC4: a bolded field key is not mistaken for an asterisk bullet', () => {
+    // `**Status:**` opens with `*` but supplies no whitespace after it, so the
+    // widened marker declines and the bolded-key path still owns the line.
+    const got = parseDeferredItemsWithStatus(`${SECTION}### Entry\n\n- **What:** x.\n**Status:** resolved\n`);
+
+    assert.strictEqual(got.length, 1, JSON.stringify(got));
+    assert.strictEqual(got[0].status, 'resolved', JSON.stringify(got));
+  });
+
+  test('AC5: a table under a leaf heading still yields exactly its rows', () => {
+    // The anti-double-count property (#2766): table lines are skipped before
+    // the body-marker flag can be set, and a `|` row is not a list marker, so
+    // the heading still contributes no phantom entry.
+    const oneRow = names('### Discovered\n\n| Test | Seeds |\n|---|---|\n| test_a | 0, 1 |\n');
+    assert.deepStrictEqual(oneRow, ['test_a — 0, 1'], JSON.stringify(oneRow));
+
+    const twoRows = names('### Discovered\n\n| Test | Seeds |\n|---|---|\n| test_a | 0 |\n| test_b | 1 |\n');
+    assert.strictEqual(twoRows.length, 2, JSON.stringify(twoRows));
+  });
+
+  test('the paren-terminated ordered marker `1)` remains out of scope', () => {
+    // Pinned so a later reader sees this as the ruling's scope, not a miss.
+    assert.deepStrictEqual(names('1) alpha\n2) beta\n'), []);
+  });
+
+  test('CRLF files: widened markers split and resolve identically', () => {
+    for (const m of MARKERS) {
+      const crlf = `## Deferred Items\r\n\r\n### Entry\r\n\r\n${m} **What:** x.\r\n${m} **Status:** resolved\r\n`;
+      const withStatus = parseDeferredItemsWithStatus(crlf);
+
+      // Same anti-vacuity as AC3: an empty outstanding list would also be
+      // satisfied by the entry never being parsed.
+      assert.strictEqual(withStatus.length, 1, `marker ${JSON.stringify(m)}: ${JSON.stringify(withStatus)}`);
+      assert.strictEqual(withStatus[0].status, 'resolved', `marker ${JSON.stringify(m)}`);
+      assert.deepStrictEqual(parseDeferredItems(crlf), [], `marker ${JSON.stringify(m)}`);
+    }
+  });
+
+  test('nested sub-lists under any marker stay folded into their parent entry', () => {
+    // splitGapsEntries' indent rule (#2286) is marker-agnostic: only a marker at
+    // or shallower than the first one seen opens a new entry.
+    for (const m of MARKERS) {
+      const got = names(`${m} alpha\n    ${m} nested one\n    ${m} nested two\n${m} beta\n`);
+      assert.strictEqual(got.length, 2, `marker ${JSON.stringify(m)}: ${JSON.stringify(got)}`);
+    }
+  });
+});
+
+describe('#3702 round 2: CRLF on the heading path and in the acknowledge writer', () => {
+  const MARKERS = ['-', '*', '+', '1.'];
+  const CRLF_SECTION = '## Deferred Items\r\n\r\n';
+
+  test('B1: a CRLF heading entry resolves when **Status:** is NOT the last line', () => {
+    // Round-1's CRLF test put `**Status:**` on the fixture's LAST line, where
+    // `collectSection`'s `.trimEnd()` had already removed the one `\r` that
+    // mattered — a false green. Every other line of a CRLF body still carries
+    // its `\r`, and a `$`-anchored marker strip fails on it, so the marker
+    // survived into field extraction and the field was silently lost.
+    for (const m of MARKERS) {
+      const statusFirst = `${CRLF_SECTION}### Entry\r\n\r\n${m} **Status:** resolved\r\n${m} **What:** x.\r\n`;
+      const withStatus = parseDeferredItemsWithStatus(statusFirst);
+
+      assert.strictEqual(withStatus.length, 1, `marker ${JSON.stringify(m)}: ${JSON.stringify(withStatus)}`);
+      assert.strictEqual(withStatus[0].status, 'resolved', `marker ${JSON.stringify(m)}: status-first CRLF must resolve`);
+      assert.deepStrictEqual(parseDeferredItems(statusFirst), [], `marker ${JSON.stringify(m)}`);
+
+      // And the mirror: a field ABOVE a trailing status line is not lost either.
+      const whatFirst = `${CRLF_SECTION}### Entry\r\n\r\n${m} **What:** x.\r\n${m} **Status:** resolved\r\n${m} **Why:** y.\r\n`;
+      assert.strictEqual(parseDeferredItemsWithStatus(whatFirst)[0].status, 'resolved', `marker ${JSON.stringify(m)}: mid-body status`);
+    }
+  });
+
+  test('B1: a CRLF heading entry parses byte-for-byte like its LF twin', () => {
+    for (const m of MARKERS) {
+      const body = `### Entry\n\n${m} **Status:** resolved\n${m} **What:** x.\n`;
+      const lf = parseDeferredItemsWithStatus(`## Deferred Items\n\n${body}`);
+      const crlf = parseDeferredItemsWithStatus(`${CRLF_SECTION}${body.replace(/\n/g, '\r\n')}`);
+      assert.deepStrictEqual(crlf, lf, `marker ${JSON.stringify(m)}`);
+    }
+  });
+
+  test('M4: acknowledge REWRITES an existing status line on a CRLF file (was: ok + no write)', () => {
+    // Pre-existing on `next`: the finder tested a CR-stripped copy, the rewrite
+    // ran on the raw `\r`-terminated line with a `$`-anchored regex, `replace`
+    // returned the input unchanged, and the writer reported `ok` over content
+    // that was byte-identical — the item then resurfaced on every audit.
+    for (const m of MARKERS) {
+      const content = `${CRLF_SECTION}${m} alpha\r\n  status: pending\r\n${m} beta\r\n`;
+      const target = parseDeferredItemsWithStatus(content)[0].name;
+      const got = acknowledgeDeferredItem(content, target);
+
+      assert.strictEqual(got.status, 'ok', `marker ${JSON.stringify(m)}`);
+      assert.notStrictEqual(got.content, content, `marker ${JSON.stringify(m)}: an ok must have written`);
+      assert.strictEqual(parseDeferredItemsWithStatus(got.content)[0].status, 'acknowledged', `marker ${JSON.stringify(m)}`);
+    }
+  });
+
+  test('m2: the inserted status line takes the entry indent on a CRLF file', () => {
+    for (const m of MARKERS) {
+      const content = `${CRLF_SECTION}    ${m} alpha\r\n    ${m} beta\r\n`;
+      const got = acknowledgeDeferredItem(content, 'alpha');
+
+      assert.strictEqual(got.status, 'ok', `marker ${JSON.stringify(m)}`);
+      assert.match(got.content, /\n {6}status: acknowledged/, `marker ${JSON.stringify(m)}: indent 4 + 2, not the indent-0 fallback`);
+    }
+  });
+});
+
+describe('#3702 round 3: detect/strip symmetry on the acknowledge path (B1, B2)', () => {
+  // The round-3 blocker. Round 2 widened the WRITER's status-line finder to
+  // the deferred marker set while the reader still de-bulleted line 0 only, so
+  // a nested `  * status:` was selectable by the writer and invisible to the
+  // reader: acknowledge rewrote it, returned `ok`, and the item stayed
+  // outstanding on every later audit. Measured against a `next` build, `*`,
+  // `+` and `1.` all resolved on base and stopped resolving at round 2's head
+  // — a regression, not a gap in new behaviour.
+  for (const marker of ['-', '*', '+', '1.']) {
+    test(`a nested "${marker} status:" line acknowledges and READS BACK`, () => {
+      const doc = `## Deferred Items\n\n- alpha thing\n  ${marker} status: pending\n`;
+      const items = parseDeferredItemsWithStatus(doc);
+      assert.strictEqual(items.length, 1);
+      const got = acknowledgeDeferredItem(doc, items[0].name);
+      assert.strictEqual(got.status, 'ok', `${marker}: acknowledge reported`);
+      assert.notStrictEqual(got.content, doc, `${marker}: content actually changed`);
+      const after = parseDeferredItemsWithStatus(got.content);
+      assert.strictEqual(
+        after[0].status, 'acknowledged',
+        `${marker}: the entry must read back as acknowledged — reporting ok over a line the reader skips is the defect`,
+      );
+    });
+  }
+
+  // The hyphen row above is NOT a widened marker: it was already broken on
+  // `next`, for the same reason. One classifier cannot be right for three
+  // markers and wrong for the fourth, so it is fixed here rather than left as
+  // a pre-existing defect found while working.
+  test('a bare capitalised "Status:" resolves rather than reporting a write nothing reads', () => {
+    // The reader stores a bare key case-sensitively, so `Status:` is not
+    // `status:`. The writer must therefore NOT select it — it falls to the
+    // insert branch, which writes a line the reader does read.
+    const doc = '## Deferred Items\n\n- alpha\n  Status: pending\n';
+    const items = parseDeferredItemsWithStatus(doc);
+    const got = acknowledgeDeferredItem(doc, items[0].name);
+    assert.strictEqual(got.status, 'ok');
+    assert.strictEqual(parseDeferredItemsWithStatus(got.content)[0].status, 'acknowledged');
+  });
+
+  test('a fenced "status:" line does not make the entry un-acknowledgeable', () => {
+    // Found by the pre-push review, and a regression THIS round introduced:
+    // the reader applied the fence gate before classifying and the writer did
+    // not, so the writer selected a fenced `status:` line the reader skips.
+    // The read-back guard then refused the write and the entry could not be
+    // acknowledged at all — `audit acknowledge` raised an internal error and
+    // `complete-milestone` halted. It acknowledged cleanly on `next`.
+    const F = '`'.repeat(3);
+    const doc = `## Deferred Items\n\n- alpha\n  ${F}\n  status: pending\n  ${F}\n`;
+    const items = parseDeferredItemsWithStatus(doc);
+    assert.strictEqual(items.length, 1);
+    const got = acknowledgeDeferredItem(doc, items[0].name);
+    assert.strictEqual(got.status, 'ok', 'a fenced status line must not refuse the write');
+    assert.strictEqual(
+      parseDeferredItemsWithStatus(got.content)[0].status, 'acknowledged',
+      'the insert branch must write a line the reader reads, rather than rewriting one it skips',
+    );
+  });
+
+  test('CONTROL: a bolded line-0 key keeps its ** wrapper and spelling through the rewrite', () => {
+    // Held before this round too — it is a control on the NEW offset-based
+    // rewrite, not a regression test for a reported defect. The rewrite
+    // replaces the VALUE at the offset the classifier reported, so the key is
+    // untouched by construction; a key-matching regex would have to reproduce
+    // the wrapper to preserve it, which is the thing that could regress.
+    const doc = '## Deferred Items\n\n- **Status:** pending alpha\n';
+    const items = parseDeferredItemsWithStatus(doc);
+    const got = acknowledgeDeferredItem(doc, items[0].name);
+    assert.strictEqual(got.status, 'ok');
+    assert.match(got.content, /- \*\*Status:\*\* acknowledged/);
+  });
+
+  test('acknowledge is idempotent across a re-read', () => {
+    // The failure this guards is the one the defect actually produced: the
+    // item resurfaces, gets acknowledged again, and never settles.
+    const doc = '## Deferred Items\n\n- alpha\n  * status: pending\n';
+    const first = acknowledgeDeferredItem(doc, parseDeferredItemsWithStatus(doc)[0].name);
+    const reread = parseDeferredItemsWithStatus(first.content);
+    assert.strictEqual(reread[0].status, 'acknowledged');
+    const second = acknowledgeDeferredItem(first.content, reread[0].name);
+    assert.strictEqual(second.status, 'ok');
+    assert.strictEqual(parseDeferredItemsWithStatus(second.content)[0].status, 'acknowledged');
+  });
+});
+
+describe('#3702 round 4: ONE end-of-file CRLF algorithm, adopted from #3773 with its B4 closed (M1)', () => {
+  // Two open PRs shipped two different answers to "what line ending does an
+  // entry that ENDS THE FILE get?", and the maintainer's round-4 ruling was
+  // that the disagreement "needs one answer, not two". Neither shipped answer
+  // was that one. Measured, on builds of both heads, over the fixtures below:
+  //
+  //   case                                     #3739 r3   #3773   here
+  //   undelimited single entry, CRLF preamble    pass      FAIL    pass
+  //   LF-dominant list, one stray CRLF at EOF    FAIL      pass    pass
+  //   (the other five)                           pass      pass    pass
+  //
+  // #3739's `content.endsWith('\r\n', matchIndexInContent)` reads the
+  // terminator of the PREVIOUS line, so it propagated an isolated CRLF into an
+  // LF-dominant list. #3773's `crlfAtEof` asks the right question but over a
+  // scope that goes EMPTY for an undelimited single-entry list, so it inserted
+  // a bare `\n` into a CRLF document — its own B4, and a violation of the
+  // uniform-CRLF invariant the fix exists to hold. What lands here is
+  // `crlfAtEof`'s semantics over a scope that widens instead of going empty.
+  //
+  // Every fixture below is a counterexample that killed a simpler algorithm,
+  // four of them ported from #3773 along with the function. They are not
+  // decoration: drop any one and a refuted algorithm passes again.
+  const endings = (text) => (text.match(/\r?\n/g) || []).map((b) => (b === '\r\n' ? 'CRLF' : 'LF'));
+  const assertUniformCrlf = (text) => {
+    assert.ok(!/[^\r]\n/.test(text) && !/^\n/.test(text), `mixed line endings: ${JSON.stringify(text)}`);
+  };
+
+  test('B4: an UNDELIMITED single-entry list at EOF inserts CRLF, not a bare LF', () => {
+    // #3773's B4, the defect this PR must not inherit while absorbing that PR.
+    // With no `## Deferred Items` heading and exactly ONE entry, the entry-list
+    // region runs from the first entry's start to the insertion point — and
+    // those are the same offset, so the region is empty and `crlfAtEof('')` is
+    // `false` by its own `before.length > 0` guard. The scope widens to
+    // everything before the insertion point rather than asserting LF from no
+    // evidence at all.
+    const content = 'preamble\r\n\r\n- alpha';
+    const ack = acknowledgeDeferredItem(content, 'alpha');
+    assert.strictEqual(ack.status, 'ok');
+    assert.strictEqual(ack.content, 'preamble\r\n\r\n- alpha\r\n  status: acknowledged');
+    assert.strictEqual(parseDeferredItemsWithStatus(ack.content)[0].status, 'acknowledged');
+    assertUniformCrlf(ack.content);
+  });
+
+  test('B4 control: the same shape under LF stays LF', () => {
+    const content = 'preamble\n\n- alpha';
+    const ack = acknowledgeDeferredItem(content, 'alpha');
+    assert.strictEqual(ack.status, 'ok');
+    assert.strictEqual(ack.content, 'preamble\n\n- alpha\n  status: acknowledged');
+  });
+
+  test('an LF-dominant document with ONE stray CRLF: the EOF entry does not inherit it', () => {
+    // Ported from #3773, and the fixture that refutes THIS PR's round-3
+    // algorithm. `delta`'s CRLF terminates DELTA, not the unterminated `beta`
+    // after it, so copying the preceding separator propagates an isolated CRLF
+    // into an otherwise-LF file — strictly worse than the bare `\n` it
+    // replaced. Only a scope with no contradicting bare `\n` may assert CRLF.
+    const content = '## Deferred Items\n\n- alpha\n- gamma\n- delta\r\n- beta';
+    const ack = acknowledgeDeferredItem(content, 'beta');
+    assert.strictEqual(ack.status, 'ok');
+    assert.strictEqual(parseDeferredItemsWithStatus(ack.content)[3].status, 'acknowledged');
+    assert.strictEqual(ack.content, '## Deferred Items\n\n- alpha\n- gamma\n- delta\r\n- beta\n  status: acknowledged');
+    assert.deepStrictEqual(endings(ack.content), ['LF', 'LF', 'LF', 'LF', 'CRLF', 'LF'],
+      'the inserted break must not duplicate the unrelated CRLF above it');
+  });
+
+  test('a DELIMITED single-entry list still has evidence: the section preamble is in scope', () => {
+    // Ported from #3773. The scope must not shrink to the entry list alone; a
+    // delimited section's own preamble belongs to that section and counts.
+    const content = '## Deferred Items\r\n\r\n- alpha thing';
+    const ack = acknowledgeDeferredItem(content, 'alpha thing');
+    assert.strictEqual(ack.status, 'ok');
+    assert.strictEqual(ack.content, '## Deferred Items\r\n\r\n- alpha thing\r\n  status: acknowledged');
+    assertUniformCrlf(ack.content);
+    const lf = '## Deferred Items\n\n- alpha thing';
+    assert.strictEqual(
+      acknowledgeDeferredItem(lf, 'alpha thing').content,
+      '## Deferred Items\n\n- alpha thing\n  status: acknowledged',
+    );
+  });
+
+  test('a bare LF OUTSIDE the deferred section does not veto the CRLF insert', () => {
+    // Ported from #3773, and the fixture that rules out scanning the whole
+    // DOCUMENT: an unrelated bare LF inside a fenced block in another section
+    // would reject CRLF and drop an isolated LF into an otherwise-CRLF list.
+    const content = '# Notes\r\n\r\n```text\r\nfirst\nsecond\r\n```\r\n\r\n'
+      + '## Deferred Items\r\n\r\n- alpha\r\n- beta';
+    const ack = acknowledgeDeferredItem(content, 'beta');
+    assert.strictEqual(ack.status, 'ok');
+    assert.match(ack.content, /- beta\r\n {2}status: acknowledged$/);
+    const section = ack.content.slice(ack.content.indexOf('## Deferred Items'));
+    assert.ok(!/(^|[^\r])\n/.test(section), `bare LF in the deferred section: ${JSON.stringify(section)}`);
+    assert.ok(ack.content.includes('first\nsecond'), 'the unrelated bare LF must not be rewritten');
+  });
+
+  test('an UNDELIMITED list with entries reads only the entry list, not the preamble', () => {
+    // Ported from #3773, and the fixture that rules out the SECTION as the
+    // scope: with no heading the section body IS the whole document, so a
+    // section-scoped scan silently becomes the whole-document scan the case
+    // above already refuted. The preamble is consulted ONLY when the entry
+    // list is empty (the B4 case) — here it is not, so the fence's bare LF is
+    // out of scope and must not veto.
+    const content = '```text\r\nfirst\nsecond\r\n```\r\n\r\n- alpha\r\n- beta';
+    const ack = acknowledgeDeferredItem(content, 'beta');
+    assert.strictEqual(ack.status, 'ok');
+    assert.match(ack.content, /- beta\r\n {2}status: acknowledged$/);
+    assert.ok(ack.content.includes('first\nsecond'), 'the unrelated bare LF must not be rewritten');
+  });
+
+  test('no evidence under EITHER scope: an entry at offset 0 stays LF', () => {
+    // The widened scope terminates rather than recursing outward forever. A
+    // document that is exactly one unterminated entry has no line ending
+    // anywhere; LF is the floor, not an invented CRLF.
+    const ack = acknowledgeDeferredItem('- alpha', 'alpha');
+    assert.strictEqual(ack.status, 'ok');
+    assert.strictEqual(ack.content, '- alpha\n  status: acknowledged');
+  });
+
+  test('mixed-ending document: the insert branch reads the ENTRY\'s ending, not the file\'s', () => {
+    // Ported from #3773. M1 asks for the mixed-ending fixture this PR lacked:
+    // every CRLF test it shipped used UNIFORM CRLF, so the motivating case
+    // could not fail. A CRLF heading over an LF entry — the opener's own `\n`
+    // must survive, and a document-wide sniff would rewrite it.
+    const content = '## Deferred Items\r\n\r\n- alpha\n  reason: x\n';
+    const ack = acknowledgeDeferredItem(content, parseDeferredItemsWithStatus(content)[0].name);
+    assert.strictEqual(ack.status, 'ok');
+    assert.strictEqual(ack.content, '## Deferred Items\r\n\r\n- alpha\n  status: acknowledged\n  reason: x\n');
+    // The single-line twin: a CRLF entry whose only evidence is the separator
+    // that FOLLOWS it, inside an otherwise-LF document.
+    const single = '## Deferred Items\n\n- alpha\r\n';
+    assert.strictEqual(
+      acknowledgeDeferredItem(single, parseDeferredItemsWithStatus(single)[0].name).content,
+      '## Deferred Items\n\n- alpha\r\n  status: acknowledged\r\n',
+    );
+  });
+
+  test('the widened EOF grammar carries the CRLF rule for every marker', () => {
+    // The EOF fixtures above are all hyphen-shaped because they were inherited
+    // from a hyphen-only PR. This PR's whole subject is the widened marker set,
+    // so the EOF rule has to hold across it or the two changes are only
+    // accidentally compatible.
+    for (const marker of ['-', '*', '+', '1.']) {
+      const content = `preamble\r\n\r\n${marker} alpha`;
+      const ack = acknowledgeDeferredItem(content, 'alpha');
+      assert.strictEqual(ack.status, 'ok', `marker ${JSON.stringify(marker)}`);
+      assert.strictEqual(ack.content, `preamble\r\n\r\n${marker} alpha\r\n  status: acknowledged`,
+        `marker ${JSON.stringify(marker)}: EOF insert must be CRLF`);
+      assertUniformCrlf(ack.content);
+    }
+  });
+
+  test('acknowledging twice at EOF is idempotent', () => {
+    const first = acknowledgeDeferredItem('preamble\r\n\r\n- alpha', 'alpha');
+    const again = acknowledgeDeferredItem(first.content, parseDeferredItemsWithStatus(first.content)[0].name);
+    assert.strictEqual(again.status, 'ok');
+    assert.strictEqual(again.content, first.content, 'a second acknowledge must not append a second line ending');
+    assert.deepStrictEqual(endings(again.content), ['CRLF', 'CRLF', 'CRLF']);
+  });
+});
+
+describe('#3702 round 4: the fence gate is indent-unbounded, like the rest of the grammar (M2)', () => {
+  // `scanFencedBlocks` is CommonMark, which caps a fence delimiter's indent at
+  // three spaces. This grammar opted out of that cliff for entry openers
+  // (`[ \t]*`) and thematic breaks (`^[ \t]*`) but not for fences, so a fence
+  // at four spaces was not a fence to the gate and a `status: resolved` inside
+  // it RESOLVED the entry containing it. That is reached by ordinary
+  // documents, not exotic ones: a fenced block written under a nested bullet
+  // sits at four spaces. Driven before the fix at indents 4, 5, 8 and a
+  // leading tab — all four silently resolved.
+  //
+  // `gsd-core/references/executor-examples.md` states flatly that "nothing
+  // inside a fenced code block is an entry or a field". These pin that claim
+  // instead of quietly bounding it.
+  const H = '## Deferred Items\n\n';
+  const fencedStatusDoc = (pad, delim = '```') =>
+    `${H}- alpha\n${pad}${delim}text\n${pad}status: resolved\n${pad}${delim}\n`;
+
+  for (const [label, pad] of [
+    ['0 spaces', ''], ['1 space', ' '], ['2 spaces', '  '], ['3 spaces (CommonMark cap)', '   '],
+    ['4 spaces (past the cap)', '    '], ['5 spaces', '     '], ['8 spaces', '        '],
+    ['a leading tab', '\t'],
+  ]) {
+    test(`a fenced "status: resolved" at ${label} does not resolve the entry`, () => {
+      const items = parseDeferredItemsWithStatus(fencedStatusDoc(pad));
+      assert.strictEqual(items.length, 1, `${label}: expected exactly one entry`);
+      assert.notStrictEqual(String(items[0].status || '').toLowerCase(), 'resolved',
+        `${label}: the fenced status line must not resolve the entry`);
+    });
+  }
+
+  test('the same rule holds for tilde fences past the cap', () => {
+    const items = parseDeferredItemsWithStatus(fencedStatusDoc('     ', '~~~'));
+    assert.strictEqual(items.length, 1);
+    assert.notStrictEqual(String(items[0].status || '').toLowerCase(), 'resolved');
+  });
+
+  test('an entry-shaped line inside a deep fence is content, not an entry', () => {
+    // The other half of the doc's claim: not an entry EITHER. #3702's wild
+    // records carry reproduction blocks whose `- ` and `1. ` lines are prose.
+    const doc = `${H}- alpha\n      \`\`\`diff\n      - not an entry\n      1. also not an entry\n      \`\`\`\n- beta\n`;
+    const names = parseDeferredItems(doc).map((i) => i.name);
+    assert.ok(names.some((n) => n.startsWith('alpha')), `alpha missing: ${JSON.stringify(names)}`);
+    assert.ok(names.includes('beta'), `beta missing: ${JSON.stringify(names)}`);
+    assert.ok(!names.includes('not an entry'), `fenced content became an entry: ${JSON.stringify(names)}`);
+    assert.ok(!names.includes('also not an entry'), `fenced content became an entry: ${JSON.stringify(names)}`);
+  });
+
+  test('an UNTERMINATED deep fence runs to the end of its ENTRY (round 5, B1) — the status inside it stays gated, the next entry does not', () => {
+    // Round 4 titled this "runs to end-of-file, exactly as CommonMark says";
+    // CommonMark bounds a fence by its container, and the review's B1 showed
+    // the end-of-file reading swallowing the entries after a stray delimiter.
+    // The engine still classifies; the walk bounds it at the entry.
+    const doc = `${H}- alpha\n        \`\`\`text\n        status: resolved\n`;
+    const items = parseDeferredItemsWithStatus(doc);
+    assert.strictEqual(items.length, 1);
+    assert.notStrictEqual(String(items[0].status || '').toLowerCase(), 'resolved');
+    const two = parseDeferredItemsWithStatus(`${doc}- beta\n  status: resolved\n`);
+    assert.deepStrictEqual(two.map((i) => [i.name, i.status]), [['alpha ```text status: resolved', ''], ['beta status: resolved', 'resolved']]);
+  });
+
+  test('a deep fence still CLOSES: fields after it are read again', () => {
+    // The gate must not swallow the rest of the entry. If the closer at the
+    // same deep indent were not recognised, everything after it would stay
+    // fenced to EOF and the real status line would be invisible.
+    const doc = `${H}- alpha\n    \`\`\`text\n    status: resolved\n    \`\`\`\n  status: acknowledged\n`;
+    const items = parseDeferredItemsWithStatus(doc);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(String(items[0].status).toLowerCase(), 'acknowledged',
+      'the post-fence status line must still be read');
+  });
+
+  test('acknowledge agrees with the reader about a deep fence', () => {
+    // Reader and writer share one classifier; a fence the reader honours must
+    // be one the writer refuses to rewrite into. Otherwise acknowledge writes
+    // inside the code block and reports ok.
+    const doc = `${H}- alpha\n      \`\`\`text\n      status: pending\n      \`\`\`\n`;
+    const ack = acknowledgeDeferredItem(doc, parseDeferredItemsWithStatus(doc)[0].name);
+    assert.strictEqual(ack.status, 'ok');
+    assert.ok(ack.content.includes('      status: pending'),
+      'the fenced line must be left exactly as written');
+    assert.strictEqual(String(parseDeferredItemsWithStatus(ack.content)[0].status).toLowerCase(), 'acknowledged',
+      'the entry must read back acknowledged through an inserted line, not a rewritten fenced one');
+  });
+
+  test('GUARD: `## Gaps` is untouched — it opts out of block structure entirely', () => {
+    // Both marker-parameterised call sites gate on `markers.blockStructure`,
+    // which the Gaps set does not set, so Gaps reaches an EMPTY fenced set and
+    // this change cannot reach it. Pinned rather than asserted: a future
+    // "consistency" edit that dropped that gate would silently move Gaps, and
+    // this PR's central claim is that Gaps keeps its `next` behaviour.
+    //
+    // The observable form of "no fence gate": Gaps folds the fenced lines into
+    // the entry's NAME rather than hiding them, and does so identically at an
+    // indent inside CommonMark's cap and one past it. If the deferred gate
+    // ever leaked into Gaps, the deep form would start differing from the
+    // shallow one.
+    const deep = '## Gaps\n\n- alpha\n    ```text\n    status: open\n    ```\n';
+    const shallow = '## Gaps\n\n- alpha\n  ```text\n  status: open\n  ```\n';
+    assert.deepStrictEqual(parseUatItems(deep), parseUatItems(shallow),
+      'Gaps must read a fence at 4 spaces exactly as it reads one at 2');
+    assert.deepStrictEqual(parseUatItems(deep), [
+      { name: 'alpha ```text status: open ```', result: 'open', category: 'unknown' },
+    ], 'Gaps folds fenced lines into the entry name — no fence gate at any indent');
+
+    // And the entry-shaped twin: a `- ` line inside a deep fence is still not
+    // a separate Gaps entry, because Gaps never split on it to begin with.
+    const entryShaped = '## Gaps\n\n- alpha\n    ```diff\n    - fenced line\n    ```\n- beta\n';
+    assert.deepStrictEqual(parseUatItems(entryShaped).map((i) => i.name),
+      ['alpha ```diff - fenced line ```', 'beta']);
+  });
+});
+
+describe('#3702 round 4: the minors (m1, m2, m3, m5)', () => {
+  const H = '## Deferred Items\n\n';
+  const names = (doc) => parseDeferredItems(doc).map((i) => i.name);
+
+  // ── m1: the ordinal digit cap needs the limit-1 case ──────────────────────
+  // RULESET.TESTS.boundary-coverage asks for N ∈ {limit-1, limit, limit+1}.
+  // The limit (`999999999.`) and limit+1 (`1234567890.`) were already pinned;
+  // limit-1 was the missing third. It is not a formality: an off-by-one in the
+  // `\d{1,9}` bound shows up at eight digits, not at nine.
+  test('m1: an EIGHT-digit ordinal (limit-1) is a marker', () => {
+    assert.deepStrictEqual(names(`${H}1. a\n12345678. b\n`), ['a', 'b']);
+    assert.strictEqual(DEFERRED_BULLET_MARKERS.open.test('12345678. x'), true);
+  });
+
+  test('m1: the three boundary points read consistently through the marker set', () => {
+    assert.strictEqual(DEFERRED_BULLET_MARKERS.open.test('12345678. x'), true, 'limit-1');
+    assert.strictEqual(DEFERRED_BULLET_MARKERS.open.test('999999999. x'), true, 'limit');
+    assert.strictEqual(DEFERRED_BULLET_MARKERS.open.test('1234567890. x'), false, 'limit+1');
+  });
+
+  // ── m2: the hand-rolled CommonMark copies, checked against CommonMark ─────
+  // `THEMATIC_BREAK_RE` and the tab-expanding indent counter are fresh
+  // implementations of rules CommonMark already specifies, and this repo has
+  // no sectionizer helper for either to be compared against. So the parity
+  // assertion is against the SPEC, with the two deliberate divergences named
+  // rather than left for a later reader to discover and "fix" back.
+  test('m2: THEMATIC_BREAK_RE agrees with CommonMark on `-`, `*` and `_`', () => {
+    const isBreak = (line) => {
+      const doc = `${H}- alpha\n${line}\n- beta\n`;
+      // A separator closes the list, so `beta` opens a NEW list rather than
+      // continuing alpha's. If the line is not a break, it is swallowed as
+      // alpha's continuation text.
+      return names(doc).length === 2 && names(doc)[0] === 'alpha';
+    };
+    // `-- -` belongs in the YES list: CommonMark asks for three or more
+    // matching characters "each followed optionally by any number of spaces or
+    // tabs", so the spacing between them is free. It was in the NO list on the
+    // first cut of this test and the parser was right, not the fixture.
+    for (const yes of ['---', '***', '___', '- - -', '* * *', '_ _ _', '-----', '   ---', '-- -']) {
+      assert.strictEqual(isBreak(yes), true, `CommonMark thematic break not recognised: ${JSON.stringify(yes)}`);
+    }
+    for (const no of ['--', '**', '__', '- -', 'a---']) {
+      assert.strictEqual(isBreak(no), false, `not a CommonMark thematic break, but treated as one: ${JSON.stringify(no)}`);
+    }
+  });
+
+  test('m2: the two DELIBERATE divergences from CommonMark are pinned, not accidental', () => {
+    const isBreak = (line) => {
+      const doc = `${H}- alpha\n${line}\n- beta\n`;
+      return names(doc).length === 2 && names(doc)[0] === 'alpha';
+    };
+    // (1) `+` is NOT a CommonMark thematic-break character. It is one here,
+    // because `+` IS a list marker in this grammar, so `+ + +` would otherwise
+    // open a phantom entry named `+ +` — the same reason `* * *` is a break
+    // rather than an entry named `* *`.
+    assert.strictEqual(isBreak('+ + +'), true,
+      '`+ + +` must be a separator here even though CommonMark says otherwise');
+    // (2) Indent is UNBOUNDED. CommonMark stops recognising a thematic break at
+    // four spaces (it becomes indented code); this grammar reads entries and
+    // breaks at any indent, so the break must follow the entries.
+    assert.strictEqual(isBreak('       ---'), true, 'a 7-space break must still close the list');
+    assert.strictEqual(isBreak('\t---'), true, 'a tab-indented break must still close the list');
+  });
+
+  test('m2: the indent counter expands tabs to CommonMark 4-column stops', () => {
+    // Not directly exported, so it is measured through its observable effect:
+    // a continuation line must land at or past its opener's indent column. A
+    // tab counted as ONE column instead of expanding to the next stop of four
+    // puts a 3-space continuation "outside" a tab-indented bullet.
+    const tabOpener = `${H}\t- alpha\n\t  status: acknowledged\n`;
+    assert.deepStrictEqual(
+      parseDeferredItemsWithStatus(tabOpener).map((i) => i.status),
+      ['acknowledged'],
+      'a tab-indented entry must read its own tab-indented field',
+    );
+    // A 4-space opener and a tab opener occupy the same column, so the same
+    // continuation depth works for both.
+    const spaceOpener = `${H}    - alpha\n      status: acknowledged\n`;
+    assert.deepStrictEqual(
+      parseDeferredItemsWithStatus(spaceOpener).map((i) => i.status),
+      ['acknowledged'],
+    );
+  });
+
+  // ── m3: the result union is declared twice; check it BEHAVIOURALLY ────────
+  // `src/audit.cts` carries a hand-written structural view of `uat.cjs`,
+  // including its own copy of the result union. That decoupling is deliberate
+  // (the CLI does not take a type dependency on the module it `require()`s),
+  // so the fix is not to delete one copy but to make drift observable: every
+  // status the writer can actually PRODUCE is driven here, so a status added
+  // to one union and not the other shows up as a fixture with no counterpart
+  // rather than as a silent fall-through to the write.
+  //
+  // Four of these had no assertion anywhere in the suite before this test.
+  test('m3: every reachable acknowledge status is driven from a fixture', () => {
+    const reached = new Map();
+    const drive = (label, doc, target) => {
+      const r = acknowledgeDeferredItem(doc, target);
+      reached.set(r.status, label);
+      return r;
+    };
+
+    drive('ok', `${H}- alpha\n`, 'alpha');
+    drive('not_found', `${H}- alpha\n`, 'no such entry');
+    drive('ambiguous', `${H}- alpha\n- alpha\n`, 'alpha');
+    const resolvedDoc = `${H}- alpha\n  status: resolved\n`;
+    drive('already_resolved', resolvedDoc, parseDeferredItemsWithStatus(resolvedDoc)[0].name);
+    // #3781 (merged round 5): the heading shape acks; the refusal is reached
+    // only by a span with a GFM table row INSIDE it, which no write can anchor.
+    const headingDoc = `${H}### Entry one\n\n- **Status:** open\n| a | b |\n- more\n`;
+    drive('unsupported_heading_shape', headingDoc, parseDeferredItemsWithStatus(headingDoc)[0].name);
+
+    assert.deepStrictEqual(
+      [...reached.keys()].sort(),
+      ['already_resolved', 'ambiguous', 'not_found', 'ok', 'unsupported_heading_shape'],
+      'a reachable status stopped being reachable, or a new one appeared',
+    );
+
+    // `match_verification_failed` is the sixth member and is NOT driven here.
+    // It is a defensive re-verify of the matched span against the target text,
+    // computed by an independent code path, and no fixture reaches it — the
+    // same position `rewrite_not_readable` was in before round 4 removed it.
+    // Stated rather than quietly omitted: if this union is ever pruned to what
+    // tests reach, that member is the one to weigh, and the answer is the same
+    // one round 4 gave for the other — an assertion nothing can drive is a
+    // specification nothing holds.
+  });
+
+  test('m3: each reachable status produces a DISTINCT outcome, so a merge of two would show', () => {
+    const doc = `${H}- alpha\n`;
+    const ok = acknowledgeDeferredItem(doc, 'alpha');
+    const notFound = acknowledgeDeferredItem(doc, 'nope');
+    assert.notStrictEqual(ok.content, doc, 'ok must change the content');
+    assert.strictEqual(notFound.content, doc, 'a refusal must return the content untouched');
+    // Every non-ok status returns the ORIGINAL content: that is the property
+    // the CLI relies on when it refuses rather than writes.
+    for (const [label, d, t] of [
+      ['ambiguous', `${H}- alpha\n- alpha\n`, 'alpha'],
+      ['not_found', doc, 'nope'],
+    ]) {
+      const r = acknowledgeDeferredItem(d, t);
+      assert.strictEqual(r.content, d, `${label}: refusal must not mutate content`);
+    }
+  });
+
+  // ── m5: DECLINED, with the measurement that refutes it ───────────────────
+  // The review is right that `markers.open`'s `(\s*)` indent group and the
+  // `/^[ \t]*/` reader disagree about `\f`, `\v` and NBSP. Its prescribed fix
+  // — "narrow to `([ \t]*)`" — was implemented, measured, and REVERTED,
+  // because the disagreement is not currently doing any harm and the narrowing
+  // is.
+  //
+  // Driven, both directions:
+  //   indent    as shipped                               narrowed to [ \t]*
+  //   \f        entry, status open, ack ok, reads back    NO ENTRY
+  //   \v        entry, status open, ack ok, reads back    NO ENTRY
+  //   NBSP      entry, status open, ack ok, reads back    NO ENTRY
+  //
+  // The whole round-trip already works for these: the entry surfaces, its
+  // field parses, `acknowledgeDeferredItem` returns ok and the result reads
+  // back acknowledged. Narrowing turns three working shapes into three
+  // SILENTLY DROPPED ones — which is the #3702 defect class itself, and the
+  // opposite of the fail-safe rule this file states ("never silently drop a
+  // possibly-open item"). A latent inconsistency in the safe direction is not
+  // worth trading for a live regression in the unsafe one.
+  //
+  // Pinned here so the prescription cannot be re-applied without failing a
+  // test that explains why. If the inconsistency is ever to be closed, the
+  // direction is to make the READERS agree with the opener — `indentOf` counts
+  // non-tab whitespace as a column instead of terminating on it — not to make
+  // the opener reject lines it currently accepts.
+  for (const [label, indent] of [['a form feed', '\f'], ['a vertical tab', '\v'], ['an NBSP', '\u00a0']]) {
+    test(`m5: an entry indented with ${label} still round-trips (narrowing would drop it)`, () => {
+      const doc = `${H}${indent}- alpha\n  status: open\n`;
+      const items = parseDeferredItemsWithStatus(doc);
+      assert.strictEqual(items.length, 1, `${label}: the entry must surface`);
+      assert.strictEqual(items[0].status, 'open', `${label}: its field must parse`);
+      const ack = acknowledgeDeferredItem(doc, items[0].name);
+      assert.strictEqual(ack.status, 'ok', `${label}: it must be acknowledgeable`);
+      assert.strictEqual(
+        String(parseDeferredItemsWithStatus(ack.content)[0].status).toLowerCase(),
+        'acknowledged',
+        `${label}: and the acknowledgement must read back`,
+      );
+    });
+  }
+
+  test('m5 GUARD: `## Gaps` and the deferred set read exotic indent IDENTICALLY today', () => {
+    // The two sets differing here is what a narrowing would introduce. Both
+    // use `\s*` now, so a form-feed-indented bullet is an item on both paths.
+    // If a later edit narrows only one, this fails.
+    const gaps = parseUatItems('## Gaps\n\n\f- alpha\n').map((i) => i.name);
+    const deferred = parseDeferredItems('## Deferred Items\n\n\f- alpha\n').map((i) => i.name);
+    assert.deepStrictEqual(gaps, ['alpha'], 'Gaps must read a form-feed-indented bullet');
+    assert.deepStrictEqual(deferred, ['alpha'], 'the deferred set must read it too');
+  });
+});
+
+describe('#3702 round 3: heading-path reader/namer inputs (m7, m8)', () => {
+  test('a bullet whose CONTENT is a fence opener does not suppress the entry\'s fields', () => {
+    // m7: the fence re-scan used to run on already-marker-stripped lines, so
+    // `- ```sh` — an ordinary bullet to the splitter — stripped to a fence
+    // opener that existed in no other pass, and the `**Status:** resolved`
+    // after it was suppressed as fence content. A RESOLVED entry resurfaced.
+    const doc = '## Deferred Items\n\n### Entry\n\n- ```sh\n- **Status:** resolved\n- ```\n';
+    // The status field must be READ (the round-2 fence suppression is for a
+    // fence the SPLITTER saw, which this is not) ...
+    assert.strictEqual(parseDeferredItemsWithStatus(doc)[0].status, 'resolved');
+    // ... and a resolved entry must therefore not surface as outstanding.
+    assert.deepStrictEqual(parseDeferredItems(doc), []);
+  });
+
+  test('a heading that begins with a list marker keeps it in the entry name', () => {
+    // m8: line 0 of a heading entry is the heading TEXT, not a bullet.
+    // Stripping a marker off it silently renamed the entry — and the name is
+    // the key acknowledge matches on.
+    for (const [heading, expected] of [
+      ['### 1. Race in the writer', '1. Race in the writer'],
+      ['### * starred title', '* starred title'],
+      ['### Race in the writer', 'Race in the writer'],
+    ]) {
+      const doc = `## Deferred Items\n\n${heading}\n\n- **What:** x\n`;
+      const items = parseDeferredItemsWithStatus(doc);
+      assert.strictEqual(items.length, 1, heading);
+      assert.ok(items[0].name.startsWith(expected), `${heading} -> ${items[0].name}`);
+    }
+  });
+
+  test('CONTROL: a body bullet keeps its marker in the entry name', () => {
+    // Held before this round too — a control on the opener-flag threading, not
+    // a reported defect. The flags say which lines CARRY a marker, but only
+    // line 0's is part of the entry's identity; wiring the flags into the namer
+    // wholesale strips the body lines too, which is a rename of the key
+    // acknowledge matches on. This pins that it did not happen.
+    const doc = '## Deferred Items\n\n### Entry\n\n- **What:** x\n';
+    assert.strictEqual(parseDeferredItemsWithStatus(doc)[0].name, 'Entry  - **What:** x');
+  });
+});
+
+describe('#3702 round 2: marker-grammar parity (M3, N1, N2)', () => {
+  test('every deferred-items marker regex derives from the one alternation source', () => {
+    // Structural, not behavioural: both splitter regexes embed the SAME
+    // source string, so a marker added to one cannot be absent from the other.
+    // Round 2 ran this over four regexes; the two writer-side ones are gone.
+    for (const [name, re] of [
+      ['open', DEFERRED_BULLET_MARKERS.open],
+      ['strip', DEFERRED_BULLET_MARKERS.strip],
+    ]) {
+      assert.ok(re.source.includes(DEFERRED_MARKER_ALT), `${name}: ${re.source}`);
+    }
+  });
+
+  // #3702 round 3 (M6): the structural assertion above is kept for the two
+  // SPLITTER regexes, which really are two copies of one alternation. It is no
+  // longer asked to stand in for the writer/reader agreement — it never could.
+  // Sharing a source string says nothing about whether the line the writer
+  // selects is a line the reader reads, which is precisely the asymmetry that
+  // shipped. The replacement is BEHAVIOURAL and drives the real seam.
+  test('every marker that OPENS an entry also resolves it through acknowledge', () => {
+    for (const m of ['-', '*', '+', '1.']) {
+      assert.ok(DEFERRED_BULLET_MARKERS.open.test(`${m} x`), `open: ${m}`);
+      // The marker goes on BOTH the opener and the nested status line. Round
+      // 2's structural test could not reach B1; a replacement that only marks
+      // the opener cannot either — it is green on the defective build.
+      const doc = `## Deferred Items\n\n${m} alpha\n  ${m} status: pending\n`;
+      const items = parseDeferredItemsWithStatus(doc);
+      assert.strictEqual(items.length, 1, `entry surfaced: ${m}`);
+      const got = acknowledgeDeferredItem(doc, items[0].name);
+      assert.strictEqual(got.status, 'ok', `ack ok: ${m}`);
+      const after = parseDeferredItemsWithStatus(got.content);
+      assert.strictEqual(
+        after[0].status, 'acknowledged',
+        `${m}: acknowledge must be READ BACK, not merely written — a status line the reader skips leaves the item outstanding forever`,
+      );
+    }
+  });
+
+  test('parity with markdown-sectionizer iterateBullets on the shared vocabulary', () => {
+    // `iterateBullets` is the repo's other list-marker grammar. On everything
+    // both grammars are meant to agree on, they do — including the negatives.
+    const opens = (line) => DEFERRED_BULLET_MARKERS.open.test(line);
+    const sectionizerOpens = (line) => iterateBullets(line).length === 1;
+    const shared = [
+      ['- x', true], ['* x', true], ['+ x', true], ['1. x', true], ['12. x', true], ['01. x', true],
+      ['  - x', true], ['- [ ] x', true], ['- [x] x', true],
+      ['**Status:** x', false], ['1) x', false], ['-x', false], ['*x', false], ['1.x', false],
+      ['prose', false], ['| a | b |', false], ['2026 was a year', false],
+    ];
+    for (const [line, expected] of shared) {
+      assert.strictEqual(opens(line), expected, `deferred: ${JSON.stringify(line)}`);
+      assert.strictEqual(sectionizerOpens(line), expected, `sectionizer: ${JSON.stringify(line)}`);
+    }
+  });
+
+  test('the two deliberate divergences from iterateBullets are exactly these', () => {
+    // N2 — a tab after the marker is CommonMark-legal; `iterateBullets`
+    // requires a literal space. Kept, and pinned so the difference is visible.
+    assert.strictEqual(DEFERRED_BULLET_MARKERS.open.test('-\tx'), true);
+    assert.strictEqual(iterateBullets('-\tx').length, 0);
+    // N1 — CommonMark caps an ordered start at 9 digits; `iterateBullets` is
+    // `\d+`. Ten digits is not a list marker here.
+    assert.strictEqual(DEFERRED_BULLET_MARKERS.open.test('1234567890. x'), false);
+    assert.strictEqual(iterateBullets('1234567890. x').length, 1);
+    // And `\r` is no longer whitespace after a marker (round 1's `\s` was) —
+    // nor are NBSP, form-feed or vertical-tab, which `\s` also accepted and
+    // CommonMark does not: only a space or a tab follows a marker. This is
+    // the assertion that fails on a `[ \t]` → `\s` revert on its own.
+    assert.strictEqual(DEFERRED_BULLET_MARKERS.open.test('-\r'), false);
+    for (const ws of ['\u00a0', '\f', '\v']) {
+      assert.strictEqual(DEFERRED_BULLET_MARKERS.open.test(`-${ws}x`), false, JSON.stringify(ws));
+    }
+  });
+});
+
+describe('#3702 round 2: the ordered marker and the prose contract (B2, m1)', () => {
+  const SECTION = '## Deferred Items\n\n';
+  const names = (md) => parseDeferredItems(SECTION + md).map((i) => i.name);
+
+  test('B2: a sentence that happens to open with `<number>.` is prose, not an item', () => {
+    // Both were items on round 1 — `\d+\.` accepted any digit run. CommonMark
+    // §5.3's own prose/list discriminator is that an ordered list interrupting
+    // a paragraph must START AT 1; this parser applies that rule everywhere
+    // an ordered marker is seen (see `matchListOpener`).
+    assert.deepStrictEqual(names('2026. was a bad year for this module\n'), []);
+    assert.deepStrictEqual(names('### Notes\n\n3. is the number of retries we settled on.\n'), []);
+    // And the mixed heading case: prose under one heading, a list under another.
+    const got = names('### Notes\n\n3. is the number of retries.\n\n### Steps\n\n1. do this\n2. then this\n');
+    assert.strictEqual(got.length, 1, JSON.stringify(got));
+    assert.match(got[0], /^Steps/);
+  });
+
+  test('B2: an ordered list that starts at 1. counts, at any later number in the run', () => {
+    assert.deepStrictEqual(names('1. alpha\n2. beta\n3. gamma\n'), ['alpha', 'beta', 'gamma']);
+    // CommonMark ignores the numbers after the first — so does the run.
+    assert.deepStrictEqual(names('1. alpha\n3. gamma\n7. delta\n'), ['alpha', 'gamma', 'delta']);
+    assert.deepStrictEqual(names('01. alpha\n02. beta\n'), ['alpha', 'beta']);
+    // Heading shape: the run is per entry body.
+    assert.strictEqual(names('### Steps\n\n1. do\n2. then\n').length, 1);
+    // Status fields under an ordered run still resolve their entry.
+    assert.deepStrictEqual(names('1. alpha\n   status: resolved\n2. beta\n'), ['beta']);
+  });
+
+  test('B2: the rule\'s stated cost — a run that does not start at 1 is prose', () => {
+    // Pinned so the trade is visible: a hand-numbered list starting at 2 is
+    // read as prose, the same way CommonMark refuses it as a paragraph
+    // interruption. The wild records (#3702) all start at 1.
+    assert.deepStrictEqual(names('2. alpha\n3. beta\n'), []);
+    // A bullet does NOT end the list for this purpose (round 5, M2): a list is
+    // open at the level, so the following non-1 ordinal is an item — CommonMark
+    // reads `2. gamma` there as a fresh ordered list (start=2), not as text.
+    assert.deepStrictEqual(names('1. alpha\n- beta\n2. gamma\n'), ['alpha', 'beta', 'gamma']);
+  });
+
+  test('round 5 (M1): the ordered-start threshold — `0.` and `1.` open a list, `2.` does not', () => {
+    // CommonMark §5.2 permits any 1-9-digit start; a `0.`-numbered list is
+    // ordinary. Refusing `0.` dropped ONLY the first item, because the run
+    // then started at `1.` — the mixed under-report that looks like a clean
+    // parse. Boundary: limit-1 / limit / limit+1 of the threshold itself.
+    assert.deepStrictEqual(names('0. alpha\n1. beta\n2. gamma\n'), ['alpha', 'beta', 'gamma']);
+    assert.deepStrictEqual(names('1. alpha\n2. beta\n'), ['alpha', 'beta']);
+    assert.deepStrictEqual(names('2. alpha\n3. beta\n'), []);
+    assert.deepStrictEqual(names('0. only\n'), ['only']);
+    assert.deepStrictEqual(names('00. alpha\n01. beta\n'), ['alpha', 'beta']);
+    // The cost, stated accurately: a list starting at 2 or more reads as
+    // prose UNTIL its first `0.`/`1.` line — the loss is the prefix.
+    assert.deepStrictEqual(names('2. alpha\n3. beta\n1. gamma\n'), ['gamma']);
+  });
+
+  test('round 5 (M2): a non-1 ordinal is an item wherever a list is already open at its level', () => {
+    // `1. a` / `- b` / `5. c` folded `5. c` into `b` on round 4 — the
+    // ordered-run memory was cleared by the bullet. In CommonMark `5. c` there
+    // is a fresh ordered list (start=5): a non-1 start is refused only where
+    // it would interrupt a PARAGRAPH, and after a list item it interrupts none.
+    assert.deepStrictEqual(names('1. a\n- b\n5. c\n'), ['a', 'b', 'c']);
+    assert.deepStrictEqual(names('- a\n5. c\n'), ['a', 'c']);
+    // Across a blank line the list is still open (CommonMark: a loose list).
+    assert.deepStrictEqual(names('- a\n\n5. c\n'), ['a', 'c']);
+    // A paragraph after the blank ENDS the list; the ordinal after it is prose
+    // — the round-2 B2 contract, now placed where CommonMark places it.
+    assert.deepStrictEqual(names('- a\n\nprose here\n5. c\n'), ['a  prose here 5. c']);
+    // Doc start and after a heading are paragraph positions: the B2 pins hold.
+    assert.deepStrictEqual(names('5. c\n'), []);
+    assert.deepStrictEqual(names('### Notes\n\n5. c\n'), []);
+  });
+
+  test('m1: the 9-digit boundary of an ordered start', () => {
+    // `999999999.` is a legal CommonMark ordered marker; ten digits is not.
+    assert.deepStrictEqual(names('1. a\n999999999. b\n'), ['a', 'b']);
+    // Ten digits: not a marker at all — a lazy continuation of the open item.
+    assert.deepStrictEqual(names('1. a\n1234567890. b\n'), ['a 1234567890. b']);
+    // And a ten-digit line cannot open a run on its own.
+    assert.deepStrictEqual(names('1234567890. b\n'), []);
+  });
+
+  test('m1: the indentation cliff is deliberately NOT applied — indent-lenient by design', () => {
+    // CommonMark reads a 4-space-indented line outside a list as indented
+    // code. This parser does not: `deferred-items.md` is hand-written with no
+    // mandated shape, and surfacing a questionable entry beats dropping a real
+    // one (the #2766 stance). Pinned as a decision, with the 3-space twin that
+    // both readings agree on.
+    assert.deepStrictEqual(names('   - x\n'), ['x']);
+    assert.deepStrictEqual(names('    - x\n'), ['x']);
+    // Nesting still folds by the indent rule at the 2-space depth executors
+    // actually write, not only at the 4-space depth round 1 tested.
+    assert.deepStrictEqual(names('- alpha\n  - nested\n- beta\n'), ['alpha - nested', 'beta']);
+  });
+});
+
+describe('#3702 round 2: thematic breaks and fenced code are not list items (M1, M2)', () => {
+  const SECTION = '## Deferred Items\n\n';
+  const names = (md) => parseDeferredItems(SECTION + md).map((i) => i.name);
+
+  test('M1: a thematic break opens no entry, whichever character it is drawn with', () => {
+    // `- - -` was a phantom `"- -"` entry on base already; round 1 added
+    // `* * *` and `+ + +` to the class — and `* * *` is the separator an
+    // author writing in the `*` style is most likely to use.
+    for (const hr of ['* * *', '+ + +', '- - -', '***', '---', '___', ' * * *', '*  *  *  ', '- - - - -']) {
+      assert.deepStrictEqual(names(`${hr}\n`), [], JSON.stringify(hr));
+      assert.deepStrictEqual(names(`### Entry\n\n${hr}\n`), [], `heading: ${JSON.stringify(hr)}`);
+    }
+  });
+
+  test('M1: a thematic break ENDS the open entry rather than joining it', () => {
+    // CommonMark: a thematic break closes the list. The separator is neither a
+    // phantom item nor a continuation line of the item above it.
+    assert.deepStrictEqual(names('- alpha\n\n* * *\n\n- beta\n'), ['alpha', 'beta']);
+    assert.deepStrictEqual(names('* alpha\n* * *\n* beta\n'), ['alpha', 'beta']);
+    // Under a heading the break stays a BODY line (round 5, m3): the entry's
+    // name is what `next` reports for that body, and its span stays contiguous
+    // for the writer. It is still not evidence — a break alone is no entry.
+    assert.deepStrictEqual(names('### Entry\n\n- **What:** x.\n\n* * *\n'), ['Entry  - **What:** x.  * * *']);
+    assert.deepStrictEqual(names('### Entry\n\n* * *\n'), []);
+    // `- - - x` is NOT a break (trailing text); it is a `- ` item whose text is `- - x`.
+    assert.deepStrictEqual(names('- - - x\n'), ['- - x']);
+  });
+
+  test('M2: lines inside a fenced code block never open an entry', () => {
+    // #3702's wild records carry reproduction blocks — `+`-prefixed diff lines
+    // and `1.`-numbered repro steps are the NORMAL content of such a file.
+    assert.deepStrictEqual(names('### Entry\n\n```sh\n1. run this\n2. then this\n```\n'), []);
+    assert.deepStrictEqual(names('```diff\n+ added\n- removed\n```\n'), []);
+    assert.deepStrictEqual(names('~~~\n* not an item\n~~~\n'), []);
+    // An unterminated fence runs to the end of its ENTRY, never past it
+    // (round 5, B1): a stray delimiter before the first item hides nothing.
+    assert.deepStrictEqual(names('```\n- still fenced\n'), ['still fenced']);
+  });
+
+  test('B1 (round 5): an unterminated fence runs to the end of its entry — a stray delimiter cannot swallow later entries', () => {
+    // The exact review reproduction, at indent 0 and at 4: `next` reports two
+    // entries and round 4 reported ONE, with `- b` swallowed into `a`'s name.
+    assert.deepStrictEqual(names('- a\n\n```\n\n- b\n'), ['a  ```', 'b']);
+    assert.deepStrictEqual(names('- a\n\n    ```\n\n- b\n'), ['a  ```', 'b']);
+    // A TERMINATED deep fence still gates what it encloses (round 4, M2 holds).
+    assert.deepStrictEqual(names('- a\n    ```\n    - not b\n    ```\n- b\n'), ['a ``` - not b ```', 'b']);
+    // Inside its own entry the stray fence still gates: a `status:` under it
+    // does not resolve the entry, and the NEXT entry is read on its own terms.
+    const statusesOf = (md) => parseDeferredItemsWithStatus(SECTION + md).map((i) => i.status);
+    assert.deepStrictEqual(statusesOf('- alpha\n    ```\n    status: resolved\n- beta\n  status: resolved\n'), ['', 'resolved']);
+    // A delimiter after the bound is a fence in its own right: without the
+    // rescan the `~~~` pair below would be invisible and beta would resolve.
+    assert.deepStrictEqual(statusesOf('- a\n```\n- b\n  ~~~\n  status: resolved\n  ~~~\n- c\n'), ['', '', '']);
+    assert.deepStrictEqual(names('- a\n```\n- b\n  ~~~\n  status: resolved\n  ~~~\n- c\n'), ['a ```', 'b ~~~ status: resolved ~~~', 'c']);
+    // Heading shape: a heading ends the entry, and the fence with it. (At
+    // indent 0 the heading TOKENIZER applies CommonMark's own fence rule, so
+    // `### Next` after a stray delimiter is body text there, exactly as on
+    // `next`; at four spaces the tokenizer sees no fence and the heading holds.)
+    assert.deepStrictEqual(names('### Entry\n\n- **What:** x\n\n```\n\n### Next\n\n- y\n'), ['Entry  - **What:** x  ```  ### Next  - y']);
+    assert.deepStrictEqual(names('### Entry\n\n- **What:** x\n\n    ```\n\n### Next\n\n- y\n'), ['Entry  - **What:** x  ```', 'Next  - y']);
+    // And in the headless region before the first heading (four spaces, for
+    // the tokenizer reason above — at indent 0 the section has no heading).
+    assert.deepStrictEqual(names('    ```\n- a\n\n### Entry\n\n- b\n'), ['a', 'Entry  - b']);
+    assert.deepStrictEqual(names('```\n- a\n\n### Entry\n\n- b\n'), ['a  ### Entry', 'b']);
+  });
+
+  test('M2: a fence inside an entry is continuation, and the entry still parses around it', () => {
+    const md = '- alpha\n  ```sh\n  1. step\n  + diff\n  ```\n  status: resolved\n- beta\n';
+    const withStatus = parseDeferredItemsWithStatus(SECTION + md);
+    assert.strictEqual(withStatus.length, 2, JSON.stringify(withStatus));
+    assert.strictEqual(withStatus[0].status, 'resolved');
+    assert.deepStrictEqual(names(md), ['beta']);
+    // Heading shape: the fenced lines are body text, not evidence — the `-`
+    // line outside the fence is what keeps the entry.
+    assert.strictEqual(names('### Entry\n\n- **What:** x.\n\n```\n1. repro\n```\n').length, 1);
+    // And the acknowledge writer's span survives a fenced continuation.
+    const ack = acknowledgeDeferredItem(SECTION + '- alpha\n  ```\n  + diff\n  ```\n- beta\n', 'alpha ``` + diff ```');
+    assert.strictEqual(ack.status, 'ok');
+    assert.strictEqual(parseDeferredItemsWithStatus(ack.content)[0].status, 'acknowledged');
+  });
+});
+
+describe('#3702 round 2: indent measure is grammar-scoped (review round 6)', () => {
+  // The deferred grammar measures CommonMark columns (a tab is a jump to the
+  // next multiple of 4); the Gaps grammar keeps `next`'s raw character count.
+  // Sharing one measure silently changed Gaps entry boundaries in BOTH
+  // directions on tab-indented input, breaking the `blockStructure: false`
+  // opt-out's byte-for-byte promise.
+  const gapsNames = (body) => parseUatItems(['# UAT', '', '## Gaps', '', body, ''].join('\n')).map((i) => i.name);
+  const deferredNames = (body) => parseDeferredItems('## Deferred Items\n\n' + body + '\n').map((i) => i.name);
+
+  test('Gaps: a tab-indented item followed by a two-space one stays ONE entry, as on `next`', () => {
+    assert.deepEqual(gapsNames('\t- first item\n  - second item'), ['first item - second item']);
+  });
+
+  test('Gaps: a two-space item followed by a tab-indented one stays TWO entries, as on `next`', () => {
+    assert.deepEqual(gapsNames('  - first item\n\t- second item'), ['first item', 'second item']);
+  });
+
+  test('Gaps: four spaces then two spaces splits, and a tab pair splits — unchanged either way', () => {
+    assert.deepEqual(gapsNames('    - first item\n  - second item'), ['first item', 'second item']);
+    assert.deepEqual(gapsNames('\t- first item\n\t- second item'), ['first item', 'second item']);
+  });
+
+  test('deferred: the SAME tab/space pairs measure in columns — the opposite verdict, by design', () => {
+    assert.deepEqual(deferredNames('\t- first\n  - second'), ['first', 'second']);
+    assert.deepEqual(deferredNames('  - first\n\t- second'), ['first - second']);
+  });
+});
+
+describe('#3702 round 2: round-review refinements (ordered run, rejected ordinals, breaks, fenced fields, Gaps scope)', () => {
+  const SECTION = '## Deferred Items\n\n';
+  const names = (md) => parseDeferredItems(SECTION + md).map((i) => i.name);
+  const statuses = (md) => parseDeferredItemsWithStatus(SECTION + md).map((i) => i.status);
+
+  test('an ordered run ENDS at a paragraph that follows a blank line (CommonMark §5.3), but survives lazy continuation', () => {
+    // A blank line then a non-indented, non-list line is a paragraph: the list
+    // is over, and `5. x` after it is prose folded into the open entry.
+    const got = names('1. a\n\nparagraph\n\n5. x\n');
+    assert.strictEqual(got.length, 1, JSON.stringify(got));
+    assert.match(got[0], /^a/);
+    // No blank line → lazy continuation → the list is still open and `2. b` is an item.
+    assert.deepStrictEqual(names('1. a\nlazy continuation\n2. b\n'), ['a lazy continuation', 'b']);
+    // Heading shape carries the same rule per body.
+    assert.strictEqual(names('### Steps\n\n1. do\n\nsome prose.\n\n4. not an item\n').length, 1);
+  });
+
+  test('an accepted opener clears the blank-line memory — lazy continuation right after it keeps the run', () => {
+    // Round-review continuation: `blankSeen` survived the opener branch, so
+    // `2. b` + a lazy line ended the run and `3. c` folded into `b`.
+    assert.deepStrictEqual(names('1. a\n\n2. b\nlazy continuation\n3. c\n'), ['a', 'b lazy continuation', 'c']);
+  });
+
+  test('a headless region of a heading-shaped file applies the SAME paragraph reset — opener flags come from the splitter, not a re-derivation', () => {
+    // Round-review continuation: a re-derived flag set re-accepted `3.` under a
+    // stale run after the paragraph had ended it, and stripped it into a field.
+    const md = '1. alpha\n\nparagraph\n\n3. status: resolved\n\n### Entry\n\n- **What:** x\n';
+    assert.deepStrictEqual(statuses(md), ['', '']);
+    assert.strictEqual(names(md).length, 2);
+  });
+
+  test('an ordered run is per INDENT: a nested `1. / 2.` run resolves (round-1 parity), and a nested ordinal after a nested bullet continues that level\'s list', () => {
+    // Round-review continuation 2: nested openers read the top-level run and
+    // never wrote their own.
+    for (const eol of ['\n', '\r\n']) {
+      const nestedRun = '- alpha\n  1. what: detail\n  2. status: resolved\n\n### Entry\n\n- **What:** x\n'.replace(/\n/g, eol);
+      assert.deepStrictEqual(statuses(nestedRun), ['resolved', ''], JSON.stringify(eol));
+      // Round 5 (M2): a list is open at the nested level, so `3.` is an item
+      // there — a fresh ordered list in CommonMark — and a nested item that
+      // reads `status: resolved` is a field line, as `- status: resolved` is.
+      const nestedAfterBullet = '1. alpha\n  - nested item\n  3. status: resolved\n\n### Entry\n\n- **What:** x\n'.replace(/\n/g, eol);
+      assert.deepStrictEqual(statuses(nestedAfterBullet), ['resolved', ''], JSON.stringify(eol));
+      // With NO list open at the nested level the ordinal is prose (round 2).
+      const leak = '1. alpha\n  nested prose\n  3. status: resolved\n\n### Entry\n\n- **What:** x\n'.replace(/\n/g, eol);
+      assert.deepStrictEqual(statuses(leak), ['', ''], JSON.stringify(eol));
+    }
+    // A new top-level item resets the nested levels: `2.` under beta does not continue alpha's nested run.
+    assert.deepStrictEqual(statuses('- alpha\n  1. a\n- beta\n  2. status: resolved\n'), ['', '']);
+    // Under a heading the same per-indent rule applies.
+    assert.deepStrictEqual(statuses('### Entry\n\n- **What:** x\n  1. step\n  2. **Status:** resolved\n'), ['resolved']);
+  });
+
+  test('a DEDENTING top-level list keeps its entry boundaries — every indent at or above the base is one level', () => {
+    // Round-review continuation 3: the exact-indent run lookup rejected the
+    // shallower ordinals, collapsing three entries into one.
+    assert.deepStrictEqual(names('    1. alpha\n  2. beta\n3. gamma\n'), ['alpha', 'beta', 'gamma']);
+    assert.deepStrictEqual(names('  - alpha\n- beta\n    - gamma\n'), ['alpha', 'beta - gamma']);
+  });
+
+  test('indent is measured in CommonMark COLUMNS (a tab advances to the next multiple of 4), so a tab and a space are different levels', () => {
+    // Round-review continuation 3: character counting aliased `\t` and ` `.
+    // Heading shape, where every ACCEPTED nested opener is marker-stripped
+    // before field extraction (the headless path strips line 0 only — #3740).
+    for (const eol of ['\n', '\r\n']) {
+      const body = (nested) => `### Entry\n\n- **What:** x\n${nested}`.replace(/\n/g, eol);
+      assert.deepStrictEqual(statuses(body('\t1. nested\n 2. **Status:** resolved\n')), [''], JSON.stringify(eol));
+      assert.deepStrictEqual(statuses(body('\t1. nested\n\t2. **Status:** resolved\n')), ['resolved'], JSON.stringify(eol));
+      assert.deepStrictEqual(statuses(body('    1. nested\n\t2. **Status:** resolved\n')), ['resolved'], JSON.stringify(eol));
+    }
+  });
+
+  test('a fenced block ends the runs at its indent and deeper, like a paragraph does', () => {
+    // Round-review continuation 3: a nested run stayed open across a fence,
+    // so a post-fence `2. status: resolved` resolved the entry. Heading shape,
+    // for the reason the columns test states.
+    const body = (nested) => `### Entry\n\n- **What:** x\n${nested}`;
+    assert.deepStrictEqual(statuses(body('  1. a\n  ```\n  code\n  ```\n  2. **Status:** resolved\n')), ['']);
+    // A deeper fence (3 spaces — the sectionizer's CommonMark `{0,3}` limit) leaves the shallower run alone.
+    assert.deepStrictEqual(statuses(body('  1. a\n   ```\n   code\n   ```\n  2. **Status:** resolved\n')), ['resolved']);
+    // Control: without the fence the run continues and resolves.
+    assert.deepStrictEqual(statuses(body('  1. a\n  2. **Status:** resolved\n')), ['resolved']);
+  });
+
+  test('a REJECTED ordinal line under a heading is not marker-stripped, so it cannot manufacture a field', () => {
+    // `3. status: resolved` at a PARAGRAPH position is prose by the
+    // ordered-start rule; before this fix the heading path stripped its marker
+    // anyway and read a resolved field off it. (Round 5, M2: directly after a
+    // list item it is an item instead — a list is open there.)
+    assert.deepStrictEqual(statuses('### Entry\n\n- **What:** x\n\nSome prose.\n3. status: resolved\n'), ['']);
+    assert.strictEqual(names('### Entry\n\n- **What:** x\n\nSome prose.\n3. status: resolved\n').length, 1);
+    assert.deepStrictEqual(statuses('### Entry\n\n- **What:** x\n3. status: resolved\n'), ['resolved']);
+    // An ACCEPTED ordered status line still resolves, as `- status: resolved` does.
+    assert.deepStrictEqual(statuses('### Entry\n\n1. **What:** x\n2. **Status:** resolved\n'), ['resolved']);
+    // Same rule in a headless region of a heading-shaped file.
+    assert.deepStrictEqual(statuses('- alpha\n  3. status: resolved\n\n### Entry\n\n- **What:** x\n'), ['', '']);
+  });
+
+  test('a thematic break is recognised at any indent — the parser is indent-lenient for breaks as it is for items', () => {
+    assert.deepStrictEqual(names('    * * *\n'), []);
+    assert.deepStrictEqual(names('- alpha\n\n      - - -\n\n- beta\n'), ['alpha', 'beta']);
+  });
+
+  test('a status line orphaned after a break leaves its entry OPEN — the fail-safe polarity, pinned', () => {
+    // `- alpha\n---` is a list then a thematic break in CommonMark; the indented
+    // line after it belongs to nothing. Surfacing alpha is the safe direction.
+    assert.deepStrictEqual(names('- alpha\n---\n  status: resolved\n'), ['alpha']);
+  });
+
+  test('fenced lines carry no FIELDS either — a fenced `status: resolved` does not resolve the entry', () => {
+    assert.deepStrictEqual(statuses('- alpha\n```\nstatus: resolved\n```\n'), ['']);
+    assert.deepStrictEqual(statuses('### Entry\n\n- **What:** x\n```\n- **Status:** resolved\n```\n'), ['']);
+    assert.deepStrictEqual(statuses('- alpha\n  ```yaml\n  status: resolved\n  ```\n  status: acknowledged\n'), ['acknowledged']);
+  });
+
+  test('`## Gaps` keeps its round-1 grammar byte-for-byte: no fence or break awareness there', () => {
+    // Block structure (M1/M2) is scoped to the deferred grammar via
+    // `BulletMarkers.blockStructure`; the Gaps section is template-mandated and
+    // out of #3702's blast radius, so a fenced hyphen line still counts there,
+    // and a fenced field is still read — exactly as on `next`.
+    //
+    // THE SECOND ASSERTION tracks `next`'s #3898 fix, which landed in the
+    // base range this branch merged (b431ae9f0): a spaced hyphen thematic
+    // break in `## Gaps` is a SEPARATOR — skipped between entries — so
+    // `- - -` no longer surfaces a phantom open gap named `- -`. Until that
+    // fix this line pinned the phantom on purpose (round 4, m4), because it
+    // was the only assertion that would notice the Gaps path moving; it still
+    // is, and it now pins the fixed reading. The full separator table lives in
+    // the #3898 describe block above; this one keeps the Gaps opt-out honest.
+    const uat = ['---', 'status: partial', 'phase: 01-x', '---', '', '## Gaps', '', '```', '- truth: phantom', '  status: open', '```', ''].join('\n');
+    const got = parseUatItems(uat);
+    assert.deepStrictEqual(got.map((i) => i.name), ['phantom'], JSON.stringify(got));
+    const withBreak = ['---', 'status: partial', 'phase: 01-x', '---', '', '## Gaps', '', '- - -', '- truth: real', '  status: open', ''].join('\n');
+    assert.deepStrictEqual(parseUatItems(withBreak).map((i) => i.name), ['real']);
   });
 });
 
@@ -6856,6 +8166,66 @@ describe('#3781: acknowledge supports the heading-delimited entry shape', () => 
     assert.equal(ack.status, 'unsupported_heading_shape',
       'a table line inside the entry body makes its span non-contiguous — refuse');
     assert.equal(ack.content, doc, 'file unchanged');
+  });
+
+  test('a table row AFTER the entry\'s last line is outside its span — the write lands above it', () => {
+    // #3781 refused any leaf whose heading-to-next-heading range held a table
+    // row. The refusal exists because a row INSIDE the span makes it
+    // non-contiguous; a row after the last entry line is not inside anything,
+    // and refusing it halts `complete-milestone` over a write that is safe.
+    const doc = '## Deferred Items\n\n### Finding one\n- did a thing\n| x | y |\n';
+    const before = parseDeferredItemsWithStatus(doc);
+    assert.equal(before.length, 2, 'fixture self-check: leaf entry + table row');
+    const ack = acknowledgeDeferredItem(doc, before[0].name);
+    assert.equal(ack.status, 'ok');
+    assert.equal(ack.content, '## Deferred Items\n\n### Finding one\n- did a thing\n  status: acknowledged\n| x | y |\n');
+    assert.equal(parseDeferredItemsWithStatus(ack.content)[0].status, 'acknowledged');
+  });
+
+  test('an entry whose body ENDS in a fence acks readably — the marker lands before the fence, never inside it (round 5, RV6.5)', () => {
+    // Unclosed fence: it runs to the entry's end, so "after the last
+    // non-blank line" is fence content — the reader never sees the marker.
+    const unclosed = '## Deferred Items\n\n### E\n- **What:** x\n```\ncode\n';
+    let ack = acknowledgeDeferredItem(unclosed, parseDeferredItemsWithStatus(unclosed)[0].name);
+    assert.equal(ack.status, 'ok');
+    assert.equal(ack.content, '## Deferred Items\n\n### E\n- **What:** x\n  status: acknowledged\n```\ncode\n');
+    assert.equal(parseDeferredItemsWithStatus(ack.content)[0].status, 'acknowledged', 'the marker must be read back');
+    // Closed fence at the end of the body: same placement, for the same reason.
+    const closed = '## Deferred Items\n\n### E\n- **What:** x\n```\ncode\n```\n';
+    ack = acknowledgeDeferredItem(closed, parseDeferredItemsWithStatus(closed)[0].name);
+    assert.equal(ack.status, 'ok');
+    assert.equal(parseDeferredItemsWithStatus(ack.content)[0].status, 'acknowledged');
+    assert.ok(ack.content.includes('- **What:** x\n  status: acknowledged\n```'), ack.content);
+    // A pending (preamble) entry ending in an unclosed fence before a heading.
+    const pending = '## Deferred Items\n\n- a\n```\ncode\n\n### E\n- b\n';
+    const items = parseDeferredItemsWithStatus(pending);
+    assert.equal(items.length, 2, JSON.stringify(items));
+    ack = acknowledgeDeferredItem(pending, items[0].name);
+    assert.equal(ack.status, 'ok');
+    assert.deepStrictEqual(parseDeferredItemsWithStatus(ack.content).map((i) => i.status), ['acknowledged', '']);
+    assert.ok(ack.content.startsWith('## Deferred Items\n\n- a\n  status: acknowledged\n```\ncode\n'), ack.content);
+  });
+
+  test('a heading whose TEXT is a fence delimiter is a heading, not a fence (round 5, RV6.5)', () => {
+    // The entry-level fence scan saw line 0 (`\`\`\``, the heading text) as an
+    // opener: every body line was fenced, the reader read no field, and the
+    // writer's marker landed on a line nothing reads.
+    for (const delim of ['```', '~~~']) {
+      const doc = `## Deferred Items\n\n### ${delim}\n- x\n  status: resolved\n`;
+      assert.deepStrictEqual(parseDeferredItemsWithStatus(doc).map((i) => i.status), ['resolved'], delim);
+      const open = `## Deferred Items\n\n### ${delim}\n- x\n`;
+      const ack = acknowledgeDeferredItem(open, parseDeferredItemsWithStatus(open)[0].name);
+      assert.equal(ack.status, 'ok', delim);
+      assert.equal(parseDeferredItemsWithStatus(ack.content)[0].status, 'acknowledged', delim);
+    }
+  });
+
+  test('leaf line-0 rewrite keeps a closing `#` sequence (round 5, RV6.5)', () => {
+    const doc = '## Deferred Items\n\n### status: open ###\n- did a thing\n';
+    const ack = acknowledgeDeferredItem(doc, parseDeferredItemsWithStatus(doc)[0].name);
+    assert.equal(ack.status, 'ok');
+    assert.ok(ack.content.includes('### status: acknowledged ###'), ack.content);
+    assert.equal(parseDeferredItemsWithStatus(ack.content)[0].status, 'acknowledged');
   });
 
   test('leaf line-0 corner: a heading whose text parses as a status field', () => {
