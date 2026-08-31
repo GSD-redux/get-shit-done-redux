@@ -248,7 +248,8 @@ field comparisons, omitting `subject` because the predicate binds `actual.subjec
 values instead.
 
 The predicate applies no condition proving the target test exists; **Executor Gate
-Validation** below supplies that separately by requiring the RED commit to touch a test file, and
+Validation** below supplies that separately by requiring the RED commit to touch the file its own
+evidence reports the failure in, checked after selection rather than by filtering the search, and
 it fires for every `type: tdd` plan. `gsd-core/references/execute-mvp-tdd.md` repeats the same
 condition, but only under MVP+TDD, so it is not the live path on a project that sets `tdd_mode`
 alone. The predicate itself cannot tell whether the target test was ever written.
@@ -261,8 +262,9 @@ message text. The admitted case is narrower than before: an unrelated missing de
 declared test file, at the same declared phase, the same declared class, and the same declared file
 and line — a same-basename, same-line collision the `location` conjunct alone does not distinguish
 from the plan's own declared failure site. Two controls compensate: **Executor Gate Validation**
-requires the RED commit to touch a test file, and `implementation_target` stays declared, so a
-human or a later coded gate can compare it against the recorded `command` and the message. Note
+requires the RED commit to touch the file its own evidence names, and `implementation_target`
+stays declared, so a human or a later coded gate can compare it against the recorded `command` and
+the message. Note
 that this state is strictly NARROWER than the one it replaces: the outside-in residual was
 previously unsatisfiable and admitted nothing at all, correctly or otherwise, so anchoring it on
 the declared test file admits legitimate outside-in RED while bounding what else it lets through.
@@ -284,9 +286,10 @@ before: an unrelated assertion earlier in the body of the declared test, failing
 declared phase, the same declared class, and the same declared file and line — and, at a fixture
 phase, an unrelated fixture crash at that same declared file and line, which the `location`
 conjunct alone does not distinguish from the fixture the plan declared as the behavior under test.
-The same two controls compensate: **Executor Gate Validation** requires the RED commit to touch a
-test file, and `implementation_target` stays declared for a human or a later coded gate to compare
-against. These residuals remain admitted, narrower than before, on the same terms as the outside-in
+The same two controls compensate: **Executor Gate Validation** requires the RED commit to touch
+the file its own evidence names, and `implementation_target` stays declared for a human or a later
+coded gate to compare against. These residuals remain admitted, narrower than before, on the same
+terms as the outside-in
 residual's: they
 are one root cause with three surfaces, bound by the same declared-versus-observed collision the
 `location` conjunct checks for.

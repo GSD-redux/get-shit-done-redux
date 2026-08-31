@@ -2307,16 +2307,23 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     const r8 = runGate(scriptPath, s8, taskFile8);
     assert.notStrictEqual(r8.exitCode, 0,
       'G8: a commit whose subject and trailer both qualify but which touches only a source ' +
-      "file must NOT authorize — execute-phase.md's existing test-file pathspec already " +
-      'excludes it. This is the regression guard on the pathspec, not a RED.');
-    const pathspecStrippedScript = writeScript(
-      'gate-no-pathspec.sh',
-      snippet.split('-- "**/*.test.*" "**/*.spec.*" "tests/"').join(''),
+      'file must NOT authorize — the --changed-files membership check rejects a trailer ' +
+      'declaring a file the RED commit never touched. This is the regression guard on that ' +
+      'check, not a RED.');
+    // `--changed-files` is a REQUIRED flag (Task 5), so simply deleting it trips a DIFFERENT
+    // failure (the usage error) rather than defeating the membership check. Forcing its VALUE
+    // to a constant that always matches g1Trailer's own declared_file basename, regardless of
+    // what the commit actually touched, is what isolates the membership check specifically.
+    const forcedMembershipScript = writeScript(
+      'gate-forced-membership.sh',
+      snippet.split('--changed-files "$(git show --name-only --format= "$RED_SHA")"')
+        .join('--changed-files "tests/test_pricing.py"'),
     );
-    const r8Stripped = runGate(pathspecStrippedScript, s8, taskFile8);
+    const r8Stripped = runGate(forcedMembershipScript, s8, taskFile8);
     assert.strictEqual(r8Stripped.exitCode, 0,
-      'G8 non-vacuity: the SAME fixture, with the pathspec stripped from a copy of the snippet ' +
-      'built in this test, must authorize — proving the guard is the pathspec and not ' +
+      'G8 non-vacuity: the SAME fixture, with --changed-files forced to a value that always ' +
+      "satisfies g1Trailer's own declared_file basename regardless of what the commit " +
+      'actually touched, must authorize — proving the guard is the membership check and not ' +
       'something else about this fixture.');
   });
 

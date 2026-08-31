@@ -212,18 +212,21 @@ if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
       RED_RANGE="${BASE_BRANCH}..HEAD"
     fi
 TAB=$(printf '\t')
-    # One pass: SHA<TAB>red-evidence trailer<TAB>subject, newest-first. Scoped to
-    # test files (dropping this pathspec would authorize a source-only decoy) and
-    # bounded to RED_RANGE (a same-numbered plan from a prior milestone must not
-    # supply the evidence). Subject pattern is intentionally unwidened — padding
-    # normalization across N-P and N-PP belongs to upstream #4003, not this gate.
+    # One pass: SHA<TAB>red-evidence trailer<TAB>subject, newest-first, bounded to
+    # RED_RANGE (a same-numbered plan from a prior milestone must not supply the
+    # evidence). Selection is by subject alone; the commit is verified AFTER
+    # selection, against the file its own evidence names, by the membership
+    # check below. Ordering matters: a filter on the search itself skips a
+    # non-matching commit and silently selects an older one instead — a
+    # post-selection check halts on the commit the search actually found.
+    # Subject pattern is intentionally unwidened — padding normalization across
+    # N-P and N-PP belongs to upstream #4003, not this gate.
     RED_RECORD=$(git log "$RED_RANGE" --format='%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s' \
-      -- "**/*.test.*" "**/*.spec.*" "tests/" \
       | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]+${TAB}test\(${PHASE_NUMBER}-${PLAN_ID}\):" || true)
     RED_SHA=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f1)
     if [ -z "$RED_SHA" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
-      if git log "$RED_RANGE" --format='%H %s' -- "**/*.test.*" "**/*.spec.*" "tests/" \
+      if git log "$RED_RANGE" --format='%H %s' \
         | grep -qE "^[0-9a-f]+ test\(${PHASE_NUMBER}-${PLAN_ID}\):"; then
         echo "MVP+TDD GATE TRIPPED: missing_red_evidence for ${PLAN_ID}/${TASK_ID}"
       else
@@ -232,7 +235,7 @@ TAB=$(printf '\t')
       exit 1
     fi
     RED_TRAILER=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f2)
-    RED_VERDICT=$(gsd_run query task.red-evidence-verdict --task-file "$TASK_FILE" --trailer "$RED_TRAILER" --pick verdict) || exit 1
+    RED_VERDICT=$(gsd_run query task.red-evidence-verdict --task-file "$TASK_FILE" --trailer "$RED_TRAILER" --changed-files "$(git show --name-only --format= "$RED_SHA")" --pick verdict) || exit 1
     if [ "$RED_VERDICT" != "authorize" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
       echo "MVP+TDD GATE TRIPPED: ${RED_VERDICT} for ${PLAN_ID}/${TASK_ID}"
