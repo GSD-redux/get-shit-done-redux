@@ -849,14 +849,18 @@ function advancePlanShapeError(): string {
       ? '`Current Plan: N` with `Total Plans in Phase: M`'
       : `\`Current Plan: ${shape}\``
   ));
-  // The body-only `Plan` field accepts the same shapes, but has no schema row to
-  // derive them from: `buildStateFrontmatter` never reads it into frontmatter,
-  // so there is no `current_*` key to hang a row on. Both of its spellings are
-  // named here — an earlier revision listed only `Plan: N of M` and omitted the
-  // sibling-paired form the parser also accepts, which is precisely the
-  // "message advertises a different set than the parser accepts" drift this
-  // function exists to close.
-  spellings.push('`Plan: N of M`', '`Plan: N` with `Total Plans in Phase: M`');
+  // The body-only `Plan` field has no schema row to derive from:
+  // `buildStateFrontmatter` never reads it into frontmatter, so there is no
+  // `current_*` key to hang a row on. Its ONE accepted spelling is named here.
+  //
+  // `Plan: N` with a `Total Plans in Phase: M` sibling is deliberately NOT
+  // listed (#3791 review round 6, M2): the parser does not accept it. A
+  // revision of this PR added both the branch and this spelling together, on
+  // the reasoning that the message must advertise exactly what the parser
+  // accepts. That reasoning still holds — which is why removing the branch
+  // removes the spelling in the same commit. The invariant is the lockstep,
+  // not the length of the list.
+  spellings.push('`Plan: N of M`');
   return `Cannot read the plan position from STATE.md. Expected one of: ${spellings.join(', ')}.`;
 }
 
@@ -941,6 +945,18 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
         error: 'Current Position section contains more than one Phase: entry — refusing to silently advance the first. Resolve the section to a single current entry and re-run.',
         reason: resultData['reason'],
         phase_candidates: resultData['phase_candidates'],
+      }, raw, undefined);
+      return;
+    }
+    // #3791 review round 6 (B1): the document carries both plan-position
+    // spellings with DIFFERENT numbers. Same posture as the case above — name
+    // the candidates and let the caller resolve them. Advancing either one
+    // would write a number into the other that nothing derived for it.
+    if (resultData && resultData['reason'] === 'ambiguous_plan_position') {
+      output({
+        error: 'STATE.md carries two plan positions with different numbers — refusing to advance either. Resolve them to a single current plan and re-run.',
+        reason: resultData['reason'],
+        plan_candidates: resultData['plan_candidates'],
       }, raw, undefined);
       return;
     }

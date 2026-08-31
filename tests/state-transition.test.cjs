@@ -1016,6 +1016,67 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     );
   });
 
+  // #3791 review round 6: the two properties above each exercise ONE spelling,
+  // so neither could see a document carrying both — which is where B1 and M1
+  // both lived. This one crosses the two contracts, with agreeing and
+  // disagreeing numbers, and asserts the per-spelling contract on each half.
+  test('property: two spellings — each keeps its own shape when they agree, and neither moves when they do not', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 150 }),
+        fc.integer({ min: 1, max: 4 }),
+        fc.integer({ min: 1, max: 4 }),
+        // The `Plan:` line's OWN total, independent of the sibling field.
+        fc.integer({ min: 200, max: 400 }),
+        // 0 = the two spellings agree; anything else is the offset that makes
+        // them disagree.
+        fc.integer({ min: 0, max: 9 }),
+        (n, legacyWidth, planWidth, planOwnTotal, disagreeBy) => {
+          const siblingTotal = n + 2; // strictly greater, so the advance branch is taken
+          const legacyStr = String(n).padStart(legacyWidth, '0');
+          const planN = n + disagreeBy;
+          const planStr = String(planN).padStart(planWidth, '0');
+          const input = [
+            '# Project State',
+            '',
+            `**Current Plan:** ${legacyStr}`,
+            `**Total Plans in Phase:** ${siblingTotal}`,
+            '**Status:** Executing Phase 7',
+            '',
+            '## Current Position',
+            '',
+            `Plan: ${planStr} of ${planOwnTotal}`,
+            '',
+          ].join('\n');
+          const result = transitionCore(input, { kind: 'advancePlan' }, deps);
+
+          if (disagreeBy !== 0) {
+            // Refused, and nothing written — not one field, not the status.
+            assert.strictEqual(result.data && result.data.error, true);
+            assert.strictEqual(result.data && result.data.reason, 'ambiguous_plan_position');
+            assert.strictEqual(stateExtractField(result.content, 'Current Plan'), legacyStr);
+            assert.strictEqual(stateExtractField(result.content, 'Plan'), `${planStr} of ${planOwnTotal}`);
+            return;
+          }
+
+          // They agree: both advance, and each keeps its OWN written shape —
+          // the legacy field its padding and bare form, the `Plan:` line its
+          // padding AND its own total, which is never the sibling's.
+          assert.strictEqual(result.data && result.data.advanced, true);
+          assert.strictEqual(
+            stateExtractField(result.content, 'Current Plan'),
+            String(n + 1).padStart(legacyStr.length, '0'),
+          );
+          assert.strictEqual(
+            stateExtractField(result.content, 'Plan'),
+            `${String(n + 1).padStart(planStr.length, '0')} of ${planOwnTotal}`,
+          );
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
   // m2: the degenerate end of the totalPlans threshold, and the shapes the
   // anchored grammar must refuse. `0 of 0` is `currentPlan >= totalPlans`, so
   // it is phase-complete rather than an error — pinned so the grammar
@@ -1071,6 +1132,177 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
 // pins today's reality, and it is EXPECTED to go RED the moment the parser
 // changes underneath it. That is the forcing function working as designed
 // (§8.8 "checked, not generated"), not a broken test.
+describe('#3791 review round 6 (B1/M1): every spelling advances from its own text', () => {
+  const deps = { clock: fixedClock };
+  const advance = (lines) => transitionCore(lines.join('\n'), { kind: 'advancePlan' }, deps);
+
+  // ─── M1: a field keeps its OWN total, padding and annotation ───────────────
+  //
+  // The legacy pair wins precedence, but that only decides which numbers the
+  // ADVANCE is computed from. It does not license re-rendering the `Plan:` line
+  // from the legacy pair's numbers, which is what the previous revision did:
+  // `planDisplayValue` fell back to a bare `${newPlan} of ${totalPlans}` built
+  // from the sibling field.
+
+  test('the Plan line keeps its own total when it differs from the sibling field', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 9',
+      'Status: Executing',
+      '',
+    ]);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3');
+    // Was '3 of 5' — the sibling's total silently overwrote the line's own.
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 9');
+  });
+
+  test('the Plan line keeps its own zero-padding when the legacy pair supplies the numbers', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 03',
+      '**Total Plans in Phase:** 05',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 03 of 05',
+      'Status: Executing',
+      '',
+    ]);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '04');
+    // Was '4 of 5' — the changeset's "the zero-padding width and everything
+    // after it survive" was true only for the parse-source field.
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '04 of 05');
+  });
+
+  test('a trailing annotation on the Plan line survives an advance driven by the legacy pair', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 5 in current phase',
+      '',
+    ]);
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '3 of 5 in current phase');
+  });
+
+  // ─── B1: two spellings, different numbers — refuse, never fabricate ────────
+
+  test('refuses when Current Plan and Plan carry different numbers', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 7',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 5',
+      '',
+    ]);
+    assert.strictEqual(result.data && result.data.error, true);
+    assert.strictEqual(result.data && result.data.reason, 'ambiguous_plan_position');
+    assert.deepStrictEqual(result.data && result.data.plan_candidates,
+      ['Current Plan: 7', 'Plan: 2 of 5']);
+    // Nothing is written. The previous revision advanced `Plan` to `3 of 5` and
+    // stamped `Current Plan: 3` — a number with no relationship to the 7 the
+    // author wrote.
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '7');
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), '2 of 5');
+  });
+
+  test('the disagreement refusal runs BEFORE the phase-complete branch', () => {
+    // `Plan: 5 of 5` alone would advance=false / last_plan and write a terminal
+    // "Phase complete — ready for verification". Guarding only the normal
+    // advance path would let it do that to a document whose two spellings never
+    // agreed on where execution was.
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 7',
+      '**Status:** Executing',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 5 of 5',
+      '',
+    ]);
+    assert.strictEqual(result.data && result.data.error, true);
+    assert.strictEqual(result.data && result.data.reason, 'ambiguous_plan_position');
+    assert.ok(!/Phase complete/.test(result.content),
+      'a disagreeing document must not be marked phase-complete');
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '7');
+  });
+
+  test('agreeing spellings are not a disagreement, whatever their totals say', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '',
+      '## Current Position',
+      '',
+      'Plan: 2 of 9',
+      '',
+    ]);
+    assert.strictEqual(result.data && result.data.error, undefined);
+    assert.strictEqual(result.data && result.data.advanced, true);
+  });
+
+  // ─── An unreadable sibling is left alone, not overwritten ──────────────────
+
+  test('a Plan line with no readable number is left exactly as authored', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Current Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '',
+      '## Current Position',
+      '',
+      'Plan: TBD',
+      '',
+    ]);
+    // The advance still happens — refusing the whole document because an
+    // unrelated line is unreadable would be a narrowing #3784 does not license.
+    assert.strictEqual(result.data && result.data.advanced, true);
+    assert.strictEqual(stateExtractField(result.content, 'Current Plan'), '3');
+    // ...and the unreadable line is untouched rather than fabricated over.
+    assert.strictEqual(stateExtractField(result.content, 'Plan'), 'TBD');
+  });
+
+  // ─── M2: the bare `Plan: N` + sibling shape is not accepted ────────────────
+
+  test('a bare Plan: N with a Total sibling and no Current Plan is refused', () => {
+    const result = advance([
+      '# Project State',
+      '',
+      '**Plan:** 2',
+      '**Total Plans in Phase:** 5',
+      '',
+    ]);
+    // Base refused this (its `else if (planField)` arm had no `of M` match and
+    // errored via NaN). A revision of this PR accepted it; #3791 review round 6
+    // (M2) is that it cannot be given the schema-row + forcing-test coupling
+    // the other shapes have, because `Plan` is body-only.
+    assert.strictEqual(result.data && result.data.error, true);
+    assert.strictEqual(result.data && result.data.reason, undefined);
+  });
+});
+
 describe('#3873 phase-3 rows 23/24/25: parser accepts exactly the schema-declared shapes', () => {
   const deps = { clock: fixedClock };
 

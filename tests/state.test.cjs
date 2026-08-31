@@ -1938,9 +1938,14 @@ describe('cmdStateAdvancePlan (state advance-plan)', () => {
     }
     // The body-only `Plan` field has no schema row (buildStateFrontmatter never
     // reads it into frontmatter), so it is named explicitly.
-    for (const planShape of ['`Plan: N of M`', '`Plan: N` with `Total Plans in Phase: M`']) {
-      assert.ok(output.error.includes(planShape), `error should name ${planShape}; got: ${output.error}`);
-    }
+    assert.ok(output.error.includes('`Plan: N of M`'),
+      `error should name \`Plan: N of M\`; got: ${output.error}`);
+    // ...and must NOT advertise a shape the parser refuses (#3791 review round
+    // 6, M2). `Plan: N` paired with a `Total Plans in Phase: M` sibling and no
+    // `Current Plan` is not an accepted shape; a message naming it would send
+    // the reader to write a STATE.md this command still cannot read.
+    assert.ok(!output.error.includes('`Plan: N` with'),
+      `error must not advertise the unaccepted bare-Plan+sibling shape; got: ${output.error}`);
   });
 
   test('advances plan in compound "Plan: X of Y" format', () => {
