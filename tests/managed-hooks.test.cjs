@@ -67,6 +67,58 @@ describe('bug #2136: MANAGED_HOOKS must include all shipped hook files', () => {
   });
 });
 
+/**
+ * Regression test for bug #4076
+ *
+ * gsd-node-runner.sh was registered in MANAGED_HOOKS but shipped without a
+ * "gsd-hook-version" header. gsd-check-update-worker.js treats a hook with
+ * no header as "definitely stale" (there is no way to tell it apart from a
+ * pre-version-tracking file), so every install on an otherwise up-to-date
+ * version showed a permanent, unclearable "⚠ stale hooks — run /gsd-update"
+ * warning naming that one file.
+ *
+ * This is the same *class* as bug #2136 (bash hooks missing the header
+ * entirely) but from the opposite direction: #2136 covered hooks that were
+ * *missing from MANAGED_HOOKS*; this covers a hook that *is* in
+ * MANAGED_HOOKS but never got the header line added to its source. The test
+ * below closes the whole class by iterating every MANAGED_HOOKS entry —
+ * rather than a hardcoded list of hook filenames — so a future hook added to
+ * the registry without a header fails CI instead of shipping silently.
+ */
+describe('bug #4076: every MANAGED_HOOKS entry carries a gsd-hook-version header', () => {
+  // Mirrors the exact regex gsd-check-update-worker.js uses at runtime to
+  // detect the header (both "//" JS-style and "#" bash-style comments).
+  const VERSION_HEADER_RE = /(?:\/\/|#) gsd-hook-version:\s*(.+)/;
+
+  for (const entry of MANAGED_HOOKS) {
+    test(`${entry} has a gsd-hook-version header matching the worker's detection regex`, () => {
+      const hookPath = path.join(HOOKS_DIR, entry);
+      // allow-test-rule: structural-regression-guard (#4076)
+      // The header is a source-text invariant the stale-hook detector reads
+      // via string matching (not a module export) — no behavioral/CLI path
+      // exists to observe "does this file have a version header" other than
+      // reading the file, same rationale as the sibling bug #2136 checks
+      // below (folded bug-2136-sh-hook-version.test.cjs) for this exact class
+      // of bug.
+      const content = fs.readFileSync(hookPath, 'utf8');
+      const match = content.match(VERSION_HEADER_RE);
+      assert.ok(
+        match,
+        `${entry} is listed in MANAGED_HOOKS but has no "# gsd-hook-version:" / ` +
+        `"// gsd-hook-version:" header — gsd-check-update-worker.js treats a ` +
+        `missing header as "definitely stale", producing a permanent, ` +
+        `unclearable "⚠ stale hooks" warning on every up-to-date install (#4076)`
+      );
+      assert.ok(
+        match[1].trim() === '{{GSD_VERSION}}' || /^\d+\.\d+\.\d+/.test(match[1].trim()),
+        `${entry}'s gsd-hook-version header must be either the unstamped ` +
+        `"{{GSD_VERSION}}" placeholder (source tree) or a concrete semver ` +
+        `string (installed tree) — got "${match[1].trim()}"`
+      );
+    });
+  }
+});
+
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-2136-sh-hook-version.test.cjs — consolidation epic #1969 (B6 #1975)
