@@ -58,3 +58,63 @@ describe('task red-evidence-verdict — path guards', () => {
       'a non-file path must produce the arm\'s own usage error');
   });
 });
+
+describe('task red-evidence-verdict — --changed-files membership', () => {
+  // A contract that authorizes on its own content, so the ONLY variable under
+  // test below is which changed-file list is passed. Go-shaped on purpose:
+  // no `tests/` directory and no `.test.` infix, so nothing here can be
+  // satisfied by a filename convention (LANG-01).
+  const TRAILER = `red-evidence: ${JSON.stringify({
+    command: 'go test ./... -run TestDiscountReducesTotal',
+    exit_status: 1,
+    target_test: 'TestDiscountReducesTotal',
+    expected: { phase: 'test', class_or_mode: 'undefined: ApplyDiscount', subject: 'TestDiscountReducesTotal' },
+    actual: { phase: 'test', class_or_mode: 'undefined: ApplyDiscount', subject: 'TestDiscountReducesTotal' },
+    location: {
+      declared: { file: 'pkg/pricing/pricing_test.go', line: 6 },
+      observed: { file: 'pkg/pricing/pricing_test.go', line: 6 },
+    },
+  })}`;
+
+  const withTaskFile = (t) => {
+    const rel = `.red-ev-task-${process.pid}.md`;
+    fs.writeFileSync(path.join(REPO_ROOT, rel), `<task tdd="true">
+  <behavior>Applies a percentage discount and reduces the order total.</behavior>
+  <files>pkg/pricing/pricing.go</files>
+  <red_contract>
+    <target_test>TestDiscountReducesTotal</target_test>
+    <implementation_target>pricing.ApplyDiscount</implementation_target>
+    <expected_failure>
+      <phase>test</phase>
+      <class_or_mode>undefined: ApplyDiscount</class_or_mode>
+      <subject>TestDiscountReducesTotal</subject>
+    </expected_failure>
+  </red_contract>
+</task>
+`);
+    t.after(() => fs.unlinkSync(path.join(REPO_ROOT, rel)));
+    return rel;
+  };
+
+  test('the declared file itself satisfies membership', (t) => {
+    const out = runVerdict(['--task-file', withTaskFile(t), '--trailer', TRAILER,
+      '--changed-files', 'pkg/pricing/pricing_test.go']);
+    assert.match(out, /"verdict": "authorize"/,
+      'the positive control: a commit that touched exactly the declared file must authorize. '
+      + 'Without this, the decoy assertion below could pass simply by refusing everything.');
+  });
+
+  test('a same-basename file in a DIFFERENT directory does not satisfy membership (WR-01)', (t) => {
+    const out = runVerdict(['--task-file', withTaskFile(t), '--trailer', TRAILER,
+      '--changed-files', 'vendor/other/pricing_test.go']);
+    assert.match(out, /"verdict": "red_commit_not_failing"/,
+      'WR-01: the membership check exists to prove the RED commit touched the file its own '
+      + 'evidence names. Comparing basenames lets any same-named file anywhere in the tree '
+      + 'stand in for it, which defeats exactly the anti-decoy property the check provides. '
+      + 'Both sides here are repo-relative paths from git, so there is no prefix skew to '
+      + 'normalize away — unlike locationsAgree, whose declared/observed inputs come from '
+      + 'different tools and DO legitimately differ by prefix. Do not close this by changing '
+      + 'locationsAgree: an endsWith narrowing there blocks outside-in and '
+      + 'fixture-is-the-behavior (REGR-04). See gsd-core-vlh.');
+  });
+});
