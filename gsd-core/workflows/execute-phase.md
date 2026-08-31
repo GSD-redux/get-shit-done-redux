@@ -200,13 +200,18 @@ if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
   IS_BEHAVIOR_ADDING=$(gsd_run query task.is-behavior-adding "$TASK_FILE" --pick is_behavior_adding)
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
     BASE_BRANCH=$(gsd_run query git.base-branch 2>/dev/null || echo "")
-    RED_RANGE="HEAD"
+    RED_RANGE=""
     # Prefer origin/<base>: a stale local base branch widens the range and
     # re-admits older commits as RED evidence (see gsd-core/references/tdd.md).
     if [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
       RED_RANGE="origin/${BASE_BRANCH}..HEAD"
     elif [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "${BASE_BRANCH}" >/dev/null 2>&1; then
       RED_RANGE="${BASE_BRANCH}..HEAD"
+    fi
+    if [ -z "$RED_RANGE" ]; then
+      gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
+      echo "MVP+TDD GATE TRIPPED: cannot_resolve_base_branch for ${PLAN_ID}/${TASK_ID}"
+      exit 1
     fi
 TAB=$(printf '\t')
     # One pass, bounded to RED_RANGE: SHA<TAB>trailer<TAB>subject, newest
