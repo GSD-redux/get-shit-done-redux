@@ -479,31 +479,32 @@ STATUS=0
 TAB=$(printf '\t')
 # Check for the RED gate commit and read its red-evidence: trailer in ONE pass.
 # Each candidate is formatted once as SHA<TAB>trailer<TAB>subject, so a single
-# grep expresses the whole selection rule; git logs newest-first, so -m1 is
-# "the newest candidate that is BOTH plan-scoped AND evidence-bearing".
+# grep expresses the whole selection rule; git logs newest-first, so -m1
+# selects the newest candidate that is plan-scoped by SUBJECT alone — the
+# trailer field is not part of selection, only of the verdict judged below.
 RED_RECORD=$(git log --format='%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s' \
-  | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]+${TAB}test\(${PHASE}-${PLAN}\):" || true)
+  | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]*${TAB}test\(${PHASE}-${PLAN}\):" || true)
 RED_SHA=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f1 || true)
 if [ -z "$RED_SHA" ]; then
-  # The two RED failures need different remedies, so they stay distinct.
-  if git log --format='%H %s' | grep -qE "^[0-9a-f]+ test\(${PHASE}-${PLAN}\):"; then
-    echo "matching test(${PHASE}-${PLAN}) commits exist but none carries a red-evidence: trailer — amend the trailer onto the commit you already made"
-    STATUS=1
-  else
-    echo "missing_red_commit"
-    STATUS=1
-  fi
+  echo "missing_red_commit"
+  STATUS=1
 else
   RED_TRAILER=$(printf '%s\n' "$RED_RECORD" | cut -d"$TAB" -f2 || true)
   printf '%s\n' "$RED_TRAILER"
-  # Ask the evidence which file it named, never the path's shape: `tests/`
-  # and `.test.`/`.spec.` are JS and pytest conventions, and a rule built on
-  # them rejects Go (`*_test.go`), Rust (`#[test]` inline) and R outright.
-  DECLARED=$(printf '%s' "$RED_TRAILER" | sed -n 's/.*"declared":{"file":"\([^"]*\)".*/\1/p')
-  if [ -z "$DECLARED" ]; then
-    # Fail closed: unreadable evidence is never authorization.
-    echo "the RED commit $RED_SHA carries evidence naming no declared file"
+  if [ -z "$RED_TRAILER" ]; then
+    # The two RED failures need different remedies, so they stay distinct.
+    echo "matching test(${PHASE}-${PLAN}) commits exist but none carries a red-evidence: trailer — amend the trailer onto the commit you already made"
     STATUS=1
+  else
+    # Ask the evidence which file it named, never the path's shape: `tests/`
+    # and `.test.`/`.spec.` are JS and pytest conventions, and a rule built on
+    # them rejects Go (`*_test.go`), Rust (`#[test]` inline) and R outright.
+    DECLARED=$(printf '%s' "$RED_TRAILER" | sed -n 's/.*"declared":{"file":"\([^"]*\)".*/\1/p')
+    if [ -z "$DECLARED" ]; then
+      # Fail closed: unreadable evidence is never authorization.
+      echo "the RED commit $RED_SHA carries evidence naming no declared file"
+      STATUS=1
+    fi
   fi
 fi
 # Check for GREEN gate commit — GATED: `### Gate Definitions` marks GREEN

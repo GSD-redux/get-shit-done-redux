@@ -209,23 +209,24 @@ if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
       RED_RANGE="${BASE_BRANCH}..HEAD"
     fi
 TAB=$(printf '\t')
-    # One pass, bounded to RED_RANGE: SHA<TAB>trailer<TAB>subject, newest match
-    # wins; the commit is verified AFTER selection against the file its own
-    # evidence names (membership check below) — see gsd-core/references/tdd.md.
+    # One pass, bounded to RED_RANGE: SHA<TAB>trailer<TAB>subject, newest
+    # SUBJECT match wins regardless of trailer contents — selection is
+    # indifferent to the trailer, and the verdict verb judges it AFTER
+    # selection (below) — see gsd-core/references/tdd.md.
     RED_RECORD=$(git log "$RED_RANGE" --format='%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s' \
-      | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]+${TAB}test\(${PHASE_NUMBER}-${PLAN_ID}\):" || true)
+      | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]*${TAB}test\(${PHASE_NUMBER}-${PLAN_ID}\):" || true)
     RED_SHA=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f1)
     if [ -z "$RED_SHA" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
-      if git log "$RED_RANGE" --format='%H %s' \
-        | grep -qE "^[0-9a-f]+ test\(${PHASE_NUMBER}-${PLAN_ID}\):"; then
-        echo "MVP+TDD GATE TRIPPED: missing_red_evidence for ${PLAN_ID}/${TASK_ID}"
-      else
-        echo "MVP+TDD GATE TRIPPED: missing_red_commit for ${PLAN_ID}/${TASK_ID}"
-      fi
+      echo "MVP+TDD GATE TRIPPED: missing_red_commit for ${PLAN_ID}/${TASK_ID}"
       exit 1
     fi
     RED_TRAILER=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f2)
+    if [ -z "$RED_TRAILER" ]; then
+      gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
+      echo "MVP+TDD GATE TRIPPED: missing_red_evidence for ${PLAN_ID}/${TASK_ID}"
+      exit 1
+    fi
     # quotePath=false: git's default escapes non-ASCII paths (#3770 G9).
     RED_VERDICT=$(gsd_run query task.red-evidence-verdict --task-file "$TASK_FILE" --trailer "$RED_TRAILER" --changed-files "$(git -c core.quotePath=false show --name-only --format= "$RED_SHA")" --pick verdict) || exit 1
     if [ "$RED_VERDICT" != "authorize" ]; then

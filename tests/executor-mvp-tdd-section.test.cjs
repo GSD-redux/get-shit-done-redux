@@ -1924,21 +1924,22 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     }
 
     // The RED search is split out of the loop above because its record gained
-    // fields: it now selects on the trailer as well as the subject, in one
-    // pass. This is STRICTLY MORE SPECIFIC than the shared `^[0-9a-f]+ test\(`
-    // prefix it replaces — the subject anchor is still required, and a
-    // non-empty trailer field is required alongside it. See #3770.
+    // fields: it now reads the trailer alongside the subject, in one pass.
     // Pinned IN FULL, through the closing `\):` — not as a prefix. CR-11 M1 is
     // narrowing this needle to a bare `test\(`, which selects a cross-plan
-    // decoy; a prefix-only pin cannot see that. Killed by execution in the
-    // five-scenario test above; this literal is the guard that still fires on a
-    // lane where bash or git is unavailable and that test is skipped.
-    assert.ok(snippet.includes(`grep -m1 -E "^[0-9a-f]+\${TAB}[^\${TAB}]+\${TAB}test\\(\${PHASE}-\${PLAN}\\):"`),
-      'the RED search must select the newest candidate that is BOTH anchored to this plan\'s ' +
-      'commit subject AND carries a non-empty red-evidence: trailer field. Selecting on ' +
-      'position alone (CR-04) lets a newer trailerless same-plan commit shadow the real RED; ' +
-      'dropping the plan scope (CR-11 M1) lets an unrelated plan\'s RED authorize this ' +
-      'plan\'s GREEN. See #3770.');
+    // decoy; a prefix-only pin cannot see that. The trailer field itself is
+    // zero-or-more (#3770 DI-6): selection is INDIFFERENT to whether a
+    // trailer is present — the verdict verb judges it AFTER selection (see
+    // the missing_red_evidence guard below), never selection itself. A `+`
+    // here (the pre-DI-6 shape) let a NEWER, trailer-less commit be skipped
+    // in favor of an OLDER commit's stale trailer — exactly the
+    // stale-evidence-authorizes-GREEN hole DI-6 closes.
+    assert.ok(snippet.includes(`grep -m1 -E "^[0-9a-f]+\${TAB}[^\${TAB}]*\${TAB}test\\(\${PHASE}-\${PLAN}\\):"`),
+      'the RED search must select the NEWEST candidate anchored to this plan\'s commit subject, ' +
+      'regardless of whether it carries a trailer. Dropping the plan scope (CR-11 M1) lets an ' +
+      'unrelated plan\'s RED authorize this plan\'s GREEN; requiring a non-empty trailer at ' +
+      'selection (pre-DI-6) lets a newer trailer-less commit be silently skipped in favor of an ' +
+      'older commit\'s stale trailer. See #3770 (DI-6).');
 
     // Pinned INDEPENDENTLY of the subject needle above: `%s`, `%B` and
     // `%(trailers:…)` are three different git format operations, so an
@@ -2052,13 +2053,18 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'scenario is the non-vacuity control on S6 — deleting the feat(08-02) commit above must ' +
       'turn S1 red. See #3770 (F-3).');
 
-    // ── S2, the five-condition repository (CR-04, plus M1 and M4) ────────
+    // ── S2, the five-condition repository (CR-04 retired by DI-6; M1/M4 live) ──
     const s2 = newRepo();
     const realRed = commit(s2, 'tests/test_pricing.py',
       'test(08-02): add failing test for discount', evidence('S2-REAL'));
     commit(s2, 'src/pricing.py', 'feat(08-02): implement discount');
-    // Newer, same plan, trailerless — the shadow decoy — AND a body that
-    // mentions red-evidence: mid-message so it cannot parse as a trailer.
+    // Newer, same plan, trailerless — AND a body that mentions red-evidence:
+    // mid-message so it cannot parse as a trailer. Pre-DI-6, CR-04's fix was
+    // to require a non-empty trailer AT SELECTION, so this decoy was skipped
+    // in favor of realRed's still-present trailer. DI-6 retires that
+    // mechanism: it is the exact stale-evidence-authorizes-GREEN shape #3770
+    // (DI-6) closes, so this NEWEST commit must now be judged on its own
+    // missing evidence instead of falling back to realRed's.
     runGit(['commit', '--allow-empty', '-m', 'test(08-02): add another failing test',
       '-m', 'red-evidence: S2-BODY-PROSE', '-m', 'trailing paragraph so the above is body, not a trailer'],
     { cwd: s2 });
@@ -2068,13 +2074,18 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     // NO refactor(...) commit anywhere. Newest commit is the cross-plan decoy.
     commit(s2, 'tests/test_other.py', 'test(09-01): unrelated plan', evidence('S2-CROSS'));
     const r2 = runGate(s2);
-    assert.strictEqual(r2.exitCode, 0,
-      'the five-condition repository is compliant: an absent OPTIONAL refactor commit is not ' +
-      'a violation. See #3770.');
-    assert.ok(r2.stdout.includes('# S2-REAL'),
-      `CR-04: the gate must select the newest commit that is BOTH plan-scoped AND ` +
-      `evidence-bearing (${realRed}). Selecting on position alone lets a newer trailerless ` +
-      'same-plan commit shadow the real RED. See #3770.');
+    assert.notStrictEqual(r2.exitCode, 0,
+      'DI-6 supersedes CR-04: the NEWEST plan-scoped commit (the amended, trailer-less decoy) ' +
+      'must be judged on its own missing evidence, never bypassed in favor of an OLDER ' +
+      'commit\'s stale trailer just because one happens to exist earlier in history. ' +
+      'See #3770 (DI-6).');
+    assert.match(r2.stdout, /none carries a `?red-evidence:/,
+      'the failure must name the newest commit\'s own missing evidence via the same sentence ' +
+      'S4 asserts.');
+    assert.ok(!r2.stdout.includes('# S2-REAL'),
+      `CR-04 mechanism retired by DI-6: an OLDER commit's trailer (${realRed}) must NOT ` +
+      'authorize a newer, trailer-less same-plan commit — that silent fallback is the exact ' +
+      'stale-evidence-authorizes-GREEN hole #3770 (DI-6) closes.');
     assert.ok(!r2.stdout.includes('# S2-CROSS'),
       'CR-11 M1: an unscoped `test\\(` selects the cross-plan decoy — the NEWEST commit here — ' +
       'and authorizes this plan\'s GREEN on another plan\'s RED. See #3770.');
