@@ -301,20 +301,56 @@ function routeRedEvidenceVerdict({ args, cwd, raw }: RouteTaskCommandOptions): v
 
 /**
  * Does `changedFilesText` (newline-delimited, as `git show --name-only`
- * emits) include a path whose basename matches `declaredFile`'s? Reuses
- * `locationsAgree`'s own normalization (`path.win32.basename`,
- * `red-evidence-predicate.cts:99-113`) rather than restating a second path
- * rule — `path.win32.basename` normalizes both `/` and `\` separators, so a
- * POSIX-reported changed-file path and a Windows-form declared path still
- * compare equal (#3770 D-1 revised).
+ * emits) contain the file `declaredFile` names? Path-segment matching:
+ * equality, or either side being a `/`-anchored suffix of the other, with
+ * separators normalized first (#3770 D-1 revised; tightened for
+ * gsd-core-vlh / WR-01).
+ *
+ * Matching is bidirectional because the declared path is authored by hand
+ * and may be shorter OR longer than git's repo-relative output — both are
+ * frozen as authorizing rows in `MEMBERSHIP_ROWS`
+ * (`tests/executor-mvp-tdd-section.test.cjs:2733`): a bare basename
+ * (`test_pricing.py`) is shorter, an absolute build path
+ * (`/srv/build/tests/test_pricing.py`) is longer. Anchoring on `/` is what
+ * makes it a path-segment rule rather than a string one, so
+ * `tests/test_shipping.py` cannot match `tests/test_pricing.py`.
+ *
+ * Residual, deliberately accepted: a declaration that is a BARE basename
+ * still matches that basename at any depth, because a bare basename does
+ * not identify a directory. A declaration carrying directory segments no
+ * longer does — which is the decoy WR-01 reported.
+ *
+ * This deliberately does NOT reuse `locationsAgree`'s `path.win32.basename`
+ * reduction, which it previously borrowed. The two comparisons have
+ * different inputs and therefore need different rules: `locationsAgree`
+ * compares a DECLARED path against an OBSERVED one reported by a test
+ * runner, which legitimately differ by prefix (`tests/test_pricing.py` vs
+ * `/srv/build/tests/test_pricing.py`), so it must reduce to a basename.
+ * Here both sides are repo-relative paths emitted by git, so there is no
+ * prefix skew to normalize away — and reducing to a basename lets any
+ * same-named file elsewhere in the tree stand in for the declared one,
+ * defeating the anti-decoy property this check exists to provide.
+ *
+ * Do not carry this rule back into `locationsAgree`. The `why` at
+ * `tests/executor-mvp-tdd-section.test.cjs:1291-1304` records that exactly
+ * this `endsWith` pair was proposed for that function in review and
+ * rejected: there it is a strict narrowing of basename equality that blocks
+ * `outside-in` and `fixture-is-the-behavior`, manufacturing the REGR-04
+ * regression. It is safe HERE only because this check compares a
+ * declaration against git's changed-file list, never a declared location
+ * against a runner-observed one.
  */
 function changedFilesInclude(changedFilesText: string, declaredFile: string): boolean {
-  const declaredBase = path.win32.basename(declaredFile);
+  const norm = (p: string): string => p.replace(/\\/g, '/');
+  const declaredPath = norm(declaredFile);
   return changedFilesText
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .some((line) => path.win32.basename(line) === declaredBase);
+    .map(norm)
+    .some((changed) => changed === declaredPath
+      || changed.endsWith(`/${declaredPath}`)
+      || declaredPath.endsWith(`/${changed}`));
 }
 
 function routeTaskCommand({ args, cwd, raw }: RouteTaskCommandOptions): void {
