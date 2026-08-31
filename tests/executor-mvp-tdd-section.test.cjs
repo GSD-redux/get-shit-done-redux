@@ -2790,6 +2790,20 @@ describe('task red-evidence-verdict — evidence file membership (#3770 D-1 revi
         assert.ok(typeof parsed.reason === 'string' && parsed.reason.includes(row.declaredFile),
           `${row.name}: the refusal reason must name the declared file so a human reading it `
           + `can act on it. Got: ${parsed.reason}`);
+        // Negative plus positive, so the claim cannot drift back by deleting
+        // the sentence outright. The reason names the matching RULE, and
+        // `changedFilesInclude` stopped reducing to a basename in c4dabbb79 —
+        // its own doc comment now states it deliberately does NOT reuse
+        // `locationsAgree`'s `path.win32.basename` reduction. A message still
+        // saying `basename` sends the engineer reading this refusal after a
+        // basename collision that is not the cause. See #3770 (CCR-02).
+        assert.ok(!parsed.reason.includes('basename'),
+          `${row.name}: the refusal reason must not claim the membership check matched by `
+          + `basename — it matches by path segment, anchored on \`/\`, which is a strictly `
+          + `narrower rule and a different debugging lead. Got: ${parsed.reason}`);
+        assert.ok(parsed.reason.includes('path segment'),
+          `${row.name}: the refusal reason must name the rule that actually decided it — `
+          + `path-segment matching. Got: ${parsed.reason}`);
       }
     }
   });
