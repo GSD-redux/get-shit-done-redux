@@ -57,7 +57,18 @@ const STDIN_BOUND_MS = 5000;
 function detectShells() {
   const shells = [{ name: 'bash', cmd: 'bash' }];
   const probe = spawnSync('zsh', ['-c', 'exit 0'], { timeout: PROBE_TIMEOUT_MS, windowsHide: true });
-  if (!probe.error && probe.status === 0) shells.push({ name: 'zsh', cmd: 'zsh' });
+  if (!probe.error && probe.status === 0) {
+    shells.push({ name: 'zsh', cmd: 'zsh' });
+  } else {
+    // gsd-core#4109: a skipped zsh lane reads identically to a passing one in
+    // this suite's own output, which is exactly why the bash/zsh
+    // word-splitting bug class went undetected in CI as long as it did. Make
+    // the skip loud so a zsh-less run (e.g. some ubuntu CI images) reads as
+    // "zsh coverage unknown", not "all lanes green".
+    console.warn(
+      '[review-build-prompt-optional-sections.test.cjs] zsh not available — zsh-lane tests SKIPPED, coverage for this shell is UNKNOWN, not verified',
+    );
+  }
   return shells;
 }
 const SHELLS = detectShells();
