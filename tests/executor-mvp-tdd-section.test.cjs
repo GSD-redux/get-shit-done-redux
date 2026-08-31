@@ -2743,6 +2743,16 @@ describe('task red-evidence-verdict — evidence file membership (#3770 D-1 revi
     { name: 'an absolute declaration',
       declaredFile: '/srv/build/tests/test_pricing.py', changedFiles: 'tests/test_pricing.py',
       expected: 'authorize' },
+    // The mirror of the bare-basename DECLARATION row above. That row is the
+    // accepted residual — a bare declaration cannot identify a directory, so
+    // it matches at any depth. This one is not: the declaration names a
+    // directory, so an unrelated root-level file sharing only its basename
+    // must not stand in for it. Reached in production via
+    // `execute-phase.md:229`, which passes `git show --name-only` output
+    // straight through. See gsd-core-ifc.
+    { name: 'a bare-basename changed file against a directory-qualified declaration',
+      declaredFile: 'pkg/pricing/test_pricing.py', changedFiles: 'test_pricing.py',
+      expected: 'red_commit_not_failing' },
     { name: 'the commit touches only source',
       declaredFile: 'tests/test_pricing.py', changedFiles: 'src/pricing.py',
       expected: 'red_commit_not_failing' },
