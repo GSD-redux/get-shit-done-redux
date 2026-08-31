@@ -52,6 +52,8 @@ const BASE_SITES = [
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
   { file: 'roadmap-parser.cts', site: 'getMilestonePhaseFilter phaseHeadingPattern',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
+  { file: 'commands.cts', site: 'cmdStats headingPattern',
+    baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
   // #2761 B2: BRACKET_PHASE_TAIL_RE (isBracketMilestoneBoundary's phase-tail
   // discriminator) always passes the literal 'bracket' convention — it is not
   // itself convention-gated (the CALLER, isBracketMilestoneBoundary, is only
@@ -122,6 +124,10 @@ const BASE_SITES = [
   { file: 'planning-snapshot.cts', site: 'buildCurrentMilestoneRoadmapPhaseIdsField (W026, ex-verify.cts B6)',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
   { file: 'planning-snapshot.cts', site: 'buildRoadmapPhaseCheckboxesField (W011/W006 not-started)',
+    baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
+  { file: 'init.cts', site: 'cmdInitManager phaseHeadingPrefix',
+    baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
+  { file: 'init.cts', site: 'cmdInitManager phaseHeadingPrefixNoCapture',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
 ];
 
@@ -681,6 +687,8 @@ describe('#612 PR-2: every selector call site declares the right baseline (live 
 
   // file -> [ANY_BRACKET count, LABEL_ONLY count]
   const EXPECTED = {
+    'commands.cts': [1, 0],
+    'init.cts': [0, 2],
     'roadmap.cts': [3, 3],
     'validate.cts': [1, 2],
     'state.cts': [0, 3],

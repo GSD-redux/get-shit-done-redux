@@ -89,6 +89,15 @@ const SHIP_PR_BODY_TEMPLATE_TOKENS = new Set([
 ]);
 const SHIP_PR_BODY_SOURCE_RE = /^(ROADMAP|PLAN|SUMMARY|VERIFICATION|STATE|REQUIREMENTS|CONTEXT)\.md\s+##\s+[^\r\n#][^\r\n]*$/;
 
+// ADR-612 PR-5: configuration accepts every convention the runtime can read.
+// Keep this distinct from roadmap-upgrade's supported target set: sequential
+// is valid project configuration but is not a migration destination.
+const VALID_PHASE_ID_CONVENTIONS: readonly string[] = Object.freeze([
+  'sequential',
+  'milestone-prefixed',
+  'bracket',
+]);
+
 /**
  * Schema-level defaults for well-known config keys.
  * When a key is absent from config.json and no --default flag was supplied,
@@ -820,6 +829,10 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
   const VALID_CONTEXT_VALUES = ['dev', 'research', 'review'];
   if (kp === 'context') assertEnumValue(parsedValue, val, VALID_CONTEXT_VALUES, 'context value');
 
+  if (kp === 'phase_id_convention') {
+    assertEnumValue(parsedValue, val, VALID_PHASE_ID_CONVENTIONS, 'phase_id_convention');
+  }
+
   // Codebase drift detector (#2003)
   const VALID_DRIFT_ACTIONS = ['warn', 'auto-remap'];
   if (kp === 'workflow.drift_action') assertEnumValue(parsedValue, val, VALID_DRIFT_ACTIONS, 'workflow.drift_action');
@@ -1304,6 +1317,7 @@ function cmdMigrateConfig(cwd: string, raw: boolean): void {
 
 export = {
   VALID_CONFIG_KEYS,
+  VALID_PHASE_ID_CONVENTIONS,
   cmdConfigEnsureSection,
   cmdConfigSet,
   cmdConfigGet,
