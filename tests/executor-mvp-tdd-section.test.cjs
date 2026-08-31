@@ -2161,6 +2161,28 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'must authorize it. A rule that instead asks whether the path looks like a JS or pytest ' +
       'test rejects every Go, Rust and R project outright — the language-specific class of ' +
       'rule this phase exists to remove. See #3770 / CR-01.');
+
+    // ── S8, stale-trailer RED selection (RED, DI-6) ───────────────────────
+    // Commit order matters: git log is newest-first and a real commit's
+    // timestamp only moves forward. Commit the trailer-BEARING commit FIRST,
+    // then a SECOND, trailer-LESS commit after it, so the trailer-less one is
+    // newest — exactly how the real defect manifests: a developer re-commits
+    // or amends a RED test later without carrying its evidence forward.
+    // Mirrors G10 against execute-phase.md's shipped gate.
+    const s8 = newRepo();
+    commit(s8, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', evidence('S8'));
+    commit(s8, 'tests/test_pricing_more.py', 'test(08-02): add failing test for discount', undefined);
+    const r8 = runGate(s8);
+    assert.notStrictEqual(r8.exitCode, 0,
+      'S8: the NEWEST plan-scoped commit carries no red-evidence: trailer and must NOT authorize ' +
+      'on an OLDER commit\'s trailer. Fails today: the selection regex requires a non-empty ' +
+      'trailer field, so grep -m1 skips the newer trailer-less commit and silently selects the ' +
+      'older one instead. See #3770 (DI-6).');
+    assert.match(r8.stdout, /none carries a `?red-evidence:/,
+      'the failure must name the NEWEST commit\'s own missing evidence via the same sentence S4 ' +
+      'asserts, never fall back to authorizing on the older commit\'s trailer. Fails today: the ' +
+      'selected commit is the OLDER, trailer-bearing one, so its own trailer text (marked "# S8") ' +
+      'prints instead of this sentence.');
   });
 
   // The MVP+TDD gate snippet is pure text extraction — hoisted here so both
@@ -2447,6 +2469,65 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'G9 non-vacuity: a non-ASCII declaration naming a DIFFERENT file from the one the commit ' +
       'touched must still be refused — otherwise G9 could be satisfied by unquoting that also ' +
       'stopped comparing.');
+
+    // ── G10, stale-trailer RED selection (RED, DI-6) ────────────────────────
+    // Commit order matters: git log is newest-first and a real commit's
+    // timestamp only moves forward. Commit the trailer-BEARING commit FIRST,
+    // then a SECOND, trailer-LESS commit after it, so the trailer-less one is
+    // newest — exactly how the real defect manifests: a developer re-commits
+    // or amends a RED test later without carrying its evidence forward.
+    const s10 = newRepo(t);
+    const taskFile10 = behaviorTask(s10);
+    commit(s10, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g1Trailer);
+    commit(s10, 'tests/test_pricing_more.py', 'test(08-02): add failing test for discount', undefined);
+    const r10 = runGate(scriptPath, s10, taskFile10);
+    assert.notStrictEqual(r10.exitCode, 0,
+      'G10: the NEWEST plan-scoped commit carries no red-evidence: trailer and must NOT ' +
+      'authorize on an OLDER commit\'s trailer. Fails today: the trailer-capture regex requires ' +
+      'a non-empty field, so grep -m1 skips the newer trailer-less commit and silently selects ' +
+      'the older one instead. See #3770 (DI-6).');
+    assert.ok(r10.stdout.includes('missing_red_evidence'),
+      'the failure must name the newest commit\'s own missing evidence as missing_red_evidence, ' +
+      'never silently authorize on a stale, unrelated commit\'s trailer.');
+
+    // ── G11, unresolvable base branch (RED, DI-5) ───────────────────────────
+    // git.base-branch's tier-5 fallback always returns a non-empty string
+    // ('main') even when no ref by that name exists anywhere in this
+    // repository. Unlike newRepo(t) above, this fixture deliberately omits
+    // the `.planning/config.json` override, has no origin remote, and the
+    // ONLY branch present is named something other than main or master — so
+    // neither `origin/<base>` nor `<base>` can resolve as a real ref.
+    // Confirmed directly against `resolveBaseBranchDiagnostics` for this
+    // exact shape: it returns `{branch:'main', verified:true}` — `verified`
+    // is false only when a git subprocess itself errors or times out, not
+    // when it cleanly reports no candidate, so the assertion below is scoped
+    // to the resolved branch value, never the verified flag.
+    const s11 = createTempGitProject('gsd-3770-execgate-g11-');
+    t.after(() => cleanup(s11));
+    runGit(['config', 'core.hooksPath', ''], { cwd: s11 });
+    const initialBranch11 = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: s11 }).stdout.trim();
+    runGit(['checkout', '-b', 'gsd-3770-g11-work'], { cwd: s11 });
+    runGit(['branch', '-D', initialBranch11], { cwd: s11 });
+    const taskFile11 = behaviorTask(s11);
+    commit(s11, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g1Trailer);
+    const baseBranch11 = runNode([GSD_TOOLS, 'query', 'git.base-branch', '--raw'], { cwd: s11 });
+    assert.strictEqual(baseBranch11.stdout.trim(), 'main',
+      'precondition: with no main/master branch, no origin remote, and no config override, ' +
+      'git.base-branch must still resolve to the non-empty literal "main" — the fail-closed ' +
+      'RED_RANGE gate below exists precisely because this resolved value is not backed by a ' +
+      'real ref in this repository.');
+    const r11 = runGate(scriptPath, s11, taskFile11);
+    assert.notStrictEqual(r11.exitCode, 0,
+      'G11: an unresolvable base branch must trip the gate with a distinct label BEFORE any ' +
+      'commit selection runs, never fall through to an unbounded HEAD scan that would silently ' +
+      'find the valid RED commit above and authorize on a base the range was never actually ' +
+      'bounded by. Fails today: RED_RANGE defaults to "HEAD" and the valid commit authorizes. ' +
+      'See #3770 (DI-5).');
+    assert.ok(r11.stdout.includes('cannot_resolve_base_branch'),
+      'the failure must name the unresolvable-base case distinctly, not blur into ' +
+      'missing_red_commit or missing_red_evidence — an operator debugging this needs to know ' +
+      'the range could not be bounded, not that no matching commit was found within an ' +
+      '(actually unbounded) range.');
   });
 
   test('the gate finds the RED commit in every ecosystem and halts rather than falling back',
