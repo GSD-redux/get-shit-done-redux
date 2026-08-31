@@ -1673,6 +1673,12 @@ ${Array(redContractCount).fill(block).join('\n')}
     { name: '`command` a number (12345) rather than a string',
       mutate: (t) => { t.command = 12345; return t; },
       expected: 'red_commit_not_failing' },
+    { name: '`actual` carrying a fourth key beyond `phase`, `class_or_mode` and `subject`',
+      mutate: (t) => { t.actual.duration_ms = 12; return t; },
+      expected: 'red_commit_not_failing' },
+    { name: '`expected` carrying a fourth key beyond `phase`, `class_or_mode` and `subject`',
+      mutate: (t) => { t.expected.duration_ms = 12; return t; },
+      expected: 'red_commit_not_failing' },
   ];
 
   test('shape-check edges: empty, absent and malformed trailer values fail closed; '
