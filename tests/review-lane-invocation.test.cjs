@@ -26,6 +26,7 @@ const {
 } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
 const {
   resolveLanePlan,
+  resolveTimeoutMs,
   isEmptyReview,
   normalizeHost,
   fileRefPrompt,
@@ -85,6 +86,8 @@ const GOLDEN = [
   { slug: 'opencode', binary: 'opencode', argv: ['run', '--model', 'O', '--effort', 'high', '--format', 'json', '-'], stdin: true, out: 'stdout', timeout: 660000 },
   { slug: 'qwen', binary: 'qwen', argv: ['-'], stdin: true, out: 'stdout', timeout: 900000 },
   { slug: 'cursor', binary: 'cursor-agent', argv: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
+  // resolveLanePlan fully resolves {{nativeTimeout}} itself (#3274) — this row proves the
+  // unconfigured default reproduces the original literal exactly.
   { slug: 'antigravity', binary: 'agy', argv: ['--print-timeout', '540s', '--model', 'A', '-p', FILE_REF], stdin: false, out: 'stdout', timeout: 600000 },
   { slug: 'kimi-code', binary: 'kimi', argv: ['-m', 'K', '-p', FILE_REF], stdin: false, out: 'stdout', timeout: 900000 },
 ];
@@ -134,6 +137,130 @@ describe('reviewer lane invocation — golden plans (the strangler-fig contract)
     for (const lane of REVIEWER_LANES) {
       assert.equal(resolve(lane.slug).ok, true, `${lane.slug} failed to resolve`);
     }
+  });
+});
+
+describe('#3274 — timeoutConfigKey resolves the outer wall-clock cap', () => {
+  const AGY_FLOOR = REVIEWER_LANES.find((l) => l.slug === 'antigravity').timeoutFloorMs;
+  const AGY_KEY = REVIEWER_LANES.find((l) => l.slug === 'antigravity').timeoutConfigKey;
+
+  test('an absent config key falls back to timeoutFloorMs (row 1)', () => {
+    const r = resolve('antigravity', { config: {} });
+    assert.equal(r.plan.timeoutMs, AGY_FLOOR);
+  });
+
+  test('a configured positive number overrides timeoutFloorMs, seconds -> ms (row 2)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 900 } });
+    assert.equal(r.plan.timeoutMs, 900_000);
+  });
+
+  test('0 is treated as unset, not a zero-length timeout (row 3)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 0 } });
+    assert.equal(r.plan.timeoutMs, AGY_FLOOR);
+  });
+
+  test('a negative configured timeout is treated as unset (row 4)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: -5 } });
+    assert.equal(r.plan.timeoutMs, AGY_FLOOR);
+  });
+
+  test('NaN and Infinity are treated as unset (row 5)', () => {
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: NaN } }).plan.timeoutMs, AGY_FLOOR);
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: Infinity } }).plan.timeoutMs, AGY_FLOOR);
+  });
+
+  test('a non-number configured value is never coerced, falls back (row 6)', () => {
+    for (const bad of ['900', true, {}, [], 'null']) {
+      const r = resolve('antigravity', { config: { [AGY_KEY]: bad } });
+      assert.equal(r.plan.timeoutMs, AGY_FLOOR, `value ${JSON.stringify(bad)} must not resolve to a timeout`);
+    }
+  });
+
+  test('a lane with no timeoutConfigKey field falls back like an unset key (row 7)', () => {
+    const lane = { ...REVIEWER_LANES.find((l) => l.slug === 'gemini') };
+    delete lane.timeoutConfigKey;
+    const r = resolveLanePlan({ lane, configGet: () => 900, runDir: RUN, repoRoot: ROOT });
+    assert.equal(r.ok, true);
+    assert.equal(r.plan.timeoutMs, lane.timeoutFloorMs);
+  });
+
+  test('resolveTimeoutMs: direct unit — unset falls back to floorMs', () => {
+    assert.equal(resolveTimeoutMs(null, 5000, () => undefined), 5000);
+    assert.equal(resolveTimeoutMs('some.key', 5000, () => undefined), 5000);
+  });
+
+  test('resolveTimeoutMs: direct unit — configured value overrides, seconds -> ms', () => {
+    assert.equal(resolveTimeoutMs('some.key', 5000, (k) => (k === 'some.key' ? 30 : undefined)), 30000);
+  });
+
+  test('boundary: 0 vs 1 vs a fractional second (row 8)', () => {
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: 0 } }).plan.timeoutMs, AGY_FLOOR);
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: 1 } }).plan.timeoutMs, 1000);
+    assert.equal(resolve('antigravity', { config: { [AGY_KEY]: 0.5 } }).plan.timeoutMs, 500);
+  });
+
+  test("a non-antigravity lane's configured timeout does not touch argv (row 13)", () => {
+    const key = REVIEWER_LANES.find((l) => l.slug === 'gemini').timeoutConfigKey;
+    const unset = resolve('gemini', { config: {} });
+    const configured = resolve('gemini', { config: { [key]: 300 } });
+    assert.deepStrictEqual(configured.plan.argv, unset.plan.argv);
+    assert.notEqual(configured.plan.timeoutMs, unset.plan.timeoutMs);
+  });
+
+  test('property: any positive-second config resolves to exactly seconds * 1000 ms (row 20)', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 1_000_000 }), (seconds) => {
+        const r = resolve('antigravity', { config: { [AGY_KEY]: seconds } });
+        assert.equal(r.plan.timeoutMs, seconds * 1000);
+      }),
+      FC,
+    );
+  });
+
+  test('property: any hostile config value degrades to timeoutFloorMs, never throws (row 21)', () => {
+    const hostile = fc.oneof(
+      fc.string(),
+      fc.boolean(),
+      fc.object(),
+      fc.array(fc.anything()),
+      fc.constant(0),
+      fc.integer({ max: 0 }),
+      fc.constant(NaN),
+      fc.constant(Infinity),
+      fc.constant(-Infinity),
+    );
+    fc.assert(
+      fc.property(hostile, (value) => {
+        const r = resolve('antigravity', { config: { [AGY_KEY]: value } });
+        assert.equal(r.ok, true);
+        assert.equal(r.plan.timeoutMs, AGY_FLOOR);
+      }),
+      FC,
+    );
+  });
+
+  test('a configured antigravity timeout derives both the outer cap and the native flag (row 10)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 900 } });
+    assert.equal(r.plan.timeoutMs, 900_000);
+    const i = r.plan.argv.indexOf('--print-timeout');
+    assert.equal(r.plan.argv[i + 1], '840s');
+  });
+
+  test('a native timeout below the 60s buffer clamps to 1s, never 0 or negative (row 11)', () => {
+    const r = resolve('antigravity', { config: { [AGY_KEY]: 30 } });
+    const i = r.plan.argv.indexOf('--print-timeout');
+    assert.equal(r.plan.argv[i + 1], '1s');
+  });
+
+  test('boundary around the 60-second native buffer (row 12)', () => {
+    const nativeFor = (seconds) => {
+      const r = resolve('antigravity', { config: { [AGY_KEY]: seconds } });
+      return r.plan.argv[r.plan.argv.indexOf('--print-timeout') + 1];
+    };
+    assert.equal(nativeFor(59), '1s');   // floor(59)-60 = -1 -> clamped
+    assert.equal(nativeFor(60), '1s');   // floor(60)-60 = 0 -> clamped
+    assert.equal(nativeFor(61), '1s');   // floor(61)-60 = 1
+    assert.equal(nativeFor(121), '61s'); // floor(121)-60 = 61
   });
 });
 

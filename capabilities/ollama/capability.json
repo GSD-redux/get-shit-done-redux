@@ -1,7 +1,7 @@
 {
   "id": "ollama",
   "role": "reviewer",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "title": "Ollama",
   "description": "Ollama local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.ollama_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq.",
   "tier": "full",
@@ -30,6 +30,7 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 120000,
+    "timeoutConfigKey": "review.timeouts.ollama",
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Ollama",
     "evidenceClass": "source-grounded",
@@ -53,6 +54,11 @@
       "type": "number",
       "default": -1,
       "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    },
+    "review.timeouts.ollama": {
+      "type": "number",
+      "default": -1,
+      "description": "Outer wall-clock timeout override (seconds) for the Ollama reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
     }
   }
 }

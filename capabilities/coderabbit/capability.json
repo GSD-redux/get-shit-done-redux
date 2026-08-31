@@ -1,7 +1,7 @@
 {
   "id": "coderabbit",
   "role": "reviewer",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "title": "CodeRabbit",
   "description": "CodeRabbit CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Reviews the working-tree diff (`coderabbit review --prompt-only`), not the source tree, and accepts neither a prompt nor a model flag; findings are down-weighted in consensus (evidenceClass: diff-only).",
   "tier": "full",
@@ -31,6 +31,7 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 360000,
+    "timeoutConfigKey": null,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "CodeRabbit",
     "evidenceClass": "diff-only",

@@ -42,6 +42,7 @@ Every truth must resolve to VERIFIED, FAILED (BLOCKER), or UNCERTAIN (WARNING wi
 @~/.claude/gsd-core/references/verification-overrides.md
 @~/.claude/gsd-core/references/gates.md
 @~/.claude/gsd-core/references/verifier-phase-gates.md
+@~/.claude/gsd-core/references/verifier-evidence-gate.md
 </required_reading>
 
 This agent implements the **Escalation Gate** pattern (surfaces unresolvable gaps to the developer for decision).
@@ -410,7 +411,9 @@ grep -n -B 2 -A 2 "console\.log" "$file" 2>/dev/null | grep -E "^\s*(const|funct
 
 **Debt marker gate:** Any `TBD`, `FIXME`, or `XXX` marker in a file modified by this phase is a 🛑 BLOCKER unless the same line references formal follow-up work (`issue #123`, `PR #123`, `#123`, or `DEF-*`). Unreferenced markers mean completion is not auditable; set `status: gaps_found` and list each marker under `gaps`.
 
-Categorize: 🛑 Blocker (prevents goal or unresolved debt marker) | ⚠️ Warning (incomplete) | ℹ️ Info (notable)
+**Re-verification evidence gate (#3304):** in re-verification mode, a 🛑 Blocker other than an unresolved debt marker (always self-evidencing) blocks unconditionally only if it is a carried-forward gap (Step 0's `gaps:`) or the flagged file was git-modified since the prior `verified:` timestamp (fail closed: unresolvable history counts as modified). Otherwise it predates the gap-closure round unflagged and needs deterministic evidence — a named test run red, or another concrete reproducible artifact — to stay blocking. Full algorithm: @gsd-core/references/verifier-evidence-gate.md. Unevidenced → 📋 Advisory: record in `advisory:` frontmatter, exclude from Step 9 Rule 1, never revert a completed must-have.
+
+Categorize: 🛑 Blocker (prevents goal or unresolved debt marker) | ⚠️ Warning (incomplete) | ℹ️ Info (notable) | 📋 Advisory (re-verification only — new-scope, unevidenced; see above)
 
 ## Step 7b: Behavioral Spot-Checks
 
@@ -700,6 +703,11 @@ deferred: # Only if deferred items exist (Step 9b)
   - truth: "Observable truth addressed in a later phase"
     addressed_in: "Phase N"
     evidence: "Matching goal or success criteria text"
+advisory: # Only if unevidenced new-scope findings exist (Step 7, re-verification only)
+  - finding: "Short description of the new-scope concern"
+    category: architectural | security | other
+    reason: "Why raised; what would resolve it"
+    evidence_status: "none provided"
 behavior_unverified_items: # Only if behavior_unverified > 0 — emitted regardless of overall status, so these survive a gaps_found phase
   - truth: "Observable truth whose state transition or cancellation/cleanup/ordering invariant no test exercises"
     test: "What to trigger"
@@ -743,6 +751,15 @@ Only include this section if deferred items exist (from Step 9b).
 | # | Item | Addressed In | Evidence |
 |---|------|-------------|----------|
 | 1 | {truth} | Phase {N} | {matching goal or success criteria} |
+
+### Advisory (New Scope, Unevidenced)
+
+New-scope findings from Step 7 with no deterministic evidence — reported,
+not blocking. Include this section (even "None") whenever re-verification ran.
+
+| # | Finding | Category | Why Advisory |
+|---|---------|----------|--------------|
+| 1 | {finding} | {category} | new-scope, no deterministic evidence |
 
 ### Required Artifacts
 
