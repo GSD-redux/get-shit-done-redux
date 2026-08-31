@@ -2391,6 +2391,47 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       "satisfies g1Trailer's own declared_file basename regardless of what the commit " +
       'actually touched, must authorize — proving the guard is the membership check and not ' +
       'something else about this fixture.');
+
+    // ── G9, non-ASCII path in the RED commit (RED, #3770 CCR-01) ───────────
+    // The one scenario whose changed-file list is PRODUCED by git rather than
+    // hand-typed. `MEMBERSHIP_ROWS` (below, :2733) proves the matcher against
+    // fixtures the test author wrote; nothing proved it against the bytes the
+    // producer its own comment names — `execute-phase.md`'s
+    // `git show --name-only` — actually emits. `core.quotePath` defaults to
+    // TRUE, so git wraps any path carrying a non-ASCII byte in quotes and
+    // octal-escapes it (`"tests/test_pricing_\317\211.py"`), and
+    // `changedFilesInclude` never unquotes: the escapes read as extra path
+    // segments and an honest RED commit is refused. This is the DEFAULT
+    // configuration, not an edge one.
+    //
+    // The character is deliberately GREEK SMALL LETTER OMEGA, not an accented
+    // Latin letter: `ω` has no canonical decomposition, so NFC and NFD are the
+    // same bytes and macOS's NFD-normalizing filesystem cannot turn this into
+    // a normalization failure wearing this bug's costume.
+    const s9 = newRepo(t);
+    const omegaFile = 'tests/test_pricing_ω.py';
+    const omegaId = `${omegaFile}::test_discount_reduces_total`;
+    const taskFile9 = behaviorTask(s9, omegaId);
+    commit(s9, omegaFile, 'test(08-02): add failing test for discount', ecoTrailer(omegaId, omegaFile));
+    const r9 = runGate(scriptPath, s9, taskFile9);
+    assert.strictEqual(r9.exitCode, 0,
+      'G9: a RED commit that touches the very file its evidence declares must authorize even ' +
+      'when that path carries a non-ASCII byte. Fails today: git quotes and octal-escapes the ' +
+      'path in `show --name-only` output, the membership check never unquotes it, and the gate ' +
+      'reports red_commit_not_failing against a commit that is correct. See #3770 (CCR-01).');
+    // Pinned so a future green here cannot come from the gate having stopped
+    // checking membership at all: the same fixture with the declaration moved
+    // to a file the commit never touched must still refuse.
+    const s9Decoy = newRepo(t);
+    const decoyId = 'tests/test_shipping_ω.py::test_discount_reduces_total';
+    const taskFile9b = behaviorTask(s9Decoy, decoyId);
+    commit(s9Decoy, omegaFile, 'test(08-02): add failing test for discount',
+      ecoTrailer(decoyId, 'tests/test_shipping_ω.py'));
+    const r9Decoy = runGate(scriptPath, s9Decoy, taskFile9b);
+    assert.notStrictEqual(r9Decoy.exitCode, 0,
+      'G9 non-vacuity: a non-ASCII declaration naming a DIFFERENT file from the one the commit ' +
+      'touched must still be refused — otherwise G9 could be satisfied by unquoting that also ' +
+      'stopped comparing.');
   });
 
   test('the gate finds the RED commit in every ecosystem and halts rather than falling back',
