@@ -306,6 +306,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `verification-patterns.md` | How to verify different artifact types. |
 | `verification-overrides.md` | Per-artifact verification override rules. |
 | `verifier-phase-gates.md` | Verifier-time gates eagerly imported by `gsd-verifier` (migrated from the retired `verify-phase` workflow, #1892): decision-coverage validation (#2492), test-quality audit, and infrastructure-phase human-verification scoping (#2504). |
+| `verifier-evidence-gate.md` | Re-verification convergence gate loaded by `gsd-verifier` (#3304): a Step 7 anti-pattern blocker that is neither a carried-forward gap nor a regression needs deterministic evidence to stay blocking, else it downgrades to advisory. |
 | `planning-config.md` | Full config schema and behavior. |
 | `security-asvs-levels.md` | OWASP ASVS level definitions for GSD threat modeling — per-level planner disposition rigor and auditor verification depth (L1 opportunistic, L2 standard, L3 comprehensive). |
 | `git-integration.md` | Git commit, branching, and history patterns. |
