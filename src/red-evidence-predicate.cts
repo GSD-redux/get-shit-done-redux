@@ -37,6 +37,13 @@ interface RedEvidenceResult {
   verdict: RedEvidenceVerdict;
   reason: string;
   failed?: string[];
+  /**
+   * `location.declared.file`, carried on the `authorize` result ONLY (#3770
+   * D-1 revised). The caller (`routeRedEvidenceVerdict`) uses it to verify
+   * the selected commit actually touched the file the evidence names —
+   * this module stays a pure evaluator and performs no such check itself.
+   */
+  declared_file?: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -273,6 +280,7 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
     return {
       verdict: 'authorize',
       reason: 'every conjunct of the RED Predicate holds',
+      declared_file: declaredPoint.file,
     };
   }
 

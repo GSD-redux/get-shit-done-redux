@@ -233,7 +233,7 @@ function routeResolveContent(
 function routeRedEvidenceVerdict({ args, cwd, raw }: RouteTaskCommandOptions): void {
   const opts = parseNamedArgsOrExit(
     args,
-    { valueFlags: ['task-file', 'trailer'], positionals: 2 },
+    { valueFlags: ['task-file', 'trailer', 'changed-files'], positionals: 2 },
     error,
   );
   const taskFile = opts['task-file'];
@@ -270,7 +270,51 @@ function routeRedEvidenceVerdict({ args, cwd, raw }: RouteTaskCommandOptions): v
   }
   const taskContent = fs.readFileSync(realTaskPath, 'utf-8');
 
-  output(evaluateRedEvidence(taskContent, trailer), raw, undefined);
+  // Placed AFTER the path guards above, deliberately: the two existing
+  // cases in tests/red-evidence-verdict-cli.test.cjs invoke this arm with a
+  // deliberately bad --task-file and NO --changed-files, and assert on the
+  // path guards' own messages. A usage check placed earlier would report
+  // "--changed-files is required" first and turn both into casualties of
+  // an argument-order choice (#3770 D-1 revised, T-04.1-04).
+  const changedFiles = opts['changed-files'];
+  if (typeof changedFiles !== 'string') {
+    error(
+      '--changed-files <newline-delimited paths> is required for `task red-evidence-verdict`',
+      ERROR_REASON.USAGE,
+    );
+    return;
+  }
+
+  const result = evaluateRedEvidence(taskContent, trailer);
+  if (result.verdict === 'authorize' && typeof result.declared_file === 'string'
+    && !changedFilesInclude(changedFiles, result.declared_file)) {
+    output({
+      verdict: 'red_commit_not_failing',
+      reason: `the commit's changed files do not include "${result.declared_file}", the file `
+        + 'the red-evidence trailer itself declares — matched by basename',
+    }, raw, undefined);
+    return;
+  }
+
+  output(result, raw, undefined);
+}
+
+/**
+ * Does `changedFilesText` (newline-delimited, as `git show --name-only`
+ * emits) include a path whose basename matches `declaredFile`'s? Reuses
+ * `locationsAgree`'s own normalization (`path.win32.basename`,
+ * `red-evidence-predicate.cts:99-113`) rather than restating a second path
+ * rule — `path.win32.basename` normalizes both `/` and `\` separators, so a
+ * POSIX-reported changed-file path and a Windows-form declared path still
+ * compare equal (#3770 D-1 revised).
+ */
+function changedFilesInclude(changedFilesText: string, declaredFile: string): boolean {
+  const declaredBase = path.win32.basename(declaredFile);
+  return changedFilesText
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .some((line) => path.win32.basename(line) === declaredBase);
 }
 
 function routeTaskCommand({ args, cwd, raw }: RouteTaskCommandOptions): void {
