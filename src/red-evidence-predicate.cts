@@ -12,7 +12,9 @@ import { safeJsonParse } from './security.cjs';
  * This is a leaf pure module: no fs, no child_process, no config. The caller
  * (`routeRedEvidenceVerdict` in `task-command-router.cts`) reads the task
  * file and the trailer text itself and passes both in as strings — this
- * module owns all JSON parsing and every key-set equality check.
+ * module owns all JSON parsing and every key-set equality check: the
+ * trailer's top level, `location`'s two points, each point's two fields,
+ * and `expected`/`actual`'s three fields.
  *
  * `evaluateRedEvidence` never throws and never defaults to `authorize`: every
  * malformed or ambiguous input returns `red_commit_not_failing` with a
@@ -50,6 +52,9 @@ const LOCATION_KEYS = ['declared', 'observed'].sort();
 /** `location.declared` / `location.observed`'s two sub-keys, sorted. */
 const LOCATION_POINT_KEYS = ['file', 'line'].sort();
 
+/** `expected` / `actual`'s three sub-keys, sorted. */
+const TRIPLE_KEYS = ['class_or_mode', 'phase', 'subject'].sort();
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -77,8 +82,7 @@ function keysEqual(obj: unknown, expectedSortedKeys: readonly string[]): boolean
 }
 
 /** `expected_failure` / `actual` triple structural equality over the three declared fields. */
-function sameTriple(a: unknown, b: unknown): boolean {
-  if (!isPlainObject(a) || !isPlainObject(b)) return false;
+function sameTriple(a: Record<string, unknown>, b: RedContractPlan['expected_failure']): boolean {
   return a['phase'] === b['phase']
     && a['class_or_mode'] === b['class_or_mode']
     && a['subject'] === b['subject'];
@@ -243,21 +247,25 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
     };
   }
 
-  const expected = trailer['expected'];
-  const actual = trailer['actual'];
-
-  const actualSubject = isPlainObject(actual) ? actual['subject'] : undefined;
+  if (!keysEqual(trailer['expected'], TRIPLE_KEYS) || !keysEqual(trailer['actual'], TRIPLE_KEYS)) {
+    return {
+      verdict: 'red_commit_not_failing',
+      reason: '"expected" and "actual" must each equal exactly '
+        + `[${TRIPLE_KEYS.join(', ')}]`,
+    };
+  }
+  const expectedTriple = trailer['expected'] as Record<string, unknown>;
+  const actualTriple = trailer['actual'] as Record<string, unknown>;
 
   const checks: Array<[string, boolean]> = [
-    ['trailer.expected == plan.expected_failure', sameTriple(expected, plan.expected_failure)],
-    ['actual.phase == expected.phase',
-      isPlainObject(actual) && isPlainObject(expected) && actual['phase'] === expected['phase']],
+    ['trailer.expected == plan.expected_failure',
+      sameTriple(expectedTriple, plan.expected_failure)],
+    ['actual.phase == expected.phase', actualTriple['phase'] === expectedTriple['phase']],
     ['actual.class_or_mode == expected.class_or_mode',
-      isPlainObject(actual) && isPlainObject(expected)
-        && actual['class_or_mode'] === expected['class_or_mode']],
+      actualTriple['class_or_mode'] === expectedTriple['class_or_mode']],
     ['trailer.target_test == plan.target_test', trailer['target_test'] === plan.target_test],
     ['location.observed == location.declared', locationsAgree(declaredPoint, observedPoint)],
-    ['actual.subject == plan.target_test', actualSubject === plan.target_test],
+    ['actual.subject == plan.target_test', actualTriple['subject'] === plan.target_test],
   ];
   const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
 
