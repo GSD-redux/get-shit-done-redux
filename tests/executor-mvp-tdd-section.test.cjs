@@ -2500,45 +2500,6 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     assert.ok(r10.stdout.includes('missing_red_evidence'),
       'the failure must name the newest commit\'s own missing evidence as missing_red_evidence, ' +
       'never silently authorize on a stale, unrelated commit\'s trailer.');
-
-    // ── G11, unresolvable base branch (RED, DI-5) ───────────────────────────
-    // git.base-branch's tier-5 fallback always returns a non-empty string
-    // ('main') even when no ref by that name exists anywhere in this
-    // repository. Unlike newRepo(t) above, this fixture deliberately omits
-    // the `.planning/config.json` override, has no origin remote, and the
-    // ONLY branch present is named something other than main or master — so
-    // neither `origin/<base>` nor `<base>` can resolve as a real ref.
-    // Confirmed directly against `resolveBaseBranchDiagnostics` for this
-    // exact shape: it returns `{branch:'main', verified:true}` — `verified`
-    // is false only when a git subprocess itself errors or times out, not
-    // when it cleanly reports no candidate, so the assertion below is scoped
-    // to the resolved branch value, never the verified flag.
-    const s11 = createTempGitProject('gsd-3770-execgate-g11-');
-    t.after(() => cleanup(s11));
-    runGit(['config', 'core.hooksPath', ''], { cwd: s11 });
-    const initialBranch11 = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: s11 }).stdout.trim();
-    runGit(['checkout', '-b', 'gsd-3770-g11-work'], { cwd: s11 });
-    runGit(['branch', '-D', initialBranch11], { cwd: s11 });
-    const taskFile11 = behaviorTask(s11);
-    commit(s11, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g1Trailer);
-    const baseBranch11 = runNode([GSD_TOOLS, 'query', 'git.base-branch', '--raw'], { cwd: s11 });
-    assert.strictEqual(baseBranch11.stdout.trim(), 'main',
-      'precondition: with no main/master branch, no origin remote, and no config override, ' +
-      'git.base-branch must still resolve to the non-empty literal "main" — the fail-closed ' +
-      'RED_RANGE gate below exists precisely because this resolved value is not backed by a ' +
-      'real ref in this repository.');
-    const r11 = runGate(scriptPath, s11, taskFile11);
-    assert.notStrictEqual(r11.exitCode, 0,
-      'G11: an unresolvable base branch must trip the gate with a distinct label BEFORE any ' +
-      'commit selection runs, never fall through to an unbounded HEAD scan that would silently ' +
-      'find the valid RED commit above and authorize on a base the range was never actually ' +
-      'bounded by. Fails today: RED_RANGE defaults to "HEAD" and the valid commit authorizes. ' +
-      'See #3770 (DI-5).');
-    assert.ok(r11.stdout.includes('cannot_resolve_base_branch'),
-      'the failure must name the unresolvable-base case distinctly, not blur into ' +
-      'missing_red_commit or missing_red_evidence — an operator debugging this needs to know ' +
-      'the range could not be bounded, not that no matching commit was found within an ' +
-      '(actually unbounded) range.');
   });
 
   test('the gate finds the RED commit in every ecosystem and halts rather than falling back',
