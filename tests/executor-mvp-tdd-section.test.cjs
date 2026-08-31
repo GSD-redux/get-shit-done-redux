@@ -2090,17 +2090,18 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'GREEN alone, so a regression in RED selection cannot hide behind this scenario');
   });
 
-  test("the extracted MVP+TDD gate block authorizes only on the evaluator's verdict", (t) => {
-    // SIBLING of the S1-S6 test above, not an extension of it: that test
-    // extracts `### Executor Gate Validation` out of tdd.md and runs it with
-    // PHASE/PLAN. This extracts the MVP+TDD gate's own fenced block out of
-    // execute-phase.md and runs it with PHASE_NUMBER/PLAN_ID/TASK_ID/TASK_FILE
-    // — a different snippet, a different file, its own scenarios. See #3770.
-    const snippet = extractGateSnippet(EXECUTE_PHASE_SRC);
+  // The MVP+TDD gate snippet is pure text extraction — hoisted here so both
+  // this test and "the gate finds the RED commit in every ecosystem..."
+  // below share ONE extraction and one set of fixture helpers, per #3770
+  // Task 6's explicit "do not add a second harness, `newRepo` or `runGate`".
+  // Each helper that owns a temp resource takes the CALLING test's own `t`,
+  // so `t.after` cleanup still runs at the right scope.
+  const EXECUTE_PHASE_SNIPPET = extractGateSnippet(EXECUTE_PHASE_SRC);
 
+  const makeWriteScript = (t) => {
     const scriptDir = createTempDir('gsd-3770-execgate-sh-');
     t.after(() => cleanup(scriptDir));
-    const writeScript = (name, body) => {
+    return (name, body) => {
       const p = path.join(scriptDir, name);
       fs.writeFileSync(
         p,
@@ -2109,68 +2110,99 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       );
       return p;
     };
+  };
+
+  const GATE_BASE_ENV = {
+    MVP_MODE: 'true', TDD_MODE: 'true', PHASE_NUMBER: '08', PLAN_ID: '02', TASK_ID: '1',
+  };
+  const runGate = (script, cwd, taskFile) => runHook(script, [], {
+    interpreter: 'bash',
+    cwd,
+    env: { ...process.env, ...GATE_BASE_ENV, TASK_FILE: taskFile },
+  });
+
+  // `CONTRACT_TASK_LINES`' own runner-native id, string-replaced by the
+  // optional second argument so a caller can point the SAME fixture at a
+  // different ecosystem's id without a second task-file literal (#3770
+  // Task 6).
+  const DEFAULT_TARGET_ID = 'tests/test_pricing.py::test_discount_reduces_total';
+  const behaviorTask = (cwd, id = DEFAULT_TARGET_ID) => {
+    const p = path.join(cwd, 'task.md');
+    const lines = id === DEFAULT_TARGET_ID
+      ? CONTRACT_TASK_LINES
+      : CONTRACT_TASK_LINES.map((line) => line.split(DEFAULT_TARGET_ID).join(id));
+    fs.writeFileSync(p, lines.join('\n'));
+    return p;
+  };
+  const docOnlyTask = (cwd) => {
+    const p = path.join(cwd, 'task.md');
+    fs.writeFileSync(p, ['<task type="auto">', '  <files>docs/notes.md</files>', '</task>'].join('\n'));
+    return p;
+  };
+
+  const g1Trailer = trailerLine();
+  const mutateTrailer = (mutator) => {
+    const parsed = JSON.parse(g1Trailer.slice(g1Trailer.indexOf('{')));
+    mutator(parsed);
+    return `red-evidence: ${JSON.stringify(parsed)}`;
+  };
+  const g2Trailer = mutateTrailer((p) => { p.location.observed.line += 1; });
+  const g5Trailer = mutateTrailer((p) => { p.exit_status = 0; });
+  // Builds a trailer that authorizes on its own content for a DIFFERENT
+  // ecosystem's id and file: `target_test`, `expected.subject` and
+  // `actual.subject` all take `id`, and both `location` points take `file`
+  // (declared == observed, so `locationsAgree` holds) — only the gate's
+  // search and membership behavior is under test, never the predicate's
+  // own conjuncts (#3770 Task 6).
+  const ecoTrailer = (id, file) => mutateTrailer((p) => {
+    p.target_test = id;
+    p.expected.subject = id;
+    p.actual.subject = id;
+    p.location.declared.file = file;
+    p.location.observed.file = file;
+  });
+
+  const commit = (cwd, file, subject, trailer) => {
+    const abs = path.join(cwd, file);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, `# ${subject}\n`);
+    runGit(['add', file], { cwd });
+    runGit(trailer ? ['commit', '-m', subject, '-m', trailer] : ['commit', '-m', subject], { cwd });
+    return runGit(['rev-parse', 'HEAD'], { cwd }).stdout.trim();
+  };
+
+  // git.base-branch's tier-4 fallback only recognizes local branches
+  // literally named `main`/`master`, which depends on this machine's
+  // `init.defaultBranch` and is not portable to CI. Pin the base
+  // explicitly via `.planning/config.json` (tier 1) instead, and land all
+  // task commits on a second branch forked off it, so RED_RANGE always
+  // gets a real, non-trivial boundary regardless of the host's git config.
+  const newRepo = (t) => {
+    const dir = createTempGitProject('gsd-3770-execgate-');
+    t.after(() => cleanup(dir));
+    runGit(['config', 'core.hooksPath', ''], { cwd: dir });
+    const baseBranch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir }).stdout.trim();
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'),
+      JSON.stringify({ git: { base_branch: baseBranch } }));
+    runGit(['checkout', '-b', 'gsd-3770-work'], { cwd: dir });
+    return dir;
+  };
+
+  const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+
+  test("the extracted MVP+TDD gate block authorizes only on the evaluator's verdict", (t) => {
+    // SIBLING of the S1-S6 test above, not an extension of it: that test
+    // extracts `### Executor Gate Validation` out of tdd.md and runs it with
+    // PHASE/PLAN. This extracts the MVP+TDD gate's own fenced block out of
+    // execute-phase.md and runs it with PHASE_NUMBER/PLAN_ID/TASK_ID/TASK_FILE
+    // — a different snippet, a different file, its own scenarios. See #3770.
+    const snippet = EXECUTE_PHASE_SNIPPET;
+    const writeScript = makeWriteScript(t);
     const scriptPath = writeScript('gate.sh', snippet);
 
-    const baseEnv = {
-      MVP_MODE: 'true', TDD_MODE: 'true', PHASE_NUMBER: '08', PLAN_ID: '02', TASK_ID: '1',
-    };
-    const runGate = (script, cwd, taskFile) => runHook(script, [], {
-      interpreter: 'bash',
-      cwd,
-      env: { ...process.env, ...baseEnv, TASK_FILE: taskFile },
-    });
-
-    const behaviorTask = (cwd) => {
-      const p = path.join(cwd, 'task.md');
-      fs.writeFileSync(p, CONTRACT_TASK_LINES.join('\n'));
-      return p;
-    };
-    const docOnlyTask = (cwd) => {
-      const p = path.join(cwd, 'task.md');
-      fs.writeFileSync(p, ['<task type="auto">', '  <files>docs/notes.md</files>', '</task>'].join('\n'));
-      return p;
-    };
-
-    const g1Trailer = trailerLine();
-    const mutateTrailer = (mutator) => {
-      const parsed = JSON.parse(g1Trailer.slice(g1Trailer.indexOf('{')));
-      mutator(parsed);
-      return `red-evidence: ${JSON.stringify(parsed)}`;
-    };
-    const g2Trailer = mutateTrailer((p) => { p.location.observed.line += 1; });
-    const g5Trailer = mutateTrailer((p) => { p.exit_status = 0; });
-
-    const commit = (cwd, file, subject, trailer) => {
-      const abs = path.join(cwd, file);
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, `# ${subject}\n`);
-      runGit(['add', file], { cwd });
-      runGit(trailer ? ['commit', '-m', subject, '-m', trailer] : ['commit', '-m', subject], { cwd });
-      return runGit(['rev-parse', 'HEAD'], { cwd }).stdout.trim();
-    };
-
-    // git.base-branch's tier-4 fallback only recognizes local branches
-    // literally named `main`/`master`, which depends on this machine's
-    // `init.defaultBranch` and is not portable to CI. Pin the base
-    // explicitly via `.planning/config.json` (tier 1) instead, and land all
-    // task commits on a second branch forked off it, so RED_RANGE always
-    // gets a real, non-trivial boundary regardless of the host's git config.
-    const newRepo = () => {
-      const dir = createTempGitProject('gsd-3770-execgate-');
-      t.after(() => cleanup(dir));
-      runGit(['config', 'core.hooksPath', ''], { cwd: dir });
-      const baseBranch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir }).stdout.trim();
-      fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
-      fs.writeFileSync(path.join(dir, '.planning', 'config.json'),
-        JSON.stringify({ git: { base_branch: baseBranch } }));
-      runGit(['checkout', '-b', 'gsd-3770-work'], { cwd: dir });
-      return dir;
-    };
-
-    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
-
     // ── G1, valid evidence (characterization) ────────────────────────────
-    const s1 = newRepo();
+    const s1 = newRepo(t);
     const taskFile1 = behaviorTask(s1);
     commit(s1, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g1Trailer);
     const r1 = runGate(scriptPath, s1, taskFile1);
@@ -2180,7 +2212,7 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'the gate having become unconditionally strict. See #3770.');
 
     // ── G2, mismatched evidence (RED) ─────────────────────────────────────
-    const s2 = newRepo();
+    const s2 = newRepo(t);
     const taskFile2 = behaviorTask(s2);
     commit(s2, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g2Trailer);
     const r2 = runGate(scriptPath, s2, taskFile2);
@@ -2195,7 +2227,7 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     );
 
     // ── G3, trailerless commit (RED) ──────────────────────────────────────
-    const s3 = newRepo();
+    const s3 = newRepo(t);
     const taskFile3 = behaviorTask(s3);
     commit(s3, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', undefined);
     const r3 = runGate(scriptPath, s3, taskFile3);
@@ -2206,7 +2238,7 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'authorizes on any subject match. See #3770.');
 
     // ── G4, no plan-scoped commit at all (characterization) ───────────────
-    const s4 = newRepo();
+    const s4 = newRepo(t);
     const taskFile4 = behaviorTask(s4);
     const r4 = runGate(scriptPath, s4, taskFile4);
     assert.notStrictEqual(r4.exitCode, 0,
@@ -2214,7 +2246,7 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'blocking behavior that must survive this change.');
 
     // ── G5, unexpected pass (RED) ──────────────────────────────────────────
-    const s5 = newRepo();
+    const s5 = newRepo(t);
     const taskFile5 = behaviorTask(s5);
     commit(s5, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g5Trailer);
     const r5 = runGate(scriptPath, s5, taskFile5);
@@ -2269,7 +2301,7 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'authorize — otherwise G7 proves nothing about the bound specifically.');
 
     // ── G8, source-only evidence (characterization) ─────────────────────────
-    const s8 = newRepo();
+    const s8 = newRepo(t);
     const taskFile8 = behaviorTask(s8);
     commit(s8, 'src/pricing.py', 'test(08-02): add failing test for discount', g1Trailer);
     const r8 = runGate(scriptPath, s8, taskFile8);
@@ -2287,6 +2319,69 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'built in this test, must authorize — proving the guard is the pathspec and not ' +
       'something else about this fixture.');
   });
+
+  test('the gate finds the RED commit in every ecosystem and halts rather than falling back',
+    (t) => {
+      const writeScript = makeWriteScript(t);
+      const scriptPath = writeScript('gate.sh', EXECUTE_PHASE_SNIPPET);
+
+      // Part one: five ecosystems, each authorizing on `location.declared.file`
+      // alone — never on a filename convention the search itself imposes, and
+      // never derived from the id. Go's bare `TestDiscountReducesTotal` carries
+      // no path at all, so it is the row that proves a scope derived from the
+      // id could not do this. The two "blocked today: no" rows (R, JS) are the
+      // no-regression arm: without them a change that stopped excluding the
+      // three newly supported ecosystems while breaking the two
+      // already-working ones would still pass.
+      const ECOSYSTEM_ROWS = [
+        { name: 'Go', id: 'TestDiscountReducesTotal', file: 'pkg/pricing/pricing_test.go' },
+        { name: 'Ruby', id: './spec/pricing_spec.rb[1:1]', file: 'spec/pricing_spec.rb' },
+        {
+          name: 'Python outside tests/',
+          id: 'src/pricing/test_pricing.py::test_discount_reduces_total',
+          file: 'src/pricing/test_pricing.py',
+        },
+        { name: 'R', id: 'test-pricing.R: discount reduces total', file: 'tests/testthat/test-pricing.R' },
+        { name: 'JS', id: 'lib/pricing.test.ts > discount reduces the total', file: 'lib/pricing.test.ts' },
+      ];
+      for (const row of ECOSYSTEM_ROWS) {
+        const dir = newRepo(t);
+        const taskFile = behaviorTask(dir, row.id);
+        commit(dir, row.file, 'test(08-02): add failing test for discount', ecoTrailer(row.id, row.file));
+        const result = runGate(scriptPath, dir, taskFile);
+        assert.strictEqual(result.exitCode, 0,
+          `${row.name}: the gate must authorize on ${JSON.stringify(row.id)} declaring ` +
+          `${row.file} — the file comes from location.declared.file, never from a filename ` +
+          'convention or the id itself. See #3770 (Task 6, LANG-01).');
+      }
+
+      // Part two: the stale-fallback case. An OLDER commit touches the test
+      // file with a fully self-consistent trailer. A NEWER commit touches
+      // only a source file and declares that same source file, but its
+      // trailer's `location.observed` still names the OLDER commit's test
+      // file — so the newer commit's own evidence is internally
+      // inconsistent and the predicate rejects it outright. With the
+      // pathspec, the newer commit is invisible to the search entirely (it
+      // never touched a matching file) and `grep -m1` silently falls back
+      // to the older, valid-looking evidence from a superseded run. Without
+      // the pathspec, the search finds the newer commit first and the gate
+      // halts on it instead of silently authorizing stale evidence.
+      const staleDir = newRepo(t);
+      const staleTaskFile = behaviorTask(staleDir);
+      commit(staleDir, 'tests/test_pricing.py', 'test(08-02): add failing test for discount', g1Trailer);
+      const staleTrailer = mutateTrailer((p) => { p.location.declared.file = 'src/pricing.py'; });
+      commit(staleDir, 'src/pricing.py', 'test(08-02): add failing test for discount', staleTrailer);
+      const staleResult = runGate(scriptPath, staleDir, staleTaskFile);
+      assert.notStrictEqual(staleResult.exitCode, 0,
+        'stale-fallback: a newer, plan-scoped, evidence-bearing commit that touches only a ' +
+        'source file must halt the gate, not fall back to an older, valid-looking commit the ' +
+        'newer one has superseded. Fails today: the pathspec hides the newer commit from the ' +
+        'search entirely and grep -m1 silently selects the older one instead. See #3770 (Task 6).');
+      assert.match(`${staleResult.stdout}${staleResult.stderr}`, /red_commit_not_failing/,
+        "the halt must be on the newer commit's own internally-inconsistent evidence " +
+        '(declared and observed location disagree), not on an unrelated failure such as a ' +
+        'missing commit — so the case cannot be satisfied by an unrelated failure.');
+    });
 
   test('every surface that instructs on the unexpected pass defers to the RED Contract', () => {
     const EXECUTOR = fs.readFileSync(AGENT, 'utf-8');
