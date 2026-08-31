@@ -110,12 +110,25 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+
+// Hard bound on the ShellCheck binary's run time, matching this repo's
+// npm-subprocess timeout convention (5-30s git, 60s npm — same "external
+// process that could hang" hazard class). See runShellcheck's comment for
+// why this cannot be applied via the `shellcheck` npm package's own API.
+const SHELLCHECK_TIMEOUT_MS = 60_000;
 
 const ROOT = path.join(__dirname, '..');
 const WORKFLOWS_DIR = path.join(ROOT, 'gsd-core', 'workflows');
 const SECTIONIZER_PATH = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'markdown-sectionizer.cjs');
 const SHELLCHECK_BIN_MODULE = path.join(ROOT, 'node_modules', 'shellcheck', 'build', 'index.js');
+// The top-level SHELLCHECK_BIN_MODULE barrel (build/index.js) does NOT
+// re-export `configs/index.js` (verified: `export *`-ing helpers/logger/
+// utils/shellcheck.js only — no configs), so `config` (which carries the
+// resolved binary path used by runShellcheck's own spawnSync call, see
+// below) has to be imported from its own submodule directly.
+const SHELLCHECK_CONFIG_MODULE = path.join(ROOT, 'node_modules', 'shellcheck', 'build', 'configs', 'index.js');
 const BASELINE_PATH = path.join(__dirname, 'lint-workflow-shellcheck-baseline.json');
 
 // Codes excluded for structural reasons documented in the module header above.
@@ -435,7 +448,12 @@ function loadSectionizer() {
  * bin/shellcheck (caching it there) on first use if it is not already present. */
 async function loadShellcheckModule() {
   try {
-    return await import(SHELLCHECK_BIN_MODULE);
+    const mod = await import(SHELLCHECK_BIN_MODULE);
+    // See SHELLCHECK_CONFIG_MODULE's comment above — `config` is not part of
+    // the top-level barrel's exports, so it is imported separately and
+    // attached here for runShellcheck's direct spawnSync call to consume.
+    const { config } = await import(SHELLCHECK_CONFIG_MODULE);
+    return { ...mod, config };
   } catch (e) {
     throw new ExitError(
       1,
@@ -445,7 +463,25 @@ async function loadShellcheckModule() {
   }
 }
 
-/** Run ShellCheck (json1 output) over every staged temp file in one invocation. */
+/**
+ * Run ShellCheck (json1 output) over every staged temp file in one invocation,
+ * bounded by SHELLCHECK_TIMEOUT_MS.
+ *
+ * The `shellcheck` npm package's own `shellcheck()` function does NOT accept a
+ * `timeout` — its `ShellCheckArgs` type is `{bin, args, stdio, token}` only
+ * (verified against node_modules/shellcheck/build/shellcheck.d.ts and .js),
+ * and internally it hardcodes `child_process.spawnSync(opts.bin, opts.args, {
+ * stdio: opts.stdio })` with no pass-through for extra spawnSync options.
+ * Wrapping the call in `Promise.race` against a timer would not help either:
+ * spawnSync is synchronous and blocks the event loop for its whole duration,
+ * so a timer callback racing it can never fire before it returns (or hangs).
+ * Instead, this reimplements the same binary-resolve-and-download step the
+ * wrapper performs (via the package's own exported `config`/`download`), then
+ * invokes `child_process.spawnSync` directly with a native `timeout` so a
+ * hung ShellCheck binary is killed (Node sets `result.error.code ===
+ * 'ETIMEDOUT'` and `result.signal` on expiry) rather than hanging this lint —
+ * and, transitively, CI — indefinitely.
+ */
 async function runShellcheck(mod, filePaths) {
   const args = [
     '--shell=bash',
@@ -453,11 +489,20 @@ async function runShellcheck(mod, filePaths) {
     `--exclude=${EXCLUDED_CODES.join(',')}`,
     ...filePaths,
   ];
-  const result = await mod.shellcheck({ args, stdio: 'pipe' });
+  const bin = mod.config.bin;
+  try {
+    fs.accessSync(bin, fs.constants.F_OK | fs.constants.X_OK);
+  } catch {
+    await mod.download({ destination: bin, token: process.env.GITHUB_TOKEN });
+  }
+  const result = childProcess.spawnSync(bin, args, { stdio: 'pipe', timeout: SHELLCHECK_TIMEOUT_MS });
   if (result.error) {
+    const timedOut = result.error.code === 'ETIMEDOUT';
     throw new ExitError(
       1,
-      `lint-workflow-shellcheck: ShellCheck invocation failed: ${result.error.message}`,
+      `lint-workflow-shellcheck: ShellCheck invocation ${
+        timedOut ? `timed out after ${SHELLCHECK_TIMEOUT_MS}ms` : 'failed'
+      }: ${result.error.message}`,
     );
   }
   const stdout = Buffer.isBuffer(result.stdout) ? result.stdout.toString('utf8') : (result.stdout || '');
@@ -583,7 +628,13 @@ async function main() {
   }
 }
 
-runMain(main);
+// Guarded so requiring this module (e.g. from tests/lint-workflow-shellcheck
+// .test.cjs, to exercise the exported pure parser/logic functions) does not
+// ALSO trigger a full ShellCheck run as an unwanted side effect of require()
+// — matches the established convention in this repo's other dual-purpose
+// script+module lint scripts, e.g. scripts/lint-docs-required.cjs's own
+// `if (require.main === module) runMain(main);`.
+if (require.main === module) runMain(main);
 
 module.exports = {
   substitutePlaceholders,
