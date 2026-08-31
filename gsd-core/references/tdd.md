@@ -150,7 +150,7 @@ run, and the RED commit records what was actually observed.
 
 | Field | Meaning |
 |---|---|
-| `target_test` | The runner-native id of the test that must fail. Matched by `id_matches`, defined under **Evidence**. For an outside-in missing-target declaration, declare it at the granularity the runner reports the missing target against — for a compile-time or collection-time failure that is the test FILE, since a module that never imports collects no tests and so offers no single test id to select — and record `expected_failure.subject`, `target_test` and the observed `actual.subject` at that same granularity, each excluding any position suffix (line, column) the runner appends, because a position is not part of the node's identity and moves as edits leave the declaration correct. |
+| `target_test` | The runner-native id of the test that must fail. The observed `actual.subject` must equal it exactly. For an outside-in missing-target declaration, declare it at the granularity the runner reports the missing target against — for a compile-time or collection-time failure that is the test FILE, since a module that never imports collects no tests and so offers no single test id to select — and record `expected_failure.subject`, `target_test` and the observed `actual.subject` at that same granularity, each excluding any position suffix (line, column) the runner appends, because a position is not part of the node's identity and moves as edits leave the declaration correct. |
 | `implementation_target` | The production module or symbol GREEN will create or change. Always present, so an outside-in failure that never reaches the test body is still bound to a declared production intent. Recorded for audit only: the predicate reads no field of it. |
 | `expected_failure.phase` | The runner-native lifecycle phase the failure occurs in. **Open vocabulary, not an enum.** pytest's `collection`/`setup`/`call`/`teardown` are one runner's examples; a compiled language has no collection phase at all and declares `build`. The contract compares declared against observed and never validates the value against a list. |
 | `expected_failure.class_or_mode` | The runner-native exception class or failure mode. Never a message substring. For a compiler, the diagnostic's own class, not its wording. |
@@ -175,11 +175,6 @@ red-evidence: {"command":"pytest tests/test_pricing.py::test_discount_reduces_to
 | `expected` | The declared `expected_failure`, echoed back: `phase`, `class_or_mode`, `subject`. |
 | `actual` | What was observed, in the same three fields. |
 | `location` | Where the failure was declared to occur and where it was observed to occur: `declared` and `observed`, each a `{file, line}` pair. Compared by `locationsAgree`, defined below. |
-
-> `id_matches(observed, declared)` is true when `observed === declared`, or when `observed` is
-> `declared` followed **immediately** by a runner-native variant delimiter opening a parametrization
-> case — pytest's `[`, as in `[100-10-90]`. A bare prefix with no delimiter is not a match, so
-> `test_discount` never matches `test_discount_v2`.
 
 > `locationsAgree(declared, observed)` compares `declared.file` and `observed.file` by basename
 > only, never by full path, and compares `declared.line` and `observed.line` by strict equality;
@@ -233,7 +228,7 @@ valid_red =
   AND actual.class_or_mode == expected.class_or_mode
   AND trailer.target_test == plan.target_test
   AND location.observed == location.declared
-  AND id_matches(actual.subject, plan.target_test)
+  AND actual.subject == plan.target_test
 ```
 
 This file is the block's only source. Reproduce it character-for-character wherever it is quoted:
@@ -248,10 +243,9 @@ consumes, so deferring them introduced no plan-side input Phase 3 did not alread
 leaving the `actual`-versus-`expected` comparisons above them as a self-comparison of the trailer
 against its own echo.
 
-**Two refinements**, neither narrowing the shape: `actual == expected` is written out as its two
+**One refinement**, not narrowing the shape: `actual == expected` is written out as its two
 field comparisons, omitting `subject` because the predicate binds `actual.subject` to plan-declared
-values instead; and `actual.subject == plan.target_test` becomes
-`id_matches(...)`.
+values instead.
 
 The predicate applies no condition proving the target test exists; **Executor Gate
 Validation** below supplies that separately by requiring the RED commit to touch a test file, and
@@ -275,7 +269,7 @@ the declared test file admits legitimate outside-in RED while bounding what else
 
 What the target-test residual admits and what it does not: it proves that the trailer's
 self-reported `actual` triple and `location` agree with the plan's declaration and with each
-other — the declared phase, the declared class, a subject whose id `id_matches` the declared
+other — the declared phase, the declared class, a subject whose id equals the declared
 `target_test`, and an observed location equal to the declared one. It does NOT independently
 prove that the target test was collected or executed: with `selected_count` and `target_executed`
 removed (SIMP-01), no conjunct establishes execution, so a trailer whose target never ran but
@@ -310,11 +304,11 @@ Each row is a consequence of the predicate, and each names the field that decide
 | Zero tests selected | `actual.phase` differs from `expected.phase` — the run reported at collection, not at the declared call-phase failure | block |
 | Suite failed to collect or parse | `actual.class_or_mode` differs from `expected.class_or_mode` — a test-file `SyntaxError` is not the declared missing target, unless the declaration names that class itself, in which case the classes agree, this row does not hold, and the outside-in row below decides | block |
 | Fixture or setup crashed before the target assertion | `actual.phase` differs from `expected.phase` | block |
-| A different test failed | `id_matches(actual.subject, plan.target_test)` does not hold | block |
+| A different test failed | `actual.subject == plan.target_test` does not hold | block |
 | Genuine target-behavior failure | every conjunct holds | authorize |
 | Unrelated assertion in the target test | `location.observed` differs from `location.declared` — a different assertion failing first at the same phase and class reports a different declared-versus-observed file or line | block |
-| Outside-in: the declared implementation target is missing | every conjunct holds — `id_matches(actual.subject, plan.target_test)` and `plan.expected_failure` is an outside-in missing-target mode | authorize |
-| Unrelated missing dependency in the target test file | `location.observed` differs from `location.declared` — `id_matches` anchors on the declared test FILE, and the location conjunct anchors further, on the declared line within it | block |
+| Outside-in: the declared implementation target is missing | every conjunct holds — `actual.subject == plan.target_test` and `plan.expected_failure` is an outside-in missing-target mode | authorize |
+| Unrelated missing dependency in the target test file | `location.observed` differs from `location.declared` — the subject conjunct anchors on the declared test FILE, and the location conjunct anchors further, on the declared line within it | block |
 | Fixture is itself the behavior under test | `expected.phase` and `actual.phase` are both the fixture phase, and every conjunct holds | authorize |
 | Unrelated fixture crash at the declared fixture phase | `location.observed` differs from `location.declared` — a fixture crash elsewhere in the target's dependency chain reports a different file or line than the one declared | block |
 | Unexpected pass | `exit_status` is 0 | halt |

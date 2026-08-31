@@ -85,18 +85,6 @@ function sameTriple(a: unknown, b: unknown): boolean {
 }
 
 /**
- * `id_matches`, exactly as `gsd-core/references/tdd.md`'s `### Evidence`
- * blockquote defines it: exact match, or `declared` followed immediately by
- * a runner-native variant delimiter (`[`) opening a parametrization case. A
- * bare prefix with no delimiter does not match.
- */
-function idMatches(observed: unknown, declared: unknown): boolean {
-  if (typeof observed !== 'string' || typeof declared !== 'string') return false;
-  if (observed === declared) return true;
-  return observed.startsWith(declared) && observed.slice(declared.length).startsWith('[');
-}
-
-/**
  * `location.observed == location.declared`, exactly as `### RED Predicate`'s
  * shared conjunct defines it: file compared by basename only (`path.win32`
  * normalizes both `/` and `\` separators, so a POSIX-reported and a
@@ -269,7 +257,7 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
         && actual['class_or_mode'] === expected['class_or_mode']],
     ['trailer.target_test == plan.target_test', trailer['target_test'] === plan.target_test],
     ['location.observed == location.declared', locationsAgree(declaredPoint, observedPoint)],
-    ['id_matches(actual.subject, plan.target_test)', idMatches(actualSubject, plan.target_test)],
+    ['actual.subject == plan.target_test', actualSubject === plan.target_test],
   ];
   const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
 

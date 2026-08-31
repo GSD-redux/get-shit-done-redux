@@ -528,20 +528,6 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
           + 'credential position leaks by omission',
       },
       {
-        section: 'Evidence',
-        needle: '`id_matches(observed, declared)` is true when `observed === declared`',
-        verdict: null,
-        why: 'the predicate body uses `id_matches` and that use is already pinned; deleting only '
-          + 'its definition reproduces CR-01',
-      },
-      {
-        section: 'Evidence',
-        needle: '`declared` followed **immediately** by a runner-native variant delimiter',
-        verdict: null,
-        why: 'a definition narrowed to exact equality alone blocks the legitimate parameterized '
-          + 'RED that `id_matches` exists to admit, so both halves must be pinned',
-      },
-      {
         section: 'Outcomes',
         needle: 'Unexpected pass',
         verdict: 'halt',
@@ -599,13 +585,13 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
         needle: 'offers no single test id to select — and record `expected_failure.subject`, '
           + '`target_test` and the observed `actual.subject`',
         verdict: null,
-        why: '`id_matches` admits an observed id equal to or longer than the declared one, never '
-          + 'shorter, and go reports a compile-time miss against `./pricing_test.go:6:12` while '
-          + 'the declaration says `./pricing_test.go` — the unmatched suffix begins `:` and not '
-          + '`[`, so unless the rule binds the OBSERVED `actual.subject` too, `id_matches` is '
-          + 'false and a legitimate go outside-in RED is rejected by the contract that exists to '
-          + 'admit it. The needle spans the junction between the granularity half and the '
-          + 'recording half on purpose: one sentence carrying two ideas can be half-deleted',
+        why: 'the subject-equality conjunct requires an exact match, and go reports a '
+          + 'compile-time miss against `./pricing_test.go:6:12` while the declaration says '
+          + '`./pricing_test.go` — those strings are not equal, so unless the rule binds the '
+          + 'OBSERVED `actual.subject` too, the conjunct is false and a legitimate go outside-in '
+          + 'RED is rejected by the contract that exists to admit it. The needle spans the '
+          + 'junction between the granularity half and the recording half on purpose: one '
+          + 'sentence carrying two ideas can be half-deleted',
       },
       {
         section: 'Declaration',
@@ -708,7 +694,7 @@ describe('RED contract — gsd-core/references/tdd.md (#3770)', () => {
   // shipped `evaluateRedEvidence` directly — never a second, test-local
   // reimplementation of the predicate — and asserts the VERDICT it computes
   // for a table of evidence vectors, so deleting
-  // `AND id_matches(actual.subject, plan.target_test)` from the module stops
+  // `AND actual.subject == plan.target_test` from the module stops
   // being a broken string match and becomes `different-test-failed` flipping
   // from `red_commit_not_failing` to `authorize` — which is the defect,
   // stated as the defect. See #3770 (D-5).
@@ -1080,9 +1066,10 @@ ${Array(redContractCount).fill(block).join('\n')}
       outcome_row: null,
       verdict: 'red_commit_not_failing',
       why: 'isolates `trailer.target_test == plan.target_test`. The trailer names a shorter id '
-        + 'than the plan declared while `actual.subject` still carries the full one, so every '
-        + '`id_matches` conjunct holds and only the pin fails. This is the second half of the '
-        + 'pinning pair: an executor that widened its own target id would otherwise pass.',
+        + 'than the plan declared while `actual.subject` still carries the full one, so the '
+        + '`actual.subject == plan.target_test` conjunct still holds and only the pin fails. '
+        + 'This is the second half of the pinning pair: an executor that widened its own '
+        + 'target id would otherwise pass.',
       vector: vector({
         trailer: { target_test: 'tests/test_pricing.py::test_discount' },
       }),
@@ -1114,7 +1101,7 @@ ${Array(redContractCount).fill(block).join('\n')}
       id: 'different-test-failed',
       outcome_row: 'A different test failed',
       verdict: 'red_commit_not_failing',
-      why: "isolates the `id_matches` anchor. Two tests ran, the declared "
+      why: "isolates the subject-equality anchor. Two tests ran, the declared "
         + 'target among them and passing, and a DIFFERENT test failed at the declared phase '
         + "with the declared class. This IS #3770's original defect: without the anchor the "
         + 'predicate reduces to selection plus execution, which this run satisfies.',
@@ -1132,7 +1119,8 @@ ${Array(redContractCount).fill(block).join('\n')}
       id: 'parametrized-variant-subject',
       outcome_row: null,
       verdict: 'red_commit_not_failing',
-      why: "isolates `id_matches` under D-2's exact-equality requirement. The plan names "
+      why: "isolates the subject-equality conjunct under D-2's exact-equality requirement. "
+        + "The plan names "
         + '`test_discount_reduces_total`; the run failed a PARAMETRIZED VARIANT of it, '
         + '`test_discount_reduces_total[case_3]` — a behavior the plan never named. The '
         + 'prefix-plus-bracket branch this plan deletes would have authorized this as '
@@ -1151,7 +1139,7 @@ ${Array(redContractCount).fill(block).join('\n')}
       id: 'outside-in-wrong-file',
       outcome_row: null,
       verdict: 'red_commit_not_failing',
-      why: "isolates the outside-in `id_matches` anchor. A legitimate outside-in declaration, but the "
+      why: "isolates the outside-in subject-equality anchor. A legitimate outside-in declaration, but the "
         + 'collection failure was reported against a DIFFERENT test file. Delete the anchor and '
         + 'the predicate reduces to the declared mode alone — a declaration, not evidence, authorizing '
         + 'itself.',
@@ -1212,7 +1200,7 @@ ${Array(redContractCount).fill(block).join('\n')}
       outcome_row: 'Outside-in: the declared implementation target is missing',
       verdict: 'authorize',
       why: 'the legitimate outside-in RED: the collection failure is reported against the '
-        + 'declared test FILE itself, so `id_matches(actual.subject, plan.target_test)` holds '
+        + 'declared test FILE itself, so `actual.subject == plan.target_test` holds '
         + 'even though no test inside that file ever ran, and this vector is what proves the '
         + 'predicate must admit it.',
       vector: OUTSIDE_IN,
@@ -1439,18 +1427,20 @@ ${Array(redContractCount).fill(block).join('\n')}
     }
   });
 
-  test('a failing `id_matches` is reported once, from one conjunction with no arms', () => {
+  test('a failing subject-equality check is reported once, from one conjunction with no arms', () => {
     const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
-    const differentTestFailed = EVIDENCE_VECTORS.find((c) => c.id === 'different-test-failed');
-    const taskContent = buildTaskContent(differentTestFailed.vector.plan);
-    const trailerText = `red-evidence: ${JSON.stringify(differentTestFailed.vector.trailer)}`;
-    const { failed } = evaluateRedEvidence(taskContent, trailerText);
+    for (const id of ['different-test-failed', 'parametrized-variant-subject']) {
+      const vectorCase = EVIDENCE_VECTORS.find((c) => c.id === id);
+      const taskContent = buildTaskContent(vectorCase.vector.plan);
+      const trailerText = `red-evidence: ${JSON.stringify(vectorCase.vector.trailer)}`;
+      const { failed } = evaluateRedEvidence(taskContent, trailerText);
 
-    assert.deepStrictEqual(failed, ['id_matches(actual.subject, plan.target_test)'],
-      'the predicate is a single conjunction: `id_matches` must appear at most once in any '
-      + 'failure report, never once per disjunction branch — an exact-equality assertion is '
-      + 'what catches a duplicated or spurious extra entry; a length or `includes` check would '
-      + 'not. See #3770 (SIMP-02).');
+      assert.deepStrictEqual(failed, ['actual.subject == plan.target_test'],
+        `the predicate is a single conjunction: for the \`${id}\` vector, the subject-equality `
+        + 'check must appear at most once in any failure report, never once per disjunction '
+        + 'branch — an exact-equality assertion is what catches a duplicated or spurious extra '
+        + 'entry; a length or `includes` check would not. See #3770 (SIMP-02).');
+    }
   });
 
   test('every Outcomes row verdict agrees with what the shipped module computes', () => {
