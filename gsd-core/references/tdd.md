@@ -494,11 +494,20 @@ if [ -z "$RED_SHA" ]; then
     STATUS=1
   fi
 else
-  printf '%s\n' "$RED_RECORD" | cut -d"$TAB" -f2 || true
-  git show --name-only --format= "$RED_SHA" | grep -qE '(^|/)tests?/|\.(test|spec)\.' || {
-    echo "the RED commit $RED_SHA touches no test file"
+  RED_TRAILER=$(printf '%s\n' "$RED_RECORD" | cut -d"$TAB" -f2 || true)
+  printf '%s\n' "$RED_TRAILER"
+  # Ask the evidence which file it named, never the path's shape: `tests/`
+  # and `.test.`/`.spec.` are JS and pytest conventions, and a rule built on
+  # them rejects Go (`*_test.go`), Rust (`#[test]` inline) and R outright.
+  DECLARED=$(printf '%s' "$RED_TRAILER" | sed -n 's/.*"declared":{"file":"\([^"]*\)".*/\1/p')
+  if [ -z "$DECLARED" ]; then
+    # Fail closed: unreadable evidence is never authorization.
+    echo "the RED commit $RED_SHA carries evidence naming no declared file"
     STATUS=1
-  }
+  elif ! git show --name-only --format= "$RED_SHA" | grep -Fxq -- "$DECLARED"; then
+    echo "the RED commit $RED_SHA touches no test file its evidence names ($DECLARED)"
+    STATUS=1
+  fi
 fi
 # Check for GREEN gate commit — GATED: `### Gate Definitions` marks GREEN
 # `Required | Yes`, and this block runs only after the plan COMPLETES.
