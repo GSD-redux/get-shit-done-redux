@@ -23,6 +23,7 @@ const {
   DEFERRED_MARKER_ALT,
   DEFERRED_BULLET_MARKERS,
   parseVerificationItems,
+  parsedEntriesFor,
 } = require('../gsd-core/bin/lib/uat.cjs');
 const { iterateBullets } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
@@ -815,6 +816,128 @@ All checks passed.
       const output = JSON.parse(result.output);
       assert.strictEqual(output.summary.total_items, 0);
       assert.strictEqual(output.summary.total_files, 0);
+    });
+
+    // ─── #3879 review round 4, Major: `status:` is authoritative ──────────────
+    //
+    // A `resolution:` note beside a status that is not `resolved` is an
+    // authoring mistake, not a closure assertion — the rule `validateResolution`
+    // (probe-core.cts) already applies to this same field pair, where it rejects
+    // the combination outright rather than counting the item as closed. A
+    // reporter cannot throw, so the fail-safe equivalent is to SURFACE the item.
+    // Dropping it would be the silently-vanishing-item defect #3850 exists to
+    // close, reached by field COMBINATION instead of file STATUS.
+
+    test('a human_verification entry whose status contradicts its resolution still surfaces', () => {
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "Retry the upload"
+    status: failed
+    resolution: "attempted retry, still failing"
+---
+`, 'human_needed');
+      assert.strictEqual(items.length, 1);
+    });
+
+    test('a gaps entry carrying only a resolution note surfaces — gaps closes on status alone', () => {
+      // `parseGapsItems`, the `## Gaps` markdown reader, closes on
+      // `status: resolved` and nothing else. This frontmatter reader takes that
+      // rule verbatim so the same authored entry cannot read closed in one and
+      // open in the other.
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "The widget renders"
+    resolution: "a note, not a closure assertion"
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].result, 'unknown');
+    });
+
+    test('a gaps entry whose status contradicts its resolution still surfaces', () => {
+      const items = parseVerificationItems(`---
+status: gaps_found
+gaps:
+  - truth: "The widget renders"
+    status: failed
+    resolution: "attempted retry, still failing"
+---
+`, 'gaps_found');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].result, 'failed');
+    });
+
+    // ─── #3879 review round 4, Minor 2: the alignment guard ──────────────────
+    //
+    // `parsedEntriesFor` pairs the display array with the parsed array BY INDEX
+    // and degrades to all-null if their lengths disagree, so a mis-paired index
+    // can never close the wrong row. That branch is unreachable through the two
+    // readers — both parsers share `frontmatterRegion`, and the display step is
+    // 1:1 — so it is asserted against the function directly. Called with the
+    // real content the readers pass, plus a `flattened` array of the wrong
+    // length, which is exactly the drift the guard exists to catch.
+
+    describe('parsedEntriesFor: index pairing and its degradation', () => {
+      const doc = `---
+status: gaps_found
+gaps:
+  - truth: "first"
+    status: failed
+  - truth: "second"
+    status: resolved
+---
+`;
+
+      test('pairs each display entry with its own parsed object', () => {
+        const paired = parsedEntriesFor(doc, 'gaps', ['first-display', 'second-display']);
+        assert.equal(paired.length, 2);
+        assert.equal(paired[0].truth, 'first');
+        assert.equal(paired[1].truth, 'second');
+      });
+
+      test('a length disagreement degrades to all-null — no entry is skipped as closed', () => {
+        // Over-reporting is the correct degradation: a wrong index would name a
+        // DIFFERENT entry's fields and close the wrong row.
+        const shorter = parsedEntriesFor(doc, 'gaps', ['only-one']);
+        assert.deepEqual(shorter, [null]);
+        const longer = parsedEntriesFor(doc, 'gaps', ['a', 'b', 'c']);
+        assert.deepEqual(longer, [null, null, null]);
+      });
+
+      test('a non-object entry is null at its own index, not dropped', () => {
+        const mixed = `---
+gaps:
+  - truth: "an object"
+  - a bare scalar
+---
+`;
+        const paired = parsedEntriesFor(mixed, 'gaps', ['x', 'y']);
+        assert.equal(paired.length, 2);
+        assert.equal(paired[0].truth, 'an object');
+        assert.equal(paired[1], null);
+      });
+
+      test('an absent key degrades to all-null rather than throwing', () => {
+        assert.deepEqual(parsedEntriesFor('---\nother: 1\n---\n', 'gaps', ['a', 'b']), [null, null]);
+      });
+    });
+
+    test('both closure spellings still close a human_verification entry', () => {
+      const items = parseVerificationItems(`---
+status: human_needed
+human_verification:
+  - test: "Answered"
+    resolution: "RESOLVED"
+  - test: "Also answered"
+    status: resolved
+  - test: "Still open"
+    status: partial
+---
+`, 'human_needed');
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].test, 3, 'the surfaced entry keeps its original row');
     });
   });
 
@@ -8368,7 +8491,11 @@ gaps:
     assert.strictEqual(item.name, 'The widget renders');
     assert.strictEqual(item.result, 'partial');
     assert.strictEqual(item.reason, 'Only observed on one platform');
-    assert.strictEqual(item.test, 7);
+    // No `test:` number (#3879 review round 4, Minor 4). A `gaps:` entry has no
+    // `test:` in its vocabulary, and reading one collided with the 1..N row
+    // numbers `parseHumanVerificationItems` assigns by array position — two
+    // items numbered 1 in a single file's combined list.
+    assert.strictEqual(item.test, undefined);
   });
 
   test('a gaps entry with no parseable status surfaces as unknown, never dropped (fail-safe)', () => {
@@ -8677,26 +8804,63 @@ gaps:
       .map((s) => s.replace(/["\\\r\n:]/g, ''))
       .filter((s) => s.trim().length > 0);
 
-    test('property: an entry surfaces iff it is not closed; surfaced + skipped == total', () => {
+    // Closure is PER KEY (#3879 review round 4, Major), so the property is too.
+    // `gaps:` takes `parseGapsItems`' rule verbatim — `status: resolved` and
+    // nothing else — while `human_verification:` also honours a bare
+    // `resolution:`. Generating one spelling set for both keys is what let the
+    // old universal rule read green.
+    //
+    // `contradiction` is the round-4 Major itself: a `status:` that is not
+    // `resolved` sitting beside a `resolution:` note. It is OPEN under both
+    // keys — `status:` is authoritative wherever it is readable.
+    const OPEN_SPELLINGS = {
+      gaps: {
+        plain: ['    status: partial'],
+        // No `status:` at all. Under the gaps rule this is not closure, and
+        // `parseGapsItems` already surfaces it via its 'unknown' fallback.
+        resolutionOnly: ['    resolution: "a note, not a closure assertion"'],
+        contradiction: ['    status: failed', '    resolution: "attempted retry, still failing"'],
+      },
+      human_verification: {
+        plain: ['    status: partial'],
+        contradiction: ['    status: failed', '    resolution: "attempted retry, still failing"'],
+      },
+    };
+    const CLOSED_SPELLINGS = {
+      gaps: {
+        status: ['    status: resolved'],
+      },
+      human_verification: {
+        status: ['    status: resolved'],
+        resolutionOnly: ['    resolution: "closed upstream"'],
+      },
+    };
+
+    const entryArb = (key) => fc.record({
+      body: bodyArb,
+      closed: fc.boolean(),
+      openSpelling: fc.constantFrom(...Object.keys(OPEN_SPELLINGS[key])),
+      closedSpelling: fc.constantFrom(...Object.keys(CLOSED_SPELLINGS[key])),
+    });
+
+    const renderEntry = (key, e) => {
+      const nameLine = key === 'gaps' ? `  - truth: "${e.name}"` : `  - test: "${e.name}"`;
+      const fields = e.closed
+        ? CLOSED_SPELLINGS[key][e.closedSpelling]
+        : OPEN_SPELLINGS[key][e.openSpelling];
+      return [nameLine, ...fields];
+    };
+
+    test('property: a gaps entry surfaces iff its own status is not resolved; surfaced + skipped == total', () => {
       fc.assert(
         fc.property(
-          fc.array(fc.record({
-            body: bodyArb,
-            closed: fc.boolean(),
-            // Both closure spellings occur in the wild; neither may leak an entry.
-            viaResolution: fc.boolean(),
-          }), { maxLength: 12 }),
+          fc.array(entryArb('gaps'), { maxLength: 12 }),
           (raw) => {
             // Index-prefix so surfaced names map back unambiguously even when
             // the generated bodies collide.
             const entries = raw.map((e, i) => ({ ...e, name: `E${i}_${e.body}` }));
             const lines = ['---', 'status: gaps_found', 'gaps:'];
-            for (const e of entries) {
-              lines.push(`  - truth: "${e.name}"`);
-              if (e.closed && e.viaResolution) lines.push('    resolution: "closed upstream"');
-              else if (e.closed) lines.push('    status: resolved');
-              else lines.push('    status: partial');
-            }
+            for (const e of entries) lines.push(...renderEntry('gaps', e));
             lines.push('---', '');
 
             const items = parseVerificationItems(lines.join('\n'), 'gaps_found');
@@ -8706,12 +8870,43 @@ gaps:
 
             // Partition: surfaced count is exactly the open count...
             assert.strictEqual(items.length, open.length);
-            // ...every open entry surfaces...
+            // ...every open entry surfaces, INCLUDING the two spellings the old
+            // universal rule swallowed (a bare `resolution:`, and a
+            // `resolution:` beside a non-resolved `status:`)...
             for (const e of open) assert.ok(surfaced.has(e.name), `open entry missing: ${e.name}`);
-            // ...no closed entry ever does, by either spelling...
+            // ...no closed entry ever does...
             for (const e of closed) assert.ok(!surfaced.has(e.name), `closed entry surfaced: ${e.name}`);
             // ...and the two parts account for the whole.
             assert.strictEqual(open.length + closed.length, entries.length);
+          },
+        ),
+      );
+    });
+
+    test('property: a human_verification entry surfaces iff no readable status contradicts its closure', () => {
+      fc.assert(
+        fc.property(
+          fc.array(entryArb('human_verification'), { maxLength: 12 }),
+          (raw) => {
+            const entries = raw.map((e, i) => ({ ...e, name: `E${i}_${e.body}` }));
+            const lines = ['---', 'status: human_needed', 'human_verification:'];
+            for (const e of entries) lines.push(...renderEntry('human_verification', e));
+            lines.push('---', '');
+
+            const items = parseVerificationItems(lines.join('\n'), 'human_needed');
+            const open = entries.filter((e) => !e.closed);
+
+            // Counts only: this reader names items through
+            // `normalizeHumanVerificationEntry`'s display rendering, so asserting
+            // the partition by NAME would pin that renderer rather than the
+            // closure rule under test.
+            assert.strictEqual(items.length, open.length);
+            // Numbering stays the entry's ORIGINAL 1-based row even when a
+            // closed sibling was skipped (the #3850 round-3 Blocker).
+            const expectedRows = entries
+              .map((e, i) => (e.closed ? null : i + 1))
+              .filter((n) => n !== null);
+            assert.deepStrictEqual(items.map((it) => it.test), expectedRows);
           },
         ),
       );

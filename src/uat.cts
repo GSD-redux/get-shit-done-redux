@@ -3451,29 +3451,75 @@ function rawGapEntryText(
 // ─── parseVerificationItems ───────────────────────────────────────────────────
 
 /**
- * Is this frontmatter entry already closed? (#3850)
+ * The entry's `status:`, lowercased, or undefined when absent/blank/non-scalar.
  *
- * Two markers occur in the wild and neither is universal: verifier-written
- * `human_verification:` entries record closure as a `resolution:` field with no
- * `status:` at all, while `gaps:` entries follow the `## Gaps` convention of
- * `status: resolved`. Both are accepted.
- *
- * The entry is a PARSED OBJECT, so this reads named fields rather than matching
- * prose. That distinction is the whole point: against the display-flattened
- * string, a `truth:` whose text mentions "resolution:" is indistinguishable
- * from an entry that carries the field.
- *
- * Deliberately NOT folded into `parseGapsItems`, which keeps its narrower
- * `status: resolved` rule: widening THAT would newly drop a `## Gaps` entry
- * carrying `resolution:` alongside `status: failed` — a `*-UAT.md` behavior
- * change outside this fix's scope.
+ * The entry is a PARSED OBJECT, so this reads a named field rather than
+ * matching prose. That distinction is the whole point: against the
+ * display-flattened string, a `truth:` whose text mentions "status: resolved"
+ * is indistinguishable from an entry that carries the field.
  */
-function isFrontmatterEntryResolved(entry: Record<string, unknown> | undefined): boolean {
-  if (!entry) return false;
-  const resolution = entry['resolution'];
-  if (typeof resolution === 'string' && resolution.trim() !== '') return true;
+function frontmatterEntryStatus(entry: Record<string, unknown>): string | undefined {
   const status = entry['status'];
-  return typeof status === 'string' && status.trim().toLowerCase() === 'resolved';
+  if (typeof status !== 'string' || status.trim() === '') return undefined;
+  return status.trim().toLowerCase();
+}
+
+/**
+ * Is this `gaps:` frontmatter entry already closed? (#3850)
+ *
+ * `status: resolved`, and nothing else. Byte-identical to the rule
+ * `parseGapsItems` applies to a `## Gaps` markdown section, deliberately: the
+ * two readers see the SAME authored vocabulary in two places, and a closure
+ * rule that differed between them would let one entry read closed in one
+ * reader and open in the other. `parseVerificationGapsItems`' docstring claims
+ * it mirrors `parseGapsItems`' fail-safe status handling; this is the line
+ * that makes that claim true rather than approximately true.
+ *
+ * So a `gaps:` entry carrying `resolution:` and no `status:` SURFACES, via the
+ * same 'unknown'-status fallback `parseGapsItems` already gives it (#3879
+ * review round 4, Major).
+ */
+function isGapsEntryResolved(entry: Record<string, unknown> | undefined): boolean {
+  if (!entry) return false;
+  return frontmatterEntryStatus(entry) === 'resolved';
+}
+
+/**
+ * Is this `human_verification:` frontmatter entry already closed? (#3850)
+ *
+ * Verifier-written entries record closure as a `resolution:` field with no
+ * `status:` at all, so `resolution:` closes — but ONLY when no `status:`
+ * contradicts it. `status:` is authoritative wherever it is readable.
+ *
+ * The contradiction guard is the #3879 round-4 Major fix. Without it,
+ * `status: failed` + `resolution: "attempted retry, still failing"` — a
+ * plausible informational note, not a closure assertion — is silently dropped
+ * from the report, which is the exact silently-vanishing-item defect class
+ * #3850 exists to close, reached by field COMBINATION instead of file STATUS.
+ *
+ * This is not a judgment call about YAML: it is the rule this codebase already
+ * applies to the same field pair one module over. `validateResolution`
+ * (`probe-core.cts`) rejects a populated `resolution:` on a non-resolved status
+ * outright — "a populated payload is an authoring mistake (the author meant
+ * resolved/dismissed) that would otherwise be silently dropped into the
+ * unresolved count with no error pointing at it. Reject it so the mistake
+ * surfaces." A reporter cannot throw, so the fail-safe equivalent of surfacing
+ * the mistake is to surface the ITEM.
+ *
+ * #3850's suggested fix (2) states the skip unconditionally — "Skip entries
+ * carrying a `resolution:` field" — and its named scenario (one file with 14 of
+ * 16 entries resolved) is unaffected by the guard: those entries close either
+ * on `resolution:` with no contradicting status, or on `status: resolved`.
+ * Both still skip. The guard only changes entries whose own two fields
+ * disagree, and for those the fail-safe direction on a false-NEGATIVE bug is to
+ * report, not to drop.
+ */
+function isHumanVerificationEntryResolved(entry: Record<string, unknown> | undefined): boolean {
+  if (!entry) return false;
+  const status = frontmatterEntryStatus(entry);
+  if (status !== undefined) return status === 'resolved';
+  const resolution = entry['resolution'];
+  return typeof resolution === 'string' && resolution.trim() !== '';
 }
 
 /**
@@ -3504,6 +3550,16 @@ function isFrontmatterObjectEntry(entry: unknown): entry is Record<string, unkno
  * did not, an index would name a DIFFERENT entry's fields and the resolved-skip
  * would close the wrong row. All-`null` is the correct degradation: no entry is
  * skipped as closed, which over-reports rather than mis-attributes.
+ *
+ * The length check is UNREACHABLE through content today and is kept anyway
+ * (#3879 review round 4, Minor 2). It was verified unreachable rather than
+ * assumed: both readers enter through `frontmatterRegion`, `extractFrontmatter`'s
+ * only extra argument (`sourcePath`) gates a warning and nothing else, and the
+ * display step — `normalizeParsedValue`'s `value.map(...)` — is 1:1 and drops no
+ * element. So the guard is a drift alarm for a future edit to either parser, not
+ * a live branch. That makes it untestable through the two readers, which is why
+ * this helper is exported for tests: the degradation is asserted against the
+ * function directly rather than left as the one unpinned branch in the family.
  */
 function parsedEntriesFor(
   content: string,
@@ -3562,8 +3618,16 @@ function frontmatterEntryToUatItem(entry: Record<string, unknown>): UatItem {
     result: status,
     category: categorizeItem(status, reason, undefined),
   };
-  const test = entryField(entry, 'test');
-  if (test && /^\d+$/.test(test)) item.test = parseInt(test, 10);
+  // No `test:` read (#3879 review round 4, Minor 4). A `gaps:` entry has no
+  // `test:` in its vocabulary — the verification template's entries carry
+  // `truth` / `status` / `reason` / `artifacts` / `missing` — so reading one was
+  // speculative support for a field this shape does not have. It also collided:
+  // `parseHumanVerificationItems` numbers its items 1..N by array POSITION,
+  // so a `gaps:` entry that did carry `test: 1` produced two items numbered 1
+  // in one file's combined list. Not reading it makes the collision impossible
+  // rather than unlikely, and does not renumber anything: an offset would have
+  // rewritten an authored value, which is the opposite of `entryField`'s
+  // verbatim contract.
   if (reason) item.reason = reason;
   return item;
 }
@@ -3599,7 +3663,7 @@ function parseVerificationGapsItems(content: string): UatItem[] {
       });
       return;
     }
-    if (isFrontmatterEntryResolved(entry)) return;
+    if (isGapsEntryResolved(entry)) return;
     items.push(frontmatterEntryToUatItem(entry));
   });
   return items;
@@ -3626,8 +3690,17 @@ function parseVerificationGapsItems(content: string): UatItem[] {
  * fix (2) states the skip unconditionally — "Skip entries carrying a
  * `resolution:` field, or the fix trades one wrong number for another — one
  * file here has 14 of 16 entries resolved". That file is `human_needed`, so the
- * asymmetry left the reporter's own named scenario over-reporting by 14. One
- * rule, both paths.
+ * asymmetry left the reporter's own named scenario over-reporting by 14. The
+ * SKIP applies on both paths.
+ *
+ * WHAT COUNTS AS RESOLVED is per-key, not universal (#3879 review round 4,
+ * Major): `isGapsEntryResolved` takes `parseGapsItems`' `status: resolved` rule
+ * verbatim so the two `gaps` readers cannot disagree, and
+ * `isHumanVerificationEntryResolved` honours the `resolution:`-only closure the
+ * issue names, guarded so a `status:` that contradicts it wins. The issue's
+ * "skip entries carrying a `resolution:` field" is quoted above as written; it
+ * holds for every entry whose fields agree, which is every entry the reporter's
+ * own scenario contains.
  */
 function parseVerificationItems(content: string, status: string, sourcePath?: string): UatItem[] {
   const items: UatItem[] = [];
@@ -3650,7 +3723,6 @@ function parseVerificationItems(content: string, status: string, sourcePath?: st
  */
 function parseHumanVerificationItems(content: string, sourcePath?: string): UatItem[] {
   const items: UatItem[] = [];
-  const skipResolved = true;
   // #2286: the frontmatter's structured `human_verification:` YAML array
   // (extractFrontmatter) is the PRIMARY source of truth when present and
   // non-empty — it fully bypasses the body-shape scan below, so a file
@@ -3697,7 +3769,7 @@ function parseHumanVerificationItems(content: string, sourcePath?: string): UatI
     const parsed = parsedEntriesFor(content, 'human_verification', humanVerification);
     humanVerification.forEach((flattened, idx) => {
       const object = parsed[idx];
-      if (skipResolved && object && isFrontmatterEntryResolved(object)) return;
+      if (object && isHumanVerificationEntryResolved(object)) return;
       items.push({
         // The entry's ORIGINAL 1-based position, so a surfaced item still
         // names its row in the file when a closed sibling was skipped.
@@ -3926,4 +3998,8 @@ export = {
   // against the parser itself rather than only through a CLI round-trip
   // (RULESET.TESTS.property-based-testing).
   parseVerificationItems,
+  // #3879 review round 4, Minor 2: exported for tests so the degrade-to-all-null
+  // branch is asserted directly. It cannot be reached through the two readers —
+  // see the alignment note on the function.
+  parsedEntriesFor,
 };
