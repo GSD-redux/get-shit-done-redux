@@ -587,34 +587,24 @@ describe('workflow progressive disclosure — MVP bodies lazy-loaded (#720)', ()
     path.join(WORKFLOWS_DIR, 'execute-plan.md'),
   ];
 
-  test('no RED-contract consumer eagerly @-imports tdd.md (#3770)', () => {
+  // ONE pass over the four files. A third assertion — that each file cites
+  // `gsd-core/references/tdd.md` with the `~/.claude/` prefix OPTIONAL — used
+  // to sit between these two and was deleted: the install-resolvable check
+  // below requires the PREFIXED form verbatim, so anything satisfying it
+  // satisfied the optional-prefix form by construction and that test carried
+  // no failure mode of its own.
+  test('every RED-contract consumer cites tdd.md lazily and at an install-resolvable path '
+    + '(#3770)', () => {
     for (const file of TDD_CONSUMERS) {
       const content = fs.readFileSync(file, 'utf-8');
+
       assert.ok(
         !/@[~./\w-]*\/tdd\.md/.test(content),
         `${path.basename(file)} contains an eager @-import of tdd.md — the RED contract is ` +
         'expanded into context on every dispatch whether or not the task is TDD. ' +
         'Replace with a plain backtick path. See #720, #3770.'
       );
-    }
-  });
 
-  test('every RED-contract consumer still cites the canonical tdd.md path (#3770)', () => {
-    for (const file of TDD_CONSUMERS) {
-      const content = fs.readFileSync(file, 'utf-8');
-      assert.match(
-        content,
-        /`(?:~\/\.claude\/)?gsd-core\/references\/tdd\.md`/,
-        `${path.basename(file)} must cite \`gsd-core/references/tdd.md\` as a lazy backtick ` +
-        'path, with or without the ~/.claude install prefix. Deleting the reference is not ' +
-        'how the @-sigil test is satisfied. See #720, #3770.'
-      );
-    }
-  });
-
-  test('every RED-contract consumer cites tdd.md at an install-resolvable path (#3770)', () => {
-    for (const file of TDD_CONSUMERS) {
-      const content = fs.readFileSync(file, 'utf-8');
       assert.ok(
         content.includes('`~/.claude/gsd-core/references/tdd.md`'),
         `${path.basename(file)} must carry at least one \`~/.claude/gsd-core/references/tdd.md\` ` +
