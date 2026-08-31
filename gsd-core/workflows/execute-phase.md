@@ -226,7 +226,9 @@ TAB=$(printf '\t')
       exit 1
     fi
     RED_TRAILER=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f2)
-    RED_VERDICT=$(gsd_run query task.red-evidence-verdict --task-file "$TASK_FILE" --trailer "$RED_TRAILER" --changed-files "$(git show --name-only --format= "$RED_SHA")" --pick verdict) || exit 1
+    # `-c core.quotePath=false`: git's DEFAULT quotes and octal-escapes any
+    # non-ASCII path, which the membership check reads as extra path segments.
+    RED_VERDICT=$(gsd_run query task.red-evidence-verdict --task-file "$TASK_FILE" --trailer "$RED_TRAILER" --changed-files "$(git -c core.quotePath=false show --name-only --format= "$RED_SHA")" --pick verdict) || exit 1
     if [ "$RED_VERDICT" != "authorize" ]; then
       gsd_run query state.update last_gate_trip "${PLAN_ID}/${TASK_ID}" || true
       echo "MVP+TDD GATE TRIPPED: ${RED_VERDICT} for ${PLAN_ID}/${TASK_ID}"

@@ -2380,10 +2380,18 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     // failure (the usage error) rather than defeating the membership check. Forcing its VALUE
     // to a constant that always matches g1Trailer's own declared_file basename, regardless of
     // what the commit actually touched, is what isolates the membership check specifically.
+    // Matched by SHAPE (`--changed-files "$(…)"`), never by retyping the git
+    // invocation: a copied literal silently stops matching the moment that
+    // invocation is edited, and the control then runs the UNMODIFIED gate and
+    // reports a false red. That is exactly what the `-c core.quotePath=false`
+    // fix (#3770 CCR-01) did to the previous literal here.
+    const FORCED_MEMBERSHIP_RE = /--changed-files "\$\([^)]*\)"/;
+    assert.match(snippet, FORCED_MEMBERSHIP_RE,
+      'G8 non-vacuity precondition: the gate must still pass a command-substituted changed-file '
+      + 'list, or the substitution below silently produces an unmodified script.');
     const forcedMembershipScript = writeScript(
       'gate-forced-membership.sh',
-      snippet.split('--changed-files "$(git show --name-only --format= "$RED_SHA")"')
-        .join('--changed-files "tests/test_pricing.py"'),
+      snippet.replace(FORCED_MEMBERSHIP_RE, '--changed-files "tests/test_pricing.py"'),
     );
     const r8Stripped = runGate(forcedMembershipScript, s8, taskFile8);
     assert.strictEqual(r8Stripped.exitCode, 0,
