@@ -137,11 +137,31 @@ The differential attribution check reports the file and the byte delta. To resol
 1. **Justify the growth in your PR** (a sentence in the description is enough) —
    the acknowledgment entry (below) is the review record that the larger size
    was a deliberate, seen decision, not silent drift.
-2. **Add an acknowledgment entry** in `tests/emitted-drift-ack.json` naming the
-   file and the reason, per `CONTEXT.md`'s `### Emitted Artifact Provenance`
-   entry. This is deliberately a committed file, not a flag — the entry appears
-   in your PR diff, so touching it *is* the visible signal.
-3. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
+2. **Add an acknowledgment trailer** to one of your own commits (ADR-3942),
+   naming the file and the reason, per `CONTRIBUTING.md`'s "Editing shipped
+   content" section and `CONTEXT.md`'s `### Emitted Artifact Provenance` entry:
+
+   ```
+   Emitted-Drift-Ack-Growth: explore.md — new dispatch section, reasoning ships with the block
+   ```
+
+   Growth keys on the **bare filename** as it appears under `gsd-core/workflows/`
+   or `agents/`; an unattributable **hash** ripple uses
+   `Emitted-Drift-Ack-Hash:` and keys on the emitted path (which always contains
+   a `/`). The two are separate namespaces — a growth trailer will not excuse a
+   hash ripple, and the failure output says which one applies. The trailer is the
+   review record that the larger size was a deliberate, seen decision.
+
+   If you need to change an acknowledgment, amend the commit carrying it. That is
+   deliberate: the trailer cannot drift out of sync with the diff it explains,
+   because changing either changes the sha and re-runs the gate.
+3. **There is nothing to clean up afterwards.** The trailer is read from
+   `git log $(git merge-base <base> HEAD)..HEAD` — your commits and no others —
+   so once your PR merges it is out of range by construction. It never becomes
+   "spent", it owns no shared key space, it cannot conflict with anyone else's,
+   and no sweeper has to delete it. That is the whole reason ADR-3942 moved the
+   acknowledgment off the working tree.
+4. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
    is incidental: for a workflow, move per-mode bodies to
    `workflows/<name>/modes/`, templates to `workflows/<name>/templates/`, and
    shared prose to `gsd-core/references/`; for an agent, lift shared boilerplate
@@ -160,7 +180,7 @@ help — that is the signal to extract, per step 3.
 |---|---|
 | `scripts/workflow-size.cjs` | Single source of truth — LF-normalized byte counter (`lfByteCount`) + generic `measureMdFiles(dir, predicate)` (backs both workflows and agents) + workflow enumeration (`listWorkflowStems`, `measureWorkflows`). Imported by both guards and by `tests/helpers/emitted-runtime.cjs`'s `currentSizes()` so they can never measure differently. |
 | `tests/emitted-attribution.test.cjs` + `tests/helpers/emitted-diff.cjs` | The differential attribution check and its size ratchet (ADR-2719). The sole mechanism for both emitted-content propagation AND per-file size growth as of #2724. |
-| `tests/emitted-drift-ack.json` | Committed acknowledgment file for unattributable emitted-content ripples and for size growth. Absent = no acks; its presence is the alarm. |
+| `Emitted-Drift-Ack-Hash:` / `Emitted-Drift-Ack-Growth:` commit trailers (ADR-3942) | The acknowledgment mechanism for unattributable emitted-content ripples and for size growth. Read from `git log $(git merge-base <base> HEAD)..HEAD` — no committed file, nothing to sweep; a merged trailer is out of range by construction. |
 | `npm run regen:derived` | Runs every remaining generator in dependency order (build → registry → ADR index → capability matrix → inventory manifest → manifest versions → `tests/fixtures/install-tree/*.json`). |
 | `tests/workflow-size-budget.test.cjs` | The workflow tier hard-cap guards, plus the `discuss-phase` progressive-disclosure checks. |
 | `tests/agent-size-budget.test.cjs` | The agent tier hard-cap guards (the agent analog). |
@@ -331,6 +351,99 @@ Reported paths are labelled `CREATED`, `MODIFIED`, `DELETED`, or `UNVERIFIED`.
 `UNVERIFIED` means a scan bound was hit and the path could not be attested
 either way — it is never the same as clean.
 
+## The mergeability preflight
+
+Before any of the matrix below is provisioned, every `pull_request` compute lane
+waits on one shared gate: **`PR mergeability`**, the reusable workflow
+`.github/workflows/pr-mergeable-preflight.yml`. **A pull request with a merge
+conflict runs no CI at all until the conflict is resolved** (#3833).
+
+### Reference
+
+| Verdict | When | Job result | Effect on the pipeline |
+|---|---|---|---|
+| `MERGEABLE` | GitHub reported `mergeable: true` | success | everything runs as normal |
+| `CONFLICTED` | GitHub reported `mergeable: false` | **failure** | every gated job is skipped; `Required tests` and `Stryker mutation score` report **red** |
+| `INDETERMINATE` | mergeability still unknown after the retry budget, or the API read failed | success **(fails open)** | everything runs as normal; a `::warning::` is emitted |
+| `SKIPPED_NOT_A_PR` | the event is not `pull_request` (push, `workflow_dispatch`, a `release.yml` call into `install-smoke.yml`) | success | everything runs as normal; **zero** API calls |
+| `INDETERMINATE` (bootstrap) | `scripts/ci-pr-mergeability.cjs` is absent at the base sha | success **(fails open)** | everything runs as normal; a `::warning::` names the cause |
+
+The bootstrap row is a consequence of the checkout being pinned to the base sha:
+the preflight runs the script **as it exists on the base branch**, so the script
+is absent on the pull request that introduces it, and on any branch whose base
+predates it. Absent is not "conflicted" — it is one more thing the gate cannot
+determine, so it takes the same fail-open path. The arm is self-healing and
+never fires again once the script is on the base branch; a test pins it in place
+so a future reader does not mistake it for dead code.
+
+The verdict comes from `scripts/ci-pr-mergeability.cjs`, which polls
+`GET /repos/{owner}/{repo}/pulls/{number}` until `mergeable` is non-null.
+GitHub computes mergeability in an **asynchronous background job** and returns
+`null` while it is in progress, so a single cold read is never authoritative —
+the poll is required, not defensive.
+
+Two properties are load-bearing and easy to break:
+
+- **Only `mergeable === true` / `=== false` decides the verdict.** `null` is
+  falsy, so a truthiness test (`if (!mergeable)`) would classify every cold read
+  as a conflict and red every PR in the repo.
+- **`mergeable_state` never decides the verdict.** Its `blocked` value means
+  "required checks have not passed", which is true *while this very job is
+  running* — gating on it self-deadlocks the pipeline. It is read for the
+  failure message only.
+
+Gated: `test.yml` (`lint-tests`, `test`, `test-inert`, `test-full`,
+`coverage-gate`, `qa-loop-walk`, `required-tests`), `install-smoke.yml`,
+`mutation.yml`, `security-scan.yml`, `docs-required.yml`,
+`changeset-required.yml`, `default-flip-documentation.yml`, `branch-naming.yml`.
+
+**Deliberately not gated:** the `pull_request_target` policy and security lanes —
+auto-close-unsolicited-PRs, close-draft-PRs, the target/title/template
+validators, issue-link, and unauthorized-approval dismissal. Gating those would
+let a conflicted drive-by PR evade auto-close, so they keep running on a
+conflicted PR and a test asserts they are never wired to the preflight.
+
+### What it deliberately does not do
+
+**It applies no label.** The gate does not add or remove `needs-review: merge-conflict`.
+Eight caller workflows each invoke the preflight, so eight jobs would race to
+add-or-remove one label on every PR event, and it would force
+`pull-requests: write` into eight lanes that today hold `contents: read`.
+`needs-review: merge-conflict` stays a maintainer triage label applied during PR
+sweeps; the red check and its annotation are the machine signal.
+
+**It changes no branch protection.** `.github/rulesets/main-protection.json` is
+untouched and needs no new required context — GitHub natively refuses to merge a
+pull request with conflicts, so the ruleset already blocks it. (Adding the check
+as *required* before the workflow exists on the base branch would deadlock every
+open PR until it landed.)
+
+### What this does not replace
+
+`scripts/ci-rebase-check.cjs` is unchanged and still runs inside each matrix job,
+including its #2472 base-sha pin. The preflight is an early-exit optimization on
+GitHub's asynchronously-computed view; the in-job merge remains authoritative and
+covers the case where the base advances mid-run. **The gate is never a safety
+property** — every path except an explicit `mergeable: false` fails open, so an
+API outage simply restores the pre-#3833 behavior.
+
+### If your PR shows a red `PR mergeability` check
+
+The annotation names the base branch and the remedy. There is one step:
+
+```bash
+git fetch origin && git rebase origin/next && git push --force-with-lease
+```
+
+Resolve the conflicts the rebase reports, then push. The next `synchronize`
+event re-runs the preflight and the full pipeline comes back. (Because the
+sequence is a single command, this has no separate how-to page — see
+[CONTRIBUTING.md → Where Do I Open My PR?](../CONTRIBUTING.md#where-do-i-open-my-pr-branching-model)
+for the branching model that makes the rebase necessary in the first place.)
+
+Note the interaction with the sha-bound pass marker: a rebase changes your HEAD
+sha, which invalidates any prior remote-runner verification. Rebase *last*.
+
 ## CI matrix
 
 The `Tests` workflow runs every PR through a scoped gate generated by
@@ -413,6 +526,43 @@ weight, and a missing or unparseable table falls back to uniform weight — so
 drift costs chunk *balance*, never a red build. A count-based floor additionally
 guarantees the packer never produces fewer chunks than plain count-based packing
 would, so a badly stale table cannot collapse the suite into a few fat chunks.
+
+### CI job timeout budgets: report + near-cap warning (#4036)
+
+Every matrixed job — `test` and `test-full` in `test.yml`, `mutate` in
+`mutation.yml`, `smoke` in `install-smoke.yml` — declares a `timeout-minutes`
+cap. `tests/ci-test-job-timeout-budget.test.cjs` enforces that each checked-in
+cap stays at least the **headroom factor** (1.5x) above a documented,
+hand-measured cost for that job — now all four of the jobs above, not just
+`test`/`test-full`/`coverage-gate`/`test-inert` as before.
+
+Two runtime mechanisms sit on top of that static gate, both new in #4036:
+
+- **In-job near-cap check** (`scripts/ci-check-job-near-cap.cjs`) — the last
+  step of each of the four jobs computes elapsed-vs-cap from a start-time
+  marker recorded as that job's first step. At >=90% of budget it emits a
+  `::warning::` annotation (visible in the PR Checks UI) and a
+  `$GITHUB_STEP_SUMMARY` block. Advisory only — it never fails the job. Known
+  limit: it cannot fire for a job actually killed by the timeout, since a
+  killed job never reaches its last step. That case is caught by the second
+  mechanism instead.
+- **Scheduled trending report** (`.github/workflows/ci-timeout-report.yml`,
+  `scripts/ci-timeout-report.cjs`) — runs daily and on `workflow_dispatch`. It
+  polls GitHub's Actions REST API for recently completed jobs across
+  `test.yml`, `mutation.yml`, and `install-smoke.yml`, resolves each job's
+  declared cap (a literal `timeout-minutes` for `test`/`test-full`/`smoke`, or
+  `scripts/mutation-matrix.cjs`'s `COVERED[<module>].timeoutMinutes` for
+  `mutate`'s per-module shards), and appends any new `(runId, jobName)`
+  records to `tests/ci-timeout-budget-history.jsonl`. Unlike the in-job check,
+  this also catches jobs killed by an actual timeout breach — GitHub's Jobs
+  API still reports `started_at`/`completed_at` for a cancelled job. Each run
+  opens a small, data-only PR carrying that run's new rows, since `next` is a
+  protected branch and nothing pushes to it directly — the same constraint
+  `auto-backmerge.yml` already works within.
+
+This does not retune any `timeout-minutes` value, rebalance shard composition,
+or trim what runs in shard 1 — those stay maintainer policy calls made from
+the accumulated history, not something either mechanism decides on its own.
 
 ### How-to: regenerate the timing table
 

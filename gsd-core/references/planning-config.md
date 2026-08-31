@@ -6,11 +6,13 @@ Configuration options for `.planning/` directory behavior.
 ```json
 "planning": {
   "commit_docs": true,
+  "pr_strict": false,
   "search_gitignored": false
 },
 "git": {
   "branching_strategy": "none",
   "base_branch": null,
+  "protected_branches": ["develop", "staging"],
   "phase_branch_template": "gsd/phase-{phase}-{slug}",
   "milestone_branch_template": "gsd/{milestone}-{slug}",
   "quick_branch_template": null
@@ -27,15 +29,18 @@ Configuration options for `.planning/` directory behavior.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `commit_docs` | `true` | Whether to commit planning artifacts to git |
+| `pr_strict` | `false` | Filter mode for `/gsd:pr-branch`. `false` keeps structural planning state (STATE.md, ROADMAP.md, MILESTONES.md, PROJECT.md, REQUIREMENTS.md, milestones/) in the PR branch; `true` drops every `.planning/` path |
 | `search_gitignored` | `false` | Add `--no-ignore` to broad rg searches |
 | `git.branching_strategy` | `"none"` | Git branching approach: `"none"`, `"phase"`, or `"milestone"` |
 | `git.base_branch` | `null` (auto-detect) | Target branch for PRs and merges (e.g. `"master"`, `"develop"`). When `null`, auto-detects from `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"main"`. |
+| `git.protected_branches` | (none) | Optional array of non-empty strings naming additional shared branches that should trigger protected-branch warnings |
 | `git.create_tag` | `true` | Create git tags on milestone completion |
 | `git.phase_branch_template` | `"gsd/phase-{phase}-{slug}"` | Branch template for phase strategy |
 | `git.milestone_branch_template` | `"gsd/{milestone}-{slug}"` | Branch template for milestone strategy |
 | `git.quick_branch_template` | `null` | Optional branch template for quick-task runs |
 | `workflow.use_worktrees` | `true` | Whether executor agents run in isolated git worktrees. Set to `false` to disable worktrees — agents execute sequentially on the main working tree instead. Recommended for solo developers or when worktree merges cause issues. Note: if your branch is ahead of `origin/HEAD` (a diverged milestone or feature branch), GSD auto-degrades to sequential and prints a warning; set `worktree.baseRef:"head"` in `.claude/settings.local.json` to restore parallel execution. See the branch-divergence note below. |
 | `workflow.subagent_timeout` | `300000` | Timeout in milliseconds for parallel subagent tasks (e.g. codebase mapping). Increase for large codebases or slower models. Default: 300000 (5 minutes). |
+| `workflow.inline_plan_threshold` | `2` | Plans with this many tasks or fewer execute inline (Pattern C) instead of spawning a subagent. Avoids ~14K token spawn overhead for small plans. Set to `0` to always spawn subagents. |
 | `workflow.test_command` | `null` | Custom shell command run as the regression/test gate by execute-phase, audit-fix, and post-merge-gate. When unset, GSD auto-detects (Makefile / package.json / Cargo.toml / go.mod / pyproject.toml). Example: `npm test`. |
 | `workflow.build_command` | `null` | Custom shell command run as the build gate by the post-merge gate. When unset, the build step is skipped/auto-detected. Example: `npm run build`. |
 | `workflow.inline_plan_threshold` | `2` | Plans with this many tasks or fewer execute inline (Pattern C) instead of spawning a subagent. Avoids ~14K token spawn overhead for small plans. Set to `0` to always spawn subagents. |
@@ -44,6 +49,26 @@ Configuration options for `.planning/` directory behavior.
 | `manager.flags.execute` | `""` | Flags passed to execute workflow when dispatched from manager |
 | `response_language` | `null` | Language for user-facing questions and prompts across all phases/subagents (e.g. `"Portuguese"`, `"Japanese"`, `"Spanish"`). When set, all spawned agents include a directive to respond in this language. |
 </config_schema>
+
+`git.protected_branches` has no persisted default. When it is absent, only the resolved base branch
+is protected, preserving existing project behavior. Every configured item must be a non-empty
+string. The configured list extends the resolved base branch; it never replaces the base or changes
+the resolution ladder. A match produces an advisory warning at execute-phase and ship and does not
+change `git.branching_strategy: "none"`.
+
+Matching is by exact branch name — there is no glob or prefix support, so a git-flow
+layout must name each `release/*` or `hotfix/*` branch it wants protected. An entry that
+is not a non-empty string is ignored with a warning naming it, and the remaining names
+still apply.
+
+```json
+{
+  "git": {
+    "branching_strategy": "none",
+    "protected_branches": ["develop", "staging"]
+  }
+}
+```
 
 <commit_docs_behavior>
 
@@ -61,15 +86,15 @@ Configuration options for `.planning/` directory behavior.
 
 ```bash
 # Commit with automatic commit_docs + gitignore checks:
-gsd-tools query commit "docs: update state" --files .planning/STATE.md
+gsd_run query commit "docs: update state" --files .planning/STATE.md
 
 # Load config via state load (returns JSON):
-INIT=$(gsd-tools query state.load)
+INIT=$(gsd_run query state.load)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 # commit_docs is available in the JSON output
 
 # Or use init commands which include commit_docs:
-INIT=$(gsd-tools query init.execute-phase "1")
+INIT=$(gsd_run query init.execute-phase "1")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 # commit_docs is included in all init command outputs
 ```
@@ -81,7 +106,7 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 **Commit via CLI (handles checks automatically):**
 
 ```bash
-gsd-tools query commit "docs: update state" --files .planning/STATE.md
+gsd_run query commit "docs: update state" --files .planning/STATE.md
 ```
 
 The CLI checks `commit_docs` config and gitignore status internally — no manual conditionals needed.
@@ -169,14 +194,14 @@ To use uncommitted mode:
 
 Use `init execute-phase` which returns all config as JSON:
 ```bash
-INIT=$(gsd-tools query init.execute-phase "1")
+INIT=$(gsd_run query init.execute-phase "1")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 # JSON output includes: branching_strategy, phase_branch_template, milestone_branch_template
 ```
 
 Or use `state load` for the config values:
 ```bash
-INIT=$(gsd-tools query state.load)
+INIT=$(gsd_run query state.load)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 # Parse branching_strategy, phase_branch_template, milestone_branch_template from JSON
 ```
@@ -242,6 +267,7 @@ Generated from `CONFIG_DEFAULTS` (configuration.cjs) and `VALID_CONFIG_KEYS` (co
 | `resolve_model_ids` | boolean\|string | `false` | `false`, `true`, `"omit"` | Map model aliases to full Claude IDs; `"omit"` returns empty string |
 | `context` | string\|null | `null` | `"dev"`, `"research"`, `"review"` | Execution context profile that adjusts agent behavior: `"dev"` for development tasks, `"research"` for investigation/exploration, `"review"` for code review workflows |
 | `review.models.<cli>` | string\|null | `null` | Any model ID string | Per-CLI model override for /gsd:review (e.g., `review.models.gemini`). Falls back to CLI default when null. |
+| `review.max_prompt_tokens` | number\|null | `null` | Any positive integer, or `null` | Central, cross-lane default cap (in estimated tokens) on the assembled review prompt; `null` means no trim. A per-lane `review.max_prompt_tokens_per_reviewer.<slug>` value overrides it for that lane: `-1` means unset (inherits this global default), `0` means "do not trim that lane" (not unset — it is an explicit, standing opt-out). _Alias:_ `max_prompt_tokens` is the flat-key form used in `CONFIG_DEFAULTS`; `review.max_prompt_tokens` is the canonical namespaced form. |
 
 ### Workflow Fields
 
@@ -263,11 +289,12 @@ Set via `workflow.*` namespace in config.json (e.g., `"workflow": { "research": 
 | `workflow.ui_phase` | boolean | `true` | `true`, `false` | Generate UI-SPEC.md for frontend phases |
 | `workflow.ui_safety_gate` | boolean | `true` | `true`, `false` | Require safety gate approval for UI changes |
 | `workflow.text_mode` | boolean | `false` | `true`, `false` | Use plain-text numbered lists instead of AskUserQuestion menus |
-| `workflow.research_before_questions` | boolean | `false` | `true`, `false` | Run research before interactive questions in discuss phase |
+| `workflow.research_before_questions` | boolean | `false` | `true`, `false` | Run research before interactive questions in discuss phase (also honored on the `/gsd:quick` path, #3894). _Alias:_ `research_before_questions` is the flat-key form used in `CONFIG_DEFAULTS`; `workflow.research_before_questions` is the canonical namespaced form. |
 | `workflow.discuss_mode` | string | `"discuss"` | `"discuss"`, `"assumptions"` | Default mode for discuss-phase: `"discuss"` runs interactive questioning; `"assumptions"` analyzes codebase and surfaces assumptions instead |
 | `workflow.skip_discuss` | boolean | `false` | `true`, `false` | Skip discuss phase entirely |
 | `workflow.use_worktrees` | boolean | `true` | `true`, `false` | Run executor agents in isolated git worktrees |
 | `workflow.subagent_timeout` | number | `300000` | Any positive integer (ms) | Timeout for parallel subagent tasks (default: 5 minutes) |
+| `workflow.inline_plan_threshold` | number | `2` | `0`–`10` | Plans with ≤N tasks execute inline instead of spawning a subagent |
 | `workflow.test_command` | string\|null | `null` | Any shell command | Regression/test gate command run by execute-phase, audit-fix, and post-merge-gate. Unset → GSD auto-detects (Makefile / package.json / Cargo.toml / go.mod / pyproject.toml). |
 | `workflow.build_command` | string\|null | `null` | Any shell command | Build gate command run by the post-merge gate. Unset → build step auto-detected/skipped. |
 | `workflow.mvp_mode` | boolean | `false` | `true`, `false` | Persist the MVP-mode flag in config so every phase defaults to MVP framing without requiring `--mvp` on the CLI. Resolved via the chain: `--mvp` CLI flag → ROADMAP.md `**Mode:** mvp` field → this config value → `false`. When `true`, the planner, executor, verifier, and discovery surfaces (progress, stats, graphify) all treat the phase as an MVP vertical slice (UI → API → DB) of one user-visible capability. |
@@ -278,6 +305,7 @@ Set via `workflow.*` namespace in config.json (e.g., `"workflow": { "research": 
 | `workflow.inline_plan_threshold` | number | `2` | `0`–`10` | Plans with ≤N tasks execute inline instead of spawning a subagent |
 | `workflow.code_review` | boolean | `true` | `true`, `false` | Enable built-in code review step in the ship workflow |
 | `workflow.code_review_depth` | string | `"standard"` | `"quick"`, `"standard"`, `"deep"` | Depth level for code review analysis in the ship workflow |
+| `workflow.code_review_depth_overrides` | array | `[]` | Array of `{paths, depth}` rule objects | Ordered path-scoped depth rules for `/gsd:code-review` (#2554). Each rule's `paths` are matched against the review's changed-file set by whole-segment directory-path prefix (`src/auth` matches `src/auth/token.ts`, never `src/authfoo/x.ts`); matching is case-sensitive. Glob syntax (`*`, `?`) is a configuration error. One matched file escalates the entire review — depth is not applied per file. Resolution order: `--depth=` flag → strongest matching rule → `workflow.code_review_depth` → `standard`. A malformed rule halts the review with a typed error rather than falling back silently. |
 | `workflow._auto_chain_active` | boolean | `false` | `true`, `false` | Internal: tracks whether autonomous chaining is active |
 | `workflow.security_enforcement` | boolean | `true` | `true`, `false` | Enable threat-model-anchored security verification via `/gsd:secure-phase`. When `false`, security checks are skipped entirely |
 | `workflow.security_asvs_level` | number | `1` | `1`, `2`, `3` | OWASP ASVS verification level. Level 1 = opportunistic, Level 2 = standard, Level 3 = comprehensive. Scales both planner threat-disposition rigor (which threats must be mitigated vs. accepted) and auditor verification depth (grep-level → boundary-placement check → full data-flow trace). See `gsd-core/references/security-asvs-levels.md`. |
@@ -300,6 +328,7 @@ Set via `git.*` namespace (e.g., `"git": { "branching_strategy": "phase" }`).
 |-----|------|---------|----------------|-------------|
 | `git.branching_strategy` | string | `"none"` | `"none"`, `"phase"`, `"milestone"` | Git branching approach for phase/milestone isolation |
 | `git.base_branch` | string\|null | `null` (auto-detect) | Any branch name | Target branch for PRs and merges; auto-detects from `origin/HEAD` when `null` |
+| `git.protected_branches` | array of non-empty strings | (none) | Non-empty branch names | Optional protected names added to the resolved base branch for execute-phase and ship warnings |
 | `git.create_tag` | boolean | `true` | `true`, `false` | Create git tags on milestone completion |
 | `git.phase_branch_template` | string | `"gsd/phase-{phase}-{slug}"` | Template with `{phase}`, `{slug}` | Branch naming template for `phase` strategy |
 | `git.milestone_branch_template` | string | `"gsd/{milestone}-{slug}"` | Template with `{milestone}`, `{slug}` | Branch naming template for `milestone` strategy |
@@ -398,7 +427,7 @@ Several config fields affect each other or trigger special behavior:
 
 8. **`sub_repos` auto-sync** -- On every config load, GSD scans for child directories with `.git` and updates the `sub_repos` array if the filesystem has changed. Legacy `multiRepo: true` is automatically migrated to a detected `sub_repos` array.
 
-9. **`workflow.use_worktrees` and branch divergence** -- When `use_worktrees` is `true` (default), executor worktrees are forked from `origin/HEAD` -- by the host's own harness on `dispatch.isolation: harness-worktree` runtimes (Claude Code, Cursor), or by GSD itself on `orchestrator-worktree` runtimes (Codex, OpenCode, Kimi, Kimi Code). The divergence behavior below is identical either way, because the fork base is a property of the repository rather than of whoever creates the worktree. If your current branch has commits that `origin/HEAD` does not (for example an unmerged milestone or feature branch), GSD automatically degrades to sequential execution for that run and prints a one-line `⚠ Worktree base mismatch` warning. To restore parallel execution permanently, set `worktree.baseRef:"head"` in `.claude/settings.local.json` (run `node gsd-tools.cjs worktree set-baseref`). This makes the harness fork worktrees from the live HEAD instead of `origin/HEAD`. Both fresh installs and upgrades of GSD Core set this automatically (no-clobber) when `use_worktrees` is enabled; you can also run the command manually at any time. Setting `workflow.use_worktrees: false` is the alternative if worktrees are not needed at all. On a runtime whose declared `dispatch.isolation` is `none`, an explicit `true` is a config the execution workflows fail closed on; `/gsd:health` reports it as warning `W025` and `/gsd:settings` offers to repair it (#2486).
+9. **`workflow.use_worktrees` and branch divergence** -- When `use_worktrees` is `true` (default), executor worktrees are forked from `origin/HEAD` -- by the host's own harness on `dispatch.isolation: harness-worktree` runtimes (Claude Code, Cursor), or by GSD itself on `orchestrator-worktree` runtimes (Codex, OpenCode, Kimi, Kimi Code). The divergence behavior below is identical either way, because the fork base is a property of the repository rather than of whoever creates the worktree. If your current branch has commits that `origin/HEAD` does not (for example an unmerged milestone or feature branch), GSD automatically degrades to sequential execution for that run and prints a one-line `⚠ Worktree base mismatch` warning. To restore parallel execution permanently, set `worktree.baseRef:"head"` in `.claude/settings.local.json` (run `gsd_run worktree set-baseref`). This makes the harness fork worktrees from the live HEAD instead of `origin/HEAD`. Both fresh installs and upgrades of GSD Core set this automatically (no-clobber) when `use_worktrees` is enabled; you can also run the command manually at any time. Setting `workflow.use_worktrees: false` is the alternative if worktrees are not needed at all. On a runtime whose declared `dispatch.isolation` is `none`, an explicit `true` is a config the execution workflows fail closed on; `/gsd:health` reports it as warning `W025` and `/gsd:settings` offers to repair it (#2486).
 
 ---
 

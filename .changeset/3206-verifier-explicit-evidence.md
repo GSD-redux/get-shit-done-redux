@@ -1,5 +1,0 @@
----
-type: Fixed
-pr: 3435
----
-**The verifier's non-inferable (`backstop`) abstention rule now defines "explicit evidence" where the verifier is guaranteed to read it.** Step 3 item 5b used the term undefined — its definition was stranded in `gsd-core/references/honest-verifier.md` behind a stale `references/` cite that does not resolve, so the term fell back to the verifier's default notion of evidence (symbol presence + wiring), the exact false-pass the #1154 abstention protocol exists to refuse. 5b now carries the definition inline (a passing wired held-out/property-based test or directly observed behavior; presence + wiring never qualifies), the AFK never-silent/never-halt completion line and the `insufficient_spec`-vs-manual-UAT distinction ship in the eagerly-loaded `verifier-phase-gates.md` reference, and the agent file's three stale bare `references/` cites are gone: the two at 5c and the MVP-mode section now resolve under the `gsd-core/` prefix, and 5b's is superseded by the inline definition itself. (#3206)

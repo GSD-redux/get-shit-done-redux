@@ -37,7 +37,7 @@ No Pass/Fail buttons. No severity questions. Just: "Here's what should happen. D
 If $ARGUMENTS contains a phase number, load context:
 
 ```bash
-_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; if [ -f "$GSD_TOOLS" ]; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif command -v gsd-tools >/dev/null 2>&1; then GSD_TOOLS="$(command -v gsd-tools)"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd-tools is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
+_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 GSD_WS=""
 echo "$ARGUMENTS" | grep -qE -- '--ws[[:space:]]+[A-Za-z0-9._-]+' && GSD_WS=$(echo "$ARGUMENTS" | grep -oE -- '--ws[[:space:]]+[A-Za-z0-9._-]+')
 PHASE_ARG=$(echo "$ARGUMENTS" | sed -E 's/--ws[[:space:]]+[A-Za-z0-9._-]+//g' | xargs)
@@ -61,14 +61,25 @@ MVP_MODE=$(gsd_run query phase.mvp-mode "${phase_number}" ${GSD_WS} --pick activ
 </step>
 
 <step name="verify_pre_hooks">
-**Verify:pre gate dispatch.** Before verification begins, dispatch every active
-gate hook registered at the `verify:pre` loop extension point. Each gate is
-data-driven — resolved from the capability registry, not hardcoded here.
+**Verify:pre capability dispatch.** Before verification begins, dispatch every
+active hook registered at the `verify:pre` loop extension point — of **every**
+kind, not gates alone. Each hook is data-driven — resolved from the capability
+registry, not hardcoded here.
 
 ```bash
 VERIFY_PRE_HOOKS_JSON=$(gsd_run loop render-hooks verify:pre --raw)
 PHASE_DIR=$(printf '%s' "$INIT" | jq -r '.phase_dir // empty')
 ```
+
+Read the `activeHooks` array from `VERIFY_PRE_HOOKS_JSON` in-context (do NOT pipe through a shell parser).
+
+**If `activeHooks` is empty or absent:** skip silently to `check_active_session`.
+
+**Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip when none), before the steps and gates below.
+
+**Step dispatch:** dispatch every `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md (skip when none) — not one shape of one. A step here is advisory: it never blocks the start of UAT, and a step that errors is routed by its own `onError` without failing verification. ⚠ **Validate `ref.command` in-context before any shell use** (third-party manifest input) — loop-hook-dispatch.md § `step`.
+
+Record the union of `produces` artefact names declared by the active step entries as `VERIFY_PRE_PRODUCED` — `extract_tests` consumes it below. An entry declaring `produces: []` contributes nothing, which is the normal case.
 
 ⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`.
 
@@ -186,6 +197,35 @@ Read the JSON result (`mode`, `total`, `all_auto_covered`, `auto_passed[]`, `pre
   - Surface any `errors[]` to the user (malformed coverage block) but still treat their entries as human checkpoints — **never drop a deliverable** (fail-safe).
 
 The cold-start smoke test injection below still applies in `coverage` mode.
+
+**Verify:pre produced-artefact seam (#3866).** If `VERIFY_PRE_PRODUCED` (recorded in
+`verify_pre_hooks`) is empty or absent, skip this paragraph entirely — derivation is unchanged.
+Otherwise, for each artefact name in it, locate the artefact the producing step wrote under
+`$PHASE_DIR` and merge its checkpoints into the test list **additively**.
+
+**The artefact contract.** A consumable artefact is a Markdown file holding a list of checkpoint
+entries in the **same shape `extract_tests` already emits and `create_uat_file` already consumes** —
+each entry a `name` (brief test name) and an `expected` (specific, user-observable outcome).
+Nothing else is read: extra fields are ignored, not an error. There is no new schema and no new
+parser — a producing step writes what a checkpoint already looks like. An artefact that yields zero
+parseable entries is treated exactly like an absent one (see below).
+
+Merge rules:
+
+- ⚠ **Validate the artefact name in-context before resolving it** (third-party manifest input).
+  An artefact name is a registry-declared name, **not** a path: check the value you read from
+  `produces` against `^[A-Za-z0-9][A-Za-z0-9._-]*$` yourself — **never** by pasting it into a
+  shell command to be tested there. A name carrying `/`, `..`, a leading `-`, a leading path
+  separator, or any shell metacharacter is a malformed manifest: record a warning, skip that
+  name, continue. Only a validated name is resolved, and only against what the step wrote inside
+  `$PHASE_DIR` — never above it, and never through a symlink that leaves it.
+- A name with no artefact on disk means that step was inactive, skipped, or failed. Note it to the
+  user and derive normally — **never drop a deliverable and never block UAT over it.**
+- Merged entries are added to, never subtracted from, what `coverage:` classification and the
+  prose fallback produce. An `auto_passed[]` entry stays un-presented; a `present[]` entry stays a
+  human checkpoint. This seam can deepen UAT, not suppress it.
+- Deduplicate against already-derived checkpoints by `name`, keeping the earlier entry's
+  `expected` text so a produced artefact cannot silently rewrite a criterion.
 
 **Extract testable deliverables from SUMMARY.md (legacy fallback — used when `mode: legacy`):**
 
@@ -534,6 +574,8 @@ VERIFY_POST_HOOKS_JSON=$(gsd_run loop render-hooks verify:post --raw)
 SECURITY_FILE=$(ls "${PHASE_DIR}"/*-SECURITY.md 2>/dev/null | head -1)
 ```
 
+**Generic step dispatch:** dispatch every `kind == "step"` hook from `VERIFY_POST_HOOKS_JSON` per @gsd-core/references/loop-hook-dispatch.md (skip silently when none). Each step is advisory and best-effort — honor `onError` and continue. The secure-phase handling below is an additional specialization of one such hook, not a replacement for the generic dispatch.
+
 Resolve active step hooks from `VERIFY_POST_HOOKS_JSON` where `kind == "step"` and `ref.skill == "secure-phase"`.
 
 If an active secure-phase step hook exists AND `SECURITY_FILE` is empty, dispatch the registry-provided skill stem:
@@ -633,7 +675,7 @@ All tests passed. Phase {phase} marked complete.
 <step name="scan_phase_artifacts">
 Run phase artifact scan to surface any open items before marking phase verified:
 
-`audit-open` is CJS-only until registered on `gsd-tools.cjs query`:
+`audit-open` is CJS-only until registered on `gsd_run query`:
 
 ```bash
 gsd_run query audit-open --json
@@ -647,9 +689,12 @@ Parse the JSON output. For the CURRENT PHASE ONLY, surface:
 If any are found, display:
 ```
 Phase {N} Artifact Check
-─────────────────────────────────────────────────
+
+---
+
 {list each item with status and file path}
-─────────────────────────────────────────────────
+
+---
 These items are open. Proceed anyway? [Y/n]
 ```
 
@@ -685,9 +730,7 @@ Diagnosis runs automatically - no user prompt. Parallel agents investigate simul
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► PLANNING FIXES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► PLANNING FIXES
 
 ◆ Spawning planner for gap closure... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -752,9 +795,7 @@ On return:
 
 Display:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► VERIFYING FIX PLANS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► VERIFYING FIX PLANS
 
 ◆ Spawning plan checker... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -858,9 +899,7 @@ Wait for user response.
 **Present completion and next steps:**
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► FIXES READY ✓
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► FIXES READY ✓
 
 **Phase {X}: {Name}** — {N} gap(s) diagnosed, {M} fix plan(s) created
 
@@ -871,7 +910,7 @@ Wait for user response.
 
 Plans verified and ready for execution.
 
-───────────────────────────────────────────────────────────────
+---
 
 ## ▶ Next Up — [${PROJECT_CODE}] ${PROJECT_TITLE}
 
@@ -879,7 +918,7 @@ Plans verified and ready for execution.
 
 `/clear` then `/gsd:execute-phase {phase} --gaps-only`
 
-───────────────────────────────────────────────────────────────
+---
 ```
 </step>
 

@@ -23,6 +23,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -384,10 +385,12 @@ describe('edit-phase: documentation registration', () => {
     );
     // Locate the edit-phase.md row in the Workflows table and assert the
     // "Invoked by" column documents /gsd-phase --edit (not the deleted form).
-    // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/INVENTORY.md, bounded table rows, not adversarial input
-    const rowMatch = inventory.match(/^\|\s*`edit-phase\.md`\s*\|[^|]*\|\s*([^|]+?)\s*\|$/m);
-    assert.ok(rowMatch, 'docs/INVENTORY.md must contain an edit-phase.md workflow row');
-    const invokedBy = rowMatch[1];
+    const row = inventory
+      .split(/\r?\n/)
+      .map((line) => (line.trim().startsWith('|') ? splitTableRow(line) : null))
+      .find((cells) => cells && cells[0] === '`edit-phase.md`');
+    assert.ok(row, 'docs/INVENTORY.md must contain an edit-phase.md workflow row');
+    const invokedBy = row[2];
     assert.ok(
       /\/gsd-phase\s+--edit/.test(invokedBy),
       `edit-phase.md row must list "/gsd-phase --edit" as caller; got: "${invokedBy}"`

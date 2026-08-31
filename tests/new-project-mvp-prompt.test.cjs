@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/CONFIGURATION.md is cited only in a header comment; never read.
 /**
  * new-project workflow — MVP mode prompt contract test
  * Verifies the workflow markdown documents the Vertical MVP / Horizontal Layers

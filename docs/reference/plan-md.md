@@ -35,6 +35,8 @@ files_modified:
   - src/components/PostFeed.tsx
   - src/components/PostCard.tsx
   - src/app/feed/page.tsx
+files_deleted:
+  - src/components/LegacyFeed.tsx
 autonomous: true
 requirements: ["FEED-01", "FEED-03"]
 user_setup: []
@@ -67,8 +69,9 @@ must_haves:
 | `plan` | Yes | string | Plan number within the phase, e.g. `02`. |
 | `type` | Yes | `execute` or `tdd` | `execute` for standard plans; `tdd` for test-driven plans where tests are written before implementation. |
 | `wave` | Yes | integer | Execution wave. Plans in wave 1 run in parallel (no dependencies). Plans in wave 2+ wait for all plans in the previous wave to complete. Pre-computed at plan time by `gsd-planner`. |
-| `depends_on` | Yes | array of plan IDs | Plans this plan must wait for. Empty array = wave 1. Example: `["03-01"]` means this plan runs after Plan 01 in Phase 3. |
+| `depends_on` | Yes | array of plan IDs | Plans this plan must wait for. Empty array = wave 1. Accepts three forms, resolved in order: the full plan id (`"03-01-auth-hardening"`), the canonical phase-plan prefix (`"03-01"`), or the bare plan number (`"01"`, #3897) — which resolves to the sibling plan in the **same phase** whose canonical id ends `-01`. The bare form is in-phase only; it never resolves across phases. If two plans in the same phase share a bare form, the first one (by sorted plan-file order) wins — deterministic, but arbitrary when the collision happens, so prefer the full or canonical form when phase has any short-form collision risk. Example: `["03-01"]` means this plan runs after Plan 01 in Phase 3; from within Phase 3 itself, `["01"]` means the same thing. |
 | `files_modified` | Yes | array of paths | Every file this plan creates or modifies. Used by the plan-checker to detect same-wave file conflicts and by execute-phase for merge tracking. |
+| `files_deleted` | No | array of paths | Every file this plan deliberately **removes**. The post-wave cleanup gauntlet blocks the merge of any executor branch whose diff deletes a file — a net against a mass-deletion accident — and this field is the opt-in that names the exceptions. Matching is exact per path after separator normalization: a declared path merges, an undeclared one still blocks that plan's entry (and only that entry). There are no globs and no directory prefixes, so a declaration can never authorize more than it literally lists. Omit the field and the guard's original unconditional block stays in force, which is why absence is always the safe default (#3003). Counts toward same-wave conflict detection alongside `files_modified`: a plan deleting a file another plan in the same wave is editing is the sharpest conflict there is — one branch removes what the other is writing — so the two plans are pushed into different waves regardless of which side holds the deletion. |
 | `autonomous` | Yes | boolean | `true` when all tasks are type `auto`. `false` when the plan contains any `checkpoint:*` task that requires human interaction. |
 | `requirements` | Yes | array of IDs | Requirement IDs from ROADMAP.md that this plan addresses. Every phase requirement ID must appear in at least one plan's `requirements` field. Empty arrays are a BLOCKER. |
 | `user_setup` | No | array of objects | External-service setup steps that Claude cannot automate (account creation, secret retrieval, dashboard configuration). When present, execute-phase generates a `USER-SETUP.md` checklist for the developer. |
@@ -245,7 +248,7 @@ Full taxonomy, emission rules, and anti-patterns (chiefly: rating everything `on
 | Type | Use | Autonomy |
 |---|---|---|
 | `auto` | Everything the executor can do independently. | Fully autonomous. |
-| `tracer` | The leading thin end-to-end slice a plan starts with by default (tracer-first) — production-quality, wired through every layer, with a real end-to-end `<verify>`. | Fully autonomous; after committing, the executor runs the tracer's `<verify>` as an early integration gate — autonomous runs halt on failure before expansion, interactive runs present a `checkpoint:human-verify`. |
+| `tracer` | The leading thin end-to-end slice a plan starts with by default (tracer-first) — production-quality, wired through every layer, with a real end-to-end `<verify>`. | Fully autonomous; after committing, the executor runs the tracer's `<verify>` as an early integration gate. A tracer carrying `gate="blocking-human"` STOPs for a human in every mode, auto included. Otherwise autonomous runs halt on failure before expansion, and interactive runs honor `workflow.human_verify_mode` (#3299): under the `end-of-phase` default a `<verify>` carrying only `<automated>` is re-run and, on success, expansion continues with **no** checkpoint (failure still halts); under `mid-flight`, or when the tracer carries `<human-check>`, a `checkpoint:human-verify` is presented. Full precedence chain: `gsd-core/references/checkpoints.md` → "Tracer feedback gate". |
 | `checkpoint:human-verify` | Visual or functional verification that requires a human to look at a running UI or service. | Pauses execution; presents to the developer; resumes on approval. |
 | `checkpoint:decision` | Implementation choices that arose during execution and require the developer's input. | Pauses execution; presents options; resumes on selection. |
 | `checkpoint:human-action` | Truly unavoidable manual steps (account creation, hardware interaction). Used sparingly. | Pauses execution; resumes on confirmation. |
@@ -281,7 +284,7 @@ Plans that contain any checkpoint task must set `autonomous: false` in frontmatt
 | `<files>` | Every file the task creates or modifies. The executor writes only these files. |
 | `<read_first>` | Files the executor must read before touching anything — the file being modified, any source-of-truth pattern file, any file whose types or conventions must be replicated. |
 | `<action>` | Concrete instructions with exact identifiers, file paths, function signatures, and expected values. Never says "align X with Y" without specifying the target state. Never contains fenced code blocks or full implementations. |
-| `<verify>` | A runnable command or check that proves the task succeeded. Must distinguish pass from fail — `echo "done"` is not valid. |
+| `<verify>` | A runnable command or check that proves the task succeeded. Must distinguish pass from fail — `echo "done"` is not valid. Accepts either the wrapped form (`<verify><automated>cmd</automated></verify>`) or the legacy bare-text form (`<verify>cmd</verify>`); both are valid. **On a `type="tracer"` task, prefer the wrapped form:** the tracer feedback gate's auto-continue (#3299) requires a `<verify>` carrying only `<automated>`, so a bare-text tracer verify falls through to the STOP fallback and still presents a `checkpoint:human-verify` in interactive runs even under `end-of-phase`. |
 | `<acceptance_criteria>` | Verifiable conditions: grep-verifiable strings, command exit codes, observable behaviours. No subjective language ("looks correct", "properly configured"). Negative greps (`! grep -Eq 'PAT' file`) are file-scoped — region-scope them (`sed -n`/`awk` range, then grep) when a sibling task needs the construct elsewhere in the same file (#968). |
 | `<done>` | A short measurable statement of the completed outcome. |
 

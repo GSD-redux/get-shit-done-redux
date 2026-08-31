@@ -82,10 +82,12 @@ const ACKS_DIR = path.join(REPO_ROOT, ...ACKS_DIR_REL_PATH.split('/'));
 const BASELINE_VERSION = 1;
 
 /**
- * Upper bound on fragment files read in one pass — mirrors the identical cap
- * in `scripts/lint-emitted-drift-ack.cjs` (`MAX_ACK_FRAGMENTS`). Exceeding it
- * throws rather than silently truncating the listing, which would silently
- * drop acknowledgments from consideration — exactly the class of silent
+ * Upper bound on fragment files read in one pass — this cap is this script's own,
+ * for its own acknowledgment set (`tests/qa/smell-acks/`), which ADR-3942 does not
+ * touch. The emitted-drift ack this cap used to mirror moved to a commit trailer
+ * (ADR-3942) and no longer has a fragment-directory cap of its own to mirror.
+ * Exceeding it throws rather than silently truncating the listing, which would
+ * silently drop acknowledgments from consideration — exactly the class of silent
  * failure this whole seam exists to prevent.
  */
 const MAX_ACK_FRAGMENTS = 500;
@@ -389,13 +391,43 @@ function collectFindings(reportObject) {
   return { smells, violations, expectationFailures };
 }
 
-/** Lowercase, hyphenate, and strip anything that isn't `[a-z0-9-]`, for a fragment-filename skeleton. */
+/**
+ * Lowercase, transliterate, hyphenate, and strip anything that isn't
+ * `[a-z0-9-]`, for a fragment-filename skeleton.
+ *
+ * Routed through the canonical `generateSlugInternal` seam (`src/core-utils.cts`,
+ * issue #3987) instead of hand-rolling the same collapse/strip/truncate shape:
+ * this local copy trimmed leading/trailing hyphens BEFORE truncating to 60
+ * chars, which is the live #2849 bug (`.slice(0, 60)` can land on a separator,
+ * re-introducing a trailing hyphen the strip step was meant to prevent), and
+ * it never transliterated non-Latin scripts (#2848). `generateSlugInternal`
+ * returns `null` for empty/nullish input; a fragment-filename skeleton needs a
+ * string, so `?? ''` preserves this function's prior never-null contract.
+ *
+ * `gsd-core/bin/lib/core-utils.cjs` is required LAZILY, here, rather than at
+ * module load — it is `src/core-utils.cts`'s gitignored `build:lib` output,
+ * so a top-level `require` made this ENTIRE script (including `--help`, which
+ * never calls `slugify`) hard-fail `MODULE_NOT_FOUND` on a fresh clone before
+ * any build ran. Deferring the require to the one call site that actually
+ * needs it means every other code path (in particular `--help`) still works
+ * with `gsd-core/bin/lib/` absent, and a genuinely missing build only surfaces
+ * as an error when a NEW smell finding is rendered (the only caller of this
+ * function).
+ */
 function slugify(value) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60);
+  let generateSlugInternal;
+  try {
+    ({ generateSlugInternal } = require('../gsd-core/bin/lib/core-utils.cjs'));
+  } catch (err) {
+    if (err && err.code === 'MODULE_NOT_FOUND') {
+      throw new ExitError(
+        1,
+        'qa-smell-ratchet: gsd-core/bin/lib/core-utils.cjs is missing — run `npm run build:lib` first.',
+      );
+    }
+    throw err;
+  }
+  return generateSlugInternal(value, 60) ?? '';
 }
 
 /**

@@ -32,6 +32,7 @@ import {
   isEmptyReview,
   normalizeHost,
   fileRefPrompt as fileRefPromptText,
+  configString,
 } from './review-lane-invocation.cjs';
 
 /* ------------------------------------------------------------------ *
@@ -76,6 +77,197 @@ export interface LaneRunResult {
   detail?: string;
   /** True when a diagnostic stub was written instead of a real review. */
   stubbed: boolean;
+  /** The model this lane actually ran under, and how that was determined (#2295). */
+  model: ResolvedModel;
+}
+
+/* ------------------------------------------------------------------ *
+ * #2295 — the resolved model
+ * ------------------------------------------------------------------ */
+
+/**
+ * How a lane's resolved model was recovered. FROZEN — adding a member is three coordinated
+ * changes (enum + emitting site + the test locking `Object.keys(MODEL_SOURCE).sort()`), the same
+ * discipline `PARITY_VIOLATION` and `LANE_UNAVAILABLE` already carry.
+ *
+ * The source travels with the value on purpose. Postel's robustness principle is usually quoted
+ * as "be liberal in what you accept", but its modern caveat is the load-bearing half here:
+ * liberal must not mean GUESS SILENTLY. Two of these arms parse third-party text this project
+ * does not own — a CLI's startup banner and an undocumented on-disk session log — so a bare
+ * model string would be an unattributable claim. Recording HOW it was recovered lets a reader
+ * weigh `pinned` (certain) against `banner` (heuristic) without leaving the file.
+ */
+export const MODEL_SOURCE = Object.freeze({
+  /** `review.models.<slug>`, or an ADR-1517 instance `--model`, that really reached the invocation. */
+  PINNED: 'pinned',
+  /** An OpenAI-compatible server echoed the model it actually ran. The most authoritative arm. */
+  SERVED: 'served',
+  /** openai-http: discovered from `/v1/models`, or the declared `fallbackModel`; the server did not echo one. */
+  REQUESTED: 'requested',
+  /** The CLI's own startup banner named it. File-output lanes only — see `resolveSpawnModel`. */
+  BANNER: 'banner',
+  /** The lane handler's own on-disk session log named it (`agy`'s `transcript_full.jsonl`). */
+  TRANSCRIPT: 'transcript',
+  /** Nothing recoverable. An explicit non-answer, never an omitted field. */
+  UNKNOWN: 'unknown',
+} as const);
+
+export type ModelSource = (typeof MODEL_SOURCE)[keyof typeof MODEL_SOURCE];
+
+export interface ResolvedModel {
+  /** The model name, or `null` — and `null` IF AND ONLY IF `source` is `unknown`. */
+  value: string | null;
+  source: ModelSource;
+}
+
+/** The one shape every unresolvable case returns, so callers never hand-build it inconsistently. */
+export const UNRESOLVED_MODEL: ResolvedModel = Object.freeze({ value: null, source: MODEL_SOURCE.UNKNOWN });
+
+/**
+ * How far into captured output a startup banner may appear, in lines. A banner is by definition
+ * the FIRST thing a CLI prints; scanning further only raises the odds of matching something that
+ * is not one.
+ */
+export const BANNER_SCAN_LINES = 40;
+
+/** Longest plausible model identifier. Anything past this is not a model name, it is a payload. */
+export const MODEL_VALUE_MAX = 200;
+
+/**
+ * C0 controls (0x00-0x1F), DEL (0x7F) and C1 controls (0x80-0x9F). A model identifier never
+ * legitimately contains one, and a newline in particular is the frontmatter-injection vector
+ * this guards against — a recorded model value is written verbatim into REVIEWS.md YAML
+ * frontmatter, so a value carrying `\n` could forge arbitrary sibling keys. Deliberately does
+ * NOT include `:` — `llama3:70b` and `qwen2.5:7b` are legitimate model ids.
+ */
+const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F-\u009F]/;
+
+/**
+ * A recovered model value, or `null`. Shares `configString`'s unset-shape rule, length-caps it,
+ * then REJECTS (never strips or escapes) a value carrying a control character — see
+ * `CONTROL_CHAR_RE`. Rejecting rather than sanitizing means an anomalous value is recorded as
+ * `unknown` rather than silently rewritten into something that merely looks safe.
+ */
+function normalizeModelValue(raw: unknown): string | null {
+  const value = configString(raw);
+  if (value === null) return null;
+  if (value.length > MODEL_VALUE_MAX) return null;
+  return CONTROL_CHAR_RE.test(value) ? null : value;
+}
+
+/**
+ * The one place a `ResolvedModel` is built. Normalizing here rather than per-arm is what makes
+ * the `value !== null` ⟺ `source !== 'unknown'` invariant structural instead of a convention
+ * five call sites have to remember — and it is the single choke point where a hostile value is
+ * refused before it can reach the REVIEWS.md frontmatter a lane's result is rendered into.
+ */
+function recordedModel(raw: unknown, source: ModelSource): ResolvedModel {
+  const value = normalizeModelValue(raw);
+  return value === null ? UNRESOLVED_MODEL : { value, source };
+}
+
+/**
+ * The reasoning effort GSD applied to this invocation, folded into the recorded value (#2295).
+ *
+ * The issue asks for `gpt-5.6-sol (reasoning=high)`, and the Antigravity lane already reports its
+ * own tier the same way (`Gemini 3.5 Flash (Medium)`) — so effort belongs in the model designation
+ * a human compares, not in a separate field they would have to join by hand.
+ *
+ * The source is GSD's OWN resolved execution policy, not the CLI's config or banner, so this arm
+ * is certain in a way the banner and transcript arms are not. `MODEL_VALUE_MAX` bounds the model
+ * id the suffix is appended to; the suffix itself is GSD-owned and bounded, so it is deliberately
+ * outside that cap rather than able to push a legitimate id over it.
+ */
+function withEffort(resolved: ResolvedModel, effort: string | null): ResolvedModel {
+  if (resolved.value === null) return resolved;
+  const normalized = normalizeModelValue(effort);
+  if (normalized === null) return resolved;
+  return { value: `${resolved.value} (reasoning=${normalized})`, source: resolved.source };
+}
+
+/** A line that IS a `model:` declaration — leading banner chrome allowed, trailing prose not. */
+const BANNER_LINE_RE = /^[\s>*|-]*model\s*:\s*(.+)$/i;
+
+/**
+ * The model a CLI named in its own startup banner, or `null` (#2295).
+ *
+ * TOTAL: never throws, for any string. Deliberately dull — a bounded line window and one anchored
+ * regex — because this is the cleverest code in the change and Kernighan's Law says debugging is
+ * twice as hard as writing.
+ *
+ * AMBIGUITY IS NOT RESOLVED, IT IS REFUSED. Two DIFFERENT candidate values in the window means we
+ * cannot tell which one ran, and picking the first would attribute a review to a model on a coin
+ * flip. Repetition of one identical value is not ambiguity and is accepted.
+ */
+export function parseModelBanner(text: string): string | null {
+  const lines = String(text ?? '').split(/\r?\n/).slice(0, BANNER_SCAN_LINES);
+  const found = new Set<string>();
+  for (const line of lines) {
+    const m = BANNER_LINE_RE.exec(line);
+    if (!m) continue;
+    const value = normalizeModelValue(m[1]);
+    if (value !== null) found.add(value);
+  }
+  return found.size === 1 ? [...found][0] : null;
+}
+
+/** An own, string-valued `model` key on a plain object — never a prototype member, never coerced. */
+function ownModel(node: unknown): string | null {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return null;
+  const record = node as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(record, 'model')) return null;
+  return normalizeModelValue(record.model);
+}
+
+/**
+ * Key names the depth-2 wrapper scan below refuses to descend through, even though `JSON.parse`
+ * gives each an ordinary OWN data property here (never the real `Object.prototype` accessor — see
+ * `resolveConvId`'s `#3118` note on the same class of trap). The transcript is third-party JSON on
+ * a trust boundary; an entry SHAPED like `{"constructor":{"model":"x"}}` must never resolve as
+ * though "constructor" were a legitimate settings-wrapper key.
+ */
+const UNSAFE_WRAPPER_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * The session model named by the LAST settings-shaped entry of a `transcript_full.jsonl`, or `null`.
+ *
+ * TOTAL: never throws, for any string. Every line is independently parsed, so one truncated or
+ * garbage line cannot poison the file.
+ *
+ * SCOPE IS BOUNDED AT DEPTH TWO, AND THAT BOUND IS THE DESIGN. The transcript is an undocumented
+ * third-party format; its settings entry may carry `model` at the top level or one level down
+ * under a wrapper whose key name we cannot know without guessing. A depth is knowable; a key name
+ * is not. A recursive search over attacker-adjacent JSON would be both unbounded and a licence to
+ * match any `model`-ish key anywhere, so anything deeper degrades to `null` — which the maintainer
+ * ruled an acceptable recorded value, unlike a wrong one.
+ *
+ * `typeof null === 'object'`, so the null guard in `ownModel` is explicit rather than implied —
+ * the same trap `resolveConvId` documents at #3118.
+ */
+export function parseTranscriptModel(text: string): string | null {
+  let latest: string | null = null;
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // one bad line is not a bad file
+    }
+    const direct = ownModel(entry);
+    if (direct !== null) {
+      latest = direct;
+      continue;
+    }
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (UNSAFE_WRAPPER_KEYS.has(key)) continue;
+      const nested = ownModel(record[key]);
+      if (nested !== null) latest = nested;
+    }
+  }
+  return latest;
 }
 
 /* ------------------------------------------------------------------ *
@@ -330,31 +522,62 @@ interface TranscriptEntry {
  * filter on, and the transcript carries none. It is stated rather than silently tolerated because
  * the guarantee this function advertises ("never stale") holds only for sequential use, and a
  * future reader deserves to know which half is actually guaranteed.
+ *
+ * ONE MARK COVERS TWO FILES (#2295). The review body lives in `transcript.jsonl`; the model lives
+ * in `transcript_full.jsonl` — and these are DIFFERENT FILES WITH DIFFERENT LINE COUNTS. Using
+ * `lines` as an offset into the full transcript would either skip real entries or replay old ones,
+ * with no signal either way that it had done so. So this snapshots both, in the one pre-spawn call
+ * site every caller already has to make — a second watermark function would just be a second thing
+ * to remember to call before the spawn.
  */
-export function antigravityWatermark(
-  workspace: string,
-  deps: RunnerDeps,
-): { convId: string; lines: number; unreadable?: boolean } {
-  const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
-  if (!deps.exists(cachePath)) return { convId: '', lines: 0 };
-  let cache: Record<string, unknown>;
-  try {
-    cache = JSON.parse(deps.readFile(cachePath)) as Record<string, unknown>;
-  } catch {
-    return { convId: '', lines: 0 };
-  }
-  const convId = resolveConvId(cache, workspace);
-  if (!convId) return { convId: '', lines: 0 };
+export interface TranscriptWatermark {
+  /** The `agy` conversation id this watermark was taken against, or `''` when none resolved. */
+  convId: string;
+  /** Line count of `transcript.jsonl` (the review body log) at watermark time. */
+  lines: number;
+  /** `true` when `transcript.jsonl` existed but could not be read (#3118 fail-closed shape). */
+  unreadable?: boolean;
+  /**
+   * Line count of `transcript_full.jsonl` (the settings/model log) at watermark time.
+   * DIFFERENT FILE, DIFFERENT LINE COUNT than `lines` — the review body and the model live in
+   * two files that grow independently, so one count is never a valid offset into the other.
+   */
+  fullLines: number;
+  /** `true` when `transcript_full.jsonl` existed but could not be read (#3118 fail-closed shape). */
+  fullUnreadable?: boolean;
+}
+
+export function antigravityWatermark(workspace: string, deps: RunnerDeps): TranscriptWatermark {
+  const convId = resolveWorkspaceConvId(workspace, deps);
+  if (!convId) return { convId: '', lines: 0, fullLines: 0 };
+
   const tx = transcriptPath(deps.homeDir, convId);
-  if (!deps.exists(tx)) return { convId, lines: 0 };
-  try {
-    return { convId, lines: deps.readFile(tx).split(/\r?\n/).filter((l) => l.trim()).length };
-  } catch {
-    // #3118: this conv-id pre-dates this run, so its transcript exists but this run cannot verify
-    // its line count. Reporting `lines: 0` would assert a fact we could not check — flag it instead
-    // so the fallback can decline rather than silently skip zero and replay a stale response.
-    return { convId, lines: 0, unreadable: true };
+  let lines = 0;
+  let unreadable: boolean | undefined;
+  if (deps.exists(tx)) {
+    try {
+      lines = deps.readFile(tx).split(/\r?\n/).filter((l) => l.trim()).length;
+    } catch {
+      // #3118: this conv-id pre-dates this run, so its transcript exists but this run cannot
+      // verify its line count. Reporting `lines: 0` would assert a fact we could not check — flag
+      // it instead so the fallback can decline rather than silently skip zero and replay a stale
+      // response.
+      unreadable = true;
+    }
   }
+
+  const fullTx = fullTranscriptPath(deps.homeDir, convId);
+  let fullLines = 0;
+  let fullUnreadable: boolean | undefined;
+  if (deps.exists(fullTx)) {
+    try {
+      fullLines = deps.readFile(fullTx).split(/\r?\n/).filter((l) => l.trim()).length;
+    } catch {
+      fullUnreadable = true;
+    }
+  }
+
+  return { convId, lines, ...(unreadable ? { unreadable } : {}), fullLines, ...(fullUnreadable ? { fullUnreadable } : {}) };
 }
 
 /**
@@ -380,8 +603,39 @@ function resolveConvId(cache: unknown, workspace: string): string {
   return '';
 }
 
+/**
+ * The `agy` conversation id for this workspace, or `''` when the cache is absent, unreadable or
+ * names none.
+ *
+ * Reads and parses `last_conversations.json` once, so `antigravityWatermark`,
+ * `antigravityTranscriptFallback` and `antigravityModel` — three callers as of #2295 — share one
+ * lookup instead of each hand-rolling the same exists/readFile/JSON.parse/resolveConvId sequence.
+ *
+ * #3118: a successful `JSON.parse` does not by itself make the payload a usable object —
+ * `JSON.parse('null')` succeeds and returns `null`, so a truncated/zeroed cache file slips past a
+ * parse-only try/catch; `resolveConvId`'s own guard handles the object-shape half of that trap.
+ * Workspace lookup is case-insensitive — the leg's jq did `ascii_downcase` on both sides — which
+ * `resolveConvId` implements.
+ */
+function resolveWorkspaceConvId(workspace: string, deps: RunnerDeps): string {
+  const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
+  if (!deps.exists(cachePath)) return '';
+  let cache: Record<string, unknown>;
+  try {
+    cache = JSON.parse(deps.readFile(cachePath)) as Record<string, unknown>;
+  } catch {
+    return '';
+  }
+  return resolveConvId(cache, workspace);
+}
+
 function transcriptPath(homeDir: string, convId: string): string {
   return `${homeDir}/.gemini/antigravity-cli/brain/${convId}/.system_generated/logs/transcript.jsonl`;
+}
+
+/** The sibling log that carries `agy`'s SETTINGS entries (and so the session's model), not the review body. */
+function fullTranscriptPath(homeDir: string, convId: string): string {
+  return `${homeDir}/.gemini/antigravity-cli/brain/${convId}/.system_generated/logs/transcript_full.jsonl`;
 }
 
 /**
@@ -396,15 +650,7 @@ export function antigravityTranscriptFallback(
   mark: { convId: string; lines: number; unreadable?: boolean },
   deps: RunnerDeps,
 ): string {
-  const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
-  if (!deps.exists(cachePath)) return '';
-  let cache: Record<string, unknown>;
-  try {
-    cache = JSON.parse(deps.readFile(cachePath)) as Record<string, unknown>;
-  } catch {
-    return '';
-  }
-  const convId = resolveConvId(cache, workspace);
+  const convId = resolveWorkspaceConvId(workspace, deps);
   if (!convId) return '';
   // #3118: the watermark could not read this conversation's transcript, so there is no trustworthy
   // skip for it. Declining is the fail-closed answer; skipping 0 would replay a prior run's review.
@@ -441,6 +687,107 @@ export function antigravityTranscriptFallback(
 }
 
 /**
+ * The model `agy` ran under, recovered from its own `transcript_full.jsonl`, or `null` (#2295).
+ *
+ * THE STALENESS RULE HERE IS DELIBERATELY LOOSER THAN `antigravityTranscriptFallback`'s, and the
+ * difference is the whole reason this is a separate function rather than a flag on that one.
+ *
+ * For a REVIEW BODY, a pre-watermark entry is fatal: it would present a previous run's review as
+ * this one's. For the MODEL it is not. `last_conversations.json` is keyed by WORKSPACE, so a
+ * matching conv-id means `agy` reused the SAME SESSION — and that session's model IS the model
+ * this run ran under. `agy` reuses sessions per workspace, so a strict post-watermark-only scan
+ * would report `unknown` for most real runs while being no more correct.
+ *
+ * A DIFFERENT conv-id means a fresh session, where every line is already this run's.
+ * `fullUnreadable` still declines outright (#3118's fail-closed shape): a file that indisputably
+ * exists but could not be read is not the same fact as an absent one.
+ */
+export function antigravityModel(
+  workspace: string,
+  mark: TranscriptWatermark,
+  deps: RunnerDeps,
+): string | null {
+  const convId = resolveWorkspaceConvId(workspace, deps);
+  if (!convId) return null;
+  // #3118, applied to the model arm: a file that indisputably exists but could not be read is not
+  // the same fact as an absent one — decline rather than guess.
+  if (mark.fullUnreadable === true && convId === mark.convId) return null;
+
+  const fullTx = fullTranscriptPath(deps.homeDir, convId);
+  if (!deps.exists(fullTx)) return null;
+  let fullText: string;
+  try {
+    fullText = deps.readFile(fullTx);
+  } catch {
+    return null;
+  }
+
+  // Same conv-id ⇒ agy reused this session; only lines beyond the watermark are guaranteed new,
+  // but see the doc-comment above for why a pre-watermark fallback still applies for the MODEL.
+  // Different id ⇒ fresh session, so every line is already this run's.
+  const sameSession = convId === mark.convId;
+  const lines = fullText.split(/\r?\n/).filter((l) => l.trim());
+  const skip = sameSession ? mark.fullLines : 0;
+  const afterWatermark = parseTranscriptModel(lines.slice(skip).join('\n'));
+  if (afterWatermark !== null) return afterWatermark;
+
+  // Nothing new since the watermark. For a same-session reuse, the session's own (pre-watermark)
+  // model is still this run's model — the whole point of the looser rule above.
+  return sameSession ? parseTranscriptModel(fullText) : null;
+}
+
+/**
+ * The model a spawned lane ran under. Precedence is TOTAL and ORDERED (#2295).
+ *
+ * `pinned` first because it is the only arm that is certain. Then the handler's own transcript,
+ * then the startup banner.
+ *
+ * THE BANNER ARM IS GATED ON `outputTarget.kind === 'file'`, and that gate is the single most
+ * important line in this function. A lane whose review comes back on STDOUT has its review text
+ * in exactly the buffer the banner scan would read — so a review that merely DISCUSSES a model
+ * ("model: gpt-5 is the wrong choice here") would be recorded as that lane's resolved model. Only
+ * a lane that writes its review to a FILE has a stdout stream that is banner and nothing else.
+ * The condition is derived from DECLARED DATA rather than from a slug check, so it covers today's
+ * one file-output lane and any future one without naming either. (`stampBlindReview` anchors its
+ * own tells to the first five lines for the same class of reason.)
+ *
+ * `repoRoot` is the workspace `agy` keys its conversation cache by, so it is required rather than
+ * defaulted — an empty workspace would silently resolve no conversation and look identical to "no
+ * model recorded".
+ */
+export function resolveSpawnModel(
+  plan: SpawnPlan,
+  out: { stdout?: string; stderr?: string },
+  mark: TranscriptWatermark,
+  deps: RunnerDeps,
+  repoRoot: string,
+): ResolvedModel {
+  try {
+    if (plan.model) return withEffort(recordedModel(plan.model, MODEL_SOURCE.PINNED), plan.effort);
+
+    if (plan.handler === 'antigravity') {
+      let transcript: string | null;
+      try {
+        transcript = antigravityModel(repoRoot, mark, deps);
+      } catch {
+        return UNRESOLVED_MODEL;
+      }
+      return withEffort(recordedModel(transcript, MODEL_SOURCE.TRANSCRIPT), plan.effort);
+    }
+
+    if (plan.outputTarget.kind === 'file') {
+      const banner = parseModelBanner(out.stdout ?? '') ?? parseModelBanner(out.stderr ?? '');
+      return withEffort(recordedModel(banner, MODEL_SOURCE.BANNER), plan.effort);
+    }
+
+    return UNRESOLVED_MODEL;
+  } catch {
+    // A model arm must NEVER fail the lane — see the module banner's TOTAL contract.
+    return UNRESOLVED_MODEL;
+  }
+}
+
+/**
  * Antigravity's prompt variant (#2176).
  *
  * Differs from the standard `argv-file-ref` text by one clause, and that clause is load-bearing:
@@ -470,9 +817,13 @@ export function antigravityPrompt(promptPath: string, repoRoot: string): string 
  *    lane that fails to start is worse than one that runs on the prompt anchor alone.
  * 2. The self-report prompt variant above, swapped in for the standard file-ref text.
  *
- * Both are argv shape, so they belong here rather than in the descriptor: expressing "add this flag
- * only if the binary's --help mentions it" as data would need a conditional, which is precisely
- * what the named-handler seam exists to absorb (ADR-2782 D6).
+ * Both are argv shape, so they belong here rather than in the descriptor: expressing "add this
+ * flag only if the binary's --help mentions it" as data would need a conditional, which is
+ * precisely what the named-handler seam exists to absorb (ADR-2782 D6). The native
+ * `--print-timeout` VALUE (#3274) is NOT this handler's job — `resolveLanePlan`
+ * (review-lane-invocation.cts) resolves the `{{nativeTimeout}}` ARGV_PLACEHOLDER itself, exactly
+ * like `{{model}}`/`{{effort}}`/`{{output}}`/`{{prompt}}`, so `plan.argv` arrives here already fully
+ * resolved.
  */
 export function antigravityArgv(
   argv: readonly string[],
@@ -612,12 +963,18 @@ export function stampUngroundedReview(review: string): string {
  * The raw body is returned alongside the content because an OpenAI-compatible server reports errors
  * with an HTTP 4xx/5xx and the JSON in the BODY. The bash piped the response straight into `jq`,
  * which discarded exactly that evidence; the stub appends it now.
+ *
+ * MODEL (#2295): what actually ran beats what was asked for. If the response echoes a `model`
+ * field, that is `SERVED` — the most authoritative arm, since it is the server's own report of
+ * what it ran. Otherwise the request falls back to `REQUESTED`: the discovered or `fallbackModel`
+ * value that was actually sent, recorded even when the request itself failed — the ADR-2782
+ * served-model mismatch warning above is preserved unchanged.
  */
 export async function runOpenAiCompatible(
   plan: HttpPlan,
   promptText: string,
   deps: RunnerDeps,
-): Promise<{ review: string; rawBody: string }> {
+): Promise<{ review: string; rawBody: string; model: ResolvedModel }> {
   let model = plan.model;
   if (!model && plan.modelsUrl) {
     const listed = await deps.httpJson(plan.modelsUrl, { method: 'GET', timeoutMs: 2_000 });
@@ -632,13 +989,15 @@ export async function runOpenAiCompatible(
     }
   }
   if (!model) model = plan.fallbackModel;
+  const requested: ResolvedModel = recordedModel(model, MODEL_SOURCE.REQUESTED);
 
   const body = JSON.stringify({ model, messages: [{ role: 'user', content: promptText }] });
   const res = await deps.httpJson(plan.url, { method: 'POST', body, timeoutMs: plan.timeoutMs });
   if (!res.ok && !res.body) {
-    return { review: '', rawBody: res.error ?? `HTTP ${res.status}` };
+    return { review: '', rawBody: res.error ?? `HTTP ${res.status}`, model: requested };
   }
   let review = '';
+  let served: ResolvedModel | null = null;
   try {
     const parsed = JSON.parse(res.body) as {
       model?: unknown;
@@ -652,12 +1011,14 @@ export async function runOpenAiCompatible(
           `Review may be from a different model.`,
       );
     }
+    const servedModel = recordedModel(parsed.model, MODEL_SOURCE.SERVED);
+    if (servedModel.source !== MODEL_SOURCE.UNKNOWN) served = servedModel;
     const content = parsed.choices?.[0]?.message?.content;
     if (typeof content === 'string') review = content;
   } catch {
     /* leave review empty — the raw body carries the diagnosis */
   }
-  return { review, rawBody: res.body };
+  return { review, rawBody: res.body, model: served ?? requested };
 }
 
 /* ------------------------------------------------------------------ *
@@ -675,7 +1036,8 @@ export async function runLane(
   deps: RunnerDeps,
   opts: { consentedHost?: unknown; explicitlyRequested?: boolean; repoRoot: string },
 ): Promise<LaneRunResult> {
-  const base = { slug: plan.slug, stubbed: false };
+  // Nothing ran for either early exit below, so there is nothing to attribute a model to (#2295).
+  const base = { slug: plan.slug, stubbed: false, model: UNRESOLVED_MODEL };
 
   if (plan.transport === 'openai-http') {
     const egress = checkEgressHost(opts.consentedHost, plan.host);
@@ -706,7 +1068,9 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
   const input = plan.stdin && deps.exists(plan.stdin) ? deps.readFile(plan.stdin) : undefined;
 
   const mark =
-    plan.handler === 'antigravity' ? antigravityWatermark(repoRoot, deps) : { convId: '', lines: 0 };
+    plan.handler === 'antigravity'
+      ? antigravityWatermark(repoRoot, deps)
+      : { convId: '', lines: 0, fullLines: 0 };
 
   const argv =
     plan.handler === 'antigravity'
@@ -718,6 +1082,9 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
     timeoutMs: plan.timeoutMs,
     ...(plan.env ? { env: plan.env } : {}),
   });
+  // The model arm reads the RAW spawn outcome here, deliberately, so it sees `out.stdout`/`out.stderr`
+  // exactly as the process emitted them — before the handlers below reassign `review` (#2295).
+  const model = resolveSpawnModel(plan, out, mark, deps, repoRoot);
   // #3086: surface spawn errors (ENOENT, ETIMEDOUT, etc.) that would otherwise
   // be silently dropped — the review path read only stdout/stderr and treated
   // an empty-stderr spawn failure as "the model had nothing to say".
@@ -755,8 +1122,12 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
     // Layer 3. `emptyOutput: 'handler-owned'` means the generic stub does not fire for this lane,
     // so if nothing is written here the lane goes out empty — the #2073 failure itself.
     if (isEmptyReview(review)) {
+      // The model is kept on this stub path deliberately (#2295): #2073 mode 2 is exactly a
+      // pinned model that 404s server-side and exits 0 with empty output, so the model IS the
+      // diagnosis — dropping it here would throw away the one piece of evidence the stub exists
+      // to preserve.
       deps.writeFile(plan.reviewPath, `${antigravityDiagnostic(deps)}\n`);
-      return { slug: plan.slug, ok: true, stubbed: true };
+      return { slug: plan.slug, ok: true, stubbed: true, model };
     }
   }
 
@@ -768,15 +1139,15 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
   if (plan.evidenceClass !== 'diff-only') review = stampUngroundedReview(review);
 
   const { stubbed } = writeReviewOrStub(plan, review, deps, extra);
-  return { slug: plan.slug, ok: true, stubbed };
+  return { slug: plan.slug, ok: true, stubbed, model };
 }
 
 async function runHttpLane(plan: HttpPlan, deps: RunnerDeps): Promise<LaneRunResult> {
   const promptText = deps.exists(plan.promptPath) ? deps.readFile(plan.promptPath) : '';
-  const { review, rawBody } = await runOpenAiCompatible(plan, promptText, deps);
+  const { review, rawBody, model } = await runOpenAiCompatible(plan, promptText, deps);
   // #3194: same verification on the http path — see runSpawnLane.
   const stamped = plan.evidenceClass !== 'diff-only' ? stampUngroundedReview(review) : review;
   deps.writeFile(plan.errPath, '');
   const { stubbed } = writeReviewOrStub(plan, stamped, deps, rawBody);
-  return { slug: plan.slug, ok: true, stubbed };
+  return { slug: plan.slug, ok: true, stubbed, model };
 }

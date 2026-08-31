@@ -41,6 +41,8 @@ const {
   VERDICT,
   REASON,
   PROPOSAL_SUFFIX,
+  DEFAULTS,
+  analyzeSource,
 } = require('../gsd-core/bin/lib/complexity-trigger.cjs');
 const gitBaseBranch = require('../gsd-core/bin/lib/git-base-branch.cjs');
 const windowsModule = require('../gsd-core/bin/lib/broken-windows.cjs');
@@ -977,5 +979,22 @@ describe('refactor-trigger: loop wiring', () => {
     for (const step of refactorTriggerCapability.steps) {
       assert.strictEqual(VALID_LOOP_POINTS.has(step.point), true, `step.point ${step.point} must be one of the closed 12 loop points`);
     }
+  });
+});
+
+// ─── Regression: handleEvaluate self-complexity (#3267) ────────────────────
+
+describe('refactor-trigger-command-router: self-complexity', () => {
+  test('handleEvaluateStaysAtOrBelowThreshold', () => {
+    const routerPath = path.join(__dirname, '..', 'src', 'refactor-trigger-command-router.cts');
+    const source = fs.readFileSync(routerPath, 'utf8');
+    const result = analyzeSource(source);
+    assert.strictEqual(result.ok, true, 'router source must analyze cleanly');
+    const handleEvaluateFn = result.functions.find((f) => f.name === 'handleEvaluate');
+    assert.ok(handleEvaluateFn, 'handleEvaluate must still be found by the analyzer');
+    assert.ok(
+      handleEvaluateFn.score <= DEFAULTS.threshold,
+      `handleEvaluate scores ${handleEvaluateFn.score}, must be <= ${DEFAULTS.threshold} (refactor.complexity_threshold)`,
+    );
   });
 });

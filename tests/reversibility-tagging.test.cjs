@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
+const { scanFencedBlocks, collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const PLANNER = path.join(ROOT, 'agents', 'gsd-planner.md');
@@ -55,7 +56,16 @@ function namesRating(text, rating) {
 /** The fenced ```bash blocks of a workflow file, so prose cannot satisfy a
  *  test that claims to assert on the parser. */
 function bashBlocks(md) {
-  return [...md.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
+  const lines = md.split(/\r?\n/);
+  return scanFencedBlocks(lines)
+    .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash')
+    .map((b) => lines.slice(b.openLineIdx + 1, b.closeLineIdx).join('\n'));
+}
+
+/** The body of the "## N. Reversibility Test" section (heading excluded), or '' if absent. */
+function reversibilityTestSection(md) {
+  const section = collectSection(md, (h) => /^\d+\. Reversibility Test\b/.test(h.text));
+  return section ? section.body : '';
 }
 
 // ─── Acceptance #1: discuss-phase decisions carry a rating + rationale ───────
@@ -452,7 +462,7 @@ describe('#1951 ungated one-way rating is flagged', () => {
 describe('#1951 taxonomy parity: a single three-level vocabulary', () => {
   test('the Reversibility Test thinking model uses the canonical three ratings', () => {
     const tm = read(THINKING_MODELS);
-    const section = (tm.match(/## \d+\. Reversibility Test[\s\S]*?(?=\n## |$)/) || [''])[0];
+    const section = reversibilityTestSection(tm);
     assert.ok(section.length > 0, 'thinking-models-planning.md must retain a Reversibility Test model');
     for (const rating of RATINGS) {
       assert.ok(
@@ -463,7 +473,7 @@ describe('#1951 taxonomy parity: a single three-level vocabulary', () => {
   });
 
   test('the legacy binary IRREVERSIBLE vocabulary is gone', () => {
-    const section = (read(THINKING_MODELS).match(/## \d+\. Reversibility Test[\s\S]*?(?=\n## |$)/) || [''])[0];
+    const section = reversibilityTestSection(read(THINKING_MODELS));
     assert.ok(
       !/IRREVERSIBLE/.test(section),
       'the binary REVERSIBLE/IRREVERSIBLE vocabulary must be replaced by the three-level taxonomy, '
@@ -472,7 +482,7 @@ describe('#1951 taxonomy parity: a single three-level vocabulary', () => {
   });
 
   test('thinking model points at the canonical taxonomy owner', () => {
-    const section = (read(THINKING_MODELS).match(/## \d+\. Reversibility Test[\s\S]*?(?=\n## |$)/) || [''])[0];
+    const section = reversibilityTestSection(read(THINKING_MODELS));
     assert.ok(
       section.includes('planner-reversibility.md'),
       'the thinking model must point at planner-reversibility.md as the taxonomy owner',

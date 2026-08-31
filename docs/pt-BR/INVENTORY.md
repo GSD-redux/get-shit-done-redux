@@ -6,7 +6,7 @@
 
 - As contagens aqui são derivadas do sistema de arquivos no pino v1.36.0 e podem divergir entre versões. Para contagens ao vivo, execute `ls commands/gsd/*.md | wc -l`, `ls agents/gsd-*.md | wc -l`, etc. na cópia local do repositório.
 - Este arquivo enumera toda superfície entregue em todas as seis famílias (agentes, comandos, workflows, referências, módulos de CLI, hooks). Documentações amplas podem apresentar narrativas ou subconjuntos curados; quando discordarem do sistema de arquivos, este arquivo e as listagens de diretório são autoritativos.
-- Novas superfícies adicionadas após v1.36.0 devem aparecer aqui primeiro, depois propagar para as documentações amplas. Os testes de controle de drift em `tests/inventory-counts.test.cjs`, `tests/commands-doc-parity.test.cjs`, `tests/agents-doc-parity.test.cjs`, `tests/cli-modules-doc-parity.test.cjs`, `tests/hooks-doc-parity.test.cjs`, `tests/architecture-counts.test.cjs` e `tests/command-count-sync.test.cjs` ancoram as contagens e o conteúdo do registro ao sistema de arquivos.
+- Novas superfícies adicionadas após v1.36.0 devem aparecer aqui primeiro, depois propagar para as documentações amplas. O teste de controle de drift em `tests/inventory-manifest-sync.test.cjs` ancora o conteúdo do registro ao sistema de arquivos.
 
 Este é o registro autoritativo de toda superfície do GSD Core entregue. Veja o [índice de documentação](README.md) para navegar por tópico.
 
@@ -476,8 +476,8 @@ Listagem completa: `hooks/`.
 | `gsd-worktree-path-guard.js` | `PreToolUse` | Bloqueia rigorosamente Edit/Write/MultiEdit com caminhos absolutos fora da raiz do worktree (PR #579, #260) |
 | `gsd-agent-isolation-guard.js` | `PreToolUse` | Bloqueia rigorosamente um dispatch `Agent()` de executor que não tenha o parâmetro de isolamento do harness quando o isolamento de dispatch resolvido do projeto é `harness-worktree` (#3045) |
 | `gsd-write-guard.js` | `PreToolUse` | Bloqueia rigorosamente um `Write` de arquivo inteiro que encolhe catastroficamente um artefato curado de `.planning/` (ROADMAP.md, roadmaps de milestone, STATE.md); override via o sentinela de uso único `.planning/.gsd-allow-shrink` (passos de workflow) ou `GSD_ALLOW_PLANNING_SHRINK=1` (interativo) (#2255, correção 3 de #973) |
-| `gsd-session-state.sh` | `PostToolUse` | Rastreamento de estado de sessão para runtimes baseados em shell |
-| `gsd-validate-commit.sh` | `PostToolUse` | Validação de commit para aplicação de conventional-commit |
+| `gsd-session-state.sh` | `SessionStart` | Rastreamento de estado de sessão para runtimes baseados em shell |
+| `gsd-validate-commit.sh` | `PreToolUse` | Validação de commit para aplicação de conventional-commit |
 | `gsd-phase-boundary.sh` | `PostToolUse` | Detecção de limite de fase para transições de workflow |
 | `gsd-graphify-update.sh` | `PostToolUse` | Reconstrução automática do grafo de conhecimento após o avanço do HEAD principal (opt-in, padrão desativado — #3347) |
 

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeEol } from './text-lines.cjs';
 import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout, retryRenameSync } from './shell-command-projection.cjs';
+import { escapeRegex } from './pattern.cjs';
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
@@ -51,7 +52,7 @@ import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir, planningPaths } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
-const { extractFrontmatter } = frontmatter;
+const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuotedScalar } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
@@ -102,10 +103,15 @@ interface CommitToSubrepoRepoResult {
   files: string[];
   reason?: string;
   error?: string;
+  /** #3886: true when the repo's git commit was timeout-killed (reason commit_timeout). */
+  timed_out?: boolean;
 }
 
 interface EffortSyncChange {
   agent: string;
+  // #3533 (10d) / #3706: from === null means the key was ABSENT; from === ''
+  // means the key was PRESENT with an empty value. Collapsing both to null
+  // would make "no key" and "empty key" indistinguishable in sync output.
   from: string | null;
   // #3533 (10d): to === null is the typed IR for omission (inherit strips the key).
   to: string | null;
@@ -202,11 +208,11 @@ function cmdGenerateSlug(text: string | undefined, raw: boolean): void {
     error('text required for slug generation');
   }
 
-  const slug = (text as string)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .substring(0, 60);
+  // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+  // (generateSlugInternal, core-utils.cts) instead of re-implementing it —
+  // this call site previously diverged from it (Cyrillic collapsed to "",
+  // and truncation could leave a trailing hyphen; #2848/#2849).
+  const slug = coreUtilsMod.generateSlugInternal(text) ?? '';
 
   const result = { slug };
   output(result, raw, slug);
@@ -619,7 +625,12 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
   const fastMode = resolveFastModeInternal(cwd, agentType!, fastModeOpts);
 
   const runtime = (config['runtime'] as string) || 'claude';
-  const rendered = renderEffortForRuntime(runtime, effort);
+  // #3007: pass the resolved model so the per-model advertised-effort ceiling
+  // (CODEX_MODEL_EFFORT) is reachable from this production seam. `model` may
+  // be a tier alias or a non-Codex id for other runtimes — that's fine and
+  // must not be special-cased here: advertisedCodexEffort() falls back to the
+  // family baseline for any id it doesn't recognize.
+  const rendered = renderEffortForRuntime(runtime, effort, model);
 
   const fastModeSupported = RUNTIMES_WITH_FAST_MODE.has(runtime);
 
@@ -675,6 +686,9 @@ function cmdResolveExecution(cwd: string, agentType: string | undefined, raw: bo
     effort_rendered: rendered.value,
     effort_param: rendered.param,
     effort_propagation: rendered.channel,
+    effort_requested: rendered.requested,
+    effort_clamped: rendered.clamped,
+    effort_clamp_reason: rendered.reason,
     effort_effective: effortEffective,
     effort_effective_source: effortEffectiveSource,
     fast_mode: fastMode,
@@ -730,43 +744,111 @@ function effortSurfaceForHost(cwd: string, host: string): string {
 }
 
 /**
- * #488 — Replace or inject the `effort:` value in YAML frontmatter.
+ * #488 — Replace or inject the `<key>:` value in YAML frontmatter.
  * Unlike injectEffortFrontmatter (install.js), this overwrites an existing value.
+ * #3706: key-parameterised so the same line-editor serves both claude's
+ * `effort:` and OpenCode's `variant:`. #3706: all offsets (eol, openLen,
+ * closingStart) are derived from the MATCHED BLOCK, not the start of the
+ * file, and the existing-key replace is scoped to the frontmatter span only.
  */
-function setEffortFrontmatter(content: string, effortValue: string): string {
-  const eol = /^---\r\n/.test(content) ? '\r\n' : '\n';
+function setFrontmatterKeyLine(content: string, key: string, value: string): string {
   const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
   const match = fmRe.exec(content);
   if (!match) return content;
   const fmBody = match[1];
-  if (/^effort:/m.test(fmBody)) {
-    return content.replace(/^(effort:)[ \t]*.*$/m, `$1 ${effortValue}`);
-  }
+  // Both writers of these frontmatter keys — this sync path and the
+  // install-side `frontmatterScalar` in runtime-artifact-conversion.cts —
+  // now share one escaping rule: quote via `agentScalarNeedsDoubleQuoting` +
+  // `escapeDoubleQuotedScalar` (both from frontmatter.cts) rather than each
+  // interpolating `value` raw/differently.
+  const renderedValue = agentScalarNeedsDoubleQuoting(value) ? `"${escapeDoubleQuotedScalar(value)}"` : value;
+  // EOL comes from the MATCHED BLOCK, not the start of the file. With a
+  // preamble the two can disagree, and on a CRLF document that misaligns every
+  // offset below by one byte and mangles the opening fence.
+  const eol = /^---\r\n/.test(match[0]) ? '\r\n' : '\n';
   const openLen = 3 + eol.length;
-  const closingStart = match.index + openLen + fmBody.length;
-  return content.slice(0, closingStart) + `effort: ${effortValue}${eol}` + content.slice(closingStart);
+  const bodyStart = match.index + openLen;
+  const closingStart = bodyStart + fmBody.length;
+  // #3706: key is now generic (not just the literal 'effort'/'variant'
+  // callers happen to pass today) — escape it before interpolating into the
+  // RegExp so a future caller can't have its key metacharacters reinterpreted.
+  const keyLineRe = new RegExp(`^(${escapeRegex(key)}:)[ \\t]*.*$`, 'm');
+  if (keyLineRe.test(fmBody)) {
+    // #3706: a duplicated `<key>:` line is already invalid YAML, but a
+    // non-first-wins reader (last-wins) would otherwise honour a stale
+    // second occurrence left behind by a naive single-hit replace, while
+    // this function's own single-hit read reports "in sync" — a
+    // permanently non-converging state. Use a GLOBAL replace with a
+    // first-hit flag so every occurrence collapses to exactly one, IN THE
+    // POSITION of the first occurrence (never delete-then-append, which
+    // would move the key to the end of the frontmatter and churn every
+    // already-generated single-occurrence file).
+    const escaped = escapeRegex(key);
+    let seen = false;
+    const newBody = fmBody.replace(
+      new RegExp(`^${escaped}:[ \\t]*.*(\\r?\\n?)`, 'gm'),
+      (_m, nl) => {
+        if (!seen) {
+          seen = true;
+          return `${key}: ${renderedValue}${nl}`;
+        }
+        return '';
+      },
+    );
+    // Replace INSIDE the frontmatter span only: a whole-file /m replace would
+    // rewrite an earlier preamble line that happens to start with this key.
+    return content.slice(0, bodyStart) + newBody + content.slice(closingStart);
+  }
+  return content.slice(0, closingStart) + `${key}: ${renderedValue}${eol}` + content.slice(closingStart);
 }
 
 /**
- * #3533 (10d) — remove exactly the frontmatter `effort:` line (and its line
+ * #3533 (10d) — remove exactly the frontmatter `<key>:` line (and its line
  * ending) so an agent configured for `inherit` carries NO key. Mirrors the
  * codex-agent-toml strip discipline: targeted line removal, EOL-aware, every
  * other byte (comments, sibling keys, the body) untouched.
+ * #3706: key-parameterised so the same line-editor serves both claude's
+ * `effort:` and OpenCode's `variant:`. #3706: openLen is derived from the
+ * MATCHED BLOCK, not the start of the file — a preamble on a CRLF document
+ * would otherwise misalign every offset below.
  */
-function removeEffortFrontmatter(content: string): string {
+function removeFrontmatterKeyLine(content: string, key: string): string {
   // Scoped to the FIRST frontmatter block (not a whole-file /m match): a
-  // preamble or body line starting with `effort:` (a fenced config example,
+  // preamble or body line starting with `<key>:` (a fenced config example,
   // a thematic-break flanked fragment) must never be the line removed.
   const fmRe = /^---\r?\n([\s\S]*?)^---\r?$/m;
   const match = fmRe.exec(content);
   if (!match) return content;
   const fmBody = match[1];
-  const lineRe = /^effort:[ \t]*.*\r?\n?/m;
+  // #3706: same generic-key escape as setFrontmatterKeyLine above.
+  const lineRe = new RegExp(`^${escapeRegex(key)}:[ \\t]*.*\\r?\\n?`, 'm');
   if (!lineRe.test(fmBody)) return content;
-  const strippedFm = fmBody.replace(lineRe, '');
-  const openLen = 3 + (/^---\r\n/.test(content) ? 2 : 1);
+  // A duplicate `<key>:` mapping key is already invalid YAML (a document with
+  // two `effort:`/`variant:` lines does not parse), so this is robustness
+  // against a malformed document, not a live corruption path. Still, "a null
+  // target means the key must not exist" is an invariant this function must
+  // leave true on disk — a non-global replace here would strip only the
+  // FIRST occurrence and require a second run to converge. Use a fresh
+  // global RegExp for the strip so every occurrence in the frontmatter body
+  // is removed in one pass.
+  const stripAllRe = new RegExp(`^${escapeRegex(key)}:[ \\t]*.*\\r?\\n?`, 'gm');
+  const strippedFm = fmBody.replace(stripAllRe, '');
+  // Same rule as setFrontmatterKeyLine: the EOL must come from the matched
+  // block, not the start of the file, or a preambled CRLF document misaligns.
+  const eol = /^---\r\n/.test(match[0]) ? '\r\n' : '\n';
+  const openLen = 3 + eol.length;
   const closingStart = match.index + openLen + fmBody.length;
   return content.slice(0, match.index + openLen) + strippedFm + content.slice(closingStart);
+}
+
+/** #488 — Replace or inject the `effort:` value in YAML frontmatter. */
+function setEffortFrontmatter(content: string, effortValue: string): string {
+  return setFrontmatterKeyLine(content, 'effort', effortValue);
+}
+
+/** #3533 (10d) — remove exactly the frontmatter `effort:` line (and its line ending). */
+function removeEffortFrontmatter(content: string): string {
+  return removeFrontmatterKeyLine(content, 'effort');
 }
 
 /**
@@ -795,6 +877,15 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     return;
   }
 
+  // #3706: install now bakes OpenCode's resolved effort into agent
+  // frontmatter under the `variant:` key (not `effort:`), so OpenCode gets
+  // its own sync path — mirroring the codex branch above — rather than
+  // falling into the generic "does not use effort: frontmatter" skip.
+  if (runtime === 'opencode') {
+    cmdEffortSyncOpencode(cwd, raw, dryRun, opts.configDir);
+    return;
+  }
+
   if (runtime !== 'claude') {
     output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, reason: `runtime '${runtime}' does not use effort: frontmatter` }, raw, '');
     return;
@@ -808,8 +899,8 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   // package-root bin/install.js, which the installer never copies into a runtime home).
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
   const { readGsdEffectiveEffortConfig, resolveInstallTimeEffort } = require('./install-effort-resolver.cjs') as {
-    readGsdEffectiveEffortConfig(cwd: string): Record<string, unknown>;
-    resolveInstallTimeEffort(cfg: Record<string, unknown>, agentName: string): string;
+    readGsdEffectiveEffortConfig(cwd: string): Record<string, unknown> | null;
+    resolveInstallTimeEffort(cfg: Record<string, unknown> | null, agentName: string): string;
   };
   const effortCfg = readGsdEffectiveEffortConfig(cwd);
 
@@ -824,15 +915,47 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
   const files = fs.readdirSync(agentsDir).filter(f => {
     if (!f.startsWith('gsd-') || !f.endsWith('.md')) return false;
     try { return fs.lstatSync(path.join(agentsDir, f)).isFile(); } catch { return false; }
-  });
+  }).sort(); // #3706: sorted like the codex and
+  // opencode branches — readdir order is platform-dependent, so leaving it unsorted makes the
+  // reported `changes` ordering differ across machines for identical inputs.
+
   const changes: EffortSyncChange[] = [];
   let synced = 0;
   let skipped = 0;
+  // Local-only counter: reads AND writes are both guarded in this loop (an
+  // unreadable or unwritable agent file must not abort the whole sweep), but
+  // this result shape (`{synced, skipped, changes, dry_run, agents_dir}`) is
+  // long-standing and widely consumed, so it deliberately gains NO new key
+  // (no `read_failures`/`write_failures`, unlike the codex/opencode branches
+  // below). Instead every per-file failure — read or write — is folded into
+  // `skipped` and rides the raw-mode summary token below — `output()`'s
+  // third argument is never merged into the emitted JSON object (see io.cts
+  // `output()`: it is only read when `raw === true`, entirely replacing the
+  // JSON payload), so flipping it to `'failed'` costs nothing in the wire
+  // shape while still surfacing the failure to a raw-mode caller. The three
+  // branches differ on that reporting shape, but are now also consistent in
+  // HOW they publish: every write below goes through the same tmp-file +
+  // chmod + retryRenameSync atomic-publish sequence used by
+  // cmdEffortSyncCodex and cmdEffortSyncOpencode, so a fault mid-write can
+  // never leave an agent file truncated or empty.
+  let fileFailureCount = 0;
 
   for (const file of files) {
     const agentName = file.replace(/\.md$/, '');
     const filePath = path.join(agentsDir, file);
-    const content = fs.readFileSync(filePath, 'utf8');
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      // An unreadable agent file must not abort the whole sweep. Deliberately
+      // NOT adding a new field here: this result shape (`{synced, skipped,
+      // changes, dry_run, agents_dir}`) is long-standing and widely consumed,
+      // so the failure is folded into `skipped` only, with no
+      // read_failures/write_failures list — see `fileFailureCount` above.
+      skipped++;
+      fileFailureCount++;
+      continue;
+    }
 
     // Resolve using install-time logic: home defaults merged with project config.
     const universalEffort = resolveInstallTimeEffort(effortCfg, agentName);
@@ -842,40 +965,147 @@ function cmdEffortSync(cwd: string, raw: boolean, opts?: { dryRun?: boolean; con
     // drift and the sync re-added a hand-stripped key on every apply. A
     // present key under inherit is stripped, reported as {from, to: null}.
     if (universalEffort === 'inherit') {
-      // eslint-disable-next-line local/no-unbounded-quantifier -- same lazy `*?` bounded by the `^---$/m` closing anchor as the concrete-path fmMatch below; duplicated here so the inherit branch validates against the same frontmatter span the strip targets
       const fmMatchInherit = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
       if (!fmMatchInherit) { skipped++; continue; }
+      // Presence and value are distinct questions: `effort:` with an EMPTY
+      // value is a key that IS present but whose captured value is null (the
+      // `(.+?)` group requires at least one char). Deciding "already correct"
+      // from a null value alone is wrong here — it would leave an
+      // unresolvable `effort: null` key on disk forever. Test presence with
+      // its own regex, and only compare values once presence is known.
+      const effortPresentInherit = /^effort:/m.test(fmMatchInherit[1]);
+      if (!effortPresentInherit) { skipped++; continue; }
       const effortMatchInherit = /^effort:[ \t]*(.+?)[ \t]*$/m.exec(fmMatchInherit[1]);
-      if (!effortMatchInherit) { skipped++; continue; }
-      changes.push({ agent: agentName, from: effortMatchInherit[1], to: null });
-      synced++;
+      // `effortPresentInherit` is guaranteed true here (checked above), so a
+      // failed value match means the key is present with an EMPTY value —
+      // report `''`, not `null`, so "present-but-empty" is never conflated
+      // with "absent" in the sync output.
       if (!dryRun) {
-        fs.writeFileSync(filePath, removeEffortFrontmatter(content));
+        // Atomic publish AND mode preservation, same discipline as
+        // cmdEffortSyncCodex/cmdEffortSyncOpencode: write to a sibling tmp
+        // file, chmod it to match filePath's existing (masked) mode, then
+        // retryRenameSync it over the target so filePath is either the old
+        // bytes or the new ones, never half-written and never dropped to a
+        // default mode. On any failure the tmp file is unlinked (best-effort)
+        // and the write is reported (folded into `skipped`/`fileFailureCount`,
+        // no new field), not thrown, so the remaining agents still get
+        // processed. ONE failure path for this site — no nested try/catch.
+        const tmpPathInherit = `${filePath}.tmp.${process.pid}`;
+        // Stat filePath BEFORE the write so its mode can be passed at
+        // CREATION time — a plain `writeFileSync(tmpPath, data)` creates the
+        // tmp file at the default `0666 & ~umask` even when filePath is more
+        // restrictive. Best-effort only: a stat failure must not abort the
+        // sync, since the content write is what matters, not the mode.
+        let originalModeInherit: number | undefined;
+        try {
+          originalModeInherit = fs.statSync(filePath).mode & 0o7777;
+        } catch { /* non-fatal: fall back to writing without an explicit mode */ }
+        try {
+          fs.writeFileSync(
+            tmpPathInherit,
+            removeEffortFrontmatter(content),
+            originalModeInherit !== undefined ? { mode: originalModeInherit } : undefined,
+          );
+          // Not redundant with the `mode` option above: `mode` only applies
+          // when the file is actually created (O_CREAT). A leftover tmp file
+          // from an earlier crashed run would be reused (truncated) at its
+          // OLD mode instead, and this chmod is what corrects that case.
+          // Best-effort only: a chmod failure must not abort the sync, since
+          // the content write is what matters, not the mode.
+          try {
+            if (originalModeInherit !== undefined) fs.chmodSync(tmpPathInherit, originalModeInherit);
+          } catch { /* non-fatal: proceed with default tmp-file mode */ }
+          retryRenameSync(tmpPathInherit, filePath);
+        } catch {
+          try { fs.unlinkSync(tmpPathInherit); } catch { /* already gone or never created */ }
+          skipped++;
+          fileFailureCount++;
+          continue;
+        }
       }
+      changes.push({ agent: agentName, from: effortMatchInherit ? effortMatchInherit[1] : '', to: null });
+      synced++;
       continue;
     }
 
+    // `runtime` is guaranteed 'claude' by the guard above (#3007: only
+    // codex's 'ultra' rejection can produce a null value).
     const rendered = renderEffortForRuntime(runtime, universalEffort);
-    const newEffortValue = rendered.value;
+    const newEffortValue = rendered.value as string;
 
-    // eslint-disable-next-line local/no-unbounded-quantifier -- lazy `*?` bounded by the `^---$/m` closing anchor, no nested quantifier, measured linear to 5MB (no-closing-marker adversarial input)
     const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
     if (!fmMatch) { skipped++; continue; }
 
+    // Presence and value are distinct questions here too: `currentEffort`
+    // reads null both when the key is ABSENT and when it is present with an
+    // EMPTY value. `effortPresent` disambiguates those two for the reported
+    // `from` below (never `null` when the key is present but empty) — but it
+    // has no bearing on the skip check that follows: `newEffortValue` is
+    // never null on this path (guarded above), so an absent key already
+    // yields `currentEffort === null !== newEffortValue` without consulting
+    // presence separately.
+    const effortPresent = /^effort:/m.test(fmMatch[1]);
     const effortMatch = /^effort:[ \t]*(.+?)[ \t]*$/m.exec(fmMatch[1]);
-    const currentEffort = effortMatch ? effortMatch[1] : null;
+    // `null` (key absent) and `''` (key present, value empty) are distinct
+    // states `effortPresent` deliberately disambiguates — collapsing both to
+    // `null` here would make the reported `from` lie about which case fired.
+    const currentEffort = effortPresent ? (effortMatch ? effortMatch[1] : '') : null;
 
     if (currentEffort === newEffortValue) { skipped++; continue; }
 
+    if (!dryRun) {
+      // Atomic publish AND mode preservation, same discipline as
+      // cmdEffortSyncCodex/cmdEffortSyncOpencode: write to a sibling tmp
+      // file, chmod it to match filePath's existing (masked) mode, then
+      // retryRenameSync it over the target so filePath is either the old
+      // bytes or the new ones, never half-written and never dropped to a
+      // default mode. On any failure the tmp file is unlinked (best-effort)
+      // and the write is reported (folded into `skipped`/`fileFailureCount`,
+      // no new field), not thrown, so the remaining agents still get
+      // processed. ONE failure path for this site — no nested try/catch.
+      const tmpPathSet = `${filePath}.tmp.${process.pid}`;
+      // Stat filePath BEFORE the write so its mode can be passed at CREATION
+      // time — a plain `writeFileSync(tmpPath, data)` creates the tmp file
+      // at the default `0666 & ~umask` even when filePath is more
+      // restrictive. Best-effort only: a stat failure must not abort the
+      // sync, since the content write is what matters, not the mode.
+      let originalModeSet: number | undefined;
+      try {
+        originalModeSet = fs.statSync(filePath).mode & 0o7777;
+      } catch { /* non-fatal: fall back to writing without an explicit mode */ }
+      try {
+        fs.writeFileSync(
+          tmpPathSet,
+          setEffortFrontmatter(content, newEffortValue),
+          originalModeSet !== undefined ? { mode: originalModeSet } : undefined,
+        );
+        // Not redundant with the `mode` option above: `mode` only applies
+        // when the file is actually created (O_CREAT). A leftover tmp file
+        // from an earlier crashed run would be reused (truncated) at its OLD
+        // mode instead, and this chmod is what corrects that case.
+        // Best-effort only: a chmod failure must not abort the sync, since
+        // the content write is what matters, not the mode.
+        try {
+          if (originalModeSet !== undefined) fs.chmodSync(tmpPathSet, originalModeSet);
+        } catch { /* non-fatal: proceed with default tmp-file mode */ }
+        retryRenameSync(tmpPathSet, filePath);
+      } catch {
+        try { fs.unlinkSync(tmpPathSet); } catch { /* already gone or never created */ }
+        skipped++;
+        fileFailureCount++;
+        continue;
+      }
+    }
+
     changes.push({ agent: agentName, from: currentEffort, to: newEffortValue });
     synced++;
-
-    if (!dryRun) {
-      fs.writeFileSync(filePath, setEffortFrontmatter(content, newEffortValue));
-    }
   }
 
-  output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir }, raw, synced > 0 ? 'changed' : 'ok');
+  output(
+    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir },
+    raw,
+    fileFailureCount > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok',
+  );
 }
 
 /** One `{agent, field, from}` strip reported by {@link cmdEffortSyncCodex} — `to` is always omission (`null`). */
@@ -893,8 +1123,8 @@ interface CodexEffortSyncRefusal {
   reason: string;
 }
 
-/** A write that failed mid-sync (fs fault), reported so the remaining agents still get processed. */
-interface CodexEffortSyncWriteFailure {
+/** A read or write that failed mid-sync (fs fault), reported so the remaining agents still get processed. */
+interface EffortSyncFileFailure {
   agent: string;
   file: string;
   error: string;
@@ -909,8 +1139,9 @@ interface CodexEffortSyncWriteFailure {
  * document is refused and reported, never partially rewritten (40-design.md
  * "Reconciliation" — parseCodexAgentToml is the STRICT half of the reader/
  * writer split). Result shape is additive over the claude branch's
- * `{synced, skipped, changes, dry_run, agents_dir}` — `refused` and
- * `write_failures` are new fields, never a reshape of the existing ones.
+ * `{synced, skipped, changes, dry_run, agents_dir}` — `refused`,
+ * `write_failures`, and `read_failures` are new fields, never a reshape of
+ * the existing ones.
  */
 function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
@@ -934,14 +1165,26 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
 
   const changes: CodexEffortSyncChange[] = [];
   const refused: CodexEffortSyncRefusal[] = [];
-  const writeFailures: CodexEffortSyncWriteFailure[] = [];
+  const writeFailures: EffortSyncFileFailure[] = [];
+  const readFailures: EffortSyncFileFailure[] = [];
   let synced = 0;
   let skipped = 0;
 
   for (const file of files) {
     const agentName = file.replace(/\.toml$/, '');
     const filePath = path.join(agentsDir, file);
-    const content = fs.readFileSync(filePath, 'utf8');
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      // An unreadable agent file must not abort the whole sweep — mirrors the
+      // opencode branch's own read guard, reported under its own
+      // `read_failures` key so a caller can tell "never read" apart from
+      // "read but write failed".
+      skipped++;
+      readFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
 
     const parsed = parseCodexAgentToml(content);
     if (!parsed.ok) {
@@ -988,8 +1231,29 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
       // bare fs.renameSync) carries the transient-Windows-lock retry per
       // DEFECT.WINDOWS-FS-OPS.
       const tmpPath = `${filePath}.tmp.${process.pid}`;
+      // Stat filePath BEFORE the write so the original mode is available to
+      // pass at creation time, not just at chmod time afterward — otherwise
+      // the tmp file is briefly created at the default `0666 & ~umask`
+      // (world-readable under a typical 022 umask) even when filePath is
+      // e.g. 0600, exposing its contents for the window between creation and
+      // chmod. Best-effort: a stat failure must not abort the sync, since the
+      // content write is what matters, not the mode.
+      let originalMode: number | undefined;
       try {
-        fs.writeFileSync(tmpPath, renderCodexAgentToml(doc));
+        originalMode = fs.statSync(filePath).mode & 0o7777;
+      } catch { /* non-fatal: fall back to writing without an explicit mode */ }
+      try {
+        fs.writeFileSync(tmpPath, renderCodexAgentToml(doc), originalMode !== undefined ? { mode: originalMode } : undefined);
+        // Not redundant with the `mode` option above: `mode` only applies
+        // when the file is actually created (O_CREAT). A leftover tmp file
+        // from an earlier crashed run would be reused (truncated) at its OLD
+        // mode instead, and this chmod is what corrects that case. Mask off
+        // the file-type bits fs.statSync().mode carries (POSIX leaves
+        // chmod's handling of those unspecified); best-effort only, since
+        // the content write is what matters, not the mode.
+        try {
+          if (originalMode !== undefined) fs.chmodSync(tmpPath, originalMode);
+        } catch { /* non-fatal: proceed with default tmp-file mode */ }
         retryRenameSync(tmpPath, filePath);
       } catch (err) {
         // Reported, not thrown — the remaining agents still get processed.
@@ -1006,9 +1270,183 @@ function cmdEffortSyncCodex(raw: boolean, dryRun: boolean, configDir?: string): 
   }
 
   output(
-    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, refused, write_failures: writeFailures },
+    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, refused, write_failures: writeFailures, read_failures: readFailures },
     raw,
-    synced > 0 ? 'changed' : 'ok',
+    writeFailures.length > 0 || readFailures.length > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok',
+  );
+}
+
+/**
+ * #3706 — the OpenCode branch of `cmdEffortSync`. Maintains the `variant:`
+ * frontmatter key install now bakes into every `~/.config/opencode/agents/
+ * gsd-*.md` (or configDir-relative equivalent), mirroring exactly what
+ * install writes: a resolved universal effort clamped through
+ * `clampEffortForHost('opencode', ...)`. Null means the key must be ABSENT —
+ * #3533 (10d): an absent key is the correct state under `inherit`, and a
+ * level OpenCode does not accept must never be written, so both collapse to
+ * the same `target: null` and the same removal path. Result shape is
+ * additive over the claude branch, matching the CODEX branch's
+ * `{synced, skipped, changes, dry_run, agents_dir, write_failures}`.
+ */
+function cmdEffortSyncOpencode(cwd: string, raw: boolean, dryRun: boolean, configDir?: string): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+  const { getGlobalConfigDir } = require('./runtime-homes.cjs') as { getGlobalConfigDir(runtime: string, explicitDir?: string | null): string };
+  const agentsDir = path.join(configDir || getGlobalConfigDir('opencode'), 'agents');
+
+  if (!fs.existsSync(agentsDir)) {
+    output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, agents_dir: agentsDir, reason: 'agents directory not found' }, raw, '');
+    return;
+  }
+
+  // Skip symlinks — matches the claude branch's existing guard (only write
+  // regular files, never follow a symlink into clobbering its target).
+  const files = fs
+    .readdirSync(agentsDir)
+    .filter(f => {
+      if (!f.startsWith('gsd-') || !f.endsWith('.md')) return false;
+      try { return fs.lstatSync(path.join(agentsDir, f)).isFile(); } catch { return false; }
+    })
+    .sort();
+
+  // Use install-time resolvers: they merge ~/.gsd/defaults.json with project
+  // config, matching the exact logic used when agents were originally
+  // installed. Resolved once, outside the loop, like the claude branch.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+  const { readGsdEffectiveEffortConfig, resolveInstallTimeEffort } = require('./install-effort-resolver.cjs') as {
+    readGsdEffectiveEffortConfig(cwd: string): Record<string, unknown> | null;
+    resolveInstallTimeEffort(cfg: Record<string, unknown> | null, agentName: string): string;
+  };
+  const effortCfg = readGsdEffectiveEffortConfig(cwd);
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+  const { clampEffortForHost } = require('./model-catalog.cjs') as { clampEffortForHost(host: string, effort: string): string | null };
+
+  const changes: EffortSyncChange[] = [];
+  const writeFailures: EffortSyncFileFailure[] = [];
+  const readFailures: EffortSyncFileFailure[] = [];
+  let synced = 0;
+  let skipped = 0;
+
+  for (const file of files) {
+    const agentName = file.replace(/\.md$/, '');
+    const filePath = path.join(agentsDir, file);
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      // An unreadable agent file must not abort the whole sweep — degrade
+      // like the write path below does, and report it under its own
+      // `read_failures` key so a caller can tell "never read" apart from
+      // "read but write failed".
+      skipped++;
+      readFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
+
+    // `target === null` covers both "no effort configured" (inherit) and "a
+    // level OpenCode does not accept" — both must produce NO `variant:` key,
+    // exactly what install writes.
+    const universal = effortCfg ? resolveInstallTimeEffort(effortCfg, agentName) : null;
+    const target = universal ? clampEffortForHost('opencode', universal) : null;
+
+    const fmMatch = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(content);
+    if (!fmMatch) { skipped++; continue; }
+
+    // Presence and value are distinct questions: `variant:` with an EMPTY
+    // value is a key that IS present but whose captured value is null (the
+    // `(.+?)` group requires at least one char). Deciding "already correct"
+    // from a null-vs-null comparison alone is wrong when target is also
+    // null — it would leave an unresolvable `variant: null` key on disk
+    // forever. Test presence with its own regex, and only compare values
+    // once presence is known.
+    const variantPresent = /^variant:/m.test(fmMatch[1]);
+    const variantMatch = /^variant:[ \t]*(.+?)[ \t]*$/m.exec(fmMatch[1]);
+    // `null` (key absent) and `''` (key present, value empty) are distinct
+    // states this code deliberately tracks via `variantPresent` above — a
+    // reported `from` that collapses both to `null` would make "no key" and
+    // "empty key" indistinguishable in the sync output, even though only one
+    // of them actually has a `variant:` line to remove.
+    const currentVariant = variantPresent ? (variantMatch ? variantMatch[1] : '') : null;
+
+    if (target === null) {
+      if (!variantPresent) { skipped++; continue; }
+    } else if (variantPresent && currentVariant === target) {
+      skipped++;
+      continue;
+    }
+
+    changes.push({ agent: agentName, from: currentVariant, to: target });
+    synced++;
+
+    if (!dryRun) {
+      // Atomic publish AND mode preservation, same discipline as
+      // cmdEffortSyncCodex above: write to a sibling tmp file, chmod it to
+      // match filePath's existing (masked) mode, then retryRenameSync it over
+      // the target so filePath is either the old bytes or the new ones, never
+      // half-written and never dropped to a default mode. On failure the
+      // write is reported, not thrown, so the remaining agents still get
+      // processed.
+      const tmpPath = `${filePath}.tmp.${process.pid}`;
+      // Stat filePath BEFORE the write so its mode can be passed at CREATION
+      // time — a plain `writeFileSync(tmpPath, data)` creates the tmp file at
+      // the default `0666 & ~umask` (world-readable under a typical 022
+      // umask) even when filePath is e.g. 0600, exposing its contents for
+      // the window between creation and the chmod below. Mask off the
+      // file-type bits (e.g. S_IFREG 0o100000) that fs.statSync().mode
+      // carries alongside the permission bits — POSIX leaves chmod's
+      // handling of those bits unspecified, and the remote matrix runs Linux
+      // only (Darwin tolerating the full mode is not evidence it is safe
+      // there). Best-effort only: a stat failure must not abort the sync,
+      // since the content write is what matters, not the mode.
+      let originalMode: number | undefined;
+      try {
+        originalMode = fs.statSync(filePath).mode & 0o7777;
+      } catch { /* non-fatal: fall back to writing without an explicit mode */ }
+      try {
+        fs.writeFileSync(
+          tmpPath,
+          target === null ? removeFrontmatterKeyLine(content, 'variant') : setFrontmatterKeyLine(content, 'variant', target),
+          originalMode !== undefined ? { mode: originalMode } : undefined,
+        );
+        // Not redundant with the `mode` option above: `mode` only applies
+        // when the file is actually created (O_CREAT). A leftover tmp file
+        // from an earlier crashed run would be reused (truncated) at its OLD
+        // mode instead, and this chmod is what corrects that case.
+        // Best-effort only: a chmod failure must not abort the sync, since
+        // the content write is what matters, not the mode.
+        try {
+          if (originalMode !== undefined) fs.chmodSync(tmpPath, originalMode);
+        } catch { /* non-fatal: proceed with default tmp-file mode */ }
+        retryRenameSync(tmpPath, filePath);
+      } catch (err) {
+        try { fs.unlinkSync(tmpPath); } catch { /* already gone or never created */ }
+        changes.pop();
+        synced--;
+        skipped++;
+        writeFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
+    }
+  }
+
+  // Any failure — a write OR a read — must not report 'ok' or 'changed':
+  // either would hide that at least one agent's on-disk state is now unknown
+  // (unread) or unchanged despite being reported as a pending change (write
+  // failed after being pushed onto `changes`/`synced`). `write_failures` and
+  // `read_failures` take priority over the synced-count-derived summary below,
+  // even when other agents in the same run succeeded.
+  //
+  // Known limitation, deliberately not fixed here: `output()` only honors its
+  // third argument when `raw === true`, and this command's process always
+  // exits 0 regardless of the summary string — so `if gsd-tools effort sync;
+  // then` reads success in a shell even on a run where every write failed.
+  // Making the exit code reflect failure would be a CLI-contract change
+  // affecting all three cmdEffortSync* branches (claude, codex, opencode) and
+  // is out of scope for this fix.
+  output(
+    { synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, write_failures: writeFailures, read_failures: readFailures },
+    raw,
+    writeFailures.length > 0 || readFailures.length > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok',
   );
 }
 
@@ -1196,7 +1634,10 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
       // — see #2528 for the parallel drift problem in phase-locator/phase),
       // so this is the canonical path-segment-bound read, not a fourth copy.
       const phaseNum = detectPhaseNumberFromFiles(files);
-      if (phaseNum) {
+      // #3734: a 999.x/0.x backlog sentinel is a parking-lot entry, not a real
+      // phase — the phase arm must never branch-mutate for it (isSentinelPhaseId
+      // is the invariant's single owner, src/phase-id.cts).
+      if (phaseNum && !isSentinelPhaseId(phaseNum)) {
         const phaseInfo = findPhaseInternal(cwd, phaseNum) as Record<string, unknown> | null;
         if (phaseInfo) {
           branchName = (config['phase_branch_template'] as string)
@@ -1381,8 +1822,26 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   if (canScope) {
     commitArgs.push('--', ...stagedPaths);
   }
-  const commitResult = execGit(commitArgs, { cwd });
+  // #3886: `git commit` runs pre-commit hooks (husky/lint-staged routinely
+  // idles ~4s on Windows before any task) — 10s is too tight, and a timeout
+  // kill is NOT an ordinary failure. Same band as the push call below.
+  const commitResult = execGit(commitArgs, { cwd, timeout: COMMIT_TIMEOUT_MS });
   if (commitResult.exitCode !== 0) {
+    // #3886: a SIGTERM'd git commit is a timeout, not commit_failed — the
+    // partial stderr it flushed (often incidental CRLF warnings) is noise,
+    // and the kill can leave a stale index.lock that blocks the next
+    // attempt. Report the distinct reason and surface the lock path.
+    if (isSpawnTimeout(commitResult)) {
+      const result = {
+        committed: false,
+        hash: null,
+        reason: 'commit_timeout',
+        timed_out: true,
+        error: commitTimeoutMessage(cwd, commitResult.stderr, commitResult.stdout),
+      };
+      output(result, raw, 'failed');
+      return;
+    }
     if (commitResult.stdout.includes('nothing to commit') || commitResult.stderr.includes('nothing to commit')) {
       const result = { committed: false, hash: null, reason: 'nothing_to_commit' };
       output(result, raw, 'nothing');
@@ -1530,8 +1989,21 @@ function cmdCommitToSubrepo(cwd: string, message: string | undefined, files: str
     const commitArgs = canScopeSub
       ? ['commit', '-m', message as string, '--', ...stagedRelPaths]
       : ['commit', '-m', message as string];
-    const commitResult = execGit(commitArgs, { cwd: repoCwd });
+    const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS });
     if (commitResult.exitCode !== 0) {
+      if (isSpawnTimeout(commitResult)) {
+        // #3886 (subrepo counterpart): timeout ≠ error; surface the stale-lock
+        // path a killed commit can leave in the subrepo.
+        repos[repo] = {
+          committed: false,
+          hash: null,
+          files: repoFiles,
+          reason: 'commit_timeout',
+          timed_out: true,
+          error: commitTimeoutMessage(repoCwd, commitResult.stderr, commitResult.stdout),
+        };
+        continue;
+      }
       if (commitResult.stdout.includes('nothing to commit') || commitResult.stderr.includes('nothing to commit')) {
         repos[repo] = { committed: false, hash: null, files: repoFiles, reason: 'nothing_to_commit' };
         continue;
@@ -1685,9 +2157,17 @@ function cmdPrSubrepo(
   const commitArgs = canScopePr
     ? ['commit', '-m', commitMessage as string, '--', ...changedFiles]
     : ['commit', '-m', commitMessage as string];
-  const commitResult = execGit(commitArgs, { cwd: repoCwd });
+  const commitResult = execGit(commitArgs, { cwd: repoCwd, timeout: COMMIT_TIMEOUT_MS });
   if (commitResult.exitCode !== 0) {
     rollback();
+    if (isSpawnTimeout(commitResult)) {
+      // #3886 (PR-subrepo counterpart): name the timeout and the stale lock
+      // instead of echoing the killed hook's partial stderr.
+      error(
+        `git commit timed out after ${COMMIT_TIMEOUT_MS / 1000}s in ${repo} (killed mid-hook; ` +
+        `a stale lock may remain at ${resolveIndexLockPath(repoCwd)} — remove it if no git process is running)`,
+      );
+    }
     error(`Failed to commit in ${repo}: ${commitResult.stderr}`);
   }
 
@@ -2555,6 +3035,40 @@ interface HooksDirResolution {
   ok: boolean;
   dir?: string;
   reason?: string;
+}
+
+/**
+ * #3886: the timeout band for `git commit` — pre-commit hooks (husky +
+ * lint-staged idles ~4s on Windows before any task) routinely exceed the 10s
+ * plumbing default; 30s is the same band the push call uses. Shared by all
+ * three commit sites AND their timeout messages, so the number and the text
+ * cannot drift apart.
+ */
+const COMMIT_TIMEOUT_MS = 30_000;
+
+/**
+ * #3886: resolve where a killed `git commit` would leave its stale
+ * index.lock — via `git rev-parse --git-path index.lock`, never a literal
+ * `.git/index.lock` join (#3588 row 8's class: a linked worktree's `.git` is
+ * a FILE pointing at `<gitdir>/worktrees/<name>/`, so the literal path
+ * cannot exist there while the real lock blocks the next commit). Best
+ * effort: any resolution failure falls back to the literal join, and the
+ * message already hedges with "may remain".
+ */
+function resolveIndexLockPath(cwd: string): string {
+  const result = execGit(['rev-parse', '--git-path', 'index.lock'], { cwd });
+  if (result.exitCode !== 0) return path.join(cwd, '.git', 'index.lock');
+  const raw = result.stdout.trim();
+  return raw ? (path.isAbsolute(raw) ? raw : path.join(cwd, raw)) : path.join(cwd, '.git', 'index.lock');
+}
+
+/** #3886: shared timeout message shape for all three commit sites. */
+function commitTimeoutMessage(cwd: string, stderr: string, stdout: string): string {
+  return (
+    `git commit timed out after ${COMMIT_TIMEOUT_MS / 1000}s (killed mid-hook; a stale lock may remain at ` +
+    `${resolveIndexLockPath(cwd)} — remove it if no git process is running). ` +
+    `Partial stderr: ${stderr || stdout || '(none)'}`
+  );
 }
 
 /**

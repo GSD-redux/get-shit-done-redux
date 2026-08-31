@@ -17,6 +17,7 @@ const { spawnSync } = require('node:child_process');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
+const { findTableWithColumns } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SCRIPT_REL = path.join('scripts', 'gen-adr-index.cjs');
@@ -199,7 +200,12 @@ test('subsumption is symmetry-checked but does NOT mark the target superseded', 
   assert.match(readme, /### Active decisions\b/, 'a subsumed ADR stays Active');
   // The subsumer is surfaced in the "Read first" column so EoS is discoverable
   // from the component ADR.
-  assert.match(readme, /\| \[ADR-0001\]\(0001-alpha\.md\) \|[^|]*\| Accepted \| \[ADR-900\]\(900-eos\.md\) \|/);
+  const table = findTableWithColumns(readme, ['ADR', 'Title', 'Status', 'Read first']);
+  assert.ok(table, 'the generated README has an ADR/Title/Status/Read first table');
+  const row = table.rows.find((r) => r.ADR === '[ADR-0001](0001-alpha.md)');
+  assert.ok(row, 'a row for ADR-0001 exists');
+  assert.equal(row.Status, 'Accepted');
+  assert.equal(row['Read first'], '[ADR-900](900-eos.md)');
 });
 
 test('a missing subsumption back-link is rejected', (t) => {

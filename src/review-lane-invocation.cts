@@ -79,6 +79,27 @@ export interface SpawnPlan {
   binary: string;
   /** Fully resolved argv — model, effort and prompt already folded in, in leg order. */
   argv: string[];
+  /**
+   * The configured model that was ACTUALLY APPLIED to this invocation, or `null` (#2295).
+   *
+   * Not merely "what `review.models.<slug>` says". A lane can declare a `modelConfigKey` and no
+   * `modelArg` — a shape a third-party overlay body can reach — and then the configured value
+   * never enters argv and the CLI reviews under its own default. Recording the config value in
+   * that case would attribute the review to a model that never ran, which is the inverse of the
+   * failure #2295 exists to end. So this mirrors the argv expansion: set only when `{{model}}`
+   * really expanded to something.
+   */
+  model: string | null;
+  /**
+   * The reasoning effort GSD ACTUALLY APPLIED to this invocation, or `null` (#2295).
+   *
+   * Shares the same applied-not-merely-configured rule `model` above documents. A lane whose
+   * `effortChannel` is not `argv` receives no effort argument at all — the placeholder's
+   * expansion is structurally empty for that lane — and recording an effort level in that case
+   * would attribute the review to a setting that never reached the tool. So this is set only
+   * when the effort argv really expanded into this invocation's argv.
+   */
+  effort: string | null;
   /** Prompt delivered on stdin, or `null` for `argv`/`argv-file-ref`/`none` lanes. */
   stdin: string | null;
   /**
@@ -161,6 +182,14 @@ export interface ResolveInput {
   repoRoot: string;
   /** Effort argv for lanes whose `effortChannel` is `argv`; empty when the host declares none. */
   effortArgs?: readonly string[];
+  /**
+   * The bare reasoning-effort level (`'low'`) GSD resolved for this lane's host, or `undefined`
+   * (#2295). The per-host ARGV RENDERING of this same level arrives separately in `effortArgs` —
+   * `'low'` renders as `--effort low` for one host and `-c model_reasoning_effort=low` for
+   * another, and the runner needs the bare level (for the recorded model suffix) independently
+   * of whichever rendering actually reached argv.
+   */
+  effortValue?: string;
 }
 
 /* ------------------------------------------------------------------ *
@@ -180,8 +209,11 @@ export interface ResolveInput {
  *
  * A non-string (number, bool, object, array) is NOT coerced. `String(0)` would put `"0"` into argv
  * as a model name; a wrong model silently reviewed is worse than no model override.
+ *
+ * Exported and shared with the runner's model-recovery arms (#2295) — "what counts as unset" has
+ * ONE source, so the plan resolver and the runner's recovered-model normalization cannot disagree.
  */
-function configString(raw: unknown): string | null {
+export function configString(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined') return null;
@@ -220,6 +252,44 @@ export function normalizeHost(raw: string): string {
   const host = u.hostname.toLowerCase();
   const pathPart = u.pathname.replace(/\/+$/, '');
   return `${scheme}//${host}${port ? `:${port}` : ''}${pathPart}`;
+}
+
+/**
+ * Resolve a lane's outer wall-clock timeout in milliseconds (#3274).
+ *
+ * `timeoutConfigKey` resolves in SECONDS — the user-facing convention this repo already uses for
+ * timeout-shaped config keys (`workflow.cross_ai_timeout`, `graphify.build_timeout`), distinct from
+ * the internal millisecond unit `timeoutFloorMs` carries. Anything that is not a positive finite
+ * number is treated as unset and falls back to `floorMs`, never coerced: a wrong-typed config value
+ * silently becoming a wrong-but-plausible timeout is worse than falling back cleanly. `0` and
+ * negative values are deliberately treated as unset too — a timeout has no legitimate zero or
+ * negative value, so no second sentinel (unlike the prompt-budget keys, which use -1) is needed.
+ */
+export function resolveTimeoutMs(
+  timeoutConfigKey: string | null | undefined,
+  floorMs: number,
+  configGet: (key: string) => unknown,
+): number {
+  const configuredSeconds = typeof timeoutConfigKey === 'string' ? configGet(timeoutConfigKey) : undefined;
+  return typeof configuredSeconds === 'number' && Number.isFinite(configuredSeconds) && configuredSeconds > 0
+    ? configuredSeconds * 1000
+    : floorMs;
+}
+
+/** Buffer (seconds) a lane's native inner timeout sits under its resolved outer wall-clock cap
+ * (#3274). Matches the shipped 600s outer / 540s native relationship exactly when unconfigured:
+ * floor(600000/1000) - 60 = 540. */
+const NATIVE_TIMEOUT_BUFFER_SECONDS = 60;
+
+/**
+ * Render the `{{nativeTimeout}}` argv placeholder from a lane's resolved outer timeout (#3274).
+ *
+ * Clamped to a 1-second floor so a very small configured (or, today, only-ever-default) outer
+ * timeout never produces a zero or negative duration string a CLI would reject or misinterpret.
+ */
+export function nativeTimeoutToken(timeoutMs: number): string {
+  const seconds = Math.max(1, Math.floor(timeoutMs / 1000) - NATIVE_TIMEOUT_BUFFER_SECONDS);
+  return `${seconds}s`;
 }
 
 /**
@@ -330,10 +400,11 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
   }
 
   const { promptPath, reviewPath, errPath } = artifactPaths(input.runDir, slug);
-  const timeoutMs =
+  const floorMs =
     typeof lane.timeoutFloorMs === 'number' && Number.isFinite(lane.timeoutFloorMs) && lane.timeoutFloorMs > 0
       ? lane.timeoutFloorMs
       : 900_000;
+  const timeoutMs = resolveTimeoutMs(lane.timeoutConfigKey, floorMs, input.configGet);
   const emptyOutput: EmptyOutputPolicy = lane.emptyOutput === 'handler-owned' ? 'handler-owned' : 'stub-with-stderr';
   // #3194: only an EXACT 'diff-only' declaration exempts a lane from evidence verification.
   // Anything else — including a missing or garbage value on a third-party overlay body —
@@ -471,6 +542,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
     '{{effort}}': effortExpansion,
     '{{output}}': outputExpansion,
     '{{prompt}}': promptExpansion,
+    '{{nativeTimeout}}': [nativeTimeoutToken(timeoutMs)],
   };
   const template = Array.isArray(inv.args)
     ? inv.args.filter((a): a is string => typeof a === 'string')
@@ -510,6 +582,8 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
       slug,
       binary,
       argv,
+      model: modelExpansion.length > 0 ? model : null,
+      effort: effortExpansion.length > 0 ? (configString(input.effortValue) ?? null) : null,
       stdin,
       promptPath,
       outputTarget,

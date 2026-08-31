@@ -14,12 +14,17 @@ const fc = require('fast-check');
 const {
   transitionCore,
   applyStatePreservation,
+  openStateTransaction,
+  rebuildStateTransaction,
   FIELD_CLASSIFICATION,
+  FRONTMATTER_BODY_SOURCE,
   getFieldClassification,
+  getPreserveWhenUnchangedFields,
   STATE_MD_SECTIONS,
   sliceCurrentPositionSection,
 } = require('../gsd-core/bin/lib/state-transition.cjs');
 const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
+const { STATE_FIELD_SCHEMA } = require('../gsd-core/bin/lib/state-md-schema.cjs');
 
 const fixedClock = Object.freeze({
   today: () => '2026-06-27',
@@ -110,6 +115,132 @@ describe('ADR-1769 substrate: field-classification table', () => {
     assert.strictEqual(getFieldClassification('hasOwnProperty'), null);
     assert.strictEqual(getFieldClassification('__proto__'), null);
     assert.strictEqual(getFieldClassification('not-a-real-field'), null);
+  });
+});
+
+// #3873 (ADR-3473 §8.8): `FIELD_CLASSIFICATION` and `FRONTMATTER_BODY_SOURCE`
+// are now PROJECTIONS of `STATE_FIELD_SCHEMA` (src/state-md-schema.cts),
+// derived at module load rather than hand-maintained beside it. The
+// comparands below are today's literal tables, copied VERBATIM (not
+// re-derived from the schema — a parity test that builds both sides from the
+// same source proves nothing; see 50-test-matrix.md's "writer-seeded fixture
+// trap" note), captured by direct read of `src/state-transition.cts` on this
+// branch's base (pre-#3873) before the projection replaced them. Any drift
+// here is a silently-changed preservation policy — the #3427 failure this
+// epic is named after.
+describe('ADR-3473 §8.8 (#3873): the three tables are byte-identical projections of STATE_FIELD_SCHEMA', () => {
+  // Verbatim copy of `FIELD_CLASSIFICATION`'s pre-#3873 literal (19 rows, this
+  // exact key order — key order is observable: the preservation dispatch loop
+  // and `getPreserveWhenUnchangedFields` both iterate it).
+  const TODAYS_FIELD_CLASSIFICATION = Object.freeze({
+    gsd_state_version: { source: 'free', preservation: 'derive' },
+    milestone: { source: 'external', preservation: 'preserve-if-placeholder' },
+    milestone_name: { source: 'external', preservation: 'preserve-if-placeholder' },
+    current_phase: { source: 'body', preservation: 'preserve-when-unchanged' },
+    current_phase_name: { source: 'curated', preservation: 'preserve-when-unchanged' },
+    current_plan: { source: 'body', preservation: 'preserve-when-unchanged' },
+    status: { source: 'body', preservation: 'preserve-when-unchanged', guard: 'non-sentinel-unknown' },
+    stopped_at: { source: 'body', preservation: 'preserve-when-unchanged' },
+    paused_at: { source: 'body', preservation: 'preserve-when-unchanged' },
+    last_updated: { source: 'free', preservation: 'derive' },
+    last_activity: { source: 'body', preservation: 'derive' },
+    last_activity_desc: { source: 'body', preservation: 'preserve-when-unchanged' },
+    state_head: { source: 'free', preservation: 'derive' },
+    progress: { source: 'curated', preservation: 'preserve-always', mergeStrategy: 'progress-ratchet' },
+    'progress.total_phases': { source: 'disk', preservation: 'derive' },
+    'progress.completed_phases': { source: 'disk', preservation: 'derive' },
+    'progress.total_plans': { source: 'disk', preservation: 'derive' },
+    'progress.completed_plans': { source: 'disk', preservation: 'derive' },
+    'progress.percent': { source: 'disk', preservation: 'derive' },
+  });
+
+  // Verbatim copy of `FRONTMATTER_BODY_SOURCE`'s pre-#3873 literal (8 keys,
+  // this exact key order — deliberately NOT the same order as
+  // `FIELD_CLASSIFICATION` above, nor the same order as
+  // `FRONTMATTER_KEY_TO_BODY_LABEL` in tests/state.test.cjs; the two
+  // pre-existing tables disagreed with each other's order too).
+  const TODAYS_FRONTMATTER_BODY_SOURCE = Object.freeze({
+    current_phase: ['Current Phase'],
+    current_phase_name: ['Current Phase Name'],
+    current_plan: ['Current Plan'],
+    status: ['Status'],
+    stopped_at: ['Stopped At', 'Stopped at'],
+    paused_at: ['Paused At'],
+    last_activity: ['Last Activity', 'Last activity'],
+    last_activity_desc: ['Last Activity Description'],
+  });
+
+  test('row 1 — fieldClassificationProjectionMatchesTodaysTable', () => {
+    assert.deepStrictEqual(
+      Object.keys(FIELD_CLASSIFICATION),
+      Object.keys(TODAYS_FIELD_CLASSIFICATION),
+      'FIELD_CLASSIFICATION key order must be unchanged',
+    );
+    for (const key of Object.keys(TODAYS_FIELD_CLASSIFICATION)) {
+      assert.deepStrictEqual(
+        FIELD_CLASSIFICATION[key],
+        TODAYS_FIELD_CLASSIFICATION[key],
+        `FIELD_CLASSIFICATION[${JSON.stringify(key)}] must be byte-identical to today's table`,
+      );
+    }
+  });
+
+  test('row 2 — bodySourceProjectionMatchesTodaysTable', () => {
+    assert.deepStrictEqual(
+      Object.keys(FRONTMATTER_BODY_SOURCE),
+      Object.keys(TODAYS_FRONTMATTER_BODY_SOURCE),
+      'FRONTMATTER_BODY_SOURCE key order must be unchanged',
+    );
+    for (const key of Object.keys(TODAYS_FRONTMATTER_BODY_SOURCE)) {
+      assert.deepStrictEqual(
+        [...FRONTMATTER_BODY_SOURCE[key]],
+        TODAYS_FRONTMATTER_BODY_SOURCE[key],
+        `FRONTMATTER_BODY_SOURCE[${JSON.stringify(key)}] must be byte-identical to today's table`,
+      );
+    }
+  });
+
+  test('row 5 — projectionIsFrozenAndNullPrototype (FIELD_CLASSIFICATION, FRONTMATTER_BODY_SOURCE)', () => {
+    assert.ok(Object.isFrozen(FIELD_CLASSIFICATION));
+    assert.strictEqual(FIELD_CLASSIFICATION['toString'], undefined);
+    assert.ok(Object.isFrozen(FRONTMATTER_BODY_SOURCE));
+    assert.strictEqual(FRONTMATTER_BODY_SOURCE['toString'], undefined);
+    // Per-row objects/arrays keep their pre-#3873 shape too: FIELD_CLASSIFICATION's
+    // rows were plain (non-frozen, non-null-prototype) literals, and this
+    // projection reproduces that exactly rather than "improving" it.
+    assert.strictEqual(Object.isFrozen(FIELD_CLASSIFICATION.status), false);
+    assert.ok(Object.isFrozen(FRONTMATTER_BODY_SOURCE.stopped_at));
+  });
+
+  test('row 6 — everyClassificationRowStillResolves (including the five progress.* rows)', () => {
+    for (const key of Object.keys(TODAYS_FIELD_CLASSIFICATION)) {
+      assert.notStrictEqual(getFieldClassification(key), null, `${key} must still resolve`);
+    }
+    for (const leaf of ['progress.total_phases', 'progress.completed_phases', 'progress.total_plans', 'progress.completed_plans', 'progress.percent']) {
+      const cls = getFieldClassification(leaf);
+      assert.strictEqual(cls.source, 'disk');
+      assert.strictEqual(cls.preservation, 'derive');
+    }
+  });
+
+  test('row 7 — preserveWhenUnchangedProjectionUnchanged', () => {
+    assert.deepStrictEqual(
+      getPreserveWhenUnchangedFields(),
+      ['current_phase', 'current_phase_name', 'current_plan', 'status', 'stopped_at', 'paused_at', 'last_activity_desc'],
+    );
+  });
+
+  test('row 8 — schemaMayDeclareMoreThanAProjectionConsumes', () => {
+    // `milestone` is a real STATE_FIELD_SCHEMA row (external/preserve-if-placeholder)
+    // with no body source at all, so it is legitimately absent from
+    // FRONTMATTER_BODY_SOURCE — projections are subsets by design (D4).
+    assert.ok(Object.prototype.hasOwnProperty.call(STATE_FIELD_SCHEMA, 'milestone'));
+    assert.strictEqual(STATE_FIELD_SCHEMA.milestone.bodySource, undefined);
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(FRONTMATTER_BODY_SOURCE, 'milestone'),
+      false,
+      'a schema row with no bodySource must not appear in the FRONTMATTER_BODY_SOURCE projection',
+    );
   });
 });
 
@@ -489,6 +620,113 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
     const plan = stateExtractField(result.content, 'Plan');
     assert.ok(/3 of 6/.test(plan || ''), `Plan should be "3 of 6"; got ${JSON.stringify(plan)}`);
     assert.strictEqual(result.data && result.data.advanced, true);
+  });
+});
+
+// ─── #3873 phase-3 test-matrix rows 23/24/25: parser accepts EXACTLY the ────
+// schema-declared shapes — no more, no fewer.
+//
+// Table-driven over every STATE_FIELD_SCHEMA row carrying `acceptedShapes`
+// (today: only `current_plan`), so declaring `acceptedShapes` on a future row
+// gets gated automatically. A row with a driver missing from PARSER_DRIVERS
+// fails loudly (row24/row23 below) rather than silently skipping — that is
+// what keeps the table-driven claim honest as rows are added.
+//
+// The declaration itself was corrected against OBSERVED parser behavior
+// (verified by executing `advancePlanCore`, not by reading its prior
+// docstring's claim): `current_plan.acceptedShapes` is `['N']` only.
+// `Current Plan: N of M` standalone does NOT parse today — `advancePlanCore`
+// (`src/state-transition.cts:1306`) requires a `Total Plans in Phase`
+// sibling for the bare-`N` path; with no sibling and no separate `Plan`
+// field, it falls to its NaN/NaN error branch. #3784 is the open issue for
+// teaching it the hybrid shape; **PR #3791** ("fix(#3784): read the hybrid
+// `Current Plan: N of M` shape, keep zero-padding, and name the accepted
+// shapes on failure") is the in-flight fix. When #3791 merges,
+// `acceptedShapes` MUST widen to `['N', 'N of M']` — until then, this suite
+// pins today's reality, and it is EXPECTED to go RED the moment the parser
+// changes underneath it. That is the forcing function working as designed
+// (§8.8 "checked, not generated"), not a broken test.
+describe('#3873 phase-3 rows 23/24/25: parser accepts exactly the schema-declared shapes', () => {
+  const deps = { clock: fixedClock };
+
+  // Bare `N` only ever appears in a real STATE.md paired with a sibling
+  // `Total Plans in Phase` field (that pairing is what supplies the total
+  // `advancePlanCore` needs). `N of M` / `N/M` are driven WITHOUT that
+  // sibling, because the entire point of a hybrid shape is that it is
+  // self-contained in the `Current Plan` field alone — pairing it with a
+  // sibling would let the sibling's total paper over a value `parseInt`
+  // cannot fully read, which is the exact coincidence row 25 exists to catch.
+  function driveCurrentPlanShape(shapeValue, { withTotalSibling = false } = {}) {
+    const lines = ['# Project State', '', `**Current Plan:** ${shapeValue}`];
+    if (withTotalSibling) lines.push('**Total Plans in Phase:** 5');
+    lines.push('**Status:** Executing Phase 3', '');
+    const result = transitionCore(lines.join('\n'), { kind: 'advancePlan' }, deps);
+    return !(result.data && result.data.error === true);
+  }
+
+  // field -> (shape value, drive opts) -> boolean "did it parse"
+  const PARSER_DRIVERS = {
+    current_plan: driveCurrentPlanShape,
+  };
+
+  // shape name -> [example value, drive opts]
+  const SHAPE_EXAMPLES = {
+    'N': ['3', { withTotalSibling: true }],
+    'N of M': ['3 of 5', {}],
+    'N/M': ['3/5', {}],
+  };
+
+  const rowsWithAcceptedShapes = Object.entries(STATE_FIELD_SCHEMA).filter(
+    ([, row]) => Array.isArray(row.acceptedShapes),
+  );
+
+  test('sanity: at least one schema row declares acceptedShapes (else this suite is vacuous)', () => {
+    assert.ok(rowsWithAcceptedShapes.length > 0, 'expected at least one acceptedShapes row to pin');
+  });
+
+  test('unsupportedDeclaredShapeFails: every declared shape parses via the real parser (row 24)', () => {
+    for (const [field, row] of rowsWithAcceptedShapes) {
+      const driver = PARSER_DRIVERS[field];
+      assert.ok(driver, `no PARSER_DRIVERS entry for field ${JSON.stringify(field)} — register one before declaring acceptedShapes on it`);
+      for (const shape of row.acceptedShapes) {
+        const example = SHAPE_EXAMPLES[shape];
+        assert.ok(example, `no SHAPE_EXAMPLES entry for shape ${JSON.stringify(shape)} (field ${JSON.stringify(field)})`);
+        const [value, opts] = example;
+        const parsed = driver(value, opts);
+        assert.strictEqual(parsed, true, `declared shape ${JSON.stringify(shape)} for field ${JSON.stringify(field)} did not parse`);
+      }
+    }
+  });
+
+  test('undeclaredParserShapeFails: a shape outside the declared set is rejected (row 23)', () => {
+    // 'N of M' is deliberately excluded from current_plan's declared set
+    // today (the #3784/#3791 boundary); 'N/M' is a fourth spelling that has
+    // never been declared for any row. Both must fail to parse.
+    for (const [field, row] of rowsWithAcceptedShapes) {
+      const driver = PARSER_DRIVERS[field];
+      const undeclaredCandidates = Object.keys(SHAPE_EXAMPLES).filter((shape) => !row.acceptedShapes.includes(shape));
+      assert.ok(undeclaredCandidates.length > 0, `no undeclared shape candidate available to probe field ${JSON.stringify(field)}`);
+      for (const shape of undeclaredCandidates) {
+        const [value, opts] = SHAPE_EXAMPLES[shape];
+        const parsed = driver(value, opts);
+        assert.strictEqual(parsed, false, `undeclared shape ${JSON.stringify(shape)} for field ${JSON.stringify(field)} was accepted by the parser`);
+      }
+    }
+  });
+
+  // The worked case (#3784's three spellings): current_plan specifically.
+  test('planNofMShapesAreExactlyTheDeclaredSet', () => {
+    assert.deepStrictEqual(Array.from(STATE_FIELD_SCHEMA.current_plan.acceptedShapes), ['N']);
+
+    // Declared shape parses.
+    assert.strictEqual(driveCurrentPlanShape('3', { withTotalSibling: true }), true, '"N" (paired with Total Plans in Phase) should parse');
+
+    // The hybrid shape is NOT declared today (#3784/#3791 boundary) and does
+    // NOT parse standalone in the Current Plan field.
+    assert.strictEqual(driveCurrentPlanShape('3 of 5'), false, '"N of M" standalone in Current Plan should NOT parse today');
+
+    // A fourth, never-declared spelling fails rather than quietly joining.
+    assert.strictEqual(driveCurrentPlanShape('3/5'), false, '"N/M" should NOT parse — it has never been declared');
   });
 });
 
@@ -1278,15 +1516,52 @@ describe('ADR-3408 §8.3(b) Matrix D: patchCore strips frontmatter first (#3469)
     assert.strictEqual(result.content, input);
   });
 
-  // D7 (independence, extend): updateCore is unchanged — it already strips
-  // frontmatter first, the correct shape patchCore now matches. A
-  // frontmatter-shaped `field` still cannot reach the YAML block through it.
-  test('D7: updateCore is unchanged — a frontmatter-shaped field still cannot reach the YAML block', () => {
-    const input = ['---', 'current_phase: "3"', '---', '', '# State', '', '**Status:** Planning', ''].join('\n');
+  // D7 (independence, extend): updateCore strips frontmatter first — the correct
+  // shape patchCore now matches — so a frontmatter-shaped `field` cannot reach
+  // the YAML block by text replacement.
+  //
+  // NARROWED BY #3699, deliberately. The original assertion was "a
+  // frontmatter-shaped field can NEVER reach the YAML block", which was a true
+  // characterisation of updateCore when this test was written as an independence
+  // guard for #3469 — but it is broader than the rule ADR-3408 actually states.
+  // §8.3(b)'s invariant is "no transition core calls `stateReplaceField` on
+  // unstripped content" (ADR-3408 line 318), and #3699's repair path honours it:
+  // it strips frontmatter, edits the PARSED object, and re-serialises via
+  // `reconstructFrontmatter` — it never runs the body-field text replacer over
+  // YAML, which is the dangerous shape the rule exists to forbid.
+  //
+  // So the invariant is re-pinned here at the ADR's actual boundary, in both
+  // directions, rather than deleted.
+  test('D7: a frontmatter-shaped field cannot reach the YAML block while a body source exists', () => {
+    // The body carries `Current Phase`, so the body IS the writable route and
+    // the frontmatter key must be refused exactly as before.
+    const input = [
+      '---', 'current_phase: "3"', '---', '',
+      '# State', '', '**Current Phase:** 3', '**Status:** Planning', '',
+    ].join('\n');
     const result = transitionCore(input, { kind: 'update', field: 'current_phase', value: '9' }, deps);
-    assert.strictEqual(result.content, input);
+    assert.strictEqual(result.content, input, 'no write may occur through the frontmatter key');
     assert.strictEqual(result.data && result.data.updated, false);
     assert.ok(/^current_phase: "3"$/m.test(result.content));
+  });
+
+  test('D7b: the #3699 repair path is the ONLY way frontmatter is written, and it never text-replaces over YAML', () => {
+    // Body source absent — the case-D repair shape. The write is permitted here,
+    // and `updated` is the field name rather than `false`.
+    const input = ['---', 'current_phase: "3"', '---', '', '# State', '', '**Status:** Planning', ''].join('\n');
+    const result = transitionCore(input, { kind: 'update', field: 'current_phase', value: '9' }, deps);
+
+    assert.strictEqual(result.data && result.data.updated, true);
+    assert.strictEqual(result.data && result.data.wroteFrontmatter, true, 'the repair path must announce itself');
+    assert.ok(/^current_phase: 9$/m.test(result.content), 'the frontmatter key carries the new value');
+
+    // ADR-3408 §8.3(b) still holds: the body is untouched and the frontmatter
+    // block was REBUILT from the parsed object, not text-patched in place. A
+    // `stateReplaceField` pass over unstripped content would have left the rest
+    // of the document's frontmatter formatting alone; re-serialisation is what
+    // proves the parsed-object route was taken.
+    assert.ok(result.content.includes('**Status:** Planning'), 'the body must be untouched');
+    assert.ok(!/current_phase: "9"/.test(result.content), 'the value went through the YAML serialiser, not a text splice');
   });
 });
 
@@ -1440,11 +1715,12 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
     // Default behavior: wholesale curated restore. #3242 Bug A protection.
     const curated = { progress: { total_phases: 4, completed_phases: 3, percent: 75 } };
     const r = applyStatePreservation({
-      preFm: curated,
-      preFmSnapshot: curated,
-      postFm: { progress: { total_phases: 5, completed_phases: 0, percent: 0 } }, // disk-derived clobber
-      resync: false,
-      ...untouched,
+      transaction: openStateTransaction({
+        snapshot: curated,
+        resync: false,
+        ...untouched,
+      }),
+      postFm: { progress: { total_phases: 5, completed_phases: 0, percent: 0 } }  // disk-derived clobber,
     });
     assert.deepEqual(r.postFm.progress, { total_phases: 4, completed_phases: 3, percent: 75 });
     assert.equal(r.mutated, true);
@@ -1456,12 +1732,13 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
     // completed_phases keep curated protection.
     const curated = { progress: { total_plans: 50, completed_plans: 50, total_phases: 2, completed_phases: 1, percent: 100 } };
     const r = applyStatePreservation({
-      preFm: curated,
-      preFmSnapshot: curated,
+      transaction: openStateTransaction({
+        snapshot: curated,
+        resync: false,
+        deriveProgressKeys: true,
+        ...untouched,
+      }),
       postFm: { progress: { total_plans: 64, completed_plans: 49, total_phases: 2, completed_phases: 1, percent: 77 } },
-      resync: false,
-      deriveProgressKeys: true,
-      ...untouched,
     });
     assert.equal(r.postFm.progress.total_plans, 64,
       'total_plans must take derived value (64) when deriveProgressKeys=true (#2440)');
@@ -1475,12 +1752,13 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
   test('#2440 boundary: deriveProgressKeys=true, total_plans derived == curated → identity', () => {
     const curated = { progress: { total_plans: 64, completed_plans: 49 } };
     const r = applyStatePreservation({
-      preFm: curated,
-      preFmSnapshot: curated,
+      transaction: openStateTransaction({
+        snapshot: curated,
+        resync: false,
+        deriveProgressKeys: true,
+        ...untouched,
+      }),
       postFm: { progress: { total_plans: 64, completed_plans: 49, percent: 77 } },
-      resync: false,
-      deriveProgressKeys: true,
-      ...untouched,
     });
     assert.equal(r.postFm.progress.total_plans, 64,
       'total_plans equality → derived value (identity)');
@@ -1494,12 +1772,13 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
     // completed_plans < total_plans forever even though every plan is summarized.
     const curated = { progress: { total_plans: 54, completed_plans: 50, total_phases: 2, completed_phases: 1, percent: 93 } };
     const r = applyStatePreservation({
-      preFm: curated,
-      preFmSnapshot: curated,
+      transaction: openStateTransaction({
+        snapshot: curated,
+        resync: false,
+        deriveProgressKeys: true,
+        ...untouched,
+      }),
       postFm: { progress: { total_plans: 54, completed_plans: 54, total_phases: 2, completed_phases: 1, percent: 100 } },
-      resync: false,
-      deriveProgressKeys: true,
-      ...untouched,
     });
     assert.equal(r.postFm.progress.total_plans, 54, 'total_plans takes derived value');
     assert.equal(r.postFm.progress.completed_plans, 54,
@@ -1514,12 +1793,13 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
     // derive downward. (#3242 curated-progress protection, scoped to deriveProgressKeys.)
     const curated = { progress: { total_plans: 54, completed_plans: 50, percent: 93 } };
     const r = applyStatePreservation({
-      preFm: curated,
-      preFmSnapshot: curated,
+      transaction: openStateTransaction({
+        snapshot: curated,
+        resync: false,
+        deriveProgressKeys: true,
+        ...untouched,
+      }),
       postFm: { progress: { total_plans: 54, completed_plans: 47, percent: 87 } },
-      resync: false,
-      deriveProgressKeys: true,
-      ...untouched,
     });
     assert.equal(r.postFm.progress.completed_plans, 50,
       'completed_plans must NOT derive downward (47 < curated 50) — ratchet-up only (#2969/#3242)');
@@ -1530,12 +1810,12 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
     // wholesale curated restore — completed_plans never moves for a body-only edit.
     const curated = { progress: { total_plans: 54, completed_plans: 50, percent: 93 } };
     const r = applyStatePreservation({
-      preFm: curated,
-      preFmSnapshot: curated,
+      transaction: openStateTransaction({
+        snapshot: curated,
+        resync: false, // deriveProgressKeys NOT set — body-only write path
+        ...untouched,
+      }),
       postFm: { progress: { total_plans: 54, completed_plans: 54, percent: 100 } },
-      resync: false,
-      // deriveProgressKeys NOT set — body-only write path
-      ...untouched,
     });
     assert.equal(r.postFm.progress.completed_plans, 50,
       'body-only write must keep curated completed_plans (no deriveProgressKeys) (#2969/#3242)');
@@ -1544,11 +1824,12 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
   test('progress: NOT restored when transition re-derives from disk (resync=true) — sync/advancePlan/completePhase path', () => {
     const recomputed = { progress: { total_phases: 5, completed_phases: 1, percent: 20 } };
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: {},
+      transaction: openStateTransaction({
+        snapshot: {},
+        resync: true,
+        ...untouched,
+      }),
       postFm: { ...recomputed },
-      resync: true,
-      ...untouched,
     });
     assert.deepEqual(r.postFm.progress, { total_phases: 5, completed_phases: 1, percent: 20 });
     assert.equal(r.mutated, false);
@@ -1556,11 +1837,12 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
 
   test('status: preserves when body Status source is unchanged (preserve-when-unchanged) and snapshot holds a real status', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { status: 'completed' },
+      transaction: openStateTransaction({
+        snapshot: { status: 'completed' },
+        resync: true,
+        bodyDeltas: { ...neutralBodyDeltas(), status: { pre: 'Executing Phase 3', post: 'Executing Phase 3' } },
+      }),
       postFm: { status: 'verifying' },
-      resync: true,
-      bodyDeltas: { ...neutralBodyDeltas(), status: { pre: 'Executing Phase 3', post: 'Executing Phase 3' } },
     });
     assert.equal(r.postFm.status, 'completed');
     assert.equal(r.mutated, true);
@@ -1568,11 +1850,12 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
 
   test('status: does NOT preserve when the body Status source line changed this write', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { status: 'completed' },
+      transaction: openStateTransaction({
+        snapshot: { status: 'completed' },
+        resync: true,
+        bodyDeltas: { ...neutralBodyDeltas(), status: { pre: 'Executing Phase 3', post: 'Completed Phase 3' } },
+      }),
       postFm: { status: 'verifying' },
-      resync: true,
-      bodyDeltas: { ...neutralBodyDeltas(), status: { pre: 'Executing Phase 3', post: 'Completed Phase 3' } }, // changed
     });
     assert.equal(r.postFm.status, 'verifying');
     assert.equal(r.mutated, false);
@@ -1580,11 +1863,12 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
 
   test('current_phase_name: preserves curated value when body Phase source unchanged (preserve-when-unchanged, #3468 reclassified)', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_phase_name: 'curated-name' },
+      transaction: openStateTransaction({
+        snapshot: { current_phase_name: 'curated-name' },
+        resync: true,
+        bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '3' } },
+      }),
       postFm: { current_phase_name: 'wrong-parenthetical-harvest' },
-      resync: true,
-      bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '3' } },
     });
     assert.equal(r.postFm.current_phase_name, 'curated-name');
     assert.equal(r.mutated, true);
@@ -1593,11 +1877,12 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
   test('returns mutated=false and untouched postFm when no preservation rule applies', () => {
     const postFm = { status: 'executing', progress: { percent: 10 } };
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: {},
-      postFm,
-      resync: true,
-      ...untouched,
+      transaction: openStateTransaction({
+        snapshot: {},
+        resync: true,
+        ...untouched,
+      }),
+      postFm: postFm,
     });
     assert.equal(r.mutated, false);
     assert.deepEqual(r.postFm, { status: 'executing', progress: { percent: 10 } });
@@ -1654,17 +1939,24 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       // reclassified to preserve-when-unchanged in #3468 — ADR-3408 §8.1).
       const curated = { progress: { total_phases: 4, completed_phases: 3, percent: 75 } };
       const r = applyStatePreservation({
-        preFm: curated, preFmSnapshot: curated,
+        transaction: openStateTransaction({
+          snapshot: curated,
+          resync: false,
+          bodyDeltas: unchangedBodyDeltas,
+        }),
         postFm: { progress: { total_phases: 5, completed_phases: 0, percent: 0 } },
-        resync: false, bodyDeltas: unchangedBodyDeltas,
       });
       return JSON.stringify(r.postFm.progress) === JSON.stringify(curated.progress);
     }
 
     if (policy === 'preserve-when-unchanged') {
       const r = applyStatePreservation({
-        preFm: null, preFmSnapshot: { [field]: GOOD },
-        postFm: { [field]: BAD }, resync: true, bodyDeltas: unchangedBodyDeltas,
+        transaction: openStateTransaction({
+          snapshot: { [field]: GOOD },
+          resync: true,
+          bodyDeltas: unchangedBodyDeltas,
+        }),
+        postFm: { [field]: BAD },
       });
       return r.postFm[field] === GOOD;
     }
@@ -1674,10 +1966,12 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
       // name+version. Mirrors the #948/#2135 contract: name restored to the
       // curated snapshot, version restored alongside it.
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { milestone: GOOD, milestone_name: GOOD },
+        transaction: openStateTransaction({
+          snapshot: { milestone: GOOD, milestone_name: GOOD },
+          resync: true,
+          bodyDeltas: unchangedBodyDeltas,
+        }),
         postFm: { milestone: 'derived-version', milestone_name: 'milestone' },
-        resync: true, bodyDeltas: unchangedBodyDeltas,
       });
       return r.postFm[field] === GOOD;
     }
@@ -1720,11 +2014,12 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
     // error, never a silent no-op indistinguishable from a correct skip.
     assert.throws(
       () => applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { current_plan: 'preserved-by-table' },
+        transaction: openStateTransaction({
+          snapshot: { current_plan: 'preserved-by-table' },
+          resync: true,
+          bodyDeltas: {},
+        }),
         postFm: { current_plan: 'derived' },
-        resync: true,
-        bodyDeltas: {}, // caller forgot to wire current_plan's body-source delta
       }),
       (err) => {
         assert.strictEqual(err.code, 'STATE_PRESERVATION_UNWIRED_ROW');
@@ -1741,11 +2036,12 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
 
   test('last_activity_desc: preserve-when-unchanged restores snapshot when body source unchanged', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { last_activity_desc: 'authoritative description' },
+      transaction: openStateTransaction({
+        snapshot: { last_activity_desc: 'authoritative description' },
+        resync: true,
+        bodyDeltas: { ...unchangedBodyDeltas },
+      }),
       postFm: { last_activity_desc: 'stale derived description' },
-      resync: true,
-      bodyDeltas: { ...unchangedBodyDeltas },
     });
     assert.equal(r.postFm.last_activity_desc, 'authoritative description');
     assert.equal(r.mutated, true);
@@ -1753,11 +2049,12 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
 
   test('last_activity_desc: derived wins when the body source changed this write (no over-preservation)', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { last_activity_desc: 'old description' },
+      transaction: openStateTransaction({
+        snapshot: { last_activity_desc: 'old description' },
+        resync: true,
+        bodyDeltas: { ...lastActivityDescChangedDeltas },
+      }),
       postFm: { last_activity_desc: 'new description from transition' },
-      resync: true,
-      bodyDeltas: { ...lastActivityDescChangedDeltas }, // body 'Last Activity Description' moved
     });
     assert.equal(r.postFm.last_activity_desc, 'new description from transition');
     assert.equal(r.mutated, false);
@@ -1768,11 +2065,12 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
     // absent-fallback. Derived is PRESENT but stale; body source unchanged →
     // curated frontmatter value wins.
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { paused_at: '2026-02-02' },
+      transaction: openStateTransaction({
+        snapshot: { paused_at: '2026-02-02' },
+        resync: true,
+        bodyDeltas: { ...unchangedBodyDeltas },
+      }),
       postFm: { paused_at: '2026-01-01' },
-      resync: true,
-      bodyDeltas: { ...unchangedBodyDeltas },
     });
     assert.equal(r.postFm.paused_at, '2026-02-02');
     assert.equal(r.mutated, true);
@@ -1780,11 +2078,12 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
 
   test('current_phase: preserve-when-unchanged restores curated value over a stale derived value', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_phase: '4' },
+      transaction: openStateTransaction({
+        snapshot: { current_phase: '4' },
+        resync: true,
+        bodyDeltas: { ...unchangedBodyDeltas },
+      }),
       postFm: { current_phase: '2' },
-      resync: true,
-      bodyDeltas: { ...unchangedBodyDeltas },
     });
     assert.equal(r.postFm.current_phase, '4');
     assert.equal(r.mutated, true);
@@ -1792,11 +2091,12 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
 
   test('current_plan: preserve-when-unchanged restores curated value over a stale derived value', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_plan: '5' },
+      transaction: openStateTransaction({
+        snapshot: { current_plan: '5' },
+        resync: true,
+        bodyDeltas: { ...unchangedBodyDeltas },
+      }),
       postFm: { current_plan: '3' },
-      resync: true,
-      bodyDeltas: { ...unchangedBodyDeltas },
     });
     assert.equal(r.postFm.current_plan, '5');
     assert.equal(r.mutated, true);
@@ -1804,11 +2104,12 @@ describe('#3258: applyStatePreservation honors every declared preservation row',
 
   test('milestone / milestone_name: preserve-if-placeholder restores curated name when derived is placeholder', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { milestone: '0.1', milestone_name: 'Real Curated Name' },
-      postFm: { milestone: '0.x', milestone_name: 'milestone' }, // placeholder derive
-      resync: true,
-      bodyDeltas: { ...unchangedBodyDeltas },
+      transaction: openStateTransaction({
+        snapshot: { milestone: '0.1', milestone_name: 'Real Curated Name' },
+        resync: true,
+        bodyDeltas: { ...unchangedBodyDeltas },
+      }),
+      postFm: { milestone: '0.x', milestone_name: 'milestone' }  // placeholder derive,
     });
     assert.equal(r.postFm.milestone_name, 'Real Curated Name',
       'placeholder-derived milestone_name must yield to the curated snapshot (#948/#2135 contract)');
@@ -1860,11 +2161,12 @@ const dedicatedNoop = {
 describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boundary/hostile rows', () => {
   test('A3: preserve-when-unchanged — an empty-string snapshot is not restored', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_plan: '' },
+      transaction: openStateTransaction({
+        snapshot: { current_plan: '' },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { current_plan: 'derived' },
-      resync: true,
-      bodyDeltas: neutralBodyDeltas(),
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.current_plan, 'derived');
@@ -1877,11 +2179,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
   // tree until the refactor tightens the guard.
   test('A4: preserve-when-unchanged — a whitespace-only snapshot is not restored (".length > 0" is not enough)', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_plan: '   ' },
+      transaction: openStateTransaction({
+        snapshot: { current_plan: '   ' },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { current_plan: 'derived' },
-      resync: true,
-      bodyDeltas: neutralBodyDeltas(),
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.current_plan, 'derived',
@@ -1892,11 +2195,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
   test('A5: preserve-when-unchanged — a non-string snapshot is ignored (no throw)', () => {
     for (const snapshot of [42, true, null, { nested: 1 }, undefined]) {
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { current_plan: snapshot },
+        transaction: openStateTransaction({
+          snapshot: { current_plan: snapshot },
+          resync: true,
+          bodyDeltas: neutralBodyDeltas(),
+        }),
         postFm: { current_plan: 'derived' },
-        resync: true,
-        bodyDeltas: neutralBodyDeltas(),
         ...dedicatedNoop,
       });
       assert.equal(r.postFm.current_plan, 'derived', `snapshot=${JSON.stringify(snapshot)} must not be restored`);
@@ -1905,11 +2209,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
   test('A6: preserve-when-unchanged — no-op when postFm already equals the snapshot', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_plan: 'same-value' },
+      transaction: openStateTransaction({
+        snapshot: { current_plan: 'same-value' },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { current_plan: 'same-value' },
-      resync: true,
-      bodyDeltas: neutralBodyDeltas(),
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.current_plan, 'same-value');
@@ -1918,11 +2223,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
   test('A7: preserve-when-unchanged — a postFm missing the key entirely is restored (undefined !== snapshot)', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_plan: 'curated' },
+      transaction: openStateTransaction({
+        snapshot: { current_plan: 'curated' },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: {}, // key absent entirely
-      resync: true,
-      bodyDeltas: neutralBodyDeltas(),
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.current_plan, 'curated');
@@ -1931,14 +2237,18 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
   test('A8: status — the "unknown" sentinel snapshot is never restored', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { status: 'unknown' },
+      transaction: openStateTransaction({
+        snapshot: { status: 'unknown' },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { status: 'verifying' },
-      resync: true,
-      preBodyStatus: 'x', postBodyStatus: 'x',
-      preBodyStoppedAt: 'x', postBodyStoppedAt: 'x',
-      preBodyPhaseSource: 'x', postBodyPhaseSource: 'x',
-      bodyDeltas: neutralBodyDeltas(),
+      preBodyStatus: 'x',
+      postBodyStatus: 'x',
+      preBodyStoppedAt: 'x',
+      postBodyStoppedAt: 'x',
+      preBodyPhaseSource: 'x',
+      postBodyPhaseSource: 'x',
     });
     assert.equal(r.postFm.status, 'verifying');
     assert.equal(r.mutated, false);
@@ -1946,14 +2256,18 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
   test('A9: status — the "unknown" sentinel guard is case-sensitive ("Unknown" is a real value, restored)', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { status: 'Unknown' },
+      transaction: openStateTransaction({
+        snapshot: { status: 'Unknown' },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { status: 'verifying' },
-      resync: true,
-      preBodyStatus: 'x', postBodyStatus: 'x',
-      preBodyStoppedAt: 'x', postBodyStoppedAt: 'x',
-      preBodyPhaseSource: 'x', postBodyPhaseSource: 'x',
-      bodyDeltas: neutralBodyDeltas(),
+      preBodyStatus: 'x',
+      postBodyStatus: 'x',
+      preBodyStoppedAt: 'x',
+      postBodyStoppedAt: 'x',
+      preBodyPhaseSource: 'x',
+      postBodyPhaseSource: 'x',
     });
     assert.equal(r.postFm.status, 'Unknown',
       'the sentinel is an exact-match on the lowercase literal "unknown" — a case variant is a real value');
@@ -1963,11 +2277,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
   test('A12: preserve-always progress — preFm===null under !resync does not throw (skip)', () => {
     assert.doesNotThrow(() => {
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: {},
+        transaction: openStateTransaction({
+          snapshot: {},
+          resync: false,
+          bodyDeltas: neutralBodyDeltas(),
+        }),
         postFm: { progress: { total_phases: 5, completed_phases: 1, percent: 20 } },
-        resync: false,
-        bodyDeltas: neutralBodyDeltas(),
         ...dedicatedNoop,
       });
       assert.deepEqual(r.postFm.progress, { total_phases: 5, completed_phases: 1, percent: 20 });
@@ -1978,12 +2293,13 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
   test('A14: deriveProgressKeys — derived completed_plans === curated keeps curated (limit: ">" not ">=", #2969)', () => {
     const curated = { progress: { total_plans: 10, completed_plans: 7, percent: 70 } };
     const r = applyStatePreservation({
-      preFm: curated,
-      preFmSnapshot: curated,
+      transaction: openStateTransaction({
+        snapshot: curated,
+        resync: false,
+        deriveProgressKeys: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { progress: { total_plans: 10, completed_plans: 7, percent: 70 } }, // derived === curated
-      resync: false,
-      deriveProgressKeys: true,
-      bodyDeltas: neutralBodyDeltas(),
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.progress.completed_plans, 7,
@@ -1993,11 +2309,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
   test('A18: preserve-if-placeholder — punctuation-led derived names are rejected for every delimiter', () => {
     for (const derived of ['— Foo', ': Foo', '-Foo']) {
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { milestone: '1.0', milestone_name: 'Real Curated Name' },
+        transaction: openStateTransaction({
+          snapshot: { milestone: '1.0', milestone_name: 'Real Curated Name' },
+          resync: true,
+          bodyDeltas: neutralBodyDeltas(),
+        }),
         postFm: { milestone: '1.1', milestone_name: derived },
-        resync: true,
-        bodyDeltas: neutralBodyDeltas(),
         ...dedicatedNoop,
       });
       assert.equal(r.postFm.milestone_name, 'Real Curated Name',
@@ -2007,11 +2324,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
   test('A19: preserve-if-placeholder — an empty-string derived name is rejected (restored)', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { milestone: '1.0', milestone_name: 'Real Curated Name' },
+      transaction: openStateTransaction({
+        snapshot: { milestone: '1.0', milestone_name: 'Real Curated Name' },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { milestone: '1.1', milestone_name: '' },
-      resync: true,
-      bodyDeltas: neutralBodyDeltas(),
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.milestone_name, 'Real Curated Name');
@@ -2019,11 +2337,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
   test('A20: preserve-if-placeholder — a placeholder snapshot is not restored over a placeholder derived value', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { milestone: '1.0', milestone_name: 'milestone' }, // snapshot IS the placeholder
+      transaction: openStateTransaction({
+        snapshot: { milestone: '1.0', milestone_name: 'milestone' }, // snapshot IS the placeholder
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { milestone: '1.1', milestone_name: 'milestone' }, // derived is also the placeholder
-      resync: true,
-      bodyDeltas: neutralBodyDeltas(),
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.milestone_name, 'milestone', 'nothing better to restore — value passes through unchanged');
@@ -2032,11 +2351,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
   test('A21: preserve-if-placeholder — a real, different derived name wins over the curated snapshot', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { milestone: '1.0', milestone_name: 'Old Curated Name' },
+      transaction: openStateTransaction({
+        snapshot: { milestone: '1.0', milestone_name: 'Old Curated Name' },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { milestone: '2.0', milestone_name: 'New Real Milestone Name' },
-      resync: true,
-      bodyDeltas: neutralBodyDeltas(),
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.milestone_name, 'New Real Milestone Name');
@@ -2057,11 +2377,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
     for (const field of ['last_updated', 'state_head', 'gsd_state_version', 'last_activity']) {
       assert.doesNotThrow(() => {
         const r = applyStatePreservation({
-          preFm: null,
-          preFmSnapshot: { [field]: 'curated-value' },
+          transaction: openStateTransaction({
+            snapshot: { [field]: 'curated-value' },
+            resync: true,
+            bodyDeltas: { ...neutralBodyDeltas(), [field]: { pre: 'old', post: 'new' } },
+          }),
           postFm: { [field]: 'freshly-derived-value' },
-          resync: true,
-          bodyDeltas: { ...neutralBodyDeltas(), [field]: { pre: 'old', post: 'new' } },
           ...dedicatedNoop,
         });
         assert.equal(r.postFm[field], 'freshly-derived-value',
@@ -2072,11 +2393,12 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
 
   test('A23: a field with no FIELD_CLASSIFICATION row passes through untouched', () => {
     const r = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { totally_unclassified_field: 'curated' },
+      transaction: openStateTransaction({
+        snapshot: { totally_unclassified_field: 'curated' },
+        resync: true,
+        bodyDeltas: { ...neutralBodyDeltas(), totally_unclassified_field: { pre: 'x', post: 'y' } },
+      }),
       postFm: { totally_unclassified_field: 'derived' },
-      resync: true,
-      bodyDeltas: { ...neutralBodyDeltas(), totally_unclassified_field: { pre: 'x', post: 'y' } },
       ...dedicatedNoop,
     });
     assert.equal(r.postFm.totally_unclassified_field, 'derived');
@@ -2094,16 +2416,17 @@ describe('#3468 matrix A: executor policy dispatch (ADR-3408 §8.1) — new/boun
     // instead of mutating the object's prototype.
     assert.doesNotThrow(() => {
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { ['__proto__']: 'x', ['constructor']: 'y', ['toString']: 'z' },
+        transaction: openStateTransaction({
+          snapshot: { ['__proto__']: 'x', ['constructor']: 'y', ['toString']: 'z' },
+          resync: true,
+          bodyDeltas: {
+              ...neutralBodyDeltas(),
+              ['__proto__']: { pre: 'x', post: 'y' },
+              ['constructor']: { pre: 'x', post: 'y' },
+              ['toString']: { pre: 'x', post: 'y' },
+            },
+        }),
         postFm: { ['__proto__']: 'a', ['constructor']: 'b', ['toString']: 'c' },
-        resync: true,
-        bodyDeltas: {
-          ...neutralBodyDeltas(),
-          ['__proto__']: { pre: 'x', post: 'y' },
-          ['constructor']: { pre: 'x', post: 'y' },
-          ['toString']: { pre: 'x', post: 'y' },
-        },
         ...dedicatedNoop,
       });
       assert.equal(typeof r.postFm, 'object');
@@ -2132,11 +2455,12 @@ describe('#3468 matrix B: an unenforced preserve-when-unchanged row (ADR-3408 §
     delete bodyDeltas.current_plan; // the ONLY unwired row
     assert.throws(
       () => applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { current_plan: 'curated' },
+        transaction: openStateTransaction({
+          snapshot: { current_plan: 'curated' },
+          resync: true,
+          bodyDeltas: bodyDeltas,
+        }),
         postFm: { current_plan: 'derived' },
-        resync: true,
-        bodyDeltas,
         ...dedicatedNoop,
       }),
       (err) => {
@@ -2150,11 +2474,12 @@ describe('#3468 matrix B: an unenforced preserve-when-unchanged row (ADR-3408 §
   test('B2: bodyDeltas entirely absent throws, naming the first unwired row', () => {
     assert.throws(
       () => applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: {},
+        transaction: openStateTransaction({
+          snapshot: {},
+          resync: true,
+          // bodyDeltas omitted entirely
+        }),
         postFm: {},
-        resync: true,
-        // bodyDeltas omitted entirely
         ...dedicatedNoop,
       }),
       (err) => {
@@ -2173,11 +2498,12 @@ describe('#3468 matrix B: an unenforced preserve-when-unchanged row (ADR-3408 §
   test('B3: bodyDeltas present but {} throws, naming the first unwired row', () => {
     assert.throws(
       () => applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: {},
+        transaction: openStateTransaction({
+          snapshot: {},
+          resync: true,
+          bodyDeltas: {},
+        }),
         postFm: {},
-        resync: true,
-        bodyDeltas: {},
         ...dedicatedNoop,
       }),
       (err) => {
@@ -2195,11 +2521,12 @@ describe('#3468 matrix B: an unenforced preserve-when-unchanged row (ADR-3408 §
     };
     assert.doesNotThrow(() => {
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: {}, // no snapshot — skip is a legitimate, non-throwing outcome
+        transaction: openStateTransaction({
+          snapshot: {}, // no snapshot — skip is a legitimate, non-throwing outcome
+          resync: true,
+          bodyDeltas: bodyDeltas,
+        }),
         postFm: { current_phase: 'derived' },
-        resync: true,
-        bodyDeltas,
         ...dedicatedNoop,
       });
       assert.equal(r.postFm.current_phase, 'derived');
@@ -2213,11 +2540,12 @@ describe('#3468 matrix B: an unenforced preserve-when-unchanged row (ADR-3408 §
     };
     assert.doesNotThrow(() => {
       applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { current_phase: 'curated' },
+        transaction: openStateTransaction({
+          snapshot: { current_phase: 'curated' },
+          resync: true,
+          bodyDeltas: bodyDeltas,
+        }),
         postFm: { current_phase: 'derived' },
-        resync: true,
-        bodyDeltas,
         ...dedicatedNoop,
       });
     });
@@ -2229,11 +2557,12 @@ describe('#3468 matrix B: an unenforced preserve-when-unchanged row (ADR-3408 §
     // are deliberately absent from bodyDeltas and must not trigger the throw.
     assert.doesNotThrow(() => {
       applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: {},
+        transaction: openStateTransaction({
+          snapshot: {},
+          resync: true,
+          bodyDeltas: neutralBodyDeltas(),
+        }),
         postFm: {},
-        resync: true,
-        bodyDeltas: neutralBodyDeltas(),
         ...dedicatedNoop,
       });
     });
@@ -2264,11 +2593,12 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
   test('C1: shared preserve-when-unchanged loop — delta unchanged restores the snapshot (pinned)', () => {
     for (const field of LOOP_PWU_FIELDS) {
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { [field]: GOOD },
+        transaction: openStateTransaction({
+          snapshot: { [field]: GOOD },
+          resync: true,
+          bodyDeltas: neutralBodyDeltas(),
+        }),
         postFm: { [field]: BAD },
-        resync: true,
-        bodyDeltas: neutralBodyDeltas(),
         ...dedicatedNoop,
       });
       assert.equal(r.postFm[field], GOOD, `${field}: pinned identity — restore-when-unchanged`);
@@ -2278,11 +2608,12 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
   test('C1: shared preserve-when-unchanged loop — delta changed lets derived win (pinned)', () => {
     for (const field of LOOP_PWU_FIELDS) {
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { [field]: GOOD },
+        transaction: openStateTransaction({
+          snapshot: { [field]: GOOD },
+          resync: true,
+          bodyDeltas: { ...neutralBodyDeltas(), [field]: { pre: 'old', post: 'new' } },
+        }),
         postFm: { [field]: BAD },
-        resync: true,
-        bodyDeltas: { ...neutralBodyDeltas(), [field]: { pre: 'old', post: 'new' } },
         ...dedicatedNoop,
       });
       assert.equal(r.postFm[field], BAD, `${field}: pinned identity — derived wins when body source changed`);
@@ -2291,14 +2622,22 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
 
   test('C1: status / stopped_at (pinned)', () => {
     const rStatus = applyStatePreservation({
-      preFm: null, preFmSnapshot: { status: GOOD }, postFm: { status: BAD }, resync: true,
-      bodyDeltas: neutralBodyDeltas(),
+      transaction: openStateTransaction({
+        snapshot: { status: GOOD },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
+      postFm: { status: BAD },
     });
     assert.equal(rStatus.postFm.status, GOOD);
 
     const rStopped = applyStatePreservation({
-      preFm: null, preFmSnapshot: { stopped_at: GOOD }, postFm: { stopped_at: BAD }, resync: true,
-      bodyDeltas: neutralBodyDeltas(),
+      transaction: openStateTransaction({
+        snapshot: { stopped_at: GOOD },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
+      postFm: { stopped_at: BAD },
     });
     assert.equal(rStopped.postFm.stopped_at, GOOD);
   });
@@ -2306,17 +2645,24 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
   test('C1: preserve-always progress and preserve-if-placeholder milestone/milestone_name (pinned)', () => {
     const curated = { progress: { total_phases: 4, completed_phases: 3, percent: 75 } };
     const rProgress = applyStatePreservation({
-      preFm: curated, preFmSnapshot: curated,
+      transaction: openStateTransaction({
+        snapshot: curated,
+        resync: false,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { progress: { total_phases: 5, completed_phases: 0, percent: 0 } },
-      resync: false, bodyDeltas: neutralBodyDeltas(), ...dedicatedNoop,
+      ...dedicatedNoop,
     });
     assert.deepEqual(rProgress.postFm.progress, curated.progress);
 
     const rMilestone = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { milestone: '1.0', milestone_name: GOOD },
+      transaction: openStateTransaction({
+        snapshot: { milestone: '1.0', milestone_name: GOOD },
+        resync: true,
+        bodyDeltas: neutralBodyDeltas(),
+      }),
       postFm: { milestone: '1.1', milestone_name: 'milestone' },
-      resync: true, bodyDeltas: neutralBodyDeltas(), ...dedicatedNoop,
+      ...dedicatedNoop,
     });
     assert.equal(rMilestone.postFm.milestone_name, GOOD);
   });
@@ -2324,11 +2670,12 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
   test('C1: derive-classified fields pass through untouched regardless of snapshot (pinned)', () => {
     for (const field of ['gsd_state_version', 'last_updated', 'last_activity', 'state_head']) {
       const r = applyStatePreservation({
-        preFm: null,
-        preFmSnapshot: { [field]: GOOD },
+        transaction: openStateTransaction({
+          snapshot: { [field]: GOOD },
+          resync: true,
+          bodyDeltas: { ...neutralBodyDeltas(), [field]: { pre: 'old', post: 'new' } },
+        }),
         postFm: { [field]: BAD },
-        resync: true,
-        bodyDeltas: { ...neutralBodyDeltas(), [field]: { pre: 'old', post: 'new' } },
         ...dedicatedNoop,
       });
       assert.equal(r.postFm[field], BAD, `${field}: derive rows always take the derived (postFm) value`);
@@ -2347,22 +2694,24 @@ describe('#3468 matrix C1/C2: identity across the refactor — pinned literal ou
   // to drive both an unchanged AND a changed delta for the SAME field.
   test('C2: current_phase_name (reclassified preserve-always → preserve-when-unchanged) — pinned outputs', () => {
     const rEqual = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_phase_name: GOOD },
+      transaction: openStateTransaction({
+        snapshot: { current_phase_name: GOOD },
+        resync: true,
+        bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '3' } },
+      }),
       postFm: { current_phase_name: BAD },
-      resync: true,
-      bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '3' } }, // body Phase: source unchanged this write
     });
     assert.equal(rEqual.postFm.current_phase_name, GOOD,
       'reclassification must not change this: unchanged body Phase source still restores the curated name');
     assert.equal(rEqual.mutated, true);
 
     const rDiffer = applyStatePreservation({
-      preFm: null,
-      preFmSnapshot: { current_phase_name: GOOD },
+      transaction: openStateTransaction({
+        snapshot: { current_phase_name: GOOD },
+        resync: true,
+        bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '4' } },
+      }),
       postFm: { current_phase_name: BAD },
-      resync: true,
-      bodyDeltas: { ...neutralBodyDeltas(), current_phase_name: { pre: '3', post: '4' } }, // body Phase: source changed this write
     });
     assert.equal(rDiffer.postFm.current_phase_name, BAD,
       'reclassification must not change this: changed body Phase source still lets derived win');
@@ -2395,11 +2744,12 @@ describe('#3468 matrix C3: executor dispatch is a pure function of the row polic
           const postFm = { [field]: postFmValue };
           const delta = { pre: 'source', post: deltaChanged ? 'source-changed' : 'source' };
           const r = applyStatePreservation({
-            preFm: null,
-            preFmSnapshot,
-            postFm,
-            resync,
-            bodyDeltas: { ...neutralBodyDeltas(), [field]: delta },
+            transaction: openStateTransaction({
+              snapshot: preFmSnapshot,
+              resync: resync,
+              bodyDeltas: { ...neutralBodyDeltas(), [field]: delta },
+            }),
+            postFm: postFm,
             ...dedicatedNoop,
           });
 
@@ -2470,7 +2820,10 @@ const TEMPLATE_PATHS = [
  * @returns {string} The extracted code block body.
  */
 function extractFileTemplate(fileContent) {
-  const match = fileContent.match(/```markdown\r?\n([\s\S]*?)```/);
+  // Deliberately independent of the generator's own fence-handling — this is
+  // the bug #21 regression guard that must not share the seam
+  // gen-state-md-docs.cjs uses (see tests/gen-state-md-docs.test.cjs).
+  const match = fileContent.match(/```markdown\r?\n([\s\S]*?)```/); // allow-adhoc-markdown: deliberately independent of the generator's fence-handling — regresses bug #21
   assert.ok(match, 'No ```markdown code block found in template file');
   return match[1];
 }
@@ -2989,5 +3342,404 @@ describe('state transitions do not consult a progress provider (#3118)', () => {
       { kind: 'sync', totalPlansInPhase: 5, percent: 60 },
       { clock, progressProvider: exploding },
     ));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3871 / #3756 (ADR-3473 §8.6): the `preserve-always` executor for `progress`
+// (state-transition.cjs ~line 280) gates on `ctx.resync || !ctx.preFm ||
+// !ctx.preFm[field]` — it reads `ctx.preFm`, never `ctx.preFmSnapshot`. But
+// `applyPostSyncPreservation` (src/state.cts) computes
+// `const preFm = resync ? null : extractFrontmatter(...)`, and
+// `readModifyWriteStateMd` defaults `resync` to `true` — so on every
+// resyncing write (record-session, add-decision, etc.) `ctx.preFm` is
+// ALWAYS null and the preserve-always branch for `progress` returns
+// immediately without ever consulting the curated snapshot, even though the
+// snapshot (`ctx.preFmSnapshot`) still carries the pre-write curated block.
+// This is the root cause of #3756 (progress zeroed on an archived milestone).
+//
+// Written against TODAY's `applyStatePreservation` signature
+// (`{ preFm, postFm, preFmSnapshot, resync, bodyDeltas }`) so it fails for
+// the RIGHT reason (the policy not running) rather than an import/signature
+// mismatch. The signature is expected to change in the follow-up fix commit
+// (the executor should consult `preFmSnapshot` when `preFm` is null due to
+// resync), at which point this test migrates alongside it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3871 / #3756: preserve-always must still run on a resyncing write', () => {
+  test('preserveAlwaysRunsOnResyncingWrites', () => {
+    // #3756's exact repro shape: STATE.md carries a curated progress block
+    // (5/5/32/32/100%) but the post-sync disk-derived block from a
+    // milestone-scoped scan that found NONE of the current milestone's
+    // phases (they were archived to .planning/milestones/<v>-phases/) is
+    // all STRING zeros with `percent` entirely ABSENT — exactly what the
+    // real sync path emits (never numeric zeros).
+    const curatedSnapshot = {
+      progress: {
+        total_phases: 5,
+        completed_phases: 5,
+        total_plans: 32,
+        completed_plans: 32,
+        percent: 100,
+      },
+    };
+    const zeroedPostFm = {
+      progress: {
+        total_phases: '0',
+        completed_phases: '0',
+        total_plans: '0',
+        completed_plans: '0',
+      },
+    };
+    const unchangedBodyDeltas = {
+      status: { pre: 'x', post: 'x' },
+      stopped_at: { pre: 'x', post: 'x' },
+      current_phase_name: { pre: 'x', post: 'x' },
+      paused_at: { pre: 'x', post: 'x' },
+      current_phase: { pre: 'x', post: 'x' },
+      current_plan: { pre: 'x', post: 'x' },
+      last_activity_desc: { pre: 'x', post: 'x' },
+    };
+
+    const r = applyStatePreservation({
+      transaction: openStateTransaction({
+        snapshot: curatedSnapshot,
+        resync: true,
+        bodyDeltas: unchangedBodyDeltas,
+      }),
+      postFm: zeroedPostFm,
+    });
+
+    // FAILS TODAY (#3756/#3871): the preserve-always executor for `progress`
+    // only ever consults `ctx.preFm` (always null on a resyncing write, per
+    // the root-cause comment above), so it returns immediately and the
+    // curated block above is NOT restored — `r.postFm.progress` stays the
+    // zeroed/percent-less disk-derived block instead.
+    assert.deepStrictEqual(
+      r.postFm.progress,
+      curatedSnapshot.progress,
+      'preserve-always for `progress` must restore the curated snapshot on a resyncing write, not just a non-resyncing one (#3756/#3871)',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-3473 §8.6 test matrix (.gsd/phase/feat-3871-state-transaction-snapshot/
+// 50-test-matrix.md), rows 13-27 and 36: construction failures for
+// `openStateTransaction` / `rebuildStateTransaction`, the legal-empty /
+// null-prototype / prototype-pollution snapshot boundary, the aliasing fix
+// (cloneCurated), the mutated-only-on-real-change fix, and the
+// measured-vs-unmeasured coercion boundary that `applyPreserveAlways`'s
+// `scanMeasuredSomething` decides on. Every call below wires
+// `neutralBodyDeltasForMatrix()` on the transaction (not on the
+// `applyStatePreservation` input — `bodyDeltas` is a TRANSACTION field,
+// read via `transaction.bodyDeltas`) so a probe of ONE field never trips
+// the §8.2 unwired-row throw for an unrelated preserve-when-unchanged row.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Wires every currently-declared preserve-when-unchanged field with a
+// neutral "unchanged this write" delta — local copy of the same pattern
+// `neutralBodyDeltas()` (below, hoisted) already established in this file,
+// kept separately named so this matrix block reads standalone.
+function neutralBodyDeltasForMatrix() {
+  const deltas = {};
+  for (const [field, cls] of Object.entries(FIELD_CLASSIFICATION)) {
+    if (cls.preservation === 'preserve-when-unchanged') {
+      deltas[field] = { pre: 'unchanged-source', post: 'unchanged-source' };
+    }
+  }
+  return deltas;
+}
+
+describe('ADR-3473 §8.6 matrix rows 18-21: construction is a typed failure, distinct from a legal empty snapshot', () => {
+  test('openWithoutSnapshotIsAConstructionFailure', () => {
+    assert.throws(
+      () => openStateTransaction({}),
+      (err) => {
+        assert.strictEqual(
+          Object.prototype.hasOwnProperty.call(err, 'code'),
+          true,
+          'error must carry an own `code` property',
+        );
+        assert.strictEqual(err.code, 'STATE_TRANSACTION_SNAPSHOT_REQUIRED');
+        assert.strictEqual(err.constructorName, 'openStateTransaction', 'the typed field must name the constructor, not just the message prose');
+        return true;
+      },
+      'open({}) — no snapshot key at all — must throw the typed construction failure',
+    );
+  });
+
+  test('openWithNullSnapshotIsAConstructionFailure', () => {
+    for (const snapshot of [null, undefined]) {
+      assert.throws(
+        () => openStateTransaction({ snapshot }),
+        (err) => {
+          assert.strictEqual(err.code, 'STATE_TRANSACTION_SNAPSHOT_REQUIRED');
+          assert.strictEqual(err.constructorName, 'openStateTransaction');
+          return true;
+        },
+        `open({snapshot: ${JSON.stringify(snapshot)}}) must throw the typed construction failure`,
+      );
+    }
+  });
+
+  test('rebuildWithNullSnapshotIsAConstructionFailure', () => {
+    // The ADR's explicit wording: BOTH constructors, not just open().
+    for (const init of [{ snapshot: null }, { snapshot: undefined }, {}]) {
+      assert.throws(
+        () => rebuildStateTransaction(init),
+        (err) => {
+          assert.strictEqual(err.code, 'STATE_TRANSACTION_SNAPSHOT_REQUIRED');
+          assert.strictEqual(err.constructorName, 'rebuildStateTransaction', 'rebuild()\'s own typed failure must name rebuildStateTransaction, not open');
+          return true;
+        },
+        `rebuildStateTransaction(${JSON.stringify(init)}) must throw the typed construction failure`,
+      );
+    }
+  });
+
+  test('openRejectsNonObjectSnapshot', () => {
+    for (const snapshot of [[], 'str', 42]) {
+      assert.throws(
+        () => openStateTransaction({ snapshot }),
+        (err) => {
+          assert.strictEqual(err.code, 'STATE_TRANSACTION_SNAPSHOT_REQUIRED');
+          assert.strictEqual(err.constructorName, 'openStateTransaction');
+          return true;
+        },
+        `open({snapshot: ${JSON.stringify(snapshot)}}) — a non-object (array/string/number) snapshot — must throw`,
+      );
+    }
+  });
+});
+
+describe('ADR-3473 §8.6 matrix rows 22-24: an empty / null-prototype / pollution-carrying snapshot is LEGAL', () => {
+  // This is as load-bearing as the throws above: it is what keeps
+  // /gsd-health --repair working on a broken (frontmatter-less) STATE.md —
+  // extractFrontmatter returns `{}` for such a document, never null, and
+  // `{}` must be accepted, not rejected as "absent".
+  test('emptySnapshotIsLegalAndRestoresNothing', () => {
+    const tx = openStateTransaction({ snapshot: {}, bodyDeltas: neutralBodyDeltasForMatrix() });
+    assert.strictEqual(tx.kind, 'open');
+    const r = applyStatePreservation({ transaction: tx, postFm: { status: 'executing' } });
+    assert.strictEqual(r.mutated, false, 'an empty snapshot must find nothing to restore — mutated stays false');
+    assert.strictEqual(r.postFm.status, 'executing', 'the derived value is left exactly as it was');
+  });
+
+  test('nullPrototypeSnapshotIsAccepted', () => {
+    const nullProtoSnapshot = Object.create(null);
+    nullProtoSnapshot.status = 'executing';
+    // Legal at construction — must not throw merely for lacking Object.prototype.
+    const tx = openStateTransaction({ snapshot: nullProtoSnapshot, bodyDeltas: neutralBodyDeltasForMatrix() });
+    assert.strictEqual(tx.snapshot.status, 'executing', 'a null-prototype snapshot must still support ordinary property lookup');
+    // And it must not break hasOwnProperty-style lookups inside the dispatch
+    // loop either — the call must complete and report what it did.
+    const r = applyStatePreservation({ transaction: tx, postFm: {} });
+    assert.strictEqual(typeof r.mutated, 'boolean');
+  });
+
+  test('snapshotWithPrototypeKeysDoesNotPollute', () => {
+    // Parsed via JSON.parse (not an object literal) so `__proto__` really is
+    // an OWN enumerable property of the snapshot, not the object's actual
+    // prototype link — the hostile shape a malformed/adversarial frontmatter
+    // parse could produce.
+    const evilSnapshot = JSON.parse('{"__proto__": {"polluted": true}, "constructor": "not-a-function", "toString": "not-a-method"}');
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(evilSnapshot, '__proto__'),
+      true,
+      'precondition: __proto__ must be an OWN key of the parsed snapshot, not the prototype link',
+    );
+
+    const tx = openStateTransaction({ snapshot: evilSnapshot, bodyDeltas: neutralBodyDeltasForMatrix() });
+    applyStatePreservation({ transaction: tx, postFm: {} });
+
+    assert.strictEqual(({}).polluted, undefined, 'a fresh object literal must not have picked up a polluted prototype property');
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(Object.prototype, 'polluted'),
+      false,
+      'Object.prototype itself must not have gained an own `polluted` property',
+    );
+  });
+});
+
+describe('ADR-3473 §8.6 matrix row 27: the transaction object is frozen', () => {
+  test('transactionSnapshotIsFrozen', () => {
+    const tx = openStateTransaction({ snapshot: { status: 'executing' } });
+    assert.strictEqual(Object.isFrozen(tx), true, 'the transaction object itself must be frozen');
+    // NOTE (verified against the implementation, not assumed): only the
+    // transaction OBJECT is frozen at construction — `createStateTransaction`
+    // never calls Object.freeze on `snapshot` itself. So `tx.snapshot` is NOT
+    // frozen (Object.isFrozen(tx.snapshot) === false); what independence the
+    // snapshot enjoys against later mutation comes from `applyPreserveAlways`
+    // cloning on restore (see restoreClonesSoTheSnapshotCannotBeMutatedThroughPostFm
+    // below), not from freezing the snapshot object. Assigning `tx.snapshot`
+    // itself throws because this test file runs in strict mode ('use strict'
+    // at the top) and `tx` is frozen — a sloppy-mode module would instead
+    // silently no-op the assignment.
+    assert.strictEqual(Object.isFrozen(tx.snapshot), false, 'the snapshot OBJECT is not itself frozen by construction — only the transaction wrapper is');
+    assert.throws(
+      () => { tx.snapshot = { replaced: true }; },
+      TypeError,
+      'assigning to a frozen transaction\'s property must throw under strict mode, and must not take effect',
+    );
+    assert.strictEqual(tx.snapshot.status, 'executing', 'the original snapshot value must be unchanged after the failed assignment attempt');
+  });
+});
+
+describe('ADR-3473 §8.6 matrix rows 25-26: restore mutation-reporting and aliasing independence', () => {
+  test('identicalRestoreDoesNotReportMutation', () => {
+    const curatedProgress = { total_phases: 5, completed_phases: 5, total_plans: 32, completed_plans: 32, percent: 100 };
+    const tx = openStateTransaction({
+      snapshot: { progress: { ...curatedProgress } },
+      resync: false,
+      bodyDeltas: neutralBodyDeltasForMatrix(),
+    });
+    const r = applyStatePreservation({ transaction: tx, postFm: { progress: { ...curatedProgress } } });
+    assert.strictEqual(r.mutated, false, 'restoring a value already identical to what postFm held must not report mutated=true (no spurious no-op write)');
+  });
+
+  test('restoreClonesSoTheSnapshotCannotBeMutatedThroughPostFm', () => {
+    const curatedSnapshot = { progress: { total_phases: 5, completed_phases: 5, total_plans: 32, completed_plans: 32, percent: 100 } };
+    const tx = openStateTransaction({
+      snapshot: curatedSnapshot,
+      resync: true,
+      bodyDeltas: neutralBodyDeltasForMatrix(),
+    });
+    // Derived measured NOTHING (all-string-zero, percent absent) — the
+    // #3756 shape — so preserve-always restores the curated block wholesale.
+    const postFm = { progress: { total_phases: '0', completed_phases: '0', total_plans: '0', completed_plans: '0' } };
+    const r = applyStatePreservation({ transaction: tx, postFm });
+    assert.strictEqual(r.mutated, true, 'precondition: the restore must actually have happened');
+    assert.notStrictEqual(r.postFm.progress, tx.snapshot.progress, 'the restored value must be a CLONE, not the same object reference as the snapshot');
+
+    // Mutate the restored postFm.progress block IN PLACE, as a later step
+    // in the same write pipeline legitimately could.
+    r.postFm.progress.total_phases = 999;
+    r.postFm.progress.percent = 1;
+
+    assert.strictEqual(tx.snapshot.progress.total_phases, 5, 'the transaction\'s OWN snapshot must be unaffected by a later in-place mutation of postFm.progress');
+    assert.strictEqual(tx.snapshot.progress.percent, 100, 'same independence check on a second nested field');
+  });
+});
+
+describe('ADR-3473 §8.6 matrix rows 13-17 (+10/11 pinned): the measured-vs-unmeasured coercion boundary', () => {
+  // Every case here drives applyPreserveAlways through applyStatePreservation
+  // with resync:true and a real curated `progress` block, varying ONLY the
+  // derived totals — the boundary the design/matrix calls out as the
+  // riskiest logic in the change (`scanMeasuredSomething`'s `toFiniteNumber`
+  // coercion, never a raw `=== 0`).
+  const curatedProgress = { total_phases: 5, completed_phases: 5, total_plans: 32, completed_plans: 32, percent: 100 };
+
+  function restoreWithDerivedTotals(derivedProgress) {
+    const tx = openStateTransaction({
+      snapshot: { progress: { ...curatedProgress } },
+      resync: true,
+      bodyDeltas: neutralBodyDeltasForMatrix(),
+    });
+    return applyStatePreservation({ transaction: tx, postFm: { progress: derivedProgress } });
+  }
+
+  test('stringZeroTotalsAreTreatedAsUnmeasured', () => {
+    // limit-1/limit/limit+1 triple on the STRING shape production actually
+    // emits ("0", not 0) — numeric coercion, never `=== 0`.
+    for (const zeroish of ['0', '00', '0.0']) {
+      const r = restoreWithDerivedTotals({ total_phases: zeroish, total_plans: zeroish, completed_phases: '0', completed_plans: '0' });
+      assert.deepStrictEqual(r.postFm.progress, curatedProgress, `derived totals ${JSON.stringify(zeroish)} must be treated as unmeasured — curated block stands`);
+      assert.strictEqual(r.mutated, true);
+    }
+  });
+
+  test('stringNonZeroTotalIsMeasured', () => {
+    const r = restoreWithDerivedTotals({ total_phases: '1', total_plans: '0', completed_phases: '0', completed_plans: '0' });
+    assert.strictEqual(r.mutated, false, 'a measured scan (total_phases:"1") must win — derived stands untouched');
+    assert.deepStrictEqual(r.postFm.progress, { total_phases: '1', total_plans: '0', completed_phases: '0', completed_plans: '0' });
+  });
+
+  test('absentTotalsAreUnmeasured', () => {
+    for (const derived of [{}, { total_phases: null, total_plans: null }, { total_phases: undefined, total_plans: undefined }, { total_phases: '', total_plans: '' }]) {
+      const r = restoreWithDerivedTotals(derived);
+      assert.deepStrictEqual(r.postFm.progress, curatedProgress, `derived ${JSON.stringify(derived)} (absent/null/undefined/empty totals) must be unmeasured — curated stands`);
+    }
+  });
+
+  test('nonNumericTotalsDegradeToPreservation', () => {
+    for (const derived of [
+      { total_phases: 'abc', total_plans: 'abc' },
+      { total_phases: NaN, total_plans: NaN },
+      { total_phases: {}, total_plans: {} },
+      { total_phases: [], total_plans: [] },
+    ]) {
+      const r = restoreWithDerivedTotals(derived);
+      assert.deepStrictEqual(r.postFm.progress, curatedProgress, `hostile derived totals ${JSON.stringify(derived)} must degrade TOWARD preservation, never toward deletion`);
+    }
+  });
+
+  test('negativeTotalsAreNotAMeasurement', () => {
+    const r = restoreWithDerivedTotals({ total_phases: -1, total_plans: -1 });
+    assert.deepStrictEqual(r.postFm.progress, curatedProgress, 'a negative total is not a valid count — unmeasured — curated stands');
+  });
+
+  // Pinned mirror pair from the design's row 11/the existing matrix's row
+  // 10 — grouped here so the boundary (only both-zero is unmeasured) reads
+  // legibly against the coercion cases above.
+  test('oneNonZeroTotalCountsAsMeasuredEitherDirection', () => {
+    const r1 = restoreWithDerivedTotals({ total_phases: 1, total_plans: 0, completed_phases: 0, completed_plans: 0 });
+    assert.strictEqual(r1.mutated, false, 'total_phases:1, total_plans:0 must count as measured');
+    assert.deepStrictEqual(r1.postFm.progress, { total_phases: 1, total_plans: 0, completed_phases: 0, completed_plans: 0 });
+
+    const r2 = restoreWithDerivedTotals({ total_phases: 0, total_plans: 1, completed_phases: 0, completed_plans: 0 });
+    assert.strictEqual(r2.mutated, false, 'total_phases:0, total_plans:1 must count as measured (the mirror) — only both-zero is unmeasured');
+    assert.deepStrictEqual(r2.postFm.progress, { total_phases: 0, total_plans: 1, completed_phases: 0, completed_plans: 0 });
+  });
+});
+
+describe('ADR-3473 §8.6 matrix row 36: property — preservation never drops a curated key the derived block lacks', () => {
+  // Scoped to `progress`, the one preserve-always/progress-ratchet field
+  // this phase's centerpiece logic governs (this file's other property test,
+  // "#3468 matrix C3" above, already covers the generic preserve-when-
+  // unchanged dispatch as a property — a whitespace/empty-string curated
+  // value is deliberately NOT restored there, by long-standing design, so a
+  // property phrased over that generic field set would produce a false
+  // failure unrelated to this phase's change).
+  const progressCounterArb = fc.oneof(
+    fc.integer({ min: 0, max: 999 }),
+    fc.integer({ min: 0, max: 999 }).map(String),
+  );
+  const progressBlockArb = fc.record({
+    total_phases: progressCounterArb,
+    completed_phases: progressCounterArb,
+    total_plans: progressCounterArb,
+    completed_plans: progressCounterArb,
+    percent: progressCounterArb,
+  });
+
+  test('preservationNeverDropsACuratedKey', () => {
+    fc.assert(
+      fc.property(
+        fc.option(progressBlockArb, { nil: undefined }),
+        fc.option(progressBlockArb, { nil: undefined }),
+        fc.boolean(),
+        (curatedProgress, derivedProgress, resync) => {
+          const snapshot = curatedProgress !== undefined ? { progress: curatedProgress } : {};
+          const postFm = derivedProgress !== undefined ? { progress: derivedProgress } : {};
+          const tx = openStateTransaction({ snapshot, resync, bodyDeltas: neutralBodyDeltasForMatrix() });
+          const r = applyStatePreservation({ transaction: tx, postFm });
+
+          if (curatedProgress !== undefined && derivedProgress === undefined) {
+            if (!Object.prototype.hasOwnProperty.call(r.postFm, 'progress')) {
+              throw new Error(
+                `curated key 'progress' dropped: curated=${JSON.stringify(curatedProgress)} ` +
+                `derived=${JSON.stringify(derivedProgress)} resync=${resync} result=${JSON.stringify(r.postFm)}`,
+              );
+            }
+          }
+          return true;
+        },
+      ),
+      // Seeded and bounded per repo convention; replay data (the exact
+      // curated/derived/resync triple) is printed via the thrown Error
+      // above on any failure.
+      { seed: 3871, numRuns: 300 },
+    );
   });
 });

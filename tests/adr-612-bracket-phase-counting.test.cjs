@@ -1,5 +1,14 @@
 'use strict';
 
+// docs-guard-exempt: this file performs no filesystem read of any docs/ path.
+// Its only docs/ occurrence is the ADR-612 Decision 1 citation inside a line
+// comment further down; every read call here targets a tmpdir .planning
+// fixture. It trips Detector 3 because an odd prose backtick in the comment
+// block above that citation opens a span the template-literal heuristic reads
+// as a literal containing the citation. Registering it in the docs-guard lane
+// would run this suite on docs/ changes whose content it never reads, so the
+// marker is the correct side of that trade per this lint's own guidance.
+
 /**
  * PR-2 (#2761 / epic #612) — total_phases counts bracket phase headings.
  *
@@ -60,24 +69,13 @@ function writeProject(roadmap, convention, dirs = ['GSD.02-01-setup']) {
   // `state sync` short-circuits with no phase directories, leaving STATE.md
   // byte-unchanged — which is exactly how a mutation to the write-path counter
   // survives a test that reads `state json` afterwards. Give it real work.
-  // A dir spec is either `'name'` (a PLAN, its SUMMARY and a passing
-  // `*-VERIFICATION.md` — a COMPLETE phase, the shape every earlier fixture in
-  // this file wants) or `['name', false]` (a PLAN alone — INCOMPLETE). The
-  // numerator assertions at the end of this file need the mix: a fixture where
-  // every phase is complete cannot tell `completed_phases` apart from
-  // `total_phases`.
-  //
-  // UPDATED at the origin/next merge — #3186 (ADR-3180 §7.4) made completion
-  // DISK-STRICT: `isPhaseComplete` is now the single owner and it reads only
-  // the verification verdict, so a phase with a PLAN and its SUMMARY but no
-  // `*-VERIFICATION.md` is no longer complete anywhere ("a missing verdict is
-  // not a passing one"). That is upstream semantics, not a bracket regression
-  // — the LEGACY control fixtures in this file moved identically, because the
-  // predicate is convention-agnostic. The completion signal moves onto the
-  // verification file; the SUMMARY stays because the write path kept its own
-  // `summaryCount >= planCount` gate and because several assertions here read
-  // `total_plans`/`completed_plans` separately from the phase numerator.
-  // Written LAST so it is never older than the SUMMARY (#2348 staleness).
+  // #3186 made completion disk-strict: a PLAN and SUMMARY no longer imply a
+  // completed phase without a passing verification verdict. Keep these fixtures
+  // modeling the complete phases they modeled before that upstream change.
+  // A dir spec is either `'name'` (a PLAN, SUMMARY, and passing verification)
+  // or `['name', false]` (a PLAN alone — incomplete). The mixed fixtures need
+  // both shapes to distinguish completed_phases from total_phases.
+  // Write verification last so it cannot be stale relative to the summary.
   for (const spec of dirs) {
     const [d, complete = true] = Array.isArray(spec) ? spec : [spec, true];
     const dir = path.join(planning, 'phases', d);
@@ -86,7 +84,10 @@ function writeProject(roadmap, convention, dirs = ['GSD.02-01-setup']) {
     if (complete) {
       fs.writeFileSync(path.join(dir, '01-01-x-SUMMARY.md'), '# summary\n', 'utf-8');
       fs.writeFileSync(
-        path.join(dir, verificationNameFor(d)), '---\nstatus: passed\n---\n# Verification\n', 'utf-8');
+        path.join(dir, verificationNameFor(d)),
+        '---\nstatus: passed\n---\n# Verification\n',
+        'utf-8',
+      );
     }
   }
 }
@@ -172,53 +173,16 @@ function syncedPercent() {
   return parseInt(m[1], 10);
 }
 
-/**
- * The reason `state sync` gave for WITHHOLDING the Progress percent — the
- * companion observable to `syncedPercent()` above.
- *
- * ADDED at the origin/next merge. #3217 (ADR-3180 §7.6 rule 4) made
- * `cmdStateSync` refuse to write a percentage at all when the milestone's
- * phase-directory scope is not COMPLETE, pushing a `Progress: skipped — …`
- * entry into `changes` instead. Every version-LESS fixture in this file whose
- * STATE.md still pins `milestone: v2.0` is classification row 5 (a resolved
- * version with no heading to bind it to — see `classifyMilestoneWindow` in
- * roadmap-parser.cts), so it now withholds.
- *
- * On the WRITE path that is a convergence, not a regression: the LEGACY twin
- * of the same shape ALREADY withheld before this merge, through the older and
- * orthogonal #1761 `milestoneBounded` guard — `isMilestoneBounded`'s loose
- * bracket-prefix regex simply returned `bounded: true` on the bracket leg, so
- * the bracket leg alone kept emitting a percent. #3217 closes that asymmetry.
- *
- * It does NOT converge the READ path, and what it leaves behind there is
- * bracket-only: `state json` still reports a percent on these shapes under
- * bracket, while the legacy twin reports none (#1761 fires on the read path
- * too). The mechanism is upstream's own call-site asymmetry, not this
- * branch's — `cmdStateJson` calls `buildStateFrontmatter(body, cwd)` with no
- * `storedMilestone`, so its `listMilestonePhaseDirs` sees
- * `versionOverride: null` and classifies row 3 (COMPLETE), where
- * `cmdStateSync` passes the stored version and gets row 5. Reconciling those
- * two call sites belongs to whoever owns #3217; it is recorded here rather
- * than papered over. (Not the same thing as the `PIN (G1 LEGACY control)`
- * block below — that one is a VERSIONED fixture and a 999-icebox-token
- * divergence, a different mechanism entirely.)
- *
- * On these fixtures the write-path counter is therefore no longer observable
- * through a percentage — nothing computes one. Its coverage lives in the
- * VERSIONED fixtures throughout this file, which still assert `syncedPercent`.
- */
+/** The explicit reason `state sync` withheld progress for an unsafe scope. */
 function syncSkipReason() {
   const r = runGsdTools(['state', 'sync'], tmpDir);
   assert.ok(r.success, `state sync failed: ${r.error}`);
   const changes = JSON.parse(r.output).changes || [];
-  const skipped = changes.find(c => /^Progress: skipped/.test(c));
-  assert.ok(skipped, `state sync must have recorded why Progress was skipped; got: ${JSON.stringify(changes)}`);
-  // The `changes` entry above is the discriminator for "withheld"; this only
-  // adds that the body Progress line still reads the fixture's starting value,
-  // so no percent was rendered into STATE.md behind the skip.
+  const skipped = changes.find((change) => /^Progress: skipped/.test(change));
+  assert.ok(skipped, `state sync must record why Progress was skipped; got: ${JSON.stringify(changes)}`);
   const raw = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
   assert.match(raw, /^\*\*Progress:\*\* \[░{10}\] 0%$/m,
-    'no percent may be rendered into the body when sync says it skipped');
+    'no percent may be rendered when sync says it skipped');
   return skipped;
 }
 
@@ -555,42 +519,13 @@ ${heading}
   });
 
   test('a milestone that does NOT match STATE is not scoped in', () => {
-    // Two GENUINE milestone sections (GSD.03, GSD.04), neither matching
-    // STATE's v2.0 — the #3354/#3480 milestoned-but-unbounded shape upstream
-    // (already in `next` ahead of this branch's merge) now owns explicitly.
-    //
-    // The original one-section fixture here (`## [GSD.03] Later milestone`
-    // with a single `### [GSD.03] 09: Not this milestone` phase) pinned 0,
-    // and that 0 happened to survive by ACCIDENT, not by the scoping this
-    // test claims to exercise: `hasMilestoneSectioning` requires >=2 headings
-    // whose own text carries milestone vocabulary (a version token, ✅/📋/🚧,
-    // or the word "Milestone") to call a ROADMAP sectioned, and this file's
-    // `isPhaseHeading` recognizes only the legacy `Phase N:` text form — so a
-    // bracket-numeric phase heading whose title happens to contain the word
-    // "milestone" (as "Not this milestone" did) gets miscounted as a SECOND
-    // milestone heading. With that miscount removed (phase title carrying no
-    // vocabulary), the single real GSD.03 section makes hasMilestoneSectioning
-    // false, `safeToUseRoadmapCount` true, and total_phases becomes 1 — the
-    // GSD.03 phase leaking into v2.0's count, the opposite of "not scoped
-    // in". The old 0 was never proof of correct scoping; it was proof the
-    // fixture's own prose happened to contain "milestone". Verified directly:
-    // with the collision removed, this file's exact prior fixture reads 1,
-    // not 0 (a real, pre-existing, upstream-owned `hasMilestoneSectioning`
-    // gap — it only guards >=2-section conflation, not a single non-matching
-    // section leaking through the whole-document count. Not introduced by
-    // #3480 or by this branch; out of scope here, flagged for upstream).
-    //
-    // Two real sections sidesteps that gap entirely and exercises the
-    // contract this test actually intends: STATE's milestone token is absent
-    // from every heading, the ROADMAP is genuinely sectioned (2 real
-    // milestone headings, unrelated to phase-title wording), so neither the
-    // whole-document count NOR the on-disk directory count is an
-    // authoritative total for v2.0 — upstream withholds rather than guessing
-    // (preserves a stored total_phases if one exists, else omits the key).
-    // This fixture stores none, so the key is omitted and `state json`
-    // reports it as null (matches the upstream twin:
-    // tests/state-document.test.cjs "#3354 with nothing stored, the key is
-    // omitted rather than written from the dir count").
+    // Use two genuine milestone sections, neither matching STATE's v2.0. This
+    // removes the old fixture's accidental dependence on the word "milestone"
+    // appearing in a bracket phase title. Upstream #3354/#3480, strengthened by
+    // #3642 for the single-section sibling, classifies this as milestoned but
+    // unbounded: neither the whole-document count nor the on-disk directory
+    // count is authoritative. With no stored total, `state json` reports null
+    // rather than guessing.
     writeProject(`# Roadmap
 
 ## [GSD.03] Later milestone
@@ -955,33 +890,16 @@ describe('#612 PR-2: the disk-side filter scopes bracket dirs — all five numbe
     // divergence is pre-existing and untouched would go stale silently the first
     // time a sibling slice widens the de-dup key.
     //
-    // UPDATED at the origin/next merge — this test fired exactly as it was
-    // designed to. It used to pin ONE plan: buildStateFrontmatter's #2445
-    // de-dup key captured only a directory's LEADING integer, so `02-01-one`,
-    // `02-02-two` and `02-03-three` all keyed to `2` and two of the three were
-    // dropped before they were ever counted (measured identical on the base
-    // build d04592de and on the pre-merge HEAD). Upstream #3185 (ADR-3180
-    // Decision 1) replaced that local leading-digits regex with the canonical
-    // `phaseKeyFromDir`, which keys them `02-01`/`02-02`/`02-03` — three
-    // distinct phases, three plans. The superseded comment's own words: "If the
-    // de-dup key is ever widened, total_plans goes to 3 and this fails — which
-    // is the whole point."
-    //
-    // Nothing on THIS branch moved it: the key is the same canonical call
-    // upstream makes, with only #612's already-resolved convention threaded in.
-    // The M-NN spelling now reads the same as its flat-legacy twin below, which
-    // is the direction #3185 intended.
+    // Upstream #3185 replaced the leading-integer de-dup key with canonical
+    // phaseKeyFromDir ownership. The M-NN directories now key as 02-01,
+    // 02-02, and 02-03, so all three distinct phases and plans survive.
     writeProject(ONE_MILESTONE_MNN, undefined, ONE_MNN_DIRS);
     const mnn = readProgress();
     assert.equal(mnn[0], 3, 'M-NN: total_phases still tracks the ROADMAP');
     assert.equal(mnn[2], 3, 'M-NN: all three dirs survive the de-dup after #3185');
-    // …and the flat-legacy twin reads the same, which is why it is the parity
-    // oracle for the bracket assertions above. Measured in a FRESH project:
-    // `writeProject` only ADDS phase directories, and now that the M-NN dirs no
-    // longer collapse to one key (#3185) the two fixtures' directories would
-    // otherwise stack into a six-phase repo. The stacking was invisible before
-    // only because the M-NN survivor and a legacy dir happened to share the
-    // leading-integer key the old de-dup used.
+    // Build the flat-legacy twin in a fresh project. Reusing this project would
+    // stack both directory spellings now that the M-NN entries no longer
+    // collapse under the old leading-integer key.
     cleanup(tmpDir);
     tmpDir = createTempProject('adr-612-fivenum-mnn-twin-');
     writeProject(ONE_MILESTONE_LEGACY, undefined, ONE_LEGACY_DIRS);
@@ -1463,9 +1381,8 @@ describe('#612 PR-2 B1 round-2: a same-milestone continuation heading is not a b
     assert.equal(readTotal(), 2, 'pinned 1 before this fix');
     poisonTotalPhases();
     assert.equal(syncedTotal(), 2);
-    // UPDATED at the origin/next merge — was `syncedPercent() === 50`. This
-    // fixture's milestone is fully version-LESS while STATE.md pins v2.0, so
-    // #3217 withholds the sync percentage (row 5). See syncSkipReason's block.
+    // The roadmap is version-less while STATE pins v2.0, so upstream #3217
+    // withholds the percentage rather than treating the scope as complete.
     assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
   });
 
@@ -1568,11 +1485,14 @@ describe('#612 PR-2 B2 round-2: the bracket boundary is a CONTENT discriminator,
   beforeEach(() => { tmpDir = createTempProject('adr-612-b2r2-'); });
   afterEach(() => { cleanup(tmpDir); });
 
-  test('RED (repro2 case C): all milestones ###, all phases ####, version-less — total 2, TRUTHFUL percent 100', () => {
+  test('RED (repro2 case C): all milestones ###, all phases ####, version-less — total 2, completion scoped, percent withheld', () => {
     // GSD.02 (asserted milestone) has 2 phases, both complete. isMilestoneBounded
     // already returns true at #{1,3} (state.cts, unaffected by this fix), so the
-    // percent this fixture writes is directly observable — pinned 75 (4 dirs,
-    // 3 complete, whole-disk fallback) before this fix.
+    // phase totals remain directly observable — pinned 4/3 (whole-disk
+    // fallback) before this fix. Upstream #3573 now threads the asserted v2.0
+    // milestone into truthful progress scoping. Because this deliberately
+    // version-less roadmap cannot resolve that versioned window, percentage
+    // is withheld instead of manufacturing 100 from an UNSCOPED input.
     const dirs = [
       ['GSD.01-01-old', true],
       ['GSD.02-01-one', true],
@@ -1605,26 +1525,10 @@ describe('#612 PR-2 B2 round-2: the bracket boundary is a CONTENT discriminator,
     const progress = JSON.parse(r.output).progress;
     assert.equal(progress?.total_phases, 2, 'pinned 4 before this fix (whole-doc fallback)');
     assert.equal(progress?.completed_phases, 2, 'both real GSD.02 phases are complete — scoping, not the whole disk, is what this fixture pins');
-    // UPDATED at the round-11 origin/next rebase: `percent` is now WITHHELD
-    // (the key is omitted) rather than 100. #3573 (origin/next) newly threads
-    // STATE's stored `milestone: v2.0` into THIS `state json` call as
-    // `getMilestonePhaseFilter`'s `versionOverride` (previously always
-    // `undefined` on this read surface). This fixture's ROADMAP carries no
-    // version tokens anywhere (`hasVersionedMilestonesGlobal` is false), so
-    // `sliceMilestoneWindow('v2.0')` cannot find a heading and the scope
-    // classifier's own row 5 (`versionResolved && !headingFound =>
-    // SCOPE.UNSCOPED`) reports UNSCOPED — even though the CONTENT it actually
-    // used is correct (extractCurrentMilestoneScoped's bracket-id-scoped
-    // GSD.02 window; `total_phases`/`completed_phases` above prove it).
-    // `computeProgressPercent`'s rule-4 gate then withholds the percentage
-    // for any non-COMPLETE scope. That row-5 rule is NOT touched by this
-    // branch and is load-bearing for OTHER version-less-document pins in this
-    // file (repro5, F9, G6, B1 round-2, round-4 Major 1, round-5 Minor 1 all
-    // rely on the identical UNSCOPED answer for a genuinely-missing version)
-    // — narrowing it broke seven of them in testing. Disclosed here, not
-    // fixed: the scoping claim this test exists to pin (2 real phases, not
-    // the whole-disk 4) is unaffected; only the `percent` observation channel
-    // moved, upstream of any decision taken here.
+    // Upstream #3573 threads STATE's stored `milestone: v2.0` into this read.
+    // A version-less ROADMAP cannot resolve that version, so the scope remains
+    // UNSCOPED and the percent is withheld even though the bracket-scoped
+    // totals above are correct.
     assert.equal(progress?.percent, undefined, 'percent is withheld (upstream #3573 x version-less-bracket-document interaction) — disclosed, not a scoping regression');
   });
 
@@ -1810,28 +1714,13 @@ Docs for authors:
     );
   });
 
-  test('PIN (repro12 LEGACY control): a fenced version-bearing heading in the preamble is UNCHANGED (pre-existing, out of scope)', () => {
-    // Disclosed, not fixed: the LEGACY (non-bracket) `anyMilestonePattern`
-    // raw-match path shares the same fence-blindness hazard and stays
-    // byte-identical — fixing it is out of scope for this bracket-only fix
-    // (round-2 review's own minimal-fix note). This pin exists so a future
-    // reviewer does not file the pre-existing legacy gap as a NEW regression.
-    //
-    // UPDATED at the round-11 origin/next rebase — 4 before it, 2 after, and
-    // the move is upstream's (#3573), not this branch's. #3573 threads
-    // STATE's stored `milestone:` value into `state json`'s
-    // `buildStateFrontmatter` call (previously always `undefined` on that
-    // read surface). This fixture's STATE.md asserts `milestone: v2.0`, which
-    // now flows into `getMilestonePhaseFilter` as `versionOverride` and is
-    // located via `sliceMilestoneWindow` — a DIFFERENT, fence-aware heading
-    // matcher than the raw `anyMilestonePattern` scan this pin was disclosing
-    // as blind. `sliceMilestoneWindow` correctly skips the fenced `v9.0`
-    // example and scopes to the real `## Milestone v2.0: Current` section (2
-    // phases), so this specific fixture no longer exercises the fence-blind
-    // path at all — it is scoped, not blind, on this call surface. The
-    // underlying `anyMilestonePattern` gap is UNCHANGED (still disclosed,
-    // still out of scope for this branch); only this fixture's route to it
-    // moved, upstream of any decision taken here.
+  test('UPSTREAM COMPOSITION (repro12 LEGACY control): #3573 scopes the fenced-example fixture to total 2', () => {
+    // This bracket-only fix still does not widen the LEGACY
+    // `anyMilestonePattern` raw-match path. Upstream's newer state derivation,
+    // however, routes this read through fence-aware `sliceMilestoneWindow`
+    // using STATE's stored milestone. The fixture therefore no longer reaches
+    // the blind path and must pin the improved scoped result, not the old
+    // whole-document total of 4.
     writeProject(`# Roadmap
 
 Authoring guide:
@@ -2169,8 +2058,10 @@ Phases are listed under their milestone.
 // fenced VERSION-BEARING example heading in a bracket repo's preamble
 // (ADR-612's own docs illustrate the LEGACY heading shape this way, inside a
 // fenced authoring-guide block) was still textually the earliest match for
-// that raw regex, winning the min() and un-suppressing a wrong persisted 75%
-// that base correctly suppressed.
+// that raw regex, winning the min() and formerly un-suppressing a wrong
+// persisted 75%. On the rebased base, #3217 keeps the unsafe percentage
+// suppressed explicitly when the version-less milestone cannot yield a
+// COMPLETE version override.
 describe('#612 PR-2 Major 1 round-3: preambleCutoff\'s version/emoji half is fence-aware on the bracket branch', () => {
   beforeEach(() => { tmpDir = createTempProject('adr-612-m1r3-'); });
   afterEach(() => { cleanup(tmpDir); });
@@ -2180,7 +2071,7 @@ describe('#612 PR-2 Major 1 round-3: preambleCutoff\'s version/emoji half is fen
     ['GSD.03-01-x', true], ['GSD.03-02-y', true],
   ];
 
-  test('RED case C1 (rv-attack3c): a fenced VERSION-bearing example heading in a bracket repo\'s preamble — 2/1/50, not 4/3/75', () => {
+  test('RED case C1 (rv-attack3c): a fenced VERSION-bearing example does not inflate the total; unsafe percent stays withheld', () => {
     writeProject(`# Roadmap
 
 Authoring guide — a milestone heading looks like:
@@ -2201,12 +2092,8 @@ Authoring guide — a milestone heading looks like:
 `, 'bracket', D);
     assert.equal(readTotal(), 2, 'pinned 4 before this fix — the fenced VERSION heading won the min() and swallowed everything before it into the preamble unstripped');
     poisonTotalPhases();
-    // UPDATED at the origin/next merge — was `syncedPercent() === 50`. Once
-    // the fenced example is stripped this roadmap is version-LESS while
-    // STATE.md pins v2.0, so #3217 withholds (row 5). The RED's intent is
-    // unchanged and in fact strengthened: the wrong 75 must not resurface,
-    // and now NO percent is written at all. See syncSkipReason's block.
-    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
+    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/,
+      'upstream must keep the unsafe percentage withheld rather than resurface the old 75%');
   });
 
   test('PIN case C2: a fenced BRACKET-shaped heading in the same position (round-2\'s own fix target) stays unchanged at 2/1/50', () => {
@@ -2638,9 +2525,8 @@ Authoring guide:
     assert.equal(readTotal(), 2, 'pinned 3 before this fix');
     poisonTotalPhasesR4M1();
     assert.equal(syncedTotal(), 2);
-    // UPDATED at the origin/next merge — was `syncedPercent() === 50`. This
-    // fixture is version-LESS by construction (that is what F9 is about) while
-    // STATE.md pins v2.0, so #3217 withholds (row 5). See syncSkipReason.
+    // The roadmap is version-less while STATE pins v2.0, so upstream #3217
+    // withholds the percentage rather than treating the scope as complete.
     assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
   });
 
@@ -2764,22 +2650,8 @@ describe('#612 PR-2 round-5 Blocker 1: countRoadmapPhaseHeadings restores the br
 ### Phase 02: Two
 **Goal:** b
 `, undefined, [['00-bootstrap', true], ['01-one', true]]);
-    // UPDATED at the origin/next merge — 3 before it, 2 after, and the move is
-    // upstream's, not this branch's. #3185 (ADR-3180 Decision 1) replaced
-    // buildStateFrontmatter's LEGACY heading counter's local `/^999\b/` literal
-    // with the canonical `isSentinelPhaseId`, whose leading-int rule reads
-    // `Phase 00` as sentinel milestone 0 and drops it from the denominator.
-    // The control's claim is unchanged in substance: this document is
-    // unaffected BY THE BRACKET BRANCH — countRoadmapPhaseHeadings' bracket leg
-    // never runs here, and its bare-token rules are untouched.
-    //
-    // NOTE for review: bracket and legacy now DISAGREE on this document (the
-    // RED case above reads 3 under `bracket`, this reads 2 under legacy),
-    // because the bracket leg's `/^0\b/` carve-out is `bracketId`-gated and a
-    // legacy-shaped heading in a bracket repo carries no bracket id. That is a
-    // direct consequence of upstream moving the legacy leg, not of a decision
-    // taken here; the round-6 Blocker 1 fix this control belongs to is
-    // unaffected either way.
+    // Upstream #3185 canonically treats legacy 00 as a sentinel; the bracket
+    // branch deliberately remains narrower, which is the distinction above.
     assert.equal(readTotal(), 2);
   });
 
@@ -2984,7 +2856,7 @@ describe('#612 PR-2 round-5 Minor 1: bracket-fallback selector skips indented he
   beforeEach(() => { tmpDir = createTempProject('adr-612-r5min1-'); });
   afterEach(() => { cleanup(tmpDir); });
 
-  test('RED (G6): a 2-space-indented, version-less bracket milestone heading no longer leaks the NEXT milestone\'s phases in — 2/1/50, not 3/2/67', () => {
+  test('RED (G6): a 2-space-indented, version-less bracket milestone heading no longer leaks the NEXT milestone\'s phases in — total 2, not 3', () => {
     writeProject(`# Roadmap
 
   ## [GSD.02] Foundation
@@ -3001,15 +2873,11 @@ describe('#612 PR-2 round-5 Minor 1: bracket-fallback selector skips indented he
 **Goal:** c
 `, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false], ['GSD.03-01-later-one', true]]);
     assert.equal(readTotal(), 2, 'pinned 3 before this fix — GSD.03\'s phase leaked into scope');
-    // UPDATED at the origin/next merge — was `syncedPercent() === 50`. Both
-    // milestones here are version-LESS while STATE.md pins v2.0, so #3217
-    // withholds the sync percentage (row 5). The read assertion above is what
-    // carries this RED; see syncSkipReason's block for why the write-path
-    // percent is no longer computable on this shape.
-    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
+    assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/,
+      'upstream must withhold the unsafe version-less percentage');
   });
 
-  test('PIN (G6c UNINDENTED control): the identical document with no leading indent is unaffected — 2/1/50', () => {
+  test('PIN (G6c UNINDENTED control): the identical document with no leading indent is unaffected — total 2', () => {
     writeProject(`# Roadmap
 
 ## [GSD.02] Foundation
@@ -3026,10 +2894,6 @@ describe('#612 PR-2 round-5 Minor 1: bracket-fallback selector skips indented he
 **Goal:** c
 `, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false], ['GSD.03-01-later-one', true]]);
     assert.equal(readTotal(), 2);
-    // UPDATED at the origin/next merge — was `syncedPercent() === 50`, for the
-    // same #3217 row-5 reason as its G6 twin above. The control's job is that
-    // the indented and unindented documents behave IDENTICALLY, and they still
-    // do — both now withhold.
     assert.match(syncSkipReason(), /scope is "unscoped", not COMPLETE \(#3217\)/);
   });
 
@@ -3112,7 +2976,7 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
     assert.equal(syncedPercent(), 67, 'pinned 100 before this fix — a milestone with an unstarted phase 02 read as shipped');
   });
 
-  test('PIN (T0L LEGACY control): the identical document under the legacy convention is unaffected', () => {
+  test('PIN (T0L LEGACY control): the identical document follows upstream legacy sentinel semantics', () => {
     writeProject(`# Roadmap
 
 ## Milestone v2.0: Foundation
@@ -3126,11 +2990,7 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
 ### Phase 02: Two
 **Goal:** b
 `, undefined, [['0-bootstrap', true], ['01-one', true]]);
-    // UPDATED at the origin/next merge — see the G3L control above for the full
-    // reason. #3185 moved the LEGACY heading counter onto `isSentinelPhaseId`,
-    // which drops `Phase 0` from the denominator; the bracket leg this test
-    // controls for is untouched.
-    assert.equal(readTotal(), 2);
+    assert.equal(readTotal(), 2, 'upstream #3185 canonically excludes legacy phase 0');
   });
 
   test('RED (T05): a legacy `### Phase 0.5:` heading in a bracket repo — same defect, second spelling — 3/2/67, not 2/2/100', () => {
@@ -3153,7 +3013,7 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
     assert.equal(syncedPercent(), 67, 'pinned 100 before this fix');
   });
 
-  test('PIN (T05L LEGACY control): the identical document under the legacy convention is unaffected', () => {
+  test('PIN (T05L LEGACY control): the identical document follows upstream legacy sentinel semantics', () => {
     writeProject(`# Roadmap
 
 ## Milestone v2.0: Foundation
@@ -3167,13 +3027,7 @@ describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only 
 ### Phase 02: Two
 **Goal:** b
 `, undefined, [['0.5-bootstrap', true], ['01-one', true]]);
-    // UPDATED at the origin/next merge — see the G3L control above. #3185's
-    // `isSentinelPhaseId` also drops `Phase 0.5` here: its `/^0*(\d+)/` rule
-    // backtracks to the bare `0` and reads sentinel milestone 0. (Upstream's own
-    // roadmap-parser comment names this exact hazard for the #2554 decimal ids —
-    // which is why the BRACKET leg keeps the narrower `/^0\b/` that does not
-    // match `0.5`, and why this document reads 3 under `bracket` and 2 here.)
-    assert.equal(readTotal(), 2);
+    assert.equal(readTotal(), 2, 'upstream #3185 canonically excludes legacy phase 0.5');
   });
 
   test('PIN (B0, bracket-spelled `0` token — Minor 1, NOT fixed this round): counter/filter disagreement is base-parity, deliberately unchanged', () => {
@@ -3319,6 +3173,48 @@ describe('#2761 round-11 BLOCKER: cmdStateUpdateProgress computes+writes a perce
     assert.ok(m, `state update-progress must have rendered a Progress percent into STATE.md; got:\n${raw}`);
     assert.strictEqual(parseInt(m[1], 10), parsed.percent,
       'the percent update-progress reports and the one it writes into the body must agree');
+  });
+
+  test('#2761 round-12 GAP: the enumerator .value THIS call site feeds (not the separately-scoped ' +
+    'percent) gates the #3233 zero-plans no-op — a decoy outside the bracket window must not count', () => {
+    // Round-11's PIN test above (and its own inline comment at state.cts
+    // ~:965) established that `cmdStateUpdateProgress`'s reported/written
+    // percent is IMMUNE to this call site's convention threading — it comes
+    // from computeUpdateProgressPreview -> buildStateFrontmatter, a separate,
+    // independently-scoped derivation. Mutation testing on the round-11
+    // response confirmed that empirically: reverting this call site's thread
+    // left the PIN test above still green.
+    //
+    // What THIS call site's enumerated `.value` actually feeds is
+    // `totalPlans` (summed across the enumerated dirs, just below) and the
+    // #3233 zero-plans no-op gate built on it — the ONLY place that value has
+    // any observable effect on this command's output. This fixture pins
+    // exactly that gate: BRACKET_ROADMAP declares milestone v2.0's phases
+    // (01/05/06 under [GSD.02]) but none of their directories are scaffolded
+    // on disk — zero plans exist for this milestone's real window either way.
+    // A directory that plainly does not belong to it ('not-a-declared-phase':
+    // no bracket tag, no phase token at all) sits alongside it WITH a plan.
+    //
+    // Correctly bracket-scoped, the decoy is excluded (it matches no
+    // GSD.02-qualified id) and totalPlans stays 0 -> the #3233 no-op fires.
+    // Degraded to the pass-all legacy reading (BRACKET_ROADMAP's headings are
+    // invisible under a non-bracket read — proven above by "a NON-bracket
+    // repo counts neither form of the same roadmap" — so
+    // `milestonePhaseNums` comes back empty and the filter admits
+    // everything), the decoy is swept in and totalPlans flips nonzero -> the
+    // no-op never fires and the command proceeds past it.
+    writeProject(BRACKET_ROADMAP, 'bracket', [['not-a-declared-phase', false]]);
+
+    const r = runGsdTools(['state', 'update-progress'], tmpDir);
+    assert.ok(r.success, `state update-progress failed: ${r.error}`);
+    const parsed = JSON.parse(r.output);
+
+    assert.strictEqual(parsed.updated, false,
+      'a decoy directory outside the bracket-declared milestone window must never contribute to ' +
+      'totalPlans for that milestone — got: ' + JSON.stringify(parsed));
+    assert.match(String(parsed.reason ?? ''), /no plans found/,
+      'must be the #3233 zero-plans no-op specifically (proves the enumerator excluded the decoy), ' +
+      'not some other withhold reason — got: ' + JSON.stringify(parsed));
   });
 
   test('CONTROL: the identical shape under the legacy (non-bracket) convention behaves the same way', () => {

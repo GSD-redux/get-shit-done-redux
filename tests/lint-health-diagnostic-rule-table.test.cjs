@@ -24,6 +24,7 @@ const {
   PERMANENTLY_INERT_CODES,
   STATE_VALIDATE_TEST_FILE,
   STATE_VALIDATE_CODES,
+  discoverStateValidateCodes,
 } = guard;
 
 const FAKE_SEVERITY = Object.freeze({ ERROR: 'error', WARNING: 'warning', INFO: 'info' });
@@ -263,14 +264,66 @@ describe('checkFixtureProofInvariant (S0NN pass, #3310)', () => {
     assert.deepEqual(uncovered, []);
   });
 
-  test('all 7 real STATE_VALIDATE_CODES (S001-S007) are fixture-covered against the real tests/state.test.cjs', () => {
-    assert.ok(fs.existsSync(STATE_VALIDATE_TEST_FILE), 'tests/state.test.cjs must exist');
-    assert.deepEqual(STATE_VALIDATE_CODES, ['S001', 'S002', 'S003', 'S004', 'S005', 'S006', 'S007']);
+  test('discoverStateValidateCodes reads the code set off stateDiagnostic() call sites', () => {
+    // #3696: the guard's S0NN list used to be a frozen literal, and this test
+    // used to be a second frozen literal mirroring it. Two copies of an
+    // allowlist prove only that they agree with each other — which is exactly
+    // what let S008/S009 be added while the guard reported a green
+    // "7 code(s), all fixture-covered" (ADR-3180 Decision 4(a): a zero it did
+    // not earn). The behaviour under test is now the DISCOVERY RULE, driven
+    // against fixture source text rather than the real module.
+    const fixture = [
+      "warnings.push(stateDiagnostic('S002', SEVERITY.WARNING, 'a', 'b'));",
+      'warnings.push(stateDiagnostic(',
+      "  'S001',",
+      '  SEVERITY.ERROR,',
+      '));',
+      'warnings.push(stateDiagnostic(`S002`, SEVERITY.WARNING, "dup", "b"));',
+      "// stateDiagnostic('S404', ...) in a comment still counts — this is a",
+      '// regex guard, and over-inclusion only ever demands MORE fixture cover.',
+      // Review round 2: a space before `(` must not drop the call site. The
+      // fail-closed check only fires on a FULLY empty result, so a PARTIAL
+      // miss escaped the fixture-proof check silently.
+      "warnings.push(stateDiagnostic ('S010', SEVERITY.WARNING, 'spaced', 'b'));",
+    ].join('\n');
+
+    assert.deepEqual(
+      discoverStateValidateCodes(fixture, 'fixture'),
+      ['S001', 'S002', 'S010', 'S404'],
+      'codes are deduplicated and sorted, across quoting styles, line breaks, and a space before the paren',
+    );
+  });
+
+  test('discoverStateValidateCodes fails closed when the call shape changes', () => {
+    // The branch that matters. If stateDiagnostic() is renamed, the honest
+    // answer is "I can no longer see the codes", never "there are none, and they
+    // are all covered".
+    assert.throws(
+      () => discoverStateValidateCodes('renamedHelper("S001", SEVERITY.WARNING);', 'fixture'),
+      (err) => /found no stateDiagnostic\(\) call sites in fixture/.test(String(err.message)),
+      'an unrecognised call shape must raise, not return []',
+    );
+  });
+
+  test('every code cmdStateValidate can emit is fixture-covered against the real state test file', () => {
+    assert.ok(fs.existsSync(STATE_VALIDATE_TEST_FILE), 'the state test file must exist');
+    assert.ok(STATE_VALIDATE_CODES.length > 0, 'the real discovery pass must find at least one code');
 
     const rules = STATE_VALIDATE_CODES.map((code) => ({ code }));
     const { uncovered } = checkFixtureProofInvariant(rules, [STATE_VALIDATE_TEST_FILE], new Map());
 
-    assert.deepEqual(uncovered, []);
+    assert.deepEqual(uncovered, [], `uncovered S0NN codes: ${uncovered.join(', ')}`);
+  });
+
+  test('the fixture-proof pass still fails on a code with no test (the guard can actually fail)', () => {
+    // A guard nobody has watched fail is a guard nobody knows works.
+    const { uncovered } = checkFixtureProofInvariant(
+      [...STATE_VALIDATE_CODES.map((code) => ({ code })), { code: 'S999' }],
+      [STATE_VALIDATE_TEST_FILE],
+      new Map(),
+    );
+
+    assert.deepEqual(uncovered, ['S999']);
   });
 });
 

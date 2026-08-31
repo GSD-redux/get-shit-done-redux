@@ -4,9 +4,7 @@ Skip this step entirely if NOT `$DISCUSS_MODE`.
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► DISCUSSING QUICK TASK
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► DISCUSSING QUICK TASK
 
 ◆ Surfacing gray areas for: ${DESCRIPTION}
 ```

@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/TESTING-SUITES.md is cited only in a placement-note comment; never read.
 'use strict';
 
 /**
@@ -48,7 +49,7 @@ describe('bug #2684: milestone.complete forwards version to phases.archive', () 
     );
     fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete should succeed, got error: ${result.error}`);
     assert.ok(
       !result.error || !result.error.includes('version required'),
@@ -66,7 +67,7 @@ describe('bug #2684: milestone.complete forwards version to phases.archive', () 
     // the guard, so give Phase 1 a real directory so the scan is satisfied.
     fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
 
-    const result = runSdkQuery(['milestone.complete', 'v2.5'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v2.5', '--confirm'], tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
     assert.strictEqual(result.data.version, 'v2.5');
   });
@@ -81,7 +82,7 @@ describe('bug #2684: milestone.complete forwards version to phases.archive', () 
     fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary');
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-phases'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-phases', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete --archive-phases failed: ${result.error}`);
     assert.strictEqual(result.data.version, 'v1.0');
     assert.ok(result.data.archived.phases === true, 'phases should be archived');
@@ -451,6 +452,13 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', name), { recursive: true });
   }
 
+  // #3884 (ADR-3473 §8.4): `--json` was never a real flag for `init
+  // new-milestone` — `init` subcommands always emit a JSON bundle regardless
+  // of any flag (the machine-readable-output flag is `--raw`, documented at
+  // docs/CLI-TOOLS.md:30, not `--json`). Under the pre-#3884 permissive
+  // parser the unrecognized token was silently dropped and the assertions
+  // below never actually depended on it; the strict parser now rejects it.
+  // Removed across this describe block's four call sites.
   test('init.new-milestone counts CK-NN-name dirs against numeric `Phase N:` headings', () => {
     writeConfig(tmpDir, { project_code: 'CK' });
     writeState(tmpDir, 'v1.0.0');
@@ -463,7 +471,7 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     ensurePhaseDir(tmpDir, 'CK-01-discovery');
     ensurePhaseDir(tmpDir, 'CK-02-build');
 
-    const r = runGsdTools(['init', 'new-milestone', '--json'], tmpDir);
+    const r = runGsdTools(['init', 'new-milestone'], tmpDir);
     assert.ok(r.success, `init new-milestone failed: ${r.error || r.output}`);
     const payload = JSON.parse(r.output);
     assert.strictEqual(payload.phase_dir_count, 2,
@@ -479,7 +487,7 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     ].join('\n'));
     ensurePhaseDir(tmpDir, '01-first');
 
-    const r = runGsdTools(['init', 'new-milestone', '--json'], tmpDir);
+    const r = runGsdTools(['init', 'new-milestone'], tmpDir);
     assert.ok(r.success);
     assert.strictEqual(JSON.parse(r.output).phase_dir_count, 1);
   });
@@ -494,7 +502,7 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     ].join('\n'));
     ensurePhaseDir(tmpDir, 'PROJ-42');
 
-    const r = runGsdTools(['init', 'new-milestone', '--json'], tmpDir);
+    const r = runGsdTools(['init', 'new-milestone'], tmpDir);
     assert.ok(r.success);
     assert.strictEqual(JSON.parse(r.output).phase_dir_count, 1,
       'PROJ-42 directory must still match Phase PROJ-42: via the custom-ID path');
@@ -512,7 +520,7 @@ describe('bug #3600: milestone phase filter understands project-code-prefixed di
     ensurePhaseDir(tmpDir, 'CK-99-backlog');
     ensurePhaseDir(tmpDir, 'CK-100-future');
 
-    const r = runGsdTools(['init', 'new-milestone', '--json'], tmpDir);
+    const r = runGsdTools(['init', 'new-milestone'], tmpDir);
     assert.ok(r.success);
     assert.strictEqual(JSON.parse(r.output).phase_dir_count, 1,
       'only CK-01-first should match Phase 1; CK-99 and CK-100 must be excluded');
@@ -572,7 +580,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     });
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(1));
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     assert.strictEqual(result.data.archived.quick, false, 'archived.quick must be false when --archive-quick is absent');
     assert.ok(fs.existsSync(quickDir), 'quick task directory must remain in place');
@@ -593,7 +601,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     for (const name of names) writeQuickTaskDir(tmpDir, name);
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), quickTasksStateWithRows(3));
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete --archive-quick failed: ${result.error}`);
     assert.strictEqual(result.data.archived.quick, true);
 
@@ -623,7 +631,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
   test('noOpsWhenQuickDirectoryAbsent', () => {
     setupQuickArchiveRoadmap(tmpDir);
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     assert.strictEqual(result.data.archived.quick, false);
     assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick')));
@@ -633,7 +641,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     setupQuickArchiveRoadmap(tmpDir);
     fs.mkdirSync(path.join(tmpDir, '.planning', 'quick'), { recursive: true });
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     assert.strictEqual(result.data.archived.quick, false, 'boundary 0: an empty quick dir must not count as archived');
     assert.ok(
@@ -646,7 +654,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     setupQuickArchiveRoadmap(tmpDir);
     writeQuickTaskDir(tmpDir, '2026-02-01-only-one');
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     assert.strictEqual(result.data.archived.quick, true, 'boundary 1: a single quick task dir must archive');
     assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-02-01-only-one')));
@@ -657,7 +665,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     writeQuickTaskDir(tmpDir, '2026-02-01-first');
     writeQuickTaskDir(tmpDir, '2026-02-02-second');
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     assert.strictEqual(result.data.archived.quick, true, 'boundary 2: multiple quick task dirs must archive');
     const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
@@ -670,7 +678,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     writeQuickTaskDir(tmpDir, '2026-03-01-no-section');
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# STATE\n\n### Blockers/Concerns\nNone\n');
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete must succeed even without a Quick Tasks Completed section: ${result.error}`);
     assert.strictEqual(result.data.archived.quick, true);
     assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', '2026-03-01-no-section')));
@@ -701,7 +709,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     ].join('\n');
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), nonCanonicalState);
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete must succeed even when the reset is refused: ${result.error}`);
     // The quick directories still move — only the STATE.md table reset is refused.
     assert.strictEqual(result.data.archived.quick, true);
@@ -733,7 +741,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     fs.mkdirSync(path.join(archiveDir, name), { recursive: true });
     fs.writeFileSync(path.join(archiveDir, name, 'existing-marker.txt'), 'prior run\n');
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     assert.ok(fs.existsSync(path.join(archiveDir, name, 'existing-marker.txt')), 'prior archive entry must survive');
     assert.strictEqual(
@@ -753,7 +761,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     const name = '2026-05-01-per-task-summary';
     writeQuickTaskDir(tmpDir, name, { [`${name}-SUMMARY.md`]: '# Summary\nDid the thing.\n' });
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
     assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
@@ -780,7 +788,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     const name = '2026-05-02-bare-summary';
     writeQuickTaskDir(tmpDir, name, { 'SUMMARY.md': '# Summary\nDid the other thing.\n' });
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
     assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
@@ -799,7 +807,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     const name = '2026-05-03-no-summary';
     writeQuickTaskDir(tmpDir, name); // no files at all
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
     assert.ok(fs.statSync(path.join(archiveDir, 'README.md')).isFile(), 'README.md index must be generated');
@@ -815,7 +823,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'quick', 'stray-notes.txt'), 'not a task dir\n');
     writeQuickTaskDir(tmpDir, '2026-06-01-real-task');
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     assert.ok(
       fs.existsSync(path.join(tmpDir, '.planning', 'quick', 'stray-notes.txt')),
@@ -856,7 +864,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     setupQuickArchiveRoadmap(tmpDir);
     writeQuickTaskDir(tmpDir, '2026-08-01-evil-version');
 
-    const result = runSdkQuery(['milestone.complete', '../evil', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', '../evil', '--archive-quick', '--confirm'], tmpDir);
     assert.strictEqual(result.success, false, 'a version containing a path separator must be rejected');
     assert.ok(!fs.existsSync(path.join(tmpDir, '..', 'evil')), 'nothing must be created outside the temp fixture root');
     const milestonesDir = path.join(tmpDir, '.planning', 'milestones');
@@ -876,7 +884,7 @@ describe('#2142: quick task archival at milestone close-out', () => {
     const name = '2026-01-01-café report';
     writeQuickTaskDir(tmpDir, name);
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
     assert.ok(
       fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick', name)),
@@ -916,7 +924,7 @@ describe('#2142 escalation: milestone.archive-quick — narrow archival entry po
     fs.writeFileSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-ROADMAP.md'), archivedRoadmap);
 
     // Confirm the premise this command exists to fix.
-    const milestoneCompleteResult = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const milestoneCompleteResult = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.strictEqual(
       milestoneCompleteResult.success,
       false,
@@ -1070,7 +1078,7 @@ describe('#2142 review: README injection, symlink escape, dry-run/real-run parit
       throw err;
     }
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete failed: ${result.error}`);
 
     const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
@@ -1113,7 +1121,7 @@ describe('#2142 review: README injection, symlink escape, dry-run/real-run parit
     try {
       writeQuickTaskDir(tmpDir, '2026-10-02-real-task');
 
-      const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+      const result = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
       assert.ok(result.success, `milestone.complete failed: ${result.error}`);
       assert.strictEqual(result.data.archived.quick, true, 'the real task dir must still archive');
 
@@ -1174,7 +1182,7 @@ describe('#2142 review: README injection, symlink escape, dry-run/real-run parit
         'the skipped symlink entry must not appear in the dry-run preview',
       );
 
-      const real = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick'], tmpDir);
+      const real = runSdkQuery(['milestone.complete', 'v1.0', '--archive-quick', '--confirm'], tmpDir);
       assert.ok(real.success, `real run failed: ${real.error}`);
       const archiveDir = path.join(tmpDir, '.planning', 'milestones', 'v1.0-quick');
       const archivedNames = fs
@@ -1244,7 +1252,7 @@ describe('#3597: milestone complete refuses to archive on a non-COMPLETE window 
   test('archives NOTHING and leaves every phase dir on disk when the workstream has no ROADMAP.md', () => {
     const alphaPhases = seedUnreadableWorkstream(tmpDir);
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete should still succeed (UNREADABLE is not a whole-command refusal): ${result.error}`);
 
     assert.strictEqual(result.data.archived.phases, false, 'phases must NOT be reported as archived');
@@ -1303,7 +1311,7 @@ describe('#3597: milestone complete refuses to archive on a non-COMPLETE window 
     fs.mkdirSync(path.join(betaPhases, '01-foo'), { recursive: true });
     fs.mkdirSync(path.join(betaPhases, '02-out-of-window'), { recursive: true });
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete should succeed: ${result.error}`);
 
     assert.strictEqual(result.data.archived.phases, true, 'phases must be reported as archived');
@@ -1338,7 +1346,7 @@ describe('#3597: milestone complete refuses to archive on a non-COMPLETE window 
     fs.mkdirSync(path.join(phasesDir, '01-parser'), { recursive: true });
     fs.mkdirSync(path.join(phasesDir, '02-printable-output'), { recursive: true });
 
-    const result = runSdkQuery(['milestone.complete', 'v1.0', '--force'], tmpDir);
+    const result = runSdkQuery(['milestone.complete', 'v1.0', '--force', '--confirm'], tmpDir);
     assert.ok(result.success, `milestone.complete should succeed: ${result.error}`);
 
     assert.strictEqual(result.data.archived.phases, true, 'phases must still be archived for an UNSCOPED (not UNREADABLE) window');

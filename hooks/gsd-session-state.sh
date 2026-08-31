@@ -5,6 +5,7 @@
 #
 # OPT-IN: This hook is a no-op unless config.json has hooks.community: true.
 # Enable with: "hooks": { "community": true } in .planning/config.json
+set -euo pipefail
 
 # Check opt-in config — exit silently if not enabled
 if [ -f .planning/config.json ]; then

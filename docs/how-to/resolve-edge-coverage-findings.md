@@ -4,7 +4,7 @@
 
 **Prerequisites:** A phase whose `/gsd-spec-phase` run has passed the ambiguity gate. The edge-completeness probe (Step 5.5) then runs automatically and presents its findings — you do not invoke it separately.
 
-For the category taxonomy and the reasoning behind front-of-pipeline edge analysis, see [Spec-Phase Edge-Completeness Probe](../FEATURES.md#143-spec-phase-edge-completeness-probe). This guide covers only how to *act* on the findings.
+For the category taxonomy and the reasoning behind front-of-pipeline edge analysis, see [Spec-Phase Edge-Completeness Probe](../FEATURES.md#144-spec-phase-edge-completeness-probe). This guide covers only how to *act* on the findings.
 
 ---
 
@@ -103,7 +103,7 @@ This is the payoff: a resolved edge becomes a unit the goal-backward verifier ac
 
 ## Related
 
-- [Spec-Phase Edge-Completeness Probe](../FEATURES.md#143-spec-phase-edge-completeness-probe) — taxonomy, output schema, and the front-of-pipeline rationale
+- [Spec-Phase Edge-Completeness Probe](../FEATURES.md#144-spec-phase-edge-completeness-probe) — taxonomy, output schema, and the front-of-pipeline rationale
 - [`/gsd-spec-phase`](../COMMANDS.md#gsd-spec-phase) — command reference and flags
 - [Plan a phase](plan-a-phase.md) — where `covered`/`backstop` edges become `must_haves`
 - [docs index](../README.md)

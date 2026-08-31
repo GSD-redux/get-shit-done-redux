@@ -80,7 +80,7 @@ If `--wave` is absent, preserve the current behavior of executing all incomplete
 Load all context in one call:
 
 ```bash
-_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; if [ -f "$GSD_TOOLS" ]; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif command -v gsd-tools >/dev/null 2>&1; then GSD_TOOLS="$(command -v gsd-tools)"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd-tools is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
+_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 WAVE_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--wave[[:space:]]+([^[:space:]-][^[:space:]]*) ]]; then WAVE_PARAM="--wave ${BASH_REMATCH[2]}"; fi
 INIT=$(gsd_run query init.execute-phase "${PHASE_ARG}" $WAVE_PARAM)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
@@ -100,8 +100,8 @@ Read runtime/worktree config and fail closed before any executor dispatch:
 ```bash
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
-EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes 2>/dev/null || echo "5")
-EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes 2>/dev/null || echo "10")
+EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes --raw 2>/dev/null || echo "5")
+EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes --raw 2>/dev/null || echo "10")
 
 # Resolve ISOLATION + apply its guards: read and execute the "Resolve ISOLATION"
 # section of execute-phase/steps/executor-isolation-dispatch.md. It sets
@@ -128,12 +128,12 @@ fi
 
 When `USE_WORKTREES` is `false`, `ISOLATION` is forced to `none`: executors run sequentially on the main working tree. The per-plan decision below has no effect when worktrees are project-disabled.
 
-`USE_WORKTREES` and `ISOLATION` are also reset for the run when `worktree base-check` detects the orchestrator HEAD has diverged from the worktree fork base (#683 — e.g. an unmerged milestone branch). This runs for **any** isolated run, not only Claude: fork-base divergence is a property of the repository, so it degrades a GSD-created worktree exactly as a harness-created one. The auto-degrade prints a one-line warning to stderr and falls through to the sequential path so executors do not hit the exit-42 worktree-branch-check halt. To restore parallel worktree execution, set `worktree.baseRef:"head"` in `.claude/settings.local.json` (or run `gsd_run worktree set-baseref`) — this makes the fork base track the live HEAD instead of a fixed remote ref. The `worktree-branch-check` exit-42 guard inside each executor remains in place as a backstop.
+`USE_WORKTREES` and `ISOLATION` are also reset for the run when `worktree base-check` detects the orchestrator HEAD has diverged from the worktree fork base (#683 — e.g. an unmerged milestone branch). This runs for **any** isolated run, not only Claude: fork-base divergence is a property of the repository, so it degrades a GSD-created worktree exactly as a harness-created one. The auto-degrade prints a one-line warning to stderr and falls through to the sequential path so executors do not hit the exit-42 worktree-branch-check halt. Setting `worktree.baseRef:"head"` restores parallel execution only where GSD itself creates the worktrees (orchestrator-managed runtimes — Codex, OpenCode, Kimi, Kimi Code); harness-isolated runtimes (Claude Code, Cursor) do not read the setting (#48, verified 5/5; upstream claude-code#44965), so there the check compares against the real fork base and parallel execution returns once HEAD is merged/pushed so `origin/HEAD` matches it (#3659). The `worktree-branch-check` exit-42 guard inside each executor remains in place as a backstop.
 
 Read context window size for adaptive prompt enrichment:
 
 ```bash
-CONTEXT_WINDOW=$(gsd_run query config-get context_window 2>/dev/null || echo "200000")
+CONTEXT_WINDOW=$(gsd_run query config-get context_window --raw 2>/dev/null || echo "200000")
 ```
 
 When `CONTEXT_WINDOW >= 500000` (1M-class models), subagent prompts include richer context:
@@ -280,7 +280,7 @@ checkpoints between tasks. The user can review, modify, or redirect work at any 
 <step name="handle_branching">
 Check `branching_strategy` from init:
 
-**"none":** Skip, continue on current branch.
+**"none":** Read and execute `execute-phase/steps/protected-branch.md`.
 
 **"phase" or "milestone":** Use pre-computed `branch_name` from init.
 
@@ -350,6 +350,10 @@ are done. Blocked-and-incomplete must never be reported as finished.
 
 ```bash
 VERIFY_STATUS=$(gsd_run query verification status "${PHASE_DIR}" --pick status)
+# #3684: checkbox = marked-complete; report fields can claim a no-op write (#3685).
+ANALYZE=$(gsd_run query roadmap.analyze)
+if [[ "$ANALYZE" == @file:* ]]; then ANALYZE=$(cat "${ANALYZE#@file:}"); fi
+PHASE_MARKED=$(echo "$ANALYZE"|jq -r --arg p "$PHASE_NUMBER" 'def n:sub("^0+(?=[0-9])";"");.phases[]|select(((.number//.phase_number|tostring|n))==($p|n))|.roadmap_complete'|head -1)
 ```
 
 Evaluate in this exact order — the first matching condition decides the outcome; do not evaluate
@@ -366,8 +370,6 @@ later conditions once one matches:
    → exit. Do not fall through to condition 3; this is not a completion state.
 3. **No filter is active, and every filtered plan was filtered by `has_summary` alone** (no
    blocked-plan skip occurred):
-   - **`VERIFY_STATUS` is anything other than `missing`**: the phase genuinely finished. Report
-     "No matching incomplete plans" → exit, unchanged.
    - **`VERIFY_STATUS == missing`**: the plans are all summarized but the run never reached the
      tail gates. Report:
      `"All {plan_count} plans are summarized but no VERIFICATION.md exists — resuming at the phase gates (#2868)."`
@@ -382,6 +384,13 @@ later conditions once one matches:
      skip `aggregate_results`, `code_review_gate` or `regression_gate` on this path — the manual
      workaround this replaces skipped all three, and that gap is the reason this route exists
      rather than telling users to spawn the verifier by hand.
+   - **`VERIFY_STATUS` ≠ `missing` + `PHASE_MARKED` is `true`**: genuinely finished.
+     Report "No matching incomplete plans" → exit, unchanged.
+   - **`VERIFY_STATUS` ≠ `missing` + `PHASE_MARKED` not `true`** — the run died between
+     `verify_phase_goal` and `update_roadmap` (#3684): verification EXISTS — do not redo
+     it or the gates already run. Report `"Phase {X} is verified but never marked
+     complete — resuming at update_roadmap (#3684)."` and continue directly at
+     `update_roadmap`; the tail steps then run in their normal order.
 
 Report:
 ```
@@ -414,15 +423,15 @@ executor skips them.
    `workflow.cross_ai_execution` is `true`. Plans matching both conditions are marked for cross-AI.
 
 ```bash
-CROSS_AI_ENABLED=$(gsd_run query config-get workflow.cross_ai_execution 2>/dev/null || echo "false")
-CROSS_AI_CMD=$(gsd_run query config-get workflow.cross_ai_command 2>/dev/null || echo "")
-CROSS_AI_TIMEOUT=$(gsd_run query config-get workflow.cross_ai_timeout 2>/dev/null || echo "300")
+CROSS_AI_ENABLED=$(gsd_run query config-get workflow.cross_ai_execution --raw 2>/dev/null || echo "false")
+CROSS_AI_CMD=$(gsd_run query config-get workflow.cross_ai_command --raw 2>/dev/null || echo "")
+CROSS_AI_TIMEOUT=$(gsd_run query config-get workflow.cross_ai_timeout --raw 2>/dev/null || echo "300")
 ```
 
 **If no plans are marked for cross-AI:** Skip to execute_waves.
 
 **If plans are marked but `cross_ai_command` is empty:** Error — tell user to set
-`workflow.cross_ai_command` via `gsd-tools.cjs query config-set workflow.cross_ai_command "<command>"`.
+`workflow.cross_ai_command` via `gsd_run query config-set workflow.cross_ai_command "<command>"`.
 
 **For each cross-AI plan (sequentially):**
 
@@ -644,7 +653,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
    WAVE_PRE_HOOKS_JSON=$(gsd_run loop render-hooks execute:wave:pre --raw)
    ```
 
-   If a contribution's `activeHooks` entry provides an alternate wave dispatch, follow it instead of step 3's inline loop; otherwise proceed to step 3.
+   **Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip when none); one naming an alternate wave dispatch replaces step 3's inline loop. Then proceed to step 3.
 
 3. **Spawn executor agents:**
 
@@ -778,7 +787,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
    )
    ```
 
-   After each `Agent()` returns, parse executor-returned worktree metadata (`<worktree_metadata>`) before harness metadata, then record the `{agent_id, worktree_path, branch, expected_base}` entry with `gsd_run query worktree.record-agent --manifest "$WAVE_WORKTREE_MANIFEST" --agent-id … --path … --branch … --base … --files "$PLAN_FILES"`. The verb validates every field at write time using the `cleanup-wave` reader's own rules (write-strict `--agent-id`), failing loudly with a recovery hint rather than appending an under-populated entry the reader would later drop silently. On a non-zero exit or any missing field: stop and ask for recovery instead of scanning worktrees.
+   After each `Agent()` returns, parse executor-returned worktree metadata (`<worktree_metadata>`) before harness metadata, then record the `{agent_id, worktree_path, branch, expected_base}` entry with `gsd_run query worktree.record-agent --manifest "$WAVE_WORKTREE_MANIFEST" --agent-id … --path … --branch … --base … --files "$PLAN_FILES" --deletions "$PLAN_DELETIONS"`. The verb validates every field at write time using the `cleanup-wave` reader's own rules (write-strict `--agent-id`), failing loudly with a recovery hint rather than appending an under-populated entry the reader would later drop silently. On a non-zero exit or any missing field: stop and ask for recovery instead of scanning worktrees.
 
    > **Worktree recovery policy (#48 + #1292):** See `execute-phase/steps/worktree-recovery-policy.md` — FAIL-CLOSED rule for base/HEAD-namespace mismatches AND isolated-run fail-safe recovery.
 
@@ -858,7 +867,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
 5. **Post-wave hook validation (parallel mode only):** Hooks run on every executor commit by default (#2924); this post-wave run only fires when `workflow.worktree_skip_hooks=true` opted out of per-commit hooks:
    ```bash
-   SKIP_HOOKS=$(gsd_run query config-get workflow.worktree_skip_hooks 2>/dev/null || echo "false")
+   SKIP_HOOKS=$(gsd_run query config-get workflow.worktree_skip_hooks --raw 2>/dev/null || echo "false")
    if [ "$SKIP_HOOKS" = "true" ]; then
      # Stash uncommitted changes under a named ref so we always pop (bare `git stash` strands them on hook/script failure). #3542: `refs/stash` is shared across worktrees, so this helper runs ONLY in the orchestrator's main checkout after all wave worktrees have been merged + removed; executors are forbidden from running any `git stash` subcommand (see `<destructive_git_prohibition>` in `agents/gsd-executor.md`).
      STASHED=false
@@ -1014,40 +1023,11 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    **If `activeHooks` is empty or absent:** Skip silently to step 5.8.
 
-   ⚠ **Validate `check` before shell use** (third-party manifest input) — `loop-hook-dispatch.md` § `gate`.
+   **Contribution dispatch:** inject every `kind == "contribution"` fragment per @gsd-core/references/loop-hook-dispatch.md (skip when none), before the gates below.
 
-   **For each active entry where `kind == "gate"`** (process in array order), run the gate check — a `predicate` gate (ADR-2008 / #2008) substitutes `gsd_run check predicate --predicate '<predicate JSON>' --phase-number "${PHASE_NUMBER}" --raw`:
+   **Step dispatch:** dispatch every `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md (skip when none) — not one shape of one. A step here is advisory: it never blocks wave completion. ⚠ **Validate `ref.command` in-context before any shell use** (third-party manifest input) — loop-hook-dispatch.md § `step`.
 
-   ```bash
-   GATE_RESULT=$(gsd_run check ${hook.check.query} "${PHASE_NUMBER}" --raw)
-   CHECK_EXIT=$?
-   ```
-
-   **Step 1 — did the CHECK COMMAND itself succeed?**
-
-   If the check command failed (non-zero `CHECK_EXIT`, empty output, or unparseable JSON):
-   - `onError == "halt"` → treat as a fatal error: stop wave completion, do NOT proceed to step 5.8, and surface: `⚠ Gate check command failed ({hook.capId}): command error. Resolve before continuing.`
-   - `onError == "skip"` → log a warning and continue to the next hook. Do NOT read `GATE_RESULT.block`.
-
-   **Step 2 — read `GATE_RESULT.block` (boolean).** This step is only reached when the command succeeded.
-
-   - **Blocking gate (`hook.blocking == true`) AND `GATE_RESULT.block == true`:** HALT — stop wave completion, do NOT proceed to step 5.8, and present:
-
-     ```
-     ⚠ Wave {N} blocked by capability gate ({hook.capId}): {GATE_RESULT.message}
-     Resolve before continuing to next wave.
-     ```
-
-     This halt is **not** bypassed by `onError` — `onError` only covers command errors (step 1 above), not the gate's block decision.
-
-   - **Non-blocking gate (`hook.blocking == false`):** never halts. If `GATE_RESULT.block` is `true` (or non-empty `message`), print `⚠ {hook.capId} advisory (wave {N}): {GATE_RESULT.message}`, then:
-     - If `GATE_RESULT.spawn_mapper == true` OR `GATE_RESULT.directive == "auto-remap"`: spawn `gsd-codebase-mapper` per `execute-phase/steps/codebase-drift-gate.md`; pass `--paths {GATE_RESULT.affected_paths}`. Continue regardless (wave NOT failed by remap failure).
-     - Otherwise: continue after advisory.
-     - If block `false` and no `message`: continue silently.
-
-   - **Blocking gate (`hook.blocking == true`) AND `GATE_RESULT.block == false`:** continue silently.
-
-   **When all active gates are processed without a blocking halt:** continue to step 5.8.
+   **For each active entry where `kind == "gate"`** (process in array order): read and execute `gsd-core/workflows/execute-phase/steps/wave-post-gate-hooks.md` for the full evaluation contract (check validation, `onError`, blocking semantics, mapper spawn). When all active gates are processed without a blocking halt, continue to step 5.8.
 
 5.8. **Handle test gate failures (when `WAVE_FAILURE_COUNT > 0`):**
 
@@ -1202,7 +1182,7 @@ VERIFY_POST_HOOKS_JSON=$(gsd_run loop render-hooks verify:post --raw)
 SECURITY_FILE=$(ls "${PHASE_DIR}"/*-SECURITY.md 2>/dev/null | head -1)
 ```
 
-Resolve active step hooks from `VERIFY_POST_HOOKS_JSON` where `kind == "step"` and `ref.skill == "secure-phase"`.
+Dispatch every `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md (skip when none). The secure-phase routing below applies when that specific hook is active.
 
 If no active secure-phase step hook exists: skip.
 
@@ -1461,10 +1441,12 @@ gsd_run query commit "docs(phase-{X}): complete phase execution" --files .planni
 </step>
 
 <step name="auto_copy_learnings">
-**Auto-copy phase learnings to global store (when enabled).**
+**Auto-extract and copy phase learnings to global store (when enabled).**
 
-This step runs AFTER phase completion and SUMMARY.md is written. It copies any LEARNINGS.md
-entries from the completed phase to the global learnings store at `~/.gsd/knowledge/`.
+This step runs AFTER phase completion and SUMMARY.md is written. It produces the phase's
+learnings artifact (the sole producer is otherwise the user-invoked
+`/gsd:extract-learnings`) and copies it to the global learnings store at
+`~/.gsd/knowledge/`.
 
 **Check config gate:**
 ```bash
@@ -1475,8 +1457,10 @@ GL_ENABLED=$(gsd_run query config-get features.global_learnings --raw 2>/dev/nul
 
 **If enabled:**
 
-1. Check if LEARNINGS.md exists in the phase directory (use the `phase_dir` value from init context)
-2. If found, copy to global store:
+1. Run the `extract-learnings` workflow for the JUST-COMPLETED phase (its
+   `write_learnings` step writes `{phase_dir}/{PADDED_PHASE}-LEARNINGS.md`). Extraction
+   failure must NOT block phase completion — report the failure and continue.
+2. Copy the phase artifact to the global store:
 ```bash
 gsd_run query learnings.copy 2>/dev/null || echo "⚠ Learnings copy failed — continuing"
 ```
@@ -1546,7 +1530,7 @@ For 1M+ context models, consider:
 </context_efficiency>
 
 <failure_handling>
-- **Quota / rate-limit (any runtime — #3095):** Agent return body contains a sentinel like `usage limit`, `rate limit`, `429`, `too many requests`, `RESOURCE_EXHAUSTED`, `usage_limit_reached`. Route via `gsd-tools.cjs query agent.classify-failure` → `class: "quota-exceeded"`. Do not offer retry-now; the right action is wait-for-reset and resume.
+- **Quota / rate-limit (any runtime — #3095):** Agent return body contains a sentinel like `usage limit`, `rate limit`, `429`, `too many requests`, `RESOURCE_EXHAUSTED`, `usage_limit_reached`. Route via `gsd_run query agent.classify-failure` → `class: "quota-exceeded"`. Do not offer retry-now; the right action is wait-for-reset and resume.
 - **classifyHandoffIfNeeded false failure:** Agent reports "failed" but error is `classifyHandoffIfNeeded is not defined` → Claude Code bug, not GSD. Spot-check (SUMMARY exists, commits present) → if pass, treat as success
 - **Agent fails mid-plan:** Missing SUMMARY.md → report, ask user how to proceed
 - **Dependency chain breaks:** Wave 1 fails → Wave 2 dependents likely fail → user chooses attempt or skip

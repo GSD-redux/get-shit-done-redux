@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "ui-phase.md": "#3132: realigned resolution loop and write-back format from covered/backstop-as-status to resolved+verification. — #3423 append (epic #1891 F8): also grew with the <files_to_read> -> <required_reading> tag rename (15 chars/block, tag-token-only delta)."
-  }
-}

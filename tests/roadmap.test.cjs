@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 describe('roadmap get-phase command', () => {
   let tmpDir;
@@ -1953,9 +1954,12 @@ describe('bug #2661: execute-plan.md update_roadmap gating', () => {
     // The sync call must be inside an `if [ "$IS_WORKTREE" != "true" ]` block,
     // i.e. it must NOT be unconditional and it must NOT appear on the worktree branch.
     // We verify by extracting the bash block and checking the call sits under the gate.
-    const bashMatch = step.match(/```bash\s*([\s\S]*?)```/);
-    assert.ok(bashMatch, 'update_roadmap must contain a bash block');
-    const bash = bashMatch[1];
+    const stepLines = step.split(/\r?\n/);
+    const bashFence = scanFencedBlocks(stepLines).find(
+      (b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash',
+    );
+    assert.ok(bashFence, 'update_roadmap must contain a bash block');
+    const bash = stepLines.slice(bashFence.openLineIdx + 1, bashFence.closeLineIdx).join('\n');
 
     assert.ok(
       /IS_WORKTREE/.test(bash),
@@ -3849,5 +3853,463 @@ describe('bug #3263: roadmap validate warns on a truncated milestone window', ()
       const payload = JSON.parse(result.output);
       assert.deepStrictEqual(payload.warnings, [], 'unscoped roadmap must have no warnings');
     } finally { cleanup(tmpDir); }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3641: hasPhaseEntries is convention-blind — V005 (and V004) cannot see
+// bracket-convention phase entries (`### [GSD.04] 01: Name`), so a genuinely
+// truncated bracket window classifies COMPLETE and validate stays silent
+// (while V004 falsely reports "no recognizable phase entries"). The fix
+// threads the resolved `phase_id_convention` into hasPhaseEntries and routes
+// V004 through the same owner. Mirrors the #3263 harness directly above.
+// Matrix: .gsd/bug/fix-3641-hasphaseentries-convention-v005/50-test-matrix.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bug #3641: bracket-convention windows are visible to validate (V005/V004)', () => {
+  const ROADMAP_PARSER_LIB = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'roadmap-parser.cjs');
+
+  function writeFixture3641(tmpDir, roadmapContent, stateFields, conventionSource) {
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmapContent);
+    if (stateFields) {
+      const lines = ['---'];
+      for (const [k, v] of Object.entries(stateFields)) lines.push(`${k}: ${v}`);
+      lines.push('---', '');
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), lines.join('\n'));
+    }
+    if (conventionSource && conventionSource.kind === 'config') {
+      fs.writeFileSync(
+        path.join(tmpDir, '.planning', 'config.json'),
+        JSON.stringify({ phase_id_convention: 'bracket' }, null, 2),
+      );
+    }
+    // kind === 'frontmatter': the roadmap content itself carries the frontmatter.
+  }
+
+  const BRACKET_TRUNCATED_ROADMAP = [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    'Some preamble notes. No phase headings here.',
+    '',
+    '## v4.0 Next',
+    '',
+    '### [GSD.04] 01: Foo',
+    '',
+    '### [GSD.04] 02: Bar',
+  ].join('\n');
+
+  test('bracket truncated window (config convention) → V005 fires, no false V004', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-truncated-');
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, BRACKET_TRUNCATED_ROADMAP, { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'truncated bracket window must exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V005'),
+    `truncated bracket window must produce V005; got: ${JSON.stringify(payload)}`);
+  assert.ok(!payload.warnings.some((w) => w.code === 'V004'),
+    `the document HAS bracket phase entries — V004 must not fire; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('bracket complete window → no warnings, exit 0', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-complete-');
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    '### [GSD.03] 01: Foo',
+    '',
+    '### [GSD.03] 02: Bar',
+    '',
+    '## v4.0 Next',
+    '',
+    'Later plans.',
+  ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.ok(result.success, `complete bracket window must exit 0; got: ${result.error}`);
+  const payload = JSON.parse(result.output);
+  assert.deepStrictEqual(payload.warnings, [], `complete bracket window must have no warnings; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('bracket truncated window (frontmatter convention) → V005 fires', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-fm-');
+    t.after(() => cleanup(tmpDir));
+  const withFrontmatter = [
+    '---',
+    'phase_id_convention: bracket',
+    '---',
+    '',
+    BRACKET_TRUNCATED_ROADMAP,
+  ].join('\n');
+  writeFixture3641(tmpDir, withFrontmatter, { milestone: 'v3.0' }, { kind: 'frontmatter' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'frontmatter-convention truncated window must exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V005'),
+    `frontmatter convention must resolve for V005; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('legacy truncated window without convention → V005 still fires (parity)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-legacy-parity-');
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    'Some preamble notes.',
+    '',
+    '## v4.0 Next',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '### Phase 2: Bar',
+  ].join('\n'), { milestone: 'v3.0' }, null);
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'legacy truncated window must still exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V005'),
+    `legacy V005 behavior must be unchanged; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('bracket-spelling roadmap without convention → not widened (V004 only)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-no-convention-');
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, BRACKET_TRUNCATED_ROADMAP, { milestone: 'v3.0' }, null);
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'unrecognized entries must still exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+    `a project that never opted in keeps the legacy reading (V004); got: ${JSON.stringify(payload)}`);
+  assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+    `no convention declared — the widened grammar must not engage; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('bracket phase-less roadmap with bracket milestone name headings → V004 only, no V005', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-phaseless-');
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## [GSD.02] Foundation',
+    '',
+    'Nothing planned yet. A bracket MILESTONE heading is a bracket plus a',
+    'name — not a phase entry (no digit-then-colon tail).',
+  ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'genuinely phase-less bracket roadmap must exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+    `V004 owns the phase-less case under bracket too; got: ${JSON.stringify(payload)}`);
+  assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+    `a phase-less window must never produce V005; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('fenced bracket heading example does not count as a phase entry', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-fence-');
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    'Documentation example of the syntax:',
+    '',
+    '```markdown',
+    '### [GSD.03] 01: Documented example',
+    '```',
+    '',
+    'No real phase headings anywhere.',
+    '',
+    '## v4.0 Next',
+    '',
+    'Later plans.',
+  ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.strictEqual(result.success, false, 'fenced-example-only roadmap must exit non-zero');
+  const payload = JSON.parse(result.output);
+  assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+    `a fenced example is not a real entry; got: ${JSON.stringify(payload)}`);
+  assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+    `fenced examples must not flip the scope axis; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('bracket+label mixed spelling still recognized under bracket convention', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-mixed-');
+    t.after(() => cleanup(tmpDir));
+  writeFixture3641(tmpDir, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    '### [GSD.03] Phase 01: Foo',
+    '',
+    '## v4.0 Next',
+    '',
+    'Later plans.',
+  ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+  const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+  assert.ok(result.success, `mixed spelling is already-recognized — must exit 0; got: ${result.error}`);
+  const payload = JSON.parse(result.output);
+  assert.deepStrictEqual(payload.warnings, [], `mixed spelling must stay recognized; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('colon-bearing bracket milestone heading in-window does not read as a phase entry (#3641 review HIGH)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-colon-milestone-');
+    t.after(() => cleanup(tmpDir));
+    writeFixture3641(tmpDir, [
+      '# Roadmap',
+      '',
+      '## [GSD.03] v3.0: Current',
+      '',
+      'No phases under the active milestone — and its own heading carries a',
+      'colon, which must NOT make the window read as having phase entries.',
+      '',
+      '## [GSD.04] v4.0: Next',
+      '',
+      '### [GSD.04] 01: Foo',
+    ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+    const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+    assert.strictEqual(result.success, false, 'truncated bracket window (colon-bearing milestone heading) must exit non-zero');
+    const payload = JSON.parse(result.output);
+    assert.ok(payload.warnings.some((w) => w.code === 'V005'),
+      `ADR-612 discriminator: a bracket + NAME(:version) heading is a milestone, not an entry — the window is still truncated; got: ${JSON.stringify(payload)}`);
+    assert.ok(!payload.warnings.some((w) => w.code === 'V004'), `real bracket entries exist; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('decoy bracket notes heading outside the window does not manufacture V005 (#3641 review MEDIUM)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-decoy-');
+    t.after(() => cleanup(tmpDir));
+    writeFixture3641(tmpDir, [
+      '# Roadmap',
+      '',
+      '## v3.0 Current 🚧',
+      '',
+      'Nothing planned yet — a genuinely phase-less milestone.',
+      '',
+      '## v4.0 Next',
+      '',
+      '### [GSD.04] Notes: follow-ups',
+      '',
+      'Prose under a later milestone, not a phase entry.',
+    ].join('\n'), { milestone: 'v3.0' }, { kind: 'config' });
+    const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+    assert.strictEqual(result.success, false, 'phase-less bracket roadmap must exit non-zero');
+    const payload = JSON.parse(result.output);
+    assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+      `no real entries — V004 owns the verdict; got: ${JSON.stringify(payload)}`);
+    assert.ok(!payload.warnings.some((w) => w.code === 'V005'),
+      `a decoy colon heading must never flip the scope axis to TRUNCATED; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('milestone-scope probe agrees with validate on a truncated bracket window (#3641 review MEDIUM)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-bracket-probe-');
+    t.after(() => cleanup(tmpDir));
+    writeFixture3641(tmpDir, BRACKET_TRUNCATED_ROADMAP, { milestone: 'v3.0' }, { kind: 'config' });
+    const result = runGsdTools(['roadmap', 'milestone-scope', '--raw'], tmpDir);
+    assert.ok(result.success, `probe must exit 0; got: ${result.error}`);
+    const payload = JSON.parse(result.output);
+    assert.strictEqual(payload.scope, 'truncated',
+      `the #3262 capture/compare signal must agree with validate's V005 classifier; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('colon-less legacy phase heading alone still yields V004 (owner-entry definition pin)', (t) => {
+    const tmpDir = createTempProject('gsd-3641-colonless-');
+    t.after(() => cleanup(tmpDir));
+    writeFixture3641(tmpDir, [
+      '# Roadmap',
+      '',
+      '## v3.0 Current 🚧',
+      '',
+      '### Phase 1 — Foo',
+    ].join('\n'), { milestone: 'v3.0' }, null);
+    const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+    assert.strictEqual(result.success, false, 'colon-less-only roadmap must exit non-zero');
+    const payload = JSON.parse(result.output);
+    assert.ok(payload.warnings.some((w) => w.code === 'V004'),
+      `the canonical entry grammar is colon-terminated — a colon-less heading is not an entry for ANY reader; got: ${JSON.stringify(payload)}`);
+  });
+
+  test('hasPhaseEntries gates the widened grammar on the bracket convention (unit seam)', () => {
+    // Direct rows on the exported predicate: the widened heading grammar
+    // engages ONLY when the resolved convention is 'bracket'.
+    const roadmapParser = require(ROADMAP_PARSER_LIB);
+    assert.strictEqual(typeof roadmapParser.hasPhaseEntries, 'function',
+      'hasPhaseEntries must be exported for the validate seam (#3641)');
+    const bracketHeading = '### [GSD.04] 01: Foo';
+    const legacyHeading = '### Phase 01: Foo';
+    assert.strictEqual(roadmapParser.hasPhaseEntries(bracketHeading, 'bracket'), true,
+      "bracket convention: '[GSD.04] 01:' is a phase entry");
+    assert.strictEqual(roadmapParser.hasPhaseEntries(bracketHeading, null), false,
+      'no convention: the bracket+bare-number spelling is not an entry');
+    assert.strictEqual(roadmapParser.hasPhaseEntries(legacyHeading, 'bracket'), true,
+      'bracket convention is a superset — the legacy label stays recognized');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3885 (ADR-3473 §8.5) / item 5 — `countPhasePlansAndSummaries` swallows an
+// unreadable phase directory into "absent", indistinguishable from a phase
+// that genuinely has no CONTEXT.md.
+//
+// Mechanism (src/roadmap.cts, countPhasePlansAndSummaries):
+//   try { phaseFiles = fs.readdirSync(phaseDir); } catch { /* empty */ }
+// An EACCES/EIO collapses `phaseFiles` to `[]`, which makes
+// `findContextMdIn(scopedFiles)` return null — identical to a phase dir that
+// was successfully read and genuinely has no CONTEXT.md. `cmdRoadmapAnalyze`
+// (the only exported consumer) surfaces this as `has_context: false` on the
+// phase's entry in `phases[]`, with nothing distinguishing "could not read"
+// from "nothing there".
+//
+// DESIGN DECISION (chosen by this test file, not yet implemented): each
+// `AnalyzePhase` gains a `context_read_error: string | null` field — null on
+// success (including a genuinely missing/ENOENT directory), and a message
+// string naming the phase directory when the readdirSync call fails with any
+// non-ENOENT error (EACCES, EIO, ...). Mirrors the SCOPE.UNREADABLE
+// discriminator `src/core-utils.cts`'s `getPhaseFileStats` already uses to
+// keep "unreadable" separate from "absent" on the sibling phase-stats path.
+//
+// `countPhasePlansAndSummaries` itself is not exported from roadmap.cjs, so
+// these tests drive the ONLY exported consumer, `cmdRoadmapAnalyze`, in
+// process — injecting the fs failure by monkeypatching `fs.readdirSync`
+// (restored in `finally`) and capturing `output()`'s raw fd-1 write by
+// monkeypatching `fs.writeSync` (io.cjs writes via `fs.writeSync(1, ...)`,
+// bypassing console.log, so `captureConsole()` cannot see it). NEVER
+// `chmod 0o000` — root bypasses mode bits, so that trick passes with zero
+// coverage in root Docker/CI.
+describe('#3885 (ADR-3473 §8.5): countPhasePlansAndSummaries distinguishes unreadable from absent (roadmap.cts caller)', () => {
+  let tmpDir;
+  let roadmapLib;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    roadmapLib = require('../gsd-core/bin/lib/roadmap.cjs');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 3: API\n**Goal:** Build API\n',
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Runs `roadmapLib.cmdRoadmapAnalyze(cwd, false)` while capturing the raw
+  // fd-1 bytes `output()` writes via `fs.writeSync`, and returns the parsed
+  // JSON result. Restores `fs.writeSync` in `finally` even if analyze throws.
+  function runAnalyzeCapturingStdout(cwd) {
+    const chunks = [];
+    const origWriteSync = fs.writeSync;
+    fs.writeSync = function patchedWriteSync(fd, buffer, offset, length) {
+      if (fd !== 1) return origWriteSync.apply(fs, arguments);
+      const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+      const start = offset ?? 0;
+      const len = length ?? (buf.length - start);
+      chunks.push(Buffer.from(buf.subarray(start, start + len)));
+      return len;
+    };
+    try {
+      roadmapLib.cmdRoadmapAnalyze(cwd, false);
+    } finally {
+      fs.writeSync = origWriteSync;
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  }
+
+  // Monkeypatches `fs.readdirSync` so a call whose FIRST argument resolves to
+  // `targetPath` throws an error shaped like `code`; every other path is
+  // delegated to the real implementation. Returns a restorer — callers MUST
+  // invoke it in `finally`.
+  function injectReaddirFailure(targetPath, code) {
+    const resolved = path.resolve(targetPath);
+    const origReaddirSync = fs.readdirSync;
+    fs.readdirSync = function patchedReaddirSync(p, ...rest) {
+      if (path.resolve(String(p)) === resolved) {
+        const err = new Error(`${code}: simulated failure, scandir '${p}'`);
+        err.code = code;
+        throw err;
+      }
+      return origReaddirSync.call(fs, p, ...rest);
+    };
+    return () => { fs.readdirSync = origReaddirSync; };
+  }
+
+  function findPhase3(analyzeOutput) {
+    const phase = analyzeOutput.phases.find((p) => p.number === '3');
+    assert.ok(phase, `phase 3 must appear in analyze output; got: ${JSON.stringify(analyzeOutput.phases)}`);
+    return phase;
+  }
+
+  // T61 — MUST STAY GREEN: a readable phase directory with no CONTEXT.md
+  // reports has_context:false, and (using `?? null` so this passes both
+  // before and after the fix) no read-error signal.
+  test('T61: readableDirWithoutContextReportsFalse', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '---\nwave: 1\n---\n## Task 1\n');
+
+    const output = runAnalyzeCapturingStdout(tmpDir);
+    const phase = findPhase3(output);
+    assert.strictEqual(phase.has_context, false, 'no CONTEXT.md on disk — has_context must be false');
+    assert.strictEqual(phase.context_read_error ?? null, null, 'a readable, genuinely context-less dir must report no read error');
+  });
+
+  // T62 — RED today: measured on this tree, an EACCES on the phase
+  // directory's readdirSync collapses to has_context:false /
+  // disk_status:"empty" with nothing distinguishing it from a phase that was
+  // successfully read and genuinely has no CONTEXT.md. Required: the failure
+  // must be reported, naming the phase directory.
+  test('T62: unreadablePhaseDirIsNotReportedAsAbsent', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '---\nwave: 1\n---\n## Task 1\n');
+
+    const restore = injectReaddirFailure(phaseDir, 'EACCES');
+    let output;
+    try {
+      output = runAnalyzeCapturingStdout(tmpDir);
+    } finally {
+      restore();
+    }
+    const phase = findPhase3(output);
+    assert.strictEqual(
+      typeof (phase.context_read_error ?? null),
+      'string',
+      `an unreadable phase directory must be reported as an error, not silently absent; got context_read_error=${JSON.stringify(phase.context_read_error)}`,
+    );
+    assert.ok(
+      (phase.context_read_error || '').includes('03-api'),
+      `the reported error must name the discarded input (the phase directory); got: ${phase.context_read_error}`,
+    );
+  });
+
+  // T64 — MUST STAY GREEN: a genuinely missing directory (ENOENT) is absent,
+  // not an error — this is the row that keeps T62's fix from over-firing on
+  // every ordinary "no directory yet" phase. Injected the same way as T62/T63
+  // (readdirSync throws ENOENT for the exact phase-dir path) so the assertion
+  // exercises the discriminator itself, not merely "no error was ever
+  // thrown".
+  test('T64: missingDirIsGenuinelyAbsent', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), '---\nwave: 1\n---\n## Task 1\n');
+
+    const restore = injectReaddirFailure(phaseDir, 'ENOENT');
+    let output;
+    try {
+      output = runAnalyzeCapturingStdout(tmpDir);
+    } finally {
+      restore();
+    }
+    const phase = findPhase3(output);
+    assert.strictEqual(
+      phase.context_read_error ?? null,
+      null,
+      `ENOENT must be treated as genuinely absent, not reported as an error; got: ${phase.context_read_error}`,
+    );
   });
 });

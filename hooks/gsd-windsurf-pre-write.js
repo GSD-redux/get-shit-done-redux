@@ -30,6 +30,13 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { allow, deny } = require('./lib/hook-exit.js');
+const { reportIfUndetermined } = require('./lib/git-probe.js');
+
+// #3911 (ADR-3889 Phase 7): the exit(2) call site (block(), below) is
+// migrated to hook-exit.js's deny(undefined, reason) — see
+// gsd-windsurf-pre-command.js's identical note for the fixed defect
+// (terminateNow's fd 1/fd 2 writes now run in independent try/catch blocks).
 
 const SPAWNOPT = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, windowsHide: true };
 
@@ -54,16 +61,11 @@ function nearestExistingDir(start) {
 }
 
 function block(reason) {
-  process.stderr.write(`GSD windsurf pre_write_code guard: ${reason}\n`);
-  process.exit(2);
-}
-
-function allow() {
-  process.exit(0);
+  deny(undefined, `GSD windsurf pre_write_code guard: ${reason}\n`);
 }
 
 let input = '';
-const stdinTimeout = setTimeout(() => process.exit(0), 10000);
+const stdinTimeout = setTimeout(() => allow(undefined), 10000);
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
@@ -72,14 +74,19 @@ process.stdin.on('end', () => {
     const data = JSON.parse(input || '{}');
     const toolInfo = (data && typeof data.tool_info === 'object' && data.tool_info) || {};
     const rawFilePath = typeof toolInfo.file_path === 'string' ? toolInfo.file_path : '';
-    if (!rawFilePath) { allow(); return; }
+    if (!rawFilePath) { allow(undefined); return; }
 
     const cwd = process.cwd();
 
     // Determine the active project's git root. No git root at all -> nothing
     // to enforce a boundary against -> fail open.
     const cwdTopResult = git(['rev-parse', '--show-toplevel'], cwd);
-    if (cwdTopResult.status !== 0 || !cwdTopResult.stdout) { allow(); return; }
+    // #3911: a timeout/spawn-failure result is indistinguishable from a clean
+    // "no git root here" answer by status/stdout alone — reportIfUndetermined
+    // is a no-op on a genuine negative and only fires when the probe itself
+    // could not run. The allow() below is UNCHANGED either way.
+    reportIfUndetermined('gsd-windsurf-pre-write', 'git rev-parse --show-toplevel (cwd)', cwdTopResult);
+    if (cwdTopResult.status !== 0 || !cwdTopResult.stdout) { allow(undefined); return; }
     const cwdTopRaw = cwdTopResult.stdout.trim();
 
     const filePath = path.isAbsolute(rawFilePath) ? path.resolve(rawFilePath) : path.resolve(cwd, rawFilePath);
@@ -95,14 +102,16 @@ process.stdin.on('end', () => {
         }
       })(),
     );
-    if (!checkDir) { allow(); return; } // synthetic path with no existing ancestor — fail open
+    if (!checkDir) { allow(undefined); return; } // synthetic path with no existing ancestor — fail open
 
     const fileTopResult = git(['rev-parse', '--show-toplevel'], checkDir);
+    reportIfUndetermined('gsd-windsurf-pre-write', 'git rev-parse --show-toplevel (file location)', fileTopResult);
     if (fileTopResult.status !== 0 || !fileTopResult.stdout) {
       // Not inside any git worktree. Distinguish "inside a .git/ internals
       // directory" (dangerous — BLOCK) from "outside all git repos entirely"
       // (not the escape vector this guard targets — fail open).
       const insideGitDir = git(['rev-parse', '--is-inside-git-dir'], checkDir);
+      reportIfUndetermined('gsd-windsurf-pre-write', 'git rev-parse --is-inside-git-dir', insideGitDir);
       if (insideGitDir.status === 0 && insideGitDir.stdout && insideGitDir.stdout.trim() === 'true') {
         block(
           `'${filePath}' is inside a git internal (.git) directory, not the active project at ` +
@@ -111,12 +120,12 @@ process.stdin.on('end', () => {
         );
         return;
       }
-      allow();
+      allow(undefined);
       return;
     }
 
     const fileTopRaw = fileTopResult.stdout.trim();
-    if (fileTopRaw === cwdTopRaw) { allow(); return; }
+    if (fileTopRaw === cwdTopRaw) { allow(undefined); return; }
 
     // BLOCK: file resolves to a different git root than the active project.
     block(
@@ -127,6 +136,6 @@ process.stdin.on('end', () => {
     );
   } catch {
     // Silent fail-open — never block a valid tool call due to a hook bug.
-    allow();
+    allow(undefined);
   }
 });

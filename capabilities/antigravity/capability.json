@@ -1,9 +1,9 @@
 {
   "id": "antigravity",
   "role": "runtime",
-  "version": "1.10.0",
+  "version": "1.12.0",
   "title": "Antigravity",
-  "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+  "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
   "tier": "core",
   "requires": [],
   "engines": {
@@ -34,7 +34,8 @@
           "prefix": "gsd-",
           "nesting": "flat",
           "recursive": false,
-          "converter": "convertClaudeCommandToAntigravitySkill"
+          "converter": "convertClaudeCommandToAntigravitySkill",
+          "home": ".gemini/config"
         },
         {
           "kind": "agents",
@@ -42,7 +43,8 @@
           "prefix": "gsd-",
           "nesting": "flat",
           "recursive": false,
-          "converter": "convertClaudeAgentToAntigravityAgent"
+          "converter": "convertClaudeAgentToAntigravityAgent",
+          "home": ".gemini/config"
         }
       ],
       "local": [
@@ -64,7 +66,10 @@
         }
       ]
     },
-    "triggerPrecedence": ["skills", "commands"],
+    "triggerPrecedence": [
+      "skills",
+      "commands"
+    ],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "settings-json",
     "hookEvents": "gemini",
@@ -115,7 +120,7 @@
       "binary": "agy",
       "args": [
         "--print-timeout",
-        "540s",
+        "{{nativeTimeout}}",
         "{{model}}",
         "-p",
         "{{prompt}}"
@@ -126,11 +131,12 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 600000,
+    "timeoutConfigKey": "review.timeouts.antigravity",
     "emptyOutput": "handler-owned",
     "reviewsSection": "Antigravity",
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
-    "promptBudgetKey": null,
+    "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
     "modelConfigKey": "review.models.agy",
     "handler": "antigravity"
   },
@@ -139,6 +145,16 @@
       "type": "string",
       "default": "",
       "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+    },
+    "review.max_prompt_tokens_per_reviewer.antigravity": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
+    },
+    "review.timeouts.antigravity": {
+      "type": "number",
+      "default": -1,
+      "description": "Outer wall-clock timeout override (seconds) for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
     }
   }
 }

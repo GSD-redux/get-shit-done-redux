@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/adr/0001-runtime.md fixtures are synthetic files written into a tmpDir, never the shipped docs/ tree.
 // allow-test-rule: source-text-is-the-product (see #1990)
 // Command/workflow markdown is deployed runtime product; source-text assertions
 // below verify the installed command contract. CLI assertions exercise real

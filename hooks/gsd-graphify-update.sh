@@ -9,17 +9,20 @@
 # graphify.auto_update defaults to false so existing users see no behavior change.
 #
 # Gates (in fast-fail order — each shaves work off the common non-dispatch path):
+#   0. .planning/config.json exists AND $CI unset/empty (#3729 — both are
+#      parse-free shell tests; running them before the Gate 1 node spawn keeps
+#      non-GSD repositories and CI off the spawn path entirely, which on
+#      Windows otherwise flashes a console window per Bash call)
 #   1. Stdin payload present and tool_name == "Bash"
 #   2. tool_input.command matches a HEAD-advancing git op (shell-direct or
 #      the exact `gsd-tools query commit` command shape; the SDK command invokes
 #      git internally, so the literal "git commit" substring never appears —
 #      see #3653)
-#   3. $CI is unset/empty
-#   4. Inside a git repo
-#   5. Current branch == default branch (git.base_branch override, else main/master/trunk)
-#   6. .planning/config.json sets graphify.enabled=true AND graphify.auto_update=true
-#   7. graphify binary on PATH
-#   8. No rebuild already in flight (PID lock — kill -0 check, stale-tolerant)
+#   3. Inside a git repo
+#   4. Current branch == default branch (git.base_branch override, else main/master/trunk)
+#   5. .planning/config.json sets graphify.enabled=true AND graphify.auto_update=true
+#   6. graphify binary on PATH
+#   7. No rebuild already in flight (PID lock — kill -0 check, stale-tolerant)
 #
 # When all gates pass:
 #   - Writes .planning/graphs/.last-build-status.json with status="running"
@@ -29,6 +32,13 @@
 # Returns 0 in all cases. Never blocks the user-facing tool call.
 
 set -uo pipefail
+
+# Gate 0 — GSD project at all, and not CI (#3729). Both are pure shell tests;
+# they must precede the Gate 1 node spawn so the common non-GSD/CI path pays
+# for zero child processes. Hoisting is behavior-preserving: old Gates 3 and 6
+# made the same decisions, just later.
+[ -f .planning/config.json ] || exit 0
+[ -z "${CI:-}" ] || exit 0
 
 # Gate 1 — tool_name == Bash; extract command
 INPUT=$(cat 2>/dev/null || true)
@@ -71,22 +81,17 @@ case "$COMMAND" in
   *) exit 0 ;;
 esac
 
-# Gate 3 — not CI
-[ -z "${CI:-}" ] || exit 0
-
-# Gate 4 — inside git repo
+# Gate 3 — inside git repo
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
-# Gate 5 — current branch == default branch
+# Gate 4 — current branch == default branch (config guaranteed by Gate 0)
 DEFAULT_BRANCH=""
-if [ -f .planning/config.json ]; then
-  DEFAULT_BRANCH=$(node -e '
+DEFAULT_BRANCH=$(node -e '
 try {
   const c = require("./.planning/config.json");
   process.stdout.write(c.git?.base_branch || "");
 } catch { process.stdout.write(""); }
 ' 2>/dev/null || echo "")
-fi
 if [ -z "$DEFAULT_BRANCH" ]; then
   for cand in main master trunk; do
     if git rev-parse --verify "$cand" >/dev/null 2>&1; then
@@ -100,8 +105,7 @@ fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ] || exit 0
 
-# Gate 6 — both graphify gates true in config
-[ -f .planning/config.json ] || exit 0
+# Gate 5 — both graphify gates true in config (file existence checked at Gate 0)
 GATES=$(node -e '
 try {
   const c = require("./.planning/config.json");
@@ -111,11 +115,11 @@ try {
 ' 2>/dev/null || echo "0")
 [ "$GATES" = "1" ] || exit 0
 
-# Gate 7 — graphify on PATH
+# Gate 6 — graphify on PATH
 GRAPHIFY_BIN=$(command -v graphify 2>/dev/null || true)
 [ -n "$GRAPHIFY_BIN" ] || exit 0
 
-# Gate 8 — no live rebuild in flight
+# Gate 7 — no live rebuild in flight
 mkdir -p .planning/graphs
 LOCK_FILE=".planning/graphs/.rebuild.lock"
 if [ -f "$LOCK_FILE" ]; then

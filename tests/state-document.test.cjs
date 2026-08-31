@@ -728,11 +728,18 @@ describe('#3204 buildStateFrontmatter total_phases — negative space / boundari
     );
   });
 
-  test('a single milestone section cannot conflate siblings', () => {
-    // Row 6 — exactly ONE '## v2.0' section owning phases, with the asserted
-    // milestone ('v9.9') absent from the roadmap entirely. One milestone
-    // heading can never satisfy hasMilestoneSectioning's >=2 threshold, so
-    // this is NOT sectioned and the roadmap-declared count is still used.
+  test('a single milestone section that is not the asserted one withholds the total (#3642)', () => {
+    // Row 6, REWRITTEN by #3642 (maintainer-confirmed bug; the old contract
+    // here was the bug). Exactly ONE '## v2.0' section owning phases, with
+    // the asserted milestone ('v9.9') absent from the roadmap entirely. The
+    // old row pinned that hasMilestoneSectioning's >=2 threshold reads this
+    // as flat, so the roadmap-declared count (4) was used for v9.9 — which
+    // IS the leak #3642 reports: the v2.0 section's phases became a
+    // different milestone's total. The #3354 withhold doctrine governs both
+    // faces now: neither the whole-document count (it is the foreign
+    // section's phases) NOR the on-disk dir count is authoritative for a
+    // milestone absent from the roadmap, so the STORED value (99, chosen to
+    // differ from every substitute) must be preserved.
     const roadmap = [
       '# Roadmap',
       '',
@@ -746,15 +753,29 @@ describe('#3204 buildStateFrontmatter total_phases — negative space / boundari
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
-      buildStateMd({ milestone: 'v9.9', milestoneName: 'Absent', totalPhases: 4 }),
+      buildStateMd({ milestone: 'v9.9', milestoneName: 'Absent', totalPhases: 99 }),
     );
     seedPhaseDirs(tmpDir, [1, 2]);
 
     const out = recordSessionAndReadTotalPhases(tmpDir);
     assert.strictEqual(
       Number(out.progress.total_phases),
-      4,
-      `a single milestone section cannot conflate siblings; expected the roadmap count (4), got ${out.progress && out.progress.total_phases}`,
+      99,
+      `#3642: a single non-matching section must not leak its phases into the asserted milestone's total; stored 99 expected, got ${out.progress && out.progress.total_phases}`,
+    );
+    // The clobber must also be SURFACED, not silent: drive the seam directly
+    // (runGsdTools discards stderr on success) and require the #3642 warning
+    // naming the asserted milestone.
+    const { runNode } = require('./helpers/process-seam.cjs');
+    const { TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+    const rec = runNode(
+      [TOOLS_PATH, 'state', 'json', '--raw'],
+      { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
+    );
+    assert.ok(rec.exitCode === 0, `state json --raw failed: ${rec.stderr}`);
+    assert.ok(
+      (rec.stderr || '').includes('v9.9') && (rec.stderr || '').includes('#3642'),
+      `#3642: expected a stderr warning naming the asserted milestone and the issue, got stderr=${JSON.stringify(rec.stderr)}`,
     );
   });
 
@@ -1052,16 +1073,19 @@ describe('#3185 review — hasMilestoneSectioning shapes the original suite miss
     );
   });
 
-  test('MAJOR: wrapper + single nested milestone keeps the roadmap count', () => {
-    // Adversarial review MAJOR (#3204 reintroduction): every ancestor in a
-    // nesting chain was counted as its own candidate section under the
-    // #3184 rewrite, so a generic wrapper heading with only ONE real
-    // milestone nested under it was misclassified as sectioned. Mirrors
-    // this repo's own bundled template shape (gsd-core/templates/roadmap.md:
-    // '## Phases' -> '### 🚧 v1.1 [Name] (In Progress)' -> '#### Phase N:').
-    // The asserted milestone ('v9.9') is deliberately unbound so the
-    // assertion exercises hasMilestoneSectioning itself, not
-    // isMilestoneBoundedInRoadmap.
+  test('MAJOR: wrapper + single nested milestone, asserted elsewhere, withholds the total (#3642)', () => {
+    // Adversarial review MAJOR (#3204 reintroduction), REWRITTEN by #3642
+    // (maintainer-confirmed bug). The row's original purpose survives: a
+    // generic wrapper ('## Phases') with ONE real milestone nested under it
+    // (bundled template shape: '### 🚧 v1.1 [Name]' -> '#### Phase N:') is
+    // NOT milestone-SECTIONED — hasMilestoneSectioning's >=2 still says
+    // false, pinned by the #3642 seam rows. But the row's old ASSERTION
+    // pinned the leak #3642 reports: with the asserted milestone ('v9.9')
+    // deliberately unbound, the roadmap count (4) — which IS the v1.1
+    // section's phases — was written as v9.9's total. Pre-#3354 that arm
+    // existed to stop a clobber to the disk count (2); the #3354/#3642
+    // withhold doctrine supersedes it: preserve the stored value (8, chosen
+    // to differ from every substitute) and warn.
     const roadmap = [
       '# Roadmap',
       '',
@@ -1078,15 +1102,15 @@ describe('#3185 review — hasMilestoneSectioning shapes the original suite miss
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
-      buildStateMd({ milestone: 'v9.9', milestoneName: 'Unbound', totalPhases: 2 }),
+      buildStateMd({ milestone: 'v9.9', milestoneName: 'Unbound', totalPhases: 8 }),
     );
     seedPhaseDirs(tmpDir, [1, 2]);
 
     const out = recordSessionAndReadTotalPhases(tmpDir);
     assert.strictEqual(
       Number(out.progress.total_phases),
-      4,
-      `wrapper + single nested milestone must keep the roadmap-declared count (4), not clobber to the disk count of 2. Got ${out.progress && out.progress.total_phases}`,
+      8,
+      `#3642: a single real section's phases must not become an absent milestone's total; stored 8 expected. Got ${out.progress && out.progress.total_phases}`,
     );
   });
 });
@@ -1503,8 +1527,16 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
     );
     seedPhaseDirs(tmpDir, [1]);
 
+    // ADR-3473 §8.4 / #3358: a bare positional phase ("state begin-phase 2")
+    // is now a rejected, undeclared token — see
+    // tests/state.test.cjs positionalPlannedPhaseLeavesStateMdUntouched_3358,
+    // the sibling regression for "planned-phase" that locks in exactly this
+    // rejection. Use the documented "--phase N" flag form (see
+    // CLI-TOOLS.md line 116 in the docs directory) instead; this test's own
+    // assertions were never about the bare-positional shape itself, only
+    // about total_phases surviving the resync.
     const rec = runNode(
-      [TOOLS_PATH, 'state', 'begin-phase', '2'],
+      [TOOLS_PATH, 'state', 'begin-phase', '--phase', '2'],
       { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
     );
     assert.ok(rec.exitCode === 0, `state begin-phase failed: ${rec.stderr}`);
@@ -1563,8 +1595,16 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
     );
     seedPhaseDirs(tmpDir, [1]);
 
+    // ADR-3473 §8.4 / #3358: a bare positional phase ("state planned-phase 2")
+    // is now a rejected, undeclared token — see
+    // tests/state.test.cjs positionalPlannedPhaseLeavesStateMdUntouched_3358,
+    // the regression test that locks in exactly this rejection for this same
+    // subcommand. Use the documented "--phase N" flag form (see
+    // COMMANDS.md line 2192 in the docs directory) instead; this test's own
+    // assertions were never about the bare-positional shape itself, only
+    // about total_phases surviving the resync.
     const rec = runNode(
-      [TOOLS_PATH, 'state', 'planned-phase', '2', '--name', 'Core'],
+      [TOOLS_PATH, 'state', 'planned-phase', '--phase', '2', '--name', 'Core'],
       { cwd: tmpDir, env: { ...process.env, ...TEST_ENV_BASE }, timeoutMs: 60000 },
     );
     assert.ok(rec.exitCode === 0, `state planned-phase failed: ${rec.stderr}`);
@@ -1597,3 +1637,122 @@ describe('#3573 total_phases — roadmap absent with an asserted milestone', () 
 });
   });
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3642: hasMilestoneSectioning's >=2 threshold let a single non-matching
+// milestone section's phases leak into an unrelated asserted milestone's
+// total_phases. Fix: the >=1 sibling (hasAnyMilestoneSection) governs the
+// unbounded branch's flat test, so the single-section shape takes the #3354
+// withhold (stored value preserved + warning) instead of substituting the
+// whole-document count. Controls pin what must NOT change.
+// Matrix: .gsd/bug/fix-3642-milestone-sectioning-leak/50-test-matrix.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3642 — single-section leak controls and seam pins', () => {
+  const { test, beforeEach, afterEach } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('fs');
+  const path = require('path');
+  const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+
+  // Compact local builders (this file's sections are deliberately
+  // self-contained; the #3204 suite's identical builders live in its own
+  // scope).
+  function seedDirs(tmpDir, nums) {
+    for (const n of nums) {
+      const padded = String(n).padStart(2, '0');
+      const dir = path.join(tmpDir, '.planning', 'phases', `${padded}-phase-${n}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${padded}-01-PLAN.md`), '# Plan\n');
+    }
+  }
+
+  function stateMd({ milestone, totalPhases }) {
+    return [
+      '---',
+      'gsd_state_version: 1.0',
+      `milestone: ${milestone}`,
+      'milestone_name: M',
+      'current_phase: "01"',
+      'status: executing',
+      'progress:',
+      `  total_phases: ${totalPhases}`,
+      '  completed_phases: 0',
+      '  total_plans: 0',
+      '  completed_plans: 0',
+      '  percent: 0',
+      '---',
+      '',
+      '# GSD State',
+      '',
+      '## Current Position',
+      '',
+      '**Current Phase:** 01',
+      '**Status:** Executing',
+      '',
+    ].join('\n');
+  }
+
+  function writeTotalAfterRecord(tmpDir) {
+    const recordResult = runGsdTools(
+      ['state', 'record-session', '--stopped-at', 'Phase 1, Plan 1', '--resume-file', 'none'],
+      tmpDir,
+    );
+    assert.ok(recordResult.success, `state record-session failed: ${recordResult.error}`);
+    const jsonResult = runGsdTools(['state', 'json', '--raw'], tmpDir);
+    assert.ok(jsonResult.success, `state json --raw failed: ${jsonResult.error}`);
+    return Number(JSON.parse(jsonResult.output).progress.total_phases);
+  }
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3642-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('control: a single section that MATCHES the assert keeps its own count', () => {
+    // Bounded arm unchanged: asserted v2.0 IS bound to the one heading, so
+    // the section's own count (4) is used — neither the stored (7) nor the
+    // disk count (2).
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap', '', '## v2.0', '## Phase 1: One', '## Phase 2: Two',
+      '## Phase 3: Three', '## Phase 4: Four', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateMd({ milestone: 'v2.0', totalPhases: 7 }));
+    seedDirs(tmpDir, [1, 2]);
+    assert.strictEqual(writeTotalAfterRecord(tmpDir), 4,
+      'bounded single section keeps its own count (4)');
+  });
+
+  test('control: a FLAT roadmap with an unbounded assert keeps the roadmap count (#2828 doctrine)', () => {
+    // Zero vocabulary headings → genuinely flat → the whole-document count
+    // is correct (no milestone section exists to conflate with).
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap', '', '## Phase 1: One', '## Phase 2: Two',
+      '## Phase 3: Three', '## Phase 4: Four', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateMd({ milestone: 'v9.9', totalPhases: 7 }));
+    seedDirs(tmpDir, [1, 2]);
+    assert.strictEqual(writeTotalAfterRecord(tmpDir), 4,
+      'flat roadmap + unbounded assert keeps the roadmap count (4)');
+  });
+
+  test('seam pins: hasAnyMilestoneSection counts >=1; hasMilestoneSectioning stays >=2', () => {
+    const roadmapParser = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'roadmap-parser.cjs'));
+    assert.strictEqual(typeof roadmapParser.hasAnyMilestoneSection, 'function',
+      'hasAnyMilestoneSection must be exported for buildStateFrontmatter (#3642)');
+    const one = ['# Roadmap', '', '## v2.0', '## Phase 1: One'].join('\n');
+    const two = ['# Roadmap', '', '## v1.0', '## Phase 1: One', '', '## v2.0', '## Phase 2: Two'].join('\n');
+    const flat = ['# Roadmap', '', '## Phase 1: One'].join('\n');
+    assert.strictEqual(roadmapParser.hasAnyMilestoneSection(one), true, 'one signal heading is a section');
+    assert.strictEqual(roadmapParser.hasAnyMilestoneSection(two), true, 'two signal headings is a section');
+    assert.strictEqual(roadmapParser.hasAnyMilestoneSection(flat), false, 'zero signal headings is flat');
+    assert.strictEqual(roadmapParser.hasMilestoneSectioning(one), false, '>=2 predicate unchanged: one heading is NOT sectioning');
+    assert.strictEqual(roadmapParser.hasMilestoneSectioning(two), true, '>=2 predicate unchanged: two headings is sectioning');
+  });
+});

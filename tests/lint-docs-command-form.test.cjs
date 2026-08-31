@@ -1,5 +1,9 @@
 'use strict';
 
+// docs-guard-exempt: this file only WRITES synthetic 'docs/...' fixtures into
+// a throwaway temp git repo (writeFile()) to exercise scripts/lint-docs-command-form.cjs's
+// own behavior — it never reads real shipped docs/ content.
+
 /**
  * TDD tests for scripts/lint-docs-command-form.cjs (#2903).
  *

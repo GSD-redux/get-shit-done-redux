@@ -210,10 +210,35 @@ const SHA512_INTEGRITY_RE = /^sha512-[A-Za-z0-9+/]{86}==$/;
 // hard validation error — fail closed so the capability install/load is rejected loudly.
 const SAFE_HOOK_SCRIPT_RE = /^[A-Za-z0-9._/-]+$/;
 
+// #3631 (defense-in-depth, mirrors capability-lifecycle.cts — KEEP BOTH IN SYNC): a declared script
+// path must not point into the space bundleContentHash (capability-consent.cts) excludes from the
+// consent-binding digest. A file whose basename ends `.pyc`/`.pyo` can contain perfectly valid
+// JavaScript and would be executed by `node` regardless of extension, and a `__pycache__`/
+// `.pytest_cache` segment marks a directory whose digest marker is suppressed — so a MANIFEST-DECLARED
+// executable surface must never be able to reach either, or the exclusion becomes reachable from a
+// path an attacker fully controls at declare-time rather than only via post-consent tamper.
+// Regex asymmetry is DELIBERATE, KEEP BOTH RULES IN SYNC WITH capability-lifecycle.cts (byte-identical
+// text, verified by the isSafeHookScriptPath parity test in tests/capability-registry.test.cjs):
+//   (i)   PYCACHE_SUFFIX_RE is case-INSENSITIVE (`/i`) on purpose — a validator should be STRICTER than
+//         the digest it defends, so it rejects `x.PYC` too even though bundleContentHash's own suffix
+//         match (hasPycacheFileSuffix, capability-consent.cts) is byte-exact and would still hash it.
+//   (ii)  The __pycache__/.pytest_cache SEGMENT match is case-SENSITIVE to match the digest's own
+//         byte-exact, case-sensitive directory-basename comparison (CPython always writes a lowercase
+//         `__pycache__`) — a validator segment match looser than the digest here would reject paths the
+//         digest would still hash, which is over-strict in the wrong direction for a defense-in-depth
+//         check layered on top of an already-correct digest.
+//   (iii) The `[/\\]` backslash alternations in both regexes are defensive/UNREACHABLE in practice:
+//         SAFE_HOOK_SCRIPT_RE (above) already rejects any backslash character outright, so a script
+//         string containing `\` never reaches either PYCACHE_*_RE check.
+const PYCACHE_SEGMENT_RE = /(?:^|[/\\])(__pycache__|\.pytest_cache)(?:[/\\]|$)/;
+const PYCACHE_SUFFIX_RE = /\.(pyc|pyo)$/i;
+
 /**
  * #1460 (R): true when a relative hook-script path is shell-safe (see SAFE_HOOK_SCRIPT_RE).
  * Rejects absolute paths, `..` segments, a leading `-` on any path segment, and any char
- * outside the allowlist (whitespace / shell metacharacters / control / NUL).
+ * outside the allowlist (whitespace / shell metacharacters / control / NUL). #3631: also rejects a
+ * path with a `__pycache__`/`.pytest_cache` segment or a `.pyc`/`.pyo` basename suffix (defense in
+ * depth — keeps a declared executable surface out of the digest-excluded space).
  */
 function isSafeHookScriptPath(script) {
   if (typeof script !== 'string' || script.length === 0) return false;
@@ -225,6 +250,8 @@ function isSafeHookScriptPath(script) {
   for (const seg of segments) {
     if (seg.startsWith('-')) return false;
   }
+  if (PYCACHE_SEGMENT_RE.test(script)) return false;
+  if (PYCACHE_SUFFIX_RE.test(path.basename(script))) return false;
   return true;
 }
 
@@ -369,6 +396,11 @@ function validateCapability(cap, folderId) {
     errors.push(...validateRuntimeBody(cap));
     // A host that is ALSO a reviewer keeps exactly one manifest (ADR-2782 D1).
     errors.push(...validateReviewerBody(cap));
+    // ADR-3646: a runtime capability installs a host CLI, it does not resolve
+    // task content — taskContentResolver is feature-only.
+    if (cap.taskContentResolver !== undefined) {
+      errors.push('role:runtime capability must not have a "taskContentResolver" body (feature-only field)');
+    }
   } else if (cap.role === 'reviewer') {
     // ADR-2782 D3 — a lane that is not an install target. No runtime body, no
     // install surface, no runtimeCompat (it surfaces through no host runtime).
@@ -691,6 +723,118 @@ function validateFeatureBody(cap) {
     }
   }
 
+  // ADR-3646: optional per-task external-tracker content-resolution seam.
+  errors.push(...validateTaskContentResolver(cap));
+
+  return errors;
+}
+
+/**
+ * ADR-3646 — validate an OPTIONAL `taskContentResolver` body on a `role:
+ * "feature"` capability. Absence is never an error (most manifests won't
+ * have one); presence is strictly validated.
+ *
+ * Wrapped in try/catch to degrade any unexpected throw (a hostile Proxy, a
+ * throwing getter, etc.) to a single validation error rather than crashing
+ * every consumer of loadRegistry, per the #1461 OVL-1 discipline that
+ * `validateReviewerBody` follows.
+ *
+ * @param {object} cap  The parsed capability manifest.
+ * @returns {string[]}  Array of error strings; empty = valid or absent.
+ */
+function validateTaskContentResolver(cap) {
+  try {
+    return validateTaskContentResolverFields(cap);
+  } catch (err) {
+    return ['capability taskContentResolver body could not be validated: ' + safeErrorMessage(err)];
+  }
+}
+
+/**
+ * Upper bound for `taskContentResolver.invoke.timeoutMs`, specific to this
+ * field only. `isPositiveIntegerMs()` has no ceiling and stays that way — it
+ * is shared with the reviewer lane's `timeoutFloorMs` and probe `timeoutMs`,
+ * which may legitimately need a longer or unbounded value. Without a ceiling
+ * here, a manifest could declare `Number.MAX_SAFE_INTEGER` and let
+ * `resolve-content` hang near-indefinitely on a stuck/malicious resolver,
+ * defeating the feature's "bounded subprocess" design intent.
+ */
+const TASK_CONTENT_RESOLVER_TIMEOUT_CEILING_MS = 120000;
+
+function validateTaskContentResolverFields(cap) {
+  const errors = [];
+  if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return errors;
+
+  const tcr = cap.taskContentResolver;
+  if (tcr === undefined) return errors; // optional — never an error to omit
+
+  const ctx = 'capability "' + (typeof cap.id === 'string' ? cap.id : '(unknown)') + '"';
+
+  if (typeof tcr !== 'object' || tcr === null || Array.isArray(tcr)) {
+    const got = tcr === null ? 'null' : Array.isArray(tcr) ? 'array' : typeof tcr;
+    errors.push(
+      ctx + ' taskContentResolver must be an object (got: ' + got + '). ' +
+      'Omit the key entirely to declare no resolver — an explicit null is not an omission.',
+    );
+    return errors; // cannot validate fields of a non-object
+  }
+
+  // ── trackerPrefix — same grammar as a capability id ─────────────────────
+  if (typeof tcr.trackerPrefix !== 'string' || tcr.trackerPrefix.length === 0 || !KEBAB_RE.test(tcr.trackerPrefix)) {
+    errors.push(
+      ctx + ' taskContentResolver.trackerPrefix must be a non-empty kebab-case string matching ' +
+      String(KEBAB_RE) + ' (got: ' + describeValue(tcr.trackerPrefix) + ')',
+    );
+  }
+
+  // ── invoke ────────────────────────────────────────────────────────────
+  const inv = tcr.invoke;
+  if (typeof inv !== 'object' || inv === null || Array.isArray(inv)) {
+    const got = inv === null ? 'null' : Array.isArray(inv) ? 'array' : typeof inv;
+    errors.push(ctx + ' taskContentResolver.invoke must be an object (got: ' + got + ')');
+    return errors; // cannot validate sub-fields of a non-object
+  }
+
+  if (typeof inv.binary !== 'string' || inv.binary.length === 0) {
+    errors.push(ctx + ' taskContentResolver.invoke.binary must be a non-empty string');
+  }
+
+  if (!Array.isArray(inv.args)) {
+    errors.push(ctx + ' taskContentResolver.invoke.args must be an array of strings');
+  } else {
+    let hasPlaceholder = false;
+    for (const a of inv.args) {
+      if (typeof a !== 'string') {
+        errors.push(ctx + ' taskContentResolver.invoke.args entries must be strings (got: ' + describeValue(a) + ')');
+      } else if (a === '{{id}}') {
+        hasPlaceholder = true;
+      }
+    }
+    if (!hasPlaceholder) {
+      errors.push(
+        ctx + ' taskContentResolver.invoke.args must contain a "{{id}}" placeholder — ' +
+        'without it the resolved tracker id could never reach the resolver subprocess',
+      );
+    }
+  }
+
+  if (!isPositiveIntegerMs(inv.timeoutMs)) {
+    errors.push(
+      ctx + ' taskContentResolver.invoke.timeoutMs must be a positive integer of milliseconds — ' +
+      'an unbounded resolver call could hang task execution indefinitely ' +
+      '(got: ' + describeValue(inv.timeoutMs) + ')',
+    );
+  } else if (inv.timeoutMs > TASK_CONTENT_RESOLVER_TIMEOUT_CEILING_MS) {
+    // Ceiling specific to this field — `isPositiveIntegerMs()` itself stays
+    // unbounded because it is shared with the reviewer lane's
+    // `timeoutFloorMs`/probe `timeoutMs`, which have no such ceiling.
+    errors.push(
+      ctx + ' taskContentResolver.invoke.timeoutMs must not exceed ' +
+      TASK_CONTENT_RESOLVER_TIMEOUT_CEILING_MS + 'ms — an unbounded-in-practice value defeats the ' +
+      '"bounded subprocess" design intent (got: ' + inv.timeoutMs + ')',
+    );
+  }
+
   return errors;
 }
 
@@ -916,7 +1060,7 @@ const HTTP_ONLY_INVOKE_FIELDS  = ['hostConfigKey', 'defaultHost', 'path', 'model
 
 // Feature-only fields are as forbidden on a lane-only capability as on a runtime
 // one; a `role: "reviewer"` capability owns no artefacts and wires no loop point.
-const FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER = ['skills', 'agents', 'steps', 'contributions', 'gates', 'hooks', 'activationKey'];
+const FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER = ['skills', 'agents', 'steps', 'contributions', 'gates', 'hooks', 'activationKey', 'taskContentResolver'];
 
 // GATE A: installSurface → allowed hooksSurface values (DEFECT.GENERATIVE-FIX: parity invariant)
 // Derived from the actual pairings in the 16 real runtime descriptors.
@@ -1561,6 +1705,16 @@ function validateRuntimeBody(cap) {
           'runtime.orchestratorExec.promptFlag must be a string or null (got: ' + JSON.stringify(oe.promptFlag) + ')',
         );
       }
+
+      // modelFlag — optional; string or null (#3714). `null`/absent means the
+      // host offers no per-invocation model override on this exec path; a
+      // string names the flag that pins the executor's model (codex: --model).
+      // Deliberately asymmetric: only codex declares this today.
+      if (oe.modelFlag !== undefined && oe.modelFlag !== null && typeof oe.modelFlag !== 'string') {
+        errors.push(
+          'runtime.orchestratorExec.modelFlag must be a string or null (got: ' + JSON.stringify(oe.modelFlag) + ')',
+        );
+      }
     }
   }
 
@@ -1670,6 +1824,9 @@ const KNOWN_REVIEWER_FIELDS = new Set([
   // missed a configured model and silently disabled the pinned-model escape hatch
   // #2073 added. A convention one shipped lane already violates is not a contract.
   'modelConfigKey',
+  // `timeoutConfigKey` added by #3274, same optional/backward-compatible shape as
+  // `modelConfigKey` above: a manifest authored before this field existed must keep validating.
+  'timeoutConfigKey',
   'handler',
 ]);
 
@@ -2214,6 +2371,17 @@ function validateReviewerBodyFields(cap) {
     errors.push(
       ctx + ' reviewer.modelConfigKey must be a dotted config key or null ' +
       '(got: ' + describeValue(r.modelConfigKey) + ')',
+    );
+  }
+
+  // OPTIONAL, mirroring modelConfigKey's D4 forward/backward-compat treatment (#3274): a manifest
+  // authored before this field existed must keep validating. Absent/null means "no override for
+  // this lane, use timeoutFloorMs". An empty string is neither absent nor a key, and is rejected.
+  if (r.timeoutConfigKey !== undefined && r.timeoutConfigKey !== null &&
+      (typeof r.timeoutConfigKey !== 'string' || r.timeoutConfigKey.length === 0)) {
+    errors.push(
+      ctx + ' reviewer.timeoutConfigKey must be a dotted config key or null ' +
+      '(got: ' + describeValue(r.timeoutConfigKey) + ')',
     );
   }
 
@@ -3147,6 +3315,11 @@ function validateCrossCapability(capMap, centralKeys, centralPatterns = []) {
   const laneSlugClaims = new Map();     // slug           → capId[]
   const laneFlagClaims = new Map();     // flag           → capId[]
   const laneSectionClaims = new Map();  // reviewsSection → capId[]
+  // ADR-3646: task-content resolver tracker-prefix uniqueness across the
+  // MERGED first-party ∪ overlay set, mirroring the reviewer-lane collision
+  // pattern above — two resolvers claiming the same prefix would make
+  // `execute:task` dispatch ambiguous (which capability's resolver runs?).
+  const trackerPrefixClaims = new Map(); // trackerPrefix  → capId[]
 
   // Claims are ACCUMULATED and reported after the sweep, never reported on the
   // second claimant. Reporting pairwise-on-collision looks equivalent and is not:
@@ -3167,6 +3340,15 @@ function validateCrossCapability(capMap, centralKeys, centralPatterns = []) {
   };
 
   for (const [capId, cap] of capMap) {
+    // ADR-3646: a MALFORMED taskContentResolver body was already reported by
+    // validateCapability — do not double-report; only claim well-shaped
+    // bodies. Independent of the reviewer-lane checks below, so it runs even
+    // for capabilities that carry no `reviewer` body at all.
+    const tcr = cap.taskContentResolver;
+    if (typeof tcr === 'object' && tcr !== null && !Array.isArray(tcr)) {
+      claim(trackerPrefixClaims, tcr.trackerPrefix, capId);
+    }
+
     const r = cap.reviewer;
     // A capability with no lane contributes to no uniqueness set. A MALFORMED
     // body was already reported by validateCapability — do not double-report.
@@ -3188,6 +3370,7 @@ function validateCrossCapability(capMap, centralKeys, centralPatterns = []) {
     [laneSlugClaims, 'slug'],
     [laneFlagClaims, 'flag'],
     [laneSectionClaims, 'reviewsSection'],
+    [trackerPrefixClaims, 'taskContentResolver.trackerPrefix'],
   ]) {
     for (const [key, claimants] of claims) {
       if (claimants.length < 2) continue;
@@ -3409,25 +3592,54 @@ function topoSortContributions(entries) {
 // ─── Gen-time wired guard ─────────────────────────────────────────────────────
 
 /**
+ * Hook group (capability.json array name) → hook kind (dispatch discriminator).
+ * Single source of truth for both validateHooksWired and the scanner-parity
+ * test in tests/capability-registry.test.cjs (#3606).
+ */
+const HOOK_GROUP_KINDS = Object.freeze({
+  steps: 'step',
+  contributions: 'contribution',
+  gates: 'gate',
+});
+
+/**
  * Validate that every hook point declared by a capability has a corresponding
- * `loop render-hooks <point>` call site in one of the host-loop workflow files.
+ * `loop render-hooks <point>` call site in one of the host-loop workflow files,
+ * AND — #3606 — that the call site's dispatch text covers the hook's KIND.
+ *
+ * A call site proves hooks are rendered, not dispatched: a consumer that
+ * iterates only `kind == "gate"` (or narrows `kind == "step"` to one
+ * `ref.skill`) silently drops every other registered kind — a capability can
+ * be wired, enabled, resolved active, and never run. See
+ * gsd-core/references/loop-hook-dispatch.md ("A point whose workflow
+ * hand-rolls one kind does not implement this contract").
  *
  * Only valid loop points (in VALID_LOOP_POINTS) are checked here. Invalid points
  * are already caught by validateStep/validateContribution/validateGate — do not
  * double-report.
  *
+ * KNOWN LIMITATION (#3606): coverage is the UNION across all call sites for a
+ * point in the five STEP_WORKFLOWS host files. Consumers outside that universe
+ * (quick.md, autonomous.md, code-review*.md, audit-milestone.md,
+ * secure-phase.md, validate-phase.md) are not per-file checked — a narrowed
+ * consumer there passes as long as one host file covers the point. Per-file
+ * coverage maps are the tightening path.
+ *
  * @param {object}   cap       Validated capability object.
- * @param {Set<string>} wiredSet  Set of points that have call sites in host workflows.
- * @returns {string[]}          Array of error strings; empty means all points are wired.
+ * @param {Map<string, Set<string>>} wiredKinds  Per point, the hook kinds the
+ *   host workflows' call-site dispatch text covers (getWiredKinds). A point
+ *   absent from the map is unwired.
+ * @returns {string[]}          Array of error strings; empty means all points
+ *   are wired and every registered kind is covered.
  */
-function validateHooksWired(cap, wiredSet) {
+function validateHooksWired(cap, wiredKinds) {
   const errors = [];
   const capId = cap.id || '(unknown)';
 
-  function checkPoint(point, groupName, idx) {
+  function checkPoint(point, groupName, kind, idx) {
     // Only flag valid points that are unwired — invalid points are schema-validator's job.
     if (!VALID_LOOP_POINTS.has(point)) return;
-    if (!wiredSet.has(point)) {
+    if (!wiredKinds.has(point)) {
       errors.push(
         'capability "' + capId + '" ' + groupName + '[' + idx + '].point "' + point +
         '" is declared but not wired in any host-loop workflow ' +
@@ -3435,20 +3647,34 @@ function validateHooksWired(cap, wiredSet) {
         'Wire the call site in the host workflow ' +
         '(see scripts/gen-loop-host-contract.cjs STEP_WORKFLOWS) or remove the hook.',
       );
+      return;
+    }
+    const covered = wiredKinds.get(point);
+    if (covered.size === 0) {
+      errors.push(
+        'capability "' + capId + '" ' + groupName + '[' + idx + '].point "' + point +
+        '" has `loop render-hooks ' + point + '` call site(s), but their dispatch text covers NO ' +
+        'hook kind — every consumer is narrowed to specific hooks. Dispatch every registered kind ' +
+        'per gsd-core/references/loop-hook-dispatch.md.',
+      );
+      return;
+    }
+    if (!covered.has(kind)) {
+      errors.push(
+        'capability "' + capId + '" ' + groupName + '[' + idx + '].point "' + point +
+        '" registers a ' + kind + ' hook, but the host call site\'s dispatch text never ' +
+        'covers `kind == "' + kind + '"` (it covers: ' + [...covered].sort().join(', ') + '). ' +
+        'A hand-rolled single-kind consumer silently never dispatches the other kinds — ' +
+        'dispatch every registered kind per gsd-core/references/loop-hook-dispatch.md.',
+      );
     }
   }
 
-  for (let i = 0; i < (cap.steps || []).length; i++) {
-    const hook = cap.steps[i];
-    if (hook.point !== undefined) checkPoint(hook.point, 'steps', i);
-  }
-  for (let i = 0; i < (cap.contributions || []).length; i++) {
-    const hook = cap.contributions[i];
-    if (hook.point !== undefined) checkPoint(hook.point, 'contributions', i);
-  }
-  for (let i = 0; i < (cap.gates || []).length; i++) {
-    const hook = cap.gates[i];
-    if (hook.point !== undefined) checkPoint(hook.point, 'gates', i);
+  for (const [group, kind] of Object.entries(HOOK_GROUP_KINDS)) {
+    for (let i = 0; i < (cap[group] || []).length; i++) {
+      const hook = cap[group][i];
+      if (hook.point !== undefined) checkPoint(hook.point, group, kind, i);
+    }
   }
 
   return errors;
@@ -3654,6 +3880,7 @@ module.exports = {
   validateCommandEntry,
   validateRuntimeCompat,
   validateFeatureBody,
+  validateTaskContentResolver,
   validateConfigHome,
   validateArtifactKindEntry,
   validateArtifactLayout,
@@ -3672,6 +3899,7 @@ module.exports = {
   topoSortSteps,
   topoSortContributions,
   validateHooksWired,
+  HOOK_GROUP_KINDS,
   validateConfigSliceEntry,
   classifyCrossErrors,
   runConfigFormatParityGate,

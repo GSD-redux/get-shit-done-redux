@@ -1299,7 +1299,7 @@ describe('#2997: phase_id_convention is not silently dropped on a clean read', (
 // would be false for the channel users control via effort sync.
 const GLOBAL_KEYS_SHADOWED_UNDER_PROJECT = [
   'model_profile', 'commit_docs', 'research', 'plan_checker', 'verifier',
-  'nyquist_validation', 'post_planning_gaps', 'parallelization', 'text_mode',
+  'nyquist_validation', 'post_planning_gaps', 'research_before_questions', 'parallelization', 'text_mode',
   'resolve_model_ids', 'context_window', 'subagent_timeout', 'model_overrides',
   'models', 'granularity', 'granularities', 'planning', 'dynamic_routing',
   'fast_mode', 'agent_skills', 'response_language', 'runtime',
@@ -1453,5 +1453,223 @@ describe('#3532 shadowed global-defaults warning', () => {
     );
     _resetRuntimeWarningCacheForTests();
     assert.equal(configLoader._warnedShadowedGlobalKeys.size, 0);
+  });
+});
+
+// ─── Regressions — #3760: a non-object section must not be expanded or written ──
+//
+// The loader is the surface that actually WRITES: a non-empty `normalizations`
+// array marks the config dirty and `platformWriteSync` persists it. Before the
+// fix a config holding `{"git":"main","branching_strategy":"none"}` came back
+// from `normalizeLegacyKeys` as `{"git":{"0":"m","1":"a","2":"i","3":"n",...}}`
+// and that object was written to the user's file — the original `"main"` was
+// unrecoverable afterwards.
+//
+// The loader's own multiRepo branches carried a second, quieter form of the
+// same defect: `if (!fileData.planning) fileData.planning = {}` treats a
+// non-empty STRING as an already-present section, so the next line
+// (`fileData.planning['sub_repos'] = detected`) threw a strict-mode TypeError.
+// That throw was swallowed by the enclosing catch, which discarded the entire
+// configuration and fell back to defaults — the ADR-1411 silent-fallback
+// failure, reached from an input the user can trivially write by hand.
+
+describe('regressions — #3760 loader never expands or persists a non-object section', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTempProject('gsd-3760-loader-');
+    _resetRuntimeWarningCacheForTests();
+  });
+
+  afterEach(() => {
+    if (tmpDir) cleanup(tmpDir);
+    tmpDir = null;
+  });
+
+  function readRawConfig() {
+    return fs.readFileSync(path.join(tmpDir, '.planning', 'config.json'), 'utf-8');
+  }
+
+  test('loadConfig leaves a string git section untouched on disk', () => {
+    writeConfig(tmpDir, { git: 'main', branching_strategy: 'none' });
+    const before = readRawConfig();
+
+    let config;
+    assert.doesNotThrow(() => { config = loadConfig(tmpDir); });
+
+    assert.equal(readRawConfig(), before, 'the config file must not be rewritten with an expanded section');
+    // The loader projects `git.branching_strategy` to a flat top-level key, so the
+    // legacy value the migration declined to move is still what resolution sees.
+    assert.equal(config.branching_strategy, 'none', 'the legacy value must still resolve');
+  });
+
+  test('loadConfig leaves a string planning section untouched on disk', () => {
+    writeConfig(tmpDir, { planning: 'docs', sub_repos: ['a'] });
+    const before = readRawConfig();
+
+    assert.doesNotThrow(() => { loadConfig(tmpDir); });
+
+    assert.equal(readRawConfig(), before);
+    assert.equal(JSON.parse(readRawConfig()).planning, 'docs');
+  });
+
+  test('loadConfig does not discard the config when multiRepo meets a string planning section', () => {
+    // Pre-fix the loader threw a TypeError assigning sub_repos onto the string,
+    // and the enclosing catch discarded the user's entire config. It also
+    // consumed `multiRepo` and wrote the file back with no diagnostic at all.
+    fs.mkdirSync(path.join(tmpDir, 'sub', '.git'), { recursive: true });
+    writeConfig(tmpDir, { planning: 'docs', multiRepo: true, model_profile: 'balanced' });
+    const before = readRawConfig();
+
+    let config;
+    assert.doesNotThrow(() => { config = loadConfig(tmpDir); });
+
+    assert.equal(
+      config.model_profile, 'balanced',
+      'an unrelated user setting must survive — a swallowed TypeError would have reverted it to the default',
+    );
+    assert.equal(
+      readRawConfig(), before,
+      'nothing migrated, so the file must be byte-identical — planning intact AND multiRepo still present',
+    );
+  });
+
+  test('multiRepo still migrates normally when the planning section is usable', () => {
+    // Negative space: refusing on a bad section must not break the good path.
+    fs.mkdirSync(path.join(tmpDir, 'sub', '.git'), { recursive: true });
+    writeConfig(tmpDir, { multiRepo: true });
+
+    assert.doesNotThrow(() => { loadConfig(tmpDir); });
+
+    assert.deepEqual(JSON.parse(readRawConfig()).planning.sub_repos, ['sub']);
+    assert.equal(JSON.parse(readRawConfig()).multiRepo, undefined, 'the marker is consumed once honored');
+  });
+
+  test('loadConfigResolved reports a usable resolution and writes no expanded section', () => {
+    writeConfig(tmpDir, { git: 'main', branching_strategy: 'none' });
+    const before = readRawConfig();
+
+    let resolution;
+    assert.doesNotThrow(() => { resolution = loadConfigResolved(tmpDir); });
+
+    assert.equal(readRawConfig(), before);
+    assert.equal(resolution.source, 'root', 'a present, parseable config still resolves from the project');
+    assert.equal(resolution.degraded, false);
+  });
+
+  test('a refused section emits exactly one deduplicated diagnostic, and a repeat emits none', () => {
+    // The loader is where the out-of-band diagnostic has to live: loadConfig
+    // returns `.config` alone, so an in-band `skipped` record would be unreachable
+    // to nearly every caller (ADR-1411: "a reason no caller reads is an
+    // unreachable field"). Asserted on the typed emission counter, never by
+    // scraping stderr prose.
+    const {
+      _resetUnusableInputWarningsForTests,
+      _unusableInputEmissionCountForTests,
+    } = require('../gsd-core/bin/lib/unusable-input.cjs');
+
+    function emissionsDuring(fn) {
+      const before = _unusableInputEmissionCountForTests();
+      const original = process.stderr.write;
+      process.stderr.write = () => true;
+      try { fn(); } finally { process.stderr.write = original; }
+      return _unusableInputEmissionCountForTests() - before;
+    }
+
+    _resetUnusableInputWarningsForTests();
+    writeConfig(tmpDir, { git: 'main', branching_strategy: 'none' });
+
+    const first = emissionsDuring(() => { loadConfig(tmpDir); });
+    assert.equal(first, 1, 'the operator must be told once');
+
+    const second = emissionsDuring(() => { loadConfig(tmpDir); });
+    assert.equal(second, 0, 'the ADR-1411 dedup guard must suppress the repeat');
+  });
+
+  test('an already-canonical config is still migrated normally', () => {
+    // Negative space: the guard must not suppress a legitimate hoist.
+    writeConfig(tmpDir, { git: { remote: 'origin' }, branching_strategy: 'none' });
+
+    const config = loadConfig(tmpDir);
+    // Assert on the FILE for the section shape (the loader flattens `git.*` into
+    // top-level keys, so the resolved object has no `git` to inspect) and on the
+    // resolved value for the projection.
+    const onDisk = JSON.parse(readRawConfig());
+    assert.equal(onDisk.git.branching_strategy, 'none', 'a well-formed section must still receive the hoisted key');
+    assert.equal(onDisk.git.remote, 'origin', 'existing section keys must be preserved');
+    assert.equal(onDisk.branching_strategy, undefined, 'the stale top-level key is consumed');
+    assert.equal(config.branching_strategy, 'none', 'the hoisted value still resolves');
+  });
+});
+
+// ─── #3894: workflow.research_before_questions resolves from global defaults ──
+
+describe('#3894 research_before_questions global-defaults forwarding', () => {
+  test('nested workflow.research_before_questions in ~/.gsd/defaults.json resolves', () => {
+    const homeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894-home-'));
+    const origGsdHome = process.env['GSD_HOME'];
+    try {
+      const gsdDir = path.join(homeTmp, '.gsd');
+      fs.mkdirSync(gsdDir, { recursive: true });
+      // The reporter's exact shape: same nesting as the forwarded
+      // workflow.post_planning_gaps, one resolves and one did not.
+      fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify({
+        workflow: { post_planning_gaps: true, research_before_questions: true },
+      }), 'utf-8');
+      process.env['GSD_HOME'] = homeTmp;
+      const noPlanning = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894-noplanning-'));
+      try {
+        const result = loadConfigResolved(noPlanning);
+        assert.equal(result.config.post_planning_gaps, true, 'control: the already-forwarded key resolves');
+        assert.equal(
+          result.config.research_before_questions, true,
+          '#3894: same file, same nesting — the quick-path key must resolve too, not just post_planning_gaps'
+        );
+      } finally {
+        cleanup(noPlanning);
+      }
+    } finally {
+      if (origGsdHome === undefined) delete process.env['GSD_HOME'];
+      else process.env['GSD_HOME'] = origGsdHome;
+      cleanup(homeTmp);
+    }
+  });
+
+  test('flat top-level research_before_questions in ~/.gsd/defaults.json also resolves (Branch D alias parity)', () => {
+    const homeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894b-home-'));
+    const origGsdHome = process.env['GSD_HOME'];
+    try {
+      const gsdDir = path.join(homeTmp, '.gsd');
+      fs.mkdirSync(gsdDir, { recursive: true });
+      fs.writeFileSync(path.join(gsdDir, 'defaults.json'), JSON.stringify({ research_before_questions: true }), 'utf-8');
+      process.env['GSD_HOME'] = homeTmp;
+      const noPlanning = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894b-noplanning-'));
+      try {
+        const result = loadConfigResolved(noPlanning);
+        assert.equal(result.config.research_before_questions, true);
+      } finally {
+        cleanup(noPlanning);
+      }
+    } finally {
+      if (origGsdHome === undefined) delete process.env['GSD_HOME'];
+      else process.env['GSD_HOME'] = origGsdHome;
+      cleanup(homeTmp);
+    }
+  });
+
+  test('unset resolves to the documented default (false), never undefined', () => {
+    const noPlanning = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894c-'));
+    const homeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3894c-home-'));
+    const origGsdHome = process.env['GSD_HOME'];
+    try {
+      process.env['GSD_HOME'] = homeTmp; // no .gsd/defaults.json — builtin defaults
+      const result = loadConfigResolved(noPlanning);
+      assert.equal(result.config.research_before_questions, false, 'CANONICAL_CONFIG_DEFAULTS.workflow.research_before_questions is false');
+    } finally {
+      if (origGsdHome === undefined) delete process.env['GSD_HOME'];
+      else process.env['GSD_HOME'] = origGsdHome;
+      cleanup(homeTmp);
+      cleanup(noPlanning);
+    }
   });
 });

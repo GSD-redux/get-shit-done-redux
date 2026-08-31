@@ -15,7 +15,7 @@ const os = require('node:os');
 const { createTempProject, cleanup, runGsdTools, delay } = require('./helpers.cjs');
 const { runGit, runHook: seamRunHook } = require('./helpers/process-seam.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { PROBE_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   graphifyStatus,
@@ -251,10 +251,14 @@ describe('auto-update', () => {
     const PATH = pathPrepend
       ? `${pathPrepend}${path.delimiter}${process.env.PATH || ''}`
       : process.env.PATH || '';
-    // 30000ms: already bounded pre-migration (unchanged) — this is the `slow`
-    // suite and the hook itself dispatches a detached graphify rebuild that
-    // some tests wait on separately; the hook's own synchronous return (gate
-    // checks + status-file write) is fast, so 30s stays generous headroom.
+    // Bash FAN-OUT: `gsd-graphify-update.sh` is a real hook shelling out to
+    // `git` and `graphify` (mocked here) under one `bash` interpreter — the
+    // wrong class for a plumbing-sized bound, even though the hook's own
+    // synchronous return (gate checks + status-file write) is fast. Same
+    // class as the observed CI failures in tests/quick-branching.test.cjs
+    // (PR #3787 run 32668773524) and tests/worktree-safety.test.cjs (`next`
+    // run 32608945654). See HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs
+    // for the class rationale.
     // Original invoked the hook with stdio: 'ignore' — the seam always
     // captures stdout/stderr instead, but every call site of this wrapper
     // below reads only `.status`; the captured output is simply unread.
@@ -268,7 +272,7 @@ describe('auto-update', () => {
         CI: '',
         ...env,
       },
-      timeoutMs: 30000,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     });
     return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
   }
@@ -423,6 +427,73 @@ describe('auto-update', () => {
         { env: { PATH: '/usr/bin:/bin' } },
       );
       assert.strictEqual(r.status, 0, 'must not break commits when graphify missing');
+    });
+
+    // #3729 — a sentinel `node` shim records every spawn. In a non-GSD repo the
+    // hook must bail at Gate 0 ([ -f .planning/config.json ]) without spawning
+    // node at all: pre-fix, the Gate 1 payload parse spawned node first, which
+    // on Windows allocates a console window per Bash tool call.
+    function makeSentinelNodeBin(markerPath) {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3729-node-'));
+      const shim = path.join(binDir, 'node');
+      fs.writeFileSync(
+        shim,
+        [
+          '#!/usr/bin/env bash',
+          `printf 'x' >> ${JSON.stringify(markerPath)}`,
+          'exit 1',
+        ].join('\n') + '\n',
+        { mode: 0o755 },
+      );
+      return { binDir, markerPath };
+    }
+
+    test('non-GSD repo bails at Gate 0 with zero node spawns (#3729)', (t) => {
+      const tmpDir = createTempGitRepo({ config: undefined });
+      const sentinel = makeSentinelNodeBin(path.join(tmpDir, '.node-spawned'));
+      t.after(() => {
+        cleanupHookRepo(tmpDir);
+        cleanup(sentinel.binDir);
+      });
+      const r = runHook(
+        tmpDir,
+        { tool_name: 'Bash', tool_input: { command: 'git commit -m x' } },
+        { pathPrepend: sentinel.binDir },
+      );
+      assert.strictEqual(r.status, 0, 'hook must exit 0 in a non-GSD repo');
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.planning/graphs/.last-build-status.json')),
+        'no status file should be created in a non-GSD repo',
+      );
+      assert.ok(
+        !fs.existsSync(sentinel.markerPath),
+        'hook must not spawn node before the Gate 0 .planning/config.json bail (#3729)',
+      );
+    });
+
+    test('CI set bails before the node parse in a GSD project (#3729)', (t) => {
+      const tmpDir = createTempGitRepo({
+        config: { graphify: { enabled: true, auto_update: true } },
+      });
+      const sentinel = makeSentinelNodeBin(path.join(tmpDir, '.node-spawned'));
+      t.after(() => {
+        cleanupHookRepo(tmpDir);
+        cleanup(sentinel.binDir);
+      });
+      const r = runHook(
+        tmpDir,
+        { tool_name: 'Bash', tool_input: { command: 'git commit -m x' } },
+        { env: { CI: 'true' }, pathPrepend: sentinel.binDir },
+      );
+      assert.strictEqual(r.status, 0);
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.planning/graphs/.last-build-status.json')),
+        'CI must suppress dispatch',
+      );
+      assert.ok(
+        !fs.existsSync(sentinel.markerPath),
+        'CI gate must run before the Gate 1 node parse (#3729)',
+      );
     });
   });
 

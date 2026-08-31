@@ -40,6 +40,7 @@ const {
   readWorkflowCombined,
 } = require('./helpers.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const REVIEW_WORKFLOW = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
 
@@ -95,10 +96,10 @@ function extractBuildPromptBlock() {
 /** Every fenced ```bash block of review.md (+steps), for the structural row. */
 function extractAllBashBlocks() {
   const content = readWorkflowCombined(REVIEW_WORKFLOW);
-  const blocks = [];
-  const re = /```bash\r?\n([\s\S]*?)\r?\n```/g;
-  let m;
-  while ((m = re.exec(content)) !== null) blocks.push(m[1]);
+  const lines = content.split(/\r?\n/);
+  const blocks = scanFencedBlocks(lines)
+    .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash')
+    .map((b) => lines.slice(b.openLineIdx + 1, b.closeLineIdx).join('\n'));
   assert.ok(blocks.length > 0, 'no ```bash blocks found in review.md (+steps)');
   return blocks;
 }
@@ -197,83 +198,68 @@ describe('#3300 build_prompt optional-section guards under nullglob', () => {
   });
 
   for (const shell of SHELLS) {
-    test(`[${shell.name}] absent optional sources: no context/research output file is created at all`, () => {
+    test(`[${shell.name}] absent optional sources: no context/research output file is created at all`, (t) => {
       const fx = buildFixture({ '01-PLAN.md': 'plan\n' }); // the common case: PLAN only
-      try {
-        const res = runBlock(shell, extractBuildPromptBlock(), fx);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        // Row 1/2 of the matrix — the failing-first core. Pre-fix these exist
-        // as 0-byte files (the `>` redirect creates them before cat blocks or
-        // EOFs); post-fix they must not exist at all.
-        assert.strictEqual(
-          readIfPresent(path.join(fx.runDir, 'gsd-review-context.md')),
-          null,
-          'gsd-review-context.md must NOT be created when no *-CONTEXT.md exists',
-        );
-        assert.strictEqual(
-          readIfPresent(path.join(fx.runDir, 'gsd-review-research.md')),
-          null,
-          'gsd-review-research.md must NOT be created when no *-RESEARCH.md exists',
-        );
-        // The always-on parts of the block still did their job.
-        assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-plan-00.md')), 'plan\n');
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runBlock(shell, extractBuildPromptBlock(), fx);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      // Row 1/2 of the matrix — the failing-first core. Pre-fix these exist
+      // as 0-byte files (the `>` redirect creates them before cat blocks or
+      // EOFs); post-fix they must not exist at all.
+      assert.strictEqual(
+        readIfPresent(path.join(fx.runDir, 'gsd-review-context.md')),
+        null,
+        'gsd-review-context.md must NOT be created when no *-CONTEXT.md exists',
+      );
+      assert.strictEqual(
+        readIfPresent(path.join(fx.runDir, 'gsd-review-research.md')),
+        null,
+        'gsd-review-research.md must NOT be created when no *-RESEARCH.md exists',
+      );
+      // The always-on parts of the block still did their job.
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-plan-00.md')), 'plan\n');
     });
 
-    test(`[${shell.name}] present optional sources: output matches the source exactly`, () => {
+    test(`[${shell.name}] present optional sources: output matches the source exactly`, (t) => {
       const fx = buildFixture({
         '01-PLAN.md': 'plan\n',
         '01-CONTEXT.md': 'ctx\n',
         '01-RESEARCH.md': 'research\n',
       });
-      try {
-        const res = runBlock(shell, extractBuildPromptBlock(), fx);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-context.md')), 'ctx\n');
-        assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-research.md')), 'research\n');
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runBlock(shell, extractBuildPromptBlock(), fx);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-context.md')), 'ctx\n');
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-research.md')), 'research\n');
     });
 
-    test(`[${shell.name}] research-only phase: context output stays absent`, () => {
+    test(`[${shell.name}] research-only phase: context output stays absent`, (t) => {
       const fx = buildFixture({ '01-PLAN.md': 'plan\n', '01-RESEARCH.md': 'research\n' });
-      try {
-        const res = runBlock(shell, extractBuildPromptBlock(), fx);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-context.md')), null);
-        assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-research.md')), 'research\n');
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runBlock(shell, extractBuildPromptBlock(), fx);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-context.md')), null);
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-research.md')), 'research\n');
     });
 
-    test(`[${shell.name}] multiple matches concatenate in glob order (original cat <glob> semantics)`, () => {
+    test(`[${shell.name}] multiple matches concatenate in glob order (original cat <glob> semantics)`, (t) => {
       const fx = buildFixture({
         '01-PLAN.md': 'plan\n',
         '01-CONTEXT.md': 'A\n',
         '02-CONTEXT.md': 'B\n',
       });
-      try {
-        const res = runBlock(shell, extractBuildPromptBlock(), fx);
-        assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
-        assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-context.md')), 'A\nB\n');
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = runBlock(shell, extractBuildPromptBlock(), fx);
+      assert.strictEqual(res.status, 0, `block exited ${res.status}: ${res.stderr}`);
+      assert.strictEqual(readIfPresent(path.join(fx.runDir, 'gsd-review-context.md')), 'A\nB\n');
     });
 
-    test(`[${shell.name}] open, unconsumed stdin pipe: block completes within ${STDIN_BOUND_MS}ms`, async () => {
+    test(`[${shell.name}] open, unconsumed stdin pipe: block completes within ${STDIN_BOUND_MS}ms`, async (t) => {
       const fx = buildFixture({ '01-PLAN.md': 'plan\n' });
-      try {
-        const res = await runBlockWithOpenStdin(shell, extractBuildPromptBlock(), fx);
-        assert.ok(!res.timedOut, `block blocked on stdin (killed at ${STDIN_BOUND_MS}ms) — cat ran operand-less`);
-        assert.strictEqual(res.code, 0, `block exited ${res.code}${res.signal ? ` (signal ${res.signal})` : ''}`);
-      } finally {
-        cleanup(fx.root);
-      }
+      t.after(() => cleanup(fx.root));
+      const res = await runBlockWithOpenStdin(shell, extractBuildPromptBlock(), fx);
+      assert.ok(!res.timedOut, `block blocked on stdin (killed at ${STDIN_BOUND_MS}ms) — cat ran operand-less`);
+      assert.strictEqual(res.code, 0, `block exited ${res.code}${res.signal ? ` (signal ${res.signal})` : ''}`);
     });
   }
 

@@ -44,9 +44,9 @@ const BASE_SITES = [
   // --- baseline: the site already tolerates `[anything] Phase N`
   { file: 'roadmap.cts', site: 'searchPhaseInContent headingPattern',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
-  { file: 'roadmap.cts', site: 'collectAnalyzePhases phasePattern',
+  { file: 'roadmap.cts', site: 'cmdRoadmapAnalyze phasePattern',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
-  { file: 'roadmap.cts', site: 'collectAnalyzePhases nextHeader',
+  { file: 'roadmap.cts', site: 'cmdRoadmapAnalyze nextHeader',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
   { file: 'validate.cts', site: 'buildRoadmapPhaseVariants phasePattern',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
@@ -103,7 +103,7 @@ const BASE_SITES = [
   // --- baseline: the site spells a BARE `Phase ` with no bracket tolerance
   { file: 'roadmap.cts', site: 'searchPhaseInContent checklistPattern',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
-  { file: 'roadmap.cts', site: 'collectAnalyzePhases checkboxPattern',
+  { file: 'roadmap.cts', site: 'cmdRoadmapAnalyze checkboxPattern',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
   { file: 'roadmap.cts', site: 'cmdRoadmapAnalyze checklistPattern',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
@@ -116,20 +116,9 @@ const BASE_SITES = [
   { file: 'state.cts', site: 'cmdStateSync roadmapPhaseCount', baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
   { file: 'state.cts', site: 'extractRetiredPhaseNumbers phaseRef',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
-  // #3309/#3310 RE-HOMING (merge of next @ dc3c81e9). Both rows below were ONE
-  // row — `verify.cts / cmdValidateHealth milestone-complete (B6)`. That epic
-  // migrated `cmdValidateHealth` and `cmdValidateConsistency` onto the
-  // health-diagnostic rule table and deleted every raw read they performed, so
-  // `verify.cts` no longer consumes the selector at all; the reads moved into
-  // `planning-snapshot.cts`'s parsed-projection builders, which is where the
-  // baselines are pinned now. Same questions, same baselines, new owner.
-  //   - the B6 milestone-complete scan is now W026's
-  //     `currentMilestoneRoadmapPhaseIds` builder;
-  //   - the checkbox read is NEW to this census: pre-migration, W006's
-  //     not-started exclusion came from `buildNotStartedPhaseVariants`
-  //     (`validate.cts`, already pinned above), and the rule table replaced that
-  //     call with `roadmapPhaseCheckboxes`. Left unpinned it is a second,
-  //     silently-narrower reader of the same ROADMAP checklist lines.
+  // #3309/#3310 moved the health reads out of verify.cts and into the parsed
+  // planning snapshot consumed by the diagnostic rule table. Pin the same two
+  // ROADMAP reads at their new owner so neither can silently narrow.
   { file: 'planning-snapshot.cts', site: 'buildCurrentMilestoneRoadmapPhaseIdsField (W026, ex-verify.cts B6)',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
   { file: 'planning-snapshot.cts', site: 'buildRoadmapPhaseCheckboxesField (W011/W006 not-started)',
@@ -668,8 +657,8 @@ describe('#2761 B1: a workstream\'s convention scopes ITS OWN roadmap read', () 
 
 describe('#612 PR-2: every selector call site declares the right baseline (live src)', () => {
   // The structural table above pins transcription <-> selector. It cannot see a
-  // call site whose BASELINE ARGUMENT is wrong: flipping verify.cts's
-  // milestone-complete site from LABEL_ONLY to ANY_BRACKET grants a
+  // call site whose BASELINE ARGUMENT is wrong: flipping the planning
+  // snapshot's milestone-complete site from LABEL_ONLY to ANY_BRACKET grants a
   // fires-on-every-repo check `[anything] Phase N` tolerance it has never had,
   // and every behavioural test still passed. So the mode at each site is pinned
   // count-exact against the shipped sources.
@@ -691,10 +680,6 @@ describe('#612 PR-2: every selector call site declares the right baseline (live 
   const CENSUS = scanSelectorBaselines(require('path').join(__dirname, '..'));
 
   // file -> [ANY_BRACKET count, LABEL_ONLY count]
-  // #3309/#3310 re-homing: `verify.cts` dropped out entirely (0 selector calls
-  // after `cmdValidateHealth`/`cmdValidateConsistency` moved onto the rule
-  // table) and `planning-snapshot.cts` took over its one LABEL_ONLY site plus
-  // the rule table's own checkbox read. See BASE_SITES' re-homing note.
   const EXPECTED = {
     'roadmap.cts': [3, 3],
     'validate.cts': [1, 2],

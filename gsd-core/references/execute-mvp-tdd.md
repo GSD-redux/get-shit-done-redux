@@ -40,9 +40,7 @@ The executor MUST:
 2. Emit a structured halt report:
 
    ```
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    MVP+TDD GATE TRIPPED — Plan {plan_id}, Task {task_id}
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### MVP+TDD GATE TRIPPED — Plan {plan_id}, Task {task_id}
 
    Reason: {missing_red_commit | red_commit_not_failing | feat_before_test}
 

@@ -502,3 +502,107 @@ describe('W027 — stale git worktree', () => {
     });
   });
 });
+
+// ─── W027 — #3663: path-casing provenance mismatch (win32 fold, posix strict) ──
+//
+// snapshot.cwd is raw process-cwd-derived (no casing normalization) while
+// finding.path is git-worktree-list-derived (canonical on-disk casing, forward
+// slashes). On win32 the two can spell the same directory differently, which
+// made checkW027 flag the ACTIVE worktree as stale. The fold happens ONLY on
+// win32 — POSIX comparison stays case-sensitive (criterion 2 in the issue's
+// triage brief: differently-cased paths are genuinely different directories
+// on case-sensitive filesystems).
+
+describe('W027 — #3663 isActiveWorktreePath casing/separator normalization', () => {
+  test('isActiveWorktreePath folds casing on win32', () => {
+    assert.equal(
+      worktreeHealth.isActiveWorktreePath('C:\\Repos\\P\\.claude\\worktrees\\Wt', 'c:/repos/p/.claude/worktrees/Wt', 'win32'),
+      true,
+      'the same directory spelled with different casing must match on win32',
+    );
+  });
+
+  test('isActiveWorktreePath folds casing for nested cwd on win32', () => {
+    assert.equal(
+      worktreeHealth.isActiveWorktreePath('c:/REPOS/p/.claude/worktrees/wt/sub/dir', 'C:\\Repos\\p\\.claude\\worktrees\\WT', 'win32'),
+      true,
+      'a cwd nested under the worktree (differently cased) must match on win32',
+    );
+  });
+
+  test('isActiveWorktreePath stays case-sensitive on posix', () => {
+    assert.equal(
+      worktreeHealth.isActiveWorktreePath('/tmp/A/wt', '/tmp/a/wt', 'linux'),
+      false,
+      'differently-cased paths are different directories on case-sensitive filesystems',
+    );
+  });
+
+  test('isActiveWorktreePath matches exact paths on posix', () => {
+    assert.equal(worktreeHealth.isActiveWorktreePath('/tmp/a/wt', '/tmp/a/wt', 'linux'), true);
+    assert.equal(worktreeHealth.isActiveWorktreePath('/tmp/a/wt/sub', '/tmp/a/wt', 'linux'), true);
+    assert.equal(worktreeHealth.isActiveWorktreePath('/tmp/a/wtx', '/tmp/a/wt', 'linux'), false, 'boundary segment wtx must not prefix-match wt');
+  });
+
+  test('isActiveWorktreePath does not fold distinct worktrees together on win32', () => {
+    assert.equal(
+      worktreeHealth.isActiveWorktreePath('C:\\Repos\\p\\.claude\\worktrees\\alpha', 'C:\\Repos\\p\\.claude\\worktrees\\beta', 'win32'),
+      false,
+    );
+  });
+
+  test('isActiveWorktreePath normalizes separators and trailing slashes', () => {
+    assert.equal(
+      worktreeHealth.isActiveWorktreePath('C:/Repos/p/wt/', 'C:\\Repos\\p\\wt', 'win32'),
+      true,
+      'mixed separators and a trailing slash must not break the comparison',
+    );
+  });
+
+  test('isActiveWorktreePath keeps the segment boundary under win32 folding', () => {
+    assert.equal(
+      worktreeHealth.isActiveWorktreePath('C:\\Repos\\p\\wt-alphabeta', 'C:\\Repos\\p\\wt-alpha', 'win32'),
+      false,
+      'a sibling worktree whose name extends another (wt-alphabeta vs wt-alpha) must not prefix-match',
+    );
+  });
+
+  test('isActiveWorktreePath treats a drive root as the ancestor it is', () => {
+    // 'C:/' strips to 'c:'; the + '/' guard makes the comparison
+    // startsWith('c:/') — the drive root contains everything on it, which is
+    // correct ancestor semantics (and unreachable via git worktree list).
+    assert.equal(worktreeHealth.isActiveWorktreePath('C:\\Repos\\p\\wt', 'C:/', 'win32'), true);
+    assert.equal(worktreeHealth.isActiveWorktreePath('/srv/app', '/', 'linux'), true);
+  });
+
+  test('W027 still fires for differently-cased paths on posix (case-sensitive pin)', (t) => {
+    // POSIX-only by definition: on win32 the #3663 fix correctly FOLDS the
+    // casing, so the differently-cased path IS the active worktree and must
+    // NOT be flagged — that win32 behavior is pinned by the predicate rows
+    // above (isActiveWorktreePath … 'win32').
+    if (process.platform === 'win32') {
+      t.skip('win32 folds casing by design (#3663); the posix case-sensitivity pin has no meaning there');
+      return;
+    }
+    const cwd = createTempDir('gsd-3663-w027-posix-case-');
+    t.after(() => cleanup(cwd));
+    fs.mkdirSync(planningDirOf(cwd), { recursive: true });
+
+    // A stale finding whose path differs from snapshot.cwd ONLY by casing.
+    // The variant flips a letter of the FIXED fixture prefix — deriving it
+    // from the random mkdtemp suffix would flake (1/62 the suffix is already
+    // 'X') or pass vacuously (60/62 it differs by a different character, not
+    // case). On POSIX the two spellings are different directories, so the
+    // stale finding MUST still be reported — folding here would be a
+    // criterion-2 regression.
+    const stalePath = cwd.replace('gsd-3663-w027-posix-case-', 'gsd-3663-w027-posix-Case-');
+    fs.mkdirSync(stalePath, { recursive: true });
+    fs.utimesSync(stalePath, new Date(), new Date(Date.now() - 2 * 60 * 60 * 1000));
+    mockGitWorktreeListOk(t, buildPorcelain(['/fake/main-repo', stalePath]));
+
+    const snapshot = buildPlanningSnapshot(cwd);
+    const diagnostics = ruleFor('W027').check(snapshot);
+    assert.equal(diagnostics.length, 1, 'differently-cased path is a distinct worktree on posix and must still be flagged');
+    assert.equal(diagnostics[0].code, 'W027');
+  });
+});

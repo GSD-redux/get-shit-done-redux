@@ -1,3 +1,4 @@
+// docs-guard-exempt: docs/adr/3524-...md is cited only in a References comment; never read.
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
@@ -24,6 +25,7 @@ const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 // above, and `run()` below at 15000ms for a lighter query-only call).
 const PHASE_COMPLETE_TIMEOUT_MS = 60000;
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const GSD_TOOLS_BIN = path.resolve(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
@@ -1104,6 +1106,386 @@ objective: Manual review needed
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3885 (ADR-3473 §8.5) / #3427 — phase-plan-index must NAME a dropped
+// depends_on token instead of manufacturing a wave-mismatch verdict from it.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Mechanism: resolveDependencyId (phase.cts) returns null for a depends_on
+// token that resolves via neither planMap nor canonicalToId;
+// computeDependencyLevels silently `continue`s past it, making the dependent
+// plan a DAG root. cmdPhasePlanIndex then compares that damaged wave against
+// the plan's declared `wave:` and emits a "declared wave: N but depends_on
+// DAG places it in wave M" warning — a verdict manufactured from the dropped
+// edge, not from an author error.
+//
+// VERBATIM CURRENT OUTPUT (measured on this tree, e20744eac, via the real CLI
+// `gsd-tools phase-plan-index 03` against a phase dir with 03-01 (wave: 1, no
+// deps) and 03-02 (wave: 2, depends_on: [nonexistent-token-3427])):
+//
+//   "warnings": [
+//     "Plan 03-02: declared wave: 2 but depends_on DAG places it in wave 1"
+//   ]
+//
+// Note: NO mention of "nonexistent-token-3427" anywhere in `warnings` — the
+// dropped token is invisible, and the manufactured wave-mismatch warning
+// fires in its place. That is exactly the #3427 defect this block pins.
+describe('#3885 (ADR-3473 §8.5): phase-plan-index names a dropped depends_on token instead of manufacturing a wave-mismatch verdict', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // T31 — RED today (consumer-output identity, §8.9): the emitted `warnings`
+  // must name the unresolved token together with its owning plan.
+  test('T31: planIndexJsonNamesTheDroppedToken_3427', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - nonexistent-token-3427\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.ok(
+      warnings.some((w) => w.includes('nonexistent-token-3427') && w.includes('03-02')),
+      `warnings must name plan 03-02 and its unresolved token "nonexistent-token-3427"; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T24 — RED today: the manufactured "declared wave:" verdict for 03-02 must
+  // be suppressed once its dropped edge is named (T31's warning stands in its
+  // place). Currently it fires (measured above):
+  // "Plan 03-02: declared wave: 2 but depends_on DAG places it in wave 1".
+  test('T24: droppedEdgeSuppressesTheManufacturedWaveVerdict_3427', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - nonexistent-token-3427\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.ok(
+      !warnings.some((w) => /declared wave:/.test(w) && w.includes('03-02')),
+      `the manufactured wave-mismatch warning for 03-02 must be suppressed once its dropped edge is named; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T25 — MUST STAY GREEN (N3): a fully-resolvable DAG with a genuinely wrong
+  // declared wave must still warn. Stops T24's fix from becoming a blanket
+  // suppression. Confirmed passing today (measured via the real CLI: Plan B
+  // fully resolves 03-01 and the DAG places it at wave 2, but it declares
+  // wave: 5, and the mismatch warning fires exactly as expected).
+  test('T25: genuineWaveMismatchStillWarns', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    // Plan B fully resolves its dependency (03-01) — no dropped edge — so its
+    // declared wave (5) is a genuine authoring mistake (correct DAG wave is 2).
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 5\nautonomous: true\ndepends_on:\n  - 03-01\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.ok(
+      warnings.some((w) => w.includes('declared wave: 5') && w.includes('wave 2') && w.includes('03-02')),
+      `a genuinely wrong declared wave (no dropped edge) must still warn; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T29 (N4, #3785) is already pinned by the existing test above in this file,
+  // '#3785: external cross-phase depends_on ref is preserved as-is in output'
+  // (an unresolved cross-phase depends_on token IS exactly the #3785
+  // scenario) — it already asserts the DISPLAY `depends_on` field passes an
+  // unresolved token through verbatim. No new test added here; this phase's
+  // fix must leave that test green (design N4: the display mapping stays
+  // unresolved-passthrough, never routed through resolveDependencyId).
+
+  // #3885 follow-up: the unresolved-depends_on warning embeds the token
+  // VERBATIM before this fix — an attacker-authored (YAML-frontmatter)
+  // token containing a newline can forge a second, fabricated warning line
+  // once a consumer prints `warnings[]` one-per-line. `formatDiagnosticToken`
+  // (src/io.cts, introduced for the same class in #3884) must be used to
+  // escape the token so the warning stays on ONE line and the token is still
+  // named (escaped), never dropped — a fix that deleted the token would also
+  // pass a naive "one line" check, so each case below also asserts the
+  // (escaped) token text is present.
+  test('unresolved depends_on token containing a newline cannot forge a second warning line', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - "evil\\nPlan 03-01: FORGED WARNING"\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.strictEqual(warnings.length, 1, `expected exactly one warning; got: ${JSON.stringify(warnings)}`);
+    const [warning] = warnings;
+    // Raw string (not trimmed): the embedded newline must be ESCAPED
+    // (literal backslash-n), not a real line break — a real line break here
+    // would let the attacker-authored suffix render as a forged second entry.
+    assert.strictEqual(
+      warning.split('\n').length,
+      1,
+      `warning must occupy a single line; got raw string: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(!/^Plan 03-01: FORGED WARNING/m.test(warning), 'forged second line must not appear as its own line');
+    // The token must still be NAMED — escaped, not dropped.
+    assert.ok(
+      warning.includes('evil\\nPlan 03-01: FORGED WARNING'),
+      `escaped token must still be named in the warning; got: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(warning.includes('03-02'), 'warning must name the owning plan');
+  });
+
+  test('unresolved depends_on token containing a double quote cannot break out of its quoting', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - "evil\\"quote"\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.strictEqual(warnings.length, 1, `expected exactly one warning; got: ${JSON.stringify(warnings)}`);
+    const [warning] = warnings;
+    assert.strictEqual(
+      warning.split('\n').length,
+      1,
+      `warning must occupy a single line; got raw string: ${JSON.stringify(warning)}`,
+    );
+    // The embedded quote must be ESCAPED, not left free to close the
+    // surrounding quoting early.
+    assert.ok(
+      warning.includes('evil\\"quote'),
+      `escaped token must still be named in the warning; got: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(warning.includes('03-02'), 'warning must name the owning plan');
+  });
+
+  test('unresolved depends_on token containing a C0 control char is escaped, not passed through raw', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '03-01-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    fs.writeFileSync(
+      path.join(phaseDir, '03-02-PLAN.md'),
+      '---\nwave: 2\nautonomous: true\ndepends_on:\n  - "evil\\x07bell"\n---\n<objective>Plan B.</objective>\n',
+    );
+
+    const result = runGsdTools('phase-plan-index 03', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const warnings = output.warnings ?? [];
+
+    assert.strictEqual(warnings.length, 1, `expected exactly one warning; got: ${JSON.stringify(warnings)}`);
+    const [warning] = warnings;
+    assert.strictEqual(
+      warning.split('\n').length,
+      1,
+      `warning must occupy a single line; got raw string: ${JSON.stringify(warning)}`,
+    );
+    // No raw C0 control byte may survive into the warning string.
+    // eslint-disable-next-line no-control-regex
+    assert.ok(!/[\x00-\x1f]/.test(warning), `no raw control character may survive; got: ${JSON.stringify(warning)}`);
+    assert.ok(
+      warning.includes('evil\\u0007bell'),
+      `escaped token must still be named in the warning; got: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(warning.includes('03-02'), 'warning must name the owning plan');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3897 rung 4 (ADR-3473 §8.9) — shortFormToId, the recovered third
+// depends_on resolution tier (D3). Today `resolveDependencyId`
+// (gsd-core/bin/lib/phase.cjs) has exactly two tiers — planMap (full id) and
+// canonicalToId (canonical prefix, e.g. `24-01`) — so a bare plan-number
+// short form (`depends_on: ["01"]`) resolves via NEITHER and is silently
+// dropped: the dependent plan collapses to a DAG root (wave 1) instead of its
+// declared wave.
+//
+// T43 is the CONSUMER-OUTPUT identity row (ADR-3180 Decision 4(b)): it
+// asserts on `phase-plan-index`'s emitted `waves` map through the REAL CLI,
+// never on `resolveDependencyId`/`computeDependencyLevels` in isolation — a
+// unit assertion on the resolver alone would have passed throughout this
+// defect's entire life, since nothing forces a unit test to reflect what the
+// consumer (execute-phase.md, partial-wave.md) actually reads.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#3897 rung 4 (ADR-3473 §8.9): shortFormToId, the bare plan-number depends_on tier', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // T43 — RED today: the CONSUMER-OUTPUT identity row. 26-02 depends on the
+  // bare short form '01'; today that edge is dropped, so 26-02 collapses into
+  // wave 1 alongside 26-01 instead of its own, later wave.
+  test('T43 shortFormDependencyProducesRealWaves_3427: a bare plan-number depends_on produces REAL waves, not one collapsed wave 1', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '26-shortform');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '26-01-auth-hardening-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Plan A.</objective>\n',
+    );
+    // Bare plan-number short form — NOT a full id, NOT a canonical prefix.
+    fs.writeFileSync(
+      path.join(phaseDir, '26-02-followup-PLAN.md'),
+      "---\nwave: 2\nautonomous: true\ndepends_on:\n  - '01'\n---\n<objective>Plan B.</objective>\n",
+    );
+
+    const result = runGsdTools('phase-plan-index 26', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    const waves = output.waves;
+
+    const wave01 = Object.keys(waves).find((w) => waves[w].some((id) => id.startsWith('26-01')));
+    const wave02 = Object.keys(waves).find((w) => waves[w].some((id) => id.startsWith('26-02')));
+    assert.ok(wave01 !== undefined, '26-01-auth-hardening should appear in waves');
+    assert.ok(wave02 !== undefined, '26-02-followup should appear in waves');
+    assert.ok(
+      Number(wave01) < Number(wave02),
+      `the bare short form '01' must resolve to 26-01-auth-hardening and place 26-02-followup in a LATER wave — today the edge is dropped and both plans collapse into the same wave (got wave01=${wave01}, wave02=${wave02})`,
+    );
+    // Today's defect also manufactures a wave-mismatch warning from the
+    // dropped edge (declared wave: 2 but DAG places it in wave 1) — once the
+    // short form resolves, that warning must be gone too.
+    const warnings = output.warnings ?? [];
+    assert.ok(
+      !warnings.some((w) => /declared wave:/.test(w) && w.includes('26-02')),
+      `no manufactured wave-mismatch warning should remain once the short form resolves; got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  // T49 — the short form must resolve IN-PHASE ONLY. A plan '01' living in a
+  // DIFFERENT phase must never satisfy a same-named short-form dependency in
+  // this phase — resolution is scoped per phase-plan-index invocation, never
+  // global across the project.
+  //
+  // #3897 rung 4 (isolated correctness review, MINOR finding 5): the
+  // ORIGINAL version of this test gave the target phase its OWN plan '01'
+  // (27-01-real) alongside the decoy (99-01-decoy). That construction cannot
+  // actually falsify a globally-scoped map: sorted plan-file order always
+  // resolves '01' to whichever phase's own plan sorts first among ALL
+  // candidates, and phase 27 sorts before phase 99 either way — so a
+  // GLOBALLY-scoped shortFormToId would have produced the exact same
+  // wave01 < wave02 result this test asserted, passing for the wrong reason.
+  // Verified empirically (see the isolated review's probe): building
+  // shortFormToId from the phase-scoped rawPlans vs. from the UNION of both
+  // phases' rawPlans produces byte-identical `unresolved`/`level` results for
+  // the original fixture shape.
+  //
+  // Fixed per the reviewer's own working construction: the TARGET phase has
+  // NO plan of its own numbered '01' at all (only '27-05-followup'), and the
+  // decoy phase's plan IS numbered '01' (11-01-decoy). Correct (per-phase)
+  // behavior is that '01' does NOT resolve — the edge is dropped with the
+  // existing #3427 unresolved-token warning, and 27-05 collapses to wave 1.
+  // A globally-scoped map would instead let '01' resolve to 11-01-decoy, a
+  // node outside this phase's rawPlans — which computeDependencyLevels can
+  // never satisfy, so it manufactures a false depends_on CYCLE report
+  // instead of a clean wave assignment. This construction was confirmed,
+  // by direct unit probe against the real exported `buildShortFormToId` and
+  // `computeDependencyLevels`, to distinguish the correct from the buggy
+  // scoping — the ORIGINAL fixture shape above did not.
+  test('T49 shortFormDoesNotReachAcrossPhases: a phase with NO plan of its own numbered "01" must NOT resolve depends_on: ["01"] via a same-numbered plan in a different phase', () => {
+    // A decoy phase whose OWN plan is numbered '01' — the only '01' anywhere
+    // in the project is in THIS phase, not phase 27.
+    const decoyPhaseDir = path.join(tmpDir, '.planning', 'phases', '11-decoy');
+    fs.mkdirSync(decoyPhaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(decoyPhaseDir, '11-01-decoy-PLAN.md'),
+      '---\nwave: 1\nautonomous: true\ndepends_on: []\n---\n<objective>Decoy plan in a different phase.</objective>\n',
+    );
+
+    // Target phase has NO plan of its own numbered '01' — only '05'.
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '27-inphase-only');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(phaseDir, '27-05-followup-PLAN.md'),
+      "---\nwave: 2\nautonomous: true\ndepends_on:\n  - '01'\n---\n<objective>Plan with a dangling short-form dependency.</objective>\n",
+    );
+
+    const result = runGsdTools('phase-plan-index 27', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    // The decoy phase's plan must never even appear in THIS phase's output.
+    assert.ok(
+      !output.plans.some((p) => p.id.startsWith('11-')),
+      'a different phase\'s plan must never appear in this phase\'s plan-index output at all',
+    );
+
+    // Correct behavior: the token does not resolve in-phase, so the edge is
+    // DROPPED — the #3427 unresolved-token warning fires by name, and
+    // 27-05-followup collapses to wave 1 rather than being scheduled behind
+    // a cross-phase phantom edge (which, per the probe above, would instead
+    // surface as a manufactured depends_on cycle error, not a clean pass).
+    const warnings = output.warnings ?? [];
+    assert.ok(
+      warnings.some((w) => /does not resolve to any plan in this phase/.test(w) && w.includes('27-05')),
+      `expected an unresolved-token warning naming 27-05-followup's dangling '01' dependency; got: ${JSON.stringify(warnings)}`,
+    );
+    const wave05 = Object.keys(output.waves).find((w) => output.waves[w].some((id) => id.startsWith('27-05')));
+    assert.strictEqual(
+      wave05,
+      '1',
+      `27-05-followup must collapse to wave 1 (dropped edge, no valid in-phase '01') — the short form must NOT reach the decoy in phase 11; got wave ${wave05}`,
+    );
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // phase-plan-index — canonical XML format (template-aligned)
@@ -2110,6 +2492,171 @@ describe('find-phase scalar counts (#3218)', () => {
     const phase3 = roadmapOutput.phases.find((p) => String(p.number) === '3' || p.number === 3);
     assert.ok(phase3, 'roadmap.analyze must report phase 3');
     assert.strictEqual(findOutput.plan_count, phase3.plan_count, 'find-phase and roadmap.analyze must agree');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// phase number allocation across sibling git worktrees (#3849)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase add allocation vs sibling git worktrees (#3849)', () => {
+  const activeWorktrees = [];
+  const activeDirs = [];
+
+  function git(args, cwd) {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15_000 });
+  }
+
+  function initRepo(repoDir) {
+    fs.mkdirSync(path.join(repoDir, '.planning', 'phases'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap v1.0', '', '### Phase 440: existing thing', '**Goal:** Setup', '', '---', ''].join('\n')
+    );
+    fs.mkdirSync(path.join(repoDir, '.planning', 'phases', '440-existing-thing'));
+    git(['init', '-b', 'main'], repoDir);
+    git(['config', 'user.email', 'test@example.com'], repoDir);
+    git(['config', 'user.name', 'Test'], repoDir);
+    git(['add', '-A'], repoDir);
+    git(['commit', '-m', 'init'], repoDir);
+  }
+
+  /** Materialize the issue's repro: a sibling worktree branch holding Phase 441. */
+  function addSiblingHolding441(repoDir) {
+    const sha = git(['rev-parse', 'HEAD'], repoDir).trim();
+    const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-sib-'));
+    git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
+    activeWorktrees.push({ repoDir, worktreeDir });
+    fs.mkdirSync(path.join(worktreeDir, '.planning', 'phases', '441-conversation-surface'), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktreeDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap v1.0', '', '### Phase 440: existing thing', '**Goal:** Setup', '', '### Phase 441: conversation surface', '**Goal:** Talk', '', '---', ''].join('\n')
+    );
+    return worktreeDir;
+  }
+
+  /** A sibling worktree whose checkout has no .planning at all (fail-open case). */
+  function addBareSibling(repoDir) {
+    const sha = git(['rev-parse', 'HEAD'], repoDir).trim();
+    const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-bare-'));
+    git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
+    activeWorktrees.push({ repoDir, worktreeDir });
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- fixture SETUP, not teardown: strips the tracked .planning/ so this worktree has none; cleanup() owns the dir's removal with the Windows retry budget
+    fs.rmSync(path.join(worktreeDir, '.planning'), { recursive: true, force: true });
+    return worktreeDir;
+  }
+
+  function teardown() {
+    while (activeWorktrees.length) {
+      const { repoDir, worktreeDir } = activeWorktrees.pop();
+      try {
+        git(['worktree', 'remove', '--force', worktreeDir], repoDir);
+      } catch (_) { /* best-effort; cleanup() below still removes the directory */ }
+      cleanup(worktreeDir);
+    }
+    while (activeDirs.length) cleanup(activeDirs.pop());
+  }
+
+  afterEach(teardown);
+
+  test('phase add skips a number held only by a sibling worktree (dir + roadmap header)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-main-'));
+    activeDirs.push(repoDir);
+    initRepo(repoDir);
+    addSiblingHolding441(repoDir);
+
+    const result = runGsdTools('phase add anything', repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      442,
+      '#3849: sibling worktree holds Phase 441 — allocation must skip to 442, not collide'
+    );
+    assert.ok(
+      fs.existsSync(path.join(repoDir, '.planning', 'phases', '442-anything')),
+      'directory for the non-colliding 442 should be created'
+    );
+  });
+
+  test('phase add-batch skips a number held only by a sibling worktree', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-batch-'));
+    activeDirs.push(repoDir);
+    initRepo(repoDir);
+    addSiblingHolding441(repoDir);
+
+    const result = runGsdTools(['phase', 'add-batch', '--descriptions', '["New Thing"]'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phases[0].phase_number,
+      442,
+      '#3849: the batch allocator must widen its horizon the same way the single-add allocator does'
+    );
+  });
+
+  test('a sibling worktree without .planning/ changes nothing (fail open)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-failopen-'));
+    activeDirs.push(repoDir);
+    initRepo(repoDir);
+    addBareSibling(repoDir);
+
+    const result = runGsdTools('phase add next thing', repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, 441, 'no sibling numbers visible — max+1 from the local 440');
+  });
+
+  test('allocation FROM a linked worktree counts the main checkout too (the incident topology)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-linked-'));
+    activeDirs.push(repoDir);
+    initRepo(repoDir);
+    // The real incident ran the other direction: cwd is a linked worktree and
+    // the MAIN checkout (scanned as a sibling here) holds the higher number.
+    const sha = git(['rev-parse', 'HEAD'], repoDir).trim();
+    const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3849-linked-wt-'));
+    git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
+    activeWorktrees.push({ repoDir, worktreeDir });
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- fixture SETUP, not teardown: strips the tracked .planning/ so this worktree has none; cleanup() owns the dir's removal with the Windows retry budget
+    fs.rmSync(path.join(worktreeDir, '.planning'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(worktreeDir, '.planning', 'phases'), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktreeDir, '.planning', 'ROADMAP.md'),
+      ['# Roadmap v1.0', '', '### Phase 440: base', '**Goal:** Setup', '', '---', ''].join('\n')
+    );
+
+    const result = runGsdTools('phase add from linked', worktreeDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      441,
+      '#3849: the main checkout (440) must be visible when allocating from a linked worktree'
+    );
+  });
+
+  test('phase add-batch counts bullet-only Phase N rows (#1229 reached the batch path)', () => {
+    const tmp = createTempProject();
+    try {
+      fs.writeFileSync(
+        path.join(tmp, '.planning', 'ROADMAP.md'),
+        ['# Roadmap v1.0', '', '- [ ] **Phase 11: bullet-only phase**', '', '---', ''].join('\n')
+      );
+      const result = runGsdTools(['phase', 'add-batch', '--descriptions', '["After Bullet"]'], tmp);
+      assert.ok(result.success, `Command failed: ${result.error}`);
+      const output = JSON.parse(result.output);
+      assert.strictEqual(
+        output.phases[0].phase_number,
+        12,
+        '#3849 secondary: a bullet-only Phase 11 must not be re-allocated by add-batch'
+      );
+    } finally {
+      cleanup(tmp);
+    }
   });
 });
 
@@ -3180,6 +3727,7 @@ Plans:
       path.join(tmpDir, '.planning', 'STATE.md'),
       `---\ngsd_state_version: 1.0\ncurrent_phase: 1\nprogress:\n  total_phases: 2\n  completed_phases: 0\n  percent: 0\n---\n\n# State\n\nTotal Phases: 2\n`,
     );
+    const beforeState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
 
     const result = runGsdTools('phase remove 2', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -3187,6 +3735,9 @@ Plans:
     assert.strictEqual(out.state_updated, true, 'state_updated must be true when STATE.md content changed');
     // Body 'Total Phases:' must be decremented from 2 to 1.
     const afterState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    // #3685: earn the `true` above — assert the file's content actually
+    // differs from the pre-call snapshot, not merely that it exists.
+    assert.notEqual(afterState, beforeState, '#3685: STATE.md content must actually change when state_updated is true');
     const bodyMatch = afterState.match(/^Total Phases:\s*(\d+)/m);
     assert.ok(bodyMatch, 'body must have Total Phases field after remove');
     assert.strictEqual(bodyMatch[1], '1', `body 'Total Phases:' must be 1 after removing one of 2 phases; got ${bodyMatch[1]}`);
@@ -3238,6 +3789,65 @@ Plans:
     assert.ok(result.success, `Command failed: ${result.error}`);
     const out = JSON.parse(result.output);
     assert.strictEqual(out.state_updated, false, 'state_updated must be false when no STATE.md exists');
+  });
+
+  // #3685: roadmap_updated used to be reported as a hardcoded `true` —
+  // #2640/#2974 already fixed this call site's sibling `state_updated` flag
+  // to reflect a real content diff (via readModifyWriteStateMd's returned
+  // boolean); roadmap_updated is now fixed the same way, via
+  // updateRoadmapAfterPhaseRemoval's own before/after content comparison.
+  test('roadmap_updated is false when ROADMAP.md comes out byte-identical (#3685)', () => {
+    // Target phase number appears nowhere in ROADMAP.md (no heading, no
+    // dependency reference, no progress-table row, and higher than every
+    // existing phase number so no renumbering fires) and has no directory —
+    // updateRoadmapAfterPhaseRemoval's section-delete/renumber/row-delete
+    // passes are all no-matches, so `content` never diverges from
+    // `originalContent`.
+    //
+    // The fixture is written in ALREADY-NORMALIZED form (a blank line after
+    // the `###` heading) so the byte-identity assertion below compares a
+    // normalized pre-image against a normalized post-image. A hand-authored
+    // fixture that skips that blank line is NOT in the shape
+    // platformWriteSync's own normalizer produces, so writing it back
+    // through the same normalizing write path gains the blank line even
+    // though no phase data changed — that's the writer's own formatting
+    // pass reformatting an un-normalized input, not a real content change,
+    // and asserting byte-identity against such a fixture is unsound.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: Foundation\n\n**Goal:** Setup\n\n## Progress\n\n| Phase | Status |\n|-------|--------|\n| 1 | Done |\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
+    const roadmapBefore = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+
+    const result = runGsdTools('phase remove 5', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.equal(roadmapAfter, roadmapBefore, 'ROADMAP.md must be byte-identical when the removed phase is absent from it');
+    const out = JSON.parse(result.output);
+    assert.strictEqual(
+      out.roadmap_updated, false,
+      'roadmap_updated was hardcoded true here, masking the no-op (#3685)',
+    );
+  });
+
+  test('roadmap_updated is true and ROADMAP.md content actually changes on a genuine removal (#3685)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: Foundation\n**Goal:** Setup\n\n### Phase 2: Auth\n**Goal:** Authentication\n\n## Progress\n\n| Phase | Status |\n|-------|--------|\n| 1 | Done |\n| 2 | Planned |\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-auth'), { recursive: true });
+    const roadmapBefore = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+
+    const result = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const roadmapAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.notEqual(roadmapAfter, roadmapBefore, 'precondition: ROADMAP.md content must actually change');
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.roadmap_updated, true, 'roadmap_updated must be true for a genuine removal');
   });
 });
 
@@ -3323,6 +3933,132 @@ describe('phase complete canonical verification gate (#1522)', () => {
     assert.match(errorPayload.message, /\/gsd-verify-work 0?1/);
     assert.equal(fs.readFileSync(roadmapPath, 'utf-8'), beforeRoadmap);
     assert.equal(fs.readFileSync(statePath, 'utf-8'), beforeState);
+  });
+});
+
+// #3685: cmdPhaseComplete's roadmap_updated/state_updated flags were computed
+// via fs.existsSync(roadmapPath) / fs.existsSync(statePath) — true whenever
+// the file merely EXISTS, even when the transaction rewrote nothing. The
+// sibling requirements_updated (line ~2951 in src/phase.cts) already honors
+// the correct contract: true only when that file's content actually changed
+// in the transaction. Clock is pinned (GSD_TEST_MODE + GSD_NOW_MS) because
+// syncStateFrontmatter stamps a millisecond-resolution `last_updated:` field
+// on every STATE.md write pass — an unpinned second run would genuinely
+// differ by that timestamp alone, masking the no-op these tests need to
+// observe (see .gsd/bug/fix-3685-phase-complete-write-flags/repro-pinned.cjs
+// for the standalone reproduction).
+describe('phase complete write-flag content-change contract (#3685)', () => {
+  let tmpDir;
+  const PINNED_CLOCK_ENV = { GSD_TEST_MODE: '1', GSD_NOW_MS: '1750000000000' };
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('roadmap_updated is false when the transaction rewrites nothing (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+
+    const run1 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run1.success, `first phase complete failed: ${run1.error}`);
+    const roadmapAfter1 = fs.readFileSync(roadmapPath, 'utf-8');
+
+    // Second call: phase 1 is already complete, so this is a genuine no-op
+    // against ROADMAP.md. Re-write the passed marker first so the #1522
+    // verification gate does not itself refuse the second call.
+    const run2 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run2.success, `second phase complete failed: ${run2.error}`);
+    const roadmapAfter2 = fs.readFileSync(roadmapPath, 'utf-8');
+
+    assert.equal(roadmapAfter2, roadmapAfter1, 'ROADMAP.md must be byte-identical across the no-op second run');
+    const parsed2 = JSON.parse(run2.output);
+    assert.strictEqual(
+      parsed2.roadmap_updated, false,
+      'fs.existsSync() reported true here, masking the no-op (#3685)',
+    );
+  });
+
+  test('state_updated is false when the transaction rewrites nothing (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+    const run1 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run1.success, `first phase complete failed: ${run1.error}`);
+    const stateAfter1 = fs.readFileSync(statePath, 'utf-8');
+
+    const run2 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run2.success, `second phase complete failed: ${run2.error}`);
+    const stateAfter2 = fs.readFileSync(statePath, 'utf-8');
+
+    assert.equal(stateAfter2, stateAfter1, 'STATE.md must be byte-identical across the no-op second run');
+    const parsed2 = JSON.parse(run2.output);
+    assert.strictEqual(
+      parsed2.state_updated, false,
+      'fs.existsSync() reported true here, masking the no-op (#3685)',
+    );
+    const roadmapAfter2 = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+
+    // Stability across repeats: the flag must not alternate true/false on
+    // successive no-op runs — pin a THIRD call to the same behavior.
+    const run3 = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(run3.success, `third phase complete failed: ${run3.error}`);
+    const stateAfter3 = fs.readFileSync(statePath, 'utf-8');
+    const roadmapAfter3 = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.equal(stateAfter3, stateAfter2, 'STATE.md must remain byte-identical on a third no-op run');
+    assert.equal(roadmapAfter3, roadmapAfter2, 'ROADMAP.md must remain byte-identical on a third no-op run');
+    const parsed3 = JSON.parse(run3.output);
+    assert.strictEqual(parsed3.roadmap_updated, false, 'roadmap_updated must stay false, not alternate, on repeat no-ops (#3685)');
+    assert.strictEqual(parsed3.state_updated, false, 'state_updated must stay false, not alternate, on repeat no-ops (#3685)');
+  });
+
+  test('both write flags are true when the transaction genuinely rewrites (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const roadmapBefore = fs.readFileSync(roadmapPath, 'utf-8');
+    const stateBefore = fs.readFileSync(statePath, 'utf-8');
+
+    const result = runGsdTools(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(result.success, `phase complete failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+
+    const roadmapAfter = fs.readFileSync(roadmapPath, 'utf-8');
+    const stateAfter = fs.readFileSync(statePath, 'utf-8');
+
+    assert.notEqual(roadmapAfter, roadmapBefore, 'precondition: ROADMAP.md content must actually change');
+    assert.strictEqual(parsed.roadmap_updated, true, 'roadmap_updated must be true for a genuine rewrite');
+    assert.notEqual(stateAfter, stateBefore, 'precondition: STATE.md content must actually change');
+    assert.strictEqual(parsed.state_updated, true, 'state_updated must be true for a genuine rewrite');
+  });
+
+  test('roadmap_updated stays false when ROADMAP.md is absent (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    // Deletes a single fixture FILE inside tmpDir (not the temp dir itself);
+    // helpers.cleanup() is a directory-removal helper and cannot be used here.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- single-file delete, not a directory
+    fs.rmSync(path.join(tmpDir, '.planning', 'ROADMAP.md'));
+
+    const result = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(result.success, `phase complete failed without ROADMAP.md: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.roadmap_updated, false, 'roadmap_updated must be false when ROADMAP.md does not exist (#3685)');
+  });
+
+  test('state_updated stays false when STATE.md is absent (#3685)', () => {
+    writePhaseCompleteVerificationGateFixture(tmpDir, 'passed');
+    // Deletes a single fixture FILE inside tmpDir (not the temp dir itself);
+    // helpers.cleanup() is a directory-removal helper and cannot be used here.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- single-file delete, not a directory
+    fs.rmSync(path.join(tmpDir, '.planning', 'STATE.md'));
+
+    const result = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir, PINNED_CLOCK_ENV);
+    assert.ok(result.success, `phase complete failed without STATE.md: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.state_updated, false, 'state_updated must be false when STATE.md does not exist (#3685)');
   });
 });
 
@@ -6611,12 +7347,17 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
     test('full consistency check: all STATE.md fields are coherent after phase.complete', () => {
       setupPhase3517Project(tmpDir);
       const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+      const stateBefore = fs.readFileSync(statePath, 'utf8');
 
       const r = runSdkQuery(['phase.complete', '5'], tmpDir);
       assert.ok(r.success, `call failed: ${r.error}`);
       assert.equal(r.data?.state_updated, true, 'state_updated must be true');
 
       const state = fs.readFileSync(statePath, 'utf8');
+      // #3685: earn the `true` above — assert STATE.md's content actually
+      // changed, not merely that it exists (which is all the pre-fix
+      // existsSync-based flag proved).
+      assert.notEqual(state, stateBefore, '#3685: STATE.md content must actually change when state_updated is true');
 
       const fm = extractFrontmatter(state);
       assert.equal(
@@ -9053,6 +9794,7 @@ const { cleanup, runGsdTools } = require('./helpers.cjs');
 // CJS implementation directly since that is where the bug lives.
 const phaseModule = require('../gsd-core/bin/lib/phase.cjs');
 const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 const { cmdPhaseComplete } = phaseModule;
 
 function writePassedVerificationFile(phaseDir, phase = '01') {
@@ -9177,15 +9919,19 @@ function roadmapCompletionSnapshot(roadmapContent) {
       continue;
     }
 
-    match = line.match(/^\|\s*(\d+[A-Z]?(?:\.\d+)*)\.?\s*([^|]*)\|\s*([^|]*)\|\s*([^|]*)\|\s*([^|]*)\|$/i);
-    if (match) {
-      snapshot.progressRows.push({
-        phase: match[1].trim(),
-        title: match[2].trim(),
-        plans: match[3].trim(),
-        status: match[4].trim(),
-        completed: match[5].trim(),
-      });
+    if (line.trim().startsWith('|')) {
+      const cells = splitTableRow(line);
+      const phaseTitleMatch = cells.length === 4
+        && /^(\d+[A-Z]?(?:\.\d+)*)\.?\s*(.*)$/i.exec((cells[0] || '').trim());
+      if (phaseTitleMatch) {
+        snapshot.progressRows.push({
+          phase: phaseTitleMatch[1].trim(),
+          title: phaseTitleMatch[2].trim(),
+          plans: cells[1].trim(),
+          status: cells[2].trim(),
+          completed: cells[3].trim(),
+        });
+      }
     }
   }
 
@@ -9623,16 +10369,15 @@ describe('#3511: cmdPhaseComplete — advisory pre-scan warnings are phase-scope
  * 4-col (Phase | Plans | Status | Completed) or 5-col (Phase | Milestone | Plans | Status | Completed).
  */
 function extractCompletedCell(roadmapContent, phaseNum) {
-  // Match the full progress table row whose first cell starts with the phase number.
-  // Use [^|\n] to avoid crossing line boundaries. Capture everything up to the final '|'.
-  const re = new RegExp(`^(\\|\\s*${phaseNum}[^|\\n]*(?:\\|[^|\\n]*)*)\\|\\s*$`, 'm');
-  const m = roadmapContent.match(re);
-  if (!m) return null;
-  // m[1] = '| 01. Foundation | 1/1 | Complete    | 2026-01-01 '
-  // Split on '|' → ['', ' 01. Foundation ', ' 1/1 ', ' Complete    ', ' 2026-01-01 ']
-  // Drop the leading empty string and take the last element.
-  const cells = m[1].split('|').slice(1); // drop leading ''
-  return cells[cells.length - 1].trim();
+  // Find the progress table row whose first cell starts with the phase number.
+  for (const line of roadmapContent.split(/\r?\n/)) {
+    if (!line.trim().startsWith('|')) continue;
+    const cells = splitTableRow(line);
+    if (cells.length > 0 && cells[0].startsWith(String(phaseNum))) {
+      return cells[cells.length - 1].trim();
+    }
+  }
+  return null;
 }
 
 /**
@@ -10950,9 +11695,12 @@ describe('issue #2334: ghost-REQ-ID classification must probe write surfaces, no
           /-\s*\[x\]\s*\*\*KNOWN-01\*\*/i.test(reqContent),
           `#2334 HIGH 2b FAILED (fixture invariant): checkbox must have been ticked.\n${reqContent}`,
         );
+        const traceabilityRow = reqContent.split(/\r?\n/)
+          .filter((l) => l.trim().startsWith('|'))
+          .map((l) => splitTableRow(l))
+          .find((cells) => cells[0] && cells[0].trim().toLowerCase() === 'known-01');
         assert.ok(
-          // eslint-disable-next-line local/no-unbounded-quantifier -- parses REQUIREMENTS.md the test itself wrote via build2334GhostSurfaceFixture, bounded fixed-size fixture, not adversarial input
-          /\|\s*KNOWN-01\s*\|[^|]*\|\s*Complete\s*\|/i.test(reqContent),
+          traceabilityRow && /^Complete$/i.test(traceabilityRow[traceabilityRow.length - 1].trim()),
           `#2334 HIGH 2b FAILED (fixture invariant): Traceability row must have flipped to Complete.\n${reqContent}`,
         );
         assert.strictEqual(parsed.requirements_updated, true, '#2334 HIGH 2b FAILED: requirements_updated must be true');
@@ -11131,10 +11879,15 @@ describe('#2572: phase complete warns when a SUMMARY claims files that never lan
   test('#2572-2: the advisory is ADVISORY — completion still succeeds and reports the phase complete', () => {
     const { tmpDir } = build2572SummaryArtifactFixture();
     try {
+      const stateBefore = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
       const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
       const parsed = JSON.parse(output);
       assert.strictEqual(parsed.completed_phase, '1', '#2572-2 FAILED: completion must not be blocked by the advisory');
       assert.strictEqual(parsed.state_updated, true, '#2572-2 FAILED: STATE.md must still be written');
+      // #3685: earn the `true` above — assert STATE.md's content actually
+      // differs from the pre-call snapshot.
+      const stateAfter = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      assert.notEqual(stateAfter, stateBefore, '#3685: STATE.md content must actually change when state_updated is true');
     } finally {
       cleanup(tmpDir);
     }
@@ -11878,11 +12631,15 @@ describe('bug #3572: phase remove must not corrupt STATE.md into two frontmatter
     // targetDir !== null, and the body lacks Total Phases/of-N — the trigger.
     let r = runGsdTools('phase insert 1 "Inserted probe"', tmpDir);
     assert.ok(r.success, `phase insert failed: ${r.error}`);
+    const stateBeforeRemove = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
     r = runGsdTools('phase remove 1.1', tmpDir);
     assert.ok(r.success, `phase remove failed: ${r.error}`);
     assert.strictEqual(JSON.parse(r.output).state_updated, true, 'the #2640 resync must still happen');
 
     const after = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    // #3685: earn the `true` above — assert STATE.md's content actually
+    // differs from the snapshot taken immediately before the remove call.
+    assert.notEqual(after, stateBeforeRemove, '#3685: STATE.md content must actually change when state_updated is true');
     assert.ok(after.startsWith('---\n') || after.startsWith('---\r\n'), 'file must still OPEN with the frontmatter fence');
     assert.strictEqual(fenceLineCount(after), 2, `exactly one frontmatter block (2 fence lines); got ${fenceLineCount(after)}:\n${after.slice(0, 400)}`);
     assert.strictEqual((after.match(/gsd_state_version/g) || []).length, 1, 'exactly one gsd_state_version — no second derived block');
@@ -11992,5 +12749,339 @@ describe('bug #3572 controls and clamps', () => {
     assert.doesNotMatch(after, /Total Phases:\s*-\d+/, 'count must never go negative');
     assert.match(after, /^Total Phases:\s*0$/m, 'stale zero stays clamped at 0');
     t.after(() => cleanup(tmpDir));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3701 — next_phase follows ROADMAP ORDER, not artifact presence.
+//
+// The successor cascade resolved disk-first: the first phase DIRECTORY above N
+// won, and the roadmap scan only ran when the disk found nothing. Directories
+// are created lazily, but `phase insert` scaffolds an inserted phase's directory
+// immediately — so an inserted decimal was routinely the only directory above N
+// and outranked every phase preceding it in the roadmap. The wrong value was
+// reported AND persisted to STATE.md, silently.
+//
+// #3581 fixed the identical defect at `init.progress` and named the rule: "the
+// frontier is ROADMAP ORDER, not artifact presence". This call site was outside
+// that change's scope.
+//
+// Most of this block is CONTROLS. The fix promotes the roadmap to decide WHICH
+// phase is next while the disk still decides HOW it is spelled, so the failure
+// mode of a naive fix is a silent spelling change on every aligned project —
+// which is the majority case, and which `alignedTreeKeepsDiskSpelling` catches.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3701 phase complete — next_phase follows roadmap order, not disk', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3701-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  const statePath = () => path.join(tmpDir, '.planning', 'STATE.md');
+
+  function scaffoldPhaseDir(slug) {
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', slug), { recursive: true });
+  }
+
+  /** Roadmap rows + matching detail headings, so both scan shapes are present. */
+  function writeRoadmap(rows) {
+    const checklist = rows.map((r) => `- [${r.done ? 'x' : ' '}] **Phase ${r.num}: ${r.name}**${r.inserted ? ' (INSERTED)' : ''} - ${r.name}`);
+    const details = rows.map((r) => `### Phase ${r.num}: ${r.name}\n\n**Goal:** ${r.name}`);
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n## Phases\n\n${checklist.join('\n')}\n\n## Phase Details\n\n${details.join('\n\n')}\n`,
+    );
+  }
+
+  function writeState(currentPhase) {
+    fs.writeFileSync(
+      statePath(),
+      `---\ngsd_state_version: 1.0\ncurrent_phase: ${currentPhase}\nstatus: executing\n---\n\n# Project State\n`,
+    );
+  }
+
+  function complete(phase) {
+    const result = runVerifiedPhaseComplete(`phase complete ${phase}`, tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error || result.output}`);
+    return JSON.parse(result.output);
+  }
+
+  function frontmatterField(key) {
+    const m = fs.readFileSync(statePath(), 'utf-8').match(new RegExp(`^${key}:\\s*(.*)$`, 'm'));
+    return m ? m[1].trim().replace(/^["']|["']$/g, '') : null;
+  }
+
+  // Roadmap 1, 2, 02.1 (INSERTED), 3 — the shape from the report.
+  const INSERTED_ROADMAP = [
+    { num: '1', name: 'Alpha' },
+    { num: '2', name: 'Beta' },
+    { num: '02.1', name: 'Inserted Thing', inserted: true },
+    { num: '3', name: 'Gamma' },
+  ];
+
+  // ── the defect ────────────────────────────────────────────────────────────
+
+  test('insertedDecimalDoesNotOutrankTheRoadmapSuccessor', () => {
+    // Directories for 01 and 02.1 only. Phase 2 is next in the roadmap and has
+    // no directory — the ordinary state of an unplanned phase.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap(INSERTED_ROADMAP);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.is_last_phase, false);
+    assert.strictEqual(
+      output.next_phase,
+      '2',
+      `roadmap order puts Phase 2 next; the inserted decimal has a directory and must not outrank it (got ${output.next_phase})`,
+    );
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('theWrongSuccessorIsNotPersistedToStateMd', () => {
+    // Independent of the reported value: the defect's real cost is the resume
+    // pointer written to STATE.md, which sends the next session to the wrong
+    // phase for the whole of the following phase.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap(INSERTED_ROADMAP);
+    writeState(1);
+
+    complete(1);
+
+    assert.strictEqual(
+      frontmatterField('current_phase'),
+      '2',
+      'STATE.md must advance to the roadmap successor, not to the inserted decimal',
+    );
+  });
+
+  // ── controls: what must not move ──────────────────────────────────────────
+
+  test('alignedTreeKeepsDiskSpelling', () => {
+    // THE control for this fix. When roadmap and disk agree, the directory still
+    // supplies the spelling: the zero-padded token and the on-disk slug. A fix
+    // that merely promoted the roadmap would report `2`/`beta` here instead of
+    // `02`/`beta` — a silent output change on every aligned project.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    scaffoldPhaseDir('03-gamma');
+    writeRoadmap([{ num: '1', name: 'Alpha' }, { num: '2', name: 'Beta' }, { num: '3', name: 'Gamma' }]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02', 'the on-disk zero-padded token is the established spelling');
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('roadmapSpellingWhenTheSuccessorHasNoDirectory', () => {
+    scaffoldPhaseDir('01-alpha');
+    writeRoadmap([{ num: '1', name: 'Alpha' }, { num: '2', name: 'Beta' }, { num: '3', name: 'Gamma' }]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '2', 'no directory exists, so the roadmap supplies the spelling too');
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('aDecimalThatGenuinelyIsNextIsStillSelected', () => {
+    // The mirror of the defect: an over-correction that refused decimals would
+    // pass the two tests above and fail here.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap([
+      { num: '1', name: 'Alpha', done: true },
+      { num: '2', name: 'Beta' },
+      { num: '02.1', name: 'Inserted Thing', inserted: true },
+      { num: '3', name: 'Gamma' },
+    ]);
+    writeState(2);
+
+    const output = complete(2);
+    assert.strictEqual(output.next_phase, '02.1', 'the inserted phase really does follow 2 in roadmap order');
+    assert.strictEqual(output.next_phase_name, 'inserted-thing');
+  });
+
+  test('completingTheDecimalAdvancesToTheNextWholePhase', () => {
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap([
+      { num: '1', name: 'Alpha', done: true },
+      { num: '2', name: 'Beta', done: true },
+      { num: '02.1', name: 'Inserted Thing', inserted: true },
+      { num: '3', name: 'Gamma' },
+    ]);
+    writeState('02.1');
+
+    const output = complete('02.1');
+    assert.strictEqual(output.next_phase, '3');
+    assert.strictEqual(output.next_phase_name, 'gamma');
+  });
+
+  // ── the disk fallback must survive ────────────────────────────────────────
+
+  test('noRoadmapFallsBackToTheDiskScan', () => {
+    // Making the roadmap primary must not make it required.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    writeState(1);
+    // deliberately no ROADMAP.md
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02', 'with no roadmap the disk is the only resolver');
+  });
+
+  test('unparseableRoadmapPhaseRowsFallBackToTheDiskScan', () => {
+    // A roadmap that exists but yields no phase rows is the same situation as no
+    // roadmap at all, and must degrade the same way.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '# Roadmap\n\nnothing here parses as a phase row\n');
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02');
+  });
+
+  test('lastPhaseStillReportsMilestoneEnd', () => {
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    writeRoadmap([{ num: '1', name: 'Alpha', done: true }, { num: '2', name: 'Beta' }]);
+    writeState(2);
+
+    const output = complete(2);
+    assert.strictEqual(output.is_last_phase, true);
+    assert.strictEqual(output.next_phase, null);
+  });
+
+  // ── ordering: phase NUMBERS decide sequence, not row position ─────────────
+
+  test('roadmapRowsOutOfNumericOrderStillResolveTheLowestSuccessor', () => {
+    // Review round 2 (blocker). The roadmap scan walks raw text and one global
+    // regex sweeps both the checklist and the detail headings, so "first match
+    // above N" is a statement about file position, not sequence. Once this scan
+    // started deciding the answer, a roadmap listing rows `1, 3, 2` reported
+    // next_phase 3 and PERSISTED it — skipping Phase 2 entirely, on an input the
+    // pre-fix code got right because the disk scan is numerically sorted.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' },
+      { num: '3', name: 'Gamma' },
+      { num: '2', name: 'Beta' },
+    ]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02', `Phase 2 is the lowest above 1 regardless of row position (got ${output.next_phase})`);
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('detailHeadingOrderDoesNotOverrideNumericOrder', () => {
+    // The checklist and the `## Phase Details` headings are swept by the same
+    // regex, so a details section ordered differently from the checklist is a
+    // second way row position could win.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap', '', '## Phases', '',
+        '- [ ] **Phase 1: Alpha** - Alpha',
+        '- [ ] **Phase 2: Beta** - Beta',
+        '- [ ] **Phase 3: Gamma** - Gamma',
+        '', '## Phase Details', '',
+        '### Phase 3: Gamma', '', '**Goal:** Gamma', '',
+        '### Phase 1: Alpha', '', '**Goal:** Alpha', '',
+        '### Phase 2: Beta', '', '**Goal:** Beta', '',
+      ].join('\n'),
+    );
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '02');
+  });
+
+  test('outOfOrderRowsWithNoDirectoryStillResolveNumerically', () => {
+    // Same rule on the roadmap-only path, where no disk answer exists to mask a
+    // document-order mistake.
+    scaffoldPhaseDir('01-alpha');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' },
+      { num: '3', name: 'Gamma' },
+      { num: '2', name: 'Beta' },
+    ]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '2');
+    assert.strictEqual(output.next_phase_name, 'beta');
+  });
+
+  test('anInsertedDecimalListedOutOfOrderDoesNotWin', () => {
+    // The two hazards together: rows out of sequence AND an inserted decimal
+    // holding the only directory above N.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02.1-inserted-thing');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' },
+      { num: '3', name: 'Gamma' },
+      { num: '02.1', name: 'Inserted Thing', inserted: true },
+      { num: '2', name: 'Beta' },
+    ]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '2');
+  });
+
+  // ── sentinels and the #2028 stage this change does not touch ──────────────
+
+  test('sentinelBacklogAndDraftPhasesAreNeverSelected', () => {
+    // Both scans skip sentinels (#2786 / #3185 / #2949). Whichever one is
+    // primary, that must still hold.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('999.1-backlog-item');
+    scaffoldPhaseDir('0.1-draft-item');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' },
+      { num: '2', name: 'Beta' },
+      { num: '999.1', name: 'Backlog Item' },
+      { num: '0.1', name: 'Draft Item' },
+    ]);
+    writeState(1);
+
+    const output = complete(1);
+    assert.strictEqual(output.next_phase, '2', 'sentinel phases are not the frontier');
+  });
+
+  test('lowestOutstandingOverrideStillWins', () => {
+    // Independence: the #2028 stage-3 override answers a different question — is
+    // a LOWER phase still outstanding — and is untouched by this change.
+    scaffoldPhaseDir('01-alpha');
+    scaffoldPhaseDir('02-beta');
+    scaffoldPhaseDir('03-gamma');
+    writeRoadmap([
+      { num: '1', name: 'Alpha' }, // still unchecked — outstanding
+      { num: '2', name: 'Beta' },
+      { num: '3', name: 'Gamma' },
+    ]);
+    writeState(2);
+
+    const output = complete(2);
+    assert.strictEqual(
+      output.next_phase,
+      '1',
+      'a lower outstanding phase still overrides the positional successor (#2028)',
+    );
   });
 });

@@ -20,6 +20,7 @@ const {
   Verdict,
   evaluateLint,
   testEffectivePrefix,
+  _buildTestMap,
 } = require(LINT_SCRIPT);
 
 // ---------------------------------------------------------------------------
@@ -263,6 +264,42 @@ describe('evaluateLint — allowlist behaviour (identity-based)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// _buildTestMap — longest-prefix bucketing (order-independence)
+// ---------------------------------------------------------------------------
+
+describe('_buildTestMap — longest-prefix bucketing', () => {
+  // Regression for readdirSync-order-dependent bucketing: `verify.cjs` and
+  // `verify-command-grounding.cjs` are production modules where one name is a
+  // hyphen-extension of the other. fs.readdirSync order is not stable across
+  // platforms (e.g. Linux ext4 hash order vs macOS HFS+/APFS), so
+  // `prodPrefixes` (a Map built from readdirSync) can iterate in either
+  // order. A test file matching the longer, more specific prefix must always
+  // bucket there — never fall through to the shorter prefix — regardless of
+  // which key the Map visits first.
+  const testFile = makeFiles('verify-command-grounding', ['verify-command-grounding.test.cjs'])[0];
+
+  test('buckets to the longer prefix when the short prefix is visited first', () => {
+    const prodPrefixes = new Map([
+      ['verify', '/fake/src/verify.cjs'],
+      ['verify-command-grounding', '/fake/src/verify-command-grounding.cjs'],
+    ]);
+    const map = _buildTestMap(prodPrefixes, [testFile]);
+    assert.deepStrictEqual(map.get('verify-command-grounding'), [testFile]);
+    assert.deepStrictEqual(map.get('verify'), []);
+  });
+
+  test('buckets to the longer prefix when the long prefix is visited first', () => {
+    const prodPrefixes = new Map([
+      ['verify-command-grounding', '/fake/src/verify-command-grounding.cjs'],
+      ['verify', '/fake/src/verify.cjs'],
+    ]);
+    const map = _buildTestMap(prodPrefixes, [testFile]);
+    assert.deepStrictEqual(map.get('verify-command-grounding'), [testFile]);
+    assert.deepStrictEqual(map.get('verify'), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // testEffectivePrefix — issue-stamp stripping
 // ---------------------------------------------------------------------------
 
@@ -293,6 +330,42 @@ describe('testEffectivePrefix', () => {
 
   test('double-numbered stamp is stripped correctly', () => {
     assert.strictEqual(testEffectivePrefix('bug-2550-2552-discuss-phase-context.test.cjs'), 'discuss-phase-context');
+  });
+
+  // -------------------------------------------------------------------
+  // #3227: trailing suite/kind qualifier stripping
+  // -------------------------------------------------------------------
+  test('dotted suite-qualifier file resolves to the bare module prefix', () => {
+    assert.strictEqual(testEffectivePrefix('frontmatter.property.test.cjs'), 'frontmatter');
+  });
+
+  test('unqualified file with a hyphenated module name is unaffected (no-op)', () => {
+    assert.strictEqual(testEffectivePrefix('state-contract.test.cjs'), 'state-contract');
+  });
+
+  test('pre-existing .integration.test. strip still works after the qualifier strip', () => {
+    assert.strictEqual(
+      testEffectivePrefix('installer-migration-install.integration.test.cjs'),
+      'installer-migration-install'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3227: dotted suite-qualifier files must not mis-bucket into a shorter,
+// hyphen-related module (e.g. state-contract.unit.test.cjs -> state).
+// ---------------------------------------------------------------------------
+
+describe('_buildTestMap — dotted suite-qualifier bucketing (#3227)', () => {
+  test('state-contract.unit.test.cjs buckets to state-contract, not the shorter state module', () => {
+    const testFile = makeFiles('state-contract', ['state-contract.unit.test.cjs'])[0];
+    const prodPrefixes = new Map([
+      ['state', '/fake/src/state.cjs'],
+      ['state-contract', '/fake/src/state-contract.cjs'],
+    ]);
+    const map = _buildTestMap(prodPrefixes, [testFile]);
+    assert.deepStrictEqual(map.get('state-contract'), [testFile]);
+    assert.deepStrictEqual(map.get('state'), []);
   });
 });
 

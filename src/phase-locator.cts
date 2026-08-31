@@ -26,7 +26,7 @@ import coreUtilsModule = require('./core-utils.cjs');
 const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath, findUnsummarizedPlans } = coreUtilsModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir } = planningWorkspace;
+const { planningDir, planningRoot } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatterModule = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatterModule;
@@ -142,23 +142,56 @@ function compareArchiveVersionDesc(aName: string, bName: string): number {
   return 0;
 }
 
-function listArchiveVersionDirs(cwd: string): ArchiveVersionDir[] {
-  const milestonesDir = path.join(planningDir(cwd), 'milestones');
-  if (!fs.existsSync(milestonesDir)) return [];
+function listArchiveVersionDirs(cwd: string, wsOverride?: string | null): ArchiveVersionDir[] {
+  // #3804: enumerate BOTH archive shapes under the CURRENT SCOPE's milestones
+  // tree (planningDir — GSD_WORKSTREAM/GSD_PROJECT-aware, exactly the
+  // #2855 scoping findPhaseInternal and getArchivedPhaseDirs rely on):
+  //   flat:               <scope>/milestones/vX.Y-phases/<phase-dir>/
+  //   workstream archive: <scope>/milestones/ws-<slug>-<date>/phases/<phase-dir>/
+  // Pre-#3804 only the flat shape matched, so workstream-archived milestones
+  // were invisible (the reporter's repo: 20 hidden phase artifacts). The
+  // ws-* shape's phase dirs sit one level deeper (under phases/) and its dir
+  // name fails ^v[\d.]+-phases$ — both the name AND the level are modeled.
+  // Version labels: flat keeps the bare vX.Y; ws-* shapes carry the dir name
+  // (no numeric version). Flat-newest-first (compareArchiveVersionDesc), then
+  // ws dirs by name descending — deterministic. The AUDIT's cross-workstream
+  // enumeration (audit.cts listAuditPhaseTargets) calls this helper once per
+  // tree (root + each workstream) rather than widening this scope — the
+  // #2855 no-leak contract for findPhaseInternal/getArchivedPhaseDirs is
+  // preserved untouched.
+  const milestonesDir = path.join(planningDir(cwd, wsOverride ?? undefined), 'milestones');
+  const out: ArchiveVersionDir[] = [];
+  const seen = new Set<string>();
+  const pushVersion = (version: string, archivePath: string): void => {
+    const rel = toPosixPath(path.relative(cwd, archivePath));
+    if (seen.has(rel)) return;
+    seen.add(rel);
+    out.push({ version, archivePath });
+  };
 
+  let entries: fs.Dirent[];
   try {
-    const milestoneEntries = fs.readdirSync(milestonesDir, { withFileTypes: true });
-    return milestoneEntries
-      .filter(e => e.isDirectory() && /^v[\d.]+-phases$/.test(e.name))
-      .map(e => e.name)
-      .sort(compareArchiveVersionDesc)
-      .map(archiveName => ({
-        version: archiveName.match(/^(v[\d.]+)-phases$/)![1],
-        archivePath: path.join(milestonesDir, archiveName),
-      }));
+    entries = fs.readdirSync(milestonesDir, { withFileTypes: true });
   } catch {
     return [];
   }
+  const flat = entries
+    .filter(e => e.isDirectory() && /^v[\d.]+-phases$/.test(e.name))
+    .map(e => e.name)
+    .sort(compareArchiveVersionDesc);
+  for (const archiveName of flat) {
+    pushVersion(archiveName.match(/^(v[\d.]+)-phases$/)![1], path.join(milestonesDir, archiveName));
+  }
+  const wsDirs = entries
+    .filter(e => e.isDirectory() && /^ws-/.test(e.name))
+    .map(e => e.name)
+    .sort()
+    .reverse();
+  for (const wsName of wsDirs) {
+    pushVersion(wsName, path.join(milestonesDir, wsName, 'phases'));
+  }
+
+  return out;
 }
 
 function searchPhaseInDir(baseDir: string, relBase: string, normalized: string): PhaseSearchResult | null {
@@ -266,7 +299,12 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
       directory: toPosixPath(path.join(relBase, match)),
       phase_number: phaseNumber,
       phase_name: phaseName,
-      phase_slug: phaseName ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : null,
+      // #3883 (ADR-3473 §8.3): delegate to the canonical slug formula
+      // (generateSlugInternal, core-utils.cts) rather than re-implementing
+      // it. `maxLen: null` preserves this site's pre-migration untruncated
+      // contract — the 60-char default would drop an on-disk phase slug's
+      // reported value out of sync with the real directory name.
+      phase_slug: phaseName ? coreUtilsModule.generateSlugInternal(phaseName, null) : null,
       plans,
       summaries,
       incomplete_plans: incompletePlans,
@@ -362,35 +400,17 @@ function listMilestonePhaseDirs(
     phaseIdConvention?: string | null;
   } = {},
 ): { value: string[]; scope: Scope } {
-  // #612: `phaseIdConvention` defaults to `undefined`, NOT `null`.
-  // `getMilestonePhaseFilter` distinguishes the two: `undefined` means "not
-  // resolved yet — resolve it from config", `null` means "resolved, and it is
-  // not bracket". #3185 routed ten call sites that each spelled
-  // `getMilestonePhaseFilter(cwd)` — i.e. passed `undefined` and got the
-  // lazy resolve — through this function, and a `null` default would have
-  // silently converted every one of them to "explicitly not bracket". On a
-  // project that opted into `phase_id_convention: "bracket"` that turns the
-  // heading scan back into the legacy reading, the window set comes back
-  // empty, the filter degrades to pass-all, and every OTHER milestone's
-  // directories are counted as this milestone's. A caller that HAS already
-  // resolved the convention still passes it explicitly and is unaffected; a
-  // non-bracket project resolves to a value that compiles the same base
-  // grammar `null` did, so its reading is unchanged.
-  //
-  // #3597: `ws` must ALSO default to `undefined`, NOT `null`. `undefined`
-  // means "resolve the ambient workstream" (mirrors planningDir's own
-  // contract, src/planning-workspace.cts:124); `null` means "force the
-  // project root". Every cwd-bearing caller derives `phasesDir` ambiently
-  // (planningPaths(cwd) / planningDir(cwd) with no explicit ws), so defaulting
-  // `ws` to `null` here forced the milestone WINDOW to the root ROADMAP while
-  // the caller's `phasesDir` stayed workstream-scoped — numerator and
-  // denominator drawn from different scoped sets (ADR-3180 §7.6 rule 3
-  // violation). That is what made `--ws <name> progress` read
-  // `phase_scope: "unreadable"` and withhold `percent` once `workstream
-  // create` migrated the root ROADMAP away. The two undefined-default rules
-  // are independent (one governs convention resolution, the other workstream
-  // scoping) and compose without conflict.
-  const { cwd, ws, versionOverride = null, phaseIdConvention } = opts;
+  // #3597: `ws` must default to `undefined`, NOT `null`. `undefined` means
+  // "resolve the ambient workstream" (mirrors planningDir's own contract,
+  // src/planning-workspace.cts:124); `null` means "force the project root".
+  // Every cwd-bearing caller derives `phasesDir` ambiently (planningPaths(cwd)
+  // / planningDir(cwd) with no explicit ws), so defaulting `ws` to `null` here
+  // forced the milestone WINDOW to the root ROADMAP while the caller's
+  // `phasesDir` stayed workstream-scoped — numerator and denominator drawn
+  // from different scoped sets (ADR-3180 §7.6 rule 3 violation). That is what
+  // made `--ws <name> progress` read `phase_scope: "unreadable"` and withhold
+  // `percent` once `workstream create` migrated the root ROADMAP away.
+  const { cwd, ws, versionOverride = null, phaseIdConvention = null } = opts;
 
   // Without a cwd there is nothing to scope AGAINST — the caller asked for an
   // unscoped read, which is a real answer (mirrors extractCurrentMilestoneScoped's
@@ -427,14 +447,63 @@ function listMilestonePhaseDirs(
   return { value, scope };
 }
 
-function getArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
+/**
+ * #3882 (ADR-3473 §8.2, issue #3882): the single owner of "the PHYSICAL set
+ * of phase directories on disk, entirely un-windowed" — the OTHER axis
+ * `listMilestonePhaseDirs` above deliberately does not offer. That owner
+ * refuses sentinels UNCONDITIONALLY (see its own doc comment); it has no way
+ * to say "physical set, sentinels included". That is exactly what an
+ * archival, lookup-index, or health-sweep caller needs — e.g. a heading ->
+ * directory lookup index that must resolve a directory regardless of
+ * milestone window (`cmdRoadmapAnalyze`'s `_phaseDirNames`,
+ * `cmdInitMilestoneOp`'s `diskPhaseDirs`) — which is why those callers used
+ * to hand-roll a `readdirSync` instead of calling either owner.
+ *
+ * `includeSentinels` is REQUIRED, with no default value. #3882/ADR-3473 §8.2:
+ * "a caller that wants sentinels asks for them explicitly" — obtaining
+ * sentinel-inclusion by silent omission is exactly the defect class this
+ * axis exists to close, so the call site is refused at COMPILE TIME without
+ * it, not merely documented against it here.
+ *
+ * Mirrors `listMilestonePhaseDirs`'s own absent/unreadable handling
+ * (ADR-3180 Decision 2): an ABSENT `phasesDir` is a real empty (a project
+ * with no phase directories yet), `scope: SCOPE.COMPLETE`; a `phasesDir`
+ * that EXISTS but cannot be read is a NON-answer, `scope: SCOPE.UNREADABLE`
+ * — a caller must not treat that empty list as "this project has no
+ * phases."
+ */
+function listAllPhaseDirs(
+  phasesDir: string,
+  opts: { includeSentinels: boolean; phaseIdConvention?: string | null },
+): { value: string[]; scope: Scope } {
+  const { includeSentinels, phaseIdConvention = null } = opts;
+
+  if (!fs.existsSync(phasesDir)) return { value: [], scope: SCOPE.COMPLETE };
+
+  let names: string[];
+  try {
+    names = fs.readdirSync(phasesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return { value: [], scope: SCOPE.UNREADABLE };
+  }
+
+  const value = names
+    .filter((name) => includeSentinels || !isSentinelPhaseId(name, phaseIdConvention ?? undefined))
+    .sort((a, b) => comparePhaseNum(a, b));
+
+  return { value, scope: SCOPE.COMPLETE };
+}
+
+function getArchivedPhaseDirs(cwd: string, wsOverride?: string | null): ArchivedPhaseDir[] {
   // #2855: same workstream-scoped resolution as findPhaseInternal above, via
   // the shared listArchiveVersionDirs helper. `phase.list --include-archived`
   // (the primary non-init consumer) must not leak a different workstream's
   // archive either.
   const results: ArchivedPhaseDir[] = [];
 
-  for (const { version, archivePath } of listArchiveVersionDirs(cwd)) {
+  for (const { version, archivePath } of listArchiveVersionDirs(cwd, wsOverride)) {
     const dirs = readSubdirectories(archivePath, true);
 
     for (const dir of dirs) {
@@ -450,9 +519,49 @@ function getArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
   return results;
 }
 
+/**
+ * #3804 — the CROSS-WORKSTREAM archive enumeration the audit surfaces need.
+ * getArchivedPhaseDirs above is deliberately #2855-SCOPED (an ambient
+ * workstream must not leak other trees' phases to findPhaseInternal), but
+ * audit-uat's charter (#2766: outstanding items do not stop mattering) is
+ * cross-workstream: enumerate the project root plus every workstream's own
+ * milestones tree, labeling workstream entries '<ws>/<version>' so
+ * acknowledge-by-label stays unambiguous. Deduped by full path (the same
+ * tree cannot be reached twice, but the guard keeps the invariant explicit).
+ */
+function getAllArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
+  const out: ArchivedPhaseDir[] = [];
+  const seen = new Set<string>();
+  const collect = (labelPrefix: string, wsOverride: string | null): void => {
+    for (const archived of getArchivedPhaseDirs(cwd, wsOverride)) {
+      const rel = toPosixPath(path.relative(cwd, archived.fullPath));
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      out.push({ ...archived, milestone: `${labelPrefix}${archived.milestone}` });
+    }
+  };
+  collect('', null);
+  const workstreamsDir = path.join(planningRoot(cwd), 'workstreams');
+  try {
+    const wsEntries = fs.readdirSync(workstreamsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+    for (const ws of wsEntries) {
+      collect(`${ws}/`, ws);
+    }
+  } catch {
+    /* no workstreams dir — the root pass above already ran */
+  }
+  return out;
+}
+
 export = {
   searchPhaseInDir,
   findPhaseInternal,
   getArchivedPhaseDirs,
+  getAllArchivedPhaseDirs,
   listMilestonePhaseDirs,
+  listAllPhaseDirs,
 };

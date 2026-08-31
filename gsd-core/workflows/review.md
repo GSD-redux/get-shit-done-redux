@@ -14,7 +14,7 @@ A plan that survives review from 2-3 independent AI systems is more robust.
 Check which AI CLIs are available on the system:
 
 ```bash
-_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; if [ -f "$GSD_TOOLS" ]; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif command -v gsd-tools >/dev/null 2>&1; then GSD_TOOLS="$(command -v gsd-tools)"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd-tools is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
+_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 # Check each CLI
 command -v gemini >/dev/null 2>&1 && echo "gemini:available" || echo "gemini:missing"
 command -v claude >/dev/null 2>&1 && echo "claude:available" || echo "claude:missing"
@@ -220,6 +220,13 @@ Provide structured feedback on plan quality, completeness, and risks.
 
 Findings citing `file:line` evidence are weighted far more heavily than impressionistic ones; a review that only restates the plan's own claims has low value.
 
+**Plan coverage is mandatory (#3301).** The exact list of plan ids and the total plan count for
+this review are given in the "## Plan Coverage Manifest" section below. Give **every** listed id
+its own `##`-level section headed with that id **verbatim** (e.g. `## 12.6-01`) before writing any
+cross-plan comparison, an overall risk assessment, or a consensus-style summary. A review that
+stops before every id has its own section is an incomplete review, not a summary — if you must
+stop early, say so explicitly and name which ids you did not reach.
+
 Analyze each plan and provide:
 
 1. **Summary** — One-paragraph assessment
@@ -262,6 +269,46 @@ for PLAN_FILE in "${PHASE_DIR}"/*-PLAN.md; do
   PLAN_INDEX=$((PLAN_INDEX + 1))
 done
 
+# #3301: plan coverage manifest — tell reviewers exactly which plan ids exist and
+# how many there are, so a review that silently covers 6 of 7 plans is no longer
+# indistinguishable from one that covers all 7. The id is the plan file's own
+# basename with the `-PLAN.md` suffix stripped (e.g. `12.6-01-PLAN.md` ->
+# `12.6-01`) — NOT the `plan:` frontmatter key, which holds only the bare
+# in-phase sequence number ("01") and can never reconstruct the phase-qualified
+# id reviewers need to cite. The filename is guaranteed present for every copied
+# plan, so no plan is ever dropped from the manifest for lacking a key.
+# Count and bullets are both derived directly from the glob loop below, never
+# from re-splitting an accumulated string: bash word-splits an unquoted `$VAR`
+# on IFS by default, but zsh does not (no `setopt SH_WORD_SPLIT` here), so a
+# prior `PLAN_IDS="$PLAN_IDS $id"` + `for x in $PLAN_IDS` round-trip silently
+# collapsed every id onto one iteration under zsh whenever there were 2+ plans
+# (gsd-core#4099). Direct glob iteration (`for f in "${PHASE_DIR}"/*-PLAN.md`,
+# same pattern as the copy loop above) is identical under both shells, so this
+# never needs word-splitting at all.
+PLAN_COUNT=0
+PLAN_ID_BULLETS=""
+for PLAN_FILE in "${PHASE_DIR}"/*-PLAN.md; do
+  PLAN_BASENAME=$(basename "$PLAN_FILE")
+  PLAN_ID="${PLAN_BASENAME%-PLAN.md}"
+  PLAN_COUNT=$((PLAN_COUNT + 1))
+  PLAN_ID_BULLETS="${PLAN_ID_BULLETS}- ${PLAN_ID}
+"
+done
+
+# Named to avoid BOTH existing RUN_DIR globs: `gsd-review-*.md` (reviewer
+# reports, invoke_reviewers) and `gsd-review-plan-*.md` (the plan copies just
+# above) — a manifest matching either would be picked up as a report or as a
+# plan to review.
+{
+  echo ""
+  echo "## Plan Coverage Manifest"
+  echo ""
+  echo "Total plans in this review: ${PLAN_COUNT}"
+  echo ""
+  echo "Plan ids (give each one its own \`##\`-level section, headed verbatim):"
+  printf '%s' "$PLAN_ID_BULLETS"
+} > "${RUN_DIR}/.plans-manifest.md"
+
 # Optional section files (only if content was included in the combined prompt)
 if [ -f ".planning/PROJECT.md" ]; then
   cp .planning/PROJECT.md "${RUN_DIR}/gsd-review-project.md"
@@ -277,6 +324,15 @@ fi
 if [ -f ".planning/REQUIREMENTS.md" ]; then
   cp .planning/REQUIREMENTS.md "${RUN_DIR}/gsd-review-requirements.md"
 fi
+
+# #3301: append the manifest to BOTH files reviewers actually read — the
+# per-lane budget-trimmed instructions file (descriptor lanes get
+# `--instructions-file`) and the full combined prompt (combined-prompt lanes
+# read the whole file). The `instructions` fragment is in prompt-budget's
+# `minimumFor` floor set and is never trimmed, so this survives per-lane
+# budget trimming intact.
+cat "${RUN_DIR}/.plans-manifest.md" >> "${RUN_DIR}/gsd-review-instructions.md"
+cat "${RUN_DIR}/.plans-manifest.md" >> "${RUN_DIR}/gsd-review-prompt.md"
 ```
 
 Note: `INSTRUCTIONS_BLOCK_FILE`, `ROADMAP_SECTION_FILE`, and `PHASE_DIR` come from prompt assembly; `RUN_DIR` is the run-scoped dir from `gather_context` (#2358) re-assigned from `{run_dir}` above. Copy the temp files written during prompt assembly to these section paths (or write each section here if the prompt was built inline).
@@ -316,7 +372,11 @@ reintroduce the flag (even spelled out in prose — a regression test bans the l
 If `section_manifest` is `null` or `"reviewer-instances-note-2"` is in its `included` list: read and execute `gsd-core/workflows/review/steps/reviewer-instances-note-2.md`. Otherwise skip — do not read the file.
 <!-- /gsd:section -->
 
-Lanes run **sequentially, not in parallel** — concurrent invocation trips provider rate limits.
+Lanes run **sequentially by default** — concurrent invocation trips provider rate limits, and a lane
+lost to one is a cross-AI review that quietly went blind in one eye. A project whose providers can
+accept the concurrency opts in with `review.parallel_lanes: true` (#3034): the selected lanes are
+dispatched together and **all** joined before aggregation. The default is unchanged, and convergence
+cycles stay sequential either way — only the lanes *within* one pass overlap.
 
 ```bash
 # #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
@@ -326,6 +386,13 @@ RUN_DIR="{run_dir}"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # SELECTED_REVIEWERS is the comma-separated result of reviewer selection (ADR-0011 precedence:
 # explicit flags > --all > review.default_reviewers > all detected). Unchanged by this phase.
+
+# #3034: opt-in concurrent lane dispatch. STRICT equality on "true" is deliberate — "1", "yes" and
+# "TRUE" must NOT opt in, so a mistyped config gets the conservative behaviour rather than firing
+# concurrent requests at a rate-limited provider. Note the `|| echo "false"` fallback is the
+# OPPOSITE polarity from the commit_docs guard, which fails OPEN: there, failing open preserves the
+# user's intent; here it would fire exactly the requests the default exists to prevent.
+PARALLEL_LANES=$(gsd_run query config-get review.parallel_lanes --raw 2>/dev/null || echo "false")
 
 # Shared budget-trim helper. Was defined inside the Ollama leg; it is lane-agnostic, so it is
 # hoisted here now that any lane may declare a promptBudgetKey. Returns non-zero when the budget
@@ -360,7 +427,20 @@ gsd_run query review-lane plan \
   --selected "$SELECTED_REVIEWERS" --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" --json \
   > "$RUN_DIR/gsd-review-lanes.json"
 
-for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+# One lane, start to finish. Hoisted into a function so the sequential and concurrent paths share
+# ONE body: two dispatch bodies kept in sync by hand is the generative-fix divergence ADR-2782 spent
+# a phase deleting, and it is what let #2494/#2605 be filed twice as the same defect.
+#
+# The result goes to a SLUG-SCOPED file, never a shared append. Concurrent O_APPEND is atomic only
+# below PIPE_BUF (4096 on Linux, 512 on some platforms), so a lane result above that bound could
+# interleave — and write_reviews parses this JSONL to render the models:/model_sources: frontmatter,
+# so a torn line is a broken REVIEWS.md, not a cosmetic log defect.
+run_review_lane() {
+  # `local` is hygiene, not a live fix: each `&`-dispatched call already forks its own subshell, so
+  # concurrent lanes cannot share these today. Scoped anyway so the isolation is a property of this
+  # function rather than of the dispatch mechanism happening to fork.
+  local SLUG LANE_BUDGET PROMPT_ARG TRIMMED
+  SLUG="$1"
   # Per-lane prompt budget. The lane declares its own `promptBudgetKey`; `plan` resolved it,
   # applying #2797's sentinel rule (-1 = unset → fall back to the global budget; 0 legitimately
   # means "do not trim this lane"). Trimming itself stays in prompt-budget, which owns it.
@@ -378,7 +458,9 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
       # response used to (#2605), so leave the skip visible in the review output, not only on stderr.
       echo "$SLUG review skipped: prompt budget (${LANE_BUDGET} tokens) too small for the minimum review set." \
         > "$RUN_DIR/gsd-review-$SLUG.md"
-      continue
+      # Was `continue` when this was a loop body. Inside a function that keyword is not the loop
+      # control it looks like — `return 0` is what skips this lane and leaves it with no result line.
+      return 0
     fi
   fi
 
@@ -387,7 +469,50 @@ for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
   # normal, failing to run one somebody asked for is an error.
   gsd_run query review-lane invoke --slug "$SLUG" \
     --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" $PROMPT_ARG $EXPLICIT_FLAG --json \
-    >> "$RUN_DIR/gsd-review-lane-results.jsonl"
+    > "$RUN_DIR/gsd-review-lane-result-$SLUG.json"
+}
+
+# Split ONCE, de-duplicated, and reuse for both loops below. Two reasons, and the second is
+# load-bearing: a slug repeated in SELECTED_REVIEWERS would put TWO concurrent background jobs on
+# `> "$RUN_DIR/gsd-review-lane-result-$SLUG.json"` — the same file, both truncating. The shared-append
+# form this replaced could not corrupt itself that way, so de-duping is what keeps the concurrent
+# path no worse than the sequential one. Selection de-dupes today (the roster is a Set;
+# review.default_reviewers normalizes lowercase-unique), but reachability analysis is not a contract
+# and the next caller should not have to redo it.
+#
+# A plain string accumulator, not an array: zsh and bash disagree on array indexing and this block
+# runs under both (see the nullglob/NULL_GLOB pairing above).
+DISPATCH_SLUGS=""
+for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+  case " $DISPATCH_SLUGS " in
+    *" $SLUG "*) continue ;;
+  esac
+  DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
+done
+
+for SLUG in $DISPATCH_SLUGS; do
+  if [ "$PARALLEL_LANES" = "true" ]; then
+    run_review_lane "$SLUG" &
+  else
+    run_review_lane "$SLUG"
+  fi
+done
+
+# Join every dispatched lane. A bare `wait` with no background jobs returns 0, so the sequential
+# path needs no guard around it. NOTHING below this line may run before every lane has finished —
+# write_reviews renders REVIEWS.md and the consensus summary from the aggregate below, and a review
+# assembled from a partial set looks complete while silently missing a reviewer.
+wait
+
+# Aggregate in SELECTED_REVIEWERS order, NOT completion order, so the JSONL a concurrent run
+# produces is byte-identical to the one a sequential run produces. This is post-join and therefore
+# single-threaded, so `>>` here is safe. A lane that was budget-skipped, or that never started,
+# leaves no result file and correctly contributes no line.
+for SLUG in $DISPATCH_SLUGS; do
+  LANE_RESULT="$RUN_DIR/gsd-review-lane-result-$SLUG.json"
+  if [ -f "$LANE_RESULT" ]; then
+    cat "$LANE_RESULT" >> "$RUN_DIR/gsd-review-lane-results.jsonl"
+  fi
 done
 ```
 
@@ -404,9 +529,7 @@ blocked, not silently redirected** (ADR-2782 D5).
 
 Display progress:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► CROSS-AI REVIEW — Phase {N}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► CROSS-AI REVIEW — Phase {N}
 
 ◆ Reviewing with {CLI}... done ✓
 ◆ Reviewing with {CLI}... done ✓
@@ -414,6 +537,134 @@ Display progress:
 </step>
 
 <step name="write_reviews">
+**#3352 (ADR-3473 §8.5): no artifact from failed inputs.** Before rendering anything, gate on
+whether any lane actually produced a result — "every lane failed" is exactly "the aggregate
+JSONL has zero lines" (§`invoke_reviewers`'s aggregation loop already builds this file as a
+byproduct; a lane that never started or was budget-skipped contributes no line either way).
+
+```bash
+RUN_DIR="{run_dir}"
+JSONL="$RUN_DIR/gsd-review-lane-results.jsonl"
+LANE_LINES=0
+[ -f "$JSONL" ] && LANE_LINES=$(wc -l < "$JSONL" | tr -d ' ')
+
+TOTAL_LANE_FAILURE="false"
+ALL_LANES_SKIPPED="false"
+if [ "${LANE_LINES:-0}" -eq 0 ]; then
+  # Zero lines means every dispatched lane left no result JSON — either every one
+  # was budget-skipped (N5: a skip is not a failure) or every one actually failed
+  # to run. Re-derive the dispatched-slug set the same way invoke_reviewers did
+  # (SELECTED_REVIEWERS is a shell block boundary — recompute, do not assume the
+  # earlier step's local DISPATCH_SLUGS variable survived into this block).
+  DISPATCH_SLUGS=""
+  for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+    case " $DISPATCH_SLUGS " in
+      *" $SLUG "*) continue ;;
+    esac
+    DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
+  done
+  # Distinguish by whether every dispatched slug's stub markdown says "skipped":
+  # a skip stub always does (see run_review_lane's budget branch, which writes
+  # this exact text before returning without ever invoking the lane); a real
+  # failure stub does not. If a slug has no stub at all, it is not a skip.
+  DISPATCHED_COUNT=0
+  SKIPPED_COUNT=0
+  for SLUG in $DISPATCH_SLUGS; do
+    DISPATCHED_COUNT=$((DISPATCHED_COUNT + 1))
+    STUB="$RUN_DIR/gsd-review-$SLUG.md"
+    if [ -f "$STUB" ] && grep -q "review skipped: prompt budget" "$STUB" 2>/dev/null; then
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    fi
+  done
+  if [ "$DISPATCHED_COUNT" -gt 0 ] && [ "$SKIPPED_COUNT" -eq "$DISPATCHED_COUNT" ]; then
+    ALL_LANES_SKIPPED="true"
+  else
+    TOTAL_LANE_FAILURE="true"
+  fi
+fi
+```
+
+- **If `ALL_LANES_SKIPPED=true`:** do NOT write `REVIEWS.md` and do NOT run the commit below —
+  there is nothing to review. Report to the user that every selected lane was budget-skipped
+  (not a failure) and stop; do not proceed to `present_results`' summary claiming a review ran.
+- **If `TOTAL_LANE_FAILURE=true`:** do NOT write `REVIEWS.md` and do NOT run the commit below.
+  Report the total lane failure to the user (name the lanes that were dispatched and point at
+  their `.err`/stub files preserved under `.review-diagnostics/` by `present_results`) and stop.
+- **Otherwise** (at least one lane produced a result — R1, unchanged): proceed exactly as below.
+
+**#3301: plan coverage check.** For each dispatched lane that produced a *real* review (not a
+stub, not budget-skipped, not empty), check whether its output mentions every plan id from
+`.plans-manifest.md` — the same manifest `build_prompt` gave the reviewer, so the expected-id list
+here can never diverge from what the reviewer was actually told. This is diagnostic only: it never
+blocks the workflow, never fails a lane, and never changes the `TOTAL_LANE_FAILURE`/
+`ALL_LANES_SKIPPED` gate above.
+
+CodeRabbit is excluded — it is a diff-only lane that never receives the source-grounding prompt
+(and therefore never receives the manifest or the per-id section instruction either), the same fact
+that already excludes it from grounded-review weighting in the Consensus Summary below.
+
+The match is intentionally lenient about *where* an id appears (a `##`-headed section is asked for,
+but plain prose mentioning the id still counts as coverage — grading only the letter of the
+formatting instruction would produce false INCOMPLETE verdicts against a reviewer that cited real
+evidence correctly). It is strict about *what* counts as a match: the id is regex-escaped (a
+decimal phase like `12.6` must not let `12X6-01` satisfy `12.6-01` through an unescaped `.`), and a
+`-`/word character immediately before or after the candidate match does not count as a boundary (so
+a threat id like `T-04-07` elsewhere in the review must not register as covering plan `04-07`).
+
+```bash
+RUN_DIR="{run_dir}"
+MANIFEST="$RUN_DIR/.plans-manifest.md"
+
+# Recompute — a shell variable does not survive across separate fenced blocks
+# (each is its own process), so DISPATCH_SLUGS from the gate-check block above
+# cannot be assumed to still be set here. Same recomputation as that block and
+# as invoke_reviewers.
+DISPATCH_SLUGS=""
+for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+  case " $DISPATCH_SLUGS " in
+    *" $SLUG "*) continue ;;
+  esac
+  DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
+done
+
+for SLUG in $DISPATCH_SLUGS; do
+  [ "$SLUG" = "coderabbit" ] && continue
+  REVIEW_FILE="$RUN_DIR/gsd-review-$SLUG.md"
+  [ -f "$REVIEW_FILE" ] || continue
+  [ -s "$REVIEW_FILE" ] || continue
+  grep -q "review skipped: prompt budget" "$REVIEW_FILE" 2>/dev/null && continue
+  grep -q "failed or returned empty output" "$REVIEW_FILE" 2>/dev/null && continue
+
+  node -e '
+    const fs = require("fs");
+    const { escapeRegex } = require("./gsd-core/bin/lib/pattern.cjs");
+    const manifest = fs.readFileSync(process.argv[1], "utf8");
+    const review = fs.readFileSync(process.argv[2], "utf8");
+    const ids = manifest.split("\n")
+      .filter((l) => l.startsWith("- "))
+      .map((l) => l.slice(2).trim())
+      .filter(Boolean);
+    const missing = ids.filter((id) => {
+      const re = new RegExp("(?<![\\w-])" + escapeRegex(id) + "(?![\\w-])");
+      return !re.test(review);
+    });
+    process.stdout.write(JSON.stringify({ complete: missing.length === 0, missing_ids: missing, total: ids.length }));
+  ' "$MANIFEST" "$REVIEW_FILE" > "$RUN_DIR/.plan-coverage-$SLUG.json"
+done
+```
+
+Each `${RUN_DIR}/.plan-coverage-<slug>.json` carries `{complete, missing_ids, total}` for one
+graded lane. Collect these into a `plan_coverage` frontmatter block — **only** when at least one
+graded lane has `complete: false` (mirrors the existing `trimmed_reviewers` precedent: present
+only when there is something to report):
+
+```yaml
+plan_coverage:        # only present if at least one graded lane is incomplete
+  <slug>:
+    total: 7
+    missing: ["12.6-07"]
+```
+
 Combine all review responses into `{phase_dir}/{padded_phase}-REVIEWS.md`:
 
 After all reviewers complete, collect trim metadata files written during the run. For each reviewer that was trimmed (i.e. a `.metadata.json` file exists and `hardFailed` or `omitted` is non-empty, or `projectMdShrunk` is true, or `planTruncationPct > 0`), include a `trimmed_reviewers` block in the frontmatter. Omit the key entirely if no reviewer was trimmed.
@@ -423,12 +674,31 @@ names, each gets its own `## <Adapter> Review (<instance>)` section, and ≥2 sa
 instances print a one-line shared-adapter caveat. Format in
 `gsd-core/references/reviewer-instances.md`.
 
+**Resolved model (#2295):** each lane's `review-lane invoke --json` line in
+`{run_dir}/gsd-review-lane-results.jsonl` carries a `model` object; render `models:` from
+its `value` and `model_sources:` from its `source`. Both maps carry exactly one entry per
+reviewer that appears in `reviewers:` — the two key sets always match. Write the literal
+`unknown` rather than omitting a key: an omitted key is indistinguishable from the feature
+not having run, and a reader must be able to tell *no model recorded* from *nothing to
+look at*. Emit every `models:`/`model_sources:` value as a DOUBLE-QUOTED YAML scalar — a
+legitimate model id can contain `:` (`llama3:70b`, `qwen2.5:7b`), which is unquotable as a
+bare scalar; a control character is already refused at the recording seam, so quoting is
+what closes the remaining `:`/`#`/leading-`-` cases. When GSD applied a reasoning effort to
+a lane, its `value` already carries a `(reasoning=<level>)` suffix (e.g.
+`gpt-5.6-sol (reasoning=high)`) — render it as-is, without re-deriving or re-formatting it.
+
 ```markdown
 ---
 phase: {N}
 reviewers: [gemini, claude, codex, coderabbit, opencode, qwen, cursor, antigravity, ollama, lm_studio, llama_cpp]  # populate at runtime with only the reviewers actually invoked
 reviewed_at: {ISO timestamp}
 plans_reviewed: [{list of PLAN.md files}]
+models:                   # resolved model per reviewer; `unknown` when not recoverable
+  codex: "gpt-5.6-sol (reasoning=low)"
+  antigravity: "unknown"
+model_sources:            # how each value above was determined
+  codex: "banner"
+  antigravity: "unknown"
 trimmed_reviewers:        # only present if at least one reviewer was trimmed
   ollama:
     budget: 6000
@@ -439,6 +709,10 @@ trimmed_reviewers:        # only present if at least one reviewer was trimmed
     plan_truncation_pct: 22
     hard_failed: false
     note_injected: true
+plan_coverage:            # only present if at least one graded lane is incomplete (#3301)
+  ollama:
+    total: 7
+    missing: ["12.6-07"]
 ---
 
 # Cross-AI Plan Review — Phase {N}
@@ -478,19 +752,33 @@ trimmed_reviewers:        # only present if at least one reviewer was trimmed
 {where reviewers disagreed — worth investigating}
 ```
 
-Commit:
+Commit (only reached when `TOTAL_LANE_FAILURE` and `ALL_LANES_SKIPPED` are both `false` — the
+gate above):
 ```bash
 gsd_run query commit "docs: cross-AI review for phase {N}" --files {phase_dir}/{padded_phase}-REVIEWS.md
 ```
 </step>
 
 <step name="present_results">
-Display summary:
+**If `write_reviews` set `TOTAL_LANE_FAILURE=true` or `ALL_LANES_SKIPPED=true`, skip the success
+summary below entirely** — no `REVIEWS.md` was written or committed, so there is nothing to
+present as complete. Report instead:
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► REVIEW COMPLETE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► REVIEW FAILED
+
+Phase {N}: every selected reviewer lane {failed to produce a result|was budget-skipped} — no
+REVIEWS.md was written.
+
+{If the preserve+cleanup block below reports success: "Diagnostics preserved:
+{phase_dir}/.review-diagnostics/". If it reports failure: relay its own warning verbatim —
+it names the intact run directory holding the un-preserved evidence instead.}
+```
+
+Otherwise (at least one lane succeeded), display summary:
+
+```
+### GSD ► REVIEW COMPLETE
 
 Phase {N} reviewed by {count} AI systems.
 
@@ -503,10 +791,52 @@ To incorporate feedback into planning:
   /gsd:plan-phase {N} --reviews
 ```
 
-Clean up — remove the run's temp directory now that REVIEWS.md is committed:
+**#3352 (ADR-3473 §8.5, R3): preserve per-lane evidence before destroying it.** Regardless of
+which branch above ran, the run's temp directory is the only record that a lane failed at all —
+copy it beside the phase's artifacts BEFORE cleanup. A lane that produced no output at all (L4)
+leaves nothing to preserve; that is a smaller diagnostics folder, not a fabricated one, and is
+NOT a preservation failure. This copy is deliberately NOT part of the commit above (N6) — that
+step names only `{padded_phase}-REVIEWS.md` explicitly, never a directory glob, so
+`.review-diagnostics/` is never swept into it.
+
+Preservation and cleanup MUST run in the same fenced block below (a shell variable cannot
+survive across separate fences — each is its own process). `mkdir -p` and every `cp` are
+exit-status checked; `rm -rf "$RUN_DIR"` runs ONLY if nothing was preserved (nothing to
+preserve is not a failure) or everything that needed preserving was copied successfully. If
+preservation fails partway, `$RUN_DIR` is left intact and a message names it as the location of
+the un-preserved evidence — a leftover temp directory is far cheaper than destroyed evidence:
 
 ```bash
-rm -rf "{run_dir}"
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
+
+RUN_DIR="{run_dir}"
+DIAG_DIR="{phase_dir}/.review-diagnostics"
+
+_DIAG_MD=( "$RUN_DIR"/gsd-review-*.md )
+_DIAG_ERR=()
+for f in "$RUN_DIR"/gsd-review-*.err; do
+  [ -s "$f" ] && _DIAG_ERR+=("$f")
+done
+
+_PRESERVE_OK=true
+if [ ${#_DIAG_MD[@]} -gt 0 ] || [ ${#_DIAG_ERR[@]} -gt 0 ]; then
+  if mkdir -p "$DIAG_DIR"; then
+    if [ ${#_DIAG_MD[@]} -gt 0 ] && ! cp "${_DIAG_MD[@]}" "$DIAG_DIR/"; then
+      _PRESERVE_OK=false
+    fi
+    if [ ${#_DIAG_ERR[@]} -gt 0 ] && ! cp "${_DIAG_ERR[@]}" "$DIAG_DIR/"; then
+      _PRESERVE_OK=false
+    fi
+  else
+    _PRESERVE_OK=false
+  fi
+fi
+
+if [ "$_PRESERVE_OK" = "true" ]; then
+  rm -rf "$RUN_DIR"
+else
+  echo "WARNING: evidence preservation to $DIAG_DIR failed — leaving the un-preserved run directory intact at: $RUN_DIR" >&2
+fi
 ```
 </step>
 

@@ -214,7 +214,7 @@ export const INJECTION_PATTERNS: RegExp[] = [
 
   // Role/identity manipulation
   /you\s+are\s+now\s+(?:a|an|the)\s+/i,
-  /act\s+as\s+(?:a|an|the)\s+(?!plan|phase|wave)/i,
+  /\bact\s+as\s+(?:a|an|the)\s+(?!plan|phase|wave)/i,
   /pretend\s+(?:you(?:'re| are)\s+|to\s+be\s+)/i,
   /from\s+now\s+on,?\s+you\s+(?:are|will|should|must)/i,
 

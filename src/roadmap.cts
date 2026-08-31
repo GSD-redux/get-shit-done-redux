@@ -13,22 +13,13 @@ import { escapeRegex } from './pattern.cjs';
 import { splitLines, detectEol, joinLines } from './text-lines.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output, error } = ioMod;
+const { output, error, formatDiagnosticToken } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-// #2528 moved this file's directory read off the `phaseTokenMatches` primitive
-// and onto the shared `matchPhaseDirs` selector, so the primitive is DROPPED
-// here rather than carried alongside — upstream's stated end state is that it
-// has no call sites outside phase-id.cts. The #612 bracket helpers are
-// untouched by that move and are kept.
-// #3212 Phase 1 drops `escapeRegex` from this destructure as well: the symbol
-// left phase-id.cts entirely and `src/pattern.cts` is its sole owner, imported
-// at the top of this file. A re-homing of one unrelated import — no #612
-// helper's provenance changes.
-const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, bracketQualifiedKey, foldBracketId, scopeToPhase } = phaseIdMod;
+const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, scopeToPhase, bracketQualifiedKey, foldBracketId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
+const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
@@ -43,6 +34,11 @@ import { platformWriteSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningPaths, withPlanningLock, findContextMdIn, resolvePhaseIdConvention } = planningWorkspace;
+// #3641: milestone-scope's convention resolution reads the project config
+// (no cycle — config-loader does not import this module).
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import configLoaderForScope = require('./config-loader.cjs');
+const { loadConfig: loadConfigForScope } = configLoaderForScope;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -62,6 +58,15 @@ interface PhasePlansAndSummaries {
   summaryCount: number;
   hasContext: boolean;
   hasResearch: boolean;
+  /**
+   * #3885 (ADR-3473 §8.5): null when the phase directory's readdirSync
+   * succeeded OR was genuinely absent (ENOENT — a real "not built yet"
+   * answer, not an error). A message naming the phase directory when
+   * readdirSync failed for any other reason (EACCES/EIO/...), so an
+   * unreadable directory is never silently reported the same as one that was
+   * successfully read and genuinely has no CONTEXT.md.
+   */
+  contextReadError: string | null;
 }
 
 interface PhaseSearchResult {
@@ -122,7 +127,20 @@ function countPhasePlansAndSummaries(phaseDir: string, convention?: string | nul
   // hasContext and hasResearch are not plan-scan concerns — read the directory
   // once and share the listing for all non-plan metadata that cmdRoadmapAnalyze needs.
   let phaseFiles: string[] = [];
-  try { phaseFiles = fs.readdirSync(phaseDir); } catch { /* empty */ }
+  // #3885 (ADR-3473 §8.5): distinguish "genuinely absent" (ENOENT) from
+  // "could not read" (EACCES/EIO/...) — the collapse of both to an empty
+  // listing is exactly the defect class this item closes. Mirrors
+  // core-utils.cts's getPhaseFileStats / phase-locator.cts's
+  // listMilestonePhaseDirs SCOPE.UNREADABLE discriminator.
+  let contextReadError: string | null = null;
+  try {
+    phaseFiles = fs.readdirSync(phaseDir);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      contextReadError = `Could not read phase directory ${formatDiagnosticToken(phaseDir)}: ${formatDiagnosticToken((err as Error)?.message ?? String(err))}`;
+    }
+  }
   // #3511: scope the raw listing to this phase dir before the
   // phase-numbered-artifact predicates (hasContext/hasResearch) — planCount/
   // summaryCount above stay on scanPhasePlans's own unscoped listing since a
@@ -136,6 +154,7 @@ function countPhasePlansAndSummaries(phaseDir: string, convention?: string | nul
     summaryCount,
     hasContext: findContextMdIn(scopedFiles) !== null,
     hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
+    contextReadError,
   };
 }
 
@@ -148,17 +167,6 @@ function countPhasePlansAndSummaries(phaseDir: string, convention?: string | nul
  * pre-escaped phase source. Extracted (#3412) so tests can assert against the
  * exact production pattern instead of hand-duplicating it.
  * #1729: OPTIONAL_PHASE_TAG_SOURCE after the number tolerates a pre-colon ( ) tag.
- *
- * #612: the heading intro is SELECTED by the resolved convention rather than
- * spelled literally. `convention` is OPTIONAL and trails #3412's signature, so
- * every convention-less caller — including `tests/phase-id.test.cjs:24`, which
- * imports this function precisely to assert the exact production pattern —
- * compiles the byte-identical source the literal previously spelled: at the
- * ANY_BRACKET baseline with no convention the selector returns
- * `(?:\[[^\]]{1,200}\]\s*)?Phase\s+` verbatim. Threading the parameter through
- * #3412's extraction rather than reinstating a second inline construction keeps
- * this function the single owner of the pattern, which is the whole point of
- * the extraction.
  */
 function buildPhaseHeadingRegex(escapedPhase: string, convention?: string | null): RegExp {
   return new RegExp(
@@ -385,76 +393,31 @@ type AnalyzePhase = {
   has_research: boolean;
   disk_status: string;
   roadmap_complete: boolean;
+  /** #3885 (ADR-3473 §8.5): see PhasePlansAndSummaries.contextReadError. */
+  context_read_error: string | null;
 };
 
-/**
- * #2761 M1 + #3165: the scan's two coupled outputs. `detailKeys` holds the
- * OCCURRENCE keys of the detail headings `phases` was built from — collected in
- * the same loop, past the same sentinel `continue`, so the two cannot disagree
- * about which headings count. They are returned together because the #3165
- * fallback below swaps BOTH or neither: a `detailKeys` left over from the
- * scoped scan while `phases` came from the fallback document would report every
- * recovered phase as `missing_phase_details`.
- */
-type AnalyzeScan = { phases: AnalyzePhase[]; detailKeys: Set<string> };
+type AnalyzePhaseCollection = {
+  phases: AnalyzePhase[];
+  detailKeys: Set<string>;
+};
 
-// Phase 0 (pre-milestone) and Phase 999 (backlog) are sentinels, not real
-// phases. They legitimately have no directory and must never be surfaced as
-// current/next phase or counted in phase_count. Mirrors the engine-wide
-// sentinel convention (phase-id getMilestoneFromPhaseId, roadmap-command-router
-// SENTINELS, the #1445 /^999/ progress filters). (#1580)
-// #612 READING-B: under the bracket convention the sentinel milestone lives in
-// the BRACKET (`### [GSD.999] 01:`), not in the phase token, so testing the
-// token alone is blind exactly when the widened read starts matching those
-// headings — an icebox item would count as a real phase (#1445/#1580). A
-// heading with no bracket keeps the legacy leading-integer rule byte-for-byte.
-// #612 READING-B adds a rule, it does not replace one: a bracketed heading is a
-// sentinel when its BRACKET milestone is reserved (`### [GSD.999] 01:`) OR when
-// its token is, so the engine-wide 0/999 backlog convention (#1445/#1580) keeps
-// applying to `### [GSD.02] 999:`. Replacing the token rule instead let a
-// mid-migration ROADMAP — bracket headings plus a legacy 999 backlog block,
-// exactly the content this epic targets — add entries to the denominator.
-//
-// #3185 (ADR-3180 Decision 1): the legacy leg is the canonical
-// `isSentinelPhaseId` (src/phase-id.cts, SENTINEL_RANGES), NOT the local
-// `parseInt(num,10) === 0 || === 999` copy #3185 deleted — that copy was the
-// fourth independent expression of the engine-wide convention #1580
-// describes. This predicate survives #3185's deletion only because it COMPOSES
-// that owner with the bracket reading above; it re-derives nothing.
-//
-// #3165 re-homing: this and `occurrenceKey` below were closures inside
-// `cmdRoadmapAnalyze` until #3165 split the detail scan into
-// `collectAnalyzePhases`. Both scopes read them — the extracted heading loop
-// and the caller's checklist loop — and neither closes over anything (the
-// `'bracket'` arguments below are literals, not the resolved convention), so
-// they are hoisted verbatim rather than duplicated or re-parameterised.
+// #612 composes the convention-qualified sentinel reading with upstream's
+// canonical legacy sentinel owner. A reserved bracket milestone OR a reserved
+// phase token excludes the occurrence.
 const isSentinelPhase = (num: string, bracketId?: string): boolean => {
   if (bracketId && isSentinelPhaseId(`${bracketId}-${num}`, 'bracket')) return true;
   return isSentinelPhaseId(num);
 };
 
-// #2761 M1 (trek-e review): the OCCURRENCE key — what makes two entries the
-// same phase. Under READING-B a phase's identity is its milestone-QUALIFIED
-// id, because the sentinel lives in the BRACKET: `[GSD.999] 01` and
-// `[GSD.02] 01` share a token and are not the same phase, and only one of
-// them is an icebox item. Keying on the bare token gave the pair ONE
-// classification between them, so `missing_phase_details` depended on which
-// bullet the author happened to write first.
-//
-// Prefers the owner's `bracketQualifiedKey`, which case-FOLDS, so
-// `[gsd.02] 01` and `[GSD.02] 01` are one phase. (It is not padding-tolerant
-// and does not need to be: the milestone grammar accepts exactly one spelling
-// per milestone — pad2 below 100, no leading zero above — so `[GSD.2]` is
-// malformed rather than an alternate spelling of `[GSD.02]`, and it takes the
-// fallback below.) Two shapes the owner refuses, both falling back to a
-// fold-normalized composite that still separates distinct pairs: a token
-// carrying its OWN hyphen — `[GSD.02] 02-01` splices
-// to `GSD.02-02-01`, which the qualified-key grammar reads as milestone 02 /
-// phase 02 with the trailing `-01` truncated, collapsing distinct headings
-// onto one key (the same splice hazard `getMilestonePhaseFilter` guards with
-// its own `!token.includes('-')`), and any id the grammar does not accept.
-// With no bracket id the bare token IS the identity — the legacy path, whose
-// keys and dedupe order are byte-identical to base.
+// #2761 M1: missing-detail identity is milestone-qualified under bracket.
+// Prefer the canonical qualified-key owner, which case-folds accepted ids, so
+// `[gsd.02] 01` and `[GSD.02] 01` are one occurrence. It is intentionally not
+// padding-tolerant: the milestone grammar has one canonical spelling (pad2
+// below 100, no leading zero above), so `[GSD.2]` is malformed rather than an
+// alternate spelling of `[GSD.02]`. Hyphenated tokens and other shapes the
+// qualified-key owner refuses retain a folded composite, keeping distinct
+// bracket/token pairs from collapsing onto one missing-detail verdict.
 const occurrenceKey = (num: string, bracketId?: string): string => {
   if (!bracketId) return num;
   const qualified = num.includes('-')
@@ -471,46 +434,32 @@ const occurrenceKey = (num: string, bracketId?: string): string => {
  * content (scoped window or fallback). Extracted verbatim from
  * `cmdRoadmapAnalyze`'s former inline loop so the fallback re-runs the EXACT
  * same enrichment, not a second derivation.
- *
- * #612: `convention` is the caller's ONCE-resolved `phase_id_convention`,
- * threaded rather than re-read here — it selects every heading/checklist
- * pattern below AND the directory read, so both call sites (the scoped window
- * and the #3165 fallback) get the same reading. Required, not optional: a
- * future call site that forgets it must be a compile error, not a silent
- * relapse to the legacy reading on exactly the recovery path #3165 exists for.
  */
 function collectAnalyzePhases(
   content: string,
   phasesDir: string,
   phaseDirNames: string[],
-  convention: string | null,
-): AnalyzeScan {
+  convention?: string | null,
+): AnalyzePhaseCollection {
   // Extract all phase headings: ## Phase N: Name or ### Phase N: Name
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
   // #612: CAPTURING intro under the bracket convention — group 1 is the
   // `[CODE.MM]` bracket id (undefined otherwise), group 2 the token, group 3 the
   // name. The bracket id is what the sentinel filter needs: READING-B puts the
   // sentinel milestone in the bracket, not in the token.
-  // #3036: the id capture accepts non-numeric-leading ids (e.g. B7, P0.3-2) that
-  // get-phase/execute-phase already resolve. The optional leading letter prefix
+  // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
+  // #3036: widen the id capture to accept non-numeric-leading ids (e.g. B7, P0.3-2)
+  // that get-phase/execute-phase already resolve. An optional leading letter prefix
   // ([A-Za-z]?) covers letter-prefixed ids without breaking numeric-leading ones.
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
   const phasePattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention, true)}([A-Za-z]?\\d+[A-Z]?(?:[.-]\\d+)*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
-  // Group offset: the capturing intro inserts the bracket id at 1 only when the
-  // bracket convention is active; otherwise the pattern has no such group and
-  // the token is back at 1. (#3165 split this loop out of `cmdRoadmapAnalyze`;
-  // its checklist loop derives the same offset from the same resolved
-  // convention — see the second `G` there.)
+  // The capturing intro inserts the bracket id at group 1 only under the
+  // bracket convention; the token and name shift by the same offset.
   const G = convention === 'bracket' ? 1 : 0;
   const phases: AnalyzePhase[] = [];
   let match: RegExpExecArray | null;
-
-  // #2761 M1: the occurrence keys of the DETAIL headings, collected in the same
-  // loop and past the same sentinel `continue` as `phases` itself, so the two
-  // cannot disagree about which headings count. Keyed per occurrence rather
-  // than by bare token: `[GSD.02] 01`'s heading previously marked the token
-  // `01` present, which then satisfied `[GSD.03] 01` — a different phase, with
-  // no heading anywhere — and hid it from `missing_phase_details`.
+  // The caller needs the exact occurrence identities from the same scan that
+  // built `phases`; returning them together also keeps fallback rescans atomic.
   const detailKeys = new Set<string>();
   while ((match = phasePattern.exec(content)) !== null) {
     const bracketId = G ? match[1] : undefined;
@@ -545,6 +494,10 @@ function collectAnalyzePhases(
     let summaryCount = 0;
     let hasContext = false;
     let hasResearch = false;
+    // #3885 (ADR-3473 §8.5): null unless dirMatch resolves and its readdirSync
+    // hit a non-ENOENT error — no directory at all is `disk_status:
+    // 'no_directory'`, a real (if uninteresting) answer, not a read error.
+    let contextReadError: string | null = null;
 
     // DEAD catch removed (#2245 audit): matchPhaseDirs(...) is a pure
     // array lookup on an already-resolved string array, and
@@ -558,26 +511,16 @@ function collectAnalyzePhases(
     // `disk_status: "no_directory"` with `plan_count`/`summary_count` 0 —
     // `extractPhaseToken('GSD.02-01-one')` with no convention returns the whole
     // dir name — while the same build resolved those same directories correctly
-    // in three other places on the same repo (W006/W007 via phaseTokenFromDir,
-    // `state json` via the milestone filter, and the W021 milestone-complete read
-    // through this very helper's three-argument form at the W021 site). It
+    // in three other places on the same repo (W006/W007 through their shared
+    // directory matcher, `state json` via the milestone filter, and the W026
+    // milestone-complete read through the same convention-aware owner). It
     // failed ONLY for the directory shape the convention exists to name: a
     // mid-migration bracket repo carrying legacy `01-one` dirs resolved fine.
-    // That is verbatim the asymmetry the note above the W021 site says this PR
+    // That is verbatim the asymmetry the note above the W026 rule says this PR
     // closed — the directory read widens with the heading read, or every bracket
     // phase resolves to nothing.
-    //
-    // #2528 consolidated this read onto the shared `matchPhaseDirs` selector.
-    // The convention rides along into it, per the seam agreement recorded on
-    // that function: the selector's primary match IS `phaseTokenMatches`, so
-    // dropping the argument here would reinstate exactly the regression the
-    // paragraph above describes. `.matches[0]` reproduces the prior `.find()`
-    // choice — the selector filters without reordering.
-    //
-    // #3165 made this ONE read serve TWO call paths — the scoped milestone
-    // window and the truncated-window fallback. The threading covers both by
-    // construction: `convention` is a parameter of this function, so the
-    // fallback cannot resolve directories differently from the scoped scan.
+    // Upstream centralized this choice in `matchPhaseDirs`; thread the same
+    // convention into that owner rather than reviving the primitive `.find()`.
     const dirMatch = matchPhaseDirs(phaseDirNames, normalized, convention).matches[0];
 
     if (dirMatch) {
@@ -586,6 +529,7 @@ function collectAnalyzePhases(
       summaryCount = counts.summaryCount;
       hasContext = counts.hasContext;
       hasResearch = counts.hasResearch;
+      contextReadError = counts.contextReadError;
 
       // ADR-3180 §7.4 (issue #3186, disk-strict, #3168 fix): route "is this
       // phase complete" through the canonical owner (`isPhaseComplete`),
@@ -619,10 +563,6 @@ function collectAnalyzePhases(
     // checkbox — no passing `*-VERIFICATION.md`, plans outstanding — now
     // reports incomplete; this is the deliberate Tier-2 break (ADR-3180 §7.4
     // Decision 3).
-    //
-    // #612: the label prefix comes from the owner builder — it is `Phase\s+`
-    // verbatim when the convention is not bracket, so the legacy read is
-    // byte-identical to the literal this replaced.
     const checkboxPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention)}${phaseMarkdownRegexSource(phaseNum)}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'i');
     const checkboxMatch = content.match(checkboxPattern);
     const roadmapComplete = checkboxMatch ? checkboxMatch[1] === 'x' : false;
@@ -639,6 +579,7 @@ function collectAnalyzePhases(
       has_research: hasResearch,
       disk_status: diskStatus,
       roadmap_complete: roadmapComplete,
+      context_read_error: contextReadError,
     });
   }
 
@@ -649,18 +590,27 @@ function collectAnalyzePhases(
   const stripPadA = (s: string) => s.replace(/^0+(?=.)/, '');
   const seen = new Set(phases.map((ph) => stripPadA(ph.number)));
   for (const tr of collectTablePhaseRows(content)) {
+    // #3577 table declarations were part of the pre-existing detail set.
+    // Preserve that behavior while heading occurrences gain bracket identity.
+    detailKeys.add(occurrenceKey(tr.id));
     if (seen.has(stripPadA(tr.id))) continue;
     const dirMatchA = matchPhaseDirs(phaseDirNames, normalizePhaseName(tr.id)).matches[0];
     let tPlanCount = 0;
     let tSummaryCount = 0;
     let tHasContext = false;
     let tHasResearch = false;
+    let tContextReadError: string | null = null;
     if (dirMatchA) {
       const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatchA));
       tPlanCount = counts.planCount;
       tSummaryCount = counts.summaryCount;
       tHasContext = fs.existsSync(path.join(phasesDir, dirMatchA, 'CONTEXT.md'));
       tHasResearch = fs.existsSync(path.join(phasesDir, dirMatchA, 'RESEARCH.md'));
+      // #3885 (ADR-3473 §8.5): reuse the SAME countPhasePlansAndSummaries call's
+      // discriminator — this row's hasContext/hasResearch are read via a direct
+      // existsSync (which cannot itself distinguish EACCES from absent), but
+      // an unreadable phase directory is still surfaced via the sibling call.
+      tContextReadError = counts.contextReadError;
     }
     phases.push({
       number: tr.id,
@@ -674,12 +624,9 @@ function collectAnalyzePhases(
       has_research: tHasResearch,
       disk_status: dirMatchA ? 'ok' : 'no_directory',
       roadmap_complete: false,
+      context_read_error: tContextReadError,
     });
   }
-  // #2761 M1: table-declared rows join `phases` above but are NOT heading
-  // occurrences, so `detailKeys` (heading-only) is untouched — it keeps
-  // scoping `missing_phase_details` to phases that lack a DETAIL heading,
-  // regardless of whether they also have a table row.
   return { phases, detailKeys };
 }
 
@@ -697,30 +644,30 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // indistinguishable from a genuinely empty milestone.
   const { value: content, scope } = extractCurrentMilestoneScoped(rawContent, cwd);
   const phasesDir = planningPaths(cwd).phases;
-  // #612: resolved ONCE per command, then threaded — never re-read per heading.
+  // #612: resolve once per command and thread the same reading through both
+  // the scoped scan and any fallback scan.
   const convention = resolvePhaseIdConvention(cwd);
-  // Group offset for the checklist scan below; same rule as, and same resolved
-  // convention as, `collectAnalyzePhases`'s own `G` (see the comment there).
   const G = convention === 'bracket' ? 1 : 0;
 
   // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
-  // #3185 exemption (documented reason, not a file allowlist — ADR-3180
-  // Decision 4a): this is a heading->directory LOOKUP INDEX, not a milestone
-  // enumeration. It must see the PHYSICAL set so a heading already scoped by
-  // extractCurrentMilestoneScoped above can find its directory; filtering it
-  // through listMilestonePhaseDirs would scope the same set twice.
-  const _phaseDirNames = (() => {
-    try {
-      return fs.readdirSync(phasesDir, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name);
-    } catch { return []; }
-  })();
+  // #3185 exemption reason (ADR-3180 Decision 4a): this is a heading->directory
+  // LOOKUP INDEX, not a milestone enumeration. It must see the PHYSICAL set so
+  // a heading already scoped by extractCurrentMilestoneScoped above can find
+  // its directory; filtering it through listMilestonePhaseDirs would scope
+  // the same set twice. #3882 (ADR-3473 §8.2): routed through the named
+  // "physical set, sentinels included" axis instead of a hand-rolled
+  // readdirSync — every heading matched below already excludes sentinel
+  // phase numbers via isSentinelPhaseId before it ever consults this list
+  // (collectAnalyzePhases), so a sentinel directory's presence here is
+  // output-invariant; this only removes the re-derivation, not the reason.
+  const _phaseDirNames = listAllPhaseDirs(phasesDir, { includeSentinels: true }).value;
 
   // Scan the scoped milestone window for phase-detail headings and enrich each
   // with its on-disk status. Extracted into `collectAnalyzePhases` (#3165) so
   // the SAME enrichment re-runs on the fallback below — not a second copy.
-  let { phases, detailKeys } = collectAnalyzePhases(content, phasesDir, _phaseDirNames, convention);
+  let collected = collectAnalyzePhases(content, phasesDir, _phaseDirNames, convention);
+  let phases = collected.phases;
+  let detailKeys = collected.detailKeys;
   // `effectiveContent` is what the downstream checklist scan (missing_details)
   // iterates. Defaults to the scoped window; switched to the fallback document
   // when the recovery path below fires, so a phase found via fallback is not
@@ -741,21 +688,13 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // alone cannot attribute phases to the active vs the intervening closed
   // milestone, so this never claims COMPLETE — it converts silence into a
   // populated, flagged result.
-  //
-  // #612: the suspect-window test itself is convention-BLIND by construction —
-  // `_phaseDirNames` is the raw `readdirSync` listing above, and the test is a
-  // bare `.length > 0` with no token extraction or directory matching, so no
-  // convention could change its verdict. The reading happens one line down,
-  // inside `collectAnalyzePhases`, which is threaded.
   if (phases.length === 0 && scope !== SCOPE.COMPLETE && _phaseDirNames.length > 0) {
     const fallbackContent = stripShippedMilestones(rawContent);
-    const fallbackScan = collectAnalyzePhases(fallbackContent, phasesDir, _phaseDirNames, convention);
-    if (fallbackScan.phases.length > 0) {
-      // #2761 M1: `detailKeys` moves WITH `phases`. The checklist scan below
-      // switches to `effectiveContent` in the same breath, so all three inputs
-      // to `missing_phase_details` describe one document.
-      phases = fallbackScan.phases;
-      detailKeys = fallbackScan.detailKeys;
+    const fallbackCollection = collectAnalyzePhases(fallbackContent, phasesDir, _phaseDirNames, convention);
+    if (fallbackCollection.phases.length > 0) {
+      collected = fallbackCollection;
+      phases = collected.phases;
+      detailKeys = collected.detailKeys;
       effectiveContent = fallbackContent;
     }
   }
@@ -784,7 +723,8 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // at the dash (`1-01` -> `1`) and every such phase reports a phantom missing detail.
   // #612: CAPTURING label-only intro — the bracket id rides along so the
   // sentinel filter below is not blind to `- [ ] **[GSD.999] 01: Icebox**`.
-  // #3036: the token accepts non-numeric-leading ids (same widening as the detail-heading pattern above).
+  // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
+  // #3036: widen to accept non-numeric-leading ids (same widening as the detail-heading pattern above).
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
   const checklistPattern = new RegExp(`-\\s*\\[[ x]\\]\\s*\\*\\*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true)}([A-Za-z]?\\d+[A-Z]?(?:[.-]\\d+)*)`, 'gi');
   // #2761 M1: an OCCURRENCE list keyed by `occurrenceKey`, not a token->bracket
@@ -798,9 +738,6 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   const checklistOccurrences: Array<{ token: string; bracketId?: string }> = [];
   const seenChecklistKeys = new Set<string>();
   let checklistMatch: RegExpExecArray | null;
-  // #3165: iterates `effectiveContent`, not `content` — the fallback document
-  // when the recovery path above fired, so a phase recovered from it is not
-  // then reported as "in the checklist but missing a detail section."
   while ((checklistMatch = checklistPattern.exec(effectiveContent)) !== null) {
     const token = checklistMatch[1 + G];
     const bracketId = G ? checklistMatch[1] : undefined;
@@ -919,25 +856,37 @@ function cmdRoadmapMilestoneScope(cwd: string, raw: boolean): void {
   }
 
   const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
-  const { value: window, scope } = extractCurrentMilestoneScoped(rawContent, cwd);
+  // #3641: resolve phase_id_convention and thread it into the scope axis, so
+  // this probe and `roadmap validate`'s V005 answer the SAME question the
+  // SAME way for a bracket-convention project — a window the classifier
+  // calls TRUNCATED in validate must never read COMPLETE here (the #3262
+  // capture/compare guard consumes this scope). Resolution mirrors the
+  // validate router's: .planning/config.json first, ROADMAP.md frontmatter
+  // as fallback.
+  let phaseIdConvention: string | undefined | null;
+  try {
+    const cfg = loadConfigForScope(cwd);
+    phaseIdConvention = cfg['phase_id_convention'] as string | undefined | null;
+  } catch {
+    phaseIdConvention = undefined;
+  }
+  if (phaseIdConvention === undefined || phaseIdConvention === null) {
+    // Bounded per local/no-unbounded-quantifier (#2128): frontmatter is a
+    // short header block — 4KB is orders of magnitude beyond any real one.
+    const fmMatch = rawContent.match(/^---\r?\n([\s\S]{0,4000}?)\r?\n---/);
+    if (fmMatch) {
+      const kvMatch = fmMatch[1].match(/^phase_id_convention:\s*(.*)$/m);
+      if (kvMatch) {
+        const val = kvMatch[1].trim();
+        if (val !== 'null' && val !== '') {
+          phaseIdConvention = val.replace(/^["']|["']$/g, '');
+        }
+      }
+    }
+  }
+  const { value: window, scope } = extractCurrentMilestoneScoped(rawContent, cwd, undefined, phaseIdConvention);
   // Document order (Set insertion order) — deterministic for a given document.
-  //
-  // #612: SELECTED by the resolved convention, like every other heading read on
-  // this branch — and here the selection is load-bearing for the GUARD, not
-  // just for the report. `scanMilestonePhaseIds` recognizes `### [GSD.02] 05:`
-  // only when the convention says bracket, so a convention-BLIND call returns
-  // the EMPTY set on a bracket ROADMAP: `phases: []` before the write and
-  // `phases: []` after it, and edit-phase's before/after comparison passes on
-  // exactly the narrowing it exists to catch. Resolved HERE, from this
-  // command's own `cwd` (the same one `extractCurrentMilestoneScoped` above
-  // resolves its own bracket scoping from), never inside the owner — an owner
-  // that resolved for its callers would silently re-scope workstream repos.
-  //
-  // KNOWN GAP, deliberately NOT closed here: the `scope` axis above still runs
-  // through `hasPhaseEntries`, which is convention-blind, so a pure-bracket
-  // window classifies COMPLETE. This threading fixes the `phases` axis of the
-  // probe; `scope` stays blind until the convention-less-readers slice lands.
-  const phases = [...scanMilestonePhaseIds(window, resolvePhaseIdConvention(cwd)).ids];
+  const phases = [...scanMilestonePhaseIds(window, phaseIdConvention)];
   output({ scope, phases, phase_count: phases.length }, raw, undefined);
 }
 

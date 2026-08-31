@@ -299,6 +299,32 @@ function walk(dir) {
   return results;
 }
 
+// #3738: runtimes whose GLOBAL artifact layout declares a kind `home` override
+// that resolves OUTSIDE configDir (antigravity → <HOME>/.gemini/config, the dir
+// AGY scans for machine-local discovery). The parity walk must cover those
+// roots too, or every emitted skill/agent silently leaves the manifest the
+// moment the override appears — exactly the #3547 blind-spot class this
+// harness exists to prevent (a real install shape the manifest cannot see).
+// Mirrors the capability registry's artifactLayout `home` fields the same way
+// RUNTIME_META mirrors configHome; codex's `.agents` override is deliberately
+// NOT listed here — its skills have never been manifest-covered, and widening
+// this table for codex is a coverage change unrelated to #3738.
+const EXTRA_GLOBAL_EMIT_ROOTS = {
+  antigravity: [path.join('.gemini', 'config')],
+};
+
+/**
+ * Absolute extra emit-root directories for a runtime/scope pair — the
+ * home-override install roots outside configDir — or [] when none.
+ * @param {string} runtime
+ * @param {string} scope
+ * @param {string} root  the sandboxed HOME/temp root the install ran under
+ */
+function extraEmitRootsFor(runtime, scope, root) {
+  const suffixes = (scope === 'global' && EXTRA_GLOBAL_EMIT_ROOTS[runtime]) || [];
+  return suffixes.map((suffix) => path.join(root, suffix));
+}
+
 /**
  * Build a deterministic hash-map of all non-volatile files under configDir.
  *
@@ -391,7 +417,29 @@ function collectNormalizedEmittedFiles(configDir, root, opts, callerName) {
       'Pass the version of the tree that produced the emitted content at configDir.'
     );
   }
-  const allFiles = walk(configDir);
+  // #3738: home-override emit roots outside configDir (see
+  // EXTRA_GLOBAL_EMIT_ROOTS). Each extra root's files are keyed rel to THAT
+  // root — the emitted key space is install-location-relative ('skills/…',
+  // 'agents/…'), so the same artifact keeps the same key whether the layout
+  // resolves it under configDir or under the override root. configDir entries
+  // win on collision (a layout would never write both, but a stale leftover
+  // under configDir must not shadow the live emit root).
+  const extraEmitRoots = Array.isArray(opts.extraEmitRoots) ? opts.extraEmitRoots : [];
+  const allFiles = walk(configDir).map((full) => ({ full, relRoot: configDir }));
+  for (const extraRoot of extraEmitRoots) {
+    if (typeof extraRoot !== 'string' || extraRoot.length === 0) {
+      throw new Error(`${callerName}: opts.extraEmitRoots entries must be non-empty absolute paths`);
+    }
+    if (path.resolve(extraRoot) === path.resolve(configDir)) continue;
+    // An absent extra root is a legitimate shape, not an error: the baseline
+    // side measures a BASE tree whose installer may predate the home override
+    // (the artifacts then live under configDir, which IS walked). Only a
+    // root that exists but cannot be read is a failure — walk() surfaces that.
+    let stat;
+    try { stat = fs.statSync(extraRoot); } catch { continue; }
+    if (!stat.isDirectory()) continue;
+    for (const full of walk(extraRoot)) allFiles.push({ full, relRoot: extraRoot });
+  }
   const unsorted = {};
 
   // The claude LOCAL install resolves its config dir via realpath, which on macOS
@@ -405,11 +453,15 @@ function collectNormalizedEmittedFiles(configDir, root, opts, callerName) {
   let realRoot = root;
   try { realRoot = fs.realpathSync(root); } catch { /* root already gone / not resolvable */ }
 
-  for (const full of allFiles) {
+  for (const { full, relRoot } of allFiles) {
     // Build POSIX-style relative path for cross-platform stability
-    const rel = path.relative(configDir, full).split(path.sep).join('/');
+    const rel = path.relative(relRoot, full).split(path.sep).join('/');
 
     if (VOLATILE_FILES.has(rel)) continue;
+    // Collision policy stated above: configDir owns the key first; a file in
+    // an extra emit root with an already-claimed rel is the stale-leftover
+    // case, not a second opinion.
+    if (relRoot !== configDir && Object.prototype.hasOwnProperty.call(unsorted, rel)) continue;
     if (HOOK_CONFIG_FILES.has(path.basename(rel))) continue;
     if (HOOK_CONFIG_RELATIVE_PATHS.has(rel)) continue;
     if (EXCLUDED_PREFIXES.some((p) => rel.startsWith(p))) continue;
@@ -500,10 +552,15 @@ function buildEmittedSizes(configDir, root, opts = {}) {
  *  normalizes to, never which paths buildParityManifest walks or excludes — so there
  *  is nothing for a caller to pass here, and forwarding one through would only let a
  *  bad version value make a pure file-set query throw for no file-set-shaped reason
- *  (#2891 review FINDING 6; verified no caller passes a third argument —
- *  tests/golden-install-tree.test.cjs, scripts/gen-install-tree-fixtures.cjs). */
-function buildInstallTree(configDir, root) {
-  return Object.keys(buildParityManifest(configDir, root)).sort();
+ *  (#2891 review FINDING 6; verified no caller passes a version argument —
+ *  tests/golden-install-tree.test.cjs, scripts/gen-install-tree-fixtures.cjs).
+ *  #3738: an OPTIONAL third argument — extraEmitRoots (array, see
+ *  extraEmitRootsFor) — is the one non-version thing a file-set query legitimately
+ *  needs: the home-override install roots outside configDir. Omitted/null keep the
+ *  legacy configDir-only walk, so buildInstallTree(cd, root, null) still equals
+ *  buildInstallTree(cd, root). */
+function buildInstallTree(configDir, root, extraEmitRoots) {
+  return Object.keys(buildParityManifest(configDir, root, { extraEmitRoots })).sort();
 }
 
 function simulateHookCopy(hooksSrc, hooksDest) {
@@ -559,17 +616,6 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
   const ownsRoot = providedRoot === null;
   const root = providedRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), `gsd-${runtime}-${scope}-`));
   try {
-    const LOCAL_DIR_NAME = {
-      claude: '.claude', opencode: '.opencode', kilo: '.kilo',
-      codex: '.codex', copilot: '.github', antigravity: '.agents', cursor: '.cursor',
-      windsurf: '.windsurf', augment: '.augment', trae: '.trae', qwen: '.qwen',
-      codebuddy: '.codebuddy', cline: '.',
-      // #3023: pi was in RUNTIME_META but absent here, so `scope: 'local'` for pi
-      // resolved `path.join(root, undefined)` and threw — no local-scope pi install
-      // could ever be exercised. pi's local config dir is `.pi`
-      // (capabilities/pi/capability.json runtime.localConfigDir).
-      pi: '.pi',
-    };
     let configDir;
     let cwd = process.cwd();
     const args = [installScript, `--${runtime}`];
@@ -602,7 +648,23 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
     } else {
       args.push('--local');
       cwd = root;
-      configDir = runtime === 'cline' ? root : path.join(root, LOCAL_DIR_NAME[runtime]);
+      // #3031: local scope reads RUNTIME_META.localDir — the SAME table the
+      // global branch above reads — instead of a second hand-maintained map.
+      // That duplicate map was missing four runtimes (hermes, kimi, kimi-code,
+      // zcode), so `scope: 'local'` for any of them resolved
+      // `path.join(root, undefined)` and threw a bare TypeError naming neither
+      // the runtime nor the map at fault. #3023 fixed exactly this for `pi` by
+      // adding one more entry, which left the divergence itself in place; the
+      // table is now single-source so a new runtime cannot reintroduce it.
+      // `cline` keeps its ternary: its local artifacts land at the project root
+      // itself, which is a genuine exception rather than a directory name.
+      const localMeta = RUNTIME_META[runtime];
+      if (runtime !== 'cline' && (!localMeta || !localMeta.localDir)) {
+        throw new Error(
+          `runMinimalInstall: no RUNTIME_META.localDir for runtime "${runtime}" — refusing to guess a local config dir (#3031)`,
+        );
+      }
+      configDir = runtime === 'cline' ? root : path.join(root, localMeta.localDir);
     }
     args.push(...extraArgs);
     const result = runNode(args, {
@@ -747,6 +809,7 @@ module.exports = {
   buildParityManifest,
   buildEmittedSizes,
   buildInstallTree,
+  extraEmitRootsFor,
   simulateHookCopy,
   installerEnv,
   runMinimalInstall,

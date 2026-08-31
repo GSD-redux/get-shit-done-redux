@@ -1,3 +1,4 @@
+// docs-guard-exempt: 'docs/DEVELOPMENT.md' is a synthetic files-list fixture entry, not read as content.
 // allow-test-rule: source-text-is-the-product
 // The workflow and agent .md files ARE the product: their text is loaded and
 // executed/interpreted at runtime by the agent host. Testing that specific
@@ -27,7 +28,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { toLegacyResult, gitOrThrow } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS, GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { PROBE_TIMEOUT_MS, GIT_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, createTempGitProject, cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -808,11 +809,18 @@ function runDerivation(repo, snippet, phase) {
     'printf \'%s\\n\' "$FALLOW_BASE"',
     'echo "===END==="',
   ].join('\n');
+  // Bash FAN-OUT: the extracted snippet runs `git log` plus an `echo | tail`
+  // pipe — the wrong class for `PROBE_TIMEOUT_MS` (a single short CLI
+  // probe). Same class as the observed CI failures in
+  // tests/quick-branching.test.cjs (PR #3787 run 32668773524) and
+  // tests/worktree-safety.test.cjs (`next` run 32608945654). See
+  // HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the class
+  // rationale.
   return toLegacyResult(
     runHook('-c', [script, 'bash'], {
       interpreter: 'bash',
       cwd: repo,
-      timeoutMs: PROBE_TIMEOUT_MS,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     })
   );
 }

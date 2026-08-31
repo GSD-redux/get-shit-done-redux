@@ -436,6 +436,90 @@ describe('config-set command', () => {
   });
 });
 
+// ─── config-set git.protected_branches (#3552) ──────────────────────────────
+
+describe('config-set git.protected_branches (#3552)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    runGsdTools('config-ensure-section', tmpDir);
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('accepts and persists multiple non-empty branch names', () => {
+    const branches = ['develop', 'next'];
+    const result = runGsdTools(
+      ['config-set', 'git.protected_branches', JSON.stringify(branches)],
+      tmpDir,
+    );
+
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.deepStrictEqual(readConfig(tmpDir).git.protected_branches, branches);
+  });
+
+  test('rejects invalid shapes and preserves the previous list', () => {
+    const previous = ['develop', 'next'];
+    const seed = runGsdTools(
+      ['config-set', 'git.protected_branches', JSON.stringify(previous)],
+      tmpDir,
+    );
+    assert.ok(seed.success, `Seed failed: ${seed.error}`);
+
+    const invalidValues = [
+      'develop',
+      { develop: true },
+      ['develop', 42],
+      [],
+      [''],
+      ['develop', '   '],
+    ];
+
+    for (const invalidValue of invalidValues) {
+      const result = runGsdTools(
+        ['config-set', 'git.protected_branches', JSON.stringify(invalidValue)],
+        tmpDir,
+      );
+      assert.strictEqual(
+        result.success,
+        false,
+        `Expected rejection for ${JSON.stringify(invalidValue)}, got: ${result.output}`,
+      );
+      assert.deepStrictEqual(
+        readConfig(tmpDir).git.protected_branches,
+        previous,
+        `Rejected value ${JSON.stringify(invalidValue)} must not change the prior list`,
+      );
+    }
+  });
+
+  test('is absent by default and null removes the configured list', () => {
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(readConfig(tmpDir).git, 'protected_branches'),
+      'config-ensure-section must not add a protected_branches default',
+    );
+
+    const setResult = runGsdTools(
+      ['config-set', 'git.protected_branches', '["develop","next"]'],
+      tmpDir,
+    );
+    assert.ok(setResult.success, `Set failed: ${setResult.error}`);
+
+    const unsetResult = runGsdTools(
+      ['config-set', 'git.protected_branches', 'null'],
+      tmpDir,
+    );
+    assert.ok(unsetResult.success, `Unset failed: ${unsetResult.error}`);
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(readConfig(tmpDir).git, 'protected_branches'),
+      'git.protected_branches must be absent after unset',
+    );
+  });
+});
+
 // ─── config-get ──────────────────────────────────────────────────────────────
 
 describe('config-get command', () => {

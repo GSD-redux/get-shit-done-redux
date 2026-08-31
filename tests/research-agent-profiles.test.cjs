@@ -627,3 +627,239 @@ describe('gsd-phase-researcher in-repo value provenance rule (#1699)', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Absent-evidence provenance rule (#2951)
+//
+// The two sibling rules above classify WHERE you looked. Neither classifies
+// whether what you saw supports the claim you drew from it. Consulting PyPI and
+// finding no `python_requires` and no per-minor classifier is a tool-confirmed
+// observation from an authoritative source — it earns `[VERIFIED: PyPI]` under a
+// plain reading of the base taxonomy. The negative conclusion ("ldap3 does not
+// support 3.14") then rides into a locked CONTEXT.md decision on a tag that was
+// honestly applied to the lookup. The claim was true of 3.14 and equally true of
+// 3.12 and 3.13 — the versions the plan was standardizing ON — so the same
+// evidence "proved" both, and a wrong interpreter downgrade shipped.
+//
+// An absence can be verified; the tag did not distinguish a verified absence from
+// a verified constraint. These assert the governed prose contract on the deployed
+// agent definition.
+// ---------------------------------------------------------------------------
+
+describe('gsd-phase-researcher absent-evidence provenance rule (#2951)', () => {
+  const agentPath = path.join(ROOT, 'agents', 'gsd-phase-researcher.md');
+  const read = () => fs.readFileSync(agentPath, 'utf-8');
+
+  test('names the absent-metadata forms the rule governs', () => {
+    const content = read();
+    for (const term of ['`python_requires`', '`engines` field', 'per-version classifier', 'changelog entry', 'support matrix']) {
+      assert.ok(
+        content.includes(term),
+        `agent must name "${term}" as a governed form of absent metadata`
+      );
+    }
+  });
+
+  test('states that absence is silence about every value, not a constraint on one', () => {
+    const content = read();
+    assert.ok(
+      content.includes('Absence is silence about **every** value, not a constraint on one'),
+      'the core proposition must be stated, not paraphrased'
+    );
+    assert.match(
+      content,
+      /says nothing about the version you want \*and\* nothing about the version you are standardizing on/,
+      'the agent must spell out that the same absence "proves" both sides, which is why the ldap3 claim was worthless'
+    );
+  });
+
+  test('refuses the tag however authoritative the consulted source was', () => {
+    assert.ok(
+      read().includes('however authoritative the source you consulted'),
+      'source authority is what made the original claim pass review — it must be explicitly insufficient'
+    );
+  });
+
+  test("keys on the evidence, not the claim's wording", () => {
+    const content = read();
+    assert.ok(
+      content.includes('keys on the **evidence, not the wording**'),
+      'a rule keyed on surface polarity is evaded by rephrasing'
+    );
+    assert.ok(
+      content.includes('supports only up to 3.13'),
+      'the agent must name the positive rephrasing as resting on the identical absence'
+    );
+  });
+
+  test('rejects absence as evidence of support, not only of non-support', () => {
+    assert.match(
+      read(),
+      /an absence is equally not evidence that the target \*is\* supported/,
+      'the mirror-image error must be closed, or the rule licenses "no upper bound declared, so any version works"'
+    );
+  });
+
+  test('leaves a present declared constraint earning [VERIFIED]', () => {
+    const content = read();
+    assert.ok(
+      content.includes('A **present** constraint is the opposite case and is untouched'),
+      'the rule targets MISSING fields, never merely unfavorable ones'
+    );
+    assert.ok(
+      content.includes('`requires-python = ">=3.9,<3.12"` is a declared exclusion'),
+      'a concrete present-constraint example must show what still earns the tag'
+    );
+  });
+
+  test('leaves an affirmatively documented incompatibility on [CITED]', () => {
+    assert.match(
+      read(),
+      /documentation stating the incompatibility affirmatively \(`\[CITED: …\]`\)/,
+      'an affirmative statement about the world is not an absence and must keep its existing tag'
+    );
+  });
+
+  test('licenses a positive falsification attempt as the route to [VERIFIED]', () => {
+    const content = read();
+    // Pinned as ONE joined sentence, not as independent substrings: the rule's whole
+    // payoff is the TARGET of the route. A mutant swapping `[VERIFIED]` for `[CITED]`
+    // or `[ASSUMED]` inverts the rule while leaving every separate phrase intact.
+    assert.match(
+      content,
+      /The only route from an absence to `\[VERIFIED\]` is a \*\*positive falsification attempt\*\*/,
+      'the route and the tag it reaches must be asserted together, or inverting the tag survives'
+    );
+    assert.ok(
+      content.includes('run it against the real target'),
+      'the probe must exercise the real target, not a proxy'
+    );
+  });
+
+  test('makes the pasted failing output the artifact, not the claim of having run it', () => {
+    const content = read();
+    assert.ok(
+      content.includes('**paste the failing output**'),
+      'the output is the falsifiable artifact — mirrors the in-repo rule making the quote, not the citation, the artifact'
+    );
+    assert.ok(
+      content.includes('asserting that you ran it does not earn the tag'),
+      'an unpasted probe assertion is the box-ticking mode this rule exists to close'
+    );
+  });
+
+  test('rejects a failure not attributable to the incompatibility', () => {
+    assert.match(
+      read(),
+      // The parenthetical examples are illustrative; a copy-edit that swaps them must
+      // not break this. Only the substantive clause is pinned.
+      /a failure attributable to something else[^.]{0,80}is not a falsification/,
+      'any-failure-will-do turns the probe requirement into a formality'
+    );
+  });
+
+  test('refutes rather than downgrades a claim whose probe succeeds', () => {
+    assert.match(
+      read(),
+      /A probe that \*succeeds\* refutes the claim: drop it rather than downgrade it/,
+      'a disproved claim must leave RESEARCH.md entirely, not survive as [ASSUMED]'
+    );
+  });
+
+  test('separates a failed lookup from a declared absence', () => {
+    assert.match(
+      read(),
+      /When the lookup itself failed, report \*no observation\*, never a declared absence/,
+      'an unobserved field must not be laundered into a declared-absent field'
+    );
+  });
+
+  test('keeps [ASSUMED] available when a probe cannot be run', () => {
+    assert.match(
+      read(),
+      /costs a confirmation checkpoint, not a blocked plan/,
+      'a rule that demanded a feasible probe would become a gate that is routinely skipped'
+    );
+  });
+
+  test('sits inside the claim-provenance block ahead of the [ASSUMED] routing sentence', () => {
+    const content = read();
+    const taxonomy = content.indexOf('**Claim provenance:**');
+    const rule = content.indexOf('**Absent-evidence provenance rule:**');
+    const routing = content.indexOf('Claims tagged `[ASSUMED]` signal to the planner and discuss-phase');
+    assert.ok(taxonomy >= 0, 'the base claim-provenance taxonomy must still be present');
+    assert.ok(rule >= 0, 'the absent-evidence rule must be present');
+    assert.ok(routing >= 0, 'the [ASSUMED] routing sentence must still be present');
+    assert.ok(
+      taxonomy < rule && rule < routing,
+      'the rule must follow the taxonomy it constrains and precede the routing sentence it terminates in — '
+      + 'otherwise "routes into the existing [ASSUMED] path" is not true of the deployed ordering'
+    );
+  });
+
+  test('distinguishes a bounding declaration from an allow-list that stops short', () => {
+    const content = read();
+    // The ldap3 class of case: classifiers present for some versions, absent for the
+    // target. Without this, the absence clause and the present-constraint carve-out
+    // give opposite verdicts on the same evidence and the rule cannot be applied.
+    assert.ok(
+      content.includes('whether the declaration bounds **every** value or only the ones it names'),
+      'the rule must give a decision procedure for present-list-vs-absent-entry, not two conflicting readings'
+    );
+    assert.match(
+      content,
+      /an enumerated allow-list that stops short of your target[\s\S]{0,400}is still a governed absence/,
+      'an allow-list missing the target version must stay a governed absence'
+    );
+    assert.ok(
+      content.includes('unless the project states the list is exhaustive'),
+      'the one condition that turns an allow-list into a real constraint must be named'
+    );
+    assert.match(
+      content,
+      /Reframing that silence as a positive finding[\s\S]{0,120}earns the same tag/,
+      'the positive-reframing evasion must be closed explicitly, not left to inference'
+    );
+  });
+
+  test('does not disturb the package name provenance rule', () => {
+    const content = read();
+    assert.ok(
+      content.includes('**Package name provenance rule:**'),
+      'the first sibling rule must survive unchanged'
+    );
+    assert.ok(
+      content.includes('a slopsquatted package also passes `npm view`'),
+      'package-legitimacy reasoning must remain intact'
+    );
+  });
+
+  test('does not disturb the in-repo value provenance rule', () => {
+    const content = read();
+    assert.ok(
+      content.includes('**In-repo value provenance rule:**'),
+      'the second sibling rule must survive unchanged'
+    );
+    assert.match(
+      content,
+      /opened the source-of-truth file with `Read` \*\*this session\*\*/,
+      'the same-session Read requirement must remain intact'
+    );
+  });
+
+  test('defines the rule and its core proposition once each (META.RULE.brief-no-paraphrase)', () => {
+    const content = read();
+    // Counting the heading alone would miss the drift mode this guard is named for: the
+    // same substance restated under a different heading. Pin the load-bearing sentence too.
+    assert.equal(
+      content.split('Absent-evidence provenance rule').length - 1,
+      1,
+      'the rule must be headed at exactly one site; a second copy is the prose-drift mode'
+    );
+    assert.equal(
+      content.split('Absence is silence about **every** value').length - 1,
+      1,
+      'the core proposition must appear once; a restatement elsewhere is the drift this guards'
+    );
+  });
+});

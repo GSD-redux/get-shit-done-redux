@@ -9,7 +9,6 @@ Read all files referenced by the invoking prompt's execution_context before star
 <process>
 **If `response_language` is configured:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in that language. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
-
 <step name="get_installed_version">
 Detect the installed GSD version, scope, runtime, and config dir.
 
@@ -78,7 +77,7 @@ Parse output:
 - Line 4 = resolved GSD config dir (e.g. `/Users/me/.claude`, `/Users/me/.gemini`); empty if scope is `UNKNOWN`. Capture this as `GSD_DIR` and pass it to subsequent steps so they don't re-derive the runtime path.
 - If scope is `UNKNOWN`, proceed to install using the `--claude --global` fallback.
 
-`update-context` reproduces the previous detection cascade — preferred-config-dir fast path, local-over-global with same-path dedup (so `CWD=$HOME` does not misdetect as LOCAL), env-var overrides (`CLAUDE_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`, `KILO_CONFIG`, `XDG_CONFIG_HOME`, `CODEX_HOME`, …), and semver validation — but as a tested projection rather than ~280 lines of inline bash. Branch coverage lives in `tests/issue-498-update-context.test.cjs`.
+`update-context` reproduces the previous detection cascade — preferred-config-dir fast path, local-over-global with same-path dedup (so `CWD=$HOME` does not misdetect as LOCAL), env-var overrides (`CLAUDE_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`, `KILO_CONFIG`, `XDG_CONFIG_HOME`, `CODEX_HOME`, …), and semver validation — but as a tested projection rather than ~280 lines of inline bash. Branch coverage lives in `tests/update-context.test.cjs`.
 
 If multiple runtime installs are detected and the invoking runtime cannot be determined from execution_context, ask the user which runtime to update before running install.
 
@@ -253,11 +252,12 @@ rm -f "$CHANGELOG_TMP"
 **Latest:** {LATEST_VERSION}
 
 ### What's New
-────────────────────────────────────────────────────────────
+
+---
 
 {CHANGELOG_PREVIEW}
 
-────────────────────────────────────────────────────────────
+---
 
 ⚠️  **Note:** The installer performs a clean install of GSD folders:
 - `commands/gsd/` will be wiped and replaced
@@ -276,7 +276,6 @@ Your custom files in other locations are preserved:
 
 If you've modified any GSD files directly, they'll be automatically backed up to `gsd-local-patches/` and can be reapplied with `/gsd:update --reapply` after the update.
 ```
-
 
 **Text mode (`workflow.text_mode: true` in config or `--text` flag):** Set `TEXT_MODE=true` if `--text` is present in `$ARGUMENTS` OR `text_mode` from init JSON is `true`. When TEXT_MODE is active, replace every `AskUserQuestion` call with a plain-text numbered list and ask the user to type their choice number. This is required for non-Claude runtimes (OpenAI Codex, Gemini CLI, etc.) where `AskUserQuestion` is not available.
 Use AskUserQuestion:
@@ -297,8 +296,8 @@ installer does not know about and will delete during the wipe.
 **Do not use bash path-stripping (`${filepath#$RUNTIME_DIR/}`) or `node -e require()`
 inline** — those patterns fail when `$RUNTIME_DIR` is unset and the stripped
 relative path may not match manifest key format, which causes CUSTOM_COUNT=0
-even when custom files exist (bug #1997). Use `gsd-tools.cjs query detect-custom-files`
-or the bundled `gsd-tools.cjs detect-custom-files` path — both resolve paths
+even when custom files exist (bug #1997). Use `gsd_run query detect-custom-files`
+or the bundled `gsd_run detect-custom-files` path — both resolve paths
 reliably with Node.js `path.relative()`.
 
 First, resolve the config directory (`RUNTIME_DIR`) from the install scope
@@ -480,16 +479,13 @@ The SessionStart hook (`gsd-check-update.js`) writes to the detected runtime's c
 Format completion message (changelog was already shown in confirmation step):
 
 ```
-╔═══════════════════════════════════════════════════════════╗
-║  GSD Updated: v1.5.10 → v1.5.15                           ║
-╚═══════════════════════════════════════════════════════════╝
+### GSD Updated: v1.5.10 → v1.5.15
 
 ⚠️  Restart your runtime to pick up the new commands.
 
 [View full changelog](https://github.com/open-gsd/gsd-core/blob/main/CHANGELOG.md)
 ```
 </step>
-
 
 <step name="restore_custom_files">
 `backup_custom_files` copied user-added files into `gsd-user-files-backup/`

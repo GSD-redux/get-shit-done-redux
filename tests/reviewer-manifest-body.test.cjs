@@ -1,3 +1,4 @@
+// docs-guard-exempt: record.docs is a metadata field string comparison, not a real docs/ file read.
 'use strict';
 process.env.GSD_TEST_MODE = '1';
 
@@ -1174,6 +1175,49 @@ describe('F. Lane scalars', () => {
       errs.some((e) => e.includes('reviewer.handler must be null or one of: antigravity, openai-compatible') && e.includes('"../evil"')),
       `expected a path-shaped-handler rejection, got: ${JSON.stringify(errs)}`,
     );
+  });
+});
+
+// ─── F2. timeoutConfigKey (#3274) — mirrors modelConfigKey's D4 forward/backward-compat shape ──
+
+describe('F2. timeoutConfigKey (#3274)', () => {
+  test('reviewer.timeoutConfigKey is optional — absent is valid (row 14)', () => {
+    const lane = laneOverride(() => {});
+    assert.equal(lane.timeoutConfigKey, undefined, 'fixture must not declare timeoutConfigKey');
+    const errs = validateReviewerBody({ id: 'x', reviewer: lane });
+    assert.deepEqual(errs, [], `expected no errors, got: ${JSON.stringify(errs)}`);
+  });
+
+  test('reviewer.timeoutConfigKey: null is valid (row 15)', () => {
+    const lane = laneOverride((l) => { l.timeoutConfigKey = null; });
+    const errs = validateReviewerBody({ id: 'x', reviewer: lane });
+    assert.deepEqual(errs, [], `expected no errors, got: ${JSON.stringify(errs)}`);
+  });
+
+  test('reviewer.timeoutConfigKey: a dotted string is valid (row 16)', () => {
+    const lane = laneOverride((l) => { l.timeoutConfigKey = 'review.timeouts.acme'; });
+    const errs = validateReviewerBody({ id: 'x', reviewer: lane });
+    assert.deepEqual(errs, [], `expected no errors, got: ${JSON.stringify(errs)}`);
+  });
+
+  test('reviewer.timeoutConfigKey: empty string is rejected (row 17)', () => {
+    const lane = laneOverride((l) => { l.timeoutConfigKey = ''; });
+    const errs = validateReviewerBody({ id: 'x', reviewer: lane });
+    assert.ok(
+      errs.some((e) => e.includes('reviewer.timeoutConfigKey must be a dotted config key or null') && e.includes('(got: "")')),
+      `expected an empty-string-is-not-none error, got: ${JSON.stringify(errs)}`,
+    );
+  });
+
+  test('reviewer.timeoutConfigKey: non-string, non-null is rejected (row 18)', () => {
+    for (const bad of [42, {}, []]) {
+      const lane = laneOverride((l) => { l.timeoutConfigKey = bad; });
+      const errs = validateReviewerBody({ id: 'x', reviewer: lane });
+      assert.ok(
+        errs.some((e) => e.includes('reviewer.timeoutConfigKey must be a dotted config key or null')),
+        `timeoutConfigKey=${JSON.stringify(bad)}: expected a type-rejection error, got: ${JSON.stringify(errs)}`,
+      );
+    }
   });
 });
 

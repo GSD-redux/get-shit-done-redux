@@ -83,7 +83,7 @@ Absence of `scope_out_of_declared` / `scope_check_unavailable` warnings is not p
 ## Known limits
 
 - **Glob matching is literal-prefix only.** `src/**/*.ts` matches anything under `src/`, including `src/a/b.json` — the check does not parse glob syntax past the literal prefix.
-- **Renames are not detected specially.** A rename appears in the diff as an add plus a delete. In practice this rarely reaches the scope-conformance check at all: the pre-existing deletions guard blocks any entry whose diff contains a deletion before the scope-conformance check runs.
+- **Renames are not detected specially, and mostly are not gated at all.** Git's rename detection runs by default, so a *pure* rename (content unchanged, similarity 100%) is reported as a single `R` entry and appears in **no** `--diff-filter=D` output. The deletions guard therefore never fires on it — before or after #3003 — and the rename lands here at the advisory, where the new path is compared against the declared scope like any other. Only a rename that also edits the file enough to fall below git's similarity threshold decomposes into a separate add and delete; that delete is a real deletion, and the guard blocks the entry unless the old path is declared in `files_deleted`. Declaring it is the fix in that case. The old path needs no `files_modified` entry either way: a declared deletion is subtracted from this check's findings, so it never shows up as out-of-scope.
 - **`/gsd-quick` worktrees have no plan-declared scope.** They are never checked, for the same reason as the "no `--files` recorded" case above.
 
 ---

@@ -1,12 +1,15 @@
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
+// docs-guard-exempt: 'docs/x.md' below is a synthetic fixture path fed into
+// groupFilesBySubrepo() to exercise its subrepo-grouping logic — no real
+// docs/ file is ever read or asserted on for content.
 
 /**
  * GSD Tools Tests - Commands
  */
 
-const { test, describe, beforeEach, afterEach } = require('node:test');
+const { test, describe, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -1802,6 +1805,81 @@ describe('commit command', () => {
       `second commit must not re-warn once on the phase branch; got stderr=${secondStderr}`
     );
   });
+
+  // #3734 — the phase arm of `query commit` must not treat a backlog sentinel
+  // phase id as a real phase. /gsd-capture --backlog commits the sentinel phase
+  // directory via add-backlog.md; pre-fix each capture created AND switched to a
+  // gsd/phase-999.<n>-<slug> branch, scattering backlog items across branches
+  // and leaving the operator's branch at the base commit.
+  test('#3734: 999.x backlog sentinel commits on the current branch and creates no phase branch', () => {
+    const startBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '999.42-first-idea'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'phases', '999.42-first-idea', '.gitkeep'), '# backlog marker\n'
+    );
+
+    const result = runGsdTools(
+      'commit "docs: add backlog item 999.42 — first idea" --files .planning/phases/999.42-first-idea/.gitkeep',
+      tmpDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.committed, true, 'sentinel capture must still commit');
+
+    const endBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(endBranch, startBranch, '#3734: sentinel capture must not switch branches');
+    const sentinelBranches = gitOrThrow(
+      ['branch', '--list', 'gsd/phase-999*'], { cwd: tmpDir }
+    ).trim();
+    assert.strictEqual(sentinelBranches, '', '#3734: no gsd/phase-999.* branch may be created');
+    // The "lost work" mode from the issue: the commit must be reachable on the
+    // branch the operator was actually on. gitOrThrow throws if the path is
+    // absent from startBranch, so reaching the content assertion proves it.
+    const onStartBranch = gitOrThrow(
+      ['show', `${startBranch}:.planning/phases/999.42-first-idea/.gitkeep`], { cwd: tmpDir }
+    );
+    assert.ok(onStartBranch.includes('# backlog marker'), 'sentinel commit must land on the starting branch');
+  });
+
+  test('#3734: 0.x backlog sentinel also never creates a phase branch', () => {
+    const startBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'phase',
+        phase_branch_template: 'gsd/phase-{phase}-{slug}',
+      })
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '0.3-icebox-idea'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'phases', '0.3-icebox-idea', '.gitkeep'), '# icebox marker\n');
+
+    const result = runGsdTools(
+      'commit "docs: add backlog item 0.3 — icebox idea" --files .planning/phases/0.3-icebox-idea/.gitkeep',
+      tmpDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    assert.strictEqual(JSON.parse(result.output).committed, true, '0.x capture must still commit');
+
+    const endBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
+    assert.strictEqual(endBranch, startBranch, '#3734: 0.x sentinel must not switch branches');
+    const sentinelBranches = gitOrThrow(
+      ['branch', '--list', 'gsd/phase-0*'], { cwd: tmpDir }
+    ).trim();
+    assert.strictEqual(sentinelBranches, '', '#3734: no gsd/phase-0.* branch may be created');
+    const onStartBranch = gitOrThrow(
+      ['show', `${startBranch}:.planning/phases/0.3-icebox-idea/.gitkeep`], { cwd: tmpDir }
+    );
+    assert.ok(onStartBranch.includes('# icebox marker'), '0.x sentinel commit must land on the starting branch');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2819,6 +2897,28 @@ describe('check-commit command', () => {
 // commit-docs-guard: opt-in pre-commit hook (#3588)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// #3901: a developer's GLOBAL core.hooksPath (~/.gitconfig) applies to every
+// fresh repo — the guard correctly refuses to install a hook git would never
+// run, which used to fail the guard suites' beforeEach (18 tests across the
+// A/B/D suites) on machines that centralize commit hooks. Pin
+// GIT_CONFIG_GLOBAL to an empty file (runGsdTools and the git helpers
+// propagate process.env to every child), making the fixtures independent of
+// the host's git configuration. A LOCAL repo value cannot isolate this:
+// `git config --get` returns any non-empty local value (same refusal), and an
+// empty local value makes rev-parse --git-path hooks resolve to `./` — not
+// `.git/hooks`. Returns a restore function for the suite's after().
+function isolateGlobalGitConfig() {
+  const dir = createTempDir('gsd-3901-gitconfig-');
+  const prev = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = path.join(dir, 'global.gitconfig');
+  fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, '');
+  return () => {
+    if (prev === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = prev;
+    cleanup(dir);
+  };
+}
+
 describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
   const { createTempGitProject, TEST_ENV_BASE } = require('./helpers.cjs');
   const { runHook } = require('./helpers/process-seam.cjs');
@@ -2827,11 +2927,40 @@ describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
   let tmpDir;
   let hookPath;
 
+  // #3901: see isolateGlobalGitConfig — shared by all three guard suites.
+  const restoreGitConfig = isolateGlobalGitConfig();
+  after(restoreGitConfig);
+
   beforeEach(() => {
     tmpDir = createTempGitProject();
     const enableResult = runGsdTools('commit-docs-guard enable --raw', tmpDir);
     assert.ok(enableResult.success, `enable failed: ${enableResult.error}`);
     hookPath = path.join(tmpDir, '.git', 'hooks', 'pre-commit');
+  });
+
+  test('#3901: the suite isolates children from the host git config (global core.hooksPath)', () => {
+    // The developer-machine scenario this suite must survive: a hostile
+    // ~/.gitconfig with core.hooksPath set. The before() hook pins
+    // GIT_CONFIG_GLOBAL to an empty file; this pins the seam is actually
+    // armed and reaching children — a child git sees NO hooksPath from the
+    // host, so the guard never refuses and the 18 tests never fail. (A child
+    // given an explicitly hostile GIT_CONFIG_GLOBAL still refuses — that is
+    // the guard being correct, and it is covered where the refusal is
+    // asserted.)
+    assert.ok(
+      process.env.GIT_CONFIG_GLOBAL && fs.existsSync(process.env.GIT_CONFIG_GLOBAL),
+      'the isolation file is armed for this suite',
+    );
+    assert.equal(fs.readFileSync(process.env.GIT_CONFIG_GLOBAL, 'utf-8'), '',
+      'the isolation file is empty — children inherit no host config');
+    const { spawnSync } = require('node:child_process');
+    const probe = spawnSync('git', ['config', '--get', 'core.hooksPath'], {
+      cwd: tmpDir,
+      encoding: 'utf-8',
+      timeout: 15_000,
+    });
+    assert.notEqual(probe.status, 0, `a child git must not see a host core.hooksPath; got: ${probe.stdout}`);
+    assert.ok(fs.existsSync(hookPath), 'the beforeEach enable installed the hook at the repo-local default path');
   });
 
   afterEach(() => {
@@ -2881,6 +3010,11 @@ describe('commit-docs-guard hook script (#3588 A1-A5)', () => {
 describe('commit-docs-guard enable/disable (#3588 B1-B15)', () => {
   const { createTempGitProject } = require('./helpers.cjs');
   let tmpDir;
+
+  // #3901: this suite also runs `enable` against fresh repos — the same
+  // hostile-global exposure as the A suite (review finding).
+  const restoreGitConfigB = isolateGlobalGitConfig();
+  after(restoreGitConfigB);
 
   afterEach(() => {
     if (tmpDir) cleanup(tmpDir);
@@ -3083,6 +3217,11 @@ describe('commit-docs-guard real git commit wiring (#3588 D1-D3)', () => {
   const { runGit } = require('./helpers/process-seam.cjs');
   const REPO_ROOT = path.join(__dirname, '..');
   let tmpDir;
+
+  // #3901: the D suite's premise is the hook firing from .git/hooks/pre-commit
+  // — a hostile global core.hooksPath broke its beforeEach identically.
+  const restoreGitConfigD = isolateGlobalGitConfig();
+  after(restoreGitConfigD);
 
   beforeEach(() => {
     tmpDir = createTempGitProject();

@@ -56,6 +56,7 @@ const { normalizeNodePath } = require('../gsd-core/bin/lib/runtime-hooks-surface
 const { installRuntimeArtifacts } = require('../gsd-core/bin/lib/install-engine.cjs');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+const { findTableWithColumns } = require('../gsd-core/bin/lib/markdown-table.cjs');
 // #2874 AC3 exemplar (see the qwen install/uninstall group below): resolves
 // the SAME 'full' profile install(false, <runtime>) resolves by default
 // (bin/install.js's _activeProfileName falls back to 'full' when no
@@ -1317,7 +1318,7 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
       '.agent/ must not be created by a fresh install (new installs use .agents/)');
   });
 
-  test('global antigravity install still writes to ~/.gemini/antigravity (unchanged)', () => {
+  test('global antigravity install writes skills/agents to ~/.gemini/config, runtime files to the configHome (#3738)', () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-ag-global-'));
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
@@ -1332,13 +1333,39 @@ describe('antigravity local install writes to .agents/ canonical dir (#791)', ()
         result.configDir.startsWith(homeDir),
         `global antigravity install must go under HOME, got: ${result.configDir}`,
       );
+      // #3738: Antigravity scans ~/.gemini/config for machine-local discovery,
+      // so skills and agents install under the global layout's home override…
+      const configRoot = path.join(homeDir, '.gemini', 'config');
       assert.ok(
-        fs.existsSync(path.join(result.configDir, 'skills')),
-        'global antigravity install must create skills/ under ~/.gemini/antigravity',
+        fs.existsSync(path.join(configRoot, 'skills', 'gsd-help', 'SKILL.md')),
+        'global antigravity install must create gsd-* skills under ~/.gemini/config/skills',
+      );
+      assert.ok(
+        fs.existsSync(path.join(configRoot, 'agents')),
+        'global antigravity install must create agents/ under ~/.gemini/config',
+      );
+      assert.ok(
+        !fs.existsSync(path.join(result.configDir, 'skills')),
+        'no skills/ may be created under the configHome (~/.gemini/antigravity) — AGY does not scan it (#3738)',
+      );
+      assert.ok(
+        !fs.existsSync(path.join(result.configDir, 'agents')),
+        'no agents/ may be created under the configHome (~/.gemini/antigravity) (#3738)',
       );
       assert.ok(
         !fs.existsSync(path.join(homeDir, '.agents')),
-        '.agents/ must NOT be created by a global install (global path is ~/.gemini/antigravity)',
+        '.agents/ must NOT be created by a global install (global skills path is ~/.gemini/config)',
+      );
+      // #3738 review finding 1: the manifest must record the agents surface at
+      // its ACTUAL install root — writeManifest resolves the agents-kind home
+      // override, so drift detection sees the files AGY reads.
+      const manifestPath = path.join(result.configDir, 'gsd-file-manifest.json');
+      assert.ok(fs.existsSync(manifestPath), 'global install must write the manifest');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const agentKeys = Object.keys(manifest.files).filter((k) => k.startsWith('agents/'));
+      assert.ok(
+        agentKeys.length > 0,
+        `manifest must track agents/ at the home-override root, got keys: ${Object.keys(manifest.files).slice(0, 5).join(', ')}`,
       );
     } finally {
       if (savedHome === undefined) delete process.env.HOME;
@@ -1853,12 +1880,12 @@ describe('#767 Parity: docs/AGENTS.md "Disallowed Tools" rows match READONLY_AGE
       const sectionEnd = nextSectionIdx === -1 ? agentsDoc.length : nextSectionIdx;
       const section = agentsDoc.slice(agentHeaderIdx, sectionEnd);
 
-      // eslint-disable-next-line local/no-unbounded-quantifier -- parses maintainer-authored docs/AGENTS.md table row, bounded, not adversarial input
-      const disallowedMatch = section.match(/\|\s*\*\*Disallowed Tools\*\*\s*\|\s*([^|]+)\|/);
-      assert.ok(disallowedMatch,
+      const table = findTableWithColumns(section, ['Property', 'Value']);
+      const row = table && table.rows.find((r) => r.Property === '**Disallowed Tools**');
+      assert.ok(row,
         `docs/AGENTS.md section for ${agent} must have a "Disallowed Tools" table row`);
 
-      const docTools = disallowedMatch[1].trim();
+      const docTools = row.Value.trim();
       assert.equal(docTools, expectedTools,
         `docs/AGENTS.md "Disallowed Tools" for ${agent} must be "${expectedTools}" but got "${docTools}"`);
     });
@@ -1922,6 +1949,167 @@ describe('normalizeNodePath — mise versioned path → sibling shim (#1619)', (
     assert.equal(
       normalizeNodePath('/opt/homebrew/bin/node', { existsSync: () => true }),
       '/opt/homebrew/bin/node');
+  });
+});
+
+// ─── normalizeNodePath — fnm versioned path → alias (#3704) ──────────────────
+//
+// Bug #3704: the POSIX half of #977. fnm's branch matched only the SHIM
+// (`<multishell>/node`), but on macOS/Linux `process.execPath` is never that —
+// Node realpaths through `fnm_multishells` to
+// `<FNM_DIR>/node-versions/<ver>/installation/bin/node`. Two independent reasons
+// the old pattern missed: the realpath above, and the `bin/` segment (fnm's POSIX
+// shim is `<multishell>/bin/node`, the pattern required `<multishell>/node`).
+//
+// Consequence: the raw versioned path was baked into every managed hook, so
+// `fnm uninstall <ver>` — or fnm's own pruning — 404s all of them. That is the
+// ephemeral-path failure #977 exists to prevent, already fixed for mise (#1619),
+// Homebrew (#2185) and volta (#2335) by matching the VERSIONED path.
+//
+// NOTE ON THE STUBS: each test grants existence to exactly ONE candidate, the one
+// its platform would really have. A stub that grants both `aliases/default/node.exe`
+// and `aliases/default/bin/node` does not test candidate ORDER, it hides it — no
+// real machine has both.
+describe('normalizeNodePath — fnm versioned path → alias (#3704)', () => {
+  const FNM = '/Users/u/.local/share/fnm';
+  const FNM_POSIX_PINNED = `${FNM}/node-versions/v22.22.0/installation/bin/node`;
+  const FNM_POSIX_ALIAS = `${FNM}/aliases/default/bin/node`;
+  const FNM_POSIX_SHIM = '/Users/u/.local/state/fnm_multishells/55303_1787205798690/bin/node';
+
+  const FNM_WIN = 'C:/Users/u/AppData/Roaming/fnm';
+  const FNM_WIN_PINNED = `${FNM_WIN}/node-versions/v22.22.0/installation/node.exe`;
+  const FNM_WIN_ALIAS = `${FNM_WIN}/aliases/default/node.exe`;
+  const FNM_WIN_SHIM = 'C:/Users/u/AppData/Local/fnm_multishells/1234_5678/node.exe';
+
+  test('POSIX versioned install path + alias exists → alias (the reported bug)', () => {
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_PINNED, { env: {}, existsSync: p => p === FNM_POSIX_ALIAS }),
+      FNM_POSIX_ALIAS);
+  });
+
+  test('Windows versioned install path → aliases/default/node.exe (.exe preserved)', () => {
+    assert.equal(
+      normalizeNodePath(FNM_WIN_PINNED, { env: {}, existsSync: p => p === FNM_WIN_ALIAS }),
+      FNM_WIN_ALIAS);
+  });
+
+  test('backslash Windows path normalizes the same as forward-slash', () => {
+    assert.equal(
+      normalizeNodePath(FNM_WIN_PINNED.replace(/\//g, '\\'),
+        { env: {}, existsSync: p => p === FNM_WIN_ALIAS }),
+      FNM_WIN_ALIAS);
+  });
+
+  test('POSIX shim carries a bin/ segment and is now matched too', () => {
+    // Reason 2. This path never arrives as process.execPath on POSIX, but #3662's
+    // `execPath` option exists so a caller can normalize a path from another
+    // environment — and it could not match before.
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_SHIM, { env: { FNM_DIR: FNM }, existsSync: p => p === FNM_POSIX_ALIAS }),
+      FNM_POSIX_ALIAS);
+  });
+
+  test('no regression (#977): the Windows shim still resolves through FNM_DIR', () => {
+    // The one fnm shape that already worked, and the one that is genuinely
+    // process.execPath on Windows — Windows does not realpath the shim away.
+    assert.equal(
+      normalizeNodePath(FNM_WIN_SHIM, { env: { FNM_DIR: FNM_WIN }, existsSync: p => p === FNM_WIN_ALIAS }),
+      FNM_WIN_ALIAS);
+  });
+
+  test('FNM_DIR unset → root derived from execPath (#2185 rule)', () => {
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_PINNED, { env: {}, existsSync: p => p === FNM_POSIX_ALIAS }),
+      FNM_POSIX_ALIAS);
+  });
+
+  test('FNM_DIR pointing at a different install → the path-derived root wins', () => {
+    const other = '/opt/other-fnm';
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_PINNED, {
+        env: { FNM_DIR: other },
+        // BOTH aliases exist; the one belonging to the path must be chosen.
+        existsSync: p => p === FNM_POSIX_ALIAS || p === `${other}/aliases/default/bin/node`,
+      }),
+      FNM_POSIX_ALIAS);
+  });
+
+  test('no regression: alias absent → falls back to raw execPath unchanged', () => {
+    // Rewriting to an alias that is not there would turn a stale-but-working pin
+    // into an immediately broken one — worse than the bug.
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_PINNED, { env: {}, existsSync: () => false }),
+      FNM_POSIX_PINNED);
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_SHIM, { env: { FNM_DIR: FNM }, existsSync: () => false }),
+      FNM_POSIX_SHIM);
+  });
+
+  test('a non-fnm path containing node-versions is left unchanged', () => {
+    for (const foreign of [
+      '/opt/custom/node-versions/v1/bin/node',
+      '/srv/node-versions/v22/installation-notes/bin/node', // `installation` must be a whole segment
+    ]) {
+      assert.equal(
+        normalizeNodePath(foreign, { env: {}, existsSync: () => true }),
+        foreign,
+        `${foreign} is not an fnm layout`);
+    }
+  });
+
+  test('sibling managers are untouched by the fnm branch', () => {
+    const cases = [
+      ['/Users/u/.local/share/mise/installs/node/22.1.0/bin/node', '/Users/u/.local/share/mise/shims/node'],
+      ['/Users/u/.volta/tools/image/node/22.1.0/bin/node', '/Users/u/.volta/bin/node'],
+      ['/opt/homebrew/Cellar/node/26.7.0/bin/node', '/opt/homebrew/bin/node'],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(
+        normalizeNodePath(input, { env: { FNM_DIR: FNM }, existsSync: p => p === expected }),
+        expected,
+        `${input} must still resolve through its own manager's branch`);
+    }
+  });
+
+  test('the rewrite is always an absolute path, never a bare node (#3022/#3002)', () => {
+    const out = normalizeNodePath(FNM_POSIX_PINNED, { env: {}, existsSync: () => true });
+    assert.ok(out.includes('/'), `expected an absolute path, got ${out}`);
+    assert.notEqual(out, 'node');
+  });
+
+  test('a trailing slash on FNM_DIR does not bake a doubled separator', () => {
+    // Review finding (minor). Cosmetic only — existsSync resolves `//` and shells
+    // collapse it — but the value is written into a user's settings.json.
+    const alias = `${FNM}/aliases/default/bin/node`;
+    assert.equal(
+      normalizeNodePath(FNM_POSIX_SHIM, {
+        env: { FNM_DIR: `${FNM}/` },
+        // Exact match, deliberately: a stub that collapses a doubled separator
+      // before comparing would pass whether or not the trim happened.
+      existsSync: p => p === alias,
+      }),
+      alias);
+  });
+
+  test('a trailing slash is trimmed on every fnm root, not just one branch', () => {
+    // One shared normalizeRootDir, three call sites — the versioned branch, the
+    // shim branch's FNM_DIR, and its APPDATA fallback.
+    const aliasBin = `${FNM}/aliases/default/bin/node`;
+    assert.equal(
+      normalizeNodePath('/nowhere/node-versions/v1/installation/bin/node',
+        { env: { FNM_DIR: `${FNM}//` }, existsSync: p => p === aliasBin }),
+      aliasBin,
+      'versioned branch');
+    const winAlias = 'C:/Users/u/AppData/Roaming/fnm/aliases/default/node.exe';
+    assert.equal(
+      normalizeNodePath('C:/x/fnm_multishells/1_2/node.exe',
+        { env: { APPDATA: 'C:/Users/u/AppData/Roaming/' }, existsSync: p => p === winAlias }),
+      winAlias,
+      'APPDATA fallback');
+  });
+
+  test('empty execPath is returned unchanged without throwing', () => {
+    assert.equal(normalizeNodePath('', { env: {}, existsSync: () => true }), '');
   });
 });
 
@@ -6291,6 +6479,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const os = require('node:os');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 // A single short CLI query (install.js --skills-root <runtime>) — no full
 // install or build involved.
@@ -6312,6 +6501,10 @@ describe('install.js --skills-root', () => {
     // #2088 (ADR-1239 upgrade 3): Codex skills resolve to the canonical
     // $HOME/.agents/skills root (skills-kind home override), not $CODEX_HOME/skills.
     { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    // #3738: Antigravity global discovery scans ~/.gemini/config/ — skills resolve
+    // to the skills-kind home override, not the configHome (~/.gemini/antigravity)
+    // that still holds settings.json and the gsd-core runtime files.
+    { runtime: 'antigravity', expected: path.join(os.homedir(), '.gemini', 'config', 'skills') },
     { runtime: 'copilot', expected: path.join(os.homedir(), '.copilot', 'skills') },
     { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
     { runtime: 'trae', expected: path.join(os.homedir(), '.trae', 'skills') },
@@ -6354,6 +6547,8 @@ describe('#3024: gsd-tools query skills-root', () => {
   const CASES = [
     { runtime: 'claude', expected: path.join(os.homedir(), '.claude', 'skills') },
     { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    // #3738: the query surface must agree with install.js --skills-root above.
+    { runtime: 'antigravity', expected: path.join(os.homedir(), '.gemini', 'config', 'skills') },
     { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
   ];
 
@@ -6875,7 +7070,10 @@ describe('sync-skills.md — required behavioral specs', () => {
   // elsewhere is held to the same rule.
   test('every $DEST_ROOT read is preceded by a DEST_ROOT= assignment in the same bash block', () => {
     content = content || readWorkflow();
-    const bashBlocks = [...content.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
+    const __destRootLines = content.split(/\r?\n/);
+    const bashBlocks = scanFencedBlocks(__destRootLines)
+      .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash')
+      .map((b) => __destRootLines.slice(b.openLineIdx + 1, b.closeLineIdx).join('\n'));
     assert.ok(
       bashBlocks.length > 0,
       'extractor matched no fenced ```bash blocks at all — the workflow must contain some'
@@ -7014,8 +7212,10 @@ const { cleanup, installSpawnEnv } = require('./helpers.cjs');
 const { runNode: seamRunNode, runHook: seamRunHook } = require('./helpers/process-seam.cjs');
 // Class-norm timeouts, not local literals (CONTRIBUTING: they live in
 // tests/helpers/timeouts.cjs). The install is the INSTALL class; the emitted
-// gate is a short CLI probe against a temp fixture, i.e. the PROBE class.
-const { INSTALL_TIMEOUT_MS, PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+// gate below is a bash FAN-OUT (the gate script's `gsd_run` shells out to
+// `node` multiple times), not a single CLI probe, so it takes
+// HOOK_FANOUT_TIMEOUT_MS rather than PROBE_TIMEOUT_MS.
+const { INSTALL_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const INSTALL = path.join(__dirname, '..', 'bin', 'install.js');
 
@@ -7132,6 +7332,7 @@ const NO_BASH = process.platform === 'win32';
 
 test('real install: cursor negotiates --worktree through its own emitted gate and it lands in the emitted Agent() slot (#2652)', { skip: NO_BASH }, (t) => {
   const { readFileNormalized } = require('./helpers.cjs');
+  const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-inst-cursor-gate-'));
   t.after(() => cleanup(dir));
     // Through the process seam and the install isolation seam, never a
@@ -7175,10 +7376,15 @@ test('real install: cursor negotiates --worktree through its own emitted gate an
     // subject is "does the emitted gate resolve cursor correctly" failed as
     // "there is no such block".
     const gateText = readFileNormalized(gate);
+    const gateLines = gateText.split('\n');
+    const gateBashBlocks = scanFencedBlocks(gateLines)
+      .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash');
     const blockUnder = (heading) => {
-      const at = gateText.indexOf(`## ${heading}`);
-      if (at === -1) return undefined;
-      return (gateText.slice(at).match(/```bash\r?\n([\s\S]*?)```/) || [])[1];
+      const headingLineIdx = gateLines.findIndex((l) => l.includes(`## ${heading}`));
+      if (headingLineIdx === -1) return undefined;
+      const block = gateBashBlocks.find((b) => b.openLineIdx > headingLineIdx);
+      if (!block) return undefined;
+      return gateLines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
     };
     const resolveBlock = blockUnder('Resolve ISOLATION');
     const flagBlock = blockUnder('Resolve the harness flag');
@@ -7218,13 +7424,20 @@ test('real install: cursor negotiates --worktree through its own emitted gate an
 
       // Seam again — `runHook` documents `interpreter: 'bash'` for a shell
       // script, so the gate is written to a file rather than passed as `-c`.
+      // This is a bash FAN-OUT: `gsd_run` shells out to `node` multiple times
+      // under one `bash` interpreter, the wrong class for `PROBE_TIMEOUT_MS`
+      // (a single short CLI probe). Same class as the observed CI failures in
+      // tests/quick-branching.test.cjs (PR #3787 run 32668773524) and
+      // tests/worktree-safety.test.cjs (`next` run 32608945654). See
+      // HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for the class
+      // rationale.
       const gateScript = path.join(proj, 'run-gate.sh');
       fs.writeFileSync(gateScript, script);
       const run = seamRunHook(gateScript, [], {
         interpreter: 'bash',
         cwd: proj,
         env: hermeticEnv,
-        timeoutMs: PROBE_TIMEOUT_MS,
+        timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
       });
       assert.strictEqual(
         run.outcome, 'exited',

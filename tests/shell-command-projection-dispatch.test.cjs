@@ -30,6 +30,7 @@ const {
   escapePosixDoubleQuoted,
   escapeSingleQuotedShellLiteral,
   retryRenameSync,
+  contentChangedAfterNormalize,
 } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'));
 
 const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
@@ -1291,6 +1292,71 @@ describe('normalizeContent', () => {
   });
 });
 
+// ─── contentChangedAfterNormalize ─────────────────────────────────────────────
+
+// #3685 / #3691: `platformWriteSync` runs Markdown normalization before
+// persisting. `roadmap_updated`/`state_updated`/`requirements_updated`-style
+// flags computed via a raw `after !== before` on the PRE-normalize strings
+// false-positive whenever the two sides differ only in a way normalization
+// erases (CRLF, blank-line-run collapse, trailing-newline count) — the exact
+// artifact class the milestone.cts #3685 fix diagnosed. This seam is the
+// single point every such flag must go through instead.
+describe('contentChangedAfterNormalize (#3685 / #3691)', () => {
+  test('reports false when the only difference is a CRLF vs LF artifact', () => {
+    const before = 'line1\r\nline2\r\n';
+    const after = 'line1\nline2\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('STATE.md', before, after), false,
+      'CRLF-only difference must not report a content change',
+    );
+  });
+
+  test('reports false when the only difference is a collapsible blank-line run', () => {
+    const before = '# Title\n\nparagraph\n';
+    const after = '# Title\n\n\nparagraph\n'; // extra blank line — collapses under normalize
+    assert.strictEqual(
+      contentChangedAfterNormalize('ROADMAP.md', before, after), false,
+      'a blank-line-run artifact that normalizes away must not report a content change',
+    );
+  });
+
+  test('reports false when the only difference is trailing-newline count', () => {
+    const before = '# Title\n\nbody\n';
+    const after = '# Title\n\nbody\n\n\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('STATE.md', before, after), false,
+      'trailing-newline-count-only difference must not report a content change',
+    );
+  });
+
+  test('reports true for a genuine content change', () => {
+    const before = '# Title\n\nold body\n';
+    const after = '# Title\n\nnew body\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('ROADMAP.md', before, after), true,
+      'a real content change must still report true',
+    );
+  });
+
+  test('reports true for a genuine change even when disguised by normalize-equivalent formatting on both sides', () => {
+    const before = '# Title\r\n\r\n\r\nold body\r\n';
+    const after = '# Title\n\nnew body\n\n\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('ROADMAP.md', before, after), true,
+      'formatting noise on both sides must not mask a real semantic change',
+    );
+  });
+
+  test('non-.md files still normalize (CRLF strip + trailing newline) before comparing', () => {
+    const before = 'a: 1\r\nb: 2';
+    const after = 'a: 1\nb: 2\n';
+    assert.strictEqual(
+      contentChangedAfterNormalize('config.json', before, after), false,
+      'non-.md normalization (CRLF + trailing newline) must also suppress a false positive',
+    );
+  });
+});
+
 // ─── platformWriteSync ───────────────────────────────────────────────────────
 
 describe('platformWriteSync', () => {
@@ -1685,7 +1751,7 @@ describe('bug #3439: shell projection module owns managed-hook policy and legacy
 
   test('projectLegacySettingsHookCommand preserves non-Windows script token shape', () => {
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: '"/usr/local/bin/node"',
+      runnerToken: '"/usr/local/bin/node"',
       scriptPath: '/x/hooks/gsd-statusline.js',
       scriptToken: "'/x/hooks/gsd-statusline.js'",
       platform: 'linux',
@@ -1699,7 +1765,7 @@ describe('bug #3439: shell projection module owns managed-hook policy and legacy
     // inert for every runtime (including the former 'gemini' string and its
     // Gemini-backend successor 'antigravity'). No `& ` prefix is ever added.
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: '"C:/nvm4w/nodejs/node.exe"',
+      runnerToken: '"C:/nvm4w/nodejs/node.exe"',
       scriptPath: 'C:\\Users\\me\\.gemini\\hooks\\gsd-prompt-guard.js',
       scriptToken: "'C:\\Users\\me\\.gemini\\hooks\\gsd-prompt-guard.js'",
       platform: 'win32',
@@ -1809,7 +1875,7 @@ describe('#1693 regression: Windows legacy-node rewrite must not double-quote a 
   test('projectLegacySettingsHookCommand emits the anchored path verbatim, not re-quoted', () => {
     const anchored = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/gsd-context-monitor.js';
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: winRunner,
+      runnerToken: winRunner,
       scriptPath: anchored,
       scriptToken: anchored,
       platform: 'win32',
@@ -1827,7 +1893,7 @@ describe('#1693 regression: Windows legacy-node rewrite must not double-quote a 
   test('projectLegacySettingsHookCommand still quotes a bare absolute Windows path', () => {
     const abs = 'C:/Program Files App/.claude/hooks/gsd-context-monitor.js';
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: winRunner,
+      runnerToken: winRunner,
       scriptPath: abs,
       scriptToken: JSON.stringify(abs),
       platform: 'win32',
@@ -1847,7 +1913,7 @@ describe('#1693 regression: Windows legacy-node rewrite must not double-quote a 
   // and this assertion would fail — that is what pins the gate.
   test('projectLegacySettingsHookCommand preserves the original scriptToken for anchored paths on POSIX', () => {
     const command = projectLegacySettingsHookCommand({
-      absoluteRunner: '"/usr/local/bin/node"',
+      runnerToken: '"/usr/local/bin/node"',
       scriptPath: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/gsd-statusline.js',
       scriptToken: "'/x/hooks/gsd-statusline.js'",
       platform: 'linux',

@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "import.md": "#3576: four bare `references/<name>.md` cites repaired to the canonical `gsd-core/references/<name>.md` form (+36 bytes, 4 \u00d7 9). Dead-pointer fix; no content change.",
-    "gsd-doc-synthesizer.md": "#3576: two bare `references/<name>.md` cites repaired to the canonical `gsd-core/references/<name>.md` form (+18 bytes, 2 \u00d7 9). Dead-pointer fix; no content change."
-  }
-}

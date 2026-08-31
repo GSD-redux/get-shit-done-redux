@@ -21,7 +21,7 @@ const ROOT = path.resolve(__dirname, '..');
 // buildParityManifest) is the canonical single source of truth in
 // tests/helpers/install-shared.cjs (issue #2266/#2267) — this generator does
 // not keep its own inline copy of the walk/exclusion logic.
-const { runMinimalInstall, RUNTIME_META, buildInstallTree, BUILD_SCRIPT } = require(path.join(ROOT, 'tests', 'helpers', 'install-shared.cjs'));
+const { runMinimalInstall, RUNTIME_META, buildInstallTree, extraEmitRootsFor, BUILD_SCRIPT } = require(path.join(ROOT, 'tests', 'helpers', 'install-shared.cjs'));
 const FIXTURE_DIR = path.join(ROOT, 'tests', 'fixtures', 'install-tree');
 
 function cleanup(root) {
@@ -51,7 +51,7 @@ for (const runtime of targets) {
   const { configDir, root } = runMinimalInstall({ runtime, scope: 'global' });
   let actual;
   try {
-    actual = buildInstallTree(configDir, root);
+    actual = buildInstallTree(configDir, root, extraEmitRootsFor(runtime, 'global', root));
   } finally {
     cleanup(root);
   }

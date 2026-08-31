@@ -117,11 +117,37 @@ Gates check a condition at a loop extension point and optionally block progressi
 | Predicate | `{ "predicate": { "kind": "artifact-exists" \| "config-equals" \| …, … } }` | Yes | Declarative; no code path. |
 | Agent verdict | `{ "agentVerdict": { "ref": …, "prompt": … } }` | No (forced advisory) | LLM evaluation; non-deterministic checks may not halt the loop. |
 
+### `taskContentResolver`
+
+Declares that this capability resolves per-task content (`<action>`/`<verify>`/
+`<acceptance_criteria>`/`<read_first>`/`<done>`) from an external issue tracker instead of
+`execute-plan.md`'s per-task loop reading it inline from a task's `PLAN.md` body. This is **not**
+one of `steps` / `contributions` / `gates`, and it does not use a `point` value from the closed
+12-point vocabulary above — it is dispatched directly, once per task, by `execute-plan.md` before
+that task's `read_first` gate, documented separately in
+[`loop-hook-dispatch.md`](../../gsd-core/references/loop-hook-dispatch.md#the-executetask-point-a-different-shape).
+See [ADR-3646](../adr/3646-per-task-content-resolution-seam.md) for the full design and
+[Develop a task-content resolver capability](../how-to/develop-a-task-content-resolver-capability.md)
+for the authoring walkthrough.
+
+| Sub-field | Type | Required | Description |
+|---|---|---|---|
+| `trackerPrefix` | string (kebab-case) | Yes | Matches the prefix of a task's `<task tracker-id="beads:GSD-42">` attribute — everything before the **first** `:`. Text after the first colon, including further colons, is passed through verbatim as the id. Must be unique across the merged first-party ∪ overlay capability set. |
+| `invoke.binary` | string | Yes | Executable name or path for the resolver subprocess. |
+| `invoke.args` | string[] | Yes | Argv passed to `invoke.binary`. Must contain the `{{id}}` placeholder at least once — GSD substitutes it with the task's tracker id (everything after the first `:`); an `args` array that never carries the placeholder fails validation, since the id could never reach the resolver. |
+| `invoke.timeoutMs` | number | Yes | Bound on the subprocess invocation. Required — an unbounded resolver subprocess is this repo's named Unbounded Subprocesses defect class. A resolver exceeding this bound is killed and `task resolve-content` exits non-zero. |
+
+`taskContentResolver` is feature-role only (`role: "feature"`); it is not admissible on `role: "runtime"` or `role: "reviewer"` bodies.
+
 ---
 
 ## Valid `point` values
 
 The 12 loop extension points are a **closed, additive-only vocabulary**. Every `steps`, `contributions`, and `gates` entry must use one of these identifiers exactly.
+
+A valid point is necessary but not sufficient: each host workflow decides, per point, which hook **kinds** its dispatch text handles, and a point may dispatch a subset. The registry build derives the real answer from the host workflows (`getWiredKinds()` in `scripts/gen-loop-host-contract.cjs`) and rejects a manifest declaring a kind the point does not dispatch — so an unsupported combination is a build-time error naming the point, the kind, and the kinds that point does cover. It is never a hook that renders and is then silently dropped.
+
+`verify:pre` dispatches all three kinds. A step there is **advisory**: it runs before UAT begins and never blocks it — a precondition that must halt verification is a `gate`. Its `produces` artefact names are consumed **additively** by the verify workflow's `extract_tests` step, which can deepen what UAT covers but cannot suppress a checkpoint. See [Develop a capability](../how-to/develop-a-capability.md#check-the-point-dispatches-your-kind) for the authoring workflow.
 
 | Point | Phase | Position |
 |---|---|---|
@@ -206,7 +232,7 @@ The shape is **hybrid**:
 
 Current role counts across `capabilities/`: `feature` 20, `runtime` 19, `reviewer` 5.
 
-All 12 shipped lane declarations carry all 13 fields below.
+All 12 shipped lane declarations carry all 14 fields below.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -216,6 +242,7 @@ All 12 shipped lane declarations carry all 13 fields below.
 | `probe` | object | Availability check. `probe.kind` is a closed enum: `command-exists` \| `command-capability` \| `http-reachable`. `command-capability` additionally takes `binary`, `needle`, and a **required** `timeoutMs` — it exists because a bare binary name can be ambiguous (`kimi` is claimed by both the Kimi Code CLI and the legacy Python `kimi-cli`), and the timeout bound is mandatory because an unbounded `--help \| grep` probe is this repo's named Unbounded Subprocesses defect. |
 | `invoke` | object | Shape is selected by `transport`. For `spawn`: `binary`, `args[]`, `promptChannel` (`stdin` \| `argv` \| `argv-file-ref` \| `none`), `outputChannel` (`stdout` \| `file-arg`), `outputArg` (required when `outputChannel` is `file-arg`), `modelArg` (string or `null`), `effortChannel` (`none` \| `argv` \| `env`), `env` (optional; an object of environment name/value pairs, string values only, merged over the inherited environment for that one spawn — keys must match the portable environment-name grammar `[A-Za-z_][A-Za-z0-9_]*`, which is a portability policy rather than an OS limit, and `__proto__` is refused because it would be dropped before reaching the child). For `openai-http`: `hostConfigKey`, `defaultHost`, `path`, `modelDiscovery` (`none` \| `first-from-models-endpoint`), `fallbackModel`, `effortChannel`. `args` supports the `{{model}}`, `{{prompt}}`, `{{effort}}`, and `{{output}}` placeholders. **Every field in this object is disclosed at install and bound to the consent signature** — `env` and `defaultHost` by name in the consent prompt, the rest through a residual, so any change to a declared `invoke` field forces re-consent. `env` additionally **refuses execution-primitive names** — `PATH`, `NODE_OPTIONS`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `BASH_ENV`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `GIT_SSH_COMMAND`, `JAVA_TOOL_OPTIONS` and siblings, matched case-insensitively (Windows environment lookup is). A lane needing a specific executable declares an absolute `binary` rather than reshaping the child's `PATH`. That denylist is defence in depth and not the boundary: it cannot be complete against an arbitrary child, and disclosure runs before validation, so install-time consent — which shows every declared pair and warns on execution-primitive names — is what actually gates them. |
 | `timeoutFloorMs` | number | Measured per-lane floor. Lane divergence here is real and correct — the descriptor's job is to declare divergence in one place, not to promise uniformity. |
+| `timeoutConfigKey` | string or `null` | Federated config key holding this lane's outer timeout override, in SECONDS, e.g. `review.timeouts.antigravity`. Falls back to `timeoutFloorMs` when unset or invalid (#3274). |
 | `emptyOutput` | closed enum | `stub-with-stderr` \| `handler-owned`. |
 | `reviewsSection` | string | The `REVIEWS.md` heading this lane renders under. Must be unique across the merged roster. |
 | `evidenceClass` | closed enum | `source-grounded` \| `diff-only` (diff-only findings are down-weighted in consensus). |
@@ -256,6 +283,7 @@ An unknown field inside a `reviewer` body is a **non-fatal warning on stderr, ne
       "effortChannel": "none"
     },
     "timeoutFloorMs": 360000,
+    "timeoutConfigKey": null,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "CodeRabbit",
     "evidenceClass": "diff-only",
@@ -285,6 +313,7 @@ The following invariants are enforced at **build time** by `scripts/gen-capabili
 - **`engines.gsd` is a hard gate.** A capability whose `engines.gsd` range does not satisfy the installed GSD version is blocked at install and skipped (with a warning) at load time.
 - **Path confinement.** Declared module paths may not use parent-directory traversal (`../`); modules are `require()`'d only from the capability's own install root.
 - **Reserved namespace.** Capability `id` values beginning with `gsd-`, `gsd-core-`, or `anthropic-` are reserved; third-party capabilities using these prefixes are rejected.
+- **`taskContentResolver.trackerPrefix` uniqueness, feature-only.** `trackerPrefix` must be unique across the merged first-party ∪ overlay capability set (mirrors `reviewsSection` uniqueness on the reviewer body above); a collision is a build-time violation. `taskContentResolver` is admissible only on `role: "feature"` bodies.
 
 ---
 

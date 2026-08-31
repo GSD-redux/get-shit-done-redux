@@ -47,6 +47,7 @@ GSD stores project settings in `.planning/config.json`. Created during `/gsd-new
     "use_worktrees": true,
     "code_review": true,
     "code_review_depth": "standard",
+    "code_review_depth_overrides": [],
     "plan_bounce": false,
     "plan_bounce_script": null,
     "plan_bounce_passes": 2,
@@ -84,7 +85,8 @@ GSD stores project settings in `.planning/config.json`. Created during `/gsd-new
   "review": {
     "default_reviewers": null,
     "reviewer_instances": {},
-    "models": {}
+    "models": {},
+    "parallel_lanes": false
   },
   "parallelization": {
     "enabled": true,
@@ -185,8 +187,8 @@ project one is reported, since that is the file you are most likely able to fix.
 | `dynamic_routing.max_escalations` | integer | `0`, `1`, `2`, … | `1` | Hard cap on retries per agent invocation. Beyond the cap the resolver returns the cap-tier model. Also caps `provider_escalation`. Added in v1.40 |
 | `dynamic_routing.provider_escalation` | string[] | ordered model IDs | (none) | Opt-in fallback providers tried when a run dies on a quota / rate limit — see [provider escalation](#provider-escalation-on-quota-exceeded--added-in-v143). Added in v1.43 ([#2296](https://github.com/open-gsd/gsd-core/issues/2296)) |
 | `project_code` | string | any short string | (none) | Prefix for phase directory names (e.g., `"ABC"` produces `ABC-01-setup/`). Added in v1.31 |
-| `phase_id_convention` | enum | `"milestone-prefixed"`, `"bracket"`, `null` | `null` | Phase ID naming convention. `null` = legacy numeric IDs (`Phase 1`, `Phase 2`). `"milestone-prefixed"` = globally unique IDs that encode the enclosing milestone (`Phase 1-01`, `Phase 1-02`). Run `gsd-tools roadmap upgrade --convention milestone-prefixed` to migrate an existing ROADMAP.md. `"bracket"` = IDs that carry the milestone in a bracket ahead of the phase number — heading `### [GSD.02] 05: Name`, directory `GSD.02-05-name` — per [ADR-612](adr/612-bracket-phase-id-convention.md). **`"bracket"` currently affects the READ path only:** `roadmap analyze` / `roadmap get-phase`, the W005/W006/W007 phase checks, `validate health` (including an advisory W021 — a bracket phase's milestone disagreeing with its enclosing section, or a phase heading still spelled in legacy form that has not yet been migrated to bracket form), and both `total_phases` derivations recognise the bracket spelling once it is set. There is no bracket migrator and no bracket emit yet, so set it only on a project whose ROADMAP.md already uses that spelling; a project on any other value compiles the same patterns it did before and is unaffected ([#2761](https://github.com/open-gsd/gsd-core/issues/2761)). |
-| `response_language` | string | language code | (none) | Language for agent responses (e.g., `"pt"`, `"ko"`, `"ja"`). Propagates to all spawned agents for cross-phase language consistency. Added in v1.32. UAT checkpoint frames (`/gsd-verify-work`) render a localized banner/instruction for English, Spanish, French, German, Portuguese, Japanese, Chinese, Korean, Italian, Dutch, Polish, Russian, Ukrainian, Turkish, Hindi, Arabic, Vietnamese, and Indonesian (endonyms and ISO codes also accepted); any other value falls back to the English frame. |
+| `phase_id_convention` | enum | `"milestone-prefixed"`, `"bracket"`, `null` | `null` | Phase ID naming convention. `null` = legacy numeric IDs (`Phase 1`, `Phase 2`). `"milestone-prefixed"` = globally unique IDs that encode the enclosing milestone (`Phase 1-01`, `Phase 1-02`). Run `gsd-tools roadmap upgrade --convention milestone-prefixed` to migrate an existing ROADMAP.md. `"bracket"` = IDs that carry the milestone in a bracket ahead of the phase number — heading `### [GSD.02] 05: Name`, directory `GSD.02-05-name` — per [ADR-612](adr/612-bracket-phase-id-convention.md). **`"bracket"` currently affects the READ path only:** `roadmap analyze` / `roadmap get-phase`, the W005/W006/W007 phase checks, `validate health` (including an advisory W021 — a bracket phase's milestone disagreeing with its enclosing section, or a phase heading still spelled in legacy form that has not yet been migrated to bracket form), and both `total_phases` derivations recognise the bracket spelling once it is set. There is no bracket migrator and no bracket emit yet, so set it only on a project whose ROADMAP.md already uses that spelling; a project on any other value compiles the same patterns it did before and is unaffected. **What opting in costs:** on a bracket repo a heading whose bracket is followed directly by a digit is read as a phase heading, so shapes that are legal prose headings on any other convention — `### [RFC.2119] 5:`, `### [v1.0] 2024:`, `### [ADR.612] 3:` — are claimed as phases and will move `phase_count`, `total_phases` and W006. A bracket repo cedes that heading shape; that is the trade the opt-in buys, and it is why the widened read is selected at construction time from this value rather than applied everywhere ([#2761](https://github.com/open-gsd/gsd-core/issues/2761)). |
+| `response_language` | string | language code | (none) | Language for agent responses (e.g., `"pt"`, `"ko"`, `"ja"`). Propagates to all spawned agents for cross-phase language consistency. Added in v1.32. UAT checkpoint frames (`/gsd-verify-work`) render a localized banner/instruction for English, Spanish, French, German, Portuguese, Japanese, Chinese, Korean, Italian, Dutch, Polish, Russian, Ukrainian, Turkish, Hindi, Arabic, Vietnamese, and Indonesian (endonyms and ISO codes also accepted); any other value falls back to the English frame. One deliberate exception: the `spec-phase` edge-completeness probe is fed an English translation of each requirement's text, because its shape cues are English-only — the SPEC itself stays in this language. See [Spec-Phase Edge-Completeness Probe](FEATURES.md#144-spec-phase-edge-completeness-probe). |
 | `context_window` | number | any integer | `200000` | Context window size in tokens. Set `1000000` for 1M-context models (e.g., `claude-fable-5`). Values `>= 500000` enable adaptive context enrichment (full-body reads of prior SUMMARY.md, deeper anti-pattern reads). Configured via `/gsd-config --advanced`. |
 | `context_profile` | string | `dev`, `research`, `review` | (none) | Execution context preset that applies a pre-configured bundle of mode, model, and workflow settings for the current type of work. Added in v1.34 |
 | `claude_md_path` | string | any file path | `./.claude/CLAUDE.md` | Custom output path for the generated CLAUDE.md file. Useful for monorepos or projects that need CLAUDE.md in a non-root location. Defaults to `./.claude/CLAUDE.md` — a valid project-scoped memory location that keeps GSD-generated content from polluting a hand-crafted repo-root `CLAUDE.md` ([#1098](https://github.com/open-gsd/gsd-core/issues/1098)). An existing file without GSD markers is never overwritten unless `--force` is passed. Default changed from `./CLAUDE.md` in v1.5. Added in v1.36 |
@@ -240,6 +242,25 @@ The key suffix is **not** always the lane slug. Each lane declares the config ke
 | `review.models.opencode` | string | `null` | Model id for OpenCode review (injected into --model), e.g. `"claude-sonnet-4"` |
 | `review.models.kimi-code` | string | `null` | Model id for Kimi Code review (injected into -m) |
 
+### Resolved model recording (#2295)
+
+Every `/gsd-review` run records the resolved model per reviewer in the `REVIEWS.md` frontmatter as `models:` and `model_sources:`, whether or not the lane was pinned via the keys above.
+
+| `model_sources` value | Meaning |
+|---|---|
+| `pinned` | `review.models.<slug>` (or an ADR-1517 reviewer-instance `--model`) that really reached the invocation |
+| `served` | An OpenAI-compatible server echoed the model it actually ran. Most authoritative |
+| `requested` | openai-http: discovered from `/v1/models`, or the lane's declared `fallbackModel`; the server did not echo one |
+| `banner` | The CLI's own startup banner named it. File-output lanes only (`codex` today) |
+| `transcript` | The lane handler's own on-disk session log named it (`agy`'s `transcript_full.jsonl`) |
+| `unknown` | Nothing recoverable |
+
+A `models:` value reads `unknown` if and only if its `model_sources:` entry is `unknown`.
+
+When GSD applies a reasoning effort to a lane, the recorded value carries it as a
+`(reasoning=<level>)` suffix (for example `gpt-5.6-sol (reasoning=high)`) — the level is GSD's
+own resolved effort, not the CLI's default.
+
 **Ownership.** These keys are owned by their reviewer-lane capabilities rather than the central
 config schema — `review.models.ollama` belongs to the `ollama` capability, `review.ollama_host`
 to the same, and so on. Key names and existing `.planning/config.json` files are unchanged; only
@@ -254,6 +275,22 @@ the CLI's own name, not the lane slug), `ollama`, `lm_studio` and `llama_cpp`.
 The same applies to `review.max_prompt_tokens_per_reviewer.<slug>`. `review.max_prompt_tokens`
 (the global default), `review.default_reviewers` and `review.reviewer_instances` describe policy
 across lanes rather than one lane's behavior, so they remain central and are unaffected.
+
+### Reviewer lane timeouts (`review.timeouts.*`, #3274)
+
+Nine of the twelve declared reviewer lanes accept an outer wall-clock timeout override, federated
+per-lane exactly like `review.max_prompt_tokens_per_reviewer.<slug>` above — the key is owned by
+that lane's own capability manifest, not a central schema. Keys are seconds: `review.timeouts.gemini`,
+`review.timeouts.claude`, `review.timeouts.codex`, `review.timeouts.opencode`,
+`review.timeouts.antigravity`, `review.timeouts.kimi-code`, `review.timeouts.ollama`,
+`review.timeouts.lm_studio`, `review.timeouts.llama_cpp`. Unset (or `0`/negative/non-numeric)
+falls back to that lane's built-in floor. For the `antigravity` lane specifically, this value also
+derives its native `agy --print-timeout` flag (roughly 60 seconds under the configured outer
+value), so raising `review.timeouts.antigravity` raises both bounds together — this is how to fix
+a reviewer lane being killed mid-run on a large plan set: `gsd config-set review.timeouts.antigravity 900`.
+Three lanes — `qwen`, `cursor`, and `coderabbit` — take neither a model flag nor a host and do not
+federate a timeout key either, matching the same narrow key-ownership invariant their
+`review.models.*`/host keys already follow (each owns only its own prompt-budget key).
 
 ### Reviewer defaults for `/gsd-review`
 
@@ -272,6 +309,45 @@ Example:
   }
 }
 ```
+
+### Parallel reviewer lanes for `/gsd-review` (#3034)
+
+By default `/gsd-review` invokes reviewer lanes one at a time. That is deliberate: concurrent
+invocation can trip provider rate limits, and a lane dropped to a rate limit is a review that
+silently lost an opinion. A pass with several reviewers therefore costs roughly the sum of their
+runtimes.
+
+The lanes within one review pass have no data dependency on one another — they all inspect the
+same immutable plan snapshot. If your providers can accept concurrent requests (independent
+accounts, generous quota, or local model servers), you can opt in:
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `review.parallel_lanes` | boolean | `false` | When `true`, dispatch independent selected reviewer lanes concurrently within a single `/gsd-review` pass. All lanes are joined before `REVIEWS.md` and consensus are rendered. |
+
+```bash
+gsd config-set review.parallel_lanes true
+/gsd-plan-review-convergence 3 --all
+```
+
+```json
+{
+  "review": {
+    "parallel_lanes": true
+  }
+}
+```
+
+**What this does not change.** Convergence cycles stay sequential — `review → replan → re-review`
+has a real data dependency, so enabling this speeds up each pass, not the number of passes.
+Per-lane timeouts, prompt budgets, diagnostic stubs, explicit-lane failure, trust/egress checks and
+result-file layout are all unchanged.
+
+**Before you enable it.** Every selected lane dispatches at once — there is no concurrency bound.
+Selecting eleven lanes issues eleven concurrent requests. Two reviewer instances backed by the same
+adapter (see below) also dispatch concurrently against that one provider, which is the most likely
+way to hit a limit. If a lane does get rate-limited it fails the way any other failing lane does:
+a diagnostic stub with captured stderr, never a silently dropped review.
 
 ### Reviewer instances for `/gsd-review` (#1517)
 
@@ -335,8 +411,9 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | `workflow.nyquist_validation` | boolean | `true` | Test coverage mapping during plan-phase research |
 | `workflow.ui_phase` | boolean | `true` | Generate UI design contracts for frontend phases |
 | `workflow.ui_safety_gate` | boolean | `true` | Prompt to run /gsd-ui-phase for frontend phases during plan-phase |
-| `workflow.assumption_delta` | boolean | `true` | Advisory architecture checkpoint during planning. When a phase makes something **plural, optional, or chosen** that used to be **singular, required, or derived** (e.g. a second auth method, a required field becoming optional, a constant becoming a parameter), the planner is prompted to re-ask whether the primary key / identity model still names the right thing (promote the new general representation vs. add it alongside). Non-blocking; fires only on a detected signal. Bare "or" is intentionally excluded (prose false-positives). Inspect a phase with `gsd query assumption-delta scan <phase>`. Added in #1561 |
+| `workflow.assumption_delta` | boolean | `true` | Advisory architecture checkpoint during planning. When a phase makes something **plural, optional, or chosen** that used to be **singular, required, or derived** (e.g. a second auth method, a required field becoming optional, a constant becoming a parameter), the planner is prompted to re-ask whether the primary key / identity model still names the right thing (promote the new general representation vs. add it alongside). Non-blocking; fires only on a detected signal. Bare "or" is intentionally excluded (prose false-positives). Inspect a phase with `gsd_run query assumption-delta scan <phase>`. Added in #1561. A phase section that cannot be resolved returns `{"skipped":true,"reason":"phase_unresolved"}` rather than a fabricated `detected:false` (#3909) |
 | `workflow.ui_review` | boolean | `true` | Run visual quality audit (`/gsd-ui-review`) after phase execution in autonomous mode. When `false`, the UI audit step is skipped. |
+| `workflow.live_dom_uat` | boolean | `false` | **Default-off.** Enable live-DOM verification (#2856). When `true`, a `gsd-dom-verifier` step runs after each execution wave and writes `{phase}-DOM-VERIFY.md`, and the orchestrator's automated UI verification will additionally consider `mcp__chrome-devtools__*` / `mcp__claude-in-chrome__*` when present. Browser reach is confined to `gsd-dom-verifier` — `gsd-executor`'s tool surface is unchanged in every configuration. Presence of a browser MCP server is **not** sufficient on its own: a server configured for unrelated work is never driven unless this key is on. The pre-existing `mcp__playwright__*` path is unaffected by this key. Note `chrome-devtools-mcp` holds an exclusive browser-profile lock, so concurrent waves need `--isolated` on **your** MCP server registration — GSD cannot pass it. See [Enable live-DOM verification](how-to/enable-live-dom-verification.md). |
 | `workflow.node_repair` | boolean | `true` | Autonomous task repair on verification failure |
 | `workflow.node_repair_budget` | number | `2` | Max repair attempts per failed task |
 | `workflow.smart_zone_tokens` | number | `100000` | Smart-zone token budget for phase-effort estimation (#2630, [ADR-2629](adr/2629-phase-effort-estimation-calibration.md)). A phase whose estimate exceeds this is flagged with a split recommendation — **advisory only, never a block**. This is a *policy default, not a benchmark constant*: LLM output quality degrades before the advertised context window is full, but the effective ceiling is model-, task-, and distractor-dependent, so no universal number exists. Lower it for models that degrade early; the estimate-vs-actual calibration loop corrects the figure per project over time. Must be a positive integer. |
@@ -350,6 +427,7 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | `workflow.worktree_skip_hooks` | boolean | `false` | When `true`, executor agents in worktree mode pass `--no-verify` (skipping pre-commit hooks) and post-wave hook validation runs against the merged result instead. Opt-in escape hatch for projects whose hooks cannot run in agent worktrees. Default `false` runs hooks on every commit (#2924). |
 | `workflow.code_review` | boolean | `true` | Enable `/gsd-code-review` and `/gsd-code-review --fix` commands. When `false`, the commands exit with a configuration gate message. Added in v1.34 |
 | `workflow.code_review_depth` | string | `standard` | Default review depth for `/gsd-code-review`: `quick` (pattern-matching only), `standard` (per-file analysis), or `deep` (cross-file with import graphs). Can be overridden per-run with `--depth=`. Added in v1.34 |
+| `workflow.code_review_depth_overrides` | array | `[]` | Ordered list of `{ paths: string[], depth }` rules that escalate `/gsd-code-review` depth for specific directories, e.g. `[{ "paths": ["src/auth"], "depth": "deep" }]`. Each rule's `paths` are matched against the review's changed-file set by whole-segment directory-path prefix (`src/auth` matches `src/auth/token.ts`, never `src/authfoo/x.ts` or `docs/src/auth/x.ts`); matching is case-sensitive, following git. Glob syntax (`*`, `?`) is a configuration error, not sugar for a prefix. One matched file escalates the entire review — depth is not applied per file. Resolution order: `--depth=` flag → strongest matching rule → `workflow.code_review_depth` → `standard`; a matching rule wins even when its tier is weaker than the global default. A malformed rule (bad `depth`, glob syntax, absolute path, `..` segment, empty path, non-array `overrides`, non-object rule, malformed `paths`) is a configuration error and the review halts rather than falling back silently. The resolved depth and the matching rule are printed in the review output. Added in #2554 |
 | `workflow.plan_bounce` | boolean | `false` | Run external validation script against generated plans. When enabled, the plan-phase orchestrator pipes each PLAN.md through the script specified by `plan_bounce_script` and blocks on non-zero exit. Added in v1.36 |
 | `workflow.plan_bounce_script` | string | (none) | Path to the external script invoked for plan bounce validation. Receives the PLAN.md path as its first argument. Required when `plan_bounce` is `true`. Added in v1.36 |
 | `workflow.plan_bounce_passes` | number | `2` | Number of sequential bounce passes to run. Each pass feeds the previous pass's output back into the validator. Higher values increase rigor at the cost of latency. Added in v1.36 |
@@ -366,7 +444,7 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | `workflow.cross_ai_timeout` | number | `300` | Timeout in seconds for cross-AI execution commands. Prevents runaway external processes. Added in v1.36 |
 | `workflow.test_gate_timeout` | number | `600` | Wall-clock timeout (seconds) for a verification test gate; a watch-mode runner (vitest/jest) that never exits is aborted after this budget instead of hanging the orchestrator (#1857) |
 | `workflow.ai_integration_phase` | boolean | `true` | Enable the `/gsd-ai-integration-phase` command. When `false`, the command exits with a configuration gate message |
-| `workflow.api_coverage_gate` | boolean | `true` | Require an explicit API-coverage decision before a phase that integrates an external API/SDK/service can seal. At `plan:pre` the planner is prompted to produce a `COVERAGE.md` matrix (full coverage by default, every opt-out reasoned); at `verify:pre` a blocking gate fails the seal unless the matrix is complete. Independent of `ai_integration_phase` (#1562) |
+| `workflow.api_coverage_gate` | boolean | `true` | Require an explicit API-coverage decision before a phase that integrates an external API/SDK/service can seal. At `plan:pre` the planner is prompted to produce a `COVERAGE.md` matrix (full coverage by default, every opt-out reasoned); at `verify:pre` a blocking gate fails the seal unless the matrix is complete. Independent of `ai_integration_phase` (#1562). A phase whose scope cannot be established at all (no plan body and no roadmap section) is held rather than passed, reporting `scope_unavailable` — see [Resolve a skipped capability probe](how-to/resolve-a-skipped-capability-probe.md) (#3909) |
 | `workflow.auto_prune_state` | boolean | `false` | When `true`, automatically prune stale entries from STATE.md at phase boundaries instead of prompting |
 | `workflow.pattern_mapper` | boolean | `true` | Run the `gsd-pattern-mapper` agent between research and planning to map new files to existing codebase analogs |
 | `workflow.subagent_timeout` | number | `300000` | Timeout in milliseconds for parallel subagent tasks (e.g. codebase mapping). Increase for large codebases or slower models. Default: 300000 (5 minutes) |
@@ -387,7 +465,7 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `worktree.baseRef` | string | (unset) | Controls which ref the worktree-based parallel executor uses as the base when creating new phase/wave worktrees. When unset, the executor bases new worktrees on the repository default branch (`origin/HEAD`); if the current branch has diverged, execute-phase auto-degrades to sequential execution rather than halting (as of v1.4.0). Set to `"head"` to base new worktrees on the local `HEAD` instead — the appropriate choice when working on a branch that has diverged from the default branch, as it prevents the exit-42 base-mismatch halt and allows wave-based parallel execution to proceed normally. See [Fix the worktree base-mismatch (exit 42) error](how-to/fix-worktree-base-mismatch.md). |
+| `worktree.baseRef` | string | (unset) | Controls which ref the worktree-based parallel executor uses as the base when creating new phase/wave worktrees. When unset, the executor bases new worktrees on the repository default branch (`origin/HEAD`); if the current branch has diverged, execute-phase auto-degrades to sequential execution rather than halting (as of v1.4.0). Set to `"head"` to base new worktrees on the local `HEAD` instead. **Where it applies (#48/#3659):** honored on runtimes where GSD itself creates the worktrees (Codex, OpenCode, Kimi, Kimi Code) — there it restores wave-based parallel execution on diverged branches. On harness-isolated runtimes (Claude Code, Cursor) the harness does **not** read this setting (verified 5/5 in #48; upstream claude-code#44965): the base check compares against the real fork base regardless and auto-degrades to sequential execution before dispatch when `HEAD` has diverged, so the exit-42 halt is a last-resort backstop rather than the only guard. See [Fix the worktree base-mismatch (exit 42) error](how-to/fix-worktree-base-mismatch.md). |
 
 ### Executor isolation per runtime
 
@@ -487,6 +565,7 @@ The following combinations of `mode`, `granularity`, `model_profile`, and workfl
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `planning.commit_docs` | boolean | `true` | Whether `.planning/` files are committed to git |
+| `planning.pr_strict` | boolean | `false` | Filter mode for [`/gsd-pr-branch`](COMMANDS.md#gsd-pr-branch). `false` — the generated PR branch keeps structural planning state (`STATE.md`, `ROADMAP.md`, `MILESTONES.md`, `PROJECT.md`, `REQUIREMENTS.md`, `milestones/**`) and drops the transient subdirectories. `true` — every `.planning/` path is dropped, structural files included, and a commit is carried over only when it touches at least one file outside `.planning/`. Applies to the root repository's PR branch only; `planning.sub_repos` companion branches are unaffected |
 | `planning.search_gitignored` | boolean | `false` | Add `--no-ignore` to broad searches to include `.planning/` |
 | `planning.sub_repos` | array of strings | `[]` | Paths of nested sub-repos relative to the project root. When set, GSD-aware tooling scopes phase-lookup, path-resolution, and commit operations per sub-repo instead of treating the outer repo as a monorepo |
 
@@ -592,12 +671,32 @@ for a worked example.
 | `statusline.show_context_tokens` | boolean | `false` | Append the absolute token count (e.g. `(156k)`) after the context meter's percentage. Sums input, cache-creation, cache-read, and output tokens from the hook payload — a broader basis than the meter's percentage (which excludes output tokens), so the two figures can diverge slightly. Opt-in; the meter is unchanged when the flag is absent |
 | `statusline.state_format` | string | `"full"` | Format of the GSD-state segment. `"full"` (default) is the existing rendering with milestone name and progress bar. `"compact"` renders `<version> · P<phase>/<total> · <status>` (e.g. `v1.12 · P7/12 · executing`) — drops the milestone name and bar, and collapses narrative statuses to the canonical keyword set from `normalizeStateStatus()` (`paused` — the canonical stuck state — renders uppercase as `PAUSED`) |
 | `statusline.show_git` | boolean | `false` | Append a git segment after the directory: current branch plus compact work-state markers (`+staged` `~unstaged` `?untracked` `↑ahead` `↓behind`, or `✓` when clean and in sync). One `git status --porcelain=v2` call per render; the segment is absent outside a git repo or when git is unavailable |
+| `statusline.show_state_freshness` | boolean | `false` | Append `state ~N commits back` to the GSD-state segment when STATE.md carries a `state_head` stamp and the codebase has moved at least 20 commits past it (the same advisory threshold `/gsd-health`'s W024 uses). Exactly one `git rev-list` call per render, and only when enabled and a stamp is present; the marker is absent below the threshold, outside a git repo, when the project root does not own its `.git`, and in `planning.sub_repos` workspaces |
 
 The prompt injection guard hook (`gsd-prompt-guard.js`) is always active and cannot be disabled — it's a security feature, not a workflow toggle.
 
 ### Private Planning Setup
 
 When `planning.commit_docs` is `false` and `.planning/` is listed in `.gitignore`, GSD treats planning artifacts as local-only. `planning.search_gitignored: true` ensures broad searches still include the `.planning/` directory in this configuration. See [Keep planning docs out of a shared repo](how-to/keep-planning-docs-private.md) for the full setup, including untracking files git is already tracking.
+
+#### Two ways to keep planning private, and what each costs
+
+"Private planning" is really two different questions — *is it in git at all?* and *does it reach the remote?* — and GSD answers them with two different keys.
+
+`planning.commit_docs: false` answers the first by keeping `.planning/` out of git entirely. That has a cost most projects discover late: **parallel executor worktrees stop working.** A worktree is checked out from a *commit*, so a `.planning/` directory that is untracked or ignored simply does not exist inside it, and the executor has no `PLAN.md` to read. Local-only planning and parallel execution are mutually exclusive under this setting. Untracked planning also has no git history, so `/gsd-undo` and revert paths have nothing to restore.
+
+`planning.pr_strict: true` answers the second instead, and leaves the first alone. Planning artifacts are committed normally on your working branch — so worktrees find them, and history exists — while `/gsd-pr-branch` guarantees that none of them reach the branch you publish. The guarantee is enforced by the command rather than by remembering never to push the working branch.
+
+Pick by which question you are actually asking:
+
+| You want | Setting | What you give up |
+|---|---|---|
+| Planning never enters git | `planning.commit_docs: false` | Parallel executor worktrees; planning git history |
+| Planning is versioned locally but never published | `planning.commit_docs: true` + `planning.pr_strict: true` | Nothing — but the working branch itself must not be pushed; publish the generated `-pr` branch |
+
+The two are independent keys and can be set together, but `pr_strict` is inert when `commit_docs` is `false`: with nothing committed, there is nothing for the PR-branch filter to remove.
+
+See [Publish PRs without planning artifacts](how-to/publish-prs-without-planning-artifacts.md) for the setup.
 
 ### `commit_docs` Pre-Commit Guard (opt-in)
 
@@ -998,10 +1097,36 @@ All four fields are **optional and additive** — STATE.md files without them ke
 |---------|------|---------|-------------|
 | `git.branching_strategy` | enum | `none` | `none`, `phase`, or `milestone` |
 | `git.base_branch` | string | `main` | The integration branch that phase/milestone branches are created from and merged back into. Override when your repo uses `master` or a release branch |
+| `git.protected_branches` | array of non-empty strings | (none) | Optional additional shared branches that should trigger protected-branch warnings alongside the resolved base branch |
 | `git.create_tag` | boolean | `true` | Create a git tag (`v[X.Y]`) on milestone completion. Set to `false` for projects with their own release flow |
 | `git.phase_branch_template` | string | `gsd/phase-{phase}-{slug}` | Branch name template for phase strategy |
 | `git.milestone_branch_template` | string | `gsd/{milestone}-{slug}` | Branch name template for milestone strategy |
 | `git.quick_branch_template` | string or null | `null` | Optional branch name template for `/gsd-quick` tasks |
+
+### Protected Branch Warnings
+
+`git.protected_branches` is optional and has no persisted default. When the field is absent,
+GSD protects only the resolved base branch, preserving existing project behavior. Every configured
+item must be a non-empty string. The configured list extends the resolved base branch; it never
+replaces that branch or changes base-branch detection.
+
+A match produces an advisory warning at execute-phase and ship and does not change
+`git.branching_strategy: "none"`: GSD still continues on the current branch and ship still offers
+to create a feature branch.
+
+Matching is by exact branch name — there is no glob or prefix support, so a git-flow
+layout must name each `release/*` or `hotfix/*` branch it wants protected. An entry that
+is not a non-empty string is ignored with a warning naming it, and the remaining names
+still apply.
+
+```json
+{
+  "git": {
+    "branching_strategy": "none",
+    "protected_branches": ["develop", "staging"]
+  }
+}
+```
 
 ### Strategy Comparison
 
@@ -1160,14 +1285,15 @@ Configure per-CLI model selection for `/gsd-review`. When set, overrides the CLI
 | `review.models.llama_cpp` | string | (server default) | Model name passed to llama.cpp when `--llama-cpp` reviewer is invoked. If unset, the first model reported by `/v1/models` is used. |
 | `review.default_reviewers` | string[] \| null | (all detected reviewers) | Default reviewer subset for no-flag `/gsd-review`. Example: `["gemini","codex"]`. May include configured `review.reviewer_instances` names. Explicit flags and `--all` override this setting. |
 | `review.max_prompt_tokens` | number\|null | null | Default maximum estimated tokens for the assembled review prompt. When set, the prompt is deterministically trimmed before being sent to each reviewer. Per-reviewer overrides via `review.max_prompt_tokens_per_reviewer` take precedence. null = no trim (current behavior). |
-| `review.max_prompt_tokens_per_reviewer` | object | {} | Per-reviewer token budget overrides. Keys are reviewer slugs. Only lanes that declare a budget key accept one — today `ollama`, `lm_studio` and `llama_cpp`, the local model servers this exists for. Values override `review.max_prompt_tokens` for that reviewer. A per-lane value of `0` disables trimming for that lane specifically. |
+| `review.max_prompt_tokens_per_reviewer` | object | {} | Per-reviewer token budget overrides. Keys are reviewer slugs. Every declared reviewer lane accepts one (`gemini`, `claude`, `codex`, `coderabbit`, `opencode`, `qwen`, `cursor`, `antigravity`, `kimi-code`, `ollama`, `lm_studio`, `llama_cpp`). A lane's value of `-1` (the default) is unset and inherits `review.max_prompt_tokens`; `0` disables trimming for that lane specifically; any other number is that lane's own budget. |
+| `review.parallel_lanes` | boolean | `false` | Dispatch independent reviewer lanes concurrently within a single `/gsd-review` pass. Default `false` keeps the sequential dispatch that protects against provider rate limits. Opt in only when your providers can accept concurrent requests. Convergence cycles stay sequential either way. |
 | `review.ollama_host` | string | `http://localhost:11434` | Base URL of the Ollama server. Override when running Ollama on a non-default port or remote host: `gsd config-set review.ollama_host http://192.168.1.10:11434` |
 | `review.lm_studio_host` | string | `http://localhost:1234` | Base URL of the LM Studio local server. Override when using a non-default port. |
 | `review.llama_cpp_host` | string | `http://localhost:8080` | Base URL of the llama.cpp server (`llama-server`). Override when using a non-default port. |
 
-### Prompt budgets for small-context reviewers
+### Prompt budgets for reviewer lanes
 
-Local model servers (Ollama, llama.cpp, LM Studio) typically accept far fewer tokens than cloud APIs. Setting `review.max_prompt_tokens_per_reviewer` (or the global `review.max_prompt_tokens` fallback) triggers deterministic prompt trimming before the prompt is sent to that reviewer: CONTEXT is dropped first, then RESEARCH, then REQUIREMENTS; PROJECT.md is head-shrunk to the first 40 lines; PLANs are tail-truncated proportionally — instructions and roadmap are always preserved. When a reviewer is trimmed, a disclosure note is injected at the top of the prompt and trim metadata (budget, omitted sections, truncation percentage) is recorded in the REVIEWS.md frontmatter under `trimmed_reviewers`. If even the minimum review set (instructions + roadmap + plan stubs) exceeds the budget, the reviewer is skipped with a warning rather than sending a truncated prompt that would produce misleading feedback.
+Every declared reviewer lane can be capped, most usefully the local model servers (Ollama, llama.cpp, LM Studio), which typically accept far fewer tokens than cloud APIs — but any CLI lane can be given a budget too. Setting `review.max_prompt_tokens_per_reviewer` (or the global `review.max_prompt_tokens` fallback, which every lane whose own key is unset inherits) triggers deterministic prompt trimming before the prompt is sent to that reviewer: CONTEXT is dropped first, then RESEARCH, then REQUIREMENTS; PROJECT.md is head-shrunk to the first 40 lines; PLANs are tail-truncated proportionally — instructions and roadmap are always preserved. When a reviewer is trimmed, a disclosure note is injected at the top of the prompt and trim metadata (budget, omitted sections, truncation percentage) is recorded in the REVIEWS.md frontmatter under `trimmed_reviewers`. If even the minimum review set (instructions + roadmap + plan stubs) exceeds the budget, the reviewer is skipped with a warning rather than sending a truncated prompt that would produce misleading feedback.
 
 ### Example
 
@@ -1239,7 +1365,7 @@ Invalid flag tokens are sanitized and logged as warnings. Only recognized GSD fl
 | gsd-doc-writer | Opus | Sonnet | Haiku | Sonnet | Inherit |
 | gsd-doc-verifier | Sonnet | Sonnet | Haiku | Haiku | Inherit |
 
-> **All 33 shipped agents have explicit per-profile tier assignments** in the catalog (`sdk/shared/model-catalog.json`). The table above shows a representative subset of the most-used agents. For agents not listed here, `model_overrides` accepts any shipped agent name. The authoritative profile data is derived from `sdk/shared/model-catalog.json` via `gsd-core/bin/lib/model-catalog.cjs` and `sdk/src/model-catalog.ts`.
+> **All 33 shipped agents have explicit per-profile tier assignments** in the catalog (`gsd-core/bin/shared/model-catalog.json`). The table above shows a representative subset of the most-used agents. For agents not listed here, `model_overrides` accepts any shipped agent name. The authoritative profile data is derived from `gsd-core/bin/shared/model-catalog.json` via `src/model-catalog.cts`.
 
 ### Per-Agent Overrides
 
@@ -1476,9 +1602,68 @@ Control the reasoning effort of agent invocations with a single config. The univ
 minimal < low < medium < high < xhigh < max
 ```
 
-Effort is rendered per-runtime: `output_config.effort` for Claude (Claude Code subagent `effort` frontmatter / `CLAUDE_CODE_EFFORT_LEVEL` env), `model_reasoning_effort` for Codex (Responses API `reasoning.effort`).
+Effort is rendered per-runtime: `output_config.effort` for Claude (Claude Code subagent `effort` frontmatter / `CLAUDE_CODE_EFFORT_LEVEL` env), `model_reasoning_effort` for Codex (Responses API `reasoning.effort`), and `variant` for OpenCode (agent frontmatter).
 
-**Cross-provider clamping:** `max` is Anthropic-only — it clamps to `xhigh` on Codex. `minimal` is Codex-only — it clamps to `low` on Claude.
+**OpenCode `variant` is opt-in ([#3706](https://github.com/open-gsd/gsd-core/issues/3706)).** OpenCode resolves a `variant` name against the variants available for the agent's model — the built-in sets are provider-specific (Anthropic ships `high` and `max`; OpenAI the full ladder) and you can define your own in `opencode.jsonc`. GSD writes the key only when an `effort` block is actually configured; with no `effort` config the generated agent carries no `variant` line and OpenCode applies its own default.
+
+Note that the gate is on effort being configured **at all**, not on the individual agent being named. Once any `effort` block exists, the usual cascade resolves a level for *every* agent — an `agent_overrides` entry for one agent still leaves the others resolving through `routing_tier_defaults` and the tier ladder — so every generated OpenCode agent gets a `variant` line, not only the one you named. Two levels are never written: `inherit` (which means "follow the host default", so the key is omitted) and any level outside OpenCode's supported set. Runtimes with no declared effort surface — Kilo among them — never receive the key at all.
+
+`effort sync` maintains the key too, so changing `effort` config does not require a reinstall: it writes the newly resolved `variant` into each installed OpenCode agent, and removes the key when the agent resolves to `inherit` or to a level OpenCode does not accept — the same states under which install writes nothing.
+
+**Cross-provider clamping:** `minimal` is Anthropic-unsupported — it clamps to `low` on Claude.
+
+**Codex effort is resolved per model, not per runtime (#3007).** Codex advertises a
+`supported_reasoning_levels` set on each model and validates against it, so the same universal level
+can pass cleanly on one model and clamp on another. GSD therefore renders against the model's own
+advertised set:
+
+| Model | Advertised levels |
+|---|---|
+| `gpt-5.6-sol` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
+| `gpt-5.6-terra` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` |
+| any other / unknown id | `low`, `medium`, `high`, `xhigh`, `max` (family baseline) |
+
+Today every shipped Codex model advertises the same usable range, so the same effort resolves
+identically across `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` — `ultra` is sol's only
+differentiator, and GSD rejects it for every model regardless (see below), so no observable output
+currently differs by model. The table is per-model, not per-runtime, because Codex declares
+capability per model and the sets are free to diverge — the previous single per-runtime assumption
+is exactly what went stale and produced this change.
+
+Three consequences:
+
+- **`max` reaches Codex.** It is no longer clamped to `xhigh`. Earlier GSD releases described `max`
+  as Anthropic-only; that was accurate when written and Codex has since added it. If you set `max`
+  for a Codex agent, your generated `model_reasoning_effort` now says `max` where it previously said
+  `xhigh`.
+- **`minimal` no longer reaches Codex.** No Codex model advertises it, so it clamps up to `low` —
+  the floor every model does advertise. GSD previously emitted `minimal` verbatim, which Codex
+  rejects.
+- **`ultra` is refused outright**, and is not part of GSD's ladder. See below.
+
+**Every clamp is now visible.** `resolve-execution` reports the level you asked for alongside the
+level actually rendered, so a downgrade is legible instead of silent. These are flat keys in the
+same result object as `effort_rendered` — there is no nested `effort` object:
+
+```json
+{
+  "effort_rendered":    "low",
+  "effort_requested":   "minimal",
+  "effort_clamped":     true,
+  "effort_clamp_reason": "requested 'minimal' is not in gpt-5.6-luna's advertised reasoning levels; clamped up to its floor, 'low'."
+}
+```
+
+**Why `ultra` is rejected rather than clamped.** Codex's own catalog describes `ultra` as *"Maximum
+reasoning with automatic task delegation"* — it is a mode switch, not a louder `max`. At `ultra`
+Codex enters proactive multi-agent mode and spawns sub-agents on its own initiative, which would run
+underneath GSD's orchestration rather than inside it ([#2167](https://github.com/open-gsd/gsd-core/issues/2167)).
+GSD refuses it for every model, including `gpt-5.6-sol`, which does advertise it. This is
+deliberately stricter than Codex requires: Codex only applies proactive mode to V2 sessions and
+never to spawned sub-agents, but GSD writes effort into generated agent files at install time and
+cannot know the session source of a future invocation. Clamping `ultra` down to `max` was rejected
+as an option — it would silently discard what you actually asked for.
 
 The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for reference; effort is now config-driven.
 
@@ -1521,8 +1706,9 @@ The model-catalog's `reasoning_effort` per-tier hint is a legacy field kept for 
 Valid effort values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `inherit` ([#3533](https://github.com/open-gsd/gsd-core/issues/3533)).
 
 `inherit` means "follow the session/host default" — it is a declarable choice, not a level:
-at install time the agent's `effort:` frontmatter key (claude) or `model_reasoning_effort`
-pin (Codex `.toml`) is **omitted** for an agent resolving to `inherit`; `effort sync` treats
+at install time the agent's `effort:` frontmatter key (claude), `model_reasoning_effort`
+pin (Codex `.toml`), or `variant:` frontmatter key (OpenCode) is **omitted** for an agent
+resolving to `inherit`; `effort sync` treats
 an absent key as the correct in-sync state and strips a present one; no runtime ever receives
 the literal. An explicit `inherit` also never escalates on failed attempts — your choice
 outranks the automatic ladder.
@@ -1620,18 +1806,23 @@ Use `node gsd-tools.cjs resolve-execution <agent-type> [--effort <level>] [--fas
 
 ```json
 {
-  "model":             "opus",
-  "profile":           "balanced",
-  "effort":            "xhigh",
-  "effort_rendered":   "xhigh",
-  "effort_param":      "output_config.effort",
-  "effort_propagation": "frontmatter",
-  "fast_mode":         false,
+  "model":               "opus",
+  "profile":             "balanced",
+  "effort":              "xhigh",
+  "effort_rendered":     "xhigh",
+  "effort_param":        "output_config.effort",
+  "effort_propagation":  "frontmatter",
+  "effort_requested":    "xhigh",
+  "effort_clamped":      false,
+  "effort_clamp_reason": null,
+  "fast_mode":           false,
   "fast_mode_supported": false
 }
 ```
 
-`effort_param` tells you which runtime parameter to set. `fast_mode_supported` tells you whether the configured runtime supports per-agent fast_mode propagation.
+`effort_param` tells you which runtime parameter to set. `effort_requested` is the level you asked
+for (before any clamp); `effort_rendered` is what actually shipped. `effort_clamped` is `true` only
+when the two differ, and `effort_clamp_reason` explains why (`null` when unclamped). `fast_mode_supported` tells you whether the configured runtime supports per-agent fast_mode propagation.
 
 ---
 
@@ -1856,8 +2047,47 @@ Use `provider: "generic"` (or `"custom"`) for OpenRouter, LiteLLM, local gateway
 | `GSD_AUDIT_ARGS` | Set to `1` to include command args in audit/error events (omitted by default) |
 | `GSD_PROJECT` | Override project root for multi-project workspace support (v1.32) |
 | `GSD_SKIP_SCHEMA_CHECK` | Skip schema drift detection during execute-phase (v1.31) |
+| `GSD_EXIT_CONTRACT` | Select the exit-code projection: `v1` (default) or `v2`. See [Exit-code contract](#exit-code-contract-gsd_exit_contract) below. |
 | `GSD_ALLOW_SYMLINKED_DEST` | Set to `1` (or `true`) to permit install/update when `CLAUDE_CONFIG_DIR` (or any artifact-kind child like `skills/`, `hooks/`) is an **intentional, user-owned symlink** pointing outside the install root. v1.7.x write-confinement (ADR-1239 Phase B) refuses such layouts by default to prevent untrusted `destSubpath` traversal. Opt in only if you manage configHome via symlinked external dirs, multi-account config layouts (`~/.claude-personal`, `~/.claude-team`), or dotfiles-managed configHome (nix-darwin, etc.). Two refusals remain load-bearing even with opt-in: path-traversal in `destSubpath` (`../../etc`-style), and a symlink whose resolved target equals the install root itself (would let the prune pass wipe it). |
 | `WSL_DISTRO_NAME` | Detected by installer for WSL path handling |
+
+### Exit-code contract (`GSD_EXIT_CONTRACT`)
+
+Which integers GSD's commands exit with is **versioned**, so the meanings can be
+sharpened without breaking callers that already depend on today's numbers.
+
+| Version | Behavior |
+|---|---|
+| `v1` | **Default.** Today's exit codes, unchanged. |
+| `v2` | Codes come from the exit-code registry. |
+
+Select `v2` either way — the flag wins when both are given:
+
+```bash
+GSD_EXIT_CONTRACT=v2 gsd-tools <command>
+gsd-tools <command> --exit-contract=v2
+```
+
+An unrecognized value is **rejected**, not silently treated as `v1`. That is
+deliberate: a selector that quietly ignores what you asked for is the failure
+mode this contract exists to remove.
+
+**What actually differs today.** Only one outcome: a command that ran to
+completion and is reporting a condition **through its result payload** rather
+than as a process failure. Under `v1` that exits `0` — a long-standing
+contract across ~60 call sites, documented in
+[`json-errors.md`](json-errors.md), where a caller detects the condition by
+inspecting the payload rather than the exit code. Under `v2` it exits a
+registered non-zero code instead. Pass or fail, and every other registered
+outcome, are identical under both.
+
+Every registered code is non-zero, so a caller written `if ! cmd; then` behaves
+the same for success under either version and trips for everything else.
+Switching to `v2` can turn a false green red; it cannot turn a red green.
+
+`v2` is opt-in now and becomes the default at the next major version. Rationale
+and the full band allocation are in
+[ADR-3889](adr/3889-process-exit-contract.md).
 
 ---
 
@@ -1884,6 +2114,14 @@ Two different rules apply, and the difference is deliberate ([#3532](https://git
 - **`effort` is the exception**: the install-time effort channel always merges
   `~/.gsd/defaults.json` with the project config (that is how `effort sync` works), so a
   global `effort` block keeps working in projects and does not trigger the warning.
+- **The whole `git.*` namespace is project-scoped and never resolves from the global file**,
+  in either directory shape — not `git.base_branch`, not `git.protected_branches`, not
+  `git.branching_strategy` or the branch templates. Branch policy is a property of the
+  repository, not of the machine, so it is read only from that project's
+  `.planning/config.json`. A `git` block in `~/.gsd/defaults.json` still seeds new projects
+  (`/gsd-new-project` copies globals into the new `config.json`), but it never takes effect
+  at runtime on its own. It is outside the shadowed-key warning above, which covers the
+  model-resolution set only.
 
 ---
 

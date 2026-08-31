@@ -73,6 +73,59 @@ export function formatGsdSlash(commandName: unknown, runtime: unknown): unknown 
   return `/gsd-${token}${tail}`;
 }
 
+// ─── #3897 rung 2: the per-install `.gsd-runtime` marker, promoted from ──────
+// model-resolver.cts (#2297) to this module — the canonical owner of runtime
+// identity (resolveRuntime, formatGsdSlash). `bin/install.js` writes
+// `<install>/gsd-core/.gsd-runtime` beside VERSION for every runtime install
+// (#2297). This module compiles to `gsd-core/bin/lib/runtime-slash.cjs`
+// (ADR-457) — the SAME directory `model-resolver.cjs` compiles to — so the
+// `__dirname`-relative path below is unchanged from the promoted original.
+//
+// Cache + test-seam shape, byte-for-behaviour preserved from
+// model-resolver.cts:65-77 (N5): module-level `let`, `try/catch -> null`,
+// `_setInstallRuntimeMarkerForTests` / `_resetInstallRuntimeMarkerCacheForTests`.
+// `model-resolver.cts` now imports this implementation instead of holding its
+// own copy; the two `hooks/*.js` marker readers delegate here too (through
+// `ensureRuntimeBuild()`, per `scripts/lint-hooks-runtime-build-seam.cjs`).
+let _installMarkerCache: string | null | undefined;
+
+/**
+ * Read the per-install runtime marker, cached for the process lifetime.
+ * Never throws (N4) — an absent/unreadable marker (dev/source tree, an
+ * install predating #2297, EACCES, hostile content, ...) is "no signal",
+ * never a resolution failure; a throw here would break a session in
+ * `gsd-agent-isolation-guard.js`, which is worse than resolving the wrong
+ * runtime.
+ *
+ * The raw marker string is returned as-is (trimmed) — callers MUST route it
+ * through `resolveRuntimeNameFromCandidates` before trusting it (N1); this
+ * function itself does not normalize so its cached value matches exactly
+ * what #2297's tests already assert about the underlying file read.
+ */
+export function readInstallRuntimeMarker(): string | null {
+  if (_installMarkerCache !== undefined) return _installMarkerCache;
+  try {
+    const markerPath = path.join(__dirname, '..', '..', '.gsd-runtime');
+    const raw = fs.readFileSync(markerPath, 'utf8').trim();
+    _installMarkerCache = raw || null;
+  } catch {
+    // No marker: dev/source tree, or an install predating #2297. Fall through
+    // to the 'claude' default (keeps tier aliases — never worse than the bug).
+    _installMarkerCache = null;
+  }
+  return _installMarkerCache;
+}
+
+// Test seams for the install-marker rung (the dev/source tree has no marker,
+// so the file read always bottoms out at 'claude' — these let tests exercise
+// the third precedence rung and reset the module-level cache between cases).
+export function _setInstallRuntimeMarkerForTests(value: string | null): void {
+  _installMarkerCache = value;
+}
+export function _resetInstallRuntimeMarkerCacheForTests(): void {
+  _installMarkerCache = undefined;
+}
+
 /**
  * Resolve the explicit runtime for a project directory, from the two
  * explicit sources only — no default is applied.
@@ -120,17 +173,30 @@ export function resolveExplicitRuntime(
 /**
  * Resolve the effective runtime for a project directory.
  *
- *   process.env.GSD_RUNTIME  >  config.runtime  >  'claude'
+ *   process.env.GSD_RUNTIME  >  config.runtime  >  install marker  >  'claude'
  *
  * Mirrors the precedence already used by profile-output.cjs and the rest of
  * the runtime resolution chain. Returns a lowercased string so downstream
  * comparisons can be case-blind.
  *
+ * #3897 rung 2: the per-install `.gsd-runtime` marker is the THIRD rung,
+ * between the two explicit sources and the 'claude' default — matching
+ * model-resolver.cts's own description of it as "the third precedence rung"
+ * before this reader was promoted here. The marker's raw contents are never
+ * trusted verbatim (N1): they are routed through the SAME
+ * `resolveRuntimeNameFromCandidates` normalization the env rung uses, so an
+ * unknown or hostile marker value degrades exactly like an unknown
+ * GSD_RUNTIME value would.
+ *
  * @param projectDir - path to the project directory, or null/undefined
  * @returns the resolved runtime name
  */
 export function resolveRuntime(projectDir: string | null | undefined): string {
-  return resolveExplicitRuntime(projectDir) ?? 'claude';
+  const explicit = resolveExplicitRuntime(projectDir);
+  if (explicit) return explicit;
+  const markerRuntime = resolveRuntimeNameFromCandidates(readInstallRuntimeMarker());
+  if (markerRuntime) return markerRuntime;
+  return 'claude';
 }
 
 /**

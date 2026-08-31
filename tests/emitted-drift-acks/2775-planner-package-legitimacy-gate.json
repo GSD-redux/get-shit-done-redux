@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "gsd-planner.md": {
-      "reason": "#2775: the STRIDE supply-chain row for npm/pip/cargo installs was rewritten from 'slopcheck + blocking human checkpoint for [ASSUMED]/[SUS]' to 'package-legitimacy gate + blocking human checkpoint for [ASSUMED]/[SUS]', matching ADR-0656 (registry-API verdicts are the gate; slopcheck is an optional escalate-only adapter no shipped configuration wires). The +14 bytes is the corrected mitigation description agents read at plan time, not incidental prose growth. #3565 appends the fenced `## Return Markers` section (~1.2 KB) enumerating the six exact stall-watch dispatch markers plan-phase.md matches on — the new registry lint requires every declared marker to be emitted in-fence by its producer, and the planner previously documented none of them anywhere."
-    }
-  }
-}

@@ -60,6 +60,8 @@ const PATH_RETURNING_FNS = [
   // #2088 (ADR-1239 upgrade 3): resolves the on-disk skills-install dir honoring
   // a skills-kind `home` override (e.g. Codex → $HOME/.agents/skills).
   '_resolveSkillsRootDir',
+  // #3664: shared kind-destination resolver (skills/agents/kimi-agents kinds).
+  '_kindDestDir',
   'getGlobalSkillDir',
   'getGlobalSkillDisplayPath',
   'resolveSkillsBaseFromDescriptor',
@@ -97,6 +99,32 @@ const WINDOWS_EXECUTABLE_EXTENSIONS = ['.exe', '.cmd', '.bat', '.com'];
  * `pathext`, ...) is the signal local/no-private-binary-resolution matches on.
  */
 const PATHEXT_VAR_NAME = 'PATHEXT';
+
+/**
+ * Windows environment variable names whose CONVENTIONAL casing varies from the
+ * all-uppercase POSIX convention (`Path` not `PATH`, `ComSpec` not `COMSPEC`,
+ * `TEMP`/`TMP`/`APPDATA`/`USERPROFILE` as shipped by Windows). `process.env` is
+ * a case-insensitive Proxy that hides this on every platform, so
+ * `process.env.PATH` is always safe — but a plain object (a spread of
+ * `process.env`, a function parameter, any object that is not literally
+ * `process.env` at the access site) keeps the OS's actual casing and an
+ * exact-case lookup against it silently returns `undefined` on Windows.
+ * local/no-exact-case-env-access matches a read of ANY casing of ANY of these
+ * names off ANY receiver that is not `process.env` itself (#3624, epic #3411
+ * Phase 4).
+ */
+const WINDOWS_CASE_VARYING_ENV_VARS = ['PATH', 'PATHEXT', 'ComSpec', 'USERPROFILE', 'TEMP', 'TMP', 'APPDATA'];
+
+const WINDOWS_CASE_VARYING_ENV_VARS_LOWER = new Set(WINDOWS_CASE_VARYING_ENV_VARS.map((v) => v.toLowerCase()));
+
+/**
+ * True when `name` case-insensitively matches one of WINDOWS_CASE_VARYING_ENV_VARS.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isCaseVaryingEnvVarName(name) {
+  return typeof name === 'string' && WINDOWS_CASE_VARYING_ENV_VARS_LOWER.has(name.toLowerCase());
+}
 
 /**
  * Boundary-aware match for each WINDOWS_EXECUTABLE_EXTENSIONS entry, in the
@@ -401,6 +429,8 @@ module.exports = {
   PATH_RETURNING_FNS,
   WINDOWS_EXECUTABLE_EXTENSIONS,
   PATHEXT_VAR_NAME,
+  WINDOWS_CASE_VARYING_ENV_VARS,
+  isCaseVaryingEnvVarName,
   countWindowsExecutableExtensions,
   isPathReturningCall,
   isPosixSlashStringLiteral,

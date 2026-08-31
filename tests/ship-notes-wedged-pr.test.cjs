@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { stripFencedCode } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+const { stripFencedCode, scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 const { cleanup, createTempDir, readFileNormalized } = require('./helpers.cjs');
 
 const SHIP_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'ship.md');
@@ -20,10 +20,13 @@ function extractStep(name) {
 
 function extractTrackShippingScript() {
   const step = extractStep('track_shipping');
-  const blocks = [...step.matchAll(/```bash\r?\n([\s\S]*?)\r?\n```/g)];
-  const match = blocks.find(block => block[1].includes('mergeStateStatus'));
+  const lines = step.split(/\r?\n/);
+  const blocks = scanFencedBlocks(lines)
+    .filter((b) => b.closeLineIdx !== -1 && (b.infoString || '').trim() === 'bash')
+    .map((b) => lines.slice(b.openLineIdx + 1, b.closeLineIdx).join('\n'));
+  const match = blocks.find(block => block.includes('mergeStateStatus'));
   assert.ok(match, 'track_shipping must contain an executable merge-state bash block');
-  return match[1];
+  return match;
 }
 
 function runTrackShipping(responses) {

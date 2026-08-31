@@ -1,10 +1,10 @@
 ---
-phase: {N}
-slug: {phase-slug}
+phase: "{N}"
+slug: "{phase-slug}"
 status: draft
 shadcn_initialized: false
 preset: none
-created: {date}
+created: "{date}"
 ---
 
 # Phase {N} — UI Design Contract
@@ -22,6 +22,27 @@ created: {date}
 | Component library | {radix / base-ui / none} |
 | Icon library | {library} |
 | Font | {font} |
+
+---
+
+## Component Inventory
+
+> What the project's design system actually provides. **Enumerate this from the installed
+> package — never from recall.** Delete whichever provenance line below does not apply.
+
+Enumerated by `<command>` — <N> components — <package>@<version> — <YYYY-MM-DD>.
+Could not enumerate: <reason>.
+
+Without a provenance line this table is a **non-exhaustive** list of known-good components and
+never a closed allowlist — the executor may use anything the design system exports, and
+`gsd-ui-checker` Dimension 7 reports the missing line as a defect. Checking for a component
+outside the table is the expected path, not an exception.
+
+| Component | Import path | Notes |
+|-----------|-------------|-------|
+| {name} | {import path} | {when to reach for it} |
+
+Omit this section entirely when the project has no design system (`Tool: none`).
 
 ---
 
@@ -121,5 +142,6 @@ Applicable state considerations resolved: {N covered, M backstop, K unresolved �
 - [ ] Dimension 4 Typography: PASS
 - [ ] Dimension 5 Spacing: PASS
 - [ ] Dimension 6 Registry Safety: PASS
+- [ ] Dimension 7 Inventory Provenance: PASS
 
 **Approval:** {pending / approved YYYY-MM-DD}

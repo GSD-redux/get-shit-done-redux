@@ -13,6 +13,9 @@ import os from 'node:os';
 import io = require('./io.cjs');
 const { output, error, ERROR_REASON } = io;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitMod = require('./cli-exit.cjs');
+const { ExitError } = cliExitMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoader = require('./config-loader.cjs');
 const { CONFIG_DEFAULTS } = configLoader;
 import { platformWriteSync, platformEnsureDir } from './shell-command-projection.cjs';
@@ -28,6 +31,13 @@ const { VALID_CONFIG_KEYS, isValidConfigKey, getCapabilityConfigSchema } = confi
 import { isSecretKey, maskSecret } from './secrets.cjs';
 import { normalizeConfiguredDefaultReviewers, INSTANCE_NAME_PATTERN, KNOWN_REVIEWER_SLUGS } from './review-reviewer-selection.cjs';
 import { migrateOnDisk } from './configuration.cjs';
+// #3760: the ADR-1411 out-of-band diagnostic. It lives here rather than inside
+// `migrateOnDisk` because `configuration.cjs` must stay loadable from an install
+// layout holding only itself plus its manifests (#3571) — see the note at the top
+// of configuration.cts.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import unusableInputModule = require('./unusable-input.cjs');
+const { UNUSABLE_REASON, warnUnusableInput } = unusableInputModule;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,6 +107,15 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   // Derived from the defaults manifest rather than restated, so the manifest
   // stays the single source of truth for the smart-zone budget (#2630).
   'workflow.smart_zone_tokens': CONFIG_DEFAULTS.smart_zone_tokens,
+  // #2971: /gsd:pr-branch reads this key directly; an absent key must resolve to the
+  // manifest default rather than "Key not found". Derived from the defaults manifest so
+  // the manifest stays the single source of truth.
+  'planning.pr_strict': CONFIG_DEFAULTS.pr_strict,
+  // #3801: execute-plan reads this key on every run; an absent key must resolve
+  // to the manifest default (2) rather than "Key not Found" — previously the
+  // effective default existed only as the workflow's shell fallback and the
+  // docs disagreed (settings-advanced said 3). Manifest stays the one owner.
+  'workflow.inline_plan_threshold': CONFIG_DEFAULTS.inline_plan_threshold,
 };
 
 /**
@@ -146,6 +165,34 @@ function validateKnownConfigKeyPath(keyPath: string): void {
   if (suggested) {
     error(`Unknown config key: ${keyPath}. Did you mean ${suggested}?`, ERROR_REASON.CONFIG_INVALID_KEY);
   }
+}
+
+/**
+ * Is `value` an acceptable `git.protected_branches` list (#3552)?
+ *
+ * A non-empty array whose every element is a string with non-whitespace
+ * content. Exported so a property test can pin this predicate against the
+ * resolver's own per-entry filter in `git-base-branch.cts` — `config-set` must
+ * only accept lists the resolver will honour in full, with nothing rejected.
+ * The two are deliberately different shapes (all-or-nothing here, per-entry
+ * there, because a direct file edit bypasses this check), so nothing keeps them
+ * agreeing except a test that asks both.
+ */
+function isValidProtectedBranches(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  const entries = value as unknown[];
+  // Index, do NOT use `.every()`. `.every()` SKIPS holes, so a sparse array
+  // (`["main", , "develop"]`) passed this check while the resolver's `for...of`
+  // — which yields `undefined` for a hole — rejected that element. The two
+  // surfaces then disagreed about the same value. JSON cannot express a hole,
+  // so neither surface meets one in production, but "unreachable" is not a
+  // reason to leave two definitions of the same predicate contradicting each
+  // other (round-4 external review).
+  for (let i = 0; i < entries.length; i += 1) {
+    const branch = entries[i];
+    if (typeof branch !== 'string' || branch.trim().length === 0) return false;
+  }
+  return true;
 }
 
 function validateShipPrBodySections(value: unknown): void {
@@ -825,6 +872,12 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
     }
   }
 
+  if (kp === 'git.protected_branches') {
+    if (!isValidProtectedBranches(parsedValue)) {
+      error(`Invalid git.protected_branches '${val}'. Must be a non-empty array of non-empty branch names.`);
+    }
+  }
+
   if (kp === 'ship.pr_body_sections') {
     validateShipPrBodySections(parsedValue);
   }
@@ -1001,6 +1054,15 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
       error('No config.json found at ' + configPath, ERROR_REASON.CONFIG_NO_FILE);
     }
   } catch (err) {
+    // ADR-3889: error() now throws ExitError (carries no message) instead of
+    // calling process.exit() directly. The message-sniffing check below
+    // (`.startsWith('No config.json')`) can never match an ExitError raised
+    // by the "no config.json" error() call above it — ExitError.message
+    // defaults to `process exit ${code}` when no message is passed — so
+    // without this unconditional guard that ExitError falls through and gets
+    // re-wrapped as a WRONG reason (CONFIG_PARSE_FAILED instead of
+    // CONFIG_NO_FILE) with a nonsense message, plus a duplicate stderr write.
+    if (err instanceof ExitError) throw err;
     if ((err as Error).message.startsWith('No config.json')) throw err;
     error('Failed to read config.json: ' + (err as Error).message, ERROR_REASON.CONFIG_PARSE_FAILED);
   }
@@ -1193,16 +1255,44 @@ function cmdConfigPath(cwd: string, _raw: boolean, workstreamContext: Workstream
  */
 function cmdMigrateConfig(cwd: string, raw: boolean): void {
   const ws = process.env['GSD_WORKSTREAM'] || null;
-  const report = migrateOnDisk(cwd, ws || undefined);
+  // #3749: resolve the migration target through the project-aware resolver so
+  // GSD_PROJECT scopes the write; migrateOnDisk itself cannot (see its
+  // configPathOverride note).
+  const scopedConfigPath = path.join(planningDir(cwd, ws || undefined), 'config.json');
+  const report = migrateOnDisk(cwd, ws || undefined, scopedConfigPath);
+
+  // #3760: deduplicated on (path, reason), so a repeated invocation stays quiet.
+  if (report.skipped.length > 0) {
+    warnUnusableInput({
+      reason: UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT,
+      source: path.join(planningDir(cwd, ws || undefined), 'config.json'),
+    });
+  }
 
   if (raw) {
-    if (!report.migrated) {
+    // #3760: a refused migration is NOT an already-canonical config. Reporting
+    // "no legacy keys found" when a legacy key was found and declined would send
+    // the user away believing there is nothing to fix — and the thing to fix is
+    // the one thing only they can fix, by hand.
+    const declined = (report.skipped as Array<{ from: string; to: string; section: string; sectionType: string }>);
+    const declinedLines = declined.map(
+      s => `  ${s.from} → ${s.to}  SKIPPED: '${s.section}' holds a ${s.sectionType}, not an object`,
+    );
+    if (!report.migrated && declined.length === 0) {
       const msg = 'No legacy keys found — config is already canonical.';
       output(msg, true, msg);
+    } else if (!report.migrated) {
+      const lines = [
+        'Not migrated — every legacy key found was left in place:',
+        ...declinedLines,
+        'Fix the section by hand, then re-run. Nothing was written.',
+      ].join('\n');
+      output(lines, true, lines);
     } else {
       const lines = [
         `Migrated: ${String(report.wrote)}`,
         ...(report.normalizations as Array<{ from: string; to: string }>).map(n => `  ${n.from} → ${n.to}`),
+        ...declinedLines,
       ].join('\n');
       output(lines, true, lines);
     }
@@ -1224,4 +1314,5 @@ export = {
   // Exported for programmatic use by capability-writer and tests
   setConfigValue,
   setConfigValues,
+  isValidProtectedBranches,
 };

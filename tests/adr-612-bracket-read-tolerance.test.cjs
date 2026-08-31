@@ -47,20 +47,9 @@ const analyze = () => {
   return JSON.parse(r.output);
 };
 
-/**
- * `validate consistency`'s warning MESSAGES.
- *
- * #3310 (ADR-3180 Phase 12, merged in at next @ dc3c81e9) migrated
- * `cmdValidateConsistency` onto the health-diagnostic rule table, which changed
- * its `warnings` from `string[]` to the coded `IssueEntry[]` shape
- * (`{code, message, fix, repairable}`) `validate health` already emitted — the
- * two verbs now share one output shape because they share the same `Rule`
- * objects. That is an upstream output change, not this PR's: the assertions
- * below are unchanged, only the accessor is. Tolerant of both shapes so the
- * helper states which one it saw rather than silently matching nothing — a bare
- * regex over an object stringifies to `[object Object]` and every filter
- * quietly returns empty, which is exactly how this shape change first surfaced.
- */
+// Upstream's shared diagnostic table returns coded IssueEntry objects; retain
+// compatibility with the older string form so these assertions test messages,
+// not the transport shape.
 const consistencyMessages = (r) =>
   (JSON.parse(r.output).warnings || []).map(w => (typeof w === 'string' ? w : w.message));
 
@@ -546,7 +535,7 @@ describe('#612 PR-2: bracket sentinels do not warn as missing directories', () =
 
   const consistencyWarnings = () => {
     const r = runGsdTools(['validate', 'consistency'], tmpDir);
-    return consistencyMessages(r).filter(m => /no directory on disk/.test(m));
+    return consistencyMessages(r).filter(w => /no directory on disk/.test(w));
   };
 
   test('an icebox bracket phase is not reported as missing from disk', () => {
@@ -657,7 +646,7 @@ describe('#612 PR-2 B2: validate health and validate consistency agree on bracke
 
   const consistencyMissingDirWarnings = () => {
     const r = runGsdTools(['validate', 'consistency'], tmpDir);
-    return consistencyMessages(r).filter(m => /no directory on disk/.test(m));
+    return consistencyMessages(r).filter((message) => /no directory on disk/.test(message));
   };
 
   test('a sentinel-only bracket roadmap: neither validator warns about the missing directory', () => {
@@ -696,7 +685,7 @@ describe('#612 PR-2: sentinel suppression is occurrence-aware', () => {
 
   const consistencyWarnings = () => {
     const r = runGsdTools(['validate', 'consistency'], tmpDir);
-    return consistencyMessages(r).filter(m => /no directory on disk/.test(m));
+    return consistencyMessages(r).filter(w => /no directory on disk/.test(w));
   };
 
   test('a token borne ONLY by an icebox heading is suppressed', () => {
@@ -785,11 +774,9 @@ describe('#612 PR-2: roadmap analyze resolves bracket phase DIRECTORIES', () => 
    * Phase 01 complete (PLAN + SUMMARY + a passing `*-VERIFICATION.md`),
    * phase 02 planned (PLAN only).
    *
-   * UPDATED at the origin/next merge — #3186 (ADR-3180 §7.4) made completion
-   * DISK-STRICT, so `disk_status` reads `partial`, not `complete`, for a phase
-   * whose plans are all summarized but which carries no verification verdict.
-   * The verification file is what carries completion now; it is convention-
-   * agnostic, which is why the legacy twin below moved identically.
+   * #3186 (ADR-3180 §7.4) made completion disk-strict: a fully summarized
+   * phase is still partial until its verification verdict passes. The legacy
+   * twin uses the same convention-agnostic completion predicate.
    */
   const mkDirs = (specs) => {
     for (const [dir, stem, complete] of specs) {
@@ -865,7 +852,7 @@ describe('#612 PR-2: a bracket sentinel in the CHECKLIST index is suppressed too
 
   const warnings = () => {
     const r = runGsdTools(['validate', 'consistency'], tmpDir);
-    return consistencyMessages(r).filter(m => /no directory on disk/.test(m));
+    return consistencyMessages(r).filter(w => /no directory on disk/.test(w));
   };
   const realTwoOnDisk = () => fs.mkdirSync(
     path.join(tmpDir, '.planning', 'phases', 'GSD.02-02-real-two'), { recursive: true });
@@ -907,24 +894,6 @@ describe('#612 PR-2: a bracket sentinel in the CHECKLIST index is suppressed too
   test('a REAL phase sharing the sentinel token still warns (no over-suppression)', () => {
     // The opposite direction. A checklist bullet for a REAL `[GSD.02] 01` must
     // un-suppress the token that the `[GSD.999] 01` heading marked sentinel.
-    //
-    // The real bullet is `[x]`, not `[ ]`, since the merge of next @ dc3c81e9.
-    // #3310 migrated `cmdValidateConsistency` onto the SAME W006 `Rule` object
-    // `validate health` evaluates, and that rule carries health's not-started
-    // exclusion (`isPhaseNotStarted`, `roadmap-disk-consistency.cts`) — which
-    // `cmdValidateConsistency`'s own hand-rolled loop never had. So an UNCHECKED
-    // bullet is now suppressed on its own merits, by a second rule, and the
-    // fixture could no longer isolate the sentinel question: it would read as
-    // silent whether or not the sentinel un-suppression worked.
-    //
-    // PROVEN UPSTREAM, not a consequence of the #612 threading: the flat-legacy
-    // twin of this fixture (`- [ ] **Phase 01: Real one**` + `### Phase 999:`
-    // + `### Phase 02:`) is equally silent on an unmodified dc3c81e9 build, and
-    // the bracket convention is not involved in that reading at all.
-    //
-    // `[x]` keeps the subject intact: the token is still borne by BOTH a
-    // sentinel heading and a real checklist occurrence, the un-suppression is
-    // still what decides, and the not-started rule no longer masks the answer.
     write(`# Roadmap
 
 ## [GSD.02] v2.0: Current
@@ -942,29 +911,6 @@ describe('#612 PR-2: a bracket sentinel in the CHECKLIST index is suppressed too
     const w = warnings();
     assert.equal(w.length, 1, JSON.stringify(w));
     assert.match(w[0], /Phase 01/);
-  });
-
-  test('CONTROL: the same fixture with the icebox heading removed is silent', () => {
-    // Non-vacuity for the case above: the W006 must come from the token being
-    // un-suppressed, not from `[x]` alone making every phase demand a directory
-    // — `01` has no directory in either fixture. With no sentinel heading to
-    // suppress it, `01` is simply a checked phase with no directory, which is
-    // the same warning; so the discriminator is the OTHER direction — drop the
-    // real bullet instead and the sentinel-only token must go quiet.
-    write(`# Roadmap
-
-## [GSD.02] v2.0: Current
-
-- [ ] **[GSD.02] 02: Real two**
-
-### [GSD.999] 01: Icebox item
-**Goal:** z
-
-### [GSD.02] 02: Real two
-**Goal:** b
-`, 'bracket');
-    realTwoOnDisk();
-    assert.deepEqual(warnings(), [], 'with no real occurrence, the sentinel token stays suppressed');
   });
 });
 
@@ -1186,18 +1132,21 @@ total_plans_in_phase: 3
     fs.writeFileSync(path.join(q, '05-01-PLAN.md'), '# plan\n', 'utf-8');
   };
 
+  // #3884 (e20744eac, "failure is a value") made argv strict: an unrecognized
+  // flag is now a hard `unknown flag ...; accepted: --strict` error on stderr
+  // with EMPTY stdout, where it was previously ignored. `state validate` never
+  // had a `--json` flag — JSON is its only output shape — so the token was a
+  // silent no-op that strict argv now rejects. Dropping it restores the same
+  // envelope this helper already parsed; the assertions below are unchanged.
   const validateState = () => {
-    const r = runGsdTools(['state', 'validate', '--json'], tmpDir);
+    const r = runGsdTools(['state', 'validate'], tmpDir);
     return JSON.parse(r.output);
   };
 
-  // #3310 (ADR-3180 Phase 12, merged in at next @ dc3c81e9) replaced
-  // `cmdStateValidate`'s `drift` object with a coded `warnings: Diagnostic[]`
-  // array — `drift.phase_directory` is now S004 and `drift.plan_count` is now
-  // S005. The SUBJECT of these five tests is unchanged and so are their
-  // assertions; only the accessor moved. The behaviour under test (#3208's
-  // `phaseKeyFromDir` lookup threading the resolved convention, src/state.cts)
-  // survived that rewrite verbatim, comment included.
+  // #3310 (ADR-3180 Phase 12) replaced `cmdStateValidate`'s `drift`
+  // object with coded `warnings: Diagnostic[]`: phase-directory misses are
+  // S004 and plan-count drift is S005. Keep these tests on their behavior-level
+  // subject while reading the current upstream envelope.
   const codes = (out, code) =>
     (out.warnings || []).filter((w) => w.code === code).map((w) => w.message);
   const phaseDirWarnings = (out) =>
@@ -1207,8 +1156,11 @@ total_plans_in_phase: 3
   test('a bracket phase directory is FOUND — no phantom "no phase directory matches"', () => {
     seed(BRK, 'bracket', 'GSD.02-05-real-work');
     const out = validateState();
-    assert.deepEqual(phaseDirWarnings(out), [],
-      `the directory exists and must resolve; an S004 phase-directory warning means the lookup missed it, got: ${JSON.stringify(out.warnings)}`);
+    assert.deepEqual(
+      phaseDirWarnings(out),
+      [],
+      `the directory exists and must resolve; an S004 phase-directory warning means the lookup missed it, got: ${JSON.stringify(out.warnings)}`,
+    );
   });
 
   test('and the drift scan actually RUNS — plan-count mismatch is reported', () => {

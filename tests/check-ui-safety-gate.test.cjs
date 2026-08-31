@@ -25,6 +25,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { cleanup } = require('./helpers.cjs');
+const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
 const { computeUiSafetyGate } = require('../gsd-core/bin/lib/check-command-router.cjs');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -276,9 +277,9 @@ describe('computeUiSafetyGate — ui.safety-gate check logic (#1168)', () => {
  * Root cause (#3718): shell-based invocation (with locale env-var prefix) silently
  * degrades on Windows PowerShell — the prefix is not recognised by pwsh.
  *
- * Fix (#3718, Approach A): gate logic moved to `bin/lib/ui-safety-gate.cjs` (Node.js).
+ * Fix (#3718, Approach A): gate logic moved to `gsd-core/bin/lib/ui-safety-gate.cjs` (Node.js).
  * Reads phase text from STDIN (not argv) to avoid OS ARG_MAX limits.
- * Invoked as: printf '%s' "$PHASE_SECTION" | node "${GSD_REPO_ROOT}/bin/lib/ui-safety-gate.cjs"
+ * Invoked as: printf '%s' "$PHASE_SECTION" | node "${GSD_REPO_ROOT}/gsd-core/bin/lib/ui-safety-gate.cjs"
  * Path anchored to repo root via `git rev-parse --show-toplevel`.
  *
  * Test strategy:
@@ -298,9 +299,9 @@ const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
 const { runNode, runHook } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
-const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const { PROBE_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
-const HELPER_PATH = path.join(__dirname, '..', 'bin', 'lib', 'ui-safety-gate.cjs');
+const HELPER_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'ui-safety-gate.cjs');
 const PLAN_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
 const AUTONOMOUS_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'autonomous.md');
 const AUTONOMOUS_UI_DESIGN_CONTRACT_REF_PATH = path.join(
@@ -418,9 +419,15 @@ describe('Cross-shell portability — spawnSync with shell:false, stdin (#3718)'
     assert.strictEqual(result.status, 1, `Expected exit 1 (no UI), got ${result.status}. stderr: ${result.stderr}`);
   });
 
-  test('spawn with shell:false + stdin: empty input exits 1', () => {
+  test('spawn with shell:false + stdin: empty input exits NO_INPUT (#3907)', () => {
+    // See the `gsd-core/bin/lib/ui-safety-gate.cjs CLI — NO_INPUT / UNAVAILABLE`
+    // describe block below for the full NO_INPUT/UNAVAILABLE coverage matrix.
+    const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
     const result = spawnGate('');
-    assert.strictEqual(result.status, 1, `Expected exit 1 (no UI for empty input), got ${result.status}. stderr: ${result.stderr}`);
+    assert.strictEqual(
+      result.status, exitCodeFor('NO_INPUT'),
+      `Expected NO_INPUT (${exitCodeFor('NO_INPUT')}) for empty input, got ${result.status}. stderr: ${result.stderr}`,
+    );
   });
 
   test('spawn with shell:false + stdin: CRLF line endings handled correctly', () => {
@@ -446,6 +453,120 @@ describe('Cross-shell portability — spawnSync with shell:false, stdin (#3718)'
     const largeUiInput = 'Backend infrastructure setup.\n'.repeat(2999) + 'Build the analytics dashboard.\n';
     const result = spawnGate(largeUiInput);
     assert.strictEqual(result.status, 0, `Large input ending with UI token must exit 0. stderr: ${result.stderr}`);
+  });
+});
+
+// ── ADR-3889 Phase 3 (#3907): NO_INPUT / UNAVAILABLE exit codes ───────────────
+// The prior single "2 = startup error" arm was bound to stdin.on('error') only
+// — there was no arm for stdin closed with ZERO BYTES, so empty input flowed
+// into the detector and exited 1 ("no UI"), asserting a verdict about input
+// that was never examined. These tests spawn the REAL module and assert on
+// the child's exit status, per RULESET.TESTS.
+//
+// NOTE (scope note): this block targets `gsd-core/bin/lib/ui-safety-gate.cjs`
+// — the tsc-compiled output of `src/ui-safety-gate.cts`, the module #3907
+// fixed. That is also the only shipped copy: the hand-written root
+// `bin/lib/ui-safety-gate.cjs` was removed as dead code (#3907) — no
+// installer reference, no workflow invocation, no fallback chain — so there
+// is no second copy to keep in sync.
+describe('gsd-core/bin/lib/ui-safety-gate.cjs CLI — NO_INPUT / UNAVAILABLE (ADR-3889 Phase 3, #3907)', () => {
+  const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
+  const GSD_CORE_HELPER_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'ui-safety-gate.cjs');
+  const INJECT_STDIN_ERROR = path.join(__dirname, 'helpers', 'inject-stdin-error.cjs');
+
+  function spawnCompiledGate(input, extraEnv = {}) {
+    return runNode([GSD_CORE_HELPER_PATH], {
+      input,
+      env: { ...process.env, ...extraEnv },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+  }
+
+  // ── The controls (load-bearing): without these, "always return NO_INPUT"
+  // would satisfy the empty/whitespace-only assertions below. ──────────────
+  test('control: a detected input still exits 0', () => {
+    const result = spawnCompiledGate('Build the analytics dashboard.');
+    assert.strictEqual(result.exitCode, 0, `stderr: ${result.stderr}`);
+  });
+
+  test('control: a genuine-negative (real input, no signal) still exits 1, not NO_INPUT', () => {
+    const result = spawnCompiledGate('Requirements analysis for the backend service.');
+    assert.strictEqual(result.exitCode, 1, `stderr: ${result.stderr}`);
+  });
+
+  test('whitespace-only stdin (spaces / newlines / tabs / CR) exits NO_INPUT', () => {
+    for (const ws of ['   ', '\n\n\n', '\t\t\t', '\r\r\r', '  \n\t\r\n  ']) {
+      const result = spawnCompiledGate(ws);
+      assert.strictEqual(
+        result.exitCode, exitCodeFor('NO_INPUT'),
+        `whitespace-only input ${JSON.stringify(ws)} must exit NO_INPUT; got ${result.exitCode}. stderr: ${result.stderr}`,
+      );
+    }
+  });
+
+  test('"x" and " x " are REAL input — must NOT be NO_INPUT', () => {
+    const bare = spawnCompiledGate('x');
+    assert.notStrictEqual(bare.exitCode, exitCodeFor('NO_INPUT'), `"x" must not be NO_INPUT; stderr: ${bare.stderr}`);
+    assert.strictEqual(bare.exitCode, 1, `"x" carries no UI token, so it is the genuine negative (1); stderr: ${bare.stderr}`);
+
+    const padded = spawnCompiledGate(' x ');
+    assert.notStrictEqual(padded.exitCode, exitCodeFor('NO_INPUT'), `" x " must not be NO_INPUT; stderr: ${padded.stderr}`);
+    assert.strictEqual(padded.exitCode, 1, `" x " carries no UI token, so it is the genuine negative (1); stderr: ${padded.stderr}`);
+  });
+
+  test('a NUL byte is real input (not stripped by whitespace trimming) — falls through to the detector', () => {
+    const result = spawnCompiledGate('\0');
+    assert.notStrictEqual(result.exitCode, exitCodeFor('NO_INPUT'), `NUL byte must not be treated as empty; stderr: ${result.stderr}`);
+    assert.strictEqual(result.exitCode, 1, `NUL byte alone carries no UI token; stderr: ${result.stderr}`);
+  });
+
+  test('#3907 negative space: an explicit `**UI hint**: no` on REAL input still exits 1, not NO_INPUT', () => {
+    // "the phase says it has no UI" and "I was handed nothing" are different
+    // answers (ui-safety-gate.cts:124-126 returns hasUI:false deliberately here).
+    const result = spawnCompiledGate('**UI hint**: no\n\nBuild the dashboard UI.\n');
+    assert.strictEqual(result.exitCode, 1, `hint:no on real input must exit 1, not NO_INPUT; stderr: ${result.stderr}`);
+    assert.notStrictEqual(result.exitCode, exitCodeFor('NO_INPUT'));
+  });
+
+  test('a stdin read error exits UNAVAILABLE (injected via monkeypatched process.stdin, not chmod)', () => {
+    const result = runNode(['-r', INJECT_STDIN_ERROR, GSD_CORE_HELPER_PATH], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(
+      result.exitCode, exitCodeFor('UNAVAILABLE'),
+      `stdin read error must exit UNAVAILABLE (${exitCodeFor('UNAVAILABLE')}); got ${result.exitCode}. stderr: ${result.stderr}`,
+    );
+  });
+
+  test('NO_INPUT / UNAVAILABLE codes are identical under GSD_EXIT_CONTRACT=v1 and v2', () => {
+    for (const version of ['v1', 'v2']) {
+      const emptyResult = spawnCompiledGate('', { GSD_EXIT_CONTRACT: version });
+      assert.strictEqual(
+        emptyResult.exitCode, exitCodeFor('NO_INPUT'),
+        `NO_INPUT must be ${exitCodeFor('NO_INPUT')} under ${version}; got ${emptyResult.exitCode}`,
+      );
+
+      const errResult = runNode(['-r', INJECT_STDIN_ERROR, GSD_CORE_HELPER_PATH], {
+        env: { ...process.env, GSD_EXIT_CONTRACT: version },
+        timeoutMs: PROBE_TIMEOUT_MS,
+      });
+      assert.strictEqual(
+        errResult.exitCode, exitCodeFor('UNAVAILABLE'),
+        `UNAVAILABLE must be ${exitCodeFor('UNAVAILABLE')} under ${version}; got ${errResult.exitCode}`,
+      );
+    }
+  });
+});
+
+// ── The root copy stays dead (#3907) ──────────────────────────────────────────
+// The hand-written root `bin/lib/ui-safety-gate.cjs` was removed as dead code:
+// no installer reference (bin/install.js only ever requires
+// gsd-core/bin/lib/*), no workflow or capability content invokes it, and it
+// had no fallback chain in shipped content. This guards against it silently
+// coming back (e.g. a re-added generator, a stray hand copy).
+describe('bin/lib/ui-safety-gate.cjs (root copy) — removed as dead code (#3907)', () => {
+  test('root bin/lib/ui-safety-gate.cjs does not exist', () => {
+    const rootCopy = path.join(__dirname, '..', 'bin', 'lib', 'ui-safety-gate.cjs');
+    assert.strictEqual(fs.existsSync(rootCopy), false,
+      'bin/lib/ui-safety-gate.cjs must not exist — it was removed as dead code in #3907');
   });
 });
 
@@ -572,17 +693,24 @@ describe('UI gate resolves the helper against RUNTIME_DIR, not the consuming rep
   // the CWD is a consuming project that has no bin/lib of its own.
   const GATE_SNIPPET = [
     '_GSD_RT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"',
-    'UI_GATE_JS=$(for _c in "$_GSD_RT/gsd-core/bin/lib/ui-safety-gate.cjs" "$_GSD_RT/bin/lib/ui-safety-gate.cjs" "$_GSD_RT/.claude/bin/lib/ui-safety-gate.cjs" "$HOME/.claude/gsd-core/bin/lib/ui-safety-gate.cjs" "$HOME/.claude/bin/lib/ui-safety-gate.cjs"; do [ -f "$_c" ] && { echo "$_c"; break; }; done)',
+    'UI_GATE_JS=$(for _c in "$_GSD_RT/gsd-core/bin/lib/ui-safety-gate.cjs" "$_GSD_RT/.claude/bin/lib/ui-safety-gate.cjs" "$HOME/.claude/gsd-core/bin/lib/ui-safety-gate.cjs" "$HOME/.claude/bin/lib/ui-safety-gate.cjs"; do [ -f "$_c" ] && { echo "$_c"; break; }; done)',
     'if [ -n "$UI_GATE_JS" ]; then printf \'%s\' "$PHASE_SECTION" | node "$UI_GATE_JS" >/dev/null 2>&1; HAS_UI=$?; else HAS_UI=0; fi',
     'echo "$HAS_UI"',
   ].join('\n');
 
   function runGateFrom(consumingDir, phaseSection) {
+    // Bash FAN-OUT: the snippet runs `git rev-parse`, a `for` loop probing
+    // multiple candidate paths, and `node` — the wrong class for
+    // `PROBE_TIMEOUT_MS` (a single short CLI probe). Same class as the
+    // observed CI failures in tests/quick-branching.test.cjs (PR #3787 run
+    // 32668773524) and tests/worktree-safety.test.cjs (`next` run
+    // 32608945654). See HOOK_FANOUT_TIMEOUT_MS in ./helpers/timeouts.cjs for
+    // the class rationale.
     const result = runHook('-c', [GATE_SNIPPET], {
       interpreter: 'bash',
       cwd: consumingDir,
       env: { ...process.env, RUNTIME_DIR: REPO_ROOT, PHASE_SECTION: phaseSection },
-      timeoutMs: PROBE_TIMEOUT_MS,
+      timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
     });
     return toLegacyResult(result);
   }
@@ -615,19 +743,21 @@ describe('UI gate resolves the helper against RUNTIME_DIR, not the consuming rep
     const fakeRuntime = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-installed-rt-'));
     const consumingProject = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-consuming-'));
     try {
-      const installedLibDir = path.join(fakeRuntime, 'gsd-core', 'bin', 'lib');
-      fs.mkdirSync(installedLibDir, { recursive: true });
-      fs.copyFileSync(
-        path.join(REPO_ROOT, 'gsd-core', 'bin', 'lib', 'ui-safety-gate.cjs'),
-        path.join(installedLibDir, 'ui-safety-gate.cjs')
-      );
+      // ui-safety-gate.cjs requires ./cli-exit.cjs (-> ./exit-code-registry.cjs),
+      // so a hand-copy of just the one file would MODULE_NOT_FOUND. Walk the
+      // require graph instead (tests/helpers/copy-script-fixture.cjs) — see
+      // its docstring for the #3412-class bug this avoids.
+      copyScriptWithDeps(REPO_ROOT, fakeRuntime, path.join('gsd-core', 'bin', 'lib', 'ui-safety-gate.cjs'));
 
+      // Same bash FAN-OUT class as runGateFrom above (git rev-parse + a
+      // candidate-path probe loop + node) — see HOOK_FANOUT_TIMEOUT_MS in
+      // ./helpers/timeouts.cjs.
       const res = toLegacyResult(
         runHook('-c', [GATE_SNIPPET], {
           interpreter: 'bash',
           cwd: consumingProject,
           env: { ...process.env, RUNTIME_DIR: fakeRuntime, PHASE_SECTION: 'Build the analytics dashboard' },
-          timeoutMs: PROBE_TIMEOUT_MS,
+          timeoutMs: HOOK_FANOUT_TIMEOUT_MS,
         })
       );
       assert.strictEqual(res.status, 0, `bash failed: ${res.stderr}`);
@@ -668,10 +798,30 @@ describe('checkUiPresence() return value API', () => {
     assert.strictEqual(uiCount, 1, 'Duplicate tokens must be deduplicated');
   });
 
-  test('non-string input returns { hasUI: false, tokens: [] }', () => {
-    assert.deepStrictEqual(checkUiPresence(null), { hasUI: false, tokens: [] });
-    assert.deepStrictEqual(checkUiPresence(undefined), { hasUI: false, tokens: [] });
-    assert.deepStrictEqual(checkUiPresence(42), { hasUI: false, tokens: [] });
+  test('non-string input returns { hasUI: false, tokens: [], matchedToken: null, matchedLine: null }', () => {
+    const expected = { hasUI: false, tokens: [], matchedToken: null, matchedLine: null };
+    assert.deepStrictEqual(checkUiPresence(null), expected);
+    assert.deepStrictEqual(checkUiPresence(undefined), expected);
+    assert.deepStrictEqual(checkUiPresence(42), expected);
+  });
+
+  test('UI-present input sets matchedToken/matchedLine to the first match', () => {
+    const result = checkUiPresence('Build the dashboard and UI form');
+    assert.strictEqual(result.matchedToken, 'dashboard');
+    assert.strictEqual(result.matchedLine, 'Build the dashboard and UI form');
+  });
+
+  test('no-UI input sets matchedToken/matchedLine to null', () => {
+    const result = checkUiPresence('Requirements: backend REST API only');
+    assert.strictEqual(result.matchedToken, null);
+    assert.strictEqual(result.matchedLine, null);
+  });
+
+  test('"**UI hint**: no" short-circuits to hasUI:false with matchedToken/matchedLine null', () => {
+    const result = checkUiPresence('**UI hint**: no\nBuild the dashboard');
+    assert.strictEqual(result.hasUI, false);
+    assert.strictEqual(result.matchedToken, null);
+    assert.strictEqual(result.matchedLine, null);
   });
 
   test('multiple distinct UI tokens on same line are ALL captured', () => {

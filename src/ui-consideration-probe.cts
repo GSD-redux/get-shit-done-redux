@@ -31,6 +31,9 @@ import {
   analyzeCoverage as coreAnalyzeCoverage,
   runProbeCli,
 } from './probe-core.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const { runMain } = cliExitModule;
 
 /** The six UI element kinds a described component can be (the closed relevance axis, D-03). */
 export type UIElementKind =
@@ -307,9 +310,14 @@ export function autoResolve(items: UIConsideration[]): Resolution<UIVerification
  * so it runs only when the compiled `.cjs` is executed directly.
  */
 if (require.main === module) {
-  runProbeCli(
-    (elements, resolutions) =>
-      analyzeCoverage(elements as Element[], resolutions as Resolution<UIVerification>[]),
-    { usage: 'ui-consideration-probe.cjs <elements.json> [resolutions.json]' },
-  );
+  // runProbeCli's default `exit` now throws ExitError (src/probe-core.cts) rather
+  // than calling process.exit directly, so this entry point must run under
+  // runMain to translate that throw into process.exitCode.
+  runMain(() => {
+    runProbeCli(
+      (elements, resolutions) =>
+        analyzeCoverage(elements as Element[], resolutions as Resolution<UIVerification>[]),
+      { usage: 'ui-consideration-probe.cjs <elements.json> [resolutions.json]' },
+    );
+  });
 }

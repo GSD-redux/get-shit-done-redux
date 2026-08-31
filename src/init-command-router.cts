@@ -19,7 +19,7 @@ import { INIT_SUBCOMMANDS } from './command-aliases.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import cjsCommandRouterAdapter = require('./cjs-command-router-adapter.cjs');
 const { routeCjsCommandFamily } = cjsCommandRouterAdapter;
-import { parseNamedArgs } from './command-arg-projection.cjs';
+import { parseNamedArgsOrExit, isFlagToken } from './command-arg-projection.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,6 +63,53 @@ interface RouteInitCommandOptions {
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 
+/**
+ * #3865: `--phase <N>` / `--phase=<N>` alias for the positional phase token
+ * the phase-taking init.* queries read at args[2]. Normalizes the pair into
+ * that caller-owned slot so (a) the handler's own args[2] read sees the
+ * value, and (b) the strict flag validation it runs sees exactly the argv
+ * the positional form produces (a bare `--phase 60` at index 2-3 would
+ * otherwise leave `60` as a rejected stray positional — or, pre-ADR-3473
+ * §8.4, silently answer `phase_found:false, plan_count:0` for a phase with
+ * plans on disk). A valueless `--phase` is a usage error naming the flag.
+ * Any other flag-shaped args[2] resolves to `undefined` — the commands'
+ * no-position-given input (execute-phase/plan-phase/verify-work usage-error
+ * "phase required"; the find-based queries answer phase_found:false; todos
+ * drops its area filter) — instead of passing the flag text down as a phase
+ * name.
+ */
+function normalizePhaseAlias(
+  args: string[],
+  error: (message: string) => void,
+): { args: string[]; phase: string | undefined } {
+  const tok = args[2];
+  if (tok === undefined) return { args, phase: undefined };
+  if (tok === '--phase=') {
+    error('--phase requires a value: use --phase <N> (or the positional form <N>)');
+    // Fail-closed backstop, mirroring parseNamedArgsOrExit: the wired error()
+    // exits, but a returning fail() must not fall through to the splices below.
+    throw new Error('normalizePhaseAlias: error() returned instead of exiting');
+  }
+  if (tok.startsWith('--phase=')) {
+    const value = tok.slice('--phase='.length);
+    const out = args.slice();
+    out.splice(2, 1, value);
+    return { args: out, phase: value };
+  }
+  if (tok === '--phase') {
+    const next = args[3];
+    if (next === undefined || isFlagToken(next)) {
+      error('--phase requires a value: use --phase <N> (or the positional form <N>)');
+      throw new Error('normalizePhaseAlias: error() returned instead of exiting');
+    }
+    const out = args.slice();
+    out.splice(2, 2, next);
+    return { args: out, phase: next };
+  }
+  if (isFlagToken(tok)) return { args, phase: undefined };
+  return { args, phase: tok };
+}
+
 function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptions): void {
   routeCjsCommandFamily({
     args,
@@ -76,21 +123,41 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       // `buildSectionManifestField`'s flags-Set builder (src/init.cts) is the
       // single source of truth for flag ABSENCE and gates on value truthiness,
       // so `namedArgs` is passed through here uncoerced.
+      //
+      // #3865: the phase-taking init.* queries accept `--phase <N>` /
+      // `--phase=<N>` as an alias for the positional form (matching
+      // `phase list-plans`, which accepts both). Pre-normalizing here moves
+      // the value into the caller-owned args[2] slot every handler below
+      // already reads, so the strict flag validation those handlers run sees
+      // exactly the argv the positional form produces. A valueless --phase is
+      // a usage error naming the flag — never a silent `phase_found:false`
+      // for a phase that has plans (the reported incident: 7 plans read as 0).
       'execute-phase': () => {
-        const namedArgs = parseNamedArgs(args, [], ['validate', 'tdd', 'wave']);
-        init.cmdInitExecutePhase(cwd, args[2], raw, {
+        const norm = normalizePhaseAlias(args, error);
+        // `wave` is an optionalValueFlags entry, not a booleanFlags entry:
+        // `--wave N` is a documented, shipped form (commands/gsd/execute-phase.md:4,48)
+        // whose value is consumed by the workflow layer
+        // (gsd-core/workflows/execute-phase.md:84), not by this CLI seam — see
+        // NamedArgSpec.optionalValueFlags in command-arg-projection.cts.
+        const namedArgs = parseNamedArgsOrExit(norm.args, { booleanFlags: ['validate', 'tdd'], optionalValueFlags: ['wave'], positionals: 3 }, error);
+        init.cmdInitExecutePhase(cwd, norm.phase, raw, {
           validate: namedArgs['validate'],
           tdd: namedArgs['tdd'],
           wave: namedArgs['wave'],
         });
       },
       'plan-phase': () => {
-        const namedArgs = parseNamedArgs(
-          args,
-          ['granularity', 'prd', 'ingest', 'research-phase'],
-          ['validate', 'tdd', 'reviews', 'chunked'],
+        const norm = normalizePhaseAlias(args, error);
+        const namedArgs = parseNamedArgsOrExit(
+          norm.args,
+          {
+            valueFlags: ['granularity', 'prd', 'ingest', 'research-phase'],
+            booleanFlags: ['validate', 'tdd', 'reviews', 'chunked'],
+            positionals: 3,
+          },
+          error,
         );
-        init.cmdInitPlanPhase(cwd, args[2], raw, {
+        init.cmdInitPlanPhase(cwd, norm.phase, raw, {
           validate: namedArgs['validate'],
           tdd: namedArgs['tdd'],
           granularity: namedArgs['granularity'],
@@ -102,21 +169,25 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
         });
       },
       'new-project': () => {
-        const namedArgs = parseNamedArgs(args, [], ['auto']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['auto'], positionals: 2 }, error);
         init.cmdInitNewProject(cwd, raw, { auto: namedArgs['auto'] });
       },
       'new-milestone': () => {
-        const namedArgs = parseNamedArgs(args, [], ['reset-phase-numbers']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['reset-phase-numbers'], positionals: 2 }, error);
         init.cmdInitNewMilestone(cwd, raw, {
           'reset-phase-numbers': namedArgs['reset-phase-numbers'],
         });
       },
       onboard: () => {
-        const namedArgs = parseNamedArgs(args, [], ['fast', 'text']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['fast', 'text'], positionals: 2 }, error);
         init.cmdInitOnboard(cwd, raw, { fast: namedArgs['fast'], text: namedArgs['text'] });
       },
       quick: () => {
-        const namedArgs = parseNamedArgs(args, [], ['discuss', 'research', 'validate', 'full']);
+        // #3180 Decision 4a / L2 (ADR-3473 §8.4): `positionals: 'rest'` because
+        // everything after `init quick` is a free-text description — strict
+        // undeclared-flag rejection would break
+        // `/gsd-quick add a --dry-run option`, which works today.
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['discuss', 'research', 'validate', 'full'], positionals: 'rest' }, error);
         // #2994: `args.slice(2)` is the free-text description, but section-manifest
         // gating (buildSectionManifestField, src/init.cts) now requires forwarding
         // --discuss/--research/--validate/--full alongside it — a plain `.join(' ')`
@@ -137,22 +208,47 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       },
       'ingest-docs': () => init.cmdInitIngestDocs(cwd, raw),
       resume: () => init.cmdInitResume(cwd, raw),
-      'verify-work': () => init.cmdInitVerifyWork(cwd, args[2], raw),
-      'phase-op': () => init.cmdInitPhaseOp(cwd, args[2], raw),
+      // ADR-3473 §8.4 / #3358 gap: these handlers read args[2] positionally
+      // without ever calling parseNamedArgsOrExit, so an unrecognized flag or
+      // stray positional was silently dropped instead of rejected. No flags
+      // are declared because none are documented for these subcommands
+      // (docs/CLI-TOOLS.md); `--ws` seen in shipped workflows targets the
+      // separate `query init.verify-work` seam and is stripped before
+      // reaching `init verify-work` (gsd-core/workflows/verify-work.md:42-45).
+      'verify-work': () => {
+        const norm = normalizePhaseAlias(args, error);
+        parseNamedArgsOrExit(norm.args, { positionals: 3 }, error);
+        init.cmdInitVerifyWork(cwd, norm.phase, raw);
+      },
+      'phase-op': () => {
+        const norm = normalizePhaseAlias(args, error);
+        parseNamedArgsOrExit(norm.args, { positionals: 3 }, error);
+        init.cmdInitPhaseOp(cwd, norm.phase, raw);
+      },
       'code-review': () => {
-        const namedArgs = parseNamedArgs(args, [], ['fix']);
-        init.cmdInitCodeReview(cwd, args[2], raw, { fix: namedArgs['fix'] });
+        const norm = normalizePhaseAlias(args, error);
+        const namedArgs = parseNamedArgsOrExit(norm.args, { booleanFlags: ['fix'], positionals: 3 }, error);
+        init.cmdInitCodeReview(cwd, norm.phase, raw, { fix: namedArgs['fix'] });
       },
-      review: () => init.cmdInitReview(cwd, args[2], raw, {}),
+      review: () => {
+        const norm = normalizePhaseAlias(args, error);
+        parseNamedArgsOrExit(norm.args, { positionals: 3 }, error);
+        init.cmdInitReview(cwd, norm.phase, raw, {});
+      },
       'discuss-phase-assumptions': () => {
-        const namedArgs = parseNamedArgs(args, [], ['auto']);
-        init.cmdInitDiscussPhaseAssumptions(cwd, args[2], raw, { auto: namedArgs['auto'] });
+        const norm = normalizePhaseAlias(args, error);
+        const namedArgs = parseNamedArgsOrExit(norm.args, { booleanFlags: ['auto'], positionals: 3 }, error);
+        init.cmdInitDiscussPhaseAssumptions(cwd, norm.phase, raw, { auto: namedArgs['auto'] });
       },
-      todos: () => init.cmdInitTodos(cwd, args[2], raw),
+      todos: () => {
+        const norm = normalizePhaseAlias(args, error);
+        parseNamedArgsOrExit(norm.args, { positionals: 3 }, error);
+        init.cmdInitTodos(cwd, norm.phase, raw);
+      },
       'milestone-op': () => init.cmdInitMilestoneOp(cwd, raw),
       'map-codebase': () => init.cmdInitMapCodebase(cwd, raw),
       progress: () => {
-        const namedArgs = parseNamedArgs(args, [], ['forensic']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['forensic'], positionals: 2 }, error);
         init.cmdInitProgress(cwd, raw, { forensic: namedArgs['forensic'] });
       },
       // Keep manager on CJS for now so runtime-specific command rendering
@@ -160,7 +256,7 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       manager: () => init.cmdInitManager(cwd, raw),
       'complete-milestone': () => init.cmdInitCompleteMilestone(cwd, raw),
       autonomous: () => {
-        const namedArgs = parseNamedArgs(args, [], ['converge', 'cross-ai']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['converge', 'cross-ai'], positionals: 2 }, error);
         init.cmdInitAutonomous(cwd, raw, {
           converge: namedArgs['converge'],
           'cross-ai': namedArgs['cross-ai'],
@@ -168,17 +264,20 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       },
       'docs-update': () => init.cmdInitDocsUpdate(cwd, raw, {}),
       update: () => {
-        const namedArgs = parseNamedArgs(args, [], ['next', 'rc']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['next', 'rc'], positionals: 2 }, error);
         init.cmdInitUpdate(cwd, raw, { next: namedArgs['next'], rc: namedArgs['rc'] });
       },
       transition: () => init.cmdInitTransition(cwd, raw, {}),
       debug: () => {
-        const namedArgs = parseNamedArgs(args, [], ['diagnose']);
+        const namedArgs = parseNamedArgsOrExit(args, { booleanFlags: ['diagnose'], positionals: 2 }, error);
         init.cmdInitDebug(cwd, raw, { diagnose: namedArgs['diagnose'] });
       },
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
       'list-workspaces': () => init.cmdInitListWorkspaces(cwd, raw),
-      'remove-workspace': () => init.cmdInitRemoveWorkspace(cwd, args[2], raw),
+      'remove-workspace': () => {
+        parseNamedArgsOrExit(args, { positionals: 3 }, error);
+        init.cmdInitRemoveWorkspace(cwd, args[2], raw);
+      },
     },
   });
 }

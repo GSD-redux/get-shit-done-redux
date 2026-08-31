@@ -219,7 +219,7 @@ v1.40 中，六个命名空间路由器作为第一阶段入口点随附发布�
 |-----------------|----------|-------------|
 | `N` | **是** | 要规划和审查的阶段编号 |
 | 审查者标志 | 否 | 原样传递所有审查者通道标志：`--gemini`、`--claude`、`--codex`、`--coderabbit`、`--opencode`、`--qwen`、`--cursor`、`--agy` / `--antigravity`、`--ollama`、`--lm-studio`、`--llama-cpp`、`--kimi-code` |
-| `--all` | 否 | 并行运行所有已配置的审查者 |
+| `--all` | 否 | 运行所有已配置的审查者。审查通道默认**顺序**分发；将 `review.parallel_lanes` 设为 `true` 可在单次审查中并发分发 |
 | `--max-cycles N` | 否 | 覆盖循环上限（默认 3） |
 
 **退出行为：** HIGH 计数归零时循环退出。停滞检测在 HIGH 计数在各循环间未减少时发出警告。当达到 `--max-cycles` 且仍有 HIGH 问题未解决时，升级门询问用户是继续还是手动审查。
@@ -918,7 +918,7 @@ ROADMAP.md 中阶段的 CRUD 操作 — 通过单一合并命令添加、插入�
 | `--format` | 输出格式：`markdown`（默认）、`json` |
 
 **前提条件：** 阶段已被执行（SUMMARY.md 文件已存在）
-**产出：** `.planning/learnings/{phase}-LEARNINGS.md`
+**产出：** `.planning/phases/{phase-dir}/{padded-phase}-LEARNINGS.md`
 
 **提取内容：**
 - 架构决策及其依据
@@ -1163,7 +1163,7 @@ node gsd-tools.cjs intel api-surface              # 渲染 api-map.json → API-
 | 参数 | 必填 | 描述 |
 |----------|----------|-------------|
 | `N` | **是** | 要审查的阶段编号（例如 `2` 或 `02`） |
-| `--depth=quick\|standard\|deep` | 否 | 审查深度级别（覆盖 `workflow.code_review_depth` 配置）。`quick`：仅模式匹配（约 2 分钟）。`standard`：按文件分析，含特定语言检查（约 5-15 分钟，默认）。`deep`：跨文件分析，包括导入图和调用链（约 15-30 分钟） |
+| `--depth=quick\|standard\|deep` | 否 | 审查深度级别。同时覆盖 `workflow.code_review_depth` 和任何匹配的 `workflow.code_review_depth_overrides` 路径规则——该标志始终优先。`quick`：仅模式匹配（约 2 分钟）。`standard`：按文件分析，含特定语言检查（约 5-15 分钟，默认）。`deep`：跨文件分析，包括导入图和调用链（约 15-30 分钟） |
 | `--files file1,file2,...` | 否 | 显式逗号分隔的文件列表；完全跳过 SUMMARY/git 范围界定 |
 | `--fix` | 否 | 审查后自动修复问题 — 读取 REVIEW.md，生成修复代理，原子性地提交每个修复 |
 | `--fix --all` | 否 | 将 Info 级别的发现纳入修复范围（默认：仅 Critical + Warning） |

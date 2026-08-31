@@ -1579,9 +1579,22 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
   // script, so the harness is written to a file rather than passed as `-c`.
   const { runHook } = require('./helpers/process-seam.cjs');
   const { readFileNormalized, createTempDir, cleanup: cleanupDir } = require('./helpers.cjs');
+  const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
   // Skipped on Windows, where there is no bash. Checked by platform rather than
   // by shelling out to `which`, which is itself non-portable.
   const NO_BASH = process.platform === 'win32';
+
+  /** The first ```bash fenced block in `src` whose body includes `marker`. */
+  function bashBlockContaining(src, marker) {
+    const lines = src.split(/\r?\n/);
+    for (const block of scanFencedBlocks(lines)) {
+      if (block.closeLineIdx === -1) continue;
+      if ((block.infoString || '').trim() !== 'bash') continue;
+      const body = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+      if (body.includes(marker)) return body;
+    }
+    return undefined;
+  }
 
   describe('#2486 regression: settings/health worktrees isolation branch', () => {
     // Review round 2 (#2584 Phase 3): isolation is a DECLARED CAPABILITY, not a
@@ -1799,9 +1812,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       const src = readFileNormalized(
         path.join(__dirname, '..', 'gsd-core', 'workflows', 'health.md'),
       );
-      const block = [...src.matchAll(/```bash\r?\n([\s\S]*?)```/g)]
-        .map(m => m[1])
-        .find(b => b.includes('W025:'));
+      const block = bashBlockContaining(src, 'W025:');
       assert.ok(block, 'health.md: no ```bash block containing the W025 diagnostic');
 
       /** Run the shipped block with `gsd_run` stubbed to the given answers. */
@@ -1872,9 +1883,7 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       const src = readFileNormalized(
         path.join(__dirname, '..', 'gsd-core', 'workflows', 'health.md'),
       );
-      const block = [...src.matchAll(/```bash\r?\n([\s\S]*?)```/g)]
-        .map(m => m[1])
-        .find(b => b.includes('W025:'));
+      const block = bashBlockContaining(src, 'W025:');
       assert.ok(block, 'health.md: no ```bash block containing the W025 diagnostic');
 
       // `resolves` false = the inspect call exits non-zero, the real shape of a
@@ -2208,3 +2217,374 @@ describe('bug-2876: skill+agent converters emit YAML-quoted description', () => 
 });
   });
 }
+
+// ─── #3706: OpenCode subagent effort (variant) + frontmatter escaping ────────
+//
+// `query resolve-execution` reported an effort (high/xhigh) that never reached
+// OpenCode: the bake wrote `model:` and nothing else, so every subagent ran at
+// whatever opencode.jsonc defaults the model to. The effort-side twin of #3705.
+//
+// bin/install.js has its own copy of these converters, but no `isAgent: true`
+// call site: its agents install path runs through the compiled bin/lib module,
+// not through its own copy. The live copy in src/runtime-artifact-conversion.cts
+// (compiled to gsd-core/bin/lib/runtime-artifact-conversion.cjs) is therefore
+// the one the bake actually uses, and the one under test here.
+const liveConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+
+const OPENCODE_CONVERTERS = [['src (live bake)', liveConversion.convertClaudeToOpencodeFrontmatter]];
+const KILO_CONVERTERS = [['src (live bake)', liveConversion.convertClaudeToKiloFrontmatter]];
+
+describe('#3706: OpenCode agent variant (resolved effort)', () => {
+  const AGENT = ['---', 'name: gsd-executor', 'description: x', 'model: sonnet', '---', '', 'Body.'].join('\n');
+  const hasKey = (out, key) => new RegExp(`^${key}:`, 'm').test(out);
+
+  for (const [label, convert] of OPENCODE_CONVERTERS) {
+    test(`[${label}] emits variant alongside model`, () => {
+      const out = convert(AGENT, {
+        isAgent: true, modelOverride: 'synthetic/hf:zai-org/GLM-5.2', variant: 'high',
+      });
+      assert.match(out, /^model: synthetic\/hf:zai-org\/GLM-5\.2$/m);
+      assert.match(out, /^variant: high$/m);
+    });
+
+    test(`[${label}] carries whatever level was resolved, not a fixed one`, () => {
+      assert.match(convert(AGENT, { isAgent: true, variant: 'xhigh' }), /^variant: xhigh$/m);
+    });
+
+    test(`[${label}] omits the key entirely when no variant is supplied`, () => {
+      // The control that keeps every existing install byte-identical.
+      const out = convert(AGENT, { isAgent: true, modelOverride: 'M' });
+      assert.ok(!hasKey(out, 'variant'), `expected no variant key, got:\n${out}`);
+      assert.match(out, /^model: M$/m, 'the model side is unaffected');
+    });
+
+    test(`[${label}] commands get neither model nor variant`, () => {
+      const out = convert(AGENT, { isAgent: false, modelOverride: 'M', variant: 'high' });
+      assert.ok(!hasKey(out, 'variant'));
+      assert.ok(!hasKey(out, 'model'));
+    });
+
+    test(`[${label}] adding a variant perturbs no other line`, () => {
+      const withV = convert(AGENT, { isAgent: true, modelOverride: 'M', variant: 'high' });
+      const without = convert(AGENT, { isAgent: true, modelOverride: 'M' });
+      assert.match(withV, /^mode: subagent$/m);
+      assert.deepEqual(
+        withV.split('\n').filter((l) => !/^variant:/.test(l)),
+        without.split('\n'),
+      );
+    });
+  }
+
+  for (const [label, convert] of KILO_CONVERTERS) {
+    test(`[${label}] Kilo does NOT emit variant even when one is passed`, () => {
+      // The asymmetry, pinned. EFFORT_ARGV declares surfaces for claude/opencode/
+      // codex and has no kilo entry — unlike the model side, where #2794 J8
+      // requires the two runtimes to resolve identically.
+      const out = convert(AGENT, { isAgent: true, modelOverride: 'M', variant: 'high' });
+      assert.ok(!hasKey(out, 'variant'), `kilo has no declared effort surface; got:\n${out}`);
+      assert.match(out, /^model: M$/m, 'but the model override still applies');
+    });
+  }
+});
+
+// ─── #3706: config-supplied values cannot inject frontmatter keys ────────────
+//
+// `model:` and now `variant:` both interpolate values read from
+// .planning/config.json / ~/.gsd/defaults.json. Raw interpolation let a value
+// containing a newline inject additional TOP-LEVEL keys — proven by execution
+// during the #3705 security review. The sink predates #3706; this change adds a
+// SECOND write to it, so it is closed here rather than doubled.
+describe('#3706: frontmatter values are escaped, not interpolated raw', () => {
+  const AGENT = ['---', 'name: gsd-executor', 'description: x', '---', '', 'Body.'].join('\n');
+
+  for (const [label, convert] of OPENCODE_CONVERTERS) {
+    test(`[${label}] a newline-bearing model value cannot add top-level keys`, () => {
+      const out = convert(AGENT, {
+        isAgent: true, modelOverride: 'sonnet\ntools: ["*"]\npermission: bypass',
+      });
+      assert.ok(!/^tools:/m.test(out), `injected a tools key:\n${out}`);
+      assert.ok(!/^permission: bypass$/m.test(out), `injected a permission key:\n${out}`);
+      assert.match(out, /^model: "/m, 'the value is quoted');
+    });
+
+    test(`[${label}] a newline-bearing variant value cannot add top-level keys`, () => {
+      const out = convert(AGENT, { isAgent: true, variant: 'high\nevil: yes' });
+      assert.ok(!/^evil:/m.test(out), `injected a key:\n${out}`);
+      assert.match(out, /^variant: "/m);
+    });
+  }
+
+  for (const [label, convert] of KILO_CONVERTERS) {
+    test(`[${label}] Kilo model values are escaped too — the same sink exists there`, () => {
+      const out = convert(AGENT, { isAgent: true, modelOverride: 'sonnet\ntools: ["*"]' });
+      assert.ok(!/^tools:/m.test(out), `injected a tools key:\n${out}`);
+    });
+  }
+});
+
+// ─── #3706: values that look plain but do not round-trip ────────────────────
+//
+// Matching /^[A-Za-z0-9._:\/@+-]+$/ is not the same question as "does YAML read
+// this back as the exact string that went in". Each row below is wrong when
+// emitted bare; the last is the control that keeps real installs unchanged.
+describe('#3706: YAML-ambiguous scalars are quoted, not emitted bare', () => {
+  const AGENT = ['---', 'name: gsd-executor', 'description: x', '---', '', 'Body.'].join('\n');
+
+  const QUOTED = [
+    // A PARSE ERROR bare, not merely ambiguous: '@' is a YAML reserved
+    // indicator and may not open a plain scalar, so the whole agent file
+    // becomes unreadable.
+    '@org/model',
+    // A trailing ':' reads as a nested mapping key — "bad indentation of a
+    // mapping entry" kills the frontmatter.
+    'foo:',
+    // YAML 1.1 resolves these to booleans/null, so a variant named 'no'
+    // arrives as `false` and matches no entry in the user's variants map.
+    'no', 'yes', 'true', 'off', 'y', 'n', 'null',
+    // '12:30' resolves to the integer 750; ':' is legal mid-identifier here,
+    // so the form is reachable rather than contrived.
+    '12:30', '0755', '1.5', '0x1f',
+    // #3706 hardening: '(.+?)' in the value regex needs one character before
+    // this fix, so an empty/whitespace-only value read as "key absent" rather
+    // than "key present, value empty" — these are the YAML-ambiguous classes
+    // that predicate missed once presence and value became distinct questions.
+    '~', '.inf', '.Inf', '.nan', '+1', '-1', '-0', '+1.5', '.5', '0x1F',
+    '2026-08-25', '2026-08-25T10:00:00Z', 'a: b', 'a #b',
+  ];
+  // The whole point of the predicate: no churn for anybody's existing files.
+  const BARE = ['sonnet', 'synthetic/hf:zai-org/GLM-5.2', 'gpt-5.6-luna', 'claude-opus-5', 'x-', 'a.b', 'GLM-5.2'];
+
+  for (const [label, convert] of OPENCODE_CONVERTERS) {
+    const modelLine = (v) =>
+      (convert(AGENT, { isAgent: true, modelOverride: v })
+        .split('\n').find((l) => l.startsWith('model:')) ?? '');
+
+    for (const v of QUOTED) {
+      test(`[${label}] quotes ${JSON.stringify(v)}`, () => {
+        assert.equal(modelLine(v), `model: "${v}"`);
+      });
+    }
+    for (const v of BARE) {
+      test(`[${label}] leaves ${JSON.stringify(v)} bare`, () => {
+        assert.equal(modelLine(v), `model: ${v}`);
+      });
+    }
+    test(`[${label}] the same predicate governs variant, not just model`, () => {
+      assert.match(convert(AGENT, { isAgent: true, variant: 'no' }), /^variant: "no"$/m);
+    });
+  }
+});
+
+// ─── #3706: the threading seam — where the bug actually was ─────────────────
+//
+// Every test above exercises a converter directly. #3706 broke one layer up, in
+// runtime-artifact-layout's convertedAgentsKind: the converter had no variant to
+// write because nothing resolved or passed one. A converter-only suite goes green
+// while the value still never arrives, so the resolve→render chain is pinned here.
+describe('#3706: install-time effort resolves and renders for OpenCode', () => {
+  const effortResolver = require('../gsd-core/bin/lib/install-effort-resolver.cjs');
+  const catalog = require('../gsd-core/bin/lib/model-catalog.cjs');
+
+  // Exactly the composition the layout performs per agent.
+  const thread = (effortCfg, agentName) => {
+    const universal = effortCfg ? effortResolver.resolveInstallTimeEffort(effortCfg, agentName) : null;
+    return universal ? catalog.clampEffortForHost('opencode', universal) : null;
+  };
+
+  test('no effort config at all yields no variant', () => {
+    // The gate. resolveInstallTimeEffort ALWAYS returns a level ('high' from the
+    // catalog default) even for a null config, so gating on its return value
+    // would stamp `variant:` into every existing OpenCode install.
+    assert.equal(effortResolver.resolveInstallTimeEffort(null, 'gsd-executor'), 'high');
+    assert.equal(thread(null, 'gsd-executor'), null);
+  });
+
+  test('a configured agent override reaches the emitted value', () => {
+    assert.equal(thread({ agent_overrides: { 'gsd-executor': 'xhigh' } }, 'gsd-executor'), 'xhigh');
+  });
+
+  test('a configured default reaches an agent with no catalog tier', () => {
+    // effort.default is only consulted for agents the tier ladder does not
+    // answer for; see the tiered-agent test below for the other half.
+    assert.equal(thread({ default: 'low' }, 'not-a-catalog-agent'), 'low');
+  });
+
+  test("'inherit' is never emitted as a literal", () => {
+    // #3533 (10d): inherit means "omit the key and follow the host default" and
+    // is not a wire level on ANY runtime. It IS a member of EFFORT_SET, so the
+    // resolver returns it verbatim — the declared render seam is what drops it.
+    // Writing `variant: inherit` would name a variant that cannot resolve.
+    for (const cfg of [
+      { agent_overrides: { 'gsd-executor': 'inherit' } },
+      { routing_tier_defaults: { light: 'inherit', standard: 'inherit', heavy: 'inherit' } },
+    ]) {
+      assert.equal(effortResolver.resolveInstallTimeEffort(cfg, 'gsd-executor'), 'inherit');
+      assert.equal(thread(cfg, 'gsd-executor'), null, `should omit for ${JSON.stringify(cfg)}`);
+    }
+  });
+
+  test('a bare effort.default does NOT reach a tiered agent', () => {
+    // Not obvious, and it is why the `inherit` case above goes through
+    // agent_overrides instead: for an agent WITH a catalog tier the manifest
+    // tier ladder (#3531) answers before effort.default is ever consulted, so
+    // `default: 'inherit'` leaves a tiered agent at its tier value. Pinned
+    // because a test written against `default` alone would assert nothing.
+    assert.equal(effortResolver.resolveInstallTimeEffort({ default: 'inherit' }, 'gsd-executor'), 'high');
+    assert.equal(thread({ default: 'inherit' }, 'gsd-executor'), 'high');
+  });
+
+  test('a level OpenCode does not accept is dropped, not emitted', () => {
+    // 'ultra' is a real EFFORT_SET member that OpenCode's declared supported set
+    // does not contain. Omitting beats naming a variant that cannot resolve.
+    assert.equal(catalog.renderEffortArgv('opencode', 'ultra', 'argv').value, null);
+  });
+
+  test('the full universal ladder OpenCode does accept passes through', () => {
+    for (const lvl of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+      assert.equal(catalog.renderEffortArgv('opencode', lvl, 'argv').value, lvl);
+    }
+  });
+
+  test('an empty model override omits the key rather than writing an empty value', () => {
+    // Found by the property below, which originally asserted a round-trip for
+    // every generated string and failed on "". An empty override is falsy, so
+    // no `model:` line is written at all — that is the #2256/J7 contract (omit
+    // the key, never `model: ""`), so the property is scoped to non-empty
+    // values and the empty case is pinned here instead of being generated away.
+    const out = liveConversion.convertClaudeToOpencodeFrontmatter(
+      ['---', 'name: x', 'description: y', '---', '', 'Body.'].join('\n'),
+      { isAgent: true, modelOverride: '' },
+    );
+    assert.ok(!/^model:/m.test(out), `expected no model key, got:\n${out}`);
+  });
+
+  test('every emitted model line parses back to the exact value', () => {
+    // The real contract, stated directly: whatever a user puts in config, the
+    // generated frontmatter must read back as that same string. A per-character
+    // rule list is only a means to this end, and this is what catches the case
+    // nobody thought to enumerate.
+    const fc = require('fast-check');
+    const yaml = require('js-yaml');
+    const chars = ':@-_./"\\ \n\t#&*!|>%`{}[],?~+abcXY019';
+    fc.assert(
+      fc.property(
+        fc.string({ unit: fc.constantFrom(...chars.split('')), minLength: 1 }),
+        (value) => {
+          const out = liveConversion.convertClaudeToOpencodeFrontmatter(
+            ['---', 'name: x', 'description: y', '---', '', 'Body.'].join('\n'),
+            { isAgent: true, modelOverride: value },
+          );
+          const fmBody = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(out)[1];
+          return yaml.load(fmBody).model === value;
+        },
+      ),
+      { numRuns: 2000 },
+    );
+  });
+});
+
+// ─── #3706: the layout seam actually threads the variant ─────────────────────
+//
+// Every test above calls a converter directly. Direct-converter tests all
+// still pass if a future edit drops `variant` from the `rawConverter(...)`
+// call inside runtime-artifact-layout.cts's convertedAgentsKind, or flips its
+// `converterName ===` gate — this drives the REAL staging path
+// (resolveRuntimeArtifactLayout -> the OpenCode 'agents' kind's stage()) so
+// that regression cannot hide behind converter-only coverage.
+describe('#3706: the layout seam actually threads the variant', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { cleanup } = require('./helpers.cjs');
+  const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+
+  // Fixture layout mirrors the .gsd-source marker convention
+  // (findAgentsSourceRoot): the marker at <configDir>/.gsd-source points to
+  // <configDir>/commands/gsd, and agents/ is resolved as its sibling.
+  function makeConfigDirFixture(agentContent) {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3706-seam-configdir-'));
+    const commandsDir = path.join(configDir, 'commands', 'gsd');
+    const agentsDir = path.join(configDir, 'agents');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, '.gsd-source'), commandsDir + '\n', 'utf8');
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), agentContent, 'utf8');
+    return configDir;
+  }
+
+  function makeProjectRootWithEffort(effort) {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3706-seam-project-'));
+    fs.mkdirSync(path.join(projectRoot, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, '.planning', 'config.json'),
+      JSON.stringify({ effort }),
+      'utf8',
+    );
+    return projectRoot;
+  }
+
+  // resolveInstallTimeEffort also merges ~/.gsd/defaults.json (os.homedir()),
+  // so HOME/USERPROFILE are pinned to an empty temp dir for the duration of
+  // each stage() call to keep the assertion hermetic against the real
+  // developer machine's home directory.
+  function stageWithFakeHome(agentKind, resolvedProfile, agentCtx) {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3706-seam-home-'));
+    const realHome = process.env.HOME;
+    const realUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      return agentKind.stage(resolvedProfile, agentCtx);
+    } finally {
+      // On POSIX, USERPROFILE (and potentially HOME) is unset before this
+      // helper runs — `process.env.X = undefined` would coerce to the
+      // literal string "undefined" and leak that into the environment for
+      // the rest of the test process. Restore by deletion when the saved
+      // value was genuinely absent.
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      if (realUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = realUserProfile;
+      cleanup(fakeHome);
+    }
+  }
+
+  const AGENT_SOURCE = ['---', 'name: gsd-executor', 'description: x', '---', '', 'Body.'].join('\n');
+  const resolvedProfile = { name: 'full', skills: '*', agents: new Set() };
+
+  test('a configured effort reaches the real OpenCode agents kind staging output', () => {
+    const configDir = makeConfigDirFixture(AGENT_SOURCE);
+    const projectRoot = makeProjectRootWithEffort({ agent_overrides: { 'gsd-executor': 'xhigh' } });
+    try {
+      const layout = resolveRuntimeArtifactLayout('opencode', configDir, 'global');
+      const agentKind = layout.kinds.find((k) => k.kind === 'agents');
+      assert.ok(agentKind, 'opencode global layout must include an agents kind');
+
+      const agentCtx = { runtime: 'opencode', pathPrefix: '', attribution: null, targetDir: projectRoot };
+      const stagedDir = stageWithFakeHome(agentKind, resolvedProfile, agentCtx);
+      const stagedContent = fs.readFileSync(path.join(stagedDir, 'gsd-executor.md'), 'utf8');
+      assert.match(stagedContent, /^variant: xhigh$/m, `expected variant: xhigh in staged output:\n${stagedContent}`);
+    } finally {
+      cleanup(configDir);
+      cleanup(projectRoot);
+    }
+  });
+
+  test('no effort config at all reaches the real staging output with no variant key', () => {
+    const configDir = makeConfigDirFixture(AGENT_SOURCE);
+    const noConfigRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3706-seam-noconfig-'));
+    try {
+      const layout = resolveRuntimeArtifactLayout('opencode', configDir, 'global');
+      const agentKind = layout.kinds.find((k) => k.kind === 'agents');
+
+      const agentCtx = { runtime: 'opencode', pathPrefix: '', attribution: null, targetDir: noConfigRoot };
+      const stagedDir = stageWithFakeHome(agentKind, resolvedProfile, agentCtx);
+      const stagedContent = fs.readFileSync(path.join(stagedDir, 'gsd-executor.md'), 'utf8');
+      assert.doesNotMatch(stagedContent, /^variant:/m, `expected no variant key in staged output:\n${stagedContent}`);
+    } finally {
+      cleanup(configDir);
+      cleanup(noConfigRoot);
+    }
+  });
+});
+

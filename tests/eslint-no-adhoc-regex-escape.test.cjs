@@ -288,6 +288,124 @@ describe('no-adhoc-regex-escape rule', () => {
     });
   });
 
+  // ── #3951 Rung A: UNSAFE-NEW-REGEXP widened to MemberExpression ───────────
+  // Design: .gsd/phase/feat-3951-b6-b7-guard-ledger/40-design.md "Rung A".
+  // The whole arm used to gate on `arg.type === 'Identifier'`, so a
+  // MemberExpression argument (`obj['key']`, `cfg.pattern`) was never
+  // examined — the reason this rule never fired on the #3477 ReDoS.
+
+  test('#3951 invalid: new RegExp(obj[\'key\']) — a computed MemberExpression is now examined', () => {
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [],
+      invalid: [
+        {
+          code: `const re = new RegExp(obj['key']);`,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'unsafeNewRegExp' }],
+        },
+      ],
+    });
+  });
+
+  test('#3951 invalid: new RegExp(cfg.pattern) — a non-computed MemberExpression is now examined', () => {
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [],
+      invalid: [
+        {
+          code: `const re = new RegExp(cfg.pattern);`,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'unsafeNewRegExp' }],
+        },
+      ],
+    });
+  });
+
+  test('#3951 valid: new RegExp(X.source, flags) — the safe re-flag-composition idiom is NOT flagged', () => {
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [
+        { code: `const re = new RegExp(existingPattern.source, 'g');`, filename: 'src/some-module.cts' },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3951 valid: new RegExp(config.pattern.source) — a second .source site is NOT flagged', () => {
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [
+        { code: `const re = new RegExp(config.pattern.source);`, filename: 'src/some-module.cts' },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3951 invalid: X.anything (not literally .source) is still flagged — the exemption keys on the PROPERTY only', () => {
+    // Guards against the design doc's stated failure mode: exempting on the
+    // OBJECT instead of the PROPERTY would wave through `X.anything`.
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [],
+      invalid: [
+        {
+          code: `const re = new RegExp(existingPattern.anything);`,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'unsafeNewRegExp' }],
+        },
+      ],
+    });
+  });
+
+  test('#3951 valid: a _SOURCE constant reached through a required module namespace is NOT flagged', () => {
+    // tests/continuation-grammar-parity.test.cjs:124,174,374's real shape —
+    // `const phaseId = require('../gsd-core/bin/lib/phase-id.cjs')`, then
+    // `new RegExp(phaseId.BRACKET_PHASE_TOKEN_SOURCE)`. Same provenance-exempt
+    // class isReviewedPatternFragmentIdentifier already trusts for bare
+    // identifiers, extended to a MemberExpression on a require()-derived
+    // module-scope const.
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [
+        {
+          code: `
+            const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
+            const re = new RegExp(phaseId.BRACKET_PHASE_TOKEN_SOURCE);
+          `,
+          filename: 'tests/continuation-grammar-parity.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('#3951 regression: new RegExp(someIdentifier) still behaves exactly as before (sole-return-of-parameter still fires)', () => {
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`
+            function buildLiteralMatcher(userSuppliedValue) {
+              return new RegExp(userSuppliedValue);
+            }
+          `,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'unsafeNewRegExp' }],
+        },
+      ],
+    });
+  });
+
+  test('#3951 regression: new RegExp(<identifier already computed upstream>) still NOT flagged', () => {
+    ruleTester.run('no-adhoc-regex-escape', noAdhocRegexEscape, {
+      valid: [
+        {
+          code: String.raw`
+            const src = someHelper(x);
+            const re = new RegExp(src);
+          `,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
   // ── ReDoS regression — scripts/lint-no-adhoc-regex-escape.cjs's own regex ─
 
   test('an adversarial [] run after .replace(/ terminates instead of backtracking exponentially (#3412)', () => {

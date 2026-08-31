@@ -1,6 +1,6 @@
 # GSD Agent Reference
 
-> Full role cards for 21 primary agents plus concise stubs for 12 advanced/specialized agents (33 shipped agents total). The `agents/` directory and [`docs/INVENTORY.md`](INVENTORY.md) are the authoritative roster; see [Architecture](ARCHITECTURE.md) for context.
+> Full role cards for 22 primary agents plus concise stubs for 12 advanced/specialized agents (34 shipped agents total). The `agents/` directory and [`docs/INVENTORY.md`](INVENTORY.md) are the authoritative roster; see [Architecture](ARCHITECTURE.md) for context.
 
 ---
 
@@ -12,7 +12,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 
 ### Agent Categories
 
-> The table below covers the **21 primary agents** detailed in this section. Thirteen additional shipped agents (pattern-mapper, debug-session-manager, code-reviewer, code-fixer, ai-researcher, domain-researcher, eval-planner, eval-auditor, framework-selector, intel-updater, doc-classifier, doc-synthesizer, mempalace-curator) have concise stubs in the [Advanced and Specialized Agents](#advanced-and-specialized-agents) section below. For the authoritative 34-agent roster, see [`docs/INVENTORY.md`](INVENTORY.md) and the `agents/` directory.
+> The table below covers the **22 primary agents** detailed in this section. Thirteen additional shipped agents (pattern-mapper, debug-session-manager, code-reviewer, code-fixer, ai-researcher, domain-researcher, eval-planner, eval-auditor, framework-selector, intel-updater, doc-classifier, doc-synthesizer, mempalace-curator) have concise stubs in the [Advanced and Specialized Agents](#advanced-and-specialized-agents) section below. For the authoritative 35-agent roster, see [`docs/INVENTORY.md`](INVENTORY.md) and the `agents/` directory.
 
 | Category | Count | Agents |
 |----------|-------|--------|
@@ -23,7 +23,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 | Roadmappers | 1 | roadmapper |
 | Executors | 1 | executor |
 | Checkers | 3 | plan-checker, integration-checker, ui-checker |
-| Verifiers | 1 | verifier |
+| Verifiers | 2 | verifier, dom-verifier |
 | Auditors | 3 | nyquist-auditor, ui-auditor, security-auditor |
 | Mappers | 1 | codebase-mapper |
 | Debuggers | 1 | debugger |
@@ -72,6 +72,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Investigates implementation patterns for the specific phase domain
 - Detects test infrastructure for Nyquist validation mapping
 - Tags in-repo discrete values (enums, schema unions, error codes, status constants, paths) `[VERIFIED]` only after reading the source-of-truth file that run, citing path and line range, and quoting the values verbatim
+- Refuses `[VERIFIED]` for a compatibility claim resting on *missing* metadata (no `python_requires`, no `engines` field, no per-version classifier, no changelog entry, no matching support-matrix row) — an absence constrains no version, and an enumerated allow-list that stops short of the target is still an absence, so only a positive falsification attempt with its failing output pasted earns the tag; anything less stays `[ASSUMED]`
 
 ---
 
@@ -93,6 +94,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Offers shadcn initialization for React/Next.js/Vite projects
 - Asks only unanswered design contract questions
 - Enforces registry safety gate for third-party components
+- **Enumerates the component inventory rather than recalling it (#2845):** the UI-SPEC's `## Component Inventory` carries a provenance line — the command that enumerated it, the count it returned, the resolved `<package>@<version>`, and the date — or, when nothing can enumerate it, a `Could not enumerate: <reason>` record in the same slot
 
 ---
 
@@ -173,6 +175,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Reads PROJECT.md, REQUIREMENTS.md, CONTEXT.md, RESEARCH.md
 - Creates 2-3 atomic task plans sized for single context windows
 - Uses XML structure with `<task>` elements
+- Emits a `<fails_when>` sibling for every runnable `<automated>` verify command, naming what output constitutes failure (#3172)
 - Includes `read_first` and `acceptance_criteria` sections
 - Groups plans into dependency waves
 - Performs reachability check to validate plan steps reference accessible files and APIs (v1.32)
@@ -219,7 +222,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Follows XML task instructions precisely
 - Atomic git commit per completed task
 - Handles task types: auto, tracer, checkpoint (human-verify, decision, human-action)
-- Tracer feedback gate: after a `tracer` slice, verifies it end-to-end before expansion tasks — autonomous runs halt on failure; interactive runs emit a human-verify checkpoint
+- Tracer feedback gate: after a `tracer` slice, verifies it end-to-end before expansion tasks — autonomous runs halt on failure; interactive runs honor `workflow.human_verify_mode` (under the `end-of-phase` default an automated-only `<verify>` continues with no checkpoint; otherwise a human-verify checkpoint is emitted, #3299)
 - Reports deviations from plan in SUMMARY.md
 - Invokes node repair on verification failure
 
@@ -253,14 +256,14 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 | 7 | Context compliance (when CONTEXT.md exists) |
 | 7b | Scope reduction detection |
 | 7c | Architectural tier compliance (when RESEARCH.md defines a responsibility map) |
-| 8 | Nyquist compliance (when enabled) |
+| 8 | Nyquist compliance (when enabled) — checks 8a-8e cover automated-verify presence, feedback latency, sampling continuity and Wave 0 completeness; check 8f blocks a runnable `<automated>` command with no stated `<fails_when>` failing direction (#3172) |
 | 9 | Cross-plan data contracts |
 | 10 | CLAUDE.md compliance |
 | 11 | Research resolution |
 | 12 | Pattern compliance |
 
-Two further dimensions carry no number: **Verify Command Format Sanity** and
-**Numeric/Factual Claim Authority**.
+Three further dimensions carry no number: **Verify Command Format Sanity**,
+**Verify Command Path Resolvability**, and **Numeric/Factual Claim Authority**.
 
 ---
 
@@ -294,7 +297,20 @@ Two further dimensions carry no number: **Verify Command Format Sanity** and
 | **Color** | Cyan |
 | **Produces** | BLOCK/FLAG/PASS verdict |
 
+**Verification Dimensions** — labels match the agent's own `## Dimension <N>` headings:
+
+| # | Dimension |
+|---|---|
+| 1 | Copywriting |
+| 2 | Visuals |
+| 3 | Color |
+| 4 | Typography |
+| 5 | Spacing |
+| 6 | Registry Safety |
+| 7 | Inventory Provenance |
+
 **Key behaviors:**
+- **Inventory provenance (#2845):** a UI-SPEC whose component inventory carries no provenance line is reported as a defect, and the inventory is downgraded from a closed allowlist to a **non-exhaustive list of known-good components** — so an executor is never blocked from something the spec merely failed to mention. A spec with no inventory at all PASSes, which is what keeps every UI-SPEC written before the dimension existed validating unchanged. The checker never executes the recorded command; it reads the spec as a document. **Limits, because the dimension is narrower than it reads:** the line makes an inventory's origin falsifiable, not verified — nothing re-runs the command or compares the count, so a fabricated line passes; the rule is agent-applied like the other six, not a schema check; and "never executes the recorded command" is an instruction rather than a capability boundary, since the checker holds a `Bash` grant it needs for the agent-skills bootstrap. See [Security model → Trade-offs and limits](explanation/security-model.md#trade-offs-and-limits) and [How to design a UI phase](how-to/design-a-ui-phase.md#what-this-check-is-and-is-not).
 - **Adversarial stance / "The Auditor" (#1578):** applies explicit BLOCK/FLAG/PASS tiers and an anti-capitulation rule that resists author-framing pressure while still allowing self-correction when the prior dimension application was mistaken. Persona effects are strongest on Sonnet-class reasoning and unvalidated on budget/Haiku-class routing; the criteria and evidence remain authoritative.
 
 ---
@@ -324,6 +340,7 @@ Two further dimensions carry no number: **Verify Command Format Sanity** and
 - **Coincidental-reliance advisory (#1955):** a truth that reaches `✓ VERIFIED` is additionally asked *why* it holds. When the recorded evidence shows the truth holding for an incidental reason — `undeclared-precondition`, `incidental-ordering`, or `fixture-only` — the verdict is qualified as `✓ VERIFIED (coincidental-reliance)` and the truth is listed in the `coincidental_reliance_items` frontmatter field with what to harden. This is **advisory**: the base `✓ VERIFIED` token is unchanged, the truth still counts toward `verified_truths`, the overall `status` is unaffected, and no human-verification item is emitted — a passing phase still passes. It classifies evidence the verifier already gathered rather than asking it to rate its own confidence — but it is honestly an **endogenous** check, and `gsd-core/references/honest-verifier.md` records that endogenous gates are measurably weaker than the exogenous `backstop` tag it routes on. Advisory status is the consequence, not a coincidence: a miss costs exactly today's behaviour (a plain `✓ VERIFIED`) and a false positive costs one line of prose, never a failed phase, so a weaker mechanism is affordable here in a way it would not be on a pass/fail axis. Its precision is unmeasured. It complements the two existing axes: `PRESENT_BEHAVIOR_UNVERIFIED` is *no* behavioral evidence, `insufficient_spec` is an under-specified truth, and this is evidence that exists and passes for the wrong reason.
 
   The advisory is carried by two surfaces. `agents/gsd-verifier.md` (Step 3, sub-step 5c) holds the detection rule, and the verifier's eagerly-imported `gsd-core/references/verifier-phase-gates.md` points at the canonical report template `@~/.claude/gsd-core/templates/verification-report.md`, whose `## Guidelines` carry the same instruction. (The former third surface, the retired `verify-phase` workflow, was deleted as an orphan in #1892 — every verification path is subagent-shaped today.)
+- **Convergence evidence gate (#3304):** during re-verification (after a `/gsd-plan-phase --gaps` cycle), Step 7's anti-pattern scan re-runs at full, unbounded scope — by design — but a 🛑 Blocker it finds no longer auto-reverts a completed gap-closure round on its own judgment alone. A blocker other than the self-evidencing debt-marker check (`TBD`/`FIXME`/`XXX`) blocks unconditionally only if it is a carried-forward gap from the prior `VERIFICATION.md` or its file was git-modified since the prior pass (a regression, fail-closed toward blocking when history is unresolvable); otherwise it predates the gap-closure round unflagged and needs deterministic evidence — a named test run red, or another concrete reproducible artifact — to stay blocking. Unevidenced, it downgrades to the `advisory:` frontmatter list and the report's "Advisory (New Scope, Unevidenced)" section instead of setting `status: gaps_found`. Full algorithm in `gsd-core/references/verifier-evidence-gate.md`.
 
 ---
 
@@ -368,6 +385,37 @@ Two further dimensions carry no number: **Verify Command Format Sanity** and
 4. Typography
 5. Spacing
 6. Experience Design
+
+---
+
+### gsd-dom-verifier
+
+**Role:** Observes a live DOM and reports which of a wave's stated UI acceptance criteria hold. Additive — never blocks.
+
+| Property | Value |
+|----------|-------|
+| **Spawned by** | `live-dom-uat` capability step at `execute:wave:post` |
+| **Parallelism** | One per wave |
+| **Tools** | Read, Write, Glob, Grep, mcp__chrome-devtools__*, mcp__claude-in-chrome__* |
+| **Disallowed Tools** | Edit, Bash, the Playwright MCP family |
+| **Model (balanced)** | Sonnet |
+| **Color** | Cyan |
+| **Produces** | `{phase}-DOM-VERIFY.md` |
+| **Gated by** | `workflow.live_dom_uat` (default `false`) |
+
+This is the **only** GSD agent carrying browser MCP tools. `gsd-executor` is deliberately not widened — for a first-party agent the static `tools:` list is the only control that exists ([ADR-1244](adr/1244-capability-ecosystem.md) D2, [ADR-857](adr/857-capability-system.md) D4). It carries no `Bash`: it does not start dev servers or shell out.
+
+**Outcome codes** (`nothing_to_report` and `could_not_look` are never conflated):
+
+| `outcome` | `reason` | Meaning |
+|---|---|---|
+| `verified` | `ok` | Criteria existed and were observed |
+| `nothing_to_report` | `no_criteria` | The wave stated no UI acceptance criteria |
+| `could_not_look` | `no_browser_mcp` | No browser MCP answered |
+| `could_not_look` | `profile_locked` | Another instance holds the browser profile |
+| `could_not_look` | `target_unreachable` | Nothing serving the target |
+
+**Reference:** [Enable live-DOM verification](how-to/enable-live-dom-verification.md) · [Explanation](explanation/live-dom-uat-capability.md)
 
 ---
 
@@ -788,7 +836,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 
 ## Agent Tool Permissions Summary
 
-> **Scope:** this table covers the 21 primary agents only. The 13 advanced/specialized agents listed above carry their own tool surfaces in their `agents/gsd-*.md` frontmatter (summarized in the per-agent stubs above and in [`docs/INVENTORY.md`](INVENTORY.md)).
+> **Scope:** this table covers the 22 primary agents only. The 13 advanced/specialized agents listed above carry their own tool surfaces in their `agents/gsd-*.md` frontmatter (summarized in the per-agent stubs above and in [`docs/INVENTORY.md`](INVENTORY.md)).
 
 | Agent | Read | Write | Edit | Bash | Grep | Glob | WebSearch | WebFetch | MCP |
 |-------|------|-------|------|------|------|------|-----------|----------|-----|

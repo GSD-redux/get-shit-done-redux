@@ -69,5 +69,5 @@ closed). The **open subset is prose-owned in [domain-probes.md](./domain-probes.
 real-time/offline/optimistic-UI, deep accessibility (WCAG breadth), i18n / RTL depth, and
 emerging interaction paradigms (gesture/voice/reduced-motion/print) are open-ended and
 cue-triggered — they do not belong in this closed taxonomy. This probe **complements** the
-`gsd-ui-checker` six quality dimensions (it adds a state-coverage axis); it does not change the
+`gsd-ui-checker` seven quality dimensions (it adds a state-coverage axis); it does not change the
 BLOCK/FLAG/PASS enum or the dimensions themselves.

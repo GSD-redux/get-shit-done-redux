@@ -1,7 +1,7 @@
 {
   "id": "qwen",
   "role": "runtime",
-  "version": "1.10.0",
+  "version": "1.12.0",
   "title": "Qwen Code",
   "description": "Qwen Code (Alibaba) — nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
   "tier": "core",
@@ -57,7 +57,10 @@
         }
       ]
     },
-    "triggerPrecedence": ["skills", "commands"],
+    "triggerPrecedence": [
+      "skills",
+      "commands"
+    ],
     "commandStyle": "slash-hyphen",
     "hooksSurface": "settings-json",
     "hookEvents": "claude",
@@ -125,12 +128,20 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 900000,
+    "timeoutConfigKey": null,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Qwen",
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
-    "promptBudgetKey": null,
+    "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
     "modelConfigKey": null,
     "handler": null
+  },
+  "config": {
+    "review.max_prompt_tokens_per_reviewer.qwen": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    }
   }
 }

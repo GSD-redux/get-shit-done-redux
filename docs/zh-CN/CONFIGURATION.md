@@ -47,6 +47,7 @@ GSD 将项目设置存储在 `.planning/config.json` 中。该文件在 `/gsd-ne
     "use_worktrees": true,
     "code_review": true,
     "code_review_depth": "standard",
+    "code_review_depth_overrides": [],
     "plan_bounce": false,
     "plan_bounce_script": null,
     "plan_bounce_passes": 2,
@@ -248,6 +249,7 @@ API 密钥字段接受字符串值（密钥本身）。也可以设置为哨兵�
 | `workflow.worktree_skip_hooks` | boolean | `false` | 为 `true` 时，worktree 模式下的执行器 agent 传递 `--no-verify`（跳过提交前钩子），波次后的钩子验证改为针对合并结果运行。适用于钩子无法在 agent worktree 中运行的项目的可选逃生舱口。默认 `false` 对每次提交运行钩子（#2924）。 |
 | `workflow.code_review` | boolean | `true` | 启用 `/gsd-code-review` 和 `/gsd-code-review --fix` 命令。为 `false` 时，命令以配置门禁消息退出。v1.34 新增 |
 | `workflow.code_review_depth` | string | `standard` | `/gsd-code-review` 的默认审查深度：`quick`（仅模式匹配）、`standard`（按文件分析）或 `deep`（带导入图的跨文件）。可通过 `--depth=` 按次运行覆盖。v1.34 新增 |
+| `workflow.code_review_depth_overrides` | array | `[]` | 有序的 `{ paths: string[], depth }` 规则列表，按目录前缀匹配对特定目录提升 `/gsd-code-review` 的审查深度，例如 `[{ "paths": ["src/auth"], "depth": "deep" }]`。每条规则的 `paths` 按整段目录路径前缀与本次审查的变更文件集合匹配（`src/auth` 匹配 `src/auth/token.ts`，但绝不匹配 `src/authfoo/x.ts` 或 `docs/src/auth/x.ts`）；匹配区分大小写，与 git 一致。glob 语法（`*`、`?`）是配置错误，而非前缀的简写形式。一个匹配的文件会将整次审查提升到该深度——深度并非逐文件应用。解析顺序：`--depth=` 标志 → 匹配到的最强规则 → `workflow.code_review_depth` → `standard`；即使规则的档位比全局默认值弱，匹配到的规则依然生效。格式错误的规则（`depth` 无效、glob 语法、绝对路径、`..` 段、路径为空、`overrides` 非数组、规则非对象、`paths` 格式错误）是配置错误，审查会中止，而不会静默回退。解析出的深度及匹配的规则会打印在审查输出中。#2554 新增 |
 | `workflow.plan_bounce` | boolean | `false` | 针对生成的计划运行外部验证脚本。启用后，计划阶段编排器将每个 PLAN.md 通过 `plan_bounce_script` 指定的脚本管道处理，并在非零退出时阻塞。v1.36 新增 |
 | `workflow.plan_bounce_script` | string | （无） | 用于计划反弹验证的外部脚本路径。接收 PLAN.md 路径作为第一个参数。当 `plan_bounce` 为 `true` 时必需。v1.36 新增 |
 | `workflow.plan_bounce_passes` | number | `2` | 顺序执行的反弹轮数。每轮将上一轮的输出反馈给验证器。较高的值提升严格性，但会增加延迟。v1.36 新增 |
@@ -350,6 +352,7 @@ API 密钥字段接受字符串值（密钥本身）。也可以设置为哨兵�
 | 设置 | 类型 | 默认值 | 描述 |
 |---------|------|---------|-------------|
 | `planning.commit_docs` | boolean | `true` | `.planning/` 文件是否提交到 git |
+| `planning.pr_strict` | boolean | `false` | `/gsd-pr-branch` 的过滤模式。`false` 会在 PR 分支中保留 STATE.md、ROADMAP.md、MILESTONES.md、PROJECT.md、REQUIREMENTS.md、milestones/ 等结构性规划状态；`true` 会删除所有 `.planning/` 路径 |
 | `planning.search_gitignored` | boolean | `false` | 向大范围搜索添加 `--no-ignore` 以包含 `.planning/` |
 | `planning.sub_repos` | string 数组 | `[]` | 相对于项目根目录的嵌套子仓库路径。设置后，GSD 感知工具按子仓库划定阶段查找、路径解析和提交操作的范围，而非将外层仓库视为 monorepo |
 
@@ -757,7 +760,7 @@ gsd-tools query config-set features.thinking_partner false
 | gsd-doc-writer | Opus | Sonnet | Haiku | Sonnet | Inherit |
 | gsd-doc-verifier | Sonnet | Sonnet | Haiku | Haiku | Inherit |
 
-> **所有 33 个发布 agent 在目录（`sdk/shared/model-catalog.json`）中均有显式的按配置文件层级分配。** 上表显示最常用 agent 的代表性子集。对于此处未列出的 agent，`model_overrides` 接受任何已发布的 agent 名称。权威的配置文件数据通过 `gsd-core/bin/lib/model-catalog.cjs` 和 `sdk/src/model-catalog.ts` 从 `sdk/shared/model-catalog.json` 导出。
+> **所有 33 个发布 agent 在目录（`gsd-core/bin/shared/model-catalog.json`）中均有显式的按配置文件层级分配。** 上表显示最常用 agent 的代表性子集。对于此处未列出的 agent，`model_overrides` 接受任何已发布的 agent 名称。权威的配置文件数据通过 `src/model-catalog.cts` 从 `gsd-core/bin/shared/model-catalog.json` 导出。
 
 ### 按 Agent 覆盖
 

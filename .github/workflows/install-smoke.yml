@@ -55,7 +55,24 @@ jobs:
   # ---------------------------------------------------------------------------
   # Job 1: tarball install (existing canonical path)
   # ---------------------------------------------------------------------------
+  # #3833: no compute lane runs while the PR has a merge conflict.
+  #
+  # This workflow is ALSO a workflow_call target (release.yml calls it for the
+  # rc and finalize actions). Two consequences the design depends on:
+  #   1. On those runs the event is workflow_dispatch, so the script no-ops in
+  #      ~15s with zero API calls and both smoke jobs run exactly as before.
+  #   2. A nested reusable workflow may only DOWNGRADE its caller's token, so
+  #      release.yml's two calling jobs grant `pull-requests: read` — without
+  #      it the release run fails to start on a permissions escalation.
+  preflight:
+    name: PR mergeability
+    uses: ./.github/workflows/pr-mergeable-preflight.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   smoke:
+    needs: preflight
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -99,6 +116,10 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
           # Need enough history to merge origin/main for stale-base detection.
           fetch-depth: 0
+
+      - name: Record job start time (near-cap check)
+        if: steps.skip.outputs.skip != 'true'
+        run: echo "CI_JOB_START_EPOCH_MS=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
 
       # The default `refs/pull/N/merge` ref GitHub produces for PRs is cached
       # against the recorded merge-base, not the current target branch. When the
@@ -196,10 +217,19 @@ jobs:
           path: /tmp/release-smoke.json
           retention-days: 7
 
+      - name: Check job budget (near-cap advisory)
+        if: always()
+        continue-on-error: true
+        env:
+          CI_JOB_LABEL: "smoke (${{ matrix.os }}, ${{ matrix.node-version }}, ${{ matrix.full_only }}, ${{ matrix.shell }})"
+          CI_JOB_TIMEOUT_MINUTES: '12'
+        run: node scripts/ci-check-job-near-cap.cjs
+
   # ---------------------------------------------------------------------------
   # Job 2: unpacked-dir install
   # ---------------------------------------------------------------------------
   smoke-unpacked:
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

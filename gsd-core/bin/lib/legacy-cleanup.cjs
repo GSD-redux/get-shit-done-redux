@@ -262,8 +262,14 @@ function planLegacyCleanup(configDirs, opts = {}) {
     }
   }
 
-  // Legacy shared cache (fixed name from the old package)
-  const legacyCachePath = path.join(homeDir, '.cache', 'gsd', 'gsd-update-check.json');
+  // Legacy shared cache (fixed name from the old package). #3799: under an
+  // explicit configDirs override the cache lives under the SCOPE root(s), not
+  // the default home — the override means "clean only what this redirected
+  // install owns", and the default home's cache belongs to the live install.
+  const cacheRoot = (Array.isArray(opts.configDirs) && opts.configDirs.length > 0)
+    ? opts.configDirs[0]
+    : homeDir;
+  const legacyCachePath = path.join(cacheRoot, '.cache', 'gsd', 'gsd-update-check.json');
   try {
     const stat = fsMod.statSync(legacyCachePath);
     if (stat.isFile()) {

@@ -23,12 +23,23 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
+const fc = require('fast-check');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const REPO_ROOT = path.resolve(__dirname, '..');
 
 const MATRIX_SCRIPT = path.resolve(__dirname, '../scripts/mutation-matrix.cjs');
 const matrix = require(MATRIX_SCRIPT);
+
+// Deliberately RE-DERIVED here from matrix.COVERED, rather than calling the
+// exported matrix.allCoveredTests() — resolveMutationTestFiles(undefined)'s
+// production implementation itself calls allCoveredTests(), so comparing its
+// output against that same function would make the assertion a tautology
+// that passes no matter what either function does. This independent
+// derivation is what makes the comparison test the production code.
+const derived = [...new Set(Object.values(matrix.COVERED).flatMap((mod) => mod.tests))].sort();
 
 // ── (a) TARGET_MUTATION_SCORE ─────────────────────────────────────────────────
 describe('mutation-matrix ratchet: TARGET_MUTATION_SCORE export', () => {
@@ -191,14 +202,25 @@ describe('mutation-matrix ratchet: guard detects missing minScore', () => {
 // The assertion "every baseline module still exists in COVERED" enforces the
 // reverse: removing a module from COVERED also requires updating the baseline.
 const RATCHET_BASELINE = {
-  'context-utilization':     80,
-  'context-composer':        66,  // #2929: extracted from prompt-budget; same floor as prompt-budget
-  'prompt-budget':           66,  // CI 68.33% 2026-06-14; was 90 (timeout-inflated local)
-  'frontmatter':             62,
+  'context-utilization':     91,  // CI run 33012034388 (2026-08-25): measured 92.31%; floor(92.31)-1
+  'context-composer':        78,  // CI run 33012034388 (2026-08-25): measured 79.92%; floor(79.92)-1
+  'prompt-budget':           87,  // CI run 33012034388 (2026-08-25): measured 88.95%; floor(88.95)-1
+  'frontmatter':             65,  // #3706: raised from 62; measured 66.67 on PR 3867
   'adr-parser':              68,
-  'config-schema':           52,  // CI 54.55% 2026-06-14; was 68 (timeout-inflated local)
-  'active-workstream-store': 80,
+  'config-schema':           74,  // CI run 33012034388 (2026-08-25): measured 75.51%; floor(75.51)-1
+  'active-workstream-store': 86,  // CI run 33012034388 (2026-08-25): measured 87.42%; floor(87.42)-1
   'core-utils':              75,
+  'planning-inspect':        56,  // CI run 32392791843: 57.03% (unit shard); ratchet candidate vs TARGET 80
+  'plan-document':           75,  // CI run 32392791843: 76.58% (unit shard)
+  'planning-command-router': 94,  // CI run 32392791843: 95.65% (unit shard); already exceeds TARGET 80
+  'model-catalog':           74,  // CI run 33029755081 (2026-08-27, #3915): measured 75.26%;
+                                   // floor(75.26)-1. Supersedes the #3007 59.62% measurement
+                                   // (248 killed / 168 survived) — see scripts/mutation-matrix.cjs
+                                   // for the RuntimeError classification-change diagnosis.
+  'state-contract':          65,  // #3227: CI run 32769289750, job 97565813640,
+                                   // `Stryker (state-contract)`: measured 66.25%; floor(66.25)-1.
+                                   // Below TARGET_MUTATION_SCORE (80) — ratchet candidate like
+                                   // planning-inspect / model-catalog above; raise as tests improve.
 };
 
 describe('mutation-matrix ratchet: floor equality enforcement', () => {
@@ -295,5 +317,206 @@ describe('resolveMutationBreak: fail-closed env-var resolver', () => {
 
   test("'62' → 62", () => {
     assert.strictEqual(resolveMutationBreak('62'), 62);
+  });
+});
+
+// ── (g) resolveMutationTestFiles behaviour (#3915: tap-runner test-file resolver) ────
+// stryker's tap-runner has no single `command` to inject a per-shard test list into —
+// it takes an explicit `tap.testFiles` array — so the derived-union default that used to
+// live only in stryker.config.mjs's DEFAULT_TEST_CMD string needs a resolver twin to
+// resolveMutationBreak: same fail-closed shape, same single call site, this time
+// producing a file-list array instead of a numeric threshold.
+describe('resolveMutationTestFiles: fail-closed test-file-list resolver', () => {
+  const { resolveMutationTestFiles } = matrix;
+
+  test('exports resolveMutationTestFiles as a function', () => {
+    assert.strictEqual(typeof resolveMutationTestFiles, 'function');
+  });
+
+  test('undefined → sorted, de-duplicated union of every COVERED[*].tests', () => {
+    assert.deepStrictEqual(resolveMutationTestFiles(undefined), derived);
+  });
+
+  test('every entry of the undefined-default result exists on disk', () => {
+    for (const entry of resolveMutationTestFiles(undefined)) {
+      assert.ok(
+        fs.existsSync(path.resolve(REPO_ROOT, entry)),
+        `derived default test file does not exist on disk: ${entry}`
+      );
+    }
+  });
+
+  test('single test file (boundary 1) → one-element array', () => {
+    assert.deepStrictEqual(
+      resolveMutationTestFiles('tests/frontmatter.unit.test.cjs'),
+      ['tests/frontmatter.unit.test.cjs']
+    );
+  });
+
+  test('two space-separated test files → two-element array', () => {
+    assert.deepStrictEqual(
+      resolveMutationTestFiles('tests/frontmatter.unit.test.cjs tests/unusable-input.test.cjs'),
+      ['tests/frontmatter.unit.test.cjs', 'tests/unusable-input.test.cjs']
+    );
+  });
+
+  test("'' (empty string) → throws (CI shard wiring error)", () => {
+    assert.throws(() => resolveMutationTestFiles(''), /set but empty/);
+  });
+
+  test("'   ' (whitespace-only) → throws (CI shard wiring error)", () => {
+    assert.throws(() => resolveMutationTestFiles('   '), /set but empty/);
+  });
+
+  test("'\\t\\n  ' (mixed whitespace-only) → throws (CI shard wiring error)", () => {
+    assert.throws(() => resolveMutationTestFiles('\t\n  '), /set but empty/);
+  });
+
+  test('null → throws', () => {
+    assert.throws(() => resolveMutationTestFiles(null));
+  });
+
+  test('123 (non-string) → throws', () => {
+    assert.throws(() => resolveMutationTestFiles(123));
+  });
+
+  test('an array (not a string) → throws', () => {
+    assert.throws(() => resolveMutationTestFiles(['tests/frontmatter.unit.test.cjs']));
+  });
+
+  test('leading/trailing whitespace is trimmed to exactly one entry with no surrounding whitespace', () => {
+    const result = resolveMutationTestFiles('  tests/frontmatter.unit.test.cjs  ');
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0], result[0].trim());
+    assert.strictEqual(result[0], 'tests/frontmatter.unit.test.cjs');
+  });
+
+  test('mixed tab/newline/space separators → exactly 3 non-empty entries', () => {
+    const result = resolveMutationTestFiles(
+      'tests/frontmatter.unit.test.cjs\t\ttests/unusable-input.test.cjs\n tests/frontmatter.property.test.cjs'
+    );
+    assert.strictEqual(result.length, 3);
+    for (const entry of result) assert.notStrictEqual(entry, '');
+  });
+
+  test('CRLF-separated entries → exactly 2 entries, none carrying a \\r', () => {
+    const result = resolveMutationTestFiles(
+      'tests/frontmatter.unit.test.cjs\r\ntests/unusable-input.test.cjs'
+    );
+    assert.strictEqual(result.length, 2);
+    for (const entry of result) assert.ok(!entry.includes('\r'), `entry retained a \\r: ${JSON.stringify(entry)}`);
+  });
+
+  test('a repeated entry is de-duplicated to exactly 1', () => {
+    const result = resolveMutationTestFiles(
+      'tests/frontmatter.unit.test.cjs tests/frontmatter.unit.test.cjs'
+    );
+    assert.deepStrictEqual(result, ['tests/frontmatter.unit.test.cjs']);
+  });
+
+  test('a nonexistent test file throws, naming the bad path', () => {
+    assert.throws(
+      () => resolveMutationTestFiles('tests/does-not-exist-3915.test.cjs'),
+      /does-not-exist-3915/
+    );
+  });
+
+  test('one bad entry among otherwise-valid entries still throws', () => {
+    assert.throws(
+      () => resolveMutationTestFiles('tests/frontmatter.unit.test.cjs tests/does-not-exist-3915.test.cjs'),
+      /does-not-exist-3915/
+    );
+  });
+
+  test('an entry naming an existing directory throws, indicating it is not a regular file', () => {
+    assert.throws(
+      () => resolveMutationTestFiles('tests'),
+      /not a regular file/
+    );
+  });
+
+  test('an entry escaping the repo root via ../../../etc/passwd throws, indicating the escape', () => {
+    assert.throws(
+      () => resolveMutationTestFiles('../../../etc/passwd'),
+      /escape the repo root/
+    );
+  });
+
+  test('an entry escaping via a valid-looking prefix (tests/../../outside-3915.cjs) throws for escaping the repo root', () => {
+    assert.throws(
+      () => resolveMutationTestFiles('tests/../../outside-3915.cjs'),
+      /escape the repo root/
+    );
+  });
+
+  test('the full derived default, space-joined, round-trips through the resolver', () => {
+    assert.deepStrictEqual(resolveMutationTestFiles(derived.join(' ')), derived);
+  });
+});
+
+describe('resolveMutationTestFiles: round-trip property', () => {
+  const { resolveMutationTestFiles } = matrix;
+
+  test('any non-empty subset of the derived default, space-joined, resolves back to that de-duplicated subset', () => {
+    fc.assert(
+      fc.property(
+        fc.subarray(derived, { minLength: 1 }),
+        (subset) => {
+          const expected = [...new Set(subset)].sort();
+          const actual = resolveMutationTestFiles(subset.join(' '));
+          assert.deepStrictEqual(actual, expected);
+        }
+      ),
+      { seed: 3915, numRuns: 100 }
+    );
+  });
+});
+
+// ── (h) mutation matrix: isolation field removed (#3915) ─────────────────────
+// stryker's tap-runner has no equivalent of `node --test --test-isolation=<mode>`
+// (it drives Node's own TAP test-reporter file-by-file), so the per-shard
+// `isolation` field this matrix used to emit for mutation.yml's
+// MUTATION_TEST_CMD env line has nothing left to wire into and must be removed
+// from buildResult()'s output entirely, not merely left unused.
+describe('mutation matrix: isolation field removed (#3915)', () => {
+  const { resolveMutationTestFiles } = matrix;
+
+  test('every emitted matrix entry has no isolation field but keeps the rest of the contract', () => {
+    const covered = matrix.COVERED || {};
+    const moduleNames = Object.keys(covered);
+    const stdinLines = moduleNames.map((name) => `src/${name}.cts`).join('\n');
+
+    const spawnResult = runNode(
+      [MATRIX_SCRIPT],
+      {
+        input: stdinLines + '\n',
+        cwd: REPO_ROOT,
+        timeoutMs: PROBE_TIMEOUT_MS,
+      }
+    );
+    throwIfFailed(spawnResult, `node ${MATRIX_SCRIPT}`);
+    const result = JSON.parse(spawnResult.stdout);
+
+    assert.ok(result.matrix.include.length > 0, 'matrix.include must not be empty');
+
+    for (const entry of result.matrix.include) {
+      assert.ok(
+        !Object.prototype.hasOwnProperty.call(entry, 'isolation'),
+        `matrix entry for '${entry.name}' must NOT include an isolation field (#3915: tap-runner has no test-isolation flag)`
+      );
+      for (const key of ['name', 'mutate', 'tests', 'minScore', 'timeoutMinutes']) {
+        assert.ok(
+          Object.prototype.hasOwnProperty.call(entry, key),
+          `matrix entry for '${entry.name}' must still include '${key}'`
+        );
+      }
+
+      // Round-trip between the two halves of the wiring: the tests string this
+      // matrix emits must resolve back to exactly the COVERED entry's own tests.
+      assert.deepStrictEqual(
+        resolveMutationTestFiles(entry.tests),
+        matrix.COVERED[entry.name].tests
+      );
+    }
   });
 });

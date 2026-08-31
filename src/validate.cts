@@ -54,6 +54,8 @@ const {
   // the check is widened by the relocation.
   BRACKET_ID_SRC,
   PHASE_NUMBER_TOKEN_SOURCE,
+  // #2761 M3: canonical bracket milestone intro, re-homed here with
+  // checkBracketCoherence when health diagnostics moved to the rule table.
   BRACKET_MILESTONE_INTRO_CAPTURING_SRC,
   foldBracketId,
 } = phaseIdMod;

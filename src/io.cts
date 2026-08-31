@@ -12,6 +12,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { platformWriteSync, platformEnsureDir } from './shell-command-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitModule = require('./cli-exit.cjs');
+const {
+  setJsonErrorMode, getJsonErrorMode, EXIT_ENVELOPE_REASON, ExitError,
+  setPendingOutcome, projectOutcome, getContractVersion,
+} = cliExitModule;
 
 // ─── Temp-file helpers (needed by output()) ──────────────────────────────────
 
@@ -141,7 +147,48 @@ function serializeForOutput(result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
+/**
+ * A payload-carried error, per ADR-2980's own definition (#3912, ADR-3889
+ * §4): `result` is an object carrying a SERIALIZABLE `error` property, in
+ * ANY key order — `{ found: false, error }` counts exactly the same as
+ * `{ error, found: false }`. The discriminator is a serializable error
+ * value, NOT mere key presence: `result.error`'s own truthiness is
+ * irrelevant (falsy `0`/`null`/`''` all count), and neither is `result`'s
+ * prototype (a plain object literal is all any call site here ever
+ * passes) — but `error: undefined` does NOT count, because
+ * `JSON.stringify` (the exact serializer `serializeForOutput` uses to
+ * build the payload the caller actually receives) drops an object
+ * property whose value is `undefined` entirely. A payload built as
+ * `{ found: false, error: undefined }` therefore reaches the wire as
+ * `{"found":false}` — no error at all — and recording DEGRADED for it
+ * would be a false verdict: exit 80 under v2 for output the user sees as
+ * clean. `hasOwnProperty` alone is not enough to answer "does this payload
+ * declare an error"; it must also survive `JSON.stringify`.
+ */
+function isPayloadCarriedError(result: unknown): boolean {
+  return typeof result === 'object' && result !== null
+    && Object.prototype.hasOwnProperty.call(result, 'error')
+    && (result as { error?: unknown }).error !== undefined;
+}
+
 function output(result: unknown, raw: boolean, rawValue?: unknown): void {
+  // #3912 (ADR-3889 §4): a payload-carried error declares DEGRADED into the
+  // pending-outcome cell runMain reads. This is the ONLY new thing output()
+  // does — it still just writes fd 1 and returns; the exit code stays
+  // whatever it already was under v1 (DEGRADED projects to 0), and nothing
+  // here touches process.exitCode directly.
+  //
+  // LAST-WRITE-WINS (review fix): a clean (non-error-shaped) payload CLEARS
+  // the cell rather than leaving a prior degraded declaration in place. A
+  // handler that calls output() more than once per invocation — a
+  // diagnostic error payload followed by a clean final payload — must have
+  // its LATEST declaration win, not its first: the cell reflects "is a
+  // degraded outcome pending right now", not "was one ever declared".
+  if (isPayloadCarriedError(result)) {
+    setPendingOutcome('DEGRADED');
+  } else {
+    setPendingOutcome(undefined);
+  }
   let data: string;
   if (raw && rawValue !== undefined) {
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
@@ -184,7 +231,7 @@ const ERROR_REASON = Object.freeze({
   CONFIG_PARSE_FAILED: 'config_parse_failed',
   CONFIG_INVALID_KEY: 'config_invalid_key',
   // SDK / gsd-tools dispatch
-  SDK_FAIL_FAST: 'sdk_fail_fast',
+  SDK_FAIL_FAST: EXIT_ENVELOPE_REASON,
   SDK_UNKNOWN_COMMAND: 'sdk_unknown_command',
   SDK_MISSING_ARG: 'sdk_missing_arg',
   // workflow / phase
@@ -201,6 +248,10 @@ const ERROR_REASON = Object.freeze({
   // graphify
   GRAPHIFY_NO_GRAPH: 'graphify_no_graph',
   GRAPHIFY_INVALID_QUERY: 'graphify_invalid_query',
+  // estimate-calibrate (#3882, ADR-3473 §8.2): the phases directory exists
+  // but could not be read — a NON-answer, distinct from a project that
+  // genuinely has zero completed phases yet.
+  ESTIMATE_PHASES_UNREADABLE: 'estimate_phases_unreadable',
   // hooks
   HOOKS_OPT_OUT: 'hooks_opt_out',
   // commit-docs-guard (#3588)
@@ -209,6 +260,11 @@ const ERROR_REASON = Object.freeze({
   COMMIT_DOCS_GUARD_HOOKS_PATH_SET: 'commit_docs_guard_hooks_path_set',
   // security-scan
   SECURITY_SCAN_FAILED: 'security_scan_failed',
+  // --pick (#3365 / #3358, ADR-3473 §8.4): an absent field or non-JSON
+  // command output is a failure, never a demotion to an empty answer at
+  // exit 0. See .gsd/phase/feat-3884-failure-is-a-value/40-design.md.
+  PICK_FIELD_ABSENT: 'pick_field_absent',
+  PICK_OUTPUT_NOT_JSON: 'pick_output_not_json',
   // generic
   USAGE: 'usage',
   UNKNOWN: 'unknown',
@@ -216,18 +272,8 @@ const ERROR_REASON = Object.freeze({
 
 type ErrorReasonValue = typeof ERROR_REASON[keyof typeof ERROR_REASON];
 
-/**
- * Process-level flag: when true, error() emits structured JSON to stderr
- * instead of plain "Error: <message>" text. Set by gsd-tools.cjs when the
- * CLI is invoked with `--json-errors`. Tests opt in to typed-IR error
- * assertions by passing that flag and parsing the JSON.
- *
- * Default off so existing callers and human operators keep their plain-text
- * diagnostics. The structured form is opt-in for tooling and tests (#2974).
- */
-let _jsonErrorMode = false;
-function setJsonErrorMode(v: unknown): void { _jsonErrorMode = !!v; }
-function getJsonErrorMode(): boolean { return _jsonErrorMode; }
+// setJsonErrorMode / getJsonErrorMode now live in cli-exit.cts (imported above)
+// and are re-exported here for the callers that already import them from io.
 
 /**
  * Emit an error and exit. When the second argument is provided it must be
@@ -243,14 +289,122 @@ function getJsonErrorMode(): boolean { return _jsonErrorMode; }
  * human-readable text. Ignored entirely in plain-text mode — the human
  * message is the only thing an operator sees there.
  */
+/**
+ * Render an UNTRUSTED string for embedding inside a human-readable,
+ * plain-text diagnostic (the `'Error: ' + message` line `error()` writes in
+ * non-JSON mode).
+ *
+ * WHY THIS EXISTS AND WHY `error()` DOES NOT DO IT ITSELF: `error()`
+ * deliberately writes its `message` argument verbatim — several callers in
+ * this repo intentionally emit multi-line diagnostics (e.g. the phase-gate
+ * messages), and `error()` has no way to distinguish a legitimate multi-line
+ * message from a hostile one, so it must not mangle newlines generically.
+ * That means any UNTRUSTED substring a caller interpolates into `message`
+ * (an argv token, a JSON key/value read back from a command's own output,
+ * etc.) can smuggle its own `\n` and forge a second `Error: ` line on
+ * stderr — a caller that parses stderr line-by-line would then see a second,
+ * attacker-authored error. Every call site that interpolates untrusted data
+ * into a diagnostic MUST pass that substring through this function first;
+ * `error()` itself stays a dumb, faithful writer.
+ *
+ * `JSON.stringify` is the primitive: it wraps the value in quotes and
+ * escapes control characters (`\n`, `\r`, `\t`, and the rest of the C0
+ * range, plus the quote character itself), so the result can never span
+ * more than one line or introduce an unescaped `"`. Callers embedding the
+ * result MUST NOT add their own surrounding quotes — that would
+ * double-quote it.
+ */
+function formatDiagnosticToken(value: string): string {
+  return JSON.stringify(value);
+}
+
+/**
+ * Map an ERROR_REASON wire value onto a declared outcome name (#3912,
+ * ADR-3889 §4). Closed over the 25-member enum: every reason gets an
+ * explicit entry below, so a 26th member added without a mapping falls
+ * through to the `?? 'FAIL'` default rather than silently mis-projecting —
+ * and tests/A1 iterates `Object.values(ERROR_REASON)`, so that default is
+ * exactly what makes an unmapped addition visible instead of invisible.
+ *
+ * This function's result is ONLY consulted under v2 (see `error()` below) —
+ * it is deliberately never routed through `projectOutcome` under v1, which
+ * is what keeps the v1 pin intact (`projectOutcome` treats registered names
+ * as version-invariant, so e.g. USAGE would otherwise become 64 today).
+ *
+ * Each non-FAIL choice below is justified inline; `UNKNOWN` and anything
+ * with no clearly better fit stays `FAIL` — the honest default the design
+ * calls for, not a guess dressed up as a specific outcome.
+ */
+const REASON_TO_OUTCOME: Readonly<Record<string, string>> = Object.freeze({
+  // Bad argv/subcommand/argument — the caller, not the run, is at fault.
+  [ERROR_REASON.CONFIG_INVALID_KEY]: 'USAGE',
+  [ERROR_REASON.SDK_UNKNOWN_COMMAND]: 'USAGE',
+  [ERROR_REASON.SDK_MISSING_ARG]: 'USAGE',
+  [ERROR_REASON.GRAPHIFY_INVALID_QUERY]: 'USAGE',
+  [ERROR_REASON.USAGE]: 'USAGE',
+
+  // A specific, named thing does not exist / nothing was there to find —
+  // genuine, known emptiness rather than a broken prerequisite.
+  [ERROR_REASON.CONFIG_KEY_NOT_FOUND]: 'NO_INPUT',
+  [ERROR_REASON.SUMMARY_NO_PLANNING]: 'NO_INPUT',
+  [ERROR_REASON.WORKSTREAM_MODE_NONE_ACTIVE]: 'NO_INPUT',
+
+  // A prerequisite is absent, unreadable, or otherwise not in a state the
+  // run could proceed from — distinct from NO_INPUT's genuine emptiness.
+  [ERROR_REASON.CONFIG_NO_FILE]: 'UNAVAILABLE',
+  [ERROR_REASON.CONFIG_PARSE_FAILED]: 'UNAVAILABLE',
+  [ERROR_REASON.PHASE_NOT_FOUND]: 'UNAVAILABLE',
+  [ERROR_REASON.PHASE_VERIFICATION_INCOMPLETE]: 'UNAVAILABLE',
+  [ERROR_REASON.PHASE_PLAN_COVERAGE_INCOMPLETE]: 'UNAVAILABLE',
+  // Its own docstring: "a marker exists but didn't resolve" — a broken
+  // prerequisite, not the "no marker anywhere" emptiness NONE_ACTIVE covers.
+  [ERROR_REASON.WORKSTREAM_MODE_MARKER_UNRESOLVED]: 'UNAVAILABLE',
+  [ERROR_REASON.GRAPHIFY_NO_GRAPH]: 'UNAVAILABLE',
+  // Its own docstring: "a NON-answer, distinct from a project that
+  // genuinely has zero completed phases yet" — UNAVAILABLE, not NO_INPUT.
+  [ERROR_REASON.ESTIMATE_PHASES_UNREADABLE]: 'UNAVAILABLE',
+  [ERROR_REASON.COMMIT_DOCS_GUARD_NOT_A_REPO]: 'UNAVAILABLE',
+  [ERROR_REASON.COMMIT_DOCS_GUARD_FOREIGN_HOOK]: 'UNAVAILABLE',
+  [ERROR_REASON.COMMIT_DOCS_GUARD_HOOKS_PATH_SET]: 'UNAVAILABLE',
+  // Its own docstring: "an absent field or non-JSON command output is a
+  // failure, never a demotion to an empty answer" — the field/output was
+  // supposed to be there and was not; a prerequisite of the query failed.
+  [ERROR_REASON.PICK_FIELD_ABSENT]: 'UNAVAILABLE',
+  [ERROR_REASON.PICK_OUTPUT_NOT_JSON]: 'UNAVAILABLE',
+
+  // Self-failure: the run itself broke, not its inputs.
+  [ERROR_REASON.SDK_FAIL_FAST]: 'INTERNAL',
+  [ERROR_REASON.SECURITY_SCAN_FAILED]: 'INTERNAL',
+
+  // No clearly better fit — the honest default, per design.
+  [ERROR_REASON.HOOKS_OPT_OUT]: 'FAIL',
+  [ERROR_REASON.UNKNOWN]: 'FAIL',
+});
+
+function outcomeForReason(reason: ErrorReasonValue): string {
+  return REASON_TO_OUTCOME[reason] ?? 'FAIL';
+}
+
 function error(message: string, reason: ErrorReasonValue = ERROR_REASON.UNKNOWN, extra?: Record<string, unknown>): never {
-  if (_jsonErrorMode) {
+  if (getJsonErrorMode()) {
     const payload = JSON.stringify({ ok: false, reason, message, ...(extra || {}) }) + '\n';
     writeAllSync(2, payload);
   } else {
     writeAllSync(2, 'Error: ' + message + '\n');
   }
-  process.exit(1);
+  // #3912 (ADR-3889 §4): the declaration is version-gated HERE, not inside
+  // projectOutcome — registered names are version-invariant there, so
+  // routing every reason through it unconditionally would change v1 exit
+  // codes today (e.g. USAGE -> 64) and break the pin. Under v1 the exit
+  // stays ExitError(1) unconditionally, byte-identical to every prior
+  // release; only v2 projects the declared outcome through the registry.
+  if (getContractVersion() === 'v2') {
+    throw new ExitError(projectOutcome(outcomeForReason(reason), 'v2'));
+  }
+  // No message passed to ExitError: the stderr write above is already done,
+  // byte-identical to the prior process.exit(1) behavior, and ExitError with
+  // no message means runMain's catch adds nothing further to stderr.
+  throw new ExitError(1);
 }
 
 export = {
@@ -263,4 +417,5 @@ export = {
   setJsonErrorMode,
   getJsonErrorMode,
   error,
+  formatDiagnosticToken,
 };

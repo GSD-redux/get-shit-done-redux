@@ -141,7 +141,10 @@ describe('ADR-218 — leading-zero rejection regex (behavioral)', () => {
       `If the pattern was relocated or renamed, update this test to match.`
     );
 
-    const re = new RegExp(minorMajorPatterns[0]);
+    // Pattern extracted verbatim from release.yml at test time — the shipped
+    // grep pattern IS the product under test; escaping it would assert a
+    // different string than what actually ships (#3951).
+    const re = new RegExp(minorMajorPatterns[0]); // allow-adhoc-regex-escape: runtime-contract-is-the-product
 
     // Boundary table: REJECTED (leading zeros or malformed)
     const shouldReject = [
@@ -195,7 +198,9 @@ describe('ADR-218 — leading-zero rejection regex (behavioral)', () => {
       `ADR-218 requires IS_MAJOR detection to also forbid leading zeros.`
     );
 
-    const re = new RegExp(majorOnlyPatterns[0]);
+    // Pattern extracted verbatim from release.yml — the shipped grep pattern
+    // IS the product under test (#3951).
+    const re = new RegExp(majorOnlyPatterns[0]); // allow-adhoc-regex-escape: runtime-contract-is-the-product
 
     // REJECTED: leading zeros in the major segment
     const shouldReject = [
@@ -244,7 +249,9 @@ describe('ADR-218 — leading-zero rejection regex (behavioral)', () => {
       `Expected a pattern matching 1.2.3 but not 1.2.0.`
     );
 
-    const re = new RegExp(hotfixPatterns[0]);
+    // Pattern extracted verbatim from release.yml — the shipped grep pattern
+    // IS the product under test (#3951).
+    const re = new RegExp(hotfixPatterns[0]); // allow-adhoc-regex-escape: runtime-contract-is-the-product
 
     // Sanity: valid hotfix versions accepted
     assert.equal(re.test('1.2.3'), true,  'Hotfix pattern must accept 1.2.3');

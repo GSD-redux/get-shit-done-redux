@@ -4,9 +4,7 @@ Skip this step entirely if NOT `$RESEARCH_MODE`.
 
 Display banner:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► RESEARCHING QUICK TASK
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### GSD ► RESEARCHING QUICK TASK
 
 ◆ Investigating approaches for: ${DESCRIPTION} (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
 ```
@@ -34,7 +32,7 @@ Agent(
 - ${STATE_PATH} (Project state — what's already built)
 - ${PROJECT_PATH} (Project context)
 - ./CLAUDE.md or ./.claude/CLAUDE.md (if exists — project-specific guidelines)
-${DISCUSS_MODE ? '- ' + QUICK_DIR + '/' + quick_id + '-CONTEXT.md (User decisions — research should align with these)' : ''}
+${DISCUSS_MODE ? '- ' + QUICK_DIR + '/' + quick_id + '-CONTEXT.md (User decisions — research should align with these. #3894: when workflow.research_before_questions is enabled research runs BEFORE discussion, so this file will not exist yet — read it only if present)' : ''}
 </required_reading>
 
 ${AGENT_SKILLS_PLANNER}

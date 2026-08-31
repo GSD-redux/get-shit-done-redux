@@ -721,8 +721,19 @@ function classifySites(files) {
   };
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+/**
+ * @param {string[]} [argv] - CLI-style argv (excluding the node binary and
+ *   script path). Defaults to `process.argv.slice(2)` ONLY when omitted
+ *   (`undefined`) — the sole change from the prior hardcoded read, so the
+ *   CLI entrypoint below (`runMain(main)`, which calls `main()` with no
+ *   args) is unaffected. Passing an explicit array (including `[]`) lets a
+ *   caller — notably `tests/lint-allow-test-rule-refs.test.cjs`'s
+ *   "repo baseline passes" row, #4060 — drive this function directly,
+ *   in-process, with no subprocess and thus no `spawnSync` `timeout` to
+ *   race against CI-load contention.
+ */
+async function main(argv = process.argv.slice(2)) {
+  const args = argv;
   const unknown = args.filter((a) => a !== '--help');
   if (unknown.length > 0) {
     throw new ExitError(2, `lint-allow-test-rule-refs: unknown argument(s): ${unknown.join(', ')}`);
@@ -853,6 +864,7 @@ module.exports = {
   classifyFile,
   classifySites,
   classifyCode,
+  main,
 };
 
 if (require.main === module) {

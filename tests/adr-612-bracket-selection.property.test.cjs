@@ -138,7 +138,20 @@ const bracketHeadingArb = fc
 /** The bracket DIRECTORY shape `{CODE}.{MM}-{PP}[.{SS}]-slug`. */
 const bracketDirArb = fc
   .record({ code: codeArb, milestone: milestoneArb, token: tokenArb, slug: fc.constantFrom('alpha', 'beta-two', 'x', 'a-b-c') })
-  .map(r => ({ ...r, dir: `${r.code}.${r.milestone}-${r.token}-${r.slug}` }));
+  .map(r => {
+    const dir = `${r.code}.${r.milestone}-${r.token}-${r.slug}`;
+    // A short letters+digit project-code prefix is string-indistinguishable
+    // from the shipped letter-prefixed-decimal family (for example A1.00-00).
+    // Derive that legacy oracle from generator primitives, not the parser.
+    const firstDigit = [...r.code].findIndex(ch => ch >= '0' && ch <= '9');
+    const hasLegacyLetterDecimalPrefix = firstDigit >= 1
+      && firstDigit <= 3
+      && [...r.code.slice(0, firstDigit)].every(ch => UPPER.includes(ch));
+    const legacyReading = hasLegacyLetterDecimalPrefix
+      ? `${r.code}.${r.milestone}-${r.token}`
+      : dir;
+    return { ...r, dir, legacyReading };
+  });
 
 // ─── P1 — the selection gate ─────────────────────────────────────────────────
 
@@ -166,10 +179,10 @@ describe('#612 PR-2 property: the convention selects, and only the convention', 
       fc.property(bracketDirArb, d => {
         assert.equal(extractPhaseToken(d.dir, 'bracket'), d.token);
         for (const convention of NON_BRACKET_CONVENTIONS) {
-          assert.notEqual(
+          assert.equal(
             extractPhaseToken(d.dir, convention),
-            d.token,
-            `convention ${JSON.stringify(convention)} must not read ${JSON.stringify(d.dir)} as a bracket dir`,
+            d.legacyReading,
+            `convention ${JSON.stringify(convention)} must preserve the exact legacy reading of ${JSON.stringify(d.dir)}`,
           );
         }
       }),

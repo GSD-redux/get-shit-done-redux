@@ -141,8 +141,17 @@ function captureConsole(fn) {
 
 function withWriteFailure(matchPath, fn) {
   const originalWriteFileSync = fs.writeFileSync;
+  const resolvedMatch = path.resolve(matchPath);
+  // Atomic writers (atomicWriteFileSync) never write the destination directly —
+  // they write `<target>.tmp-<pid>-<n>` and rename. Matching only the final path
+  // would make this injection silently stop firing for any write that becomes
+  // atomic, turning a rollback assertion into a vacuous pass.
+  const targetsMatch = (filePath) => {
+    const resolved = path.resolve(String(filePath));
+    return resolved === resolvedMatch || resolved.startsWith(`${resolvedMatch}.tmp-`);
+  };
   fs.writeFileSync = (filePath, ...args) => {
-    if (path.resolve(String(filePath)) === path.resolve(matchPath)) {
+    if (targetsMatch(filePath)) {
       throw new Error(`injected write failure for ${path.basename(matchPath)}`);
     }
     return originalWriteFileSync.call(fs, filePath, ...args);
@@ -271,6 +280,14 @@ function assertFreshInstallContract(runtime, targetDir) {
       // the skill dir under that sandboxed home instead of under targetDir.
       const codexSandboxHome = path.join(path.dirname(targetDir), 'home');
       assertHasGsdDirectory(path.join(codexSandboxHome, '.agents'), 'skills');
+    } else if (runtime === 'antigravity') {
+      // #3738: Antigravity's machine-local discovery scans ~/.gemini/config, so
+      // global skills install under the sandboxed home's .gemini/config root
+      // (kind `home` override), NOT `<config-dir>/skills`. Same sandboxed-HOME
+      // reasoning as the codex branch above.
+      const agySandboxHome = path.join(path.dirname(targetDir), 'home');
+      assertHasGsdDirectory(path.join(agySandboxHome, '.gemini', 'config'), 'skills');
+      assertHasGsdDirectory(path.join(agySandboxHome, '.gemini', 'config'), 'agents');
     } else {
       // Pre-#3562: codex was special-cased to expect zero gsd-* skill dirs
       // (assumption: Codex auto-discovers from workflows). That assumption
@@ -389,10 +406,20 @@ function assertFreshInstallContract(runtime, targetDir) {
   }
 
   if (contract.surface !== 'kimi-skills-agents' && contract.surface !== 'global-artifacts-noop' && contract.surface !== 'plugin-only') {
-    assert.ok(
-      listDirNames(targetDir, 'agents').some((name) => name.startsWith('gsd-')),
-      `${runtime} full install should install agents`
-    );
+    if (runtime === 'antigravity') {
+      // #3738: antigravity agents install under the sandboxed home's
+      // .gemini/config root (see the flat-skills branch above), not targetDir.
+      const agySandboxHomeForAgents = path.join(path.dirname(targetDir), 'home');
+      assert.ok(
+        listDirNames(path.join(agySandboxHomeForAgents, '.gemini', 'config'), 'agents').some((name) => name.startsWith('gsd-')),
+        `${runtime} full install should install agents`
+      );
+    } else {
+      assert.ok(
+        listDirNames(targetDir, 'agents').some((name) => name.startsWith('gsd-')),
+        `${runtime} full install should install agents`
+      );
+    }
   }
 
   assert.equal(

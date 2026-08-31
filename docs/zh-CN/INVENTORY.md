@@ -6,7 +6,7 @@
 
 - 本文件中的数量基于 v1.36.0 快照，版本之间可能存在偏差。如需实时数量，请在检出目录中运行 `ls commands/gsd/*.md | wc -l`、`ls agents/gsd-*.md | wc -l` 等命令。
 - 本文件列举了所有六大类别（代理、命令、工作流、参考资料、CLI 模块、钩子）中的每个已发布功能面。广义文档可能呈现叙述性内容或精选子集；当其与文件系统不一致时，本文件及目录清单为准。
-- v1.36.0 之后新增的功能面应首先在此处记录，再传播到广义文档中。`tests/inventory-counts.test.cjs`、`tests/commands-doc-parity.test.cjs`、`tests/agents-doc-parity.test.cjs`、`tests/cli-modules-doc-parity.test.cjs`、`tests/hooks-doc-parity.test.cjs`、`tests/architecture-counts.test.cjs` 和 `tests/command-count-sync.test.cjs` 中的漂移控制测试将数量和清单内容锚定到文件系统。
+- v1.36.0 之后新增的功能面应首先在此处记录，再传播到广义文档中。`tests/inventory-manifest-sync.test.cjs` 中的漂移控制测试将清单内容锚定到文件系统。
 
 这是所有已发布 GSD Core 功能面的权威目录。请参阅 [文档索引](README.md) 按主题导航。
 
@@ -476,8 +476,8 @@
 | `gsd-worktree-path-guard.js` | `PreToolUse` | 硬性阻止对 worktree 根目录之外绝对路径执行 Edit/Write/MultiEdit（PR #579，#260） |
 | `gsd-agent-isolation-guard.js` | `PreToolUse` | 当项目解析出的调度隔离模式为 `harness-worktree` 时，硬性阻止缺少隔离参数的 executor `Agent()` 调度（#3045） |
 | `gsd-write-guard.js` | `PreToolUse` | 硬性阻止将精选的 `.planning/` 工件（ROADMAP.md、里程碑路线图、STATE.md）灾难性缩减的整文件 `Write`；可通过一次性哨兵文件 `.planning/.gsd-allow-shrink`（工作流步骤）或 `GSD_ALLOW_PLANNING_SHRINK=1`（交互式）覆盖（#2255，#973 的修复 3） |
-| `gsd-session-state.sh` | `PostToolUse` | 基于 shell 运行时的会话状态跟踪 |
-| `gsd-validate-commit.sh` | `PostToolUse` | 常规提交强制执行的提交验证 |
+| `gsd-session-state.sh` | `SessionStart` | 基于 shell 运行时的会话状态跟踪 |
+| `gsd-validate-commit.sh` | `PreToolUse` | 常规提交强制执行的提交验证 |
 | `gsd-phase-boundary.sh` | `PostToolUse` | 工作流过渡的阶段边界检测 |
 | `gsd-graphify-update.sh` | `PostToolUse` | 在主 HEAD 推进后自动重建知识图谱（可选启用，默认关闭 — #3347） |
 

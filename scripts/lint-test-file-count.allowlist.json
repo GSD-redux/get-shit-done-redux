@@ -1,16 +1,46 @@
 {
   "_doc": "Baseline of modules currently exceeding the 2-test-file limit. Each entry locks in TODAY's exact test filenames as the allowlisted set (identity ratchet). Adding a NEW test file to a capped module fails (novel). Removing one requires pruning this list (stale, ratchet-down). When a cluster drops to \u2264 2, remove its entry entirely. New entries require justification in PR description.",
   "modules": {
+    "adr-parser": {
+      "files": [
+        "adr-parser.property.test.cjs",
+        "adr-parser.test.cjs",
+        "adr-parser.unit.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
     "config": {
       "files": [
         "config-defaults-runtime-exclusion.test.cjs",
         "config-field-docs.test.cjs",
         "config-get-default.test.cjs",
-        "config-schema.property.test.cjs",
+        "config-get-raw-guard.test.cjs",
         "config-validation.test.cjs",
         "config.test.cjs"
       ],
       "issue": "TBD"
+    },
+    "context-predicates": {
+      "files": [
+        "context-predicates-query.test.cjs",
+        "context-predicates.property.test.cjs",
+        "context-predicates.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "frontmatter": {
+      "files": [
+        "frontmatter-cli.test.cjs",
+        "frontmatter-golden-parity.test.cjs",
+        "frontmatter-roundtrip.property.test.cjs",
+        "frontmatter.property.test.cjs",
+        "frontmatter.test.cjs",
+        "frontmatter.unit.test.cjs"
+      ],
+      "issue": "3881",
+      "justification": "Grandfathered by #3227 for the original 4-file cluster (pre-existing over-cap, not new sprawl). #3881 (ADR-3473 \u00a78.1, the js-yaml parser migration) adds two more: frontmatter-golden-parity.test.cjs (D-series golden-corpus diff against the legacy parser, ~900 real documents \u2014 cannot be folded into an existing file without losing its independent-of-current-parser provenance) and frontmatter-roundtrip.property.test.cjs (fast-check property coverage the migration's bijective-contract rule requires). Both are migration-specific, not incidental sprawl."
     },
     "graphify": {
       "files": [
@@ -99,6 +129,7 @@
     },
     "verify": {
       "files": [
+        "verify-archive-dirs-live-path.test.cjs",
         "verify-health.test.cjs",
         "verify-mvp-uat.test.cjs",
         "verify-npm-publish.test.cjs",
@@ -106,20 +137,22 @@
         "verify-work-auto-transition.test.cjs",
         "verify.test.cjs"
       ],
-      "issue": "3767"
+      "issue": "#3813 \u2014 the live-path #1883 suite drives buildPlanningSnapshot in-process with an fs fault; the verify module suites are CLI-driving and cannot host an fs monkeypatch",
+      "justification": "verify-command-grounding added by #2401/#3678; allowlist follow-up landed with #3606 (base was red on this lane)."
     },
     "install": {
       "files": [
         "install-minimal-hooks.test.cjs",
         "install-nested-layout.test.cjs",
         "install-path-detection.test.cjs",
+        "install-profile-workflow-spawns.test.cjs",
         "install-regressions.test.cjs",
         "install-runtime-artifacts.test.cjs",
         "install-update-marker.test.cjs",
         "install-write-confinement.test.cjs",
         "install.test.cjs"
       ],
-      "issue": "1679"
+      "issue": "#3798 \u2014 the profile-closure spawn test reads the real repo surface (commands+workflows+agents); consolidating it into install.test.cjs would put a whole-repo scan behind the suite's heaviest file"
     },
     "edge-probe": {
       "files": [
@@ -150,9 +183,94 @@
       "files": [
         "prompt-budget-cli.test.cjs",
         "prompt-budget-parity.test.cjs",
-        "prompt-budget.test.cjs"
+        "prompt-budget.property.test.cjs",
+        "prompt-budget.test.cjs",
+        "prompt-budget.unit.test.cjs"
       ],
       "issue": "2929"
+    },
+    "mcp-catalog": {
+      "files": [
+        "mcp-catalog-parity.install.test.cjs",
+        "mcp-catalog.property.test.cjs",
+        "mcp-catalog.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "model-catalog": {
+      "files": [
+        "model-catalog-runtime-defaults.test.cjs",
+        "model-catalog-valid-tiers.test.cjs",
+        "model-catalog.unit.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "package-legitimacy": {
+      "files": [
+        "package-legitimacy-gate.test.cjs",
+        "package-legitimacy.property.test.cjs",
+        "package-legitimacy.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "runtime-homes": {
+      "files": [
+        "runtime-homes-descriptor-drive.test.cjs",
+        "runtime-homes-legacy-ids-drift-guard.test.cjs",
+        "runtime-homes.property.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "section-manifest": {
+      "files": [
+        "section-manifest-init-facts.test.cjs",
+        "section-manifest.property.test.cjs",
+        "section-manifest.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "workflow-fragments": {
+      "files": [
+        "workflow-fragments-emission.install.test.cjs",
+        "workflow-fragments.property.test.cjs",
+        "workflow-fragments.test.cjs"
+      ],
+      "issue": "3227",
+      "justification": "Grandfathered by #3227 when the testEffectivePrefix() dot/hyphen bucketing fix first made this pre-existing over-cap cluster visible to the gate; not new test sprawl."
+    },
+    "docs": {
+      "files": [
+        "docs-hooks-table-parity.test.cjs",
+        "docs-parity-live-registry.test.cjs",
+        "docs-state-md-locale-parity.test.cjs",
+        "docs-update.test.cjs"
+      ],
+      "issue": "3873 | #3839 \u2014 the hook-event parity suite cross-checks the four docs hook tables against src/runtime-hooks-surface.cts registrations; a generated-docs concern distinct from content freshness and registry parity",
+      "justification": "ADR-3473 \u00a78.8 makes docs/reference/state-md.md and its four locale siblings generated-and-committed and adds the repo's first locale-parity check (verified: no locale-parity lint precedent exists here). That check is a distinct concern from docs-update (content freshness) and docs-parity-live-registry (registry parity); folding it into either would place an unrelated subject inside them purely to satisfy a count. The section it guards is absent from all four translations today and documents the status enum behind #3853."
+    },
+    "audit": {
+      "files": [
+        "audit-command-cutover.test.cjs",
+        "audit-fix-command.test.cjs",
+        "audit-milestone-filename-guard.test.cjs",
+        "audit-open-remainder-count.test.cjs",
+        "audit-uat-acknowledged.test.cjs",
+        "audit-workstream-layouts.test.cjs"
+      ],
+      "issue": "#3804/#3805 \u2014 audit-layout and acknowledged-marker suites drive the real audit-uat CLI against on-disk fixtures | #3817 \u2014 regression suite proving countReal counts the truncation remainder marker instead of treating it as one phantom item"
+    },
+    "shell-command-projection": {
+      "files": [
+        "shell-command-projection-dispatch.test.cjs",
+        "shell-command-projection-md-normalize.test.cjs",
+        "shell-command-projection-path-sep.test.cjs"
+      ],
+      "issue": "#3854 \u2014 the tight-list suite pins the markdown write-normalizer's blank-line policy through the exported normalizeContent/platformWriteSync seam; a distinct concern from dispatch routing and path separation"
     }
   }
 }

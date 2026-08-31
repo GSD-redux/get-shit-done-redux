@@ -1,3 +1,4 @@
+// docs-guard-exempt: this file's own header comment states docs/ is deliberately OUT of scope for its citation scan.
 'use strict';
 
 // allow-test-rule: source-text-is-the-product (#3576) — this gate reads shipped

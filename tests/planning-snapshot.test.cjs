@@ -1114,6 +1114,36 @@ describe('allPhaseDirNames field (Phase 11, #3309 — health-diagnostic-rules/ro
     const snap = buildPlanningSnapshot(cwd);
     assert.deepStrictEqual(snap.allPhaseDirNames, { value: [], scope: SCOPE.UNREADABLE });
   });
+
+  test('#3882 §3.1: byte-identical to a HARDCODED literal, order INCLUDED — mixed sentinel/decimal/letter-suffix/colliding fixture', (t) => {
+    // 40-design.md §3.1 claimed this proof existed ("proven byte-identical —
+    // order included") before it did; the only existing assertion (above,
+    // `.slice().sort()`) is order-BLIND, so it can only ever pass regardless
+    // of what order buildAllPhaseDirNamesField returns. This row is what
+    // makes that claim true: order asserted, expectation hardcoded (never
+    // re-derived from listAllPhaseDirs or buildAllPhaseDirNamesField
+    // themselves), over a fixture mixing every axis the delegation could get
+    // wrong — sentinel (0-/999-), decimal (04.1-), letter-suffix (03A-), and
+    // a genuinely COLLIDING phase-number pair (01-real / 01-duplicate, both
+    // phase "01" — the shape where a raw-fs -> comparePhaseNum reorder could
+    // silently change output order).
+    const cwd = createTempDir('gsd-3882-apdn-order-');
+    t.after(() => cleanup(cwd));
+    writeRoadmap(cwd, ['## v1.0 Current 🚧', '', '### Phase 1: Foo'].join('\n'));
+    const names = ['01-real', '01-duplicate', '999-icebox', '0-backlog', '04.1-decimal', '03A-suffix'];
+    for (const name of names) {
+      fs.mkdirSync(path.join(planningDirOf(cwd), 'phases', name), { recursive: true });
+    }
+
+    const snap = buildPlanningSnapshot(cwd);
+    // Hardcoded literal — plain JS default Array.prototype.sort() (UTF-16
+    // code-unit order, a language guarantee) applied to the fixture list by
+    // hand, not by calling into the code under test.
+    assert.deepStrictEqual(snap.allPhaseDirNames, {
+      value: ['0-backlog', '01-duplicate', '01-real', '03A-suffix', '04.1-decimal', '999-icebox'],
+      scope: SCOPE.COMPLETE,
+    });
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════════════

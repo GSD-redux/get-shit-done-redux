@@ -57,7 +57,7 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
   test('config-get lookups use --raw, not a jq pipe', () => {
     // Matches: config-get <key> ... | jq   (any key, any jq program).
     // The native --raw flag strips JSON quotes off a scalar with no jq.
-    const re = /config-get\b[^|\n]*\|\s*jq\b/;
+    const re = /config-get\b[^|\n]*\|\s*jq\b/; // allow-adhoc-markdown: shell-pipe-to-jq detector, not a markdown table scan
     for (const name of AUDITED) {
       const content = readWorkflow(name);
       if (content == null) continue;
@@ -72,7 +72,7 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
 
   test('resolve-model lookups use --pick, not a jq pipe', () => {
     // resolve-model returns an object; the native --pick <field> descends it.
-    const re = /resolve-model\b[^|\n]*\|\s*jq\b/;
+    const re = /resolve-model\b[^|\n]*\|\s*jq\b/; // allow-adhoc-markdown: shell-pipe-to-jq detector, not a markdown table scan
     for (const name of AUDITED) {
       const content = readWorkflow(name);
       if (content == null) continue;
@@ -86,7 +86,7 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
   });
 
   test('verification.status lookups use --pick, not a jq pipe', () => {
-    const re = /verification\.status\b[^|\n]*\|\s*jq\b/;
+    const re = /verification\.status\b[^|\n]*\|\s*jq\b/; // allow-adhoc-markdown: shell-pipe-to-jq detector, not a markdown table scan
     for (const name of AUDITED) {
       const content = readWorkflow(name);
       if (content == null) continue;
@@ -103,7 +103,7 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
     // Belt-and-suspenders: the jq-replaceable query command families. This
     // catches a future regression on any of them (or a sibling like
     // resolve-execution, which also supports --pick) without enumerating keys.
-    const re = /gsd_run\s+query\s+(config-get|resolve-model|resolve-execution|verification\.status\b)[^|\n]*\|\s*jq\b/;
+    const re = /gsd_run\s+query\s+(config-get|resolve-model|resolve-execution|verification\.status\b)[^|\n]*\|\s*jq\b/; // allow-adhoc-markdown: shell-pipe-to-jq detector, not a markdown table scan
     for (const name of AUDITED) {
       const content = readWorkflow(name);
       if (content == null) continue;
@@ -194,7 +194,7 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
     // loudly — it silently reproduces the fresh-install fallback
     // (INSTALLED_VERSION=0.0.0, scope UNKNOWN), so `/gsd:update` re-installs
     // over a working install and targets the wrong runtime directory.
-    const re = /update-context\b[^|\n]*\|\s*jq\b/;
+    const re = /update-context\b[^|\n]*\|\s*jq\b/; // allow-adhoc-markdown: shell-pipe-to-jq detector, not a markdown table scan
     for (const name of AUDITED) {
       const content = readWorkflow(name);
       if (content == null) continue;
@@ -225,7 +225,7 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
   test('resolve-execution lookups use --pick, not a jq pipe (sibling of resolve-model)', () => {
     // resolve-execution returns an object (model/profile/effort/effort_argv_string);
     // the native --pick <field> descends it — same defect class as resolve-model.
-    const re = /resolve-execution\b[^|\n]*\|\s*jq\b/;
+    const re = /resolve-execution\b[^|\n]*\|\s*jq\b/; // allow-adhoc-markdown: shell-pipe-to-jq detector, not a markdown table scan
     for (const name of AUDITED) {
       const content = readWorkflow(name);
       if (content == null) continue;

@@ -33,6 +33,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const WORKER_PATH = path.join(__dirname, '..', 'hooks', 'gsd-check-update-worker.js');
 const PROJECTION_PATH = path.join(
@@ -140,6 +141,135 @@ describe('worker delegates the npm spawn (does not re-open the gate, #498)', () 
       assert.equal(cache.package_name, null, 'degraded package_name must be null (no-signal, never a stale/foreign value)');
       assert.ok(!cache.update_available, 'degraded update_available must be falsy');
       assert.equal(cache.installed, '0.0.0', 'installed detection is unaffected by the compiled-lib degrade');
+    });
+  });
+}
+
+// ─── #3582: cold-tree fixture must tolerate a concurrent build-hooks.js
+// staging dir, without mutating the live hooks/ tree ─────────────────────
+//
+// scripts/build-hooks.js writes atomically via a per-PID staging dir
+// (hooks/.dist-staging-<pid>) that it creates and removes; up to nine test
+// files invoke it concurrently from their `before()` hooks, so the live
+// hooks/ dir is never guaranteed stable during a test run. This is proven
+// HERMETICALLY, against a fake source tree under a temp dir — planting a
+// staging dir inside the REAL repo's hooks/ would itself be the exact
+// shared-state race this fixture exists to guard against (other test files
+// read hooks/ concurrently), and cleanup() (tests/helpers.cjs) deliberately
+// refuses to remove any path outside the known temp roots, so a real-repo
+// plant can never be cleaned up through it either.
+{
+  const { describe, test } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { buildColdInstallTree, REPO_ROOT, shouldCopyHookEntry } = require('./helpers/cold-runtime-lib-fixture.cjs');
+  const { cleanup } = require('./helpers.cjs');
+
+  describe('cold-runtime-lib-fixture.cjs: #3582 tolerates a concurrent hooks/.dist-staging-<pid> dir', () => {
+    test('a live .dist-staging-test-<random> dir does not break the fixture copy, and is excluded from it', (t) => {
+      // Build a hermetic fake source tree — never touch the real repo's hooks/.
+      const fakeRepoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-fake-repo-'));
+      t.after(() => cleanup(fakeRepoRoot));
+
+      const fakeHooksDir = path.join(fakeRepoRoot, 'hooks');
+      fs.mkdirSync(fakeHooksDir, { recursive: true });
+      // Representative real hook entries the fixture must still carry over.
+      fs.writeFileSync(path.join(fakeHooksDir, 'hooks.json'), '{}');
+      fs.writeFileSync(path.join(fakeHooksDir, 'top-level-hook.js'), '// fake hook\n');
+      fs.mkdirSync(path.join(fakeHooksDir, 'lib'), { recursive: true });
+      fs.writeFileSync(path.join(fakeHooksDir, 'lib', 'helper.js'), '// fake lib helper\n');
+      // Build output dir — must be excluded.
+      fs.mkdirSync(path.join(fakeHooksDir, 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(fakeHooksDir, 'dist', 'built.js'), '// built output\n');
+      // Concurrent build-hooks.js staging dir — must be excluded, and must
+      // not break the copy even while "live".
+      const stagingName = `.dist-staging-99999`;
+      const stagingDir = path.join(fakeHooksDir, stagingName);
+      fs.mkdirSync(stagingDir);
+      fs.writeFileSync(path.join(stagingDir, 'scratch.txt'), 'transient build output');
+
+      // The fixture also copies gsd-core/bin/ensure-runtime-build.cjs — give
+      // the fake tree a real copy of it so buildColdInstallTree() succeeds.
+      const fakeBinDir = path.join(fakeRepoRoot, 'gsd-core', 'bin');
+      fs.mkdirSync(fakeBinDir, { recursive: true });
+      fs.copyFileSync(
+        path.join(REPO_ROOT, 'gsd-core', 'bin', 'ensure-runtime-build.cjs'),
+        path.join(fakeBinDir, 'ensure-runtime-build.cjs'),
+      );
+
+      // Filtered by shouldCopyHookEntry — the same predicate the fixture
+      // itself uses to decide what to copy. Up to nine other test files'
+      // before() hooks concurrently invoke scripts/build-hooks.js, which
+      // creates/removes hooks/.dist-staging-<pid> at unpredictable times, so
+      // a RAW (unfiltered) before/after listing comparison of the live
+      // hooks/ dir is itself racy — it can observe a sibling build's
+      // transient staging dir appear or vanish between the two snapshots and
+      // fail with no real defect. Filtering both snapshots the same way the
+      // fixture does preserves the actual intent (this test adds/removes no
+      // REAL entry in the repo's hooks/) while tolerating scratch that is
+      // not this test's doing and is excluded from the fixture anyway.
+      const realHooksBefore = fs
+        .readdirSync(path.join(REPO_ROOT, 'hooks'))
+        .filter(shouldCopyHookEntry)
+        .sort();
+
+      const cold = buildColdInstallTree({ repoRoot: fakeRepoRoot });
+      t.after(cold.cleanup);
+
+      const entries = fs.readdirSync(cold.hooksDir);
+      assert.ok(
+        !entries.some((e) => e.startsWith('.dist-staging')),
+        `fixture hooks/ must not contain any .dist-staging* entry, got: ${entries.join(', ')}`,
+      );
+      assert.ok(!entries.includes('dist'), `fixture hooks/ must not contain dist/, got: ${entries.join(', ')}`);
+      assert.ok(entries.includes('hooks.json'), 'fixture must still contain the representative hooks.json');
+      assert.ok(entries.includes('top-level-hook.js'), 'fixture must still contain the representative top-level hook');
+      assert.ok(
+        fs.existsSync(path.join(cold.hooksDir, 'lib', 'helper.js')),
+        'fixture must still contain the representative hooks/lib/ subdir file',
+      );
+
+      const realHooksAfter = fs
+        .readdirSync(path.join(REPO_ROOT, 'hooks'))
+        .filter(shouldCopyHookEntry)
+        .sort();
+      assert.deepEqual(
+        realHooksAfter,
+        realHooksBefore,
+        'the real repo hooks/ directory listing, filtered by shouldCopyHookEntry, must be unchanged by ' +
+          'this test (transient hooks/.dist-staging-<pid> entries from concurrent build-hooks.js runs are ' +
+          'excluded from the comparison since this test does not own them)',
+      );
+    });
+  });
+
+  // Direct pin on shouldCopyHookEntry() itself — the predicate IS the fix
+  // (exact 'dist' match plus a '.dist-staging' PREFIX, not a loose
+  // startsWith('dist')/includes('dist') substring match). Pinning it only
+  // indirectly, via the fixture-shape assertions above, would let a looser
+  // implementation (e.g. name.startsWith('dist')) pass every case above
+  // while still being wrong — this pins the exact rule.
+  describe('cold-runtime-lib-fixture.cjs: shouldCopyHookEntry() name-filter rule', () => {
+    const { shouldCopyHookEntry } = require('./helpers/cold-runtime-lib-fixture.cjs');
+
+    test('excludes the build output dir and any .dist-staging* prefix name', () => {
+      assert.equal(shouldCopyHookEntry('dist'), false);
+      assert.equal(shouldCopyHookEntry('.dist-staging-20836'), false);
+      assert.equal(shouldCopyHookEntry('.dist-staging-test-abc'), false);
+      assert.equal(shouldCopyHookEntry('.dist-staging'), false);
+    });
+
+    test('keeps real hook entries', () => {
+      assert.equal(shouldCopyHookEntry('hooks.json'), true);
+      assert.equal(shouldCopyHookEntry('lib'), true);
+      assert.equal(shouldCopyHookEntry('gsd-check-update.js'), true);
+    });
+
+    test('does not over-match on a bare "dist" substring/prefix', () => {
+      assert.equal(shouldCopyHookEntry('dist-staging-no-dot'), true);
+      assert.equal(shouldCopyHookEntry('distant.js'), true);
     });
   });
 }
@@ -501,10 +631,12 @@ describe('bug-2784: update.md cache-clear covers shared cache path', () => {
     const stepContent = stepMatch[0];
 
     const bashLines = [];
-    const fenceRe = /```(?:bash|sh)\r?\n([\s\S]*?)```/g;
-    let m;
-    while ((m = fenceRe.exec(stepContent)) !== null) {
-      for (const line of m[1].split(/\r?\n/)) {
+    const stepLines = stepContent.split(/\r?\n/);
+    for (const block of scanFencedBlocks(stepLines)) {
+      if (block.closeLineIdx === -1) continue;
+      const info = (block.infoString || '').trim();
+      if (info !== 'bash' && info !== 'sh') continue;
+      for (const line of stepLines.slice(block.openLineIdx + 1, block.closeLineIdx)) {
         const trimmed = line.trim();
         if (trimmed) bashLines.push(trimmed);
       }

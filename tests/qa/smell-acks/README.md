@@ -17,12 +17,23 @@ an optional human note alongside a real `issue`, never a replacement for one.
 
 ## Why fragments, not one shared file
 
-Same reason `.changeset/` and `tests/emitted-drift-acks/` use fragments
-instead of one shared mutable document: a single `tests/qa/smell-baseline.json`
+Same reason `.changeset/` uses fragments instead of one shared mutable
+document: a single `tests/qa/smell-baseline.json`
 that every acknowledging PR has to rewrite guarantees a merge conflict
 between any two such PRs in flight at once. A fragment per PR — uniquely
 named so concurrent PRs never touch the same file — means two PRs can never
 conflict on this seam.
+
+**Why this directory survived when `tests/emitted-drift-acks/` did not
+(ADR-3942).** That one was deleted because an emitted-drift acknowledgment is
+spent the instant its PR merges: its ripple is in the base, so it can never
+clear anything again, and every merged fragment became cruft a scheduled bot
+had to garbage-collect. A **smell** acknowledgment is the opposite — it is a
+standing decision that stays valid for as long as the smell keeps firing, which
+is precisely why it folds into a durable shrink-only baseline rather than
+evaporating. Same fragment shape, opposite data lifetime. Do not "consistently"
+migrate this directory to a commit trailer; the trailer is right only for data
+whose life ends at merge.
 
 ## Shape
 

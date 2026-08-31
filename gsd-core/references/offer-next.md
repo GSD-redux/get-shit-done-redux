@@ -4,7 +4,6 @@
   extraction restores byte-budget headroom the frozen ceiling exists to provide.
 -->
 
-
 **Exception:** If `gaps_found`, the `verify_phase_goal` step already presents the gap-closure path (`/gsd:plan-phase {X} --gaps`). No additional routing needed — skip auto-advance.
 
 **No-transition check (spawned by auto-advance chain):**
@@ -41,10 +40,9 @@ STOP. Do not proceed to auto-advance or transition.
 **If `--auto` flag present OR `AUTO_MODE` is true (AND verification passed with no gaps):**
 
 ```
-╔══════════════════════════════════════════╗
-║  AUTO-ADVANCING → TRANSITION             ║
-║  Phase {X} verified, continuing chain    ║
-╚══════════════════════════════════════════╝
+### AUTO-ADVANCING → TRANSITION
+
+Phase {X} verified, continuing chain
 ```
 
 Execute the transition workflow inline (do NOT use Agent — orchestrator context is ~10-15%, transition needs phase completion data already in context):

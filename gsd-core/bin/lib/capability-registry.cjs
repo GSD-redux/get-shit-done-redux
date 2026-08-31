@@ -10,7 +10,7 @@ const capabilities = {
   "ai-integration": {
     "id": "ai-integration",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "AI design contract",
     "description": "AI-SPEC design contract workflow for phases that build AI systems; owns the AI integration command, agents, and workflow.ai_integration_phase activation key.",
     "tier": "full",
@@ -68,7 +68,7 @@ const capabilities = {
         "into": "planner",
         "fragment": {
           "path": "fragments/api-coverage-plan-pre.md",
-          "inline": "# API Coverage Decision Checkpoint\n\n> Full API Coverage by Default — Opt Out, Never Opt In. Fires when a phase\n> integrates an external API / SDK / service. Most non-API phases will not fire\n> it — that is the point.\n\n## Why this exists\n\n\"We integrated the API\" too often silently means \"we integrated whatever the\nfirst use case exercised.\" Every un-built capability is then an invisible hole,\ndiscovered later by a user who reasonably expected it to work. The phase sealed\ngreen because its tasks completed; nobody decided the gaps were acceptable,\nbecause nobody enumerated them. This checkpoint makes the surface **visible and\ndecided** before the phase can seal.\n\n## Detect whether this phase integrates an external API\n\nThe detector is a deterministic scan over the phase scope. It strips fenced\ncode blocks first, so a trigger term inside a code snippet does not fire. It\nreturns a typed result: `{ detected, signals[], terms }`. Run it on the phase\nscope (the concatenation of this phase's ROADMAP section + the PLAN body):\n\n```bash\nSCOPE=\"$(cat \"${PHASE_DIR}\"/*-PLAN.md 2>/dev/null) $(gsd_run query roadmap.get-phase \"${PHASE}\" 2>/dev/null || true)\"\nAPI_COVERAGE_JSON=$(printf '%s' \"$SCOPE\" | node gsd-core/bin/lib/api-coverage.cjs --json 2>/dev/null || echo '{\"detected\":false,\"signals\":[]}')\n```\n\nRead `API_COVERAGE_JSON.detected`. Act on it only — do **not** pattern-match the\nprose yourself.\n\n**If `detected` is `false`:** this phase does not integrate an external API. Skip\nthe checkpoint entirely and continue planning. Do not raise it with the user.\n\n**If `detected` is `true`:** an external-API integration is in scope. You MUST\nproduce a **coverage matrix** before the plan is finalized.\n\n**If `detected` is `true` but the phase genuinely integrates no external API**\n(the detector is deterministic, not infallible — confirm by re-reading the phase\nscope, not by preference): do NOT fabricate a matrix row for a capability that\ndoes not exist. Write a reasoned declaration to `${PHASE_DIR}/COVERAGE.md`\ninstead:\n\n```markdown\nNo external API integration: <one-line reason — what the phase touches instead>.\n```\n\nThe reason is required, exactly like an `OPT-OUT` reason. The seal-time gate\naccepts this declaration in place of a matrix.\n\n## Produce the coverage matrix\n\nEnumerate the external API's full **capability surface** — the verb/endpoint/method\nlist (e.g. for a music service: `search`, `play`, `pause`, `skip`, `set_volume`,\n`get_playlist`, `create_playlist`, `add_to_playlist`, …). For each capability\nrecord a decision, starting from **full coverage** as the default:\n\n| capability | decision | reason |\n|---|---|---|\n| `<capability-id>` | `INTEGRATE` \\| `OPT-OUT` | `<one-line reason if OPT-OUT>` |\n\nRules:\n\n- **`INTEGRATE` is the default.** Every capability starts as INTEGRATE; the\n  matrix is the *subtraction record*.\n- **Every `OPT-OUT` MUST carry a one-line reason** (`not needed`, `not needed\n  yet`, `explicitly out of scope`, …). An opt-out without a reason is an\n  un-decided hole — the exact failure mode this gate exists to close.\n- **A second integration against the same need** (e.g. a second platform for the\n  same capability) starts from the **same full-coverage baseline** as the first.\n  Do not carry over the first integration's opt-outs silently — re-decide each\n  capability for the new surface, so a first-class/fallback asymmetry cannot\n  accumulate.\n\nWrite the matrix to `${PHASE_DIR}/COVERAGE.md` (canonical markdown-table form):\n\n```markdown\n# API Coverage — <service>\n\n> Full coverage by default. Opt-outs are explicit, reasoned decisions.\n\n| capability | decision | reason |\n|---|---|---|\n| search | INTEGRATE | |\n| playlists | INTEGRATE | |\n| skip | OPT-OUT | not needed yet — tracked for follow-up phase |\n```\n\nA fenced ` ```coverage ` JSON block is also accepted for machine-generated\nmatrices; the markdown table is preferred (human-editable, diff-friendly).\n\n## The seal-time gate\n\nThis checkpoint is enforced. At `verify:pre` the `api-coverage.verify-pre` gate\nruns `check api-coverage.verify-pre <phase-dir>`:\n\n- If `COVERAGE.md` exists, it is validated — every row needs a valid decision and\n  every `OPT-OUT` a reason. A malformed/partial matrix **blocks the seal**. A\n  reasoned `No external API integration: …` declaration (and no rows) passes.\n- If `COVERAGE.md` is absent, the detector runs again over the phase scope. If a\n  strong external-API-integration signal is found, the seal is **blocked** until a\n  matrix is produced. If no signal is found, the phase is treated as a non-API\n  phase and the seal proceeds.\n\nSo: an API-integrating phase cannot seal without a decided matrix. Produce it at\nplan time; do not leave it for seal time.\n\n## Tuning the vocabulary (optional)\n\nThe trigger vocabulary is a curated, additive-only set in\n`gsd-core/bin/lib/api-coverage.cjs` (`DEFAULT_API_COVERAGE_TERMS`). To widen it\nfor a project, override at the call site:\n\n```bash\nprintf '%s' \"$SCOPE\" | node gsd-core/bin/lib/api-coverage.cjs --json \\\n  --verbs integrate,wrap,connect,embed --nouns api,sdk,rest,grpc,webhook,plugin\n```\n\nThe whole checkpoint is toggleable via `workflow.api_coverage_gate` in\n`.planning/config.json`.\n"
+          "inline": "# API Coverage Decision Checkpoint\n\n> Full API Coverage by Default — Opt Out, Never Opt In. Fires when a phase\n> integrates an external API / SDK / service. Most non-API phases will not fire\n> it — that is the point.\n\n## Why this exists\n\n\"We integrated the API\" too often silently means \"we integrated whatever the\nfirst use case exercised.\" Every un-built capability is then an invisible hole,\ndiscovered later by a user who reasonably expected it to work. The phase sealed\ngreen because its tasks completed; nobody decided the gaps were acceptable,\nbecause nobody enumerated them. This checkpoint makes the surface **visible and\ndecided** before the phase can seal.\n\n## Detect whether this phase integrates an external API\n\nThe detector is a deterministic scan over the phase scope. It strips fenced\ncode blocks first, so a trigger term inside a code snippet does not fire. It\nreturns a typed result: `{ detected, signals[], terms }`. Run it on the phase\nscope (the concatenation of this phase's ROADMAP section + the PLAN body):\n\n```bash\nSCOPE=\"$(cat \"${PHASE_DIR}\"/*-PLAN.md 2>/dev/null) $(gsd_run query roadmap.get-phase \"${PHASE}\" 2>/dev/null || true)\"\nAPI_COVERAGE_JSON=$(printf '%s' \"$SCOPE\" | node gsd-core/bin/lib/api-coverage.cjs --json 2>/dev/null) || true\n[ -n \"$API_COVERAGE_JSON\" ] || API_COVERAGE_JSON='{\"skipped\":true,\"reason\":\"probe_unavailable\"}'\n```\n\nThe `|| true` neutralizes the assignment's status without discarding the\ndetector's own payload: the detector exits **1** for a real \"no integration\"\nverdict, so treating any non-zero exit as failure would throw away a correct\nanswer. Emptiness — not exit status — is what proves the probe never ran, and\nthe second line is the only place the fragment manufactures a payload of its\nown — one that records the *absence* of a verdict rather than asserting one.\n\nThe detector's exit code and `--json` payload now distinguish a real negative\nfrom an unexamined input (ADR-3889 Phase 3, #3907): empty/whitespace-only\n`$SCOPE` or a stdin read failure emit `{\"skipped\":true,\"reason\":\"no_input\"|\n\"stdin_error\"}` — no `detected` key at all. **Check for `skipped` before\nreading `detected`**: a `skipped` payload is not a confirmed \"no API\nintegration\" verdict, it means the detector never examined real input. Do not\ntreat it as `detected:false`. Read `API_COVERAGE_JSON.detected` only when\n`skipped` is absent — act on it only, do **not** pattern-match the prose\nyourself.\n\n**If `skipped` is `true`:** the detector could not establish a scope (empty\n`$SCOPE`) or failed to run (stdin read error). Skip the checkpoint for this\nrun rather than asserting a verdict about input that was never examined; do\nnot raise it with the user.\n\n**If `detected` is `false`:** this phase does not integrate an external API. Skip\nthe checkpoint entirely and continue planning. Do not raise it with the user.\n\n**If `detected` is `true`:** an external-API integration is in scope. You MUST\nproduce a **coverage matrix** before the plan is finalized.\n\n**If `detected` is `true` but the phase genuinely integrates no external API**\n(the detector is deterministic, not infallible — confirm by re-reading the phase\nscope, not by preference): do NOT fabricate a matrix row for a capability that\ndoes not exist. Write a reasoned declaration to `${PHASE_DIR}/COVERAGE.md`\ninstead:\n\n```markdown\nNo external API integration: <one-line reason — what the phase touches instead>.\n```\n\nThe reason is required, exactly like an `OPT-OUT` reason. The seal-time gate\naccepts this declaration in place of a matrix.\n\n## Produce the coverage matrix\n\nEnumerate the external API's full **capability surface** — the verb/endpoint/method\nlist (e.g. for a music service: `search`, `play`, `pause`, `skip`, `set_volume`,\n`get_playlist`, `create_playlist`, `add_to_playlist`, …). For each capability\nrecord a decision, starting from **full coverage** as the default:\n\n| capability | decision | reason |\n|---|---|---|\n| `<capability-id>` | `INTEGRATE` \\| `OPT-OUT` | `<one-line reason if OPT-OUT>` |\n\nRules:\n\n- **`INTEGRATE` is the default.** Every capability starts as INTEGRATE; the\n  matrix is the *subtraction record*.\n- **Every `OPT-OUT` MUST carry a one-line reason** (`not needed`, `not needed\n  yet`, `explicitly out of scope`, …). An opt-out without a reason is an\n  un-decided hole — the exact failure mode this gate exists to close.\n- **A second integration against the same need** (e.g. a second platform for the\n  same capability) starts from the **same full-coverage baseline** as the first.\n  Do not carry over the first integration's opt-outs silently — re-decide each\n  capability for the new surface, so a first-class/fallback asymmetry cannot\n  accumulate.\n\nWrite the matrix to `${PHASE_DIR}/COVERAGE.md` (canonical markdown-table form):\n\n```markdown\n# API Coverage — <service>\n\n> Full coverage by default. Opt-outs are explicit, reasoned decisions.\n\n| capability | decision | reason |\n|---|---|---|\n| search | INTEGRATE | |\n| playlists | INTEGRATE | |\n| skip | OPT-OUT | not needed yet — tracked for follow-up phase |\n```\n\nA fenced ` ```coverage ` JSON block is also accepted for machine-generated\nmatrices; the markdown table is preferred (human-editable, diff-friendly).\n\n## The seal-time gate\n\nThis checkpoint is enforced. At `verify:pre` the `api-coverage.verify-pre` gate\nruns `check api-coverage.verify-pre <phase-dir>`:\n\n- If `COVERAGE.md` exists, it is validated — every row needs a valid decision and\n  every `OPT-OUT` a reason. A malformed/partial matrix **blocks the seal**. A\n  reasoned `No external API integration: …` declaration (and no rows) passes.\n- If `COVERAGE.md` is absent, the detector runs again over the phase scope. If a\n  strong external-API-integration signal is found, the seal is **blocked** until a\n  matrix is produced. If no signal is found, the phase is treated as a non-API\n  phase and the seal proceeds.\n\nSo: an API-integrating phase cannot seal without a decided matrix. Produce it at\nplan time; do not leave it for seal time.\n\n## Tuning the vocabulary (optional)\n\nThe trigger vocabulary is a curated, additive-only set in\n`gsd-core/bin/lib/api-coverage.cjs` (`DEFAULT_API_COVERAGE_TERMS`). To widen it\nfor a project, override at the call site:\n\n```bash\nprintf '%s' \"$SCOPE\" | node gsd-core/bin/lib/api-coverage.cjs --json \\\n  --verbs integrate,wrap,connect,embed --nouns api,sdk,rest,grpc,webhook,plugin\n```\n\nThe whole checkpoint is toggleable via `workflow.api_coverage_gate` in\n`.planning/config.json`.\n"
         },
         "produces": [
           "COVERAGE.md"
@@ -95,9 +95,9 @@ const capabilities = {
   "antigravity": {
     "id": "antigravity",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -128,7 +128,8 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeCommandToAntigravitySkill"
+            "converter": "convertClaudeCommandToAntigravitySkill",
+            "home": ".gemini/config"
           },
           {
             "kind": "agents",
@@ -136,7 +137,8 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeAgentToAntigravityAgent"
+            "converter": "convertClaudeAgentToAntigravityAgent",
+            "home": ".gemini/config"
           }
         ],
         "local": [
@@ -212,7 +214,7 @@ const capabilities = {
         "binary": "agy",
         "args": [
           "--print-timeout",
-          "540s",
+          "{{nativeTimeout}}",
           "{{model}}",
           "-p",
           "{{prompt}}"
@@ -223,11 +225,12 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 600000,
+      "timeoutConfigKey": "review.timeouts.antigravity",
       "emptyOutput": "handler-owned",
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
     },
@@ -236,13 +239,23 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      },
+      "review.max_prompt_tokens_per_reviewer.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
+      },
+      "review.timeouts.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "assumption-delta": {
     "id": "assumption-delta",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Assumption-delta architecture checkpoint",
     "description": "Rarely-firing advisory checkpoint that triggers when a phase makes something plural, optional, or chosen that used to be singular, required, or derived. Surfaces one identity-model question (promote the new general representation to primary, or add it alongside?) so a silent primary-key drift does not accumulate into a later user-facing bug. Non-blocking; fires only on a detected signal.",
     "tier": "full",
@@ -273,7 +286,7 @@ const capabilities = {
         "into": "planner",
         "fragment": {
           "path": "fragments/plan-pre.md",
-          "inline": "# Assumption-Delta Architecture Checkpoint\n\n> Advisory, non-blocking. Fires **only** when the phase scope shows a singular→plural / required→optional / derived→chosen transition. When it fires, it surfaces ONE identity-model question before the plan is finalized. Most phases will not fire it — that is the point.\n\n## Why this exists\n\nMost quietly-imported architectural debt does not come from a missing upfront design phase. It comes at the *seam*: a later phase introduces a second case (a second platform, auth method, tenant, region, source of truth) and nobody re-asks whether the original abstraction still names the right thing. The phase that adds the second case is exactly the 20-minute conversation that prevents an afternoon of later cleanup.\n\n## Run the detector\n\nThe detector is a deterministic scan over the phase scope text. It strips fenced code blocks first, so a trigger word that appears only inside a code snippet does not fire. It returns a typed result: `{ detected, signals[], terms }`. Resolve it through the `assumption-delta scan` query (same phase-section resolver as `roadmap.get-phase`):\n\n```bash\nASSUMPTION_DELTA_JSON=$(gsd_run query assumption-delta scan \"${PHASE}\" --json 2>/dev/null || echo '{\"detected\":false,\"signals\":[],\"terms\":{}}')\n```\n\n> If the phase section cannot be resolved (no `ROADMAP.md` / unknown phase), the query emits `{ \"detected\": false, ... }` — the checkpoint does not fire. Do not block on it.\n>\n> Optional tuning — pass `--terms <comma-list>` to replace the curated pluralization cues for this project (the `optional`/`chosen` cues keep their defaults): `gsd_run query assumption-delta scan \"${PHASE}\" --json --terms second,alternative,fallback`.\n\n## Decision branch\n\nRead `ASSUMPTION_DELTA_JSON`. Act on `detected` only — do **not** pattern-match the human prose.\n\n**If `detected` is `false`:** this phase does not change a core assumption. Skip the checkpoint entirely and continue planning. Do not raise it with the user.\n\n**If `detected` is `true`:** a core assumption may have lost its monopoly. The `signals[]` array tells you which family fired:\n\n| `kind` | What changed | The question to answer |\n|---|---|---|\n| `pluralization` | A second X was introduced where there was one (second platform / auth method / tenant / region / source of truth) | Does the current primary key / identity model still name the right noun? |\n| `optional` | A required / `only` field became optional | Is the field still the right anchor, or has the anchor moved? |\n| `chosen` | A derived value became chosen, or a constant became a parameter | Has a configuration decision become a modeling decision? |\n\nBefore finalizing the plan, answer this for the user and record the decision explicitly:\n\n> **Promote vs. add-alongside.** The usual correct move when a generalization occurs is to **promote** the new general representation to the primary and **demote** the old specific one to a detail of one variant — *not* to add the new one alongside the still-required old one. Adding alongside silently contradicts the generalized intent (a later variant that does not fit the old primary can be stored but never confirmed as a default).\n\nRecord the outcome in the PLAN.md front matter / a `<assumption_delta_decision>` block:\n\n- The **noun** that is now primary (the generalized identity).\n- The **decision**: `promote` | `add-alongside` | `no-change`, with a one-line rationale.\n- If `add-alongside`: call it out as accepted debt and note what would force a later promote.\n\n## Optional companion: an invariant test\n\nWhen `detected` is `true`, suggest (do not require) a contract/invariant test that encodes the now-generalized intent — e.g. *\"every confirmed default round-trips through the primary use-path, for every supported variant.\"* That test goes red the instant a future phase reintroduces the singular assumption, so the regression cannot land silently. If the user accepts, add the test as a task in the plan.\n\n## Tuning the vocabulary (optional)\n\nThe trigger vocabulary is a curated, additive-only set in `gsd-core/bin/lib/assumption-delta.cjs` (`DEFAULT_ASSUMPTION_DELTA_TERMS`). Bare \"or\" is intentionally excluded — it is too common in prose and would make the gate fire constantly. To widen or narrow the cues for a project, override at the call site with `--terms <comma-list>` (replaces the pluralization cues; `optional`/`chosen` keep defaults). The whole checkpoint is toggleable via `workflow.assumption_delta` in `.planning/config.json`.\n\nThis checkpoint is advisory: it informs and records; it never blocks the phase.\n"
+          "inline": "# Assumption-Delta Architecture Checkpoint\n\n> Advisory, non-blocking. Fires **only** when the phase scope shows a singular→plural / required→optional / derived→chosen transition. When it fires, it surfaces ONE identity-model question before the plan is finalized. Most phases will not fire it — that is the point.\n\n## Why this exists\n\nMost quietly-imported architectural debt does not come from a missing upfront design phase. It comes at the *seam*: a later phase introduces a second case (a second platform, auth method, tenant, region, source of truth) and nobody re-asks whether the original abstraction still names the right thing. The phase that adds the second case is exactly the 20-minute conversation that prevents an afternoon of later cleanup.\n\n## Run the detector\n\nThe detector is a deterministic scan over the phase scope text. It strips fenced code blocks first, so a trigger word that appears only inside a code snippet does not fire. It returns a typed result: `{ detected, signals[], terms }`. Resolve it through the `assumption-delta scan` query (same phase-section resolver as `roadmap.get-phase`):\n\n```bash\nASSUMPTION_DELTA_JSON=$(gsd_run query assumption-delta scan \"${PHASE}\" --json 2>/dev/null) || true\n[ -n \"$ASSUMPTION_DELTA_JSON\" ] || ASSUMPTION_DELTA_JSON='{\"skipped\":true,\"reason\":\"probe_unavailable\"}'\n```\n\n> If the phase section cannot be resolved (no `ROADMAP.md` / unknown phase, or a section with no body), the query emits `{ \"skipped\": true, \"reason\": \"phase_unresolved\" }` — **not** `detected:false`. A probe that never had input does not get to assert that this phase changes no core assumption. The checkpoint does not fire either way; the difference is that a skip is now distinguishable from a real negative. Do not block on it.\n>\n> Optional tuning — pass `--terms <comma-list>` to replace the curated pluralization cues for this project (the `optional`/`chosen` cues keep their defaults): `gsd_run query assumption-delta scan \"${PHASE}\" --json --terms second,alternative,fallback`.\n\n## Decision branch\n\nRead `ASSUMPTION_DELTA_JSON`. Act on `detected` only — do **not** pattern-match the human prose.\n\n**If `skipped` is `true`:** the detector never examined a phase section — it could not resolve one (`phase_unresolved`) or could not run at all (`probe_unavailable`). Skip the checkpoint for this run rather than asserting a verdict about input that was never examined; do not raise it with the user. **Check for `skipped` before reading `detected`** — a skipped payload carries no `detected` key, and treating its absence as `false` re-creates the fabrication this branch exists to prevent.\n\n**If `detected` is `false`:** this phase does not change a core assumption. Skip the checkpoint entirely and continue planning. Do not raise it with the user.\n\n**If `detected` is `true`:** a core assumption may have lost its monopoly. The `signals[]` array tells you which family fired:\n\n| `kind` | What changed | The question to answer |\n|---|---|---|\n| `pluralization` | A second X was introduced where there was one (second platform / auth method / tenant / region / source of truth) | Does the current primary key / identity model still name the right noun? |\n| `optional` | A required / `only` field became optional | Is the field still the right anchor, or has the anchor moved? |\n| `chosen` | A derived value became chosen, or a constant became a parameter | Has a configuration decision become a modeling decision? |\n\nBefore finalizing the plan, answer this for the user and record the decision explicitly:\n\n> **Promote vs. add-alongside.** The usual correct move when a generalization occurs is to **promote** the new general representation to the primary and **demote** the old specific one to a detail of one variant — *not* to add the new one alongside the still-required old one. Adding alongside silently contradicts the generalized intent (a later variant that does not fit the old primary can be stored but never confirmed as a default).\n\nRecord the outcome in the PLAN.md front matter / a `<assumption_delta_decision>` block:\n\n- The **noun** that is now primary (the generalized identity).\n- The **decision**: `promote` | `add-alongside` | `no-change`, with a one-line rationale.\n- If `add-alongside`: call it out as accepted debt and note what would force a later promote.\n\n## Optional companion: an invariant test\n\nWhen `detected` is `true`, suggest (do not require) a contract/invariant test that encodes the now-generalized intent — e.g. *\"every confirmed default round-trips through the primary use-path, for every supported variant.\"* That test goes red the instant a future phase reintroduces the singular assumption, so the regression cannot land silently. If the user accepts, add the test as a task in the plan.\n\n## Tuning the vocabulary (optional)\n\nThe trigger vocabulary is a curated, additive-only set in `gsd-core/bin/lib/assumption-delta.cjs` (`DEFAULT_ASSUMPTION_DELTA_TERMS`). Bare \"or\" is intentionally excluded — it is too common in prose and would make the gate fire constantly. To widen or narrow the cues for a project, override at the call site with `--terms <comma-list>` (replaces the pluralization cues; `optional`/`chosen` keep defaults). The whole checkpoint is toggleable via `workflow.assumption_delta` in `.planning/config.json`.\n\nThis checkpoint is advisory: it informs and records; it never blocks the phase.\n"
         },
         "produces": [],
         "consumes": [
@@ -288,7 +301,7 @@ const capabilities = {
   "audit": {
     "id": "audit",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Audit",
     "description": "Open-artifact audit and UAT-gap audit for milestone close gates; exposes `gsd-tools audit-uat` (cross-phase UAT outstanding items) and `gsd-tools audit-open` (structured open-artifact scan across debug, tasks, threads, todos, seeds, UAT, verification, context-questions).",
     "tier": "full",
@@ -325,7 +338,7 @@ const capabilities = {
   "augment": {
     "id": "augment",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Augment Code",
     "description": "Augment Code CLI — commands + nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -438,7 +451,7 @@ const capabilities = {
   "broken-windows": {
     "id": "broken-windows",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Broken-windows ledger",
     "description": "Cross-phase defect register accumulating stubs, TODOs, skipped tests, unrun verifies, and unmet truths into .planning/WINDOWS.md. When enforcement is enabled, it blocks /gsd-ship while any window is open unless explicitly waived with a recorded reason. Operationalizes GSD's no-defer discipline as a tracked artifact (issue #1950).",
     "tier": "full",
@@ -484,7 +497,7 @@ const capabilities = {
   "claude": {
     "id": "claude",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Claude Code",
     "description": "Anthropic Claude Code — primary development runtime; tier-1 support with full hook surface and skills-based global install.",
     "tier": "core",
@@ -627,11 +640,12 @@ const capabilities = {
         }
       },
       "timeoutFloorMs": 1200000,
+      "timeoutConfigKey": "review.timeouts.claude",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Claude",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
       "handler": null
     },
@@ -640,13 +654,23 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Claude reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "claude-orchestration": {
     "id": "claude-orchestration",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Claude orchestration (Workflow backend)",
     "description": "Default-off, BETA, claude-only capability that adopts Claude Code's Workflow tool (the engine behind /effort ultracode) as an optional parallel-execution backend for the GSD loop. When the runtime exposes the Workflow tool and claude_orchestration.execution_backend resolves to 'workflow', execute-phase emits a generated Workflow script (waves -> parallel() barriers, plans -> agent({ agentType: 'gsd-executor', isolation: 'worktree' }), files_modified overlap -> separate sequential stages, resumeFromRunId wired to the phase run id, shared token budget) that composes the SAME gsd-executor agent and worktree isolation the inline path uses, restoring the wave parallelism the #853 backgrounded-agent nesting limitation forces inline on Claude Code. (The plan-checker and verifier remain inline until separately wired — this capability delivers the parallel-execution backend, not those gates.) Also folds the ultraplan plan-offload under one runtime gate (plan:* surface). On any runtime lacking the Workflow tool, or when the capability is disabled, behaviour is byte-identical to today (inline/manual dispatch). Detection + emission live in gsd-core/bin/lib/claude-orchestration.cjs (pure, fail-closed). Mirrors the existing gsd-ultraplan-phase BETA-isolation posture.",
     "tier": "full",
@@ -705,7 +729,7 @@ const capabilities = {
         "into": "executor",
         "fragment": {
           "path": "fragments/execute-wave-pre.md",
-          "inline": "# Claude orchestration — Workflow execution backend (BETA)\n\n> Injected at `execute:wave:pre` `into: executor` only when\n> `claude_orchestration.enabled` is true. Default-off; `onError: skip`.\n\n## When this contribution is active\n\nThe Claude orchestration capability is **default-off and BETA**. It activates only\nwhen ALL of the following hold:\n\n1. `claude_orchestration.enabled` is `true` in `.planning/config.json`, AND\n2. the active runtime is **Claude Code** (the Workflow tool is Claude / Agent\n   SDK-specific), AND\n3. `claude_orchestration.execution_backend` resolves to `workflow` — either\n   explicitly, or via `auto` — **and** the Agent SDK version is\n   `>= claude_orchestration.min_agent_sdk_version` (default `0.3.149`). The SDK\n   floor applies in both `auto` and `workflow` modes (fail-closed: a pre-release\n   or older SDK never activates the preview backend).\n\nDetection is fail-closed: any miss degrades to **inline, manual, one-agent-per-\nmessage dispatch** — exactly today's behaviour. On a non-Claude runtime this\ncontribution is a no-op.\n\n## Why `execute:wave:pre` (not `execute:wave:post`)\n\nThis is a **dispatch-backend selector** — it decides HOW a wave's executor agents\nare spawned. That decision has to be made BEFORE the wave's `Agent()` calls in\n`execute-phase.md` step 3, not after the wave has already finished (#2285). The\ncapability previously registered at `execute:wave:post`, which fires only after\nworktree merge/post-merge tests/tracking updates — by then the wave was already\ndispatched inline, so the contribution was structurally unable to change how\ndispatch happened. This fragment is injected at the point that actually precedes\ndispatch.\n\n## What the orchestrator does when the Workflow backend is active\n\nBefore spawning executor agents for the current wave (execute-phase.md step 3),\nresolve the dispatch backend through the single composed CLI seam:\n\n```bash\ngsd-tools claude-orchestration resolve-wave-dispatch \\\n  --waves \"$WAVE_MANIFEST_PATH\" --run-id \"$PHASE_RUN_ID\" \\\n  --runtime \"$RUNTIME\" \\\n  --phase-dir \"$PHASE_DIR\" --raw\n```\n\n`--agent-sdk-version` is no longer passed here (#2590). The router resolves the\ninstalled Agent SDK version itself; see **Agent SDK version** below. The former\n`${AGENT_SDK_VERSION:+--agent-sdk-version \"$AGENT_SDK_VERSION\"}` line was also\n**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it\ncollapsed to a SINGLE argv element there, `argValue()` never matched, and the run\nfailed into `agent_sdk_version_unknown` — indistinguishable from genuinely\nunknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.\n\nThis composes `detectWorkflowBackend` (the gate ladder above) with\n`emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure\nfunction backing it is `resolveWaveDispatch` in\n`gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:\n`{ backend: 'inline'|'workflow', reason, script?, summary? }`.\n\n### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)\n\nThese are NOT pre-existing execute-phase.md variables — the orchestrator builds\nthem at this step, from data it already has in-context from `discover_and_group_plans`\n(the `PLAN_INDEX` JSON) and step 2.5 (the per-plan `USE_WORKTREES_FOR_PLAN` decision):\n\n1. **`$PHASE_DIR`** — reuse `{phase_dir}` from the `INIT` bundle (already loaded\n   in the `initialize` step). No new value needed.\n\n2. **`$PHASE_RUN_ID`** — a stable identifier for THIS phase-execution attempt, so\n   `resumeFromRunId` can resume an interrupted run without re-dispatching plans\n   the Workflow tool already completed. Construct it deterministically —\n   `execute-{phase_number}-{phase_slug}` — from `INIT`'s `phase_number`/`phase_slug`\n   (both are already validated identifiers used elsewhere in this workflow, so\n   they satisfy `emitWorkflowScript`'s `isScriptableIdentifier` check). Do NOT\n   mint a new random id per wave — the SAME `$PHASE_RUN_ID` is reused for every\n   wave in the phase so the Workflow tool can correctly track cross-wave resume\n   state.\n\n3. **`$WAVE_MANIFEST_PATH`** — a fresh temp file for THIS wave's manifest (one\n   wave = one `waves` array with a single entry, matching the wave-by-wave\n   dispatch loop; do not batch multiple waves into one manifest — waves are\n   dispatched in wave order, not all at once):\n\n   ```bash\n   WAVE_MANIFEST_PATH=$(mktemp \"${TMPDIR:-/tmp}/gsd-wave-dispatch-XXXXXX\") && mv \"$WAVE_MANIFEST_PATH\" \"$WAVE_MANIFEST_PATH.json\" && WAVE_MANIFEST_PATH=\"$WAVE_MANIFEST_PATH.json\"\n   ```\n\n   Then **use the Write tool** (not a bash/jq pipeline — the orchestrator already\n   has every field parsed in-context) to write the manifest JSON to\n   `$WAVE_MANIFEST_PATH`:\n\n   ```json\n   {\n     \"waves\": [\n       {\n         \"id\": \"wave-{N}\",\n         \"plans\": [\n           {\n             \"id\": \"{plan_id}\",\n             \"brief\": \"{the SAME <objective>...<success_criteria> prompt block step 3 builds for this plan's inline Agent() call}\",\n             \"files_modified\": [\"{from PLAN_INDEX.plans[].files_modified for this plan}\"],\n             \"use_worktree\": {true unless step 2.5 set USE_WORKTREES_FOR_PLAN=false for this plan}\n           }\n         ]\n       }\n     ]\n   }\n   ```\n\n   - **`id`** — the plan id from `PLAN_INDEX`, e.g. `\"01-01\"`.\n   - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`\n     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/\n     `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/\n     `{phase_name}` substituted) — a short summary here would NOT reproduce\n     step 3's behavior and would violate the \"identical artifacts\" contract.\n   - **`files_modified`** — copy verbatim from the plan's `PLAN_INDEX` entry.\n   - **`use_worktree`** — `true` for every plan UNLESS step 2.5's per-plan\n     worktree gate (`execute-phase/steps/per-plan-worktree-gate.md`) set\n     `USE_WORKTREES_FOR_PLAN=false` for that plan (submodule-touching plan, or\n     project-level `USE_WORKTREES=false`) — in which case pass `false` here so\n     `emitWorkflowScript` omits `isolation: \"worktree\"` for that plan (#2772 /\n     #2285 finding 1). **Never** hardcode `true` — that would force worktree\n     isolation on a plan the inline path explicitly keeps out of worktrees.\n\n4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.\n\n**Agent SDK version:** the orchestrator has no *bash-computable* way to\nintrospect the live Agent SDK version — but the router runs in Node, so it\nresolves the version itself (#2590), in this order:\n\n1. an explicit `--agent-sdk-version <ver>` (pin a version),\n2. `GSD_AGENT_SDK_VERSION`,\n3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from\n   its `package.json` on disk by walking `node_modules` up the tree. (Read\n   directly rather than via `require.resolve`: the SDK's `exports` map does not\n   expose `./package.json`, so `require.resolve` throws\n   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)\n\nPreviously nothing computed this at all, so gate 5 returned\n`agent_sdk_version_unknown` on **every** automated run and the Workflow backend\ncould never activate — while `gsd-tools capability state` still reported the\ncapability `active: true`. Fail-closed is preserved: when no version can be\nresolved, gate 5 still declines to `inline`. What changed is that a resolvable\nversion is now actually found, so a genuinely-too-old SDK reports\n`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.\n\n**If `backend == \"workflow\"`:** run the emitted `script` via the Workflow tool\nfor THIS wave instead of the per-message `Agent()` loop in step 3. The script\ncomposes the SAME `gsd-executor` agent type the inline path uses, with\nworktree isolation applied PER PLAN from the manifest's `use_worktree` field\n(see `emitWorkflowScript`):\n\n- **waves → one or more sequential `parallel()` barriers** — each wave is a\n  barrier group; when plans within a wave share `files_modified`, they are split\n  into separate sequential stages within that wave's barrier.\n- **plans → `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })`**\n  when `use_worktree` is not `false`, or `agent(brief, { agentType: 'gsd-executor' })`\n  (no isolation) when it is — so the produced `SUMMARY.md` and commits are\n  identical to inline dispatch, INCLUDING the inline path's submodule safety\n  gate (#2772 / #2285 finding 1).\n- **`files_modified` overlap → separate sequential stages** — the same overlap\n  rule execute-phase already applies inline (step 1 of the wave loop).\n- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's\n  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,\n  not a script function; the script deliberately does not call it (#2590 — doing\n  so threw \"resumeFromRunId is not defined\" and rejected the entire script).\n  Omitting it from the tool invocation silently regresses phase-resume to a\n  no-op: an interrupted phase re-runs completed plans.\n\n### After the run: manifest bridge into the merge chain (#3302)\n\nThe single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also\nmeans step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on\nthis path. The orchestrator MUST bridge the run's per-agent results into the SAME\nmanifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run\nunchanged:\n\n1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,\n   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:\n\n   ```bash\n   if [ -z \"${WAVE_WORKTREE_MANIFEST:-}\" ]; then\n     M=$(mktemp \"${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX\") && mv \"$M\" \"$M.json\" && WAVE_WORKTREE_MANIFEST=\"$M.json\" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)\n     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back\n     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.\n     ORCH_ROOT=$(git rev-parse --show-toplevel)\n     ORCH_ROOT=\"$ORCH_ROOT\" MANIFEST=\"$WAVE_WORKTREE_MANIFEST\" node -e 'const fs=require(\"fs\");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+\"\\n\")'\n     export WAVE_WORKTREE_MANIFEST\n   fi\n   ```\n\n2. **Invoke the Workflow tool with the emitted script and\n   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry\n   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that\n   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,\n   expected_base}` — captured by the executor itself per\n   `agents/gsd-executor.md`), or `null` when the agent's result carried none\n   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).\n\n3. **Record every worktree plan** exactly as inline dispatch does at step 3's\n   \"After each `Agent()` returns\" — one `worktree.record-agent` per returned entry\n   with `expects_worktree: true` and complete metadata:\n\n   ```bash\n   gsd_run query worktree.record-agent --manifest \"$WAVE_WORKTREE_MANIFEST\" \\\n     --agent-id \"<metadata.agent_id>\" --path \"<metadata.worktree_path>\" \\\n     --branch \"<metadata.branch>\" --base \"<metadata.expected_base>\" \\\n     --files \"<plan files_modified, space-separated>\"\n   ```\n\n   The verb's write-strict validation applies as inline: on a non-zero exit or any\n   missing field, stop and ask for recovery — do not append an under-populated entry.\n\n4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**\n   After recording, the manifest must hold one entry per `expects_worktree: true`\n   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected\n   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count\n   mismatch — means commits are stranded on their `worktree-wf_*` branches and\n   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the\n   phase with the failing plan id and the recovery hint below; do NOT run\n   `worktree.cleanup-wave` and do NOT proceed to step 4.\n\n   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover\n   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one\n   `{\"type\":\"result\",…}` line per agent — in the Workflow run's transcript dir), re-run\n   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be\n   recovered either, merge the branch manually after review — never discard it.\n\n5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final\n   messages, so a previously-completed plan can return with `metadata: null`. Recover\n   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it\n   cannot be recovered, fail loudly per rule 4 — a resumed run must never report\n   success over silently-dropped agent work.\n\n6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the\n   manifest): they ran without isolation; their commits are already on the main working\n   tree. No record-agent entry, no manifest write.\n\nWith the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's\nmanifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run\nUNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their\nmetadata; the merge chain itself is the inline path's own, now with real input.\n\n**If `backend == \"inline\"`** (any gate miss, or `resolve-wave-dispatch` itself\nunavailable/erroring): proceed to step 3's standard per-message `Agent()`\ndispatch — the default, byte-identical-to-today path. `onError: skip` on this\ncontribution means a `resolve-wave-dispatch` command failure is treated exactly\nlike an `inline` result, never as a fatal wave error.\n\n## Fallback contract\n\nDetection is fail-closed end-to-end: capability disabled, non-Claude runtime,\n`execution_backend:\"inline\"`, missing/incapable host descriptor, unknown or\nbelow-floor Agent SDK version, or an `emitWorkflowScript` failure on a malformed\nwave manifest — ANY of these degrades to `backend:\"inline\"` and execute-phase's\nstandard inline dispatch (step 3) runs unmodified. The Workflow backend never\npartially activates; the executor MUST NOT assume parallelism, a shared budget,\nor resume-from-run-id semantics when `backend == \"inline\"`.\n"
+          "inline": "# Claude orchestration — Workflow execution backend (BETA)\n\n> Injected at `execute:wave:pre` `into: executor` only when\n> `claude_orchestration.enabled` is true. Default-off; `onError: skip`.\n\n## When this contribution is active\n\nThe Claude orchestration capability is **default-off and BETA**. It activates only\nwhen ALL of the following hold:\n\n1. `claude_orchestration.enabled` is `true` in `.planning/config.json`, AND\n2. the active runtime is **Claude Code** (the Workflow tool is Claude / Agent\n   SDK-specific), AND\n3. `claude_orchestration.execution_backend` resolves to `workflow` — either\n   explicitly, or via `auto` — **and** the Agent SDK version is\n   `>= claude_orchestration.min_agent_sdk_version` (default `0.3.149`). The SDK\n   floor applies in both `auto` and `workflow` modes (fail-closed: a pre-release\n   or older SDK never activates the preview backend).\n\nDetection is fail-closed: any miss degrades to **inline, manual, one-agent-per-\nmessage dispatch** — exactly today's behaviour. On a non-Claude runtime this\ncontribution is a no-op.\n\n## Why `execute:wave:pre` (not `execute:wave:post`)\n\nThis is a **dispatch-backend selector** — it decides HOW a wave's executor agents\nare spawned. That decision has to be made BEFORE the wave's `Agent()` calls in\n`execute-phase.md` step 3, not after the wave has already finished (#2285). The\ncapability previously registered at `execute:wave:post`, which fires only after\nworktree merge/post-merge tests/tracking updates — by then the wave was already\ndispatched inline, so the contribution was structurally unable to change how\ndispatch happened. This fragment is injected at the point that actually precedes\ndispatch.\n\n## What the orchestrator does when the Workflow backend is active\n\nBefore spawning executor agents for the current wave (execute-phase.md step 3),\nresolve the dispatch backend through the single composed CLI seam:\n\n```bash\ngsd-tools claude-orchestration resolve-wave-dispatch \\\n  --waves \"$WAVE_MANIFEST_PATH\" --run-id \"$PHASE_RUN_ID\" \\\n  --runtime \"$RUNTIME\" \\\n  --phase-dir \"$PHASE_DIR\" --raw\n```\n\n`--agent-sdk-version` is no longer passed here (#2590). The router resolves the\ninstalled Agent SDK version itself; see **Agent SDK version** below. The former\n`${AGENT_SDK_VERSION:+--agent-sdk-version \"$AGENT_SDK_VERSION\"}` line was also\n**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it\ncollapsed to a SINGLE argv element there, `argValue()` never matched, and the run\nfailed into `agent_sdk_version_unknown` — indistinguishable from genuinely\nunknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.\n\nThis composes `detectWorkflowBackend` (the gate ladder above) with\n`emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure\nfunction backing it is `resolveWaveDispatch` in\n`gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:\n`{ backend: 'inline'|'workflow', reason, script?, summary? }`.\n\n### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)\n\nThese are NOT pre-existing execute-phase.md variables — the orchestrator builds\nthem at this step, from data it already has in-context from `discover_and_group_plans`\n(the `PLAN_INDEX` JSON) and step 2.5 (the per-plan `USE_WORKTREES_FOR_PLAN` decision):\n\n1. **`$PHASE_DIR`** — reuse `{phase_dir}` from the `INIT` bundle (already loaded\n   in the `initialize` step). No new value needed.\n\n2. **`$PHASE_RUN_ID`** — a stable identifier for THIS phase-execution attempt, so\n   `resumeFromRunId` can resume an interrupted run without re-dispatching plans\n   the Workflow tool already completed. Construct it deterministically —\n   `execute-{phase_number}-{phase_slug}` — from `INIT`'s `phase_number`/`phase_slug`\n   (both are already validated identifiers used elsewhere in this workflow, so\n   they satisfy `emitWorkflowScript`'s `isScriptableIdentifier` check). Do NOT\n   mint a new random id per wave — the SAME `$PHASE_RUN_ID` is reused for every\n   wave in the phase so the Workflow tool can correctly track cross-wave resume\n   state.\n\n3. **`$WAVE_MANIFEST_PATH`** — a fresh temp file for THIS wave's manifest (one\n   wave = one `waves` array with a single entry, matching the wave-by-wave\n   dispatch loop; do not batch multiple waves into one manifest — waves are\n   dispatched in wave order, not all at once):\n\n   ```bash\n   WAVE_MANIFEST_PATH=$(mktemp \"${TMPDIR:-/tmp}/gsd-wave-dispatch-XXXXXX\") && mv \"$WAVE_MANIFEST_PATH\" \"$WAVE_MANIFEST_PATH.json\" && WAVE_MANIFEST_PATH=\"$WAVE_MANIFEST_PATH.json\"\n   ```\n\n   Then **use the Write tool** (not a bash/jq pipeline — the orchestrator already\n   has every field parsed in-context) to write the manifest JSON to\n   `$WAVE_MANIFEST_PATH`:\n\n   ```json\n   {\n     \"waves\": [\n       {\n         \"id\": \"wave-{N}\",\n         \"plans\": [\n           {\n             \"id\": \"{plan_id}\",\n             \"brief\": \"{the SAME <objective>...<success_criteria> prompt block step 3 builds for this plan's inline Agent() call}\",\n             \"files_modified\": [\"{from PLAN_INDEX.plans[].files_modified for this plan}\"],\n             \"use_worktree\": {true unless step 2.5 set USE_WORKTREES_FOR_PLAN=false for this plan}\n           }\n         ]\n       }\n     ]\n   }\n   ```\n\n   - **`id`** — the plan id from `PLAN_INDEX`, e.g. `\"01-01\"`.\n   - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`\n     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/\n     `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/\n     `{phase_name}` substituted) — a short summary here would NOT reproduce\n     step 3's behavior and would violate the \"identical artifacts\" contract.\n   - **`files_modified`** — copy verbatim from the plan's `PLAN_INDEX` entry.\n   - **`use_worktree`** — `true` for every plan UNLESS step 2.5's per-plan\n     worktree gate (`execute-phase/steps/per-plan-worktree-gate.md`) set\n     `USE_WORKTREES_FOR_PLAN=false` for that plan (submodule-touching plan, or\n     project-level `USE_WORKTREES=false`) — in which case pass `false` here so\n     `emitWorkflowScript` omits `isolation: \"worktree\"` for that plan (#2772 /\n     #2285 finding 1). **Never** hardcode `true` — that would force worktree\n     isolation on a plan the inline path explicitly keeps out of worktrees.\n\n4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.\n\n**Agent SDK version:** the orchestrator has no *bash-computable* way to\nintrospect the live Agent SDK version — but the router runs in Node, so it\nresolves the version itself (#2590), in this order:\n\n1. an explicit `--agent-sdk-version <ver>` (pin a version),\n2. `GSD_AGENT_SDK_VERSION`,\n3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from\n   its `package.json` on disk by walking `node_modules` up the tree. (Read\n   directly rather than via `require.resolve`: the SDK's `exports` map does not\n   expose `./package.json`, so `require.resolve` throws\n   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)\n\nPreviously nothing computed this at all, so gate 5 returned\n`agent_sdk_version_unknown` on **every** automated run and the Workflow backend\ncould never activate — while `gsd-tools capability state` still reported the\ncapability `active: true`. Fail-closed is preserved: when no version can be\nresolved, gate 5 still declines to `inline`. What changed is that a resolvable\nversion is now actually found, so a genuinely-too-old SDK reports\n`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.\n\n**If `backend == \"workflow\"`:** run the emitted `script` via the Workflow tool\nfor THIS wave instead of the per-message `Agent()` loop in step 3. The script\ncomposes the SAME `gsd-executor` agent type the inline path uses, with\nworktree isolation applied PER PLAN from the manifest's `use_worktree` field\n(see `emitWorkflowScript`):\n\n- **waves → one or more sequential `parallel()` barriers** — each wave is a\n  barrier group; when plans within a wave share `files_modified`, they are split\n  into separate sequential stages within that wave's barrier.\n- **plans → `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })`**\n  when `use_worktree` is not `false`, or `agent(brief, { agentType: 'gsd-executor' })`\n  (no isolation) when it is — so the produced `SUMMARY.md` and commits are\n  identical to inline dispatch, INCLUDING the inline path's submodule safety\n  gate (#2772 / #2285 finding 1).\n- **`files_modified` overlap → separate sequential stages** — the same overlap\n  rule execute-phase already applies inline (step 1 of the wave loop).\n- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's\n  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,\n  not a script function; the script deliberately does not call it (#2590 — doing\n  so threw \"resumeFromRunId is not defined\" and rejected the entire script).\n  Omitting it from the tool invocation silently regresses phase-resume to a\n  no-op: an interrupted phase re-runs completed plans.\n\n### After the run: manifest bridge into the merge chain (#3302)\n\nThe single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also\nmeans step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on\nthis path. The orchestrator MUST bridge the run's per-agent results into the SAME\nmanifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run\nunchanged:\n\n1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,\n   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:\n\n   ```bash\n   if [ -z \"${WAVE_WORKTREE_MANIFEST:-}\" ]; then\n     M=$(mktemp \"${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX\") && mv \"$M\" \"$M.json\" && WAVE_WORKTREE_MANIFEST=\"$M.json\" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)\n     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back\n     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.\n     ORCH_ROOT=$(git rev-parse --show-toplevel)\n     ORCH_ROOT=\"$ORCH_ROOT\" MANIFEST=\"$WAVE_WORKTREE_MANIFEST\" node -e 'const fs=require(\"fs\");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+\"\\n\")'\n     export WAVE_WORKTREE_MANIFEST\n   fi\n   ```\n\n2. **Invoke the Workflow tool with the emitted script and\n   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry\n   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that\n   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,\n   expected_base}` — captured by the executor itself per\n   `agents/gsd-executor.md`), or `null` when the agent's result carried none\n   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).\n\n3. **Record every worktree plan** exactly as inline dispatch does at step 3's\n   \"After each `Agent()` returns\" — one `worktree.record-agent` per returned entry\n   with `expects_worktree: true` and complete metadata:\n\n   ```bash\n   gsd_run query worktree.record-agent --manifest \"$WAVE_WORKTREE_MANIFEST\" \\\n     --agent-id \"<metadata.agent_id>\" --path \"<metadata.worktree_path>\" \\\n     --branch \"<metadata.branch>\" --base \"<metadata.expected_base>\" \\\n     --files \"<plan files_modified, space-separated>\" \\\n     --deletions \"<plan files_deleted, space-separated>\"\n   ```\n\n   `--deletions` (#3003) carries the plan's declared `files_deleted` so a plan that scoped a file\n   removal merges through `cleanup-wave` instead of being blocked. Unlike `--files` it is not\n   advisory: omitting it leaves the deletions guard blocking on any deletion at all, so this\n   dispatch path must pass it or plans declaring a removal fail to merge here while succeeding on\n   the inline path.\n\n   The verb's write-strict validation applies as inline: on a non-zero exit or any\n   missing field, stop and ask for recovery — do not append an under-populated entry.\n\n4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**\n   After recording, the manifest must hold one entry per `expects_worktree: true`\n   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected\n   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count\n   mismatch — means commits are stranded on their `worktree-wf_*` branches and\n   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the\n   phase with the failing plan id and the recovery hint below; do NOT run\n   `worktree.cleanup-wave` and do NOT proceed to step 4.\n\n   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover\n   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one\n   `{\"type\":\"result\",…}` line per agent — in the Workflow run's transcript dir), re-run\n   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be\n   recovered either, merge the branch manually after review — never discard it.\n\n5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final\n   messages, so a previously-completed plan can return with `metadata: null`. Recover\n   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it\n   cannot be recovered, fail loudly per rule 4 — a resumed run must never report\n   success over silently-dropped agent work.\n\n6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the\n   manifest): they ran without isolation; their commits are already on the main working\n   tree. No record-agent entry, no manifest write.\n\nWith the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's\nmanifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run\nUNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their\nmetadata; the merge chain itself is the inline path's own, now with real input.\n\n**If `backend == \"inline\"`** (any gate miss, or `resolve-wave-dispatch` itself\nunavailable/erroring): proceed to step 3's standard per-message `Agent()`\ndispatch — the default, byte-identical-to-today path. `onError: skip` on this\ncontribution means a `resolve-wave-dispatch` command failure is treated exactly\nlike an `inline` result, never as a fatal wave error.\n\n## Fallback contract\n\nDetection is fail-closed end-to-end: capability disabled, non-Claude runtime,\n`execution_backend:\"inline\"`, missing/incapable host descriptor, unknown or\nbelow-floor Agent SDK version, or an `emitWorkflowScript` failure on a malformed\nwave manifest — ANY of these degrades to `backend:\"inline\"` and execute-phase's\nstandard inline dispatch (step 3) runs unmodified. The Workflow backend never\npartially activates; the executor MUST NOT assume parallelism, a shared budget,\nor resume-from-run-id semantics when `backend == \"inline\"`.\n"
         },
         "produces": [],
         "consumes": [
@@ -734,7 +758,7 @@ const capabilities = {
   "cline": {
     "id": "cline",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Cline",
     "description": "Cline (VS Code extension) — global-only nested-skill layout; cline-rules hook surface (.clinerules); no hook events emitted; tier-2 support.",
     "tier": "core",
@@ -826,7 +850,7 @@ const capabilities = {
   "code-review": {
     "id": "code-review",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Code review",
     "description": "Source-file code review and review-fix workflow support for completed execution work.",
     "tier": "full",
@@ -887,7 +911,7 @@ const capabilities = {
   "codebuddy": {
     "id": "codebuddy",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "CodeBuddy",
     "description": "CodeBuddy (Tencent) — converted commands + skills artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -1004,7 +1028,7 @@ const capabilities = {
   "coderabbit": {
     "id": "coderabbit",
     "role": "reviewer",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "CodeRabbit",
     "description": "CodeRabbit CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Reviews the working-tree diff (`coderabbit review --prompt-only`), not the source tree, and accepts neither a prompt nor a model flag; findings are down-weighted in consensus (evidenceClass: diff-only).",
     "tier": "full",
@@ -1034,19 +1058,27 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 360000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "CodeRabbit",
       "evidenceClass": "diff-only",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.coderabbit",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.coderabbit": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "codex": {
     "id": "codex",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "OpenAI Codex CLI",
     "description": "OpenAI Codex CLI — shell-var command style; per-agent sandbox tiers; config.toml + hooks.json hook surface; tier-1 support.",
     "tier": "core",
@@ -1145,7 +1177,8 @@ const capabilities = {
           "exec"
         ],
         "cwdFlag": "--cd",
-        "promptFlag": null
+        "promptFlag": null,
+        "modelFlag": "--model"
       },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
@@ -1183,11 +1216,12 @@ const capabilities = {
         "effortChannel": "argv"
       },
       "timeoutFloorMs": 1200000,
+      "timeoutConfigKey": "review.timeouts.codex",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Codex",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
       "handler": null
     },
@@ -1196,13 +1230,23 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Codex reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "copilot": {
     "id": "copilot",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "GitHub Copilot",
     "description": "GitHub Copilot (VS Code) — markdown config format; copilot-inline hook surface; no hook events emitted; flat skill nesting (unconfirmed recursive loader); tier-2 support.",
     "tier": "core",
@@ -1301,7 +1345,7 @@ const capabilities = {
   "cursor": {
     "id": "cursor",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Cursor",
     "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
     "tier": "core",
@@ -1441,19 +1485,27 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.cursor": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "drift": {
     "id": "drift",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Drift detection gates",
     "description": "Drift detection gates for the planning loop. At execute:wave:post: a blocking schema drift gate (detects schema files changed without a database push) and a non-blocking codebase drift gate (detects structural additions not reflected in STRUCTURE.md). At plan:pre: a non-blocking, warn-only codebase drift gate (gated on workflow.plan_drift_precheck) that flags a stale codebase map before planning, so plans are authored against a fresh STRUCTURE.md instead of discovering drift mid-execution.",
     "tier": "full",
@@ -1531,7 +1583,7 @@ const capabilities = {
   "external-job": {
     "id": "external-job",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Async external-job scheduler adapter",
     "description": "Default-off producer of the async external-job manifest (#1164). At execute:wave:post an executor can externalize long-running compute (SLURM first, scheduler-pluggable), commit a .planning/async-jobs/<job>.json manifest, defer SUMMARY.md, and return external_job_waiting. The core loop (#1165) consumes the manifest; this capability is the only thing that writes it. NOTE on contribution point: #1164 specifies execute:wave:pre, but execute-phase.md only dispatches execute:wave:post today (wave:pre is declared in the loop host contract but not rendered); wiring wave:pre dispatch is a core-loop change #1164 explicitly puts out of scope, so this capability registers at wave:post and the executor honors the runtime_budget classification guidance before running any tagged task. The adapter (scripts/slurm-adapter.cjs) reads external_job.submit_timeout_ms / poll_timeout_ms / artifact_dir through the canonical capability-config seam (env override > config > registry default).",
     "tier": "full",
@@ -1614,7 +1666,7 @@ const capabilities = {
   "gap-analysis": {
     "id": "gap-analysis",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Post-planning gap analysis",
     "description": "Proactive, non-blocking post-planning coverage report. After all PLAN.md files are generated, cross-references every REQ-ID and D-ID from REQUIREMENTS.md and CONTEXT.md against plan bodies. Emits a Source | Item | Status table. Does not block phase advancement.",
     "tier": "standard",
@@ -1655,7 +1707,7 @@ const capabilities = {
   "gemini": {
     "id": "gemini",
     "role": "reviewer",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Gemini CLI",
     "description": "Google Gemini CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Spawned as `gemini -p - -m <model>` with the plan piped on stdin.",
     "tier": "full",
@@ -1686,11 +1738,12 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": "review.timeouts.gemini",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Gemini",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.gemini",
       "modelConfigKey": "review.models.gemini",
       "handler": null
     },
@@ -1699,13 +1752,23 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Gemini reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.gemini": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.gemini": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Gemini reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "graphify": {
     "id": "graphify",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Knowledge graph",
     "description": "Build, query, and inspect the project knowledge graph in `.planning/graphs/`; exposes graphify CLI subcommands (build, query, status, diff) and the /gsd-graphify skill.",
     "tier": "full",
@@ -1746,7 +1809,7 @@ const capabilities = {
   "hermes": {
     "id": "hermes",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Hermes Agent",
     "description": "Hermes Agent (NousResearch) — skills nest under skills/gsd/ category bucket; nested skill layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -1857,7 +1920,7 @@ const capabilities = {
   "intel": {
     "id": "intel",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Codebase intelligence",
     "description": "Code-intelligence store for codebase querying, diff, snapshot, and API-surface extraction; exposes `gsd-tools intel` subcommands (query, status, update, diff, snapshot, patch-meta, validate, extract-exports, api-surface) and backs `/gsd-map-codebase` and `gsd-intel-updater`.",
     "tier": "full",
@@ -1909,7 +1972,7 @@ const capabilities = {
   "kilo": {
     "id": "kilo",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Kilo Code",
     "description": "Kilo Code — XDG-based config dir; global skills at ~/.kilo/skills (separate from XDG config); flat command/ + skills artifact layout; no lifecycle hook registration; tier-2 support.",
     "tier": "core",
@@ -2038,7 +2101,7 @@ const capabilities = {
   "kimi": {
     "id": "kimi",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Kimi CLI",
     "description": "Kimi CLI (Moonshot AI) — generic agents root at ~/.config/agents; skills + kimi-agents artifact layout; native config.toml [[hooks]] bus at ~/.kimi/config.toml; background dispatch; tier-2 support.",
     "tier": "core",
@@ -2140,7 +2203,7 @@ const capabilities = {
   "kimi-code": {
     "id": "kimi-code",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Kimi Code CLI",
     "description": "Kimi Code CLI (Moonshot AI, Node) — Agent Skills auto-discovered at ~/.kimi-code/skills; global AGENTS.md at ~/.kimi-code/AGENTS.md; native config.toml + [[hooks]] bus; three built-in subagents (coder/explore/plan), NO custom named subagents; background dispatch; tier-2 support. Distinct from Python kimi-cli (the 'kimi' capability) per ADR-1239 EoS — Kimi Code cannot dispatch named subagents so the kimi-agents YAML layout does NOT apply; persona injection rides the existing ${AGENT_SKILLS_*} workflow fallback. Install-layout, agent-install-check, and install-time decision (kimi vs kimi-code) land in follow-up PRs; this descriptor is the EoS foundation.",
     "tier": "core",
@@ -2274,11 +2337,12 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": "review.timeouts.kimi-code",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Kimi Code",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
       "handler": null
     },
@@ -2287,13 +2351,76 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Kimi Code reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
+  },
+  "live-dom-uat": {
+    "id": "live-dom-uat",
+    "role": "feature",
+    "version": "1.12.0",
+    "title": "Live-DOM UAT",
+    "description": "Default-off live-DOM verification (#2856). Confines browser MCP reach to one purpose-built agent (gsd-dom-verifier) that carries the browser globs in its own tools: line, registered as an additive step hook at execute:wave:post. agents/gsd-executor.md is deliberately NOT widened: for a first-party agent the static tool list is the only control that exists, no capability can grant tools to one (ADR-1244 D2), no hook kind grants tool permissions (ADR-857 D4), and there is no per-dispatch tool override. Gated by activationKey workflow.live_dom_uat (default false), so with the key off the capability resolves inactive and the hook does not render at all. NOTE on the browser profile lock: chrome-devtools-mcp holds an exclusive lock on $HOME/.cache/chrome-devtools-mcp/chrome-profile, and --isolated is a flag on the user's own MCP-server registration that GSD cannot pass. Concurrent execution waves sharing one profile will therefore collide; the step tolerates and reports that (onError: skip, never blocking) rather than pretending to coordinate a resource it does not own.",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.11.0"
+    },
+    "runtimeCompat": {
+      "supported": [
+        "*"
+      ],
+      "unsupported": []
+    },
+    "skills": [],
+    "agents": [
+      "gsd-dom-verifier"
+    ],
+    "activationKey": "workflow.live_dom_uat",
+    "config": {
+      "workflow.live_dom_uat": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable live-DOM verification. Default-off: browser MCP reach is opt-in per project. When on, the orchestrator's automated UI verification may additionally use mcp__chrome-devtools__* / mcp__claude-in-chrome__* when present, and a gsd-dom-verifier step runs after each execution wave. When off, neither surface reaches a browser and the pre-existing mcp__playwright__* path is unchanged."
+      }
+    },
+    "hooks": [],
+    "steps": [
+      {
+        "point": "execute:wave:post",
+        "ref": {
+          "agent": "gsd-dom-verifier"
+        },
+        "fragment": {
+          "path": "fragments/execute-wave-post.md",
+          "inline": "<objective>\nVerify the live-DOM acceptance criteria for the execution wave that just completed.\nAnswer: \"of this wave's stated UI acceptance criteria, which can I observe in a live DOM\nright now, and which could I not look at?\"\n\nThis step is ADDITIVE. It never halts the wave, never fails the phase, and never rewrites\nSUMMARY.md. If you cannot look, say so and finish.\n</objective>\n\n<required_reading>\n- {phase_dir}/{phase_num}-PLAN.md (the wave's tasks and their acceptance criteria)\n- {phase_dir}/{phase_num}-UI-SPEC.md if it exists (the design contract, when the phase has one)\n</required_reading>\n\n<browser_surface>\nYou carry exactly two browser MCP families: `mcp__chrome-devtools__*` and\n`mcp__claude-in-chrome__*`. Use whichever responds. Do not assume they expose the same\ntool names — probe, then use what is there. Do not paper over differences between them.\n\nYou do NOT carry the Playwright MCP family. That path belongs to the orchestrator's\nown verification step and is not yours.\n</browser_surface>\n\n<profile_lock>\n`chrome-devtools-mcp` holds an exclusive lock on its browser profile\n(`$HOME/.cache/chrome-devtools-mcp/chrome-profile`). A second concurrent instance fails with:\n\n```\nThe browser is already running for <dir>. Use --isolated to run multiple browser instances.\n```\n\nIf you see that, or any equivalent lock error:\n\n1. Record `outcome: could_not_look` and `reason: profile_locked`.\n2. Name `--isolated` in the notes, so the operator knows the remedy is a flag on THEIR MCP\n   server registration.\n3. **Stop.** Do not retry, do not loop, do not wait for the lock. GSD cannot pass\n   `--isolated` — it is not GSD's flag — and a retry loop here just holds up the wave.\n\nParallel execution waves sharing one profile WILL hit this. It is an expected condition,\nnot a defect, and it is not a reason to fail anything.\n</profile_lock>\n\n<method>\nFor each UI acceptance criterion you can identify in the wave's plan:\n\n1. Resolve its target URL. If no dev server or target is reachable, that criterion is\n   `could_not_look` / `target_unreachable` — not a failure.\n2. Open it with the browser family that responded.\n3. Observe the DOM for the specific, stated condition. Assert on structure and content —\n   an element's presence, its text, its attributes, its computed state.\n4. Record `passed` when the stated condition is observably true, `needs_review` when it is\n   ambiguous or requires human judgement (subjective aesthetics, content accuracy).\n\nScope limit for this version: DOM observation against stated criteria only. No screenshot\ndiffing, no accessibility audit, no performance tracing. If a criterion needs one of those,\nmark it `needs_review` and say which.\n\nNever invent a criterion. If the plan states no UI acceptance criteria, that is\n`outcome: nothing_to_report` / `reason: no_criteria`, and it is a perfectly good result.\n</method>\n\n<output>\nWrite to: {phase_dir}/{phase_num}-DOM-VERIFY.md\n\nFrontmatter carries scalars only, so a reader can get the verdict without parsing prose:\n\n```\n---\nschema_version: 1\nwave: {wave_number}\noutcome: verified | nothing_to_report | could_not_look\nreason: ok | no_criteria | no_browser_mcp | profile_locked | target_unreachable\nchecked: <integer>\npassed: <integer>\nneeds_review: <integer>\n---\n```\n\nThen a short body: one line per criterion with its verdict, and — when `outcome` is\n`could_not_look` — exactly what stopped you and what the operator would change.\n\n**`nothing_to_report` and `could_not_look` are different outcomes and must never be\nconflated.** \"There were no UI criteria in this wave\" and \"there were criteria but I had no\nbrowser\" look identical in a summary that collapses them, and that ambiguity is the reported\nproblem this capability exists to remove.\n</output>\n"
+        },
+        "produces": [
+          "DOM-VERIFY.md"
+        ],
+        "consumes": [
+          "PLAN.md"
+        ],
+        "when": "workflow.live_dom_uat",
+        "onError": "skip"
+      }
+    ],
+    "contributions": [],
+    "gates": []
   },
   "llama-cpp": {
     "id": "llama-cpp",
     "role": "reviewer",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "llama.cpp",
     "description": "llama.cpp server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.llama_cpp_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`llama-cpp`, required by KEBAB_RE); `reviewer.slug` stays snake (`llama_cpp`) to match the shipped roster and the `review.llama_cpp_host` config key (ADR-2782's three-namespace trap).",
     "tier": "full",
@@ -2322,6 +2449,7 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
+      "timeoutConfigKey": "review.timeouts.llama_cpp",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "llama.cpp",
       "evidenceClass": "source-grounded",
@@ -2345,13 +2473,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.llama_cpp": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "lm-studio": {
     "id": "lm-studio",
     "role": "reviewer",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "LM Studio",
     "description": "LM Studio local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.lm_studio_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`lm-studio`, required by KEBAB_RE); `reviewer.slug` stays snake (`lm_studio`) to match the shipped roster and the `review.lm_studio_host` config key (ADR-2782's three-namespace trap).",
     "tier": "full",
@@ -2380,6 +2513,7 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
+      "timeoutConfigKey": "review.timeouts.lm_studio",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "LM Studio",
       "evidenceClass": "source-grounded",
@@ -2403,13 +2537,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.lm_studio": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "mempalace": {
     "id": "mempalace",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "MemPalace memory",
     "description": "Cross-session, cross-project memory: deliberate recall before discuss/plan and verbatim capture + temporal-KG sync at phase boundaries, via the MemPalace MCP server and CLI.",
     "tier": "full",
@@ -2583,7 +2722,7 @@ const capabilities = {
   "nyquist": {
     "id": "nyquist",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Nyquist validation",
     "description": "Validation coverage audit that maps executed work back to tests and manual-only evidence.",
     "tier": "full",
@@ -2633,7 +2772,7 @@ const capabilities = {
   "ollama": {
     "id": "ollama",
     "role": "reviewer",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Ollama",
     "description": "Ollama local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.ollama_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq.",
     "tier": "full",
@@ -2662,6 +2801,7 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
+      "timeoutConfigKey": "review.timeouts.ollama",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Ollama",
       "evidenceClass": "source-grounded",
@@ -2685,13 +2825,18 @@ const capabilities = {
         "type": "number",
         "default": -1,
         "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.ollama": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Ollama reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "opencode": {
     "id": "opencode",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "OpenCode",
     "description": "OpenCode — XDG-based config dir; flat commands/ + skills artifact layout; settings-json config format; no lifecycle hook registration; tier-2 support.",
     "tier": "core",
@@ -2848,11 +2993,12 @@ const capabilities = {
         "effortChannel": "argv"
       },
       "timeoutFloorMs": 660000,
+      "timeoutConfigKey": "review.timeouts.opencode",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
       "handler": "opencode"
     },
@@ -2861,13 +3007,23 @@ const capabilities = {
         "type": "string",
         "default": "",
         "description": "Model passed to the OpenCode reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "pattern-mapper": {
     "id": "pattern-mapper",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Pattern mapping",
     "description": "Optional codebase-pattern mapping before planning; owns the pattern mapper agent and workflow.pattern_mapper activation key.",
     "tier": "full",
@@ -2921,7 +3077,7 @@ const capabilities = {
   "pi": {
     "id": "pi",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "pi",
     "description": "pi (pi.dev) — bun-runtime programmatic-CLI; TS ExtensionAPI (registerCommand/registerTool/registerProvider/pi.on); single native-extension file at ~/.pi/agent/extensions/gsd.js (.js, not .cjs — pi's extension auto-discovery accepts only .ts/.js, #2470); no shared-settings hook surface; tier-2 support.",
     "tier": "core",
@@ -2990,7 +3146,7 @@ const capabilities = {
   "profile-pipeline": {
     "id": "profile-pipeline",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Developer profiling pipeline",
     "description": "Developer behavioral profiling from Claude Code session history; scans session JSONL files, extracts and samples user messages, and generates profile artifacts (USER-PROFILE.md, dev-preferences.md, CLAUDE.md sections). Exposes eight `gsd-tools` commands: scan-sessions, extract-messages, profile-sample (pipeline phase) and write-profile, profile-questionnaire, generate-dev-preferences, generate-claude-profile, generate-claude-md (output phase). Backs the /gsd-profile-user skill and gsd-user-profiler agent.",
     "tier": "full",
@@ -3067,7 +3223,7 @@ const capabilities = {
   "qwen": {
     "id": "qwen",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Qwen Code",
     "description": "Qwen Code (Alibaba) — nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -3194,19 +3350,27 @@ const capabilities = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.qwen": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "refactor-trigger": {
     "id": "refactor-trigger",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Complexity-triggered refactor",
     "description": "Measures the complexity of the code a phase touched and, when a function crosses a configured threshold or jumps past its recorded anchor, surfaces a scoped refactor proposal at .planning/phases/<N>/<NN>-REFACTOR.md. Advisory by default — it never edits code and never blocks. Opt-in strict mode blocks /gsd-ship while a proposal is untriaged; a declined proposal is recorded in the broken-windows ledger when that capability is present. Operationalizes 'refactor early, refactor often' as continuous pressure instead of a thing you have to remember (issue #1953).",
     "tier": "full",
@@ -3273,7 +3437,7 @@ const capabilities = {
   "research": {
     "id": "research",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Phase research",
     "description": "Optional phase research before planning; owns the phase researcher agent and workflow.research activation key.",
     "tier": "standard",
@@ -3325,7 +3489,7 @@ const capabilities = {
   "schema-gate": {
     "id": "schema-gate",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Schema push detection gate",
     "description": "Detects ORM schema-relevant files in the phase scope during planning and injects a mandatory [BLOCKING] schema push task into the plan. Prevents false-positive verification where build/types pass because TypeScript types come from config, not the live database.",
     "tier": "full",
@@ -3371,7 +3535,7 @@ const capabilities = {
   "security": {
     "id": "security",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Security enforcement",
     "description": "Threat mitigation verification and ship-time security blocking for phases with security enforcement enabled.",
     "tier": "full",
@@ -3470,7 +3634,7 @@ const capabilities = {
   "tdd": {
     "id": "tdd",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Test-driven development",
     "description": "Injects TDD heuristics into the planner and enforces RED/GREEN gate compliance on type:tdd plans after execution. Owns workflow.tdd_mode; the --tdd CLI flag is the ephemeral override.",
     "tier": "full",
@@ -3523,7 +3687,7 @@ const capabilities = {
   "trae": {
     "id": "trae",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Trae IDE",
     "description": "Trae IDE — nested-skill artifact layout; no hook surface (profile-marker-only config); tier-2 support.",
     "tier": "core",
@@ -3620,7 +3784,7 @@ const capabilities = {
   "ui": {
     "id": "ui",
     "role": "feature",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "UI design contracts",
     "description": "UI-SPEC design contract + retrospective UI audit for frontend phases.",
     "tier": "full",
@@ -3715,7 +3879,7 @@ const capabilities = {
   "vscode": {
     "id": "vscode",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "VS Code",
     "description": "VS Code — Marketplace/VSIX extension; no file-projected config directory; IDE-profile reference host (active vscode.lm model, engine-owned hook bus, sandboxed globalState/workspaceState stateIO).",
     "tier": "core",
@@ -3772,7 +3936,7 @@ const capabilities = {
   "windsurf": {
     "id": "windsurf",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Windsurf",
     "description": "Windsurf (Codeium) — workspace workflow artifact layout for slash commands; Cascade native hooks.json blocking hook bus (pre_write_code, pre_run_command); tier-2 support.",
     "tier": "core",
@@ -3863,7 +4027,7 @@ const capabilities = {
   "zcode": {
     "id": "zcode",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "ZCode",
     "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
     "tier": "core",
@@ -3993,6 +4157,7 @@ const byAgent = {
   "gsd-eval-planner": "ai-integration",
   "gsd-code-reviewer": "code-review",
   "gsd-code-fixer": "code-review",
+  "gsd-dom-verifier": "live-dom-uat",
   "gsd-mempalace-curator": "mempalace",
   "gsd-nyquist-auditor": "nyquist",
   "gsd-pattern-mapper": "pattern-mapper",
@@ -4148,7 +4313,7 @@ const byLoopPoint = {
         "into": "planner",
         "fragment": {
           "path": "fragments/api-coverage-plan-pre.md",
-          "inline": "# API Coverage Decision Checkpoint\n\n> Full API Coverage by Default — Opt Out, Never Opt In. Fires when a phase\n> integrates an external API / SDK / service. Most non-API phases will not fire\n> it — that is the point.\n\n## Why this exists\n\n\"We integrated the API\" too often silently means \"we integrated whatever the\nfirst use case exercised.\" Every un-built capability is then an invisible hole,\ndiscovered later by a user who reasonably expected it to work. The phase sealed\ngreen because its tasks completed; nobody decided the gaps were acceptable,\nbecause nobody enumerated them. This checkpoint makes the surface **visible and\ndecided** before the phase can seal.\n\n## Detect whether this phase integrates an external API\n\nThe detector is a deterministic scan over the phase scope. It strips fenced\ncode blocks first, so a trigger term inside a code snippet does not fire. It\nreturns a typed result: `{ detected, signals[], terms }`. Run it on the phase\nscope (the concatenation of this phase's ROADMAP section + the PLAN body):\n\n```bash\nSCOPE=\"$(cat \"${PHASE_DIR}\"/*-PLAN.md 2>/dev/null) $(gsd_run query roadmap.get-phase \"${PHASE}\" 2>/dev/null || true)\"\nAPI_COVERAGE_JSON=$(printf '%s' \"$SCOPE\" | node gsd-core/bin/lib/api-coverage.cjs --json 2>/dev/null || echo '{\"detected\":false,\"signals\":[]}')\n```\n\nRead `API_COVERAGE_JSON.detected`. Act on it only — do **not** pattern-match the\nprose yourself.\n\n**If `detected` is `false`:** this phase does not integrate an external API. Skip\nthe checkpoint entirely and continue planning. Do not raise it with the user.\n\n**If `detected` is `true`:** an external-API integration is in scope. You MUST\nproduce a **coverage matrix** before the plan is finalized.\n\n**If `detected` is `true` but the phase genuinely integrates no external API**\n(the detector is deterministic, not infallible — confirm by re-reading the phase\nscope, not by preference): do NOT fabricate a matrix row for a capability that\ndoes not exist. Write a reasoned declaration to `${PHASE_DIR}/COVERAGE.md`\ninstead:\n\n```markdown\nNo external API integration: <one-line reason — what the phase touches instead>.\n```\n\nThe reason is required, exactly like an `OPT-OUT` reason. The seal-time gate\naccepts this declaration in place of a matrix.\n\n## Produce the coverage matrix\n\nEnumerate the external API's full **capability surface** — the verb/endpoint/method\nlist (e.g. for a music service: `search`, `play`, `pause`, `skip`, `set_volume`,\n`get_playlist`, `create_playlist`, `add_to_playlist`, …). For each capability\nrecord a decision, starting from **full coverage** as the default:\n\n| capability | decision | reason |\n|---|---|---|\n| `<capability-id>` | `INTEGRATE` \\| `OPT-OUT` | `<one-line reason if OPT-OUT>` |\n\nRules:\n\n- **`INTEGRATE` is the default.** Every capability starts as INTEGRATE; the\n  matrix is the *subtraction record*.\n- **Every `OPT-OUT` MUST carry a one-line reason** (`not needed`, `not needed\n  yet`, `explicitly out of scope`, …). An opt-out without a reason is an\n  un-decided hole — the exact failure mode this gate exists to close.\n- **A second integration against the same need** (e.g. a second platform for the\n  same capability) starts from the **same full-coverage baseline** as the first.\n  Do not carry over the first integration's opt-outs silently — re-decide each\n  capability for the new surface, so a first-class/fallback asymmetry cannot\n  accumulate.\n\nWrite the matrix to `${PHASE_DIR}/COVERAGE.md` (canonical markdown-table form):\n\n```markdown\n# API Coverage — <service>\n\n> Full coverage by default. Opt-outs are explicit, reasoned decisions.\n\n| capability | decision | reason |\n|---|---|---|\n| search | INTEGRATE | |\n| playlists | INTEGRATE | |\n| skip | OPT-OUT | not needed yet — tracked for follow-up phase |\n```\n\nA fenced ` ```coverage ` JSON block is also accepted for machine-generated\nmatrices; the markdown table is preferred (human-editable, diff-friendly).\n\n## The seal-time gate\n\nThis checkpoint is enforced. At `verify:pre` the `api-coverage.verify-pre` gate\nruns `check api-coverage.verify-pre <phase-dir>`:\n\n- If `COVERAGE.md` exists, it is validated — every row needs a valid decision and\n  every `OPT-OUT` a reason. A malformed/partial matrix **blocks the seal**. A\n  reasoned `No external API integration: …` declaration (and no rows) passes.\n- If `COVERAGE.md` is absent, the detector runs again over the phase scope. If a\n  strong external-API-integration signal is found, the seal is **blocked** until a\n  matrix is produced. If no signal is found, the phase is treated as a non-API\n  phase and the seal proceeds.\n\nSo: an API-integrating phase cannot seal without a decided matrix. Produce it at\nplan time; do not leave it for seal time.\n\n## Tuning the vocabulary (optional)\n\nThe trigger vocabulary is a curated, additive-only set in\n`gsd-core/bin/lib/api-coverage.cjs` (`DEFAULT_API_COVERAGE_TERMS`). To widen it\nfor a project, override at the call site:\n\n```bash\nprintf '%s' \"$SCOPE\" | node gsd-core/bin/lib/api-coverage.cjs --json \\\n  --verbs integrate,wrap,connect,embed --nouns api,sdk,rest,grpc,webhook,plugin\n```\n\nThe whole checkpoint is toggleable via `workflow.api_coverage_gate` in\n`.planning/config.json`.\n"
+          "inline": "# API Coverage Decision Checkpoint\n\n> Full API Coverage by Default — Opt Out, Never Opt In. Fires when a phase\n> integrates an external API / SDK / service. Most non-API phases will not fire\n> it — that is the point.\n\n## Why this exists\n\n\"We integrated the API\" too often silently means \"we integrated whatever the\nfirst use case exercised.\" Every un-built capability is then an invisible hole,\ndiscovered later by a user who reasonably expected it to work. The phase sealed\ngreen because its tasks completed; nobody decided the gaps were acceptable,\nbecause nobody enumerated them. This checkpoint makes the surface **visible and\ndecided** before the phase can seal.\n\n## Detect whether this phase integrates an external API\n\nThe detector is a deterministic scan over the phase scope. It strips fenced\ncode blocks first, so a trigger term inside a code snippet does not fire. It\nreturns a typed result: `{ detected, signals[], terms }`. Run it on the phase\nscope (the concatenation of this phase's ROADMAP section + the PLAN body):\n\n```bash\nSCOPE=\"$(cat \"${PHASE_DIR}\"/*-PLAN.md 2>/dev/null) $(gsd_run query roadmap.get-phase \"${PHASE}\" 2>/dev/null || true)\"\nAPI_COVERAGE_JSON=$(printf '%s' \"$SCOPE\" | node gsd-core/bin/lib/api-coverage.cjs --json 2>/dev/null) || true\n[ -n \"$API_COVERAGE_JSON\" ] || API_COVERAGE_JSON='{\"skipped\":true,\"reason\":\"probe_unavailable\"}'\n```\n\nThe `|| true` neutralizes the assignment's status without discarding the\ndetector's own payload: the detector exits **1** for a real \"no integration\"\nverdict, so treating any non-zero exit as failure would throw away a correct\nanswer. Emptiness — not exit status — is what proves the probe never ran, and\nthe second line is the only place the fragment manufactures a payload of its\nown — one that records the *absence* of a verdict rather than asserting one.\n\nThe detector's exit code and `--json` payload now distinguish a real negative\nfrom an unexamined input (ADR-3889 Phase 3, #3907): empty/whitespace-only\n`$SCOPE` or a stdin read failure emit `{\"skipped\":true,\"reason\":\"no_input\"|\n\"stdin_error\"}` — no `detected` key at all. **Check for `skipped` before\nreading `detected`**: a `skipped` payload is not a confirmed \"no API\nintegration\" verdict, it means the detector never examined real input. Do not\ntreat it as `detected:false`. Read `API_COVERAGE_JSON.detected` only when\n`skipped` is absent — act on it only, do **not** pattern-match the prose\nyourself.\n\n**If `skipped` is `true`:** the detector could not establish a scope (empty\n`$SCOPE`) or failed to run (stdin read error). Skip the checkpoint for this\nrun rather than asserting a verdict about input that was never examined; do\nnot raise it with the user.\n\n**If `detected` is `false`:** this phase does not integrate an external API. Skip\nthe checkpoint entirely and continue planning. Do not raise it with the user.\n\n**If `detected` is `true`:** an external-API integration is in scope. You MUST\nproduce a **coverage matrix** before the plan is finalized.\n\n**If `detected` is `true` but the phase genuinely integrates no external API**\n(the detector is deterministic, not infallible — confirm by re-reading the phase\nscope, not by preference): do NOT fabricate a matrix row for a capability that\ndoes not exist. Write a reasoned declaration to `${PHASE_DIR}/COVERAGE.md`\ninstead:\n\n```markdown\nNo external API integration: <one-line reason — what the phase touches instead>.\n```\n\nThe reason is required, exactly like an `OPT-OUT` reason. The seal-time gate\naccepts this declaration in place of a matrix.\n\n## Produce the coverage matrix\n\nEnumerate the external API's full **capability surface** — the verb/endpoint/method\nlist (e.g. for a music service: `search`, `play`, `pause`, `skip`, `set_volume`,\n`get_playlist`, `create_playlist`, `add_to_playlist`, …). For each capability\nrecord a decision, starting from **full coverage** as the default:\n\n| capability | decision | reason |\n|---|---|---|\n| `<capability-id>` | `INTEGRATE` \\| `OPT-OUT` | `<one-line reason if OPT-OUT>` |\n\nRules:\n\n- **`INTEGRATE` is the default.** Every capability starts as INTEGRATE; the\n  matrix is the *subtraction record*.\n- **Every `OPT-OUT` MUST carry a one-line reason** (`not needed`, `not needed\n  yet`, `explicitly out of scope`, …). An opt-out without a reason is an\n  un-decided hole — the exact failure mode this gate exists to close.\n- **A second integration against the same need** (e.g. a second platform for the\n  same capability) starts from the **same full-coverage baseline** as the first.\n  Do not carry over the first integration's opt-outs silently — re-decide each\n  capability for the new surface, so a first-class/fallback asymmetry cannot\n  accumulate.\n\nWrite the matrix to `${PHASE_DIR}/COVERAGE.md` (canonical markdown-table form):\n\n```markdown\n# API Coverage — <service>\n\n> Full coverage by default. Opt-outs are explicit, reasoned decisions.\n\n| capability | decision | reason |\n|---|---|---|\n| search | INTEGRATE | |\n| playlists | INTEGRATE | |\n| skip | OPT-OUT | not needed yet — tracked for follow-up phase |\n```\n\nA fenced ` ```coverage ` JSON block is also accepted for machine-generated\nmatrices; the markdown table is preferred (human-editable, diff-friendly).\n\n## The seal-time gate\n\nThis checkpoint is enforced. At `verify:pre` the `api-coverage.verify-pre` gate\nruns `check api-coverage.verify-pre <phase-dir>`:\n\n- If `COVERAGE.md` exists, it is validated — every row needs a valid decision and\n  every `OPT-OUT` a reason. A malformed/partial matrix **blocks the seal**. A\n  reasoned `No external API integration: …` declaration (and no rows) passes.\n- If `COVERAGE.md` is absent, the detector runs again over the phase scope. If a\n  strong external-API-integration signal is found, the seal is **blocked** until a\n  matrix is produced. If no signal is found, the phase is treated as a non-API\n  phase and the seal proceeds.\n\nSo: an API-integrating phase cannot seal without a decided matrix. Produce it at\nplan time; do not leave it for seal time.\n\n## Tuning the vocabulary (optional)\n\nThe trigger vocabulary is a curated, additive-only set in\n`gsd-core/bin/lib/api-coverage.cjs` (`DEFAULT_API_COVERAGE_TERMS`). To widen it\nfor a project, override at the call site:\n\n```bash\nprintf '%s' \"$SCOPE\" | node gsd-core/bin/lib/api-coverage.cjs --json \\\n  --verbs integrate,wrap,connect,embed --nouns api,sdk,rest,grpc,webhook,plugin\n```\n\nThe whole checkpoint is toggleable via `workflow.api_coverage_gate` in\n`.planning/config.json`.\n"
         },
         "produces": [
           "COVERAGE.md"
@@ -4165,7 +4330,7 @@ const byLoopPoint = {
         "into": "planner",
         "fragment": {
           "path": "fragments/plan-pre.md",
-          "inline": "# Assumption-Delta Architecture Checkpoint\n\n> Advisory, non-blocking. Fires **only** when the phase scope shows a singular→plural / required→optional / derived→chosen transition. When it fires, it surfaces ONE identity-model question before the plan is finalized. Most phases will not fire it — that is the point.\n\n## Why this exists\n\nMost quietly-imported architectural debt does not come from a missing upfront design phase. It comes at the *seam*: a later phase introduces a second case (a second platform, auth method, tenant, region, source of truth) and nobody re-asks whether the original abstraction still names the right thing. The phase that adds the second case is exactly the 20-minute conversation that prevents an afternoon of later cleanup.\n\n## Run the detector\n\nThe detector is a deterministic scan over the phase scope text. It strips fenced code blocks first, so a trigger word that appears only inside a code snippet does not fire. It returns a typed result: `{ detected, signals[], terms }`. Resolve it through the `assumption-delta scan` query (same phase-section resolver as `roadmap.get-phase`):\n\n```bash\nASSUMPTION_DELTA_JSON=$(gsd_run query assumption-delta scan \"${PHASE}\" --json 2>/dev/null || echo '{\"detected\":false,\"signals\":[],\"terms\":{}}')\n```\n\n> If the phase section cannot be resolved (no `ROADMAP.md` / unknown phase), the query emits `{ \"detected\": false, ... }` — the checkpoint does not fire. Do not block on it.\n>\n> Optional tuning — pass `--terms <comma-list>` to replace the curated pluralization cues for this project (the `optional`/`chosen` cues keep their defaults): `gsd_run query assumption-delta scan \"${PHASE}\" --json --terms second,alternative,fallback`.\n\n## Decision branch\n\nRead `ASSUMPTION_DELTA_JSON`. Act on `detected` only — do **not** pattern-match the human prose.\n\n**If `detected` is `false`:** this phase does not change a core assumption. Skip the checkpoint entirely and continue planning. Do not raise it with the user.\n\n**If `detected` is `true`:** a core assumption may have lost its monopoly. The `signals[]` array tells you which family fired:\n\n| `kind` | What changed | The question to answer |\n|---|---|---|\n| `pluralization` | A second X was introduced where there was one (second platform / auth method / tenant / region / source of truth) | Does the current primary key / identity model still name the right noun? |\n| `optional` | A required / `only` field became optional | Is the field still the right anchor, or has the anchor moved? |\n| `chosen` | A derived value became chosen, or a constant became a parameter | Has a configuration decision become a modeling decision? |\n\nBefore finalizing the plan, answer this for the user and record the decision explicitly:\n\n> **Promote vs. add-alongside.** The usual correct move when a generalization occurs is to **promote** the new general representation to the primary and **demote** the old specific one to a detail of one variant — *not* to add the new one alongside the still-required old one. Adding alongside silently contradicts the generalized intent (a later variant that does not fit the old primary can be stored but never confirmed as a default).\n\nRecord the outcome in the PLAN.md front matter / a `<assumption_delta_decision>` block:\n\n- The **noun** that is now primary (the generalized identity).\n- The **decision**: `promote` | `add-alongside` | `no-change`, with a one-line rationale.\n- If `add-alongside`: call it out as accepted debt and note what would force a later promote.\n\n## Optional companion: an invariant test\n\nWhen `detected` is `true`, suggest (do not require) a contract/invariant test that encodes the now-generalized intent — e.g. *\"every confirmed default round-trips through the primary use-path, for every supported variant.\"* That test goes red the instant a future phase reintroduces the singular assumption, so the regression cannot land silently. If the user accepts, add the test as a task in the plan.\n\n## Tuning the vocabulary (optional)\n\nThe trigger vocabulary is a curated, additive-only set in `gsd-core/bin/lib/assumption-delta.cjs` (`DEFAULT_ASSUMPTION_DELTA_TERMS`). Bare \"or\" is intentionally excluded — it is too common in prose and would make the gate fire constantly. To widen or narrow the cues for a project, override at the call site with `--terms <comma-list>` (replaces the pluralization cues; `optional`/`chosen` keep defaults). The whole checkpoint is toggleable via `workflow.assumption_delta` in `.planning/config.json`.\n\nThis checkpoint is advisory: it informs and records; it never blocks the phase.\n"
+          "inline": "# Assumption-Delta Architecture Checkpoint\n\n> Advisory, non-blocking. Fires **only** when the phase scope shows a singular→plural / required→optional / derived→chosen transition. When it fires, it surfaces ONE identity-model question before the plan is finalized. Most phases will not fire it — that is the point.\n\n## Why this exists\n\nMost quietly-imported architectural debt does not come from a missing upfront design phase. It comes at the *seam*: a later phase introduces a second case (a second platform, auth method, tenant, region, source of truth) and nobody re-asks whether the original abstraction still names the right thing. The phase that adds the second case is exactly the 20-minute conversation that prevents an afternoon of later cleanup.\n\n## Run the detector\n\nThe detector is a deterministic scan over the phase scope text. It strips fenced code blocks first, so a trigger word that appears only inside a code snippet does not fire. It returns a typed result: `{ detected, signals[], terms }`. Resolve it through the `assumption-delta scan` query (same phase-section resolver as `roadmap.get-phase`):\n\n```bash\nASSUMPTION_DELTA_JSON=$(gsd_run query assumption-delta scan \"${PHASE}\" --json 2>/dev/null) || true\n[ -n \"$ASSUMPTION_DELTA_JSON\" ] || ASSUMPTION_DELTA_JSON='{\"skipped\":true,\"reason\":\"probe_unavailable\"}'\n```\n\n> If the phase section cannot be resolved (no `ROADMAP.md` / unknown phase, or a section with no body), the query emits `{ \"skipped\": true, \"reason\": \"phase_unresolved\" }` — **not** `detected:false`. A probe that never had input does not get to assert that this phase changes no core assumption. The checkpoint does not fire either way; the difference is that a skip is now distinguishable from a real negative. Do not block on it.\n>\n> Optional tuning — pass `--terms <comma-list>` to replace the curated pluralization cues for this project (the `optional`/`chosen` cues keep their defaults): `gsd_run query assumption-delta scan \"${PHASE}\" --json --terms second,alternative,fallback`.\n\n## Decision branch\n\nRead `ASSUMPTION_DELTA_JSON`. Act on `detected` only — do **not** pattern-match the human prose.\n\n**If `skipped` is `true`:** the detector never examined a phase section — it could not resolve one (`phase_unresolved`) or could not run at all (`probe_unavailable`). Skip the checkpoint for this run rather than asserting a verdict about input that was never examined; do not raise it with the user. **Check for `skipped` before reading `detected`** — a skipped payload carries no `detected` key, and treating its absence as `false` re-creates the fabrication this branch exists to prevent.\n\n**If `detected` is `false`:** this phase does not change a core assumption. Skip the checkpoint entirely and continue planning. Do not raise it with the user.\n\n**If `detected` is `true`:** a core assumption may have lost its monopoly. The `signals[]` array tells you which family fired:\n\n| `kind` | What changed | The question to answer |\n|---|---|---|\n| `pluralization` | A second X was introduced where there was one (second platform / auth method / tenant / region / source of truth) | Does the current primary key / identity model still name the right noun? |\n| `optional` | A required / `only` field became optional | Is the field still the right anchor, or has the anchor moved? |\n| `chosen` | A derived value became chosen, or a constant became a parameter | Has a configuration decision become a modeling decision? |\n\nBefore finalizing the plan, answer this for the user and record the decision explicitly:\n\n> **Promote vs. add-alongside.** The usual correct move when a generalization occurs is to **promote** the new general representation to the primary and **demote** the old specific one to a detail of one variant — *not* to add the new one alongside the still-required old one. Adding alongside silently contradicts the generalized intent (a later variant that does not fit the old primary can be stored but never confirmed as a default).\n\nRecord the outcome in the PLAN.md front matter / a `<assumption_delta_decision>` block:\n\n- The **noun** that is now primary (the generalized identity).\n- The **decision**: `promote` | `add-alongside` | `no-change`, with a one-line rationale.\n- If `add-alongside`: call it out as accepted debt and note what would force a later promote.\n\n## Optional companion: an invariant test\n\nWhen `detected` is `true`, suggest (do not require) a contract/invariant test that encodes the now-generalized intent — e.g. *\"every confirmed default round-trips through the primary use-path, for every supported variant.\"* That test goes red the instant a future phase reintroduces the singular assumption, so the regression cannot land silently. If the user accepts, add the test as a task in the plan.\n\n## Tuning the vocabulary (optional)\n\nThe trigger vocabulary is a curated, additive-only set in `gsd-core/bin/lib/assumption-delta.cjs` (`DEFAULT_ASSUMPTION_DELTA_TERMS`). Bare \"or\" is intentionally excluded — it is too common in prose and would make the gate fire constantly. To widen or narrow the cues for a project, override at the call site with `--terms <comma-list>` (replaces the pluralization cues; `optional`/`chosen` keep defaults). The whole checkpoint is toggleable via `workflow.assumption_delta` in `.planning/config.json`.\n\nThis checkpoint is advisory: it informs and records; it never blocks the phase.\n"
         },
         "produces": [],
         "consumes": [
@@ -4315,7 +4480,7 @@ const byLoopPoint = {
         "into": "executor",
         "fragment": {
           "path": "fragments/execute-wave-pre.md",
-          "inline": "# Claude orchestration — Workflow execution backend (BETA)\n\n> Injected at `execute:wave:pre` `into: executor` only when\n> `claude_orchestration.enabled` is true. Default-off; `onError: skip`.\n\n## When this contribution is active\n\nThe Claude orchestration capability is **default-off and BETA**. It activates only\nwhen ALL of the following hold:\n\n1. `claude_orchestration.enabled` is `true` in `.planning/config.json`, AND\n2. the active runtime is **Claude Code** (the Workflow tool is Claude / Agent\n   SDK-specific), AND\n3. `claude_orchestration.execution_backend` resolves to `workflow` — either\n   explicitly, or via `auto` — **and** the Agent SDK version is\n   `>= claude_orchestration.min_agent_sdk_version` (default `0.3.149`). The SDK\n   floor applies in both `auto` and `workflow` modes (fail-closed: a pre-release\n   or older SDK never activates the preview backend).\n\nDetection is fail-closed: any miss degrades to **inline, manual, one-agent-per-\nmessage dispatch** — exactly today's behaviour. On a non-Claude runtime this\ncontribution is a no-op.\n\n## Why `execute:wave:pre` (not `execute:wave:post`)\n\nThis is a **dispatch-backend selector** — it decides HOW a wave's executor agents\nare spawned. That decision has to be made BEFORE the wave's `Agent()` calls in\n`execute-phase.md` step 3, not after the wave has already finished (#2285). The\ncapability previously registered at `execute:wave:post`, which fires only after\nworktree merge/post-merge tests/tracking updates — by then the wave was already\ndispatched inline, so the contribution was structurally unable to change how\ndispatch happened. This fragment is injected at the point that actually precedes\ndispatch.\n\n## What the orchestrator does when the Workflow backend is active\n\nBefore spawning executor agents for the current wave (execute-phase.md step 3),\nresolve the dispatch backend through the single composed CLI seam:\n\n```bash\ngsd-tools claude-orchestration resolve-wave-dispatch \\\n  --waves \"$WAVE_MANIFEST_PATH\" --run-id \"$PHASE_RUN_ID\" \\\n  --runtime \"$RUNTIME\" \\\n  --phase-dir \"$PHASE_DIR\" --raw\n```\n\n`--agent-sdk-version` is no longer passed here (#2590). The router resolves the\ninstalled Agent SDK version itself; see **Agent SDK version** below. The former\n`${AGENT_SDK_VERSION:+--agent-sdk-version \"$AGENT_SDK_VERSION\"}` line was also\n**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it\ncollapsed to a SINGLE argv element there, `argValue()` never matched, and the run\nfailed into `agent_sdk_version_unknown` — indistinguishable from genuinely\nunknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.\n\nThis composes `detectWorkflowBackend` (the gate ladder above) with\n`emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure\nfunction backing it is `resolveWaveDispatch` in\n`gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:\n`{ backend: 'inline'|'workflow', reason, script?, summary? }`.\n\n### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)\n\nThese are NOT pre-existing execute-phase.md variables — the orchestrator builds\nthem at this step, from data it already has in-context from `discover_and_group_plans`\n(the `PLAN_INDEX` JSON) and step 2.5 (the per-plan `USE_WORKTREES_FOR_PLAN` decision):\n\n1. **`$PHASE_DIR`** — reuse `{phase_dir}` from the `INIT` bundle (already loaded\n   in the `initialize` step). No new value needed.\n\n2. **`$PHASE_RUN_ID`** — a stable identifier for THIS phase-execution attempt, so\n   `resumeFromRunId` can resume an interrupted run without re-dispatching plans\n   the Workflow tool already completed. Construct it deterministically —\n   `execute-{phase_number}-{phase_slug}` — from `INIT`'s `phase_number`/`phase_slug`\n   (both are already validated identifiers used elsewhere in this workflow, so\n   they satisfy `emitWorkflowScript`'s `isScriptableIdentifier` check). Do NOT\n   mint a new random id per wave — the SAME `$PHASE_RUN_ID` is reused for every\n   wave in the phase so the Workflow tool can correctly track cross-wave resume\n   state.\n\n3. **`$WAVE_MANIFEST_PATH`** — a fresh temp file for THIS wave's manifest (one\n   wave = one `waves` array with a single entry, matching the wave-by-wave\n   dispatch loop; do not batch multiple waves into one manifest — waves are\n   dispatched in wave order, not all at once):\n\n   ```bash\n   WAVE_MANIFEST_PATH=$(mktemp \"${TMPDIR:-/tmp}/gsd-wave-dispatch-XXXXXX\") && mv \"$WAVE_MANIFEST_PATH\" \"$WAVE_MANIFEST_PATH.json\" && WAVE_MANIFEST_PATH=\"$WAVE_MANIFEST_PATH.json\"\n   ```\n\n   Then **use the Write tool** (not a bash/jq pipeline — the orchestrator already\n   has every field parsed in-context) to write the manifest JSON to\n   `$WAVE_MANIFEST_PATH`:\n\n   ```json\n   {\n     \"waves\": [\n       {\n         \"id\": \"wave-{N}\",\n         \"plans\": [\n           {\n             \"id\": \"{plan_id}\",\n             \"brief\": \"{the SAME <objective>...<success_criteria> prompt block step 3 builds for this plan's inline Agent() call}\",\n             \"files_modified\": [\"{from PLAN_INDEX.plans[].files_modified for this plan}\"],\n             \"use_worktree\": {true unless step 2.5 set USE_WORKTREES_FOR_PLAN=false for this plan}\n           }\n         ]\n       }\n     ]\n   }\n   ```\n\n   - **`id`** — the plan id from `PLAN_INDEX`, e.g. `\"01-01\"`.\n   - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`\n     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/\n     `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/\n     `{phase_name}` substituted) — a short summary here would NOT reproduce\n     step 3's behavior and would violate the \"identical artifacts\" contract.\n   - **`files_modified`** — copy verbatim from the plan's `PLAN_INDEX` entry.\n   - **`use_worktree`** — `true` for every plan UNLESS step 2.5's per-plan\n     worktree gate (`execute-phase/steps/per-plan-worktree-gate.md`) set\n     `USE_WORKTREES_FOR_PLAN=false` for that plan (submodule-touching plan, or\n     project-level `USE_WORKTREES=false`) — in which case pass `false` here so\n     `emitWorkflowScript` omits `isolation: \"worktree\"` for that plan (#2772 /\n     #2285 finding 1). **Never** hardcode `true` — that would force worktree\n     isolation on a plan the inline path explicitly keeps out of worktrees.\n\n4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.\n\n**Agent SDK version:** the orchestrator has no *bash-computable* way to\nintrospect the live Agent SDK version — but the router runs in Node, so it\nresolves the version itself (#2590), in this order:\n\n1. an explicit `--agent-sdk-version <ver>` (pin a version),\n2. `GSD_AGENT_SDK_VERSION`,\n3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from\n   its `package.json` on disk by walking `node_modules` up the tree. (Read\n   directly rather than via `require.resolve`: the SDK's `exports` map does not\n   expose `./package.json`, so `require.resolve` throws\n   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)\n\nPreviously nothing computed this at all, so gate 5 returned\n`agent_sdk_version_unknown` on **every** automated run and the Workflow backend\ncould never activate — while `gsd-tools capability state` still reported the\ncapability `active: true`. Fail-closed is preserved: when no version can be\nresolved, gate 5 still declines to `inline`. What changed is that a resolvable\nversion is now actually found, so a genuinely-too-old SDK reports\n`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.\n\n**If `backend == \"workflow\"`:** run the emitted `script` via the Workflow tool\nfor THIS wave instead of the per-message `Agent()` loop in step 3. The script\ncomposes the SAME `gsd-executor` agent type the inline path uses, with\nworktree isolation applied PER PLAN from the manifest's `use_worktree` field\n(see `emitWorkflowScript`):\n\n- **waves → one or more sequential `parallel()` barriers** — each wave is a\n  barrier group; when plans within a wave share `files_modified`, they are split\n  into separate sequential stages within that wave's barrier.\n- **plans → `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })`**\n  when `use_worktree` is not `false`, or `agent(brief, { agentType: 'gsd-executor' })`\n  (no isolation) when it is — so the produced `SUMMARY.md` and commits are\n  identical to inline dispatch, INCLUDING the inline path's submodule safety\n  gate (#2772 / #2285 finding 1).\n- **`files_modified` overlap → separate sequential stages** — the same overlap\n  rule execute-phase already applies inline (step 1 of the wave loop).\n- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's\n  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,\n  not a script function; the script deliberately does not call it (#2590 — doing\n  so threw \"resumeFromRunId is not defined\" and rejected the entire script).\n  Omitting it from the tool invocation silently regresses phase-resume to a\n  no-op: an interrupted phase re-runs completed plans.\n\n### After the run: manifest bridge into the merge chain (#3302)\n\nThe single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also\nmeans step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on\nthis path. The orchestrator MUST bridge the run's per-agent results into the SAME\nmanifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run\nunchanged:\n\n1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,\n   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:\n\n   ```bash\n   if [ -z \"${WAVE_WORKTREE_MANIFEST:-}\" ]; then\n     M=$(mktemp \"${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX\") && mv \"$M\" \"$M.json\" && WAVE_WORKTREE_MANIFEST=\"$M.json\" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)\n     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back\n     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.\n     ORCH_ROOT=$(git rev-parse --show-toplevel)\n     ORCH_ROOT=\"$ORCH_ROOT\" MANIFEST=\"$WAVE_WORKTREE_MANIFEST\" node -e 'const fs=require(\"fs\");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+\"\\n\")'\n     export WAVE_WORKTREE_MANIFEST\n   fi\n   ```\n\n2. **Invoke the Workflow tool with the emitted script and\n   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry\n   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that\n   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,\n   expected_base}` — captured by the executor itself per\n   `agents/gsd-executor.md`), or `null` when the agent's result carried none\n   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).\n\n3. **Record every worktree plan** exactly as inline dispatch does at step 3's\n   \"After each `Agent()` returns\" — one `worktree.record-agent` per returned entry\n   with `expects_worktree: true` and complete metadata:\n\n   ```bash\n   gsd_run query worktree.record-agent --manifest \"$WAVE_WORKTREE_MANIFEST\" \\\n     --agent-id \"<metadata.agent_id>\" --path \"<metadata.worktree_path>\" \\\n     --branch \"<metadata.branch>\" --base \"<metadata.expected_base>\" \\\n     --files \"<plan files_modified, space-separated>\"\n   ```\n\n   The verb's write-strict validation applies as inline: on a non-zero exit or any\n   missing field, stop and ask for recovery — do not append an under-populated entry.\n\n4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**\n   After recording, the manifest must hold one entry per `expects_worktree: true`\n   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected\n   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count\n   mismatch — means commits are stranded on their `worktree-wf_*` branches and\n   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the\n   phase with the failing plan id and the recovery hint below; do NOT run\n   `worktree.cleanup-wave` and do NOT proceed to step 4.\n\n   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover\n   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one\n   `{\"type\":\"result\",…}` line per agent — in the Workflow run's transcript dir), re-run\n   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be\n   recovered either, merge the branch manually after review — never discard it.\n\n5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final\n   messages, so a previously-completed plan can return with `metadata: null`. Recover\n   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it\n   cannot be recovered, fail loudly per rule 4 — a resumed run must never report\n   success over silently-dropped agent work.\n\n6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the\n   manifest): they ran without isolation; their commits are already on the main working\n   tree. No record-agent entry, no manifest write.\n\nWith the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's\nmanifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run\nUNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their\nmetadata; the merge chain itself is the inline path's own, now with real input.\n\n**If `backend == \"inline\"`** (any gate miss, or `resolve-wave-dispatch` itself\nunavailable/erroring): proceed to step 3's standard per-message `Agent()`\ndispatch — the default, byte-identical-to-today path. `onError: skip` on this\ncontribution means a `resolve-wave-dispatch` command failure is treated exactly\nlike an `inline` result, never as a fatal wave error.\n\n## Fallback contract\n\nDetection is fail-closed end-to-end: capability disabled, non-Claude runtime,\n`execution_backend:\"inline\"`, missing/incapable host descriptor, unknown or\nbelow-floor Agent SDK version, or an `emitWorkflowScript` failure on a malformed\nwave manifest — ANY of these degrades to `backend:\"inline\"` and execute-phase's\nstandard inline dispatch (step 3) runs unmodified. The Workflow backend never\npartially activates; the executor MUST NOT assume parallelism, a shared budget,\nor resume-from-run-id semantics when `backend == \"inline\"`.\n"
+          "inline": "# Claude orchestration — Workflow execution backend (BETA)\n\n> Injected at `execute:wave:pre` `into: executor` only when\n> `claude_orchestration.enabled` is true. Default-off; `onError: skip`.\n\n## When this contribution is active\n\nThe Claude orchestration capability is **default-off and BETA**. It activates only\nwhen ALL of the following hold:\n\n1. `claude_orchestration.enabled` is `true` in `.planning/config.json`, AND\n2. the active runtime is **Claude Code** (the Workflow tool is Claude / Agent\n   SDK-specific), AND\n3. `claude_orchestration.execution_backend` resolves to `workflow` — either\n   explicitly, or via `auto` — **and** the Agent SDK version is\n   `>= claude_orchestration.min_agent_sdk_version` (default `0.3.149`). The SDK\n   floor applies in both `auto` and `workflow` modes (fail-closed: a pre-release\n   or older SDK never activates the preview backend).\n\nDetection is fail-closed: any miss degrades to **inline, manual, one-agent-per-\nmessage dispatch** — exactly today's behaviour. On a non-Claude runtime this\ncontribution is a no-op.\n\n## Why `execute:wave:pre` (not `execute:wave:post`)\n\nThis is a **dispatch-backend selector** — it decides HOW a wave's executor agents\nare spawned. That decision has to be made BEFORE the wave's `Agent()` calls in\n`execute-phase.md` step 3, not after the wave has already finished (#2285). The\ncapability previously registered at `execute:wave:post`, which fires only after\nworktree merge/post-merge tests/tracking updates — by then the wave was already\ndispatched inline, so the contribution was structurally unable to change how\ndispatch happened. This fragment is injected at the point that actually precedes\ndispatch.\n\n## What the orchestrator does when the Workflow backend is active\n\nBefore spawning executor agents for the current wave (execute-phase.md step 3),\nresolve the dispatch backend through the single composed CLI seam:\n\n```bash\ngsd-tools claude-orchestration resolve-wave-dispatch \\\n  --waves \"$WAVE_MANIFEST_PATH\" --run-id \"$PHASE_RUN_ID\" \\\n  --runtime \"$RUNTIME\" \\\n  --phase-dir \"$PHASE_DIR\" --raw\n```\n\n`--agent-sdk-version` is no longer passed here (#2590). The router resolves the\ninstalled Agent SDK version itself; see **Agent SDK version** below. The former\n`${AGENT_SDK_VERSION:+--agent-sdk-version \"$AGENT_SDK_VERSION\"}` line was also\n**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it\ncollapsed to a SINGLE argv element there, `argValue()` never matched, and the run\nfailed into `agent_sdk_version_unknown` — indistinguishable from genuinely\nunknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.\n\nThis composes `detectWorkflowBackend` (the gate ladder above) with\n`emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure\nfunction backing it is `resolveWaveDispatch` in\n`gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:\n`{ backend: 'inline'|'workflow', reason, script?, summary? }`.\n\n### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)\n\nThese are NOT pre-existing execute-phase.md variables — the orchestrator builds\nthem at this step, from data it already has in-context from `discover_and_group_plans`\n(the `PLAN_INDEX` JSON) and step 2.5 (the per-plan `USE_WORKTREES_FOR_PLAN` decision):\n\n1. **`$PHASE_DIR`** — reuse `{phase_dir}` from the `INIT` bundle (already loaded\n   in the `initialize` step). No new value needed.\n\n2. **`$PHASE_RUN_ID`** — a stable identifier for THIS phase-execution attempt, so\n   `resumeFromRunId` can resume an interrupted run without re-dispatching plans\n   the Workflow tool already completed. Construct it deterministically —\n   `execute-{phase_number}-{phase_slug}` — from `INIT`'s `phase_number`/`phase_slug`\n   (both are already validated identifiers used elsewhere in this workflow, so\n   they satisfy `emitWorkflowScript`'s `isScriptableIdentifier` check). Do NOT\n   mint a new random id per wave — the SAME `$PHASE_RUN_ID` is reused for every\n   wave in the phase so the Workflow tool can correctly track cross-wave resume\n   state.\n\n3. **`$WAVE_MANIFEST_PATH`** — a fresh temp file for THIS wave's manifest (one\n   wave = one `waves` array with a single entry, matching the wave-by-wave\n   dispatch loop; do not batch multiple waves into one manifest — waves are\n   dispatched in wave order, not all at once):\n\n   ```bash\n   WAVE_MANIFEST_PATH=$(mktemp \"${TMPDIR:-/tmp}/gsd-wave-dispatch-XXXXXX\") && mv \"$WAVE_MANIFEST_PATH\" \"$WAVE_MANIFEST_PATH.json\" && WAVE_MANIFEST_PATH=\"$WAVE_MANIFEST_PATH.json\"\n   ```\n\n   Then **use the Write tool** (not a bash/jq pipeline — the orchestrator already\n   has every field parsed in-context) to write the manifest JSON to\n   `$WAVE_MANIFEST_PATH`:\n\n   ```json\n   {\n     \"waves\": [\n       {\n         \"id\": \"wave-{N}\",\n         \"plans\": [\n           {\n             \"id\": \"{plan_id}\",\n             \"brief\": \"{the SAME <objective>...<success_criteria> prompt block step 3 builds for this plan's inline Agent() call}\",\n             \"files_modified\": [\"{from PLAN_INDEX.plans[].files_modified for this plan}\"],\n             \"use_worktree\": {true unless step 2.5 set USE_WORKTREES_FOR_PLAN=false for this plan}\n           }\n         ]\n       }\n     ]\n   }\n   ```\n\n   - **`id`** — the plan id from `PLAN_INDEX`, e.g. `\"01-01\"`.\n   - **`brief`** — MUST carry the same task content as step 3's inline `Agent()`\n     prompt (the `<objective>`/`<execution_context>`/`<required_reading>`/\n     `<success_criteria>` block, with `{plan_number}`/`{phase_number}`/\n     `{phase_name}` substituted) — a short summary here would NOT reproduce\n     step 3's behavior and would violate the \"identical artifacts\" contract.\n   - **`files_modified`** — copy verbatim from the plan's `PLAN_INDEX` entry.\n   - **`use_worktree`** — `true` for every plan UNLESS step 2.5's per-plan\n     worktree gate (`execute-phase/steps/per-plan-worktree-gate.md`) set\n     `USE_WORKTREES_FOR_PLAN=false` for that plan (submodule-touching plan, or\n     project-level `USE_WORKTREES=false`) — in which case pass `false` here so\n     `emitWorkflowScript` omits `isolation: \"worktree\"` for that plan (#2772 /\n     #2285 finding 1). **Never** hardcode `true` — that would force worktree\n     isolation on a plan the inline path explicitly keeps out of worktrees.\n\n4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.\n\n**Agent SDK version:** the orchestrator has no *bash-computable* way to\nintrospect the live Agent SDK version — but the router runs in Node, so it\nresolves the version itself (#2590), in this order:\n\n1. an explicit `--agent-sdk-version <ver>` (pin a version),\n2. `GSD_AGENT_SDK_VERSION`,\n3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from\n   its `package.json` on disk by walking `node_modules` up the tree. (Read\n   directly rather than via `require.resolve`: the SDK's `exports` map does not\n   expose `./package.json`, so `require.resolve` throws\n   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)\n\nPreviously nothing computed this at all, so gate 5 returned\n`agent_sdk_version_unknown` on **every** automated run and the Workflow backend\ncould never activate — while `gsd-tools capability state` still reported the\ncapability `active: true`. Fail-closed is preserved: when no version can be\nresolved, gate 5 still declines to `inline`. What changed is that a resolvable\nversion is now actually found, so a genuinely-too-old SDK reports\n`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.\n\n**If `backend == \"workflow\"`:** run the emitted `script` via the Workflow tool\nfor THIS wave instead of the per-message `Agent()` loop in step 3. The script\ncomposes the SAME `gsd-executor` agent type the inline path uses, with\nworktree isolation applied PER PLAN from the manifest's `use_worktree` field\n(see `emitWorkflowScript`):\n\n- **waves → one or more sequential `parallel()` barriers** — each wave is a\n  barrier group; when plans within a wave share `files_modified`, they are split\n  into separate sequential stages within that wave's barrier.\n- **plans → `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })`**\n  when `use_worktree` is not `false`, or `agent(brief, { agentType: 'gsd-executor' })`\n  (no isolation) when it is — so the produced `SUMMARY.md` and commits are\n  identical to inline dispatch, INCLUDING the inline path's submodule safety\n  gate (#2772 / #2285 finding 1).\n- **`files_modified` overlap → separate sequential stages** — the same overlap\n  rule execute-phase already applies inline (step 1 of the wave loop).\n- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's\n  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,\n  not a script function; the script deliberately does not call it (#2590 — doing\n  so threw \"resumeFromRunId is not defined\" and rejected the entire script).\n  Omitting it from the tool invocation silently regresses phase-resume to a\n  no-op: an interrupted phase re-runs completed plans.\n\n### After the run: manifest bridge into the merge chain (#3302)\n\nThe single Workflow tool call replaces step 3's per-plan `Agent()` loop — which also\nmeans step 3's manifest bookkeeping (creation + per-agent recording) does NOT happen on\nthis path. The orchestrator MUST bridge the run's per-agent results into the SAME\nmanifest-scoped merge chain inline dispatch uses, before steps 4–5.8, which then run\nunchanged:\n\n1. **Create the manifest BEFORE invoking the tool** (this is step 3's creation block,\n   which this path skips). When ANY plan in the wave has `use_worktree` not `false`:\n\n   ```bash\n   if [ -z \"${WAVE_WORKTREE_MANIFEST:-}\" ]; then\n     M=$(mktemp \"${TMPDIR:-/tmp}/gsd-worktree-wave-XXXXXX\") && mv \"$M\" \"$M.json\" && WAVE_WORKTREE_MANIFEST=\"$M.json\" || exit 1  # XXXXXX must be path-final on BSD/macOS (#1520)\n     # Persist the dispatch-time orchestrator worktree root so wave-cleanup pins back\n     # to the orchestrator's OWN worktree (#630), exactly as inline dispatch does.\n     ORCH_ROOT=$(git rev-parse --show-toplevel)\n     ORCH_ROOT=\"$ORCH_ROOT\" MANIFEST=\"$WAVE_WORKTREE_MANIFEST\" node -e 'const fs=require(\"fs\");fs.writeFileSync(process.env.MANIFEST,JSON.stringify({orchestrator_root:process.env.ORCH_ROOT||null,worktrees:[]})+\"\\n\")'\n     export WAVE_WORKTREE_MANIFEST\n   fi\n   ```\n\n2. **Invoke the Workflow tool with the emitted script and\n   `resumeFromRunId: summary.resumeRunId`.** The script top-level `return`s one entry\n   per dispatched plan: `{ plan, expects_worktree, metadata }`. `metadata` is that\n   plan's executor `<worktree_metadata>` JSON (`{agent_id, worktree_path, branch,\n   expected_base}` — captured by the executor itself per\n   `agents/gsd-executor.md`), or `null` when the agent's result carried none\n   (interrupted agent, resumed-from-cache plan, or a non-worktree plan).\n\n3. **Record every worktree plan** exactly as inline dispatch does at step 3's\n   \"After each `Agent()` returns\" — one `worktree.record-agent` per returned entry\n   with `expects_worktree: true` and complete metadata:\n\n   ```bash\n   gsd_run query worktree.record-agent --manifest \"$WAVE_WORKTREE_MANIFEST\" \\\n     --agent-id \"<metadata.agent_id>\" --path \"<metadata.worktree_path>\" \\\n     --branch \"<metadata.branch>\" --base \"<metadata.expected_base>\" \\\n     --files \"<plan files_modified, space-separated>\" \\\n     --deletions \"<plan files_deleted, space-separated>\"\n   ```\n\n   `--deletions` (#3003) carries the plan's declared `files_deleted` so a plan that scoped a file\n   removal merges through `cleanup-wave` instead of being blocked. Unlike `--files` it is not\n   advisory: omitting it leaves the deletions guard blocking on any deletion at all, so this\n   dispatch path must pass it or plans declaring a removal fail to merge here while succeeding on\n   the inline path.\n\n   The verb's write-strict validation applies as inline: on a non-zero exit or any\n   missing field, stop and ask for recovery — do not append an under-populated entry.\n\n4. **HALT on uncapturable metadata — never a silently-empty manifest (#3302).**\n   After recording, the manifest must hold one entry per `expects_worktree: true`\n   outcome (`summary.worktreePlans` from `resolve-wave-dispatch` is the expected\n   count). Any shortfall — a `null` `metadata`, a missing/empty field, or a count\n   mismatch — means commits are stranded on their `worktree-wf_*` branches and\n   `worktree.cleanup-wave` would merge nothing while the phase looks green. STOP the\n   phase with the failing plan id and the recovery hint below; do NOT run\n   `worktree.cleanup-wave` and do NOT proceed to step 4.\n\n   **Recovery hint:** the unmerged `worktree-wf_*` branch still holds the work. Recover\n   the missing metadata from the run's per-agent result journal (`journal.jsonl` — one\n   `{\"type\":\"result\",…}` line per agent — in the Workflow run's transcript dir), re-run\n   `worktree.record-agent` by hand, then re-run cleanup. If the journal cannot be\n   recovered either, merge the branch manually after review — never discard it.\n\n5. **Resume (`resumeFromRunId`).** Cached/resumed agents do not re-emit their final\n   messages, so a previously-completed plan can return with `metadata: null`. Recover\n   that plan's metadata from the ORIGINAL run's journal (same hint as above). If it\n   cannot be recovered, fail loudly per rule 4 — a resumed run must never report\n   success over silently-dropped agent work.\n\n6. **Non-worktree plans** (`expects_worktree: false` — `use_worktree: false` in the\n   manifest): they ran without isolation; their commits are already on the main working\n   tree. No record-agent entry, no manifest write.\n\nWith the manifest populated, steps 4–5.8 (wait/completion bookkeeping, step 5.5's\nmanifest-scoped `worktree.cleanup-wave`, post-merge gate, tracking update) run\nUNCHANGED — the Workflow backend replaces HOW agents are spawned and returns their\nmetadata; the merge chain itself is the inline path's own, now with real input.\n\n**If `backend == \"inline\"`** (any gate miss, or `resolve-wave-dispatch` itself\nunavailable/erroring): proceed to step 3's standard per-message `Agent()`\ndispatch — the default, byte-identical-to-today path. `onError: skip` on this\ncontribution means a `resolve-wave-dispatch` command failure is treated exactly\nlike an `inline` result, never as a fatal wave error.\n\n## Fallback contract\n\nDetection is fail-closed end-to-end: capability disabled, non-Claude runtime,\n`execution_backend:\"inline\"`, missing/incapable host descriptor, unknown or\nbelow-floor Agent SDK version, or an `emitWorkflowScript` failure on a malformed\nwave manifest — ANY of these degrades to `backend:\"inline\"` and execute-phase's\nstandard inline dispatch (step 3) runs unmodified. The Workflow backend never\npartially activates; the executor MUST NOT assume parallelism, a shared budget,\nor resume-from-run-id semantics when `backend == \"inline\"`.\n"
         },
         "produces": [],
         "consumes": [
@@ -4328,7 +4493,27 @@ const byLoopPoint = {
     "gates": []
   },
   "execute:wave:post": {
-    "steps": [],
+    "steps": [
+      {
+        "capId": "live-dom-uat",
+        "point": "execute:wave:post",
+        "ref": {
+          "agent": "gsd-dom-verifier"
+        },
+        "fragment": {
+          "path": "fragments/execute-wave-post.md",
+          "inline": "<objective>\nVerify the live-DOM acceptance criteria for the execution wave that just completed.\nAnswer: \"of this wave's stated UI acceptance criteria, which can I observe in a live DOM\nright now, and which could I not look at?\"\n\nThis step is ADDITIVE. It never halts the wave, never fails the phase, and never rewrites\nSUMMARY.md. If you cannot look, say so and finish.\n</objective>\n\n<required_reading>\n- {phase_dir}/{phase_num}-PLAN.md (the wave's tasks and their acceptance criteria)\n- {phase_dir}/{phase_num}-UI-SPEC.md if it exists (the design contract, when the phase has one)\n</required_reading>\n\n<browser_surface>\nYou carry exactly two browser MCP families: `mcp__chrome-devtools__*` and\n`mcp__claude-in-chrome__*`. Use whichever responds. Do not assume they expose the same\ntool names — probe, then use what is there. Do not paper over differences between them.\n\nYou do NOT carry the Playwright MCP family. That path belongs to the orchestrator's\nown verification step and is not yours.\n</browser_surface>\n\n<profile_lock>\n`chrome-devtools-mcp` holds an exclusive lock on its browser profile\n(`$HOME/.cache/chrome-devtools-mcp/chrome-profile`). A second concurrent instance fails with:\n\n```\nThe browser is already running for <dir>. Use --isolated to run multiple browser instances.\n```\n\nIf you see that, or any equivalent lock error:\n\n1. Record `outcome: could_not_look` and `reason: profile_locked`.\n2. Name `--isolated` in the notes, so the operator knows the remedy is a flag on THEIR MCP\n   server registration.\n3. **Stop.** Do not retry, do not loop, do not wait for the lock. GSD cannot pass\n   `--isolated` — it is not GSD's flag — and a retry loop here just holds up the wave.\n\nParallel execution waves sharing one profile WILL hit this. It is an expected condition,\nnot a defect, and it is not a reason to fail anything.\n</profile_lock>\n\n<method>\nFor each UI acceptance criterion you can identify in the wave's plan:\n\n1. Resolve its target URL. If no dev server or target is reachable, that criterion is\n   `could_not_look` / `target_unreachable` — not a failure.\n2. Open it with the browser family that responded.\n3. Observe the DOM for the specific, stated condition. Assert on structure and content —\n   an element's presence, its text, its attributes, its computed state.\n4. Record `passed` when the stated condition is observably true, `needs_review` when it is\n   ambiguous or requires human judgement (subjective aesthetics, content accuracy).\n\nScope limit for this version: DOM observation against stated criteria only. No screenshot\ndiffing, no accessibility audit, no performance tracing. If a criterion needs one of those,\nmark it `needs_review` and say which.\n\nNever invent a criterion. If the plan states no UI acceptance criteria, that is\n`outcome: nothing_to_report` / `reason: no_criteria`, and it is a perfectly good result.\n</method>\n\n<output>\nWrite to: {phase_dir}/{phase_num}-DOM-VERIFY.md\n\nFrontmatter carries scalars only, so a reader can get the verdict without parsing prose:\n\n```\n---\nschema_version: 1\nwave: {wave_number}\noutcome: verified | nothing_to_report | could_not_look\nreason: ok | no_criteria | no_browser_mcp | profile_locked | target_unreachable\nchecked: <integer>\npassed: <integer>\nneeds_review: <integer>\n---\n```\n\nThen a short body: one line per criterion with its verdict, and — when `outcome` is\n`could_not_look` — exactly what stopped you and what the operator would change.\n\n**`nothing_to_report` and `could_not_look` are different outcomes and must never be\nconflated.** \"There were no UI criteria in this wave\" and \"there were criteria but I had no\nbrowser\" look identical in a summary that collapses them, and that ambiguity is the reported\nproblem this capability exists to remove.\n</output>\n"
+        },
+        "produces": [
+          "DOM-VERIFY.md"
+        ],
+        "consumes": [
+          "PLAN.md"
+        ],
+        "when": "workflow.live_dom_uat",
+        "onError": "skip"
+      }
+    ],
     "contributions": [
       {
         "capId": "external-job",
@@ -4580,15 +4765,23 @@ const configKeys = {
   "workflow.ai_integration_phase": "ai-integration",
   "workflow.api_coverage_gate": "ai-integration",
   "review.models.agy": "antigravity",
+  "review.max_prompt_tokens_per_reviewer.antigravity": "antigravity",
+  "review.timeouts.antigravity": "antigravity",
   "workflow.assumption_delta": "assumption-delta",
   "workflow.windows_enforce": "broken-windows",
   "review.models.claude": "claude",
+  "review.max_prompt_tokens_per_reviewer.claude": "claude",
+  "review.timeouts.claude": "claude",
   "claude_orchestration.enabled": "claude-orchestration",
   "claude_orchestration.execution_backend": "claude-orchestration",
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
+  "review.max_prompt_tokens_per_reviewer.coderabbit": "coderabbit",
   "review.models.codex": "codex",
+  "review.max_prompt_tokens_per_reviewer.codex": "codex",
+  "review.timeouts.codex": "codex",
+  "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
@@ -4600,15 +4793,22 @@ const configKeys = {
   "external_job.poll_timeout_ms": "external-job",
   "workflow.post_planning_gaps": "gap-analysis",
   "review.models.gemini": "gemini",
+  "review.max_prompt_tokens_per_reviewer.gemini": "gemini",
+  "review.timeouts.gemini": "gemini",
   "graphify.enabled": "graphify",
   "intel.enabled": "intel",
   "review.models.kimi-code": "kimi-code",
+  "review.max_prompt_tokens_per_reviewer.kimi-code": "kimi-code",
+  "review.timeouts.kimi-code": "kimi-code",
+  "workflow.live_dom_uat": "live-dom-uat",
   "review.models.llama_cpp": "llama-cpp",
   "review.llama_cpp_host": "llama-cpp",
   "review.max_prompt_tokens_per_reviewer.llama_cpp": "llama-cpp",
+  "review.timeouts.llama_cpp": "llama-cpp",
   "review.models.lm_studio": "lm-studio",
   "review.lm_studio_host": "lm-studio",
   "review.max_prompt_tokens_per_reviewer.lm_studio": "lm-studio",
+  "review.timeouts.lm_studio": "lm-studio",
   "mempalace.enabled": "mempalace",
   "mempalace.memory_mode": "mempalace",
   "mempalace.wing": "mempalace",
@@ -4623,9 +4823,13 @@ const configKeys = {
   "review.models.ollama": "ollama",
   "review.ollama_host": "ollama",
   "review.max_prompt_tokens_per_reviewer.ollama": "ollama",
+  "review.timeouts.ollama": "ollama",
   "review.models.opencode": "opencode",
+  "review.max_prompt_tokens_per_reviewer.opencode": "opencode",
+  "review.timeouts.opencode": "opencode",
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
+  "review.max_prompt_tokens_per_reviewer.qwen": "qwen",
   "refactor.trigger_enabled": "refactor-trigger",
   "refactor.complexity_threshold": "refactor-trigger",
   "refactor.complexity_jump_delta": "refactor-trigger",
@@ -4660,6 +4864,18 @@ const configSchema = {
     "default": "",
     "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
   },
+  "review.max_prompt_tokens_per_reviewer.antigravity": {
+    "owner": "antigravity",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
+  },
+  "review.timeouts.antigravity": {
+    "owner": "antigravity",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
   "workflow.assumption_delta": {
     "owner": "assumption-delta",
     "type": "boolean",
@@ -4677,6 +4893,18 @@ const configSchema = {
     "type": "string",
     "default": "",
     "description": "Model passed to the Claude reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.claude": {
+    "owner": "claude",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.claude": {
+    "owner": "claude",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
   "claude_orchestration.enabled": {
     "owner": "claude-orchestration",
@@ -4718,11 +4946,35 @@ const configSchema = {
       "deep"
     ]
   },
+  "review.max_prompt_tokens_per_reviewer.coderabbit": {
+    "owner": "coderabbit",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the CodeRabbit reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
   "review.models.codex": {
     "owner": "codex",
     "type": "string",
     "default": "",
     "description": "Model passed to the Codex reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.codex": {
+    "owner": "codex",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.codex": {
+    "owner": "codex",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "review.max_prompt_tokens_per_reviewer.cursor": {
+    "owner": "cursor",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "workflow.drift_threshold": {
     "owner": "drift",
@@ -4797,6 +5049,18 @@ const configSchema = {
     "default": "",
     "description": "Model passed to the Gemini reviewer lane."
   },
+  "review.max_prompt_tokens_per_reviewer.gemini": {
+    "owner": "gemini",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.gemini": {
+    "owner": "gemini",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Gemini reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
   "graphify.enabled": {
     "owner": "graphify",
     "type": "boolean",
@@ -4814,6 +5078,24 @@ const configSchema = {
     "type": "string",
     "default": "",
     "description": "Model passed to the Kimi Code reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.kimi-code": {
+    "owner": "kimi-code",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.kimi-code": {
+    "owner": "kimi-code",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
+  "workflow.live_dom_uat": {
+    "owner": "live-dom-uat",
+    "type": "boolean",
+    "default": false,
+    "description": "Enable live-DOM verification. Default-off: browser MCP reach is opt-in per project. When on, the orchestrator's automated UI verification may additionally use mcp__chrome-devtools__* / mcp__claude-in-chrome__* when present, and a gsd-dom-verifier step runs after each execution wave. When off, neither surface reaches a browser and the pre-existing mcp__playwright__* path is unchanged."
   },
   "review.models.llama_cpp": {
     "owner": "llama-cpp",
@@ -4833,6 +5115,12 @@ const configSchema = {
     "default": -1,
     "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
+  "review.timeouts.llama_cpp": {
+    "owner": "llama-cpp",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
   "review.models.lm_studio": {
     "owner": "lm-studio",
     "type": "string",
@@ -4850,6 +5138,12 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.lm_studio": {
+    "owner": "lm-studio",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
   "mempalace.enabled": {
     "owner": "mempalace",
@@ -4940,11 +5234,29 @@ const configSchema = {
     "default": -1,
     "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
+  "review.timeouts.ollama": {
+    "owner": "ollama",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the Ollama reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
+  },
   "review.models.opencode": {
     "owner": "opencode",
     "type": "string",
     "default": "",
     "description": "Model passed to the OpenCode reviewer lane."
+  },
+  "review.max_prompt_tokens_per_reviewer.opencode": {
+    "owner": "opencode",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.timeouts.opencode": {
+    "owner": "opencode",
+    "type": "number",
+    "default": -1,
+    "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
   },
   "workflow.pattern_mapper": {
     "owner": "pattern-mapper",
@@ -4957,6 +5269,12 @@ const configSchema = {
     "type": "boolean",
     "default": false,
     "description": "Enable the developer profiling pipeline commands (scan-sessions, extract-messages, profile-sample, write-profile, etc.)."
+  },
+  "review.max_prompt_tokens_per_reviewer.qwen": {
+    "owner": "qwen",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "refactor.trigger_enabled": {
     "owner": "refactor-trigger",
@@ -5049,9 +5367,9 @@ const runtimes = {
   "antigravity": {
     "id": "antigravity",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Antigravity",
-    "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
+    "description": "Google Antigravity IDE — config/settings home nested under ~/.gemini/antigravity (probed across 1.x and 2.x layouts); global skills/agents install under ~/.gemini/config, the dir AGY scans for global discovery (#3738); Gemini hook event dialect; flat skill layout; tier-1 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -5082,7 +5400,8 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeCommandToAntigravitySkill"
+            "converter": "convertClaudeCommandToAntigravitySkill",
+            "home": ".gemini/config"
           },
           {
             "kind": "agents",
@@ -5090,7 +5409,8 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeAgentToAntigravityAgent"
+            "converter": "convertClaudeAgentToAntigravityAgent",
+            "home": ".gemini/config"
           }
         ],
         "local": [
@@ -5166,7 +5486,7 @@ const runtimes = {
         "binary": "agy",
         "args": [
           "--print-timeout",
-          "540s",
+          "{{nativeTimeout}}",
           "{{model}}",
           "-p",
           "{{prompt}}"
@@ -5177,11 +5497,12 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 600000,
+      "timeoutConfigKey": "review.timeouts.antigravity",
       "emptyOutput": "handler-owned",
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.antigravity",
       "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
     },
@@ -5190,13 +5511,23 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      },
+      "review.max_prompt_tokens_per_reviewer.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\". Keyed on the reviewer slug `antigravity`, not the `agy` binary alias used by review.models.agy."
+      },
+      "review.timeouts.antigravity": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Antigravity reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "augment": {
     "id": "augment",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Augment Code",
     "description": "Augment Code CLI — commands + nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -5309,7 +5640,7 @@ const runtimes = {
   "claude": {
     "id": "claude",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Claude Code",
     "description": "Anthropic Claude Code — primary development runtime; tier-1 support with full hook surface and skills-based global install.",
     "tier": "core",
@@ -5452,11 +5783,12 @@ const runtimes = {
         }
       },
       "timeoutFloorMs": 1200000,
+      "timeoutConfigKey": "review.timeouts.claude",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Claude",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.claude",
       "modelConfigKey": "review.models.claude",
       "handler": null
     },
@@ -5465,13 +5797,23 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Claude reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Claude reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.claude": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Claude reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "cline": {
     "id": "cline",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Cline",
     "description": "Cline (VS Code extension) — global-only nested-skill layout; cline-rules hook surface (.clinerules); no hook events emitted; tier-2 support.",
     "tier": "core",
@@ -5563,7 +5905,7 @@ const runtimes = {
   "codebuddy": {
     "id": "codebuddy",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "CodeBuddy",
     "description": "CodeBuddy (Tencent) — converted commands + skills artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -5680,7 +6022,7 @@ const runtimes = {
   "codex": {
     "id": "codex",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "OpenAI Codex CLI",
     "description": "OpenAI Codex CLI — shell-var command style; per-agent sandbox tiers; config.toml + hooks.json hook surface; tier-1 support.",
     "tier": "core",
@@ -5779,7 +6121,8 @@ const runtimes = {
           "exec"
         ],
         "cwdFlag": "--cd",
-        "promptFlag": null
+        "promptFlag": null,
+        "modelFlag": "--model"
       },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
@@ -5817,11 +6160,12 @@ const runtimes = {
         "effortChannel": "argv"
       },
       "timeoutFloorMs": 1200000,
+      "timeoutConfigKey": "review.timeouts.codex",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Codex",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.codex",
       "modelConfigKey": "review.models.codex",
       "handler": null
     },
@@ -5830,13 +6174,23 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Codex reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.codex": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "copilot": {
     "id": "copilot",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "GitHub Copilot",
     "description": "GitHub Copilot (VS Code) — markdown config format; copilot-inline hook surface; no hook events emitted; flat skill nesting (unconfirmed recursive loader); tier-2 support.",
     "tier": "core",
@@ -5935,7 +6289,7 @@ const runtimes = {
   "cursor": {
     "id": "cursor",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Cursor",
     "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
     "tier": "core",
@@ -6075,19 +6429,27 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Cursor",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.cursor",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.cursor": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "hermes": {
     "id": "hermes",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Hermes Agent",
     "description": "Hermes Agent (NousResearch) — skills nest under skills/gsd/ category bucket; nested skill layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -6198,7 +6560,7 @@ const runtimes = {
   "kilo": {
     "id": "kilo",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Kilo Code",
     "description": "Kilo Code — XDG-based config dir; global skills at ~/.kilo/skills (separate from XDG config); flat command/ + skills artifact layout; no lifecycle hook registration; tier-2 support.",
     "tier": "core",
@@ -6327,7 +6689,7 @@ const runtimes = {
   "kimi": {
     "id": "kimi",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Kimi CLI",
     "description": "Kimi CLI (Moonshot AI) — generic agents root at ~/.config/agents; skills + kimi-agents artifact layout; native config.toml [[hooks]] bus at ~/.kimi/config.toml; background dispatch; tier-2 support.",
     "tier": "core",
@@ -6429,7 +6791,7 @@ const runtimes = {
   "kimi-code": {
     "id": "kimi-code",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Kimi Code CLI",
     "description": "Kimi Code CLI (Moonshot AI, Node) — Agent Skills auto-discovered at ~/.kimi-code/skills; global AGENTS.md at ~/.kimi-code/AGENTS.md; native config.toml + [[hooks]] bus; three built-in subagents (coder/explore/plan), NO custom named subagents; background dispatch; tier-2 support. Distinct from Python kimi-cli (the 'kimi' capability) per ADR-1239 EoS — Kimi Code cannot dispatch named subagents so the kimi-agents YAML layout does NOT apply; persona injection rides the existing ${AGENT_SKILLS_*} workflow fallback. Install-layout, agent-install-check, and install-time decision (kimi vs kimi-code) land in follow-up PRs; this descriptor is the EoS foundation.",
     "tier": "core",
@@ -6563,11 +6925,12 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": "review.timeouts.kimi-code",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Kimi Code",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.kimi-code",
       "modelConfigKey": "review.models.kimi-code",
       "handler": null
     },
@@ -6576,13 +6939,23 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the Kimi Code reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.kimi-code": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the Kimi Code reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "opencode": {
     "id": "opencode",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "OpenCode",
     "description": "OpenCode — XDG-based config dir; flat commands/ + skills artifact layout; settings-json config format; no lifecycle hook registration; tier-2 support.",
     "tier": "core",
@@ -6739,11 +7112,12 @@ const runtimes = {
         "effortChannel": "argv"
       },
       "timeoutFloorMs": 660000,
+      "timeoutConfigKey": "review.timeouts.opencode",
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.opencode",
       "modelConfigKey": "review.models.opencode",
       "handler": "opencode"
     },
@@ -6752,13 +7126,23 @@ const runtimes = {
         "type": "string",
         "default": "",
         "description": "Model passed to the OpenCode reviewer lane."
+      },
+      "review.max_prompt_tokens_per_reviewer.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      },
+      "review.timeouts.opencode": {
+        "type": "number",
+        "default": -1,
+        "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
       }
     }
   },
   "pi": {
     "id": "pi",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "pi",
     "description": "pi (pi.dev) — bun-runtime programmatic-CLI; TS ExtensionAPI (registerCommand/registerTool/registerProvider/pi.on); single native-extension file at ~/.pi/agent/extensions/gsd.js (.js, not .cjs — pi's extension auto-discovery accepts only .ts/.js, #2470); no shared-settings hook surface; tier-2 support.",
     "tier": "core",
@@ -6827,7 +7211,7 @@ const runtimes = {
   "qwen": {
     "id": "qwen",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Qwen Code",
     "description": "Qwen Code (Alibaba) — nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
     "tier": "core",
@@ -6954,19 +7338,27 @@ const runtimes = {
         "effortChannel": "none"
       },
       "timeoutFloorMs": 900000,
+      "timeoutConfigKey": null,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Qwen",
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
-      "promptBudgetKey": null,
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.qwen",
       "modelConfigKey": null,
       "handler": null
+    },
+    "config": {
+      "review.max_prompt_tokens_per_reviewer.qwen": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Qwen Code reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "trae": {
     "id": "trae",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Trae IDE",
     "description": "Trae IDE — nested-skill artifact layout; no hook surface (profile-marker-only config); tier-2 support.",
     "tier": "core",
@@ -7063,7 +7455,7 @@ const runtimes = {
   "vscode": {
     "id": "vscode",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "VS Code",
     "description": "VS Code — Marketplace/VSIX extension; no file-projected config directory; IDE-profile reference host (active vscode.lm model, engine-owned hook bus, sandboxed globalState/workspaceState stateIO).",
     "tier": "core",
@@ -7120,7 +7512,7 @@ const runtimes = {
   "windsurf": {
     "id": "windsurf",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "Windsurf",
     "description": "Windsurf (Codeium) — workspace workflow artifact layout for slash commands; Cascade native hooks.json blocking hook bus (pre_write_code, pre_run_command); tier-2 support.",
     "tier": "core",
@@ -7211,7 +7603,7 @@ const runtimes = {
   "zcode": {
     "id": "zcode",
     "role": "runtime",
-    "version": "1.10.0",
+    "version": "1.12.0",
     "title": "ZCode",
     "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
     "tier": "core",
@@ -7500,6 +7892,7 @@ const _requiresGraph = {
   "kilo": [],
   "kimi": [],
   "kimi-code": [],
+  "live-dom-uat": [],
   "llama-cpp": [],
   "lm-studio": [],
   "mempalace": [],

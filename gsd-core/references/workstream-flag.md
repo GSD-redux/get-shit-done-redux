@@ -109,19 +109,19 @@ This ensures workstream scope chains automatically through the workflow:
 ## CLI Usage
 
 ```bash
-# All gsd-tools query commands accept --ws
-gsd-tools query state.json --ws feature-a
-gsd-tools query find-phase 3 --ws feature-b
+# All gsd_run query commands accept --ws
+gsd_run query state.json --ws feature-a
+gsd_run query find-phase 3 --ws feature-b
 
 # Session-local switching without --ws on every command
-GSD_SESSION_KEY=my-terminal-a gsd-tools query workstream.set feature-a
-GSD_SESSION_KEY=my-terminal-a gsd-tools query state.json
-GSD_SESSION_KEY=my-terminal-b gsd-tools query workstream.set feature-b
-GSD_SESSION_KEY=my-terminal-b gsd-tools query state.json
+GSD_SESSION_KEY=my-terminal-a gsd_run query workstream.set feature-a
+GSD_SESSION_KEY=my-terminal-a gsd_run query state.json
+GSD_SESSION_KEY=my-terminal-b gsd_run query workstream.set feature-b
+GSD_SESSION_KEY=my-terminal-b gsd_run query state.json
 
 # Workstream CRUD
-gsd-tools query workstream.create <name>
-gsd-tools query workstream.list
-gsd-tools query workstream.status <name>
-gsd-tools query workstream.complete <name>
+gsd_run query workstream.create <name>
+gsd_run query workstream.list
+gsd_run query workstream.status <name>
+gsd_run query workstream.complete <name>
 ```

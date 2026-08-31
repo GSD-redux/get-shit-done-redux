@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { runGsdTools, createTempProject, cleanup, readWorkflowCombined } = require('./helpers.cjs');
+const { escapeRegex } = require('../gsd-core/bin/lib/pattern.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOWS = path.join(ROOT, 'gsd-core', 'workflows');
@@ -358,7 +359,9 @@ test('#2684: ship.md validates capability-supplied ref.agent before it reaches a
       'assignment IS the injection point (#2684 isolated review).',
   );
 
-  const shape = new RegExp(gate[1]);
+  // Pattern extracted verbatim from ship.md's validation gate — the shipped
+  // regex IS the product under test (#3951).
+  const shape = new RegExp(gate[1]); // allow-adhoc-regex-escape: runtime-contract-is-the-product
 
   // Legitimate agent names the capability system actually dispatches.
   for (const ok of ['gsd-mempalace-curator', 'gsd-code-reviewer', 'my.agent_v2', 'a']) {
@@ -414,4 +417,242 @@ test('#2684: an unknown agent type resolves to an empty model, so dispatch must 
   } finally {
     cleanup(dir);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #3602 — every spawned gsd-* subagent gets a model resolution.
+//
+// ingest-docs.md and import.md spawned their agents with ZERO model bindings,
+// so every spawn silently inherited the caller's model regardless of
+// dynamic_routing/model_profile config. audit-fix.md and diagnose-issues.md
+// had the same defect; the issue's per-file grep audit missed them because
+// their spawns are dispatch-shaped, not file-level greppable. This guard
+// re-derives the audit from the corpus so a fifth file cannot join silently.
+//
+// An agent type is covered when the workflow either (a) resolves it directly —
+// a `resolve-model <agent>` call appears in the file — or (b) dispatches with
+// a `model=…` reference that is bound by one of the #2684 sources (shell
+// assignment, declared parse field, or a key of an init surface the file
+// queries). Route (b) cannot see WHICH agent a `planner_model`-style field
+// answers — that mapping is conventional, not textual — so it covers the
+// file's spawns as a group; that is the same altitude the issue's own audit
+// operated at, and it is what lets this guard adopt without touching the
+// ~20 compliant init-route workflows.
+//
+// Documented residuals (isolated adversarial review, #3602 PR):
+// - Group coverage means a file binding ONE agent's model could later gain a
+//   SECOND, unbound spawn and still pass. Direct per-agent resolution (route a)
+//   is what this PR shipped for every file it touched; a per-site guard would
+//   need delimited Agent-block parsing the corpus's prose spawns don't have.
+// - The prose collector misses "Delegate to `gsd-x`", "Invoke the gsd-x agent",
+//   and mid-sentence "then spawn `gsd-x`" shapes; every live instance of those
+//   today is also collected via a dispatch shape in the same combined body.
+// - readWorkflowCombined inlines only <wf>/steps/ fragments, so dispatches in
+//   e.g. discuss-phase/modes/*.md are invisible here (all currently compliant).
+// ---------------------------------------------------------------------------
+
+/** Init-surface resolver for synthetic bodies: no surfaces, so binding must come
+ * from the text sources (shell assignment / parse line) alone. */
+const noInit = () => null;
+
+/** gsd-* agent types this workflow spawns, by any spawn shape the corpus uses.
+ *
+ * The prose shape collects an instruction ("spawn `gsd-x` in parallel",
+ * "**Spawn gsd-user-profiler agent using Task tool:**") but not a description of
+ * what a NESTED workflow does — plan-review-convergence.md runs plan-phase inline
+ * and its "inline plan-phase can spawn gsd-planner / plan-phase spawn gsd-planner"
+ * mentions describe plan-phase's dispatches, whose bindings live in plan-phase.md.
+ * Discriminator: a descriptive continuation is always preceded by a lowercase word
+ * ("it can spawn", "phase spawn"); an instruction follows a comma, `**`, punctuation,
+ * or line start. Mid-sentence imperatives ("then spawn `gsd-x`") are a known
+ * under-collection — the dispatch shape remains the primary collector.
+ */
+function spawnedAgentTypes(content) {
+  const dispatchShaped = [...content.matchAll(/subagent_type[=:]\s*"?(gsd-[a-z0-9-]+)"?/g)].map((m) => m[1]);
+  const proseShaped = [
+    ...content.matchAll(/(?<![a-z] )\bspawn(?:s|ing)?\s+`?(gsd-[a-z0-9-]+)/gi),
+  ].map((m) => m[1]);
+  return [...new Set([...dispatchShaped, ...proseShaped])];
+}
+
+/** Names referenced as `model=…` at dispatch sites: `"{X}"`, bare `X`, quoted `"X"`. */
+function modelRefNames(content) {
+  const braced = [...content.matchAll(/model="\{([A-Za-z0-9_]+)\}"/g)].map((m) => m[1]);
+  // Bare/unquoted form (execute-plan.md: `model=executor_model`). A leading quote
+  // deliberately does not match here, so `model="haiku"` is not treated as a
+  // binding reference — a literal tier is a value, not a resolution.
+  const bare = [...content.matchAll(/model=([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+  return [...new Set([...braced, ...bare])];
+}
+
+/** Every name the #2684 machinery treats as a binding source, for one body. */
+function boundModelNames(content, resolveInit = initPayloadKeys) {
+  const bound = new Set([...shellAssignedNames(content), ...declaredParseNames(content)]);
+  for (const surface of queriedInitSurfaces(content)) {
+    const keys = resolveInit(surface);
+    if (keys) for (const k of keys) bound.add(k);
+  }
+  return bound;
+}
+
+/** Uncovered spawns in one body: `gsd-x` agent types with no resolution behind them. */
+function uncoveredSpawnedAgents(content, resolveInit = initPayloadKeys) {
+  const agents = spawnedAgentTypes(content);
+  if (agents.length === 0) return [];
+  const bound = boundModelNames(content, resolveInit);
+  // A file that binds any *_model name (shell assignment, parse line, or init payload
+  // key) carries model resolution even when its dispatch sites live in an inline child
+  // workflow — plan-review-convergence.md parses planner_model/checker_model and runs
+  // plan-phase inline; plan-phase.md owns the model= sites.
+  const fileCarriesModelResolution =
+    modelRefNames(content).some((n) => bound.has(n)) || [...bound].some((n) => /_model$/i.test(n));
+  return agents.filter((a) => {
+    const direct = new RegExp(`resolve-model\\s+["'\`]?${escapeRegex(a)}["'\`]?`).test(content);
+    return !(direct || fileCarriesModelResolution);
+  });
+}
+
+test('#3602: every workflow that spawns a gsd-* subagent resolves a model for it', () => {
+  const findings = [];
+  let spawningFiles = 0;
+  let coveredSpawns = 0;
+
+  for (const file of fs.readdirSync(WORKFLOWS).filter((f) => f.endsWith('.md'))) {
+    const content = readWorkflowCombined(path.join(WORKFLOWS, file));
+    const agents = spawnedAgentTypes(content);
+    if (agents.length === 0) continue;
+    spawningFiles += 1;
+    const uncovered = uncoveredSpawnedAgents(content);
+    coveredSpawns += agents.length - uncovered.length;
+    for (const a of uncovered) {
+      findings.push(
+        `${file}: spawns ${a} with no model resolution — neither a \`resolve-model ${a}\` ` +
+        `binding nor a bound model= reference (#3602). The spawn silently inherits the ` +
+        `caller's model, ignoring dynamic_routing/model_profile.`,
+      );
+    }
+  }
+
+  // Non-vacuity: a spawn-collector that silently stops matching must fail, not pass.
+  assert.ok(
+    spawningFiles >= 20,
+    `expected >=20 spawning workflows, derived ${spawningFiles} — the derivation itself ` +
+      'is broken, so this guard proves nothing.',
+  );
+  assert.ok(
+    coveredSpawns >= 30,
+    `expected >=30 covered spawns, derived ${coveredSpawns} — the derivation itself ` +
+      'is broken, so this guard proves nothing.',
+  );
+  assert.deepEqual(findings, [], `spawns with no model resolution:\n  ${findings.join('\n  ')}`);
+});
+
+test('#3602: prose mentions that are not spawns are not flagged', () => {
+  const body = [
+    '## Anti-Patterns',
+    '',
+    '- Use `gsd-plan-checker` and `gsd-planner` — never the pbr ones',
+    '- Valid types: gsd-debugger — investigates bugs',
+    '',
+  ].join('\n');
+  assert.deepEqual(
+    uncoveredSpawnedAgents(body, noInit),
+    [],
+    'an anti-pattern mention and a type listing are not spawns — flagging them is a false positive',
+  );
+
+  // Counter-case: the same agent name preceded by a spawn verb IS collected.
+  const spawnProse = 'For each doc, spawn `gsd-doc-classifier` in parallel.\n';
+  assert.deepEqual(
+    uncoveredSpawnedAgents(spawnProse, noInit),
+    ['gsd-doc-classifier'],
+    'a prose spawn with no binding behind it must be reported — that is the #3602 shape',
+  );
+});
+
+test('#3602: a literal model= value is not a binding', () => {
+  const literal = [
+    'Agent(',
+    '  prompt="fix it",',
+    '  subagent_type="gsd-executor",',
+    '  model="haiku"',
+    ')',
+    '',
+  ].join('\n');
+  assert.deepEqual(
+    uncoveredSpawnedAgents(literal, noInit),
+    ['gsd-executor'],
+    'model="haiku" hardcodes a tier — it is a value, not a resolution, and must not count as coverage',
+  );
+
+  const bound = [
+    'EXECUTOR_MODEL=$(gsd_run query resolve-model gsd-executor --raw)',
+    'Agent(',
+    '  prompt="fix it",',
+    '  subagent_type="gsd-executor",',
+    '  model="{EXECUTOR_MODEL}"',
+    ')',
+    '',
+  ].join('\n');
+  assert.deepEqual(
+    uncoveredSpawnedAgents(bound, noInit),
+    [],
+    'a shell-assigned resolve-model binding referenced at the dispatch site is coverage',
+  );
+
+  const bareForm = 'Parse from init JSON: `executor_model`.\nAgent(subagent_type="gsd-executor", model=executor_model)\n';
+  assert.deepEqual(
+    uncoveredSpawnedAgents(bareForm, noInit),
+    [],
+    'the bare model=executor_model notation (execute-plan.md) counts when the name is parse-declared',
+  );
+});
+
+test('#3602: spawn-site extraction round-trips (property)', () => {
+  const name = fc.stringMatching(/^gsd-[a-z0-9]{1,18}$/);
+  fc.assert(
+    fc.property(fc.array(name, { minLength: 1, maxLength: 10 }), (names) => {
+      const distinct = [...new Set(names)];
+      const render = (n) =>
+        n === names[0]
+          ? `spawn \`${n}\` in parallel` // prose shape
+          : `subagent_type: "${n}"`; // dispatch shape
+      const body = names.map(render).join('\n');
+      assert.deepEqual([...spawnedAgentTypes(body)].sort(), [...distinct].sort());
+    }),
+    { numRuns: 200 },
+  );
+});
+
+test('#3602: spawn coverage detection is CRLF-safe', () => {
+
+  const unbound = [
+    'For each doc, spawn `gsd-doc-classifier` in parallel.',
+    'Agent(subagent_type="gsd-doc-synthesizer")',
+    '',
+  ].join('\n');
+  const unboundLf = uncoveredSpawnedAgents(unbound, noInit);
+  assert.deepEqual(
+    [...unboundLf].sort(),
+    ['gsd-doc-classifier', 'gsd-doc-synthesizer'],
+    'with no binding anywhere in the file, both spawn shapes are uncovered',
+  );
+  assert.deepEqual(
+    uncoveredSpawnedAgents(unbound.replace(/\n/g, '\r\n'), noInit),
+    unboundLf,
+    'CRLF input must yield the same verdicts as LF (recurring class: #1658/#1668/#2206/#2449/#2450)',
+  );
+
+  const bound = [
+    'CLASSIFIER_MODEL=$(gsd_run query resolve-model gsd-doc-classifier --raw)',
+    'Agent(subagent_type="gsd-doc-synthesizer", model="{CLASSIFIER_MODEL}")',
+    '',
+  ].join('\n');
+  const boundLf = uncoveredSpawnedAgents(bound, noInit);
+  assert.deepEqual(boundLf, [], 'a file-level binding covers the file\'s spawns as a group');
+  assert.deepEqual(
+    uncoveredSpawnedAgents(bound.replace(/\n/g, '\r\n'), noInit),
+    boundLf,
+    'CRLF input must yield the same verdicts as LF',
+  );
 });

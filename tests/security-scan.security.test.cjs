@@ -32,14 +32,17 @@
 // Migrating these to a parsed IR would add ceremony without changing
 // what is verified — the strings ARE the typed surface.
 
-const { describe, test } = require('node:test');
+const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempGitProject } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
+const { gitOrThrow, GIT_FIXTURE_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
+const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
 const SCRIPTS = {
@@ -47,6 +50,10 @@ const SCRIPTS = {
   base64: path.join(PROJECT_ROOT, 'scripts', 'base64-scan.sh'),
   secret: path.join(PROJECT_ROOT, 'scripts', 'secret-scan.sh'),
 };
+// ADR-3889 (#3908): the generated exit-code registry — codes are resolved
+// via exitCodeFor(), never hardcoded, so this suite stays correct if the
+// registry's integers ever change.
+const { exitCodeFor } = require('../gsd-core/bin/lib/exit-code-registry.cjs');
 
 // Helper: create a temp file with given content, run scanner, return { status, stdout, stderr }
 const IS_WINDOWS = process.platform === 'win32';
@@ -189,7 +196,7 @@ describe('prompt-injection-scan.sh', { skip: IS_WINDOWS }, () => {
     assert.equal(result.status, 0);
   });
 
-  test('exits 2 on missing arguments', () => {
+  test('exits USAGE on missing arguments', () => {
     try {
       execFileSync(SCRIPTS.injection, [], {
         encoding: 'utf-8',
@@ -198,7 +205,7 @@ describe('prompt-injection-scan.sh', { skip: IS_WINDOWS }, () => {
       });
       assert.fail('Should have exited non-zero');
     } catch (err) {
-      assert.equal(err.status, 2);
+      assert.equal(err.status, exitCodeFor('USAGE'));
     }
   });
 });
@@ -280,7 +287,7 @@ describe('base64-scan.sh', { skip: IS_WINDOWS }, () => {
     assert.equal(result.status, 0);
   });
 
-  test('exits 2 on missing arguments', () => {
+  test('exits USAGE on missing arguments', () => {
     try {
       execFileSync(SCRIPTS.base64, [], {
         encoding: 'utf-8',
@@ -289,7 +296,7 @@ describe('base64-scan.sh', { skip: IS_WINDOWS }, () => {
       });
       assert.fail('Should have exited non-zero');
     } catch (err) {
-      assert.equal(err.status, 2);
+      assert.equal(err.status, exitCodeFor('USAGE'));
     }
   });
 
@@ -492,7 +499,7 @@ describe('secret-scan.sh', { skip: IS_WINDOWS }, () => {
     assert.equal(result.status, 0);
   });
 
-  test('exits 2 on missing arguments', () => {
+  test('exits USAGE on missing arguments', () => {
     try {
       execFileSync(SCRIPTS.secret, [], {
         encoding: 'utf-8',
@@ -501,7 +508,240 @@ describe('secret-scan.sh', { skip: IS_WINDOWS }, () => {
       });
       assert.fail('Should have exited non-zero');
     } catch (err) {
-      assert.equal(err.status, 2);
+      assert.equal(err.status, exitCodeFor('USAGE'));
+    }
+  });
+});
+
+// ─── Exit-Code Contract (ADR-3889 Phase 4, #3908) ──────────────────────────
+//
+// Drives the real scripts through tests/helpers/process-seam.cjs's `runHook`
+// (never a hand-rolled spawnSync — a review blocker on P3). Every repo
+// fixture is a throwaway temp git repo built via
+// createTempGitProject/gitOrThrow; nothing here depends on, or mutates, this
+// repo's own git state, since test files in this suite run in parallel.
+//
+// The "shared" describes assert the SAME code across all three scanners for
+// input classes that collapse identically regardless of scanner-specific
+// extension filtering (a bad ref, no repo, no commits, an established-empty
+// diff, an all-images diff, and every usage error). The "controls" describe
+// is load-bearing: without a "files changed, no findings" case per scanner,
+// an implementation that returns UNAVAILABLE unconditionally would satisfy
+// every assertion above it.
+
+describe('scanner exit-code contract', { skip: IS_WINDOWS }, () => {
+  const SCANNERS = [
+    ['secret-scan', SCRIPTS.secret],
+    ['base64-scan', SCRIPTS.base64],
+    ['prompt-injection-scan', SCRIPTS.injection],
+  ];
+
+  function runScanner(scriptPath, args, opts = {}) {
+    return runHook(scriptPath, args, { interpreter: 'bash', timeoutMs: HOOK_FANOUT_TIMEOUT_MS, ...opts });
+  }
+
+  describe('shared exit-code classes (identical across all three scanners)', () => {
+    let repo;
+    before(() => { repo = createTempGitProject('gsd-scan-shared-'); });
+    after(() => { cleanup(repo); });
+
+    for (const [name, scriptPath] of SCANNERS) {
+      test(`${name}: nonexistent --diff ref -> UNAVAILABLE, git diagnostic on stderr`, () => {
+        const result = runScanner(scriptPath, ['--diff', 'refs/heads/does-not-exist-xyz'], { cwd: repo });
+        assert.equal(result.exitCode, exitCodeFor('UNAVAILABLE'));
+        assert.ok(result.stderr.length > 0, 'git\'s own diagnostic must survive on stderr');
+      });
+
+      test(`${name}: --file with a nonexistent path -> USAGE`, () => {
+        const result = runScanner(scriptPath, ['--file', path.join(repo, 'does-not-exist.md')], { cwd: repo });
+        assert.equal(result.exitCode, exitCodeFor('USAGE'));
+      });
+
+      test(`${name}: --dir with a nonexistent path -> USAGE`, () => {
+        const result = runScanner(scriptPath, ['--dir', path.join(repo, 'does-not-exist-dir')], { cwd: repo });
+        assert.equal(result.exitCode, exitCodeFor('USAGE'));
+      });
+
+      test(`${name}: unknown mode -> USAGE`, () => {
+        const result = runScanner(scriptPath, ['--bogus-mode'], { cwd: repo });
+        assert.equal(result.exitCode, exitCodeFor('USAGE'));
+      });
+
+      test(`${name}: no argv at all -> USAGE`, () => {
+        const result = runScanner(scriptPath, [], { cwd: repo });
+        assert.equal(result.exitCode, exitCodeFor('USAGE'));
+      });
+    }
+  });
+
+  describe('outside a git repository -> UNAVAILABLE', () => {
+    let nonRepoDir;
+    before(() => { nonRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-scan-norepo-')); });
+    after(() => { cleanup(nonRepoDir); });
+
+    for (const [name, scriptPath] of SCANNERS) {
+      test(name, () => {
+        const result = runScanner(scriptPath, ['--diff', 'origin/next'], { cwd: nonRepoDir });
+        assert.equal(result.exitCode, exitCodeFor('UNAVAILABLE'));
+      });
+    }
+  });
+
+  describe('repo with no commits -> UNAVAILABLE', () => {
+    let emptyRepo;
+    before(() => {
+      emptyRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-scan-nocommit-'));
+      gitOrThrow(['init'], { cwd: emptyRepo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+    });
+    after(() => { cleanup(emptyRepo); });
+
+    for (const [name, scriptPath] of SCANNERS) {
+      test(name, () => {
+        const result = runScanner(scriptPath, ['--diff', 'origin/next'], { cwd: emptyRepo });
+        assert.equal(result.exitCode, exitCodeFor('UNAVAILABLE'));
+      });
+    }
+  });
+
+  describe('established-empty diff (base === HEAD) -> NO_INPUT', () => {
+    let repo;
+    before(() => {
+      repo = createTempGitProject('gsd-scan-emptydiff-');
+      gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+    });
+    after(() => { cleanup(repo); });
+
+    for (const [name, scriptPath] of SCANNERS) {
+      test(name, () => {
+        const result = runScanner(scriptPath, ['--diff', 'base-branch'], { cwd: repo });
+        assert.equal(result.exitCode, exitCodeFor('NO_INPUT'));
+      });
+    }
+  });
+
+  describe('all-images diff -> NO_INPUT (not a failure, not UNAVAILABLE)', () => {
+    let repo;
+    before(() => {
+      repo = createTempGitProject('gsd-scan-images-');
+      gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      fs.writeFileSync(path.join(repo, 'pic.png'), 'fake png bytes');
+      gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      gitOrThrow(['commit', '-m', 'add image only'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+    });
+    after(() => { cleanup(repo); });
+
+    for (const [name, scriptPath] of SCANNERS) {
+      test(name, () => {
+        const result = runScanner(scriptPath, ['--diff', 'base-branch'], { cwd: repo });
+        assert.equal(
+          result.exitCode, exitCodeFor('NO_INPUT'),
+          `expected NO_INPUT — stdout: ${result.stdout} stderr: ${result.stderr}`,
+        );
+        assert.notEqual(result.exitCode, 1, `${name} must not report the all-images diff as a failure`);
+      });
+    }
+  });
+
+  // ── Controls ───────────────────────────────────────────────────────────
+  describe('controls: clean scan / findings scan / mixed diff still work', () => {
+    test('secret-scan: clean scan with a real file still exits 0', (t) => {
+      const repo = createTempGitProject('gsd-scan-clean-secret-');
+      t.after(() => cleanup(repo));
+      gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      fs.writeFileSync(path.join(repo, 'code.txt'), 'clean text content\n');
+      gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      gitOrThrow(['commit', '-m', 'add clean file'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      const result = runScanner(SCRIPTS.secret, ['--diff', 'base-branch'], { cwd: repo });
+      assert.equal(result.exitCode, 0, result.stdout + result.stderr);
+    });
+
+    test('secret-scan: a diff WITH a real secret still reports findings (exit 1)', (t) => {
+      const repo = createTempGitProject('gsd-scan-findings-secret-');
+      t.after(() => cleanup(repo));
+      gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      const key = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+      fs.writeFileSync(path.join(repo, 'secret.txt'), `aws_key = "${key}"\n`);
+      gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      gitOrThrow(['commit', '-m', 'add secret'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      const result = runScanner(SCRIPTS.secret, ['--diff', 'base-branch'], { cwd: repo });
+      assert.equal(result.exitCode, 1, result.stdout + result.stderr);
+      assert.ok(result.stdout.includes('FAIL'));
+    });
+
+    test('prompt-injection-scan: mixed images+code diff scans the code file (exit 0, clean)', (t) => {
+      const repo = createTempGitProject('gsd-scan-mixed-');
+      t.after(() => cleanup(repo));
+      gitOrThrow(['branch', 'base-branch'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      fs.writeFileSync(path.join(repo, 'pic.png'), 'fake png bytes');
+      fs.writeFileSync(path.join(repo, 'clean.md'), '# Clean docs\n');
+      gitOrThrow(['add', '-A'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      gitOrThrow(['commit', '-m', 'mixed'], { cwd: repo, timeoutMs: GIT_FIXTURE_TIMEOUT_MS });
+      const result = runScanner(SCRIPTS.injection, ['--diff', 'base-branch'], { cwd: repo });
+      assert.equal(result.exitCode, 0, result.stdout + result.stderr);
+    });
+
+    test('--file / --dir / --stdin controls still scan and pass on clean content', (t) => {
+      const repo = createTempGitProject('gsd-scan-modes-');
+      t.after(() => cleanup(repo));
+      const cleanFile = path.join(repo, 'clean.md');
+      fs.writeFileSync(cleanFile, '# Clean docs\n');
+      assert.equal(runScanner(SCRIPTS.injection, ['--file', cleanFile]).exitCode, 0);
+      assert.equal(runScanner(SCRIPTS.injection, ['--dir', repo]).exitCode, 0);
+      const stdinResult = runScanner(SCRIPTS.injection, ['--stdin'], { input: '# clean\n' });
+      assert.equal(stdinResult.exitCode, 0);
+    });
+  });
+
+  describe('--dir unreadable -> UNAVAILABLE', () => {
+    let parent, locked;
+    before(() => {
+      parent = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-scan-unreadable-'));
+      locked = path.join(parent, 'locked');
+      fs.mkdirSync(locked);
+      fs.chmodSync(locked, 0o000);
+    });
+    after(() => {
+      try { fs.chmodSync(locked, 0o755); } catch { /* best effort, for cleanup() below */ }
+      cleanup(parent);
+    });
+
+    for (const [name, scriptPath] of SCANNERS) {
+      test(name, (t) => {
+        // Root (and some CI/Docker images running as root) bypasses mode
+        // bits entirely — a bare `return` here would be a silent PASS, so
+        // this is an explicit t.skip() instead.
+        if (typeof process.getuid === 'function' && process.getuid() === 0) {
+          t.skip('running as root — mode bits do not restrict access');
+          return;
+        }
+        const result = runScanner(scriptPath, ['--dir', locked]);
+        assert.equal(result.exitCode, exitCodeFor('UNAVAILABLE'));
+      });
+    }
+  });
+
+  describe('missing exit-codes.sh -> loud non-zero, never 0', () => {
+    // Isolated copy of the scanner in a throwaway tree whose gsd-core/bin/
+    // shared/ directory has no exit-codes.sh — never touches the real
+    // committed file, so this is safe under parallel test-file execution.
+    function isolatedCopyWithNoRegistry(scriptPath) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-scan-noregistry-'));
+      fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'gsd-core', 'bin', 'shared'), { recursive: true });
+      const dest = path.join(root, 'scripts', path.basename(scriptPath));
+      fs.copyFileSync(scriptPath, dest);
+      fs.chmodSync(dest, 0o755);
+      return { root, dest };
+    }
+
+    for (const [name, scriptPath] of SCANNERS) {
+      test(name, (t) => {
+        const { root, dest } = isolatedCopyWithNoRegistry(scriptPath);
+        t.after(() => cleanup(root));
+        const result = runScanner(dest, ['--diff', 'origin/next']);
+        assert.ok(Number.isInteger(result.exitCode), `expected a numeric exit code, got ${result.exitCode}`);
+        assert.notEqual(result.exitCode, 0, 'a missing exit-code registry must never silently exit 0');
+      });
     }
   });
 });

@@ -23,6 +23,7 @@ const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const { routeAuditUat, routeAuditOpen } = require('../gsd-core/bin/lib/audit-command-router.cjs');
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -238,8 +239,8 @@ describe('audit cutover: output shape equivalence', () => {
       `audit-open must succeed. stderr: ${result.error}`);
     const lines = result.output.split('\n').map(l => l.trim()).filter(Boolean);
     assert.ok(
-      lines.includes('Milestone Close: Open Artifact Audit'),
-      `report title must appear as a standalone line; got: ${JSON.stringify(lines.slice(0, 5))}`,
+      lines.includes('### Milestone Close: Open Artifact Audit'),
+      `report title must appear as a standalone Markdown heading line; got: ${JSON.stringify(lines.slice(0, 5))}`,
     );
   });
 
@@ -481,7 +482,7 @@ describe('audit-open — does not crash with ReferenceError (#2659)', () => {
  *   2. Even after switching to `core.output(formatted, raw)`, the human-readable
  *      branch JSON-stringifies the formatted string because `core.output` only
  *      bypasses JSON encoding when called as `core.output(null, true, rawValue)`.
- *      Result: stdout contains `"━━━…\n  Milestone Close: …\n…"` (a JSON string
+ *      Result: stdout contains `"### Milestone Close: …\n…"` (a JSON string
  *      literal) instead of the rendered report.
  *
  * The shape assertions below catch both regressions structurally — never via
@@ -640,10 +641,10 @@ describe('audit-open — output shape (#2911)', () => {
 
     const lines = result.output.split('\n').map(l => l.trim()).filter(Boolean);
 
-    // The first non-empty line must be the divider character row, *not* a
-    // JSON-encoded string starting with a quote. If core.output JSON-stringified
+    // The first non-empty line must be the rendered Markdown heading row, *not*
+    // a JSON-encoded string starting with a quote. If core.output JSON-stringified
     // the formatted report, the entire payload sits on one line wrapped in
-    // double quotes ("━━━…\n…").
+    // double quotes ("### Milestone Close: …\n…").
     assert.ok(
       !result.output.startsWith('"'),
       'text-mode stdout must not begin with a JSON quote (would mean the report was JSON.stringified)'
@@ -655,8 +656,8 @@ describe('audit-open — output shape (#2911)', () => {
 
     // Section headers from formatAuditReport that must appear as standalone lines.
     assert.ok(
-      lines.includes('Milestone Close: Open Artifact Audit'),
-      `expected report title as a standalone line; got lines: ${JSON.stringify(lines.slice(0, 5))}`
+      lines.includes('### Milestone Close: Open Artifact Audit'),
+      `expected report title as a standalone Markdown heading line; got lines: ${JSON.stringify(lines.slice(0, 5))}`
     );
     assert.ok(
       lines.includes('All artifact types clear. Safe to proceed.'),
@@ -1363,12 +1364,14 @@ function extractFrontmatter(content) {
   }
 
   // Case 2: frontmatter is embedded inside a fenced block (```markdown\n---\n…\n---\n)
-  const fenceMatch = content.match(/```(?:markdown|md)?\r?\n(---\r?\n[\s\S]*?\r?\n---)\r?\n/);
-  if (fenceMatch) {
-    // Strip the outer --- delimiters to get just the YAML body
-    const block = fenceMatch[1];
-    const inner = block.match(/^---\r?\n([\s\S]*?)\r?\n---$/);
-    return inner ? inner[1] : null;
+  const lines = content.split(/\r?\n/);
+  for (const block of scanFencedBlocks(lines)) {
+    if (block.closeLineIdx === -1) continue;
+    const info = (block.infoString || '').trim().toLowerCase();
+    if (info !== '' && info !== 'markdown' && info !== 'md') continue;
+    const fenced = lines.slice(block.openLineIdx + 1, block.closeLineIdx).join('\n');
+    const inner = fenced.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (inner) return inner[1];
   }
 
   return null;
@@ -2074,17 +2077,39 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       assert.match(result.error, /no deferred item matched/i);
     });
 
-    test('BLOCKER 1: heading-delimited (#3457) deferred-items shape is refused as unsupported_heading_shape, not guessed at', () => {
+    test('BLOCKER 1 (updated for #3781): heading-delimited (#3457) entries ack via the CLI; only table-embedded spans still refuse', () => {
       const phaseDir = planningPath('phases', '01-alpha');
       fs.mkdirSync(phaseDir, { recursive: true });
       const filePath = path.join(phaseDir, 'deferred-items.md');
-      const before = ['## Deferred Items', '', '### Something out of scope', '', 'Some detail line.', ''].join('\n');
-      fs.writeFileSync(filePath, before);
 
-      const result = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Something out of scope', '--milestone', 'v1.0']);
-      assert.equal(result.success, false, 'heading-delimited shape must be refused');
-      assert.match(result.error, /heading-delimited/i);
-      assert.equal(fs.readFileSync(filePath, 'utf-8'), before, 'file must be byte-identical — nothing written on refusal');
+      // #3781: the heading shape is now SUPPORTED — a bullet-bearing leaf
+      // acks through the CLI writer.
+      const ackable = ['## Deferred Items', '', '### Something out of scope', '', '- a real bullet', ''].join('\n');
+      fs.writeFileSync(filePath, ackable);
+      // --text must be the reader-derived identity: rawGapEntryText joins the
+      // heading text, the blank line, and the bullet with single spaces —
+      // the blank line contributes an empty segment, hence the double space.
+      const okResult = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Something out of scope  - a real bullet', '--milestone', 'v1.0']);
+      assert.equal(okResult.success, true, `heading-shaped entries must be acknowledgeable; stderr: ${okResult.error}`);
+      assert.match(fs.readFileSync(filePath, 'utf-8'), /status: acknowledged/);
+
+      // A table row embedded in the entry's span is still refused — a
+      // non-contiguous span cannot anchor a safe write.
+      const tabled = ['## Deferred Items', '', '### Tabled finding', '', '- a bullet', '| x | y |', ''].join('\n');
+      fs.writeFileSync(filePath, tabled);
+      const refuse = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Tabled finding  - a bullet', '--milestone', 'v1.0']);
+      assert.equal(refuse.success, false, 'table-embedded spans must still refuse');
+      assert.match(refuse.error, /GFM table row/i);
+      assert.equal(fs.readFileSync(filePath, 'utf-8'), tabled, 'file must be byte-identical — nothing written on refusal');
+
+      // Prose-only headings were never items (reader contract) — not_found,
+      // never a write.
+      const proseOnly = ['## Deferred Items', '', '### Something out of scope', '', 'Some detail line.', ''].join('\n');
+      fs.writeFileSync(filePath, proseOnly);
+      const nf = ack(tmpDir, ['--category', 'deferred_items', '--phase', '01', '--file', 'deferred-items.md', '--text', 'Something out of scope', '--milestone', 'v1.0']);
+      assert.equal(nf.success, false, 'prose-only headings contribute no entry');
+      assert.match(nf.error, /no deferred item matched/i);
+      assert.equal(fs.readFileSync(filePath, 'utf-8'), proseOnly, 'file must be byte-identical');
     });
 
     // ── F1 (#3458 follow-up review, HIGH): the writer must splice by the
@@ -2234,7 +2259,9 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
       }
 
       const before = audit(tmpDir);
-      assert.equal(before.counts.todos, 5, 'display cap: 5 of 7 shown in one scan');
+      // #3817: the display cap truncates the DETAIL list, not the count —
+      // 7 pending files means counts.todos is 7 (5 shown + remainder 2).
+      assert.equal(before.counts.todos, 7, 'counts include the truncation remainder (#3817)');
       assert.equal(before.has_open_items, true);
 
       const shown = before.items.todos.filter((i) => !i.scan_error && !i._remainder_count).map((i) => i.filename);
@@ -2408,6 +2435,96 @@ describe('bug #950: quick-task SUMMARY must carry status: complete', () => {
     test('writer refuses to acknowledge a category with a required flag missing', () => {
       const result = ack(tmpDir, ['--category', 'uat_gaps', '--milestone', 'v1.0']); // no --phase/--file
       assert.equal(result.success, false, 'missing --phase/--file must be refused');
+    });
+
+    // ── mixed-frame fix (security review, #3078-CR follow-up): the writer's
+    // snapshot value and the scanners' recomputed value must share ONE
+    // frame (both normalized) even though the writer's SPLICE stays raw. A
+    // lone-CR artifact discriminates this: normalizing shifts every byte
+    // offset, so if the splice used normalized text it would corrupt the
+    // file, and if the snapshot used raw text it would never match the
+    // scanner's normalized recomputation — acknowledge would silently never
+    // suppress. An LF control proves the round trip isn't accidentally
+    // broken for the common case while fixing the CR case. ──────────────
+
+    test('mixed-frame fix: context_questions acknowledge on a lone-CR artifact actually suppresses the item', () => {
+      // A lone-CR CONTEXT.md is the clean discriminator: `deriveOpenQuestions`
+      // splits the `## Open Questions` body on `\n` — raw lone-CR content has
+      // NO `\n` at all, so pre-fix the writer's raw-content digest is
+      // computed over a ZERO-question set (sha256 of ''), which can never
+      // equal what the scanner (reading normalized content) recomputes — the
+      // acknowledge is a silent no-op. This file carries no frontmatter
+      // fence, so it is not entangled with the separate, pre-existing
+      // splice-vs-lone-CR-fence limitation a UAT/VERIFICATION file with an
+      // EXISTING lone-CR frontmatter block would hit.
+      const phaseDir = planningPath('phases', '01-alpha');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '01-CONTEXT.md');
+      fs.writeFileSync(filePath, '# Context\r\r## Open Questions\r\r- Which backend?\r- What about auth?\r');
+
+      const before = audit(tmpDir);
+      assert.equal(before.counts.context_questions, 1, 'lone-CR CONTEXT file must be parsed as having open questions before acknowledge');
+
+      const result = ack(tmpDir, ['--category', 'context_questions', '--phase', '01', '--file', '01-CONTEXT.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+      assert.notEqual(
+        JSON.parse(result.output).questions_digest,
+        'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        'the recorded digest must reflect the REAL 2-question set, not sha256 of an empty set (the pre-fix raw-content bug)',
+      );
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.context_questions, 0, 'lone-CR context_questions item must be SUPPRESSED, not resurface as a silent no-op');
+      assert.equal(after.acknowledged.context_questions, 1);
+      assert.deepEqual(
+        (after.items.context_questions || []).filter((i) => !i.scan_error).map((i) => i.file),
+        [],
+        'the specific acknowledged file must be gone from the open items, by identity — not just a smaller count',
+      );
+    });
+
+    test('mixed-frame fix control: context_questions acknowledge on an LF artifact still suppresses the item (round trip not broken by the CR fix)', () => {
+      const phaseDir = planningPath('phases', '02-beta');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '02-CONTEXT.md');
+      fs.writeFileSync(filePath, '# Context\n\n## Open Questions\n\n- Which backend?\n- What about auth?\n');
+
+      const before = audit(tmpDir);
+      assert.equal(before.counts.context_questions, 1);
+
+      const result = ack(tmpDir, ['--category', 'context_questions', '--phase', '02', '--file', '02-CONTEXT.md', '--milestone', 'v1.0', '--at', '2026-08-15']);
+      assert.ok(result.success, `acknowledge must succeed. stderr: ${result.error}`);
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.context_questions, 0, 'LF context_questions item must still be suppressed after the fix');
+      assert.equal(after.acknowledged.context_questions, 1);
+      assert.deepEqual(
+        (after.items.context_questions || []).filter((i) => !i.scan_error).map((i) => i.file),
+        [],
+        'the specific acknowledged file must be gone from the open items, by identity',
+      );
+      assert.ok(!fs.readFileSync(filePath, 'utf-8').includes('\r'), 'LF file stays LF — the fix must not introduce CR bytes on the common path');
+    });
+
+    test('mixed-frame fix compatibility: a HAND-AUTHORED pre-existing LF acknowledgment marker (never touched by this change\'s writer) is still recognised', () => {
+      const phaseDir = planningPath('phases', '03-gamma');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      const filePath = path.join(phaseDir, '03-UAT.md');
+      // The marker's `gap_snapshot` value is computed BY HAND here, per
+      // `deriveUatGapSnapshotValue`'s documented shape
+      // (`${status}::scenarios=${openScenarioCount}`) — NOT produced by
+      // calling the writer — so this exercises the scanner's READ side in
+      // isolation against a marker that predates this change entirely. This
+      // content has zero `result: pending`/`[pending]` matches, so the open
+      // scenario count is 0.
+      fs.writeFileSync(
+        filePath,
+        '---\nstatus: gaps_found\naudit_acknowledged:\n  milestone: v1.0\n  at: "2026-08-15"\n  gap_snapshot: "gaps_found::scenarios=0"\n---\n# UAT\n\n## Gaps\n\n- truth: "something broke"\n  status: open\n',
+      );
+
+      const after = audit(tmpDir);
+      assert.equal(after.counts.uat_gaps, 0, 'a pre-existing LF acknowledgment marker must still suppress the item after the mixed-frame fix');
+      assert.equal(after.acknowledged.uat_gaps, 1);
     });
   });
 }

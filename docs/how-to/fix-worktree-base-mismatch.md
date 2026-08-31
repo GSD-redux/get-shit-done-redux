@@ -14,9 +14,10 @@ When you run `/gsd-execute-phase` or `/gsd-quick` on a branch that is ahead of t
 
 ```
 ⚠ Worktree base mismatch: HEAD (abc12345) differs from origin/HEAD (def67890).
-Running this phase sequentially on the main working tree.
-To keep parallel worktrees, set worktree.baseRef:"head" in
-.claude/settings.local.json (or run: gsd-tools worktree set-baseref). See #683.
+Running this phase sequentially on the main working tree. Parallel worktrees
+return once HEAD is merged/pushed so origin/HEAD matches it.
+(worktree.baseRef:"head" applies only where GSD itself creates the worktree —
+the runtime harness does not read it; #48, #3659.)
 ```
 
 The phase or quick task runs to completion sequentially; nothing is blocked. This is the runtime mitigation (`/gsd-execute-phase`: #683/#1369; `/gsd-quick`: #1941).
@@ -51,9 +52,20 @@ Use this option when:
 
 ---
 
-## Option 2 — Permanent fix: set `worktree.baseRef: "head"` (recommended)
+## Option 2 — Where `worktree.baseRef: "head"` actually applies (runtimes where GSD creates the worktrees)
 
-This option restores parallel worktree execution on diverged branches. It tells Claude Code to fork executor worktrees from your current `HEAD` instead of `origin/HEAD`, so the plan files and branch-only commits are present in every worktree.
+**What this setting can and cannot do (#48, #3659):** on runtimes whose own harness creates isolated
+worktrees (Claude Code's `Agent(isolation="worktree")`), the harness forks from the repository
+default branch and **does not read project-settings `baseRef`** — verified 5/5 in #48; tracked
+upstream at claude-code#44965/#43535. On those runtimes, setting `baseRef:"head"` does **not**
+restore parallel worktrees on a diverged branch, and since #3659 it no longer silences the
+pre-dispatch check: GSD compares `HEAD` against the real fork base and auto-degrades to sequential
+execution before dispatch instead of letting every executor die at the exit-42 guard.
+
+The setting **is** honored where GSD itself runs `git worktree add <path> <start-point>` — the
+orchestrator-managed isolation used on runtimes with a headless exec surface (Codex, OpenCode,
+Kimi, Kimi Code). There `baseRef:"head"` really does fork from your current `HEAD`, the check
+suppresses on it (`reason: "baseref-head"`), and parallel execution works on any branch.
 
 Run the convenience command from your project root:
 
@@ -63,13 +75,18 @@ node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" worktree set-baseref
 
 This writes `worktree.baseRef: "head"` into `.claude/settings.local.json` in your project root. It is no-clobber: if you already have an explicit `baseRef` set to something else, it leaves your value in place and tells you.
 
-To verify the result:
+To verify the result on a harness-isolated runtime (Claude Code, Cursor), pass the dispatch mode so
+the check evaluates the base the harness will actually use:
 
 ```bash
-node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" worktree base-check
+node "$HOME/.claude/gsd-core/bin/gsd-tools.cjs" worktree base-check --mode harness-worktree
 ```
 
-The output is JSON. When `shouldDegrade` is `false` and `reason` is `"baseref-head"`, parallel worktrees will work on any branch.
+The output is JSON. On a diverged branch expect `shouldDegrade: true` with
+`reason: "baseref-head-ignored-by-harness"` — GSD will run the phase sequentially; parallel
+worktrees return once `HEAD` is merged/pushed so `origin/HEAD` matches it. On a GSD-managed runtime,
+`--mode orchestrator-worktree` returns `shouldDegrade: false` with `reason: "baseref-head"` and
+parallel worktrees work on any branch.
 
 Alternatively, set the value by hand in `.claude/settings.local.json`:
 
@@ -81,13 +98,12 @@ Alternatively, set the value by hand in `.claude/settings.local.json`:
 }
 ```
 
-**Note:** Fresh installs and upgrades of GSD Core both set `worktree.baseRef:"head"` automatically in `.claude/settings.local.json` (no-clobber) when `workflow.use_worktrees` is enabled (the default). You can also apply or re-apply it manually at any time with `gsd-tools worktree set-baseref` — for example, if you toggled worktrees on after the initial install.
+**Note:** Fresh installs and upgrades of GSD Core both set `worktree.baseRef:"head"` automatically in `.claude/settings.local.json` (no-clobber) when `workflow.use_worktrees` is enabled (the default). This remains useful for GSD-managed runtimes and harmless elsewhere — post-#3659 it never silences the check on harness-managed ones.
 
 Use this option when:
 
-- You regularly work on long-lived or milestone branches
-- You want parallel phase execution (faster, lower context-window pressure)
-- You are a solo developer or team working on a feature branch for an extended period
+- Your runtime uses GSD-managed worktrees (Codex, OpenCode, Kimi, Kimi Code) and you regularly work on long-lived or milestone branches
+- You want parallel phase execution there (faster, lower context-window pressure)
 
 ---
 

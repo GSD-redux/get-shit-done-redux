@@ -16,6 +16,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { copyScriptWithDeps } = require('./helpers/copy-script-fixture.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SCRIPT_REL = path.join('scripts', 'check-glossary-refs.cjs');
@@ -34,7 +35,10 @@ function allRuntimesSentence(count, members) {
 /**
  * Build a throwaway repo containing exactly what the gate reads: CONTEXT.md,
  * bin/install.js, a real src/ file a clean fixture can legitimately reference,
- * and a copy of the gate + its cli-exit dependency. A unique mkdtemp per call
+ * and a copy of the gate together with its transitive relative-require graph
+ * (walked and copied by copyScriptWithDeps, not hand-listed — see that
+ * helper's docstring for why: a hand-copied dependency list silently goes
+ * stale the moment the script gains a new require). A unique mkdtemp per call
  * keeps parallel tests from colliding, and the dir is removed via `t.after()`
  * so a failing assertion cannot leak it.
  */
@@ -42,15 +46,10 @@ function makeRepo(t, { contextBody, runtimes = REAL_RUNTIMES }) {
   const root = createTempDir('gsd-glossary-refs-');
   t.after(() => cleanup(root));
 
-  fs.mkdirSync(path.join(root, 'scripts', 'lib'), { recursive: true });
   fs.mkdirSync(path.join(root, 'src'), { recursive: true });
   fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
 
-  fs.copyFileSync(path.join(REPO_ROOT, SCRIPT_REL), path.join(root, SCRIPT_REL));
-  fs.copyFileSync(
-    path.join(REPO_ROOT, 'scripts', 'lib', 'cli-exit.cjs'),
-    path.join(root, 'scripts', 'lib', 'cli-exit.cjs'),
-  );
+  copyScriptWithDeps(REPO_ROOT, root, SCRIPT_REL);
 
   fs.writeFileSync(path.join(root, 'CONTEXT.md'), contextBody);
   fs.writeFileSync(
@@ -232,4 +231,119 @@ test('the real script runs cleanly against the real repo without crashing', () =
   });
   assert.equal(res.error, undefined, `spawn must not error: ${res.error}`);
   assert.ok(res.status === 0 || res.status === 1, `expected exit 0 or 1, got ${res.status} (stderr: ${res.stderr})`);
+});
+
+// ---------------------------------------------------------------------------
+// #3604 — backtick-pairing parity. extractTrackedRefs paired backticks in one
+// whole-text pass, so (a) an odd-backtick line (the RULESET.* predicate format
+// is backtick-wrapped and its values sometimes contain backticks) shifted the
+// pairing of every later line, and (b) the fact-store predicate lines wrap the
+// whole `CLASS.subkey=value` in ONE pair, hiding the real tests/… paths inside
+// the span's value. A broken ref the gate cannot see is a gate that reports a
+// false clean — the exact luck-based pass #2778's docstring warned about.
+// ---------------------------------------------------------------------------
+
+test('a broken tracked reference after a RULESET predicate with inner backticks is caught (#3604)', (t) => {
+  // The predicate line carries an ODD backtick count (outer pair + one inner
+  // unpaired tick), which desynchronized the old whole-text pairing. The broken
+  // ref on a LATER line must still be found.
+  const context = [
+    '# Context',
+    '',
+    "`RULESET.TESTS.inner=this value breaks ` pairing for everything after it`",
+    '',
+    'Coverage lives in `src/does-not-exist.cts`.',
+    '',
+    `${allRuntimesSentence(17, REAL_RUNTIMES)}.`,
+    '',
+  ].join('\n');
+  const root = makeRepo(t, { contextBody: context });
+
+  const lf = run(root, ['--check']);
+  assert.equal(lf.status, 1, 'a broken ref after a desynchronizing RULESET predicate must fail --check');
+
+  // CRLF replay: the same verdict under \r\n (recurring class #1658/#1668/#2206).
+  const rootCrlf = makeRepo(t, { contextBody: context.replace(/\n/g, '\r\n') });
+  const crlf = run(rootCrlf, ['--check']);
+  assert.equal(crlf.status, 1, 'CRLF input must yield the same verdict as LF');
+});
+
+test('tracked paths inside an outer-wrapped predicate span are extracted (#3604)', (t) => {
+  // The line-647 shape: one backtick pair wraps the whole predicate, and the
+  // VALUE carries two real paths. The resolving one must pass; the missing one
+  // must be named. The old extractor read the whole span as one token (spaces
+  // → rejected) and saw neither.
+  const context = [
+    '# Context',
+    '',
+    '`WORKTREE.SEAM.demo-anchor=src/real-module.cts + tests/missing-anchor.test.cjs`',
+    '',
+    `${allRuntimesSentence(17, REAL_RUNTIMES)}.`,
+    '',
+  ].join('\n');
+  const root = makeRepo(t, { contextBody: context });
+
+  const res = run(root, ['--check']);
+  assert.equal(res.status, 1, 'a missing path inside a predicate value must fail --check');
+  assert.match(`${res.stdout}${res.stderr}`, /tests\/missing-anchor\.test\.cjs/,
+    'the finding must name the missing token, not the enclosing span');
+  assert.doesNotMatch(`${res.stdout}${res.stderr}`, /real-module/,
+    'the resolving sibling in the same span must not be reported');
+});
+
+test('glob and NNNN template mentions are not drift (#3604)', (t) => {
+  // `scripts/gen-*.cjs`-style globs and the documented ADR filename template
+  // (`docs/adr/NNNN-*.md`, CONTRIBUTING's "Do not compute a next number
+  // locally") are legitimate mentions. A fragment ending in `-` or `.` is a
+  // glob/template remnant, never a real path. The bare template shape
+  // (`docs/adr/NNNN.md`, no dash-star) ends in a word char and ends the
+  // final-char guard's reach — only the NNNN skip covers it.
+  const context = [
+    '# Context',
+    '',
+    '`RULESET.AUDIT.demo=search src/*.cts OR the scripts/gen-*.cjs generator`',
+    '`RULESET.ADR-HEADER=every docs/adr/NNNN-*.md must open with Status and Date`',
+    'A fresh ADR starts from `docs/adr/NNNN.md`.',
+    'Retired scanners were `scripts/lint-*.cjs`.',
+    '',
+    `${allRuntimesSentence(17, REAL_RUNTIMES)}.`,
+    '',
+  ].join('\n');
+  const root = makeRepo(t, { contextBody: context });
+
+  const res = run(root, ['--check']);
+  assert.equal(res.status, 0, `glob and NNNN template fragments must be skipped: ${res.stderr}`);
+});
+
+test('retired-path exemptions are exact, not a blanket hole (#3604)', (t) => {
+  // The emitted-attribution family retired by the #2724 cutover is documented
+  // in CONTEXT.md as HISTORY ("Historically tests/fixtures/...") — absence is
+  // the healthy steady state, the same semantics as the #2778 entry. But the
+  // exemption must stay exact: a sibling missing tests/ path still fails.
+  //
+  // The NOT-mention must ride a PREDICATE span, mirroring CONTEXT.md's real
+  // shape (RULESET.TESTS.eslint-harness): inside a predicate value the
+  // sub-scan harvests `scripts/eslint-rules` WITHOUT the trailing slash, so
+  // it is tracked-prefix-shaped and only the exemption saves it. Standalone
+  // spans with trailing slashes never reach the exemption (PATH_TOKEN_RE
+  // rejects them), which is exactly the vacuity this test must not have.
+  const context = [
+    '# Context',
+    '',
+    'Historically `tests/golden-install-parity.test.cjs` and `tests/workflow-size-baseline.json`.',
+    '`RULESET.TESTS.harness=local plugin at eslint-rules/ (repo root, NOT scripts/eslint-rules/)`',
+    'A typo sibling `tests/golden-install-parity-typo.test.cjs` is real drift.',
+    '',
+    `${allRuntimesSentence(17, REAL_RUNTIMES)}.`,
+    '',
+  ].join('\n');
+  const root = makeRepo(t, { contextBody: context });
+
+  const res = run(root, ['--check']);
+  assert.equal(res.status, 1, 'the sibling typo must still be a finding');
+  assert.match(`${res.stdout}${res.stderr}`, /golden-install-parity-typo/);
+  assert.doesNotMatch(`${res.stdout}${res.stderr}`, /scripts\/eslint-rules/,
+    'the contrastive NOT-mention inside a predicate value must be exempt');
+  assert.doesNotMatch(`${res.stdout}${res.stderr}`, /workflow-size-baseline/,
+    'the retired-path mention must be exempt');
 });

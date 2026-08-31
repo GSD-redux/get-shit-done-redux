@@ -13,9 +13,31 @@ const { describe, test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { splitTableRow } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const REFERENCE_PATH = path.join(__dirname, '..', 'gsd-core', 'references', 'planning-config.md');
 const CORE_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'config-loader.cjs');
+const DOCS_CONFIG_PATH = path.join(__dirname, '..', 'docs', 'CONFIGURATION.md');
+const CONFIG_SCHEMA_MANIFEST_PATH = path.join(
+  __dirname,
+  '..',
+  'gsd-core',
+  'bin',
+  'shared',
+  'config-schema.manifest.json',
+);
+
+/** Find the markdown table row whose first cell is `` `key` `` and return its cells. */
+function tableRowForKey(content, key) {
+  const target = `\`${key}\``;
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) continue;
+    const cells = splitTableRow(line);
+    if (cells[0] === target) return cells;
+  }
+  return null;
+}
 
 describe('config-field-docs', () => {
   let content;
@@ -92,6 +114,7 @@ describe('config-field-docs', () => {
       security_enforcement: 'workflow.security_enforcement',
       security_asvs_level: 'workflow.security_asvs_level',
       security_block_on: 'workflow.security_block_on',
+      inline_plan_threshold: 'workflow.inline_plan_threshold', // #3801
     };
 
     const missing = keys.filter(k => {
@@ -139,6 +162,46 @@ describe('config-field-docs', () => {
       [],
       `Git fields missing from planning-config.md: ${missing.join(', ')}`
     );
+  });
+
+  test('git.protected_branches canonical field has synchronized type and examples', () => {
+    const manifest = JSON.parse(fs.readFileSync(CONFIG_SCHEMA_MANIFEST_PATH, 'utf-8'));
+    assert.ok(
+      manifest.validKeys.includes('git.protected_branches'),
+      'config schema manifest must register git.protected_branches',
+    );
+
+    const publicDocs = fs.readFileSync(DOCS_CONFIG_PATH, 'utf-8');
+    const references = [
+      ['docs/CONFIGURATION.md', publicDocs],
+      ['gsd-core/references/planning-config.md', content],
+    ];
+    const example = /"protected_branches"\s*:\s*\[\s*"develop"\s*,\s*"staging"\s*\]/;
+
+    for (const [name, reference] of references) {
+      const row = reference
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('| `git.protected_branches` |'));
+      assert.ok(row, `${name} must document the canonical git.protected_branches key`);
+      assert.match(row, /array of non-empty strings/i,
+        `${name} must document the non-empty string-array contract`);
+      assert.match(row, /\| \(none\) \|/,
+        `${name} must document that the optional field has no persisted default`);
+      assert.match(reference, example,
+        `${name} must show the synchronized multi-branch JSON example`);
+      assert.match(reference, /extends the resolved base branch/i,
+        `${name} must state that configured names extend the resolved base`);
+      assert.match(reference, /execute-phase and ship/i,
+        `${name} must name both advisory warning boundaries`);
+      assert.match(reference, /does not\s+change\s+`git\.branching_strategy: "none"`/i,
+        `${name} must preserve branching_strategy none behavior`);
+      assert.match(reference, /exact branch name/i,
+        `${name} must state that matching is by exact name`);
+      assert.match(reference, /no glob or prefix/i,
+        `${name} must say globs and prefixes are unsupported, so git-flow layouts enumerate`);
+      assert.match(reference, /remaining names\s+still apply/i,
+        `${name} must state that an invalid entry drops only itself`);
+    }
   });
 
   test('documents KNOWN_TOP_LEVEL internal fields not in CONFIG_DEFAULTS', () => {
@@ -340,16 +403,22 @@ describe('CONFIGURATION.md parity (#1216)', () => {
       docsContent.includes('millisecond') || docsContent.includes('milliseconds'),
       'CONFIGURATION.md workflow.subagent_timeout must use the word "millisecond(s)"'
     );
-    assert.ok(
-      !docsContent.match(/\|\s*`workflow\.subagent_timeout`[^|]*\|\s*`?600`?\s*\|/),
-      'CONFIGURATION.md workflow.subagent_timeout must NOT have default 600 (that was the seconds default)'
+    const row = tableRowForKey(docsContent, 'workflow.subagent_timeout');
+    assert.ok(row, 'CONFIGURATION.md must have a table row for workflow.subagent_timeout');
+    assert.notEqual(
+      row[2].replace(/`/g, ''),
+      '600',
+      'CONFIGURATION.md workflow.subagent_timeout default must not be 600 (that was the seconds default)'
     );
   });
 
   test('CONFIGURATION.md workflow.subagent_timeout default is 300000 (#1216)', () => {
     // Row-scoped: the actual table row for workflow.subagent_timeout must contain 300000
-    assert.ok(
-      /\|\s*`workflow\.subagent_timeout`\s*\|[^|]*\|\s*`?300000`?\s*\|/.test(docsContent),
+    const row = tableRowForKey(docsContent, 'workflow.subagent_timeout');
+    assert.ok(row, 'CONFIGURATION.md must have a table row for workflow.subagent_timeout');
+    assert.equal(
+      row[2].replace(/`/g, ''),
+      '300000',
       'CONFIGURATION.md workflow.subagent_timeout table row must have default 300000'
     );
   });

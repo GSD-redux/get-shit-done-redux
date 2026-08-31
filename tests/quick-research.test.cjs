@@ -324,3 +324,36 @@ describe('quick workflow: banner variants for flag combinations', () => {
     );
   });
 });
+
+// ─── #3894: quick.md honors workflow.research_before_questions ───────────────
+
+describe('#3894 quick.md research-before-questions ordering', () => {
+  const QUICK = fs.readFileSync(path.join(WORKFLOWS_DIR, 'quick.md'), 'utf-8');
+
+  test('quick.md reads workflow.research_before_questions', () => {
+    assert.ok(
+      QUICK.includes('research_before_questions'),
+      '#3894: the quick path must read the documented key — before this fix neither quick.md nor its steps referenced it'
+    );
+  });
+
+  test('when enabled, research-phase is ordered BEFORE discussion-phase', () => {
+    const orderingIdx = QUICK.indexOf('research_before_questions');
+    assert.ok(orderingIdx !== -1, 'key referenced');
+    const ruleWindow = QUICK.slice(orderingIdx, orderingIdx + 900);
+    assert.ok(
+      /research[- ]phase[^]{0,200}(before|prior to|first)[^]{0,120}discussion/i.test(ruleWindow)
+        || /when[^]{0,60}(true|enabled)[^]{0,300}research/i.test(ruleWindow),
+      'the ordering rule must state research runs before discussion when the key is true'
+    );
+    assert.ok(
+      ruleWindow.includes('false') || ruleWindow.includes('unset') || ruleWindow.toLowerCase().includes('unchanged'),
+      'and must keep the written order when false/unset'
+    );
+  });
+
+  test('both step sections remain section-manifest gated (no structural regression)', () => {
+    assert.ok(/gsd:section id="discussion-phase"/.test(QUICK), 'discussion-phase section marker intact');
+    assert.ok(/gsd:section id="research-phase"/.test(QUICK), 'research-phase section marker intact');
+  });
+});

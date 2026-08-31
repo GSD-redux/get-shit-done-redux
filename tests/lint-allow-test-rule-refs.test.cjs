@@ -1,5 +1,9 @@
 'use strict';
 
+// docs-guard-exempt: 'docs/readme.md' appears only inside literal fixture
+// `code` strings written to synthetic files and fed to the no-source-grep
+// lint under test — this file never itself reads a real docs/ file off disk.
+
 // Tests for scripts/lint-allow-test-rule-refs.cjs — the guard that (a)
 // ratchets exemption-marker comments on IDENTITY (uncited comments must
 // carry a tracking-issue ref or be grandfathered), (b) ratchets EFFECTIVE
@@ -38,15 +42,25 @@ const SCRIPT = path.join(ROOT, 'scripts', 'lint-allow-test-rule-refs.cjs');
 // sandbox override, so it drives ESLint's `Linter` over every real
 // marker-bearing file the script finds (~294 files after the #3464 perf
 // follow-up narrowed the Linter pass off the full ~1200-file glob walk).
-// That is a heavier class than `PROBE_TIMEOUT_MS` describes ("a single short
-// CLI query or `node -e` probe against a temp fixture") — measured ~2.3-3.3s
-// locally post-narrowing, down from ~7-12s pre-narrowing, which is what
-// previously died at exactly the `PROBE_TIMEOUT_MS=15000` bound under CI
-// load (empty stdout/stderr, exitCode null — SIGKILLed by the harness
-// timeout, not a real assertion failure). 30000ms is ~10x the measured local
-// runtime, leaving real headroom for slower CI runners without hand-waving
-// the bound back up to "whatever makes it pass this once."
-const REPO_BASELINE_LINT_TIMEOUT_MS = 30000;
+//
+// Unlike every other row, this one needs no per-test sandboxing or env-var
+// override (there is no synthetic fixture state to isolate — it targets the
+// real, shared repo tree), so it is the one row with no structural reason to
+// go through a subprocess at all. It previously did anyway
+// (`runNode([SCRIPT], { timeoutMs: ... })`), which raced the script's real
+// wall-clock completion against a FIXED `spawnSync` `timeout` bound under
+// variable, unbounded CI-load contention — a bound that was already raised
+// once before (`PROBE_TIMEOUT_MS=15000` -> a dedicated 30000ms constant)
+// after dying at the lower value under CI load (empty stdout/stderr, exit
+// code null — SIGKILLed by the harness timeout, not a real assertion
+// failure), and then died again at the raised value for the same reason
+// (#4060). A fixed timeout racing unbounded contention has no value that is
+// simultaneously tight enough to catch a real hang and loose enough to never
+// lose the race under load, so raising the number a third time would not fix
+// the mechanism, only its odds. Fixed by removing the subprocess boundary
+// for this one row: it now drives the script's own exported `main` directly,
+// in-process, exactly like the structural rows 13-15 already do for the
+// script's other exports — there is no `spawnSync` timeout to race at all.
 
 // Deliberately split so this file's OWN source never contains the contiguous
 // exemption-marker substring the script under test scans for — the script
@@ -235,12 +249,66 @@ describe('lint-allow-test-rule-refs', () => {
     assert.match(r.stderr, /--bogus/);
   });
 
-  test('repo baseline passes (real tests/ dir against real allowlist + ceilings)', () => {
-    const r = runNode([SCRIPT], { cwd: ROOT, timeoutMs: REPO_BASELINE_LINT_TIMEOUT_MS });
-    assert.strictEqual(r.exitCode, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
-    assert.match(r.stdout, /effective exemptions:/);
-    assert.match(r.stdout, /unverified markers:/);
-    assert.match(r.stdout, /Known limit:/);
+  test('repo baseline passes (real tests/ dir against real allowlist + ceilings)', async () => {
+    // In-process: no subprocess, no spawnSync `timeout` to race against CI
+    // load (see the header comment above this describe block). Capture BOTH
+    // console.log and process.stderr.write — main()'s only diagnostic output
+    // on a real failure is a bare `throw new ExitError(1)` with NO message
+    // (scripts/lint-allow-test-rule-refs.cjs:824-832); every actual detail
+    // (which files/violations) goes to process.stderr.write, not the thrown
+    // error. The old subprocess-based assertion embedded both r.stderr and
+    // r.stdout in its failure message; capturing only console.log here would
+    // silently regress that — a real failure would surface as an opaque,
+    // messageless ExitError with no clue which allowlist/ceiling tripped.
+    // Both patches are restored in `finally` regardless of outcome so a
+    // thrown/rejected call can never leak into a later test.
+    const originalLog = console.log;
+    const originalStderrWrite = process.stderr.write;
+    let stdout = '';
+    let stderr = '';
+    console.log = (...args) => {
+      stdout += `${args.join(' ')}\n`;
+    };
+    process.stderr.write = (chunk, encoding, callback) => {
+      stderr += typeof chunk === 'string' ? chunk : chunk.toString(typeof encoding === 'string' ? encoding : 'utf8');
+      const cb = typeof encoding === 'function' ? encoding : callback;
+      if (typeof cb === 'function') cb();
+      return true;
+    };
+    try {
+      await scriptUnderTest.main([]);
+    } catch (err) {
+      // Re-throw with the captured streams attached so a real gate failure
+      // (allowlist/ceiling trip) is diagnosable from the test output alone,
+      // matching what the old subprocess assertion's message provided.
+      const wrapped = new Error(`${err.message}\nstderr: ${stderr}\nstdout: ${stdout}`);
+      wrapped.cause = err;
+      throw wrapped;
+    } finally {
+      console.log = originalLog;
+      process.stderr.write = originalStderrWrite;
+    }
+    const context = `stderr: ${stderr}\nstdout: ${stdout}`;
+    assert.match(stdout, /effective exemptions:/, context);
+    assert.match(stdout, /unverified markers:/, context);
+    assert.match(stdout, /Known limit:/, context);
+  });
+
+  test('repo baseline: main() still rejects unknown argv in-process (boundary on the new argv contract)', async () => {
+    // Pins that exporting/parameterizing `main` for in-process use did not
+    // loosen its existing CLI-argv validation — same contract the
+    // subprocess-based "unknown CLI arguments are rejected with exit code 2"
+    // row below already covers via the CLI entrypoint, exercised here
+    // directly against the exported function.
+    await assert.rejects(
+      () => scriptUnderTest.main(['--bogus']),
+      (err) => {
+        assert.strictEqual(err.code, 2);
+        assert.match(err.message, /unknown argument/);
+        assert.match(err.message, /--bogus/);
+        return true;
+      }
+    );
   });
 
   // ─── #3520 test-matrix rows 1-12 ────────────────────────────────────────

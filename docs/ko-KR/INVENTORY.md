@@ -6,7 +6,7 @@
 
 - 여기의 수량은 v1.36.0 핀 기준 파일시스템에서 도출된 것으로, 릴리스 사이에 변동될 수 있습니다. 최신 수량을 확인하려면 체크아웃에서 `ls commands/gsd/*.md | wc -l`, `ls agents/gsd-*.md | wc -l` 등을 실행하세요.
 - 이 파일은 6개 패밀리(에이전트, 명령어, 워크플로우, 레퍼런스, CLI 모듈, 훅) 전반에 걸쳐 출시된 모든 표면을 열거합니다. 광범위 문서는 내러티브 또는 엄선된 하위 집합을 렌더링할 수 있습니다. 파일시스템과 불일치할 경우 이 파일과 디렉터리 목록이 권위 있는 출처입니다.
-- v1.36.0 이후 추가된 새 표면은 먼저 여기에 기록된 후 광범위 문서로 전파되어야 합니다. `tests/inventory-counts.test.cjs`, `tests/commands-doc-parity.test.cjs`, `tests/agents-doc-parity.test.cjs`, `tests/cli-modules-doc-parity.test.cjs`, `tests/hooks-doc-parity.test.cjs`, `tests/architecture-counts.test.cjs`, `tests/command-count-sync.test.cjs`의 드리프트 제어 테스트가 파일시스템 대비 수량 및 목록 내용을 고정합니다.
+- v1.36.0 이후 추가된 새 표면은 먼저 여기에 기록된 후 광범위 문서로 전파되어야 합니다. `tests/inventory-manifest-sync.test.cjs`의 드리프트 제어 테스트가 파일시스템 대비 로스터 내용을 고정합니다.
 
 이것은 출시된 모든 GSD Core 표면의 공식 목록입니다. 주제별 탐색은 [문서 색인](README.md)을 참조하세요.
 
@@ -476,8 +476,8 @@
 | `gsd-worktree-path-guard.js` | `PreToolUse` | 워크트리 루트 외부의 절대 경로로 Edit/Write/MultiEdit를 하드 차단 (PR #579, #260) |
 | `gsd-agent-isolation-guard.js` | `PreToolUse` | 프로젝트의 해석된 디스패치 격리가 `harness-worktree`일 때 하네스 격리 매개변수가 누락된 executor `Agent()` 디스패치를 하드 차단 (#3045) |
 | `gsd-write-guard.js` | `PreToolUse` | 큐레이션된 `.planning/` 아티팩트(ROADMAP.md, 마일스톤 로드맵, STATE.md)를 치명적으로 축소하는 전체 파일 `Write`를 하드 차단. 일회용 센티널 `.planning/.gsd-allow-shrink`(워크플로 단계) 또는 `GSD_ALLOW_PLANNING_SHRINK=1`(대화형)로 우회 가능 (#2255, #973의 수정 3) |
-| `gsd-session-state.sh` | `PostToolUse` | 셸 기반 런타임을 위한 세션 상태 추적 |
-| `gsd-validate-commit.sh` | `PostToolUse` | 컨벤셔널 커밋 적용을 위한 커밋 검증 |
+| `gsd-session-state.sh` | `SessionStart` | 셸 기반 런타임을 위한 세션 상태 추적 |
+| `gsd-validate-commit.sh` | `PreToolUse` | 컨벤셔널 커밋 적용을 위한 커밋 검증 |
 | `gsd-phase-boundary.sh` | `PostToolUse` | 워크플로우 전환을 위한 단계 경계 감지 |
 | `gsd-graphify-update.sh` | `PostToolUse` | 메인 HEAD 진행 후 지식 그래프 자동 재빌드 (옵트인, 기본 비활성화 — #3347) |
 
