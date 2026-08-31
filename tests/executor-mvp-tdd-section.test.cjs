@@ -1703,6 +1703,44 @@ ${Array(redContractCount).fill(block).join('\n')}
     }
   });
 
+  test('an EMPTY <red_contract> fails closed even when the trailer echoes its empty '
+    + 'strings back (CR-02)', () => {
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    // Every compared field declared but empty. `extractTag` returns '' for an
+    // absent tag too, so this one fixture covers both the empty and the absent
+    // spelling — they are indistinguishable by construction.
+    const emptyContractTask = buildTaskContent({
+      target_test: '',
+      implementation_target: '',
+      expected_failure: { phase: '', class_or_mode: '', subject: '' },
+    });
+    const emptyTriple = { phase: '', class_or_mode: '', subject: '' };
+    // A trailer that is otherwise fully conforming: correct six-key top level,
+    // real non-empty location files, non-zero exit. The ONLY thing wrong is
+    // that it agrees with a contract which declared nothing.
+    const echoingTrailer = `red-evidence: ${JSON.stringify({
+      target_test: '',
+      location: { declared: { file: 'a.py', line: 1 }, observed: { file: 'a.py', line: 1 } },
+      command: 'pytest -q',
+      exit_status: 1,
+      expected: emptyTriple,
+      actual: emptyTriple,
+    })}`;
+
+    const { verdict, reason } = evaluateRedEvidence(emptyContractTask, echoingTrailer);
+    assert.strictEqual(verdict, 'red_commit_not_failing',
+      'CR-02: a <red_contract> that declares nothing must authorize nothing. Every equality '
+      + "conjunct compares '' === '' and holds, so without a non-emptiness guard on the plan "
+      + "side the predicate returns `authorize` and contradicts its own documented invariant "
+      + '(src/red-evidence-predicate.cts:19-22, "never defaults to authorize"). The five frozen '
+      + 'legitimate-RED cases all declare every compared field non-empty — outside-in, the one '
+      + 'that never reaches the test body, encodes that as phase:"collection", never as an '
+      + 'empty field — so no legitimate contract is rejected by this guard. See gsd-core-3oz.');
+    assert.match(reason, /<red_contract>|non-empty/,
+      'the reason must name the contract as what was rejected, not the trailer — the trailer '
+      + 'here is fully conforming and a reason blaming it would send the fix to the wrong side');
+  });
+
   test('a task file carrying two <red_contract> blocks fails closed with a reason naming the '
     + 'ambiguity, even with an otherwise valid trailer (#3770)', () => {
     const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
