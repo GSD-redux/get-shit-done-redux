@@ -279,17 +279,23 @@ done
 # in-phase sequence number ("01") and can never reconstruct the phase-qualified
 # id reviewers need to cite. The filename is guaranteed present for every copied
 # plan, so no plan is ever dropped from the manifest for lacking a key.
-# A plain string accumulator, not an array: zsh and bash disagree on array
-# indexing and this block runs under both (see the nullglob/NULL_GLOB pairing
-# above).
-PLAN_IDS=""
+# Count and bullets are both derived directly from the glob loop below, never
+# from re-splitting an accumulated string: bash word-splits an unquoted `$VAR`
+# on IFS by default, but zsh does not (no `setopt SH_WORD_SPLIT` here), so a
+# prior `PLAN_IDS="$PLAN_IDS $id"` + `for x in $PLAN_IDS` round-trip silently
+# collapsed every id onto one iteration under zsh whenever there were 2+ plans
+# (gsd-core#4099). Direct glob iteration (`for f in "${PHASE_DIR}"/*-PLAN.md`,
+# same pattern as the copy loop above) is identical under both shells, so this
+# never needs word-splitting at all.
+PLAN_COUNT=0
+PLAN_ID_BULLETS=""
 for PLAN_FILE in "${PHASE_DIR}"/*-PLAN.md; do
   PLAN_BASENAME=$(basename "$PLAN_FILE")
-  PLAN_IDS="$PLAN_IDS ${PLAN_BASENAME%-PLAN.md}"
+  PLAN_ID="${PLAN_BASENAME%-PLAN.md}"
+  PLAN_COUNT=$((PLAN_COUNT + 1))
+  PLAN_ID_BULLETS="${PLAN_ID_BULLETS}- ${PLAN_ID}
+"
 done
-PLAN_IDS="${PLAN_IDS# }"
-PLAN_COUNT=0
-for _ in $PLAN_IDS; do PLAN_COUNT=$((PLAN_COUNT + 1)); done
 
 # Named to avoid BOTH existing RUN_DIR globs: `gsd-review-*.md` (reviewer
 # reports, invoke_reviewers) and `gsd-review-plan-*.md` (the plan copies just
@@ -302,9 +308,7 @@ for _ in $PLAN_IDS; do PLAN_COUNT=$((PLAN_COUNT + 1)); done
   echo "Total plans in this review: ${PLAN_COUNT}"
   echo ""
   echo "Plan ids (give each one its own \`##\`-level section, headed verbatim):"
-  for PLAN_ID in $PLAN_IDS; do
-    echo "- ${PLAN_ID}"
-  done
+  printf '%s' "$PLAN_ID_BULLETS"
 } > "${RUN_DIR}/.plans-manifest.md"
 
 # Optional section files (only if content was included in the combined prompt)
