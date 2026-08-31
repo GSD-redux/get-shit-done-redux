@@ -1820,6 +1820,53 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     }
   });
 
+  test('round 7: a malformed event name does not inherit the Gemini fallback', (t) => {
+    // The row above pins malformed names with GEMINI_API_KEY UNSET, and its own
+    // comment records why: with the key SET, `stdout === ''` failed outright,
+    // because readEventName collapsed ABSENT and MALFORMED onto the same '' and
+    // the fallback `eventName === "" && !!GEMINI_API_KEY` then fired. That was
+    // pinned around rather than fixed, and it is an ACCEPT-DIRECTION regression
+    // against the merge-base: base evaluated `data.hook_event_name.trim()`,
+    // which THREW on a truthy non-string after the side effects, so no envelope
+    // was ever emitted. Measured base-vs-head at 996196fe0 before fixing:
+    //
+    //   hook_event_name: 42             base silent -> head EMITS AfterTool
+    //   hook_event_name: ['PreCompact'] base silent -> head EMITS AfterTool
+    //   hook_event_name: {}             base silent -> head EMITS AfterTool
+    //   hook_event_name ABSENT          base EMITS  -> head EMITS   (unchanged)
+    //
+    // readEventName now returns '' only for an ABSENT name and null for a
+    // present-but-non-string one, so the documented fallback keeps working for
+    // the case it was written for and stops covering malformed payloads.
+    //
+    // This row is the one that must run with the key SET — that is the whole
+    // condition under test, and pinning it unset here would reproduce the
+    // blind spot the row exists to close.
+    const withGemini = { GEMINI_API_KEY: 'fixture-key-not-a-real-credential' };
+    for (const [label, badEvent] of [
+      ['number', 42],
+      ['array', ['PreCompact']],
+      ['object', { toString: 'not-callable' }],
+    ]) {
+      const s = makeSession(t);
+      const { stdout, exitCode } = s.call(badEvent, 30, { env: withGemini });
+      assert.strictEqual(exitCode, 0, `${label}: a malformed event name must never fail the hook`);
+      assert.strictEqual(stdout, '', `${label}: a malformed name must not be treated as the ABSENT `
+        + 'name and emit the Gemini AfterTool envelope — base emitted nothing for this payload');
+      assert.ok(s.warn(), `${label}: the #2289 side-effect contract still holds — the payload is `
+        + 'malformed, not a reason to skip the bookkeeping');
+    }
+
+    // Non-vacuity: the ABSENT name must STILL take the documented fallback with
+    // the same key set. Without this, the rows above would also pass if the
+    // fallback had simply been deleted.
+    const s = makeSession(t);
+    const { stdout } = s.call(undefined, 30, { env: withGemini });
+    assert.match(stdout, /CONTEXT WARNING/,
+      'a MISSING event name under a Gemini-dialect runtime must still mean AfterTool — that '
+      + 'fallback is the pre-#2289 behaviour this hook deliberately preserves');
+  });
+
   test('round 3, Minor 6: an ARRAY-wrapped PreCompact does not run the reset', (t) => {
     // ['PreCompact'] under String() coercion reads as 'PreCompact' — a
     // malformed payload triggering a state-clearing branch. Strict typeof
@@ -1836,6 +1883,130 @@ describe('#3709 context-monitor: PreCompact resets the warn sentinel', () => {
     assert.strictEqual(stdout, '', 'a malformed event emits nothing');
     assert.ok(s.warn(), 'the reset must NOT run off a non-string event name — the sentinel survives '
       + '(the side-effect pipeline ran instead, which is the unknown-event contract)');
+  });
+
+  // ─── round 7: the routine sentinel writes/read refuse a planted object ───
+  //
+  // Round 7 ruled that the three routine debounce-accounting writes must be
+  // brought in line with the PreCompact clear and the compaction watermark,
+  // which already refuse to follow or overwrite a planted object. The read
+  // beside them is folded in as the same class in the same file — the
+  // watermark's read was hardened in round 4 for exactly this reason, so
+  // leaving this one bare recreated the asymmetry round 7 asks be removed.
+  //
+  // Every row below drives the REAL hook; none extracts logic into a
+  // standalone harness. The control row runs first on purpose: without it a
+  // refusal row passes for the wrong reason if the sentinel mechanism is
+  // broken outright.
+
+  test('round 7 control: an ordinary warning run writes a usable regular-file sentinel', (t) => {
+    const s = makeSession(t);
+    const { stdout, exitCode } = s.call('PostToolUse', 30);
+    assert.strictEqual(exitCode, 0, 'the ordinary warning path must exit 0');
+    assert.match(stdout, /CONTEXT WARNING/,
+      'precondition: remaining=30 is under WARNING_THRESHOLD and must warn');
+    const wd = s.warn();
+    assert.ok(wd && wd.lastLevel === 'warning',
+      'the sentinel must be written AND parseable through the hardened write — if it is not, the '
+      + 'refusal rows below prove nothing, because a hook that writes no sentinel at all also '
+      + 'never writes through a symlink');
+    assert.ok(fs.lstatSync(s.warnPath).isFile(),
+      'and it must land as a plain regular file, not a link');
+  });
+
+  test('round 7: a planted symlink is never written through to its target', (t) => {
+    // The write-through primitive. A bare writeFileSync on a path in the
+    // shared, sticky os.tmpdir() follows a planted link and writes the
+    // sentinel INTO the attacker's chosen file — an arbitrary-file-write with
+    // JSON the hook itself composes. Verified fail-first against the
+    // pre-hardening file: the victim came back holding the sentinel JSON.
+    if (process.platform === 'win32') {
+      t.skip('symlink planting is a POSIX shared-sticky-tmpdir scenario; Windows temp is per-user, '
+        + 'and libuv defines O_NOFOLLOW as 0 there — the unlink-then-O_EXCL half still applies');
+      return;
+    }
+    const s = makeSession(t);
+    const victim = path.join(os.tmpdir(),
+      `fix-3709-victim-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    const ORIGINAL = JSON.stringify({ untouched: true });
+    fs.writeFileSync(victim, ORIGINAL);
+    t.after(() => { try { fs.unlinkSync(victim); } catch { /* absent */ } });
+
+    fs.symlinkSync(victim, s.warnPath);
+    const { exitCode } = s.call('PostToolUse', 30);
+
+    assert.strictEqual(exitCode, 0,
+      'refusing a planted object is a give-up, never a hook failure');
+    assert.strictEqual(fs.readFileSync(victim, 'utf8'), ORIGINAL,
+      'the symlink TARGET must be byte-identical — writing through it is the arbitrary-file-write '
+      + 'primitive this hardening exists to remove');
+    assert.ok(fs.lstatSync(s.warnPath).isFile(),
+      'the planted link must be REPLACED by a fresh regular file: unlink removes the link, then '
+      + 'O_EXCL refuses to create through one, so the write can only land on this process own file');
+  });
+
+  test('round 7: a SYMLINKED sentinel cannot mute the monitor through the read', (t) => {
+    // The mute primitive, and the reason the read is hardened alongside the
+    // writes. The read runs BEFORE the first write of an invocation, so the
+    // write-side unlink cannot protect it, and re-planting reopens it every
+    // invocation. Fail-first against the pre-hardening file: this row emitted
+    // NOTHING, because following the link set firstWarn=false and left
+    // callsSinceWarn under DEBOUNCE_CALLS, taking the silent debounce arm.
+    //
+    // SCOPE OF THIS ROW, stated because the guard is narrower than "cannot be
+    // muted" (Codex review of #3808, round 7): lstat + O_NOFOLLOW establishes
+    // that the sentinel is a plain regular file, NOT that it is trustworthy. A
+    // cross-owner REGULAR file planted at the predictable path in a shared
+    // sticky tmpdir is still read, and the write cannot displace it either —
+    // unlink returns EPERM in a sticky directory, so writeSentinel gives up and
+    // the planted value persists. That residual is pre-existing (the bare
+    // readFileSync had it too, plus the symlink case this row closes) and is
+    // NOT fixed here: refusing it needs an ownership check, which is a
+    // different policy than this PR's. Every object below is created by the
+    // current user, so no row here exercises the cross-owner case.
+    if (process.platform === 'win32') {
+      t.skip('symlink creation needs privilege on Windows; the guard is lstat + O_NOFOLLOW, and '
+        + 'the lstat half still refuses a non-regular sentinel there');
+      return;
+    }
+    const s = makeSession(t);
+    const planted = path.join(os.tmpdir(),
+      `fix-3709-planted-warn-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    // callsSinceWarn=1 with lastLevel='warning' keeps the debounce arm taken at
+    // remaining=30: the counter increments to 2, still under DEBOUNCE_CALLS=5,
+    // and warning→warning is not a severity escalation, so nothing is emitted.
+    fs.writeFileSync(planted, JSON.stringify({ callsSinceWarn: 1, lastLevel: 'warning' }));
+    t.after(() => { try { fs.unlinkSync(planted); } catch { /* absent */ } });
+
+    fs.symlinkSync(planted, s.warnPath);
+    const { stdout, exitCode } = s.call('PostToolUse', 30);
+
+    assert.strictEqual(exitCode, 0, 'a refused sentinel must never fail the hook');
+    assert.match(stdout, /CONTEXT WARNING/,
+      'an attacker-chosen sentinel reached through a link must not suppress the warning — in a '
+      + 'shared sticky tmpdir that is a mute primitive, and a link to a FIFO stalls this '
+      + 'synchronous read outright');
+  });
+
+  test('round 7: a non-regular sentinel is refused without failing the hook', (t) => {
+    // Class coverage rather than one spelling, and the shape that proves the
+    // refusal is not symlink-specific: the write's unlink throws something
+    // other than ENOENT on a directory, which must still land in the give-up
+    // arm rather than escaping as a hook crash.
+    const s = makeSession(t);
+    const oversized = JSON.stringify({ callsSinceWarn: 1, lastLevel: 'warning', pad: 'x'.repeat(8192) });
+    for (const [label, plant, unplant] of [
+      ['a directory', (wp) => fs.mkdirSync(wp), (wp) => { try { fs.rmdirSync(wp); } catch { /* gone */ } }],
+      ['an oversized file', (wp) => fs.writeFileSync(wp, oversized), () => {}],
+    ]) {
+      plant(s.warnPath);
+      const { stdout, exitCode } = s.call('PostToolUse', 30);
+      unplant(s.warnPath);
+      assert.strictEqual(exitCode, 0, `${label}: must never fail the hook`);
+      assert.match(stdout, /CONTEXT WARNING/,
+        `${label}: must be refused as a sentinel and fall back to first-warn defaults, not honored `
+        + 'and not crashed on');
+    }
   });
 });
 

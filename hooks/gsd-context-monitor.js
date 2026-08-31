@@ -64,7 +64,56 @@ const WATERMARK_SKEW_SECONDS = 5;
 // side effects intact — on both call sites.
 function readEventName(data) {
   const name = data && data.hook_event_name;
-  return typeof name === 'string' ? name.trim() : '';
+  if (typeof name === 'string') return name.trim();
+  // ABSENT vs MALFORMED are not the same event (Codex review of #3808, round 7,
+  // measured base-vs-head). A MISSING name is the documented pre-#2289 Gemini
+  // fallback: under GEMINI_API_KEY it means AfterTool and still emits. A name
+  // that is PRESENT but not a string is a malformed payload and must not
+  // inherit that fallback — at the merge-base it threw on `.trim()` after the
+  // side effects, so no envelope was ever produced, and collapsing both onto ''
+  // silently turned `42`, `{}` and `['PreCompact']` into emitting AfterTool
+  // events. Measured: base silent, head emitted, for both `42` and
+  // `['PreCompact']`. null keeps them distinguishable while staying unequal to
+  // every event name, so the PreCompact reset and the allowlist below are
+  // byte-for-byte unchanged for every well-formed payload.
+  return (name === undefined || name === null) ? '' : null;
+}
+
+// SENTINEL WRITE HARDENING (review of #3808, round 7). `warnPath` lives in the
+// shared, sticky os.tmpdir() — not guaranteed per-user, and the file persists
+// across invocations — so an object already sitting there may be a planted
+// symlink. The three routine debounce-accounting writes were bare
+// writeFileSync, which follows one and writes through to its target, while the
+// PreCompact clear and the compaction watermark in this same file already
+// refuse to. Unlink-then-O_EXCL is the watermark's own shape: the unlink
+// removes any existing object (regular file or link) and O_EXCL then refuses
+// to create through one, so the write can only ever land on a fresh regular
+// file this process made. Best effort by design — a lost sentinel write costs
+// only debounce accounting, which is never worth breaking the hook over, so
+// every failure is swallowed exactly as the watermark write's is.
+// NOT an atomic read-modify-write, and not claimed to be (Codex review of
+// #3808, round 7): two concurrent invocations can read the same state and race
+// through unlink/create, so one invocation's accounting can be lost — the same
+// lost-update race the bare writeFileSync already had, not a class this change
+// introduces. What a lost write leaves behind is whatever the competing writer
+// wrote, which may be a perfectly valid sentinel; it does not reliably mean
+// "defaults on the next call". Advisory debounce bookkeeping is the right place
+// to accept that.
+function writeSentinel(target, payload) {
+  try {
+    try {
+      fs.unlinkSync(target);
+    } catch (e) {
+      if (!e || e.code !== 'ENOENT') throw e;
+    }
+    const fd = fs.openSync(
+      target,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+    );
+    try {
+      fs.writeSync(fd, payload);
+    } finally { fs.closeSync(fd); }
+  } catch (e) { /* best effort — see above */ }
 }
 
 let input = '';
@@ -266,8 +315,32 @@ process.stdin.on('end', () => {
 
     // Collapsed existsSync+readFileSync: ENOENT or parse error → keep default warnData
     // (same as old "file absent" branch). firstWarn tracks whether we read a valid sentinel.
+    //
+    // READ HARDENING (self-found while addressing round 7; same class, same
+    // file). Hardening the writes above leaves this read as the one bare
+    // readFileSync on warnPath, which is the exact asymmetry round 7 asks be
+    // removed from the write side — and the watermark's read was hardened in
+    // round 4 for this same reason, so leaving this one recreates it. The
+    // exposure is real but bounded: the writes now unlink any planted object,
+    // so only a read reaching this line BEFORE the first write of an
+    // invocation can follow one, and re-planting reopens it every invocation.
+    // Following it is a mute primitive — attacker-chosen callsSinceWarn keeps
+    // the debounce arm below taken so no warning is ever emitted — and a
+    // symlink to a FIFO stalls this synchronous read, the same two primitives
+    // measured on the watermark. Same lstat + O_NOFOLLOW + size bound; every
+    // refusal degrades to the default warnData this catch already produces,
+    // so a normal regular file behaves exactly as before.
     try {
-      warnData = JSON.parse(fs.readFileSync(warnPath, 'utf8'));
+      const st = fs.lstatSync(warnPath);
+      if (!st.isFile() || st.size > 4096) throw new Error('not a plain sentinel');
+      const rfd = fs.openSync(warnPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+      let raw;
+      try {
+        const buf = Buffer.alloc(st.size);
+        fs.readSync(rfd, buf, 0, st.size, 0);
+        raw = buf.toString('utf8');
+      } finally { fs.closeSync(rfd); }
+      warnData = JSON.parse(raw);
       firstWarn = false;
     } catch (e) {
       // Missing or corrupted sentinel → firstWarn stays true, warnData stays at defaults
@@ -283,14 +356,14 @@ process.stdin.on('end', () => {
     const severityEscalated = currentLevel === 'critical' && warnData.lastLevel === 'warning';
     if (!firstWarn && warnData.callsSinceWarn < DEBOUNCE_CALLS && !severityEscalated) {
       // Update counter and exit without warning
-      fs.writeFileSync(warnPath, JSON.stringify(warnData));
+      writeSentinel(warnPath, JSON.stringify(warnData));
       allow(undefined);
     }
 
     // Reset debounce counter
     warnData.callsSinceWarn = 0;
     warnData.lastLevel = currentLevel;
-    fs.writeFileSync(warnPath, JSON.stringify(warnData));
+    writeSentinel(warnPath, JSON.stringify(warnData));
 
     // Detect if GSD is active (has .planning/STATE.md in working directory)
     const isGsdActive = fs.existsSync(path.join(cwd, '.planning', 'STATE.md'));
@@ -317,7 +390,7 @@ process.stdin.on('end', () => {
         ).unref();
         warnData.criticalRecorded = true;
         // Persist the sentinel so subsequent debounce cycles don't re-fire
-        fs.writeFileSync(warnPath, JSON.stringify(warnData));
+        writeSentinel(warnPath, JSON.stringify(warnData));
       } catch { /* non-critical — don't let state recording break the hook */ }
     }
 
