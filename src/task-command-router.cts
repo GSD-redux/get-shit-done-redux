@@ -291,7 +291,7 @@ function routeRedEvidenceVerdict({ args, cwd, raw }: RouteTaskCommandOptions): v
     output({
       verdict: 'red_commit_not_failing',
       reason: `the commit's changed files do not include "${result.declared_file}", the file `
-        + 'the red-evidence trailer itself declares — matched by basename',
+        + 'the red-evidence trailer itself declares — matched by path segment',
     }, raw, undefined);
     return;
   }
