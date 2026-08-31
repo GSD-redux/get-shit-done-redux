@@ -201,26 +201,17 @@ if [ "$MVP_MODE" = "true" ] && [ "$TDD_MODE" = "true" ]; then
   if [ "$IS_BEHAVIOR_ADDING" = "true" ]; then
     BASE_BRANCH=$(gsd_run query git.base-branch 2>/dev/null || echo "")
     RED_RANGE="HEAD"
-    # Prefer the remote-tracking ref. `git.base-branch` returns a LOCAL branch
-    # name, and a local base that has fallen behind its remote WIDENS this
-    # range — the opposite of what the bound below exists to do. Measured on
-    # this repo: local `next` 96 commits behind `origin/next` turned a
-    # 56-commit range into 152, re-admitting older history as RED evidence.
+    # Prefer origin/<base>: a stale local base branch widens the range and
+    # re-admits older commits as RED evidence (see gsd-core/references/tdd.md).
     if [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
       RED_RANGE="origin/${BASE_BRANCH}..HEAD"
     elif [ -n "$BASE_BRANCH" ] && git rev-parse --verify --quiet "${BASE_BRANCH}" >/dev/null 2>&1; then
       RED_RANGE="${BASE_BRANCH}..HEAD"
     fi
 TAB=$(printf '\t')
-    # One pass: SHA<TAB>red-evidence trailer<TAB>subject, newest-first, bounded to
-    # RED_RANGE (a same-numbered plan from a prior milestone must not supply the
-    # evidence). Selection is by subject alone; the commit is verified AFTER
-    # selection, against the file its own evidence names, by the membership
-    # check below. Ordering matters: a filter on the search itself skips a
-    # non-matching commit and silently selects an older one instead — a
-    # post-selection check halts on the commit the search actually found.
-    # Subject pattern is intentionally unwidened — padding normalization across
-    # N-P and N-PP belongs to upstream #4003, not this gate.
+    # One pass, bounded to RED_RANGE: SHA<TAB>trailer<TAB>subject, newest match
+    # wins; the commit is verified AFTER selection against the file its own
+    # evidence names (membership check below) — see gsd-core/references/tdd.md.
     RED_RECORD=$(git log "$RED_RANGE" --format='%H%x09%(trailers:key=red-evidence,valueonly,separator=%x20)%x09%s' \
       | grep -m1 -E "^[0-9a-f]+${TAB}[^${TAB}]+${TAB}test\(${PHASE_NUMBER}-${PLAN_ID}\):" || true)
     RED_SHA=$(printf '%s' "$RED_RECORD" | cut -d"$TAB" -f1)
