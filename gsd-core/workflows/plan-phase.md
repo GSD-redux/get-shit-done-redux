@@ -584,8 +584,6 @@ map is refreshed first. (`drift_action: auto-remap` stays at `execute:wave:post`
 ls "${PHASE_DIR}"/*-PLAN.md 2>/dev/null || true
 ```
 
-**If exists AND `--reviews` flag:** Skip prompt — go straight to replanning (the purpose of `--reviews` is to replan with review feedback).
-
 **If exists AND no `--reviews` flag:** Offer: 1) Add more plans, 2) View existing, 3) Replan from scratch.
 
 ## 7. Use Context Paths from INIT
@@ -620,6 +618,12 @@ SPEC_PATH="${SPEC_FILE}"
 UI_SPEC_FILE=$(ls "${PHASE_DIR_FOR_SPEC}"/*-UI-SPEC.md 2>/dev/null | head -1)
 UI_SPEC_PATH="${UI_SPEC_FILE}"
 ```
+
+**If plans exist AND the `--reviews` flag is set:** Before replanning from `--reviews`, scan
+`REVIEWS_PATH` for open plan-revision conflicts inside the writer-owned delimiter pair. Go
+straight to replanning with those records included, and flip the matching line to `- [x]` once
+the chosen resolution is applied. The purpose of `--reviews` is to replan with review feedback,
+not orphan blocking state.
 
 ## 7.5. Verify Nyquist Artifacts
 
@@ -1275,20 +1279,29 @@ Agent(
 `gsd-core/references/revision-loop.md` (@-imported above), with this workflow's bindings:
 
 ```bash
-CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence 2>/dev/null || echo "false")
-REVIEWS_FILE=$(ls "${PHASE_DIR}"/*-REVIEWS.md 2>/dev/null | head -1)
+if ! CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence --raw 2>/dev/null); then
+  echo "BLOCKED: cannot read workflow.plan_review_convergence; refusing to drop persisted conflict state." >&2
+  exit 1
+fi
+REVIEWS_FILE="${REVIEWS_PATH}"
+if [ "${CONVERGENCE_ENABLED}" = "true" ] && [ ! -f "${REVIEWS_FILE}" ]; then
+  echo "BLOCKED: cannot persist plan-revision conflict because REVIEWS_PATH is not a regular file: ${REVIEWS_FILE}" >&2
+  exit 1
+fi
 ```
 
 - Counter not spent: `iteration_count`, and `prev_issue_count` is left unchanged.
-- Record channel: `$REVIEWS_FILE` under `## Plan-Revision Conflicts`, when `CONVERGENCE_ENABLED`
-  is `true` and `$REVIEWS_FILE` is non-empty. plan-phase wrote the line, so plan-phase closes it.
+- Record channel: the writer-owned delimiter pair in `$REVIEWS_FILE`, under
+  `## Plan-Revision Conflicts`, when `CONVERGENCE_ENABLED` is `true` and `$REVIEWS_FILE` is
+  non-empty. plan-phase wrote the line, so plan-phase closes it.
 - After re-spawning, re-evaluate the return here — do not fall through to the checker spawn below.
 - Escalation uses the same gate as the iteration cap below — on a repeated `required_property`,
   and on the THIRD conflict return of this loop whatever property it names.
 - Sanitize each agent-authored field before appending: newlines and tabs to spaces, strip a
-  leading `#`/`-`/`|`/fence. One conflict is one line. The reader stops at the next `## `.
+  leading `#`/`-`/`|`/fence. One conflict is one line. The reader counts only inside the
+  first writer-owned delimiter pair immediately after the artifact title.
 
-After planner returns -> spawn checker again (step 10), increment iteration_count.
+**Otherwise (planner returned revised plans, not `## REVISION_CONFLICT`):** spawn checker again (step 10), then increment `iteration_count`.
 
 **If iteration_count >= 3:**
 

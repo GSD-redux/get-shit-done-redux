@@ -348,7 +348,6 @@ if [ -z "${phase_dir}" ]; then
   echo "ERROR: phase_dir is empty — cannot resolve the expected REVIEWS.md path." >&2
   exit 1
 fi
-
 REVIEWS_FILE="${phase_dir}/${padded_phase}-REVIEWS.md"
 if [ ! -f "${REVIEWS_FILE}" ] || [ ! -r "${REVIEWS_FILE}" ]; then
   echo "ERROR: expected reviews file is not a readable file: '${REVIEWS_FILE}'. Confirm the phase directory resolved correctly before concluding the review agent produced nothing." >&2
@@ -406,45 +405,53 @@ it must be read from the file directly — evaluate this BEFORE the converged br
 run would write `planned-phase` and print the success banner over a conflict nobody resolved:
 
 ```bash
-if [ -z "${REVIEWS_FILE}" ] || [ ! -r "${REVIEWS_FILE}" ]; then
-  # Fail CLOSED. An unreadable REVIEWS.md is "I cannot tell", never "no conflicts" — and
-  # REVIEWS_FILE is resolved a few lines above by an `ls` whose ${phase_dir} is unquoted, so a
-  # path containing a space yields an empty string rather than an error. Counting 0 there would
-  # converge over every open conflict silently.
+if [ ! -f "${REVIEWS_FILE}" ]; then
+  # Fail CLOSED. A missing/non-file REVIEWS.md is "I cannot tell", never "no conflicts".
   echo "BLOCKED: cannot read REVIEWS.md ('${REVIEWS_FILE}') to check for open plan-revision conflicts. Refusing to declare convergence on an unverifiable gate." >&2
   exit 1
 fi
-if OPEN_CONFLICTS=$(grep -c '^- \[ \] .*required_property:' "${REVIEWS_FILE}"); then
+if OPEN_CONFLICTS=$(awk '
+  BEGIN { saw_title = 0; in_owned = 0; saw_heading = 0; done = 0; count = 0 }
+  { sub(/\r$/, "") }
+  !saw_title && /^# Cross-AI Plan Review — Phase / { saw_title = 1; next }
+  saw_title && !in_owned && !done {
+    if ($0 == "") next
+    if ($0 == "<!-- gsd:plan-revision-conflicts:begin -->") { in_owned = 1; next }
+    exit 2
+  }
+  in_owned && $0 == "<!-- gsd:plan-revision-conflicts:begin -->" { exit 2 }
+  in_owned && !saw_heading && $0 == "## Plan-Revision Conflicts" { saw_heading = 1; next }
+  in_owned && !saw_heading { exit 2 }
+  in_owned && $0 == "<!-- gsd:plan-revision-conflicts:end -->" {
+    done = 1
+    in_owned = 0
+    print count
+    exit
+  }
+  in_owned && /^- \[ \] REVISION_CONFLICT .*required_property:/ { count++ }
+  END { if (!done) exit 2 }
+' "${REVIEWS_FILE}"); then
   :
 else
-  # `$?` must be read in the ELSE branch, not after `if !` — `!` inverts the status, so a
-  # negated form reports 0 here and every failure reads as success.
-  # grep exit 1 is "no matches", a legitimate zero. ANY other status is a read failure, and
-  # `|| true` would launder it into 0 open conflicts, converging over whatever the file holds.
-  grep_status=$?
-  if [ "${grep_status}" -ne 1 ]; then
-    echo "BLOCKED: could not scan '${REVIEWS_FILE}' for open plan-revision conflicts (grep exit ${grep_status}). Refusing to declare convergence on an unverifiable gate." >&2
-    exit 1
-  fi
-  OPEN_CONFLICTS=0
+  awk_status=$?
+  echo "BLOCKED: could not parse the writer-owned plan-revision conflict block in '${REVIEWS_FILE}' (awk exit ${awk_status}). Refusing to declare convergence on an unverifiable gate." >&2
+  exit 1
 fi
 ```
 
-`/gsd:plan-phase` records each conflict as a `- [ ]` checklist line and flips it to `- [x]` when
-it is resolved, so open conflicts are an exact fixed-string match — no table parsing, and a
-resolved line can never be miscounted as open.
+`/gsd:review` emits exactly one writer-owned slot immediately after the artifact title,
+between `<!-- gsd:plan-revision-conflicts:begin -->` and
+`<!-- gsd:plan-revision-conflicts:end -->`. Inside that slot, `/gsd:plan-phase` records each
+conflict as a `- [ ] REVISION_CONFLICT` checklist line and flips it to
+`- [x] REVISION_CONFLICT` when resolved. The reader counts only the first fixed slot at that
+position and stops at its explicit end delimiter. Reviewer output is rendered after the slot, so
+raw reviewer text containing either the heading or an exact conflict-shaped checklist line cannot
+forge blocking state. There is deliberately no fallback to the prior global line-shape scan: that
+shape never merged to `next`, and accepting both grammars would recreate the reviewer collision.
 
-**The count is by line SHAPE, not by section, deliberately.** An earlier form scanned between
-`## Plan-Revision Conflicts` and the next `## ` heading. That scan stops at the FIRST heading it
-meets, so a single stray `## ` line — from a hand edit, a legacy file, or an agent that ignored
-the single-writer rule below — hid every conflict beneath it and returned 0, converging over a
-live blocker. Matching `- [ ] … required_property:` anywhere in the file cannot be truncated by a
-heading, needs no section bookkeeping, and pairs with the writer's sanitization (which strips a
-leading `-` from agent text, so agent prose cannot forge this shape).
-
-**Only `/gsd:plan-phase` writes this section.** It appends the `- [ ]` lines and it flips them to
-`- [x]`. Every other agent with write access to REVIEWS.md — the review agent included — must
-leave `## Plan-Revision Conflicts` byte-for-byte alone: appending, editing, reordering or
+**Only `/gsd:plan-phase` mutates the contents of this slot.** The review agent preserves the
+existing `## Plan-Revision Conflicts` block byte-for-byte between its delimiters; every other
+agent with write access to REVIEWS.md must leave it alone. Appending, editing, reordering or
 deleting a line there forges the state of a blocking gate. Readers read. If `OPEN_CONFLICTS` > 0, convergence has NOT been
 achieved regardless of the counts: skip the converged branch and continue to 5c so the next cycle
 arbitrates. Escalation at `MAX_CYCLES` is unchanged and still terminates the loop, so an

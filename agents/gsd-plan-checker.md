@@ -339,7 +339,7 @@ issue:
   plan: "01"
   metrics:
     tasks: 4
-    files: 9
+    files: 8
   fix_hint: "Split into 2 plans: foundation (01) and integration (02)"
 ```
 

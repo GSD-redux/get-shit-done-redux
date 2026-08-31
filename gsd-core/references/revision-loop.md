@@ -16,6 +16,8 @@ This pattern applies whenever:
 ```
 prev_issue_count = Infinity
 iteration = 0
+previous_conflict_property = null
+conflict_return_count = 0
 
 LOOP:
   1. Run checker/validator on current output
@@ -31,9 +33,13 @@ LOOP:
      d. prev_issue_count = issue_count
      e. Re-spawn the producing agent with checker feedback appended
      f. If the agent returns REVISION_CONFLICT:
+        -> conflict_return_count += 1
+        -> If conflict_return_count >= 3:
+             escalate through the iteration-cap gate
         -> If it names the same required_property as the previous conflict:
-             escalate as a stall (the resolution did not take) -- bounds this path
-           Else: resolve it (see "Conflict Return" below) and go to step e.
+             escalate as a stall (the resolution did not take)
+           Else: previous_conflict_property = current required_property
+             resolve it (see "Conflict Return" below) and go to step e.
              Do NOT increment iteration -- the conflict was not a failed attempt.
      g. iteration += 1
      h. After revision completes, go to LOOP
@@ -106,27 +112,31 @@ so they restate the operative rules inline; this section is the authority they m
 
 1. **Do not spend budget.** Do NOT increment the iteration counter and do NOT update
    `prev_issue_count`. Do NOT re-spawn the checker yet — the conflict is not a revised output.
-2. **Record**, where the host has a channel an arbitration loop reads. `plan-phase` appends one
-   line per conflict to the phase `*-REVIEWS.md` under `## Plan-Revision Conflicts` when
-   `workflow.plan_review_convergence` is enabled and that file already exists:
+2. **Record**, where the host has a channel an arbitration loop reads. `review.md` emits one
+   fixed writer-owned slot immediately after the artifact title, between
+   `<!-- gsd:plan-revision-conflicts:begin -->` and
+   `<!-- gsd:plan-revision-conflicts:end -->`. When `workflow.plan_review_convergence` is enabled
+   and the phase `*-REVIEWS.md` already exists, `plan-phase` appends one line per conflict under
+   `## Plan-Revision Conflicts` inside that slot:
 
-   ```markdown
-   - [ ] {dimension}/{plan} — required_property: {property} | conflicts with: {locked decision
-     D-nn / CLAUDE.md rule / plan constraint} | alternatives: {the agent's alternatives}
-   ```
+```markdown
+- [ ] REVISION_CONFLICT {dimension}/{plan} — required_property: {property} | conflicts with: {locked decision D-nn / CLAUDE.md rule / plan constraint} | alternatives: {the agent's alternatives}
+```
 
-   A checkbox, not a table row: `- [ ]` is open, `- [x]` is resolved, so the reader counts open
-   conflicts by fixed-string match and never parses a table whose header and separator rows are
-   indistinguishable from data. An open line blocks convergence even if this run is abandoned.
+   A checkbox, not a table row: `- [ ] REVISION_CONFLICT` is open and `- [x] REVISION_CONFLICT`
+   is resolved. The reader counts matching open lines only inside the first fixed slot after the
+   artifact title; an identical marker in reviewer output is not state. An open line in the owned
+   slot blocks convergence even if this run is abandoned.
    A workflow with no such channel (`quick` has no phase and no REVIEWS.md) skips this step.
 
+   Before appending, reuse the existing open line instead of appending a duplicate when its
+   sanitized fields identify the same conflict. This makes persisted conflict state idempotent.
+
    **Sanitize before writing — the conflict text is agent-authored.** Every field comes from the
-   producing agent, and the file is scanned later by a reader that stops at the next `## ` heading.
-   One line of agent text beginning `## ` ends that scan early, so the conflicts below it are not
-   counted and the gate passes over an unresolved blocker — it fails OPEN, the dangerous
-   direction. Before appending, for EACH field: collapse every newline and tab to a single space,
-   and strip any leading `#`, `-`, `|` or backtick-fence run. One conflict is exactly one line
-   beginning `- [ ]`. Never append agent text verbatim, and never append a fenced block.
+   producing agent. Before appending, for EACH field: collapse every newline and tab to a single
+   space, and strip any leading `#`, `-`, `|` or backtick-fence run. Otherwise an embedded
+   newline can forge an extra conflict-shaped record inside the owned slot. One conflict is exactly
+   one line beginning `- [ ]`. Never append agent text verbatim, and never append a fenced block.
 3. **Resolve** — present the conflict and its alternatives to the user and ask which to take
    (pattern: `gsd-core/references/gate-prompts.md`): adopt a named alternative / override the
    named constraint and apply the hint / amend the constraint itself. Each option resolves the

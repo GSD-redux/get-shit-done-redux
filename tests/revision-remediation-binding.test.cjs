@@ -39,6 +39,7 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
+const fc = require('fast-check');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
@@ -74,6 +75,8 @@ const VERIFY_WORK = read('gsd-core', 'workflows', 'verify-work.md');
 const PLANNER = read('agents', 'gsd-planner.md');
 const UI_RESEARCHER = read('agents', 'gsd-ui-researcher.md');
 const CONTRACTS = read('gsd-core', 'references', 'agent-contracts.md');
+const REVIEW = read('gsd-core', 'workflows', 'review.md');
+const COMMANDS = read('docs', 'COMMANDS.md');
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -81,9 +84,9 @@ const CONTRACTS = read('gsd-core', 'references', 'agent-contracts.md');
  * The convergence conflict gate, extracted from the workflow and RUN.
  *
  * Everything else in this suite asserts on prose. That is the right instrument for a prompt,
- * but this one block is real shell that an orchestrator executes, and it has been wrong three
- * times — a section scan a heading could truncate, a `|| true` that laundered grep's error
- * status into zero, and an `if !` whose `$?` reported the negation instead of the command.
+ * but this one block is real shell that an orchestrator executes, and it has been wrong four
+ * times — a heading-truncated scan, a laundered read error, an inverted status, and a global
+ * line-shape scan that let raw reviewer text forge blocking state.
  * Every one of those passed the text assertions that existed at the time. So this block gets
  * executed against fixtures instead of read.
  *
@@ -92,7 +95,7 @@ const CONTRACTS = read('gsd-core', 'references', 'agent-contracts.md');
  */
 function extractConflictGate() {
   const fences = CONVERGENCE.split(/```/);
-  const block = fences.find((f) => /^bash\r?\n/.test(f) && /OPEN_CONFLICTS=\$\(grep -c/.test(f));
+  const block = fences.find((f) => /^bash\r?\n/.test(f) && /OPEN_CONFLICTS=\$\(awk/.test(f));
   assert.ok(block, 'could not find the bash fence containing the OPEN_CONFLICTS gate');
   return block.replace(/^bash\r?\n/, '');
 }
@@ -120,10 +123,10 @@ function runConflictGate(reviewsFile) {
 }
 
 /** Write a REVIEWS.md fixture and hand its path to `fn`. */
-function withReviews(body, fn) {
+function withReviews(body, fn, filename = '07-REVIEWS.md') {
   const dir = createTempDir('gsd-3771-reviews-');
   try {
-    const file = path.join(dir, '07-REVIEWS.md');
+    const file = path.join(dir, filename);
     fs.writeFileSync(file, body);
     return fn(file);
   } finally {
@@ -131,8 +134,34 @@ function withReviews(body, fn) {
   }
 }
 
-const OPEN = (id) => `- [ ] ${id} — required_property: p | conflicts with: D-1 | alternatives: a`;
-const RESOLVED = (id) => `- [x] ${id} — required_property: p | resolved: adopted alternative`;
+const OPEN = (id) => `- [ ] REVISION_CONFLICT ${id} — required_property: p | conflicts with: D-1 | alternatives: a`;
+const RESOLVED = (id) => `- [x] REVISION_CONFLICT ${id} — required_property: p | resolved: adopted alternative`;
+const CONFLICTS_BEGIN = '<!-- gsd:plan-revision-conflicts:begin -->';
+const CONFLICTS_END = '<!-- gsd:plan-revision-conflicts:end -->';
+
+const reviewsArtifact = (conflicts = '', reviewerText = '') =>
+  `# Cross-AI Plan Review — Phase 7\n\n${CONFLICTS_BEGIN}\n## Plan-Revision Conflicts\n${conflicts}${CONFLICTS_END}\n\n${reviewerText}`;
+
+/** Extract the canonical writer template without normalizing indentation or line wrapping. */
+function extractConflictTemplate() {
+  const fences = REVISION_LOOP.split(/```/);
+  const block = fences.find((f) => /^markdown\r?\n/.test(f) && /required_property: \{property\}/.test(f));
+  assert.ok(block, 'could not find the canonical Plan-Revision Conflicts writer template');
+  return block.replace(/^markdown\r?\n/, '').replace(/\r?\n$/, '');
+}
+
+/** Agent-authored reference rendering used only to test the documented writer/reader contract. */
+function renderConflictTemplate({ dimension, plan, property, constraint, alternatives }) {
+  const clean = (value) => String(value)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/^\s*[#|`-]+\s*/, '');
+  return extractConflictTemplate()
+    .replace('{dimension}', clean(dimension))
+    .replace('{plan}', clean(plan))
+    .replace('{property}', clean(property))
+    .replace(/\{locked decision\s+D-nn \/ CLAUDE\.md rule \/ plan constraint\}/, clean(constraint))
+    .replace("{the agent's alternatives}", clean(alternatives));
+}
 
 /**
  * Every fenced YAML issue example that names a `fix_hint`. Each block is returned
@@ -330,62 +359,93 @@ describe('#3771 generic revision pattern carries the same separation', () => {
       'the superseded routing description must not survive as drift');
   });
 
-  // The conflict text is agent-authored and lands in a file scanned by heading. Verified by
-  // hand before this was written: 3 open conflicts, awk returned 2, because one conflict's text
-  // began a `## ` line and ended the scan. That is a fail-OPEN — convergence over a live blocker.
+  // The conflict text is agent-authored and lands inside a writer-owned slot. Newlines are
+  // still a trust boundary: an embedded record-shaped line could forge an extra blocker.
   test('agent-authored conflict text is sanitized at the write boundary', () => {
     assert.match(flat(REVISION_LOOP), /Sanitize before writing — the conflict text is agent-authored/,
       'the shared protocol must sanitize where the untrusted text enters the file');
     assert.match(flat(REVISION_LOOP), /collapse every newline and tab to a single space, and strip any leading `#`/,
       'the rule must name the exact transform, or it is advice rather than a control');
-    assert.match(flat(REVISION_LOOP), /it fails OPEN, the dangerous direction/,
-      'the failure direction must be stated so nobody relaxes this later');
+    assert.match(flat(REVISION_LOOP), /embedded newline can forge an extra conflict-shaped record inside the owned slot/,
+      'the contract must state the concrete forgery sanitization prevents');
     assert.match(flat(PLAN_PHASE), /Sanitize each agent-authored field before appending/,
       'the workflow that does the appending must carry the rule, not only the reference');
     for (const [name, agent] of [['planner-revision', PLANNER_REVISION], ['gsd-ui-researcher', UI_RESEARCHER]]) {
       assert.match(flat(agent), /\*\*Every field is one line of plain text\.\*\*/,
         `${name} must forbid the shapes the writer would otherwise have to strip`);
     }
-    assert.match(flat(CONVERGENCE), /\*\*The count is by line SHAPE, not by section, deliberately\.\*\*/,
-      'the reader must state why it does not scope by section, or someone reintroduces the scan');
+    assert.match(flat(CONVERGENCE), /reader counts only the first fixed slot at that position/,
+      'the reader must state the ownership boundary that excludes raw reviewer text');
   });
 
-  // The gate reads a path resolved by a pre-existing unquoted `ls`; an empty or unreadable
-  // result must never read as "no conflicts". Unverifiable is not the same as clean.
-  test('the convergence gate fails CLOSED when it cannot read REVIEWS.md', () => {
-    assert.match(CONVERGENCE, /if \[ -z "\$\{REVIEWS_FILE\}" \] \|\| \[ ! -r "\$\{REVIEWS_FILE\}" \]; then/,
-      'the gate must test readability before trusting a count of zero');
+  // A missing or non-file artifact must never read as "no conflicts".
+  // Unverifiable is not the same as clean.
+  test('the convergence gate fails CLOSED when it cannot read or parse REVIEWS.md', () => {
+    assert.match(CONVERGENCE, /if \[ ! -f "\$\{REVIEWS_FILE\}" \]; then/,
+      'the gate must require a regular file before trusting a count of zero');
     assert.match(flat(CONVERGENCE), /Refusing to declare convergence on an unverifiable gate/,
-      'an unreadable gate input must block, not pass');
-    assert.doesNotMatch(CONVERGENCE, /"\$\{REVIEWS_FILE\}" 2>\/dev\/null \|\| echo 0/,
-      'swallowing the read error back into a zero count is the fail-open this test exists to stop');
-    // `|| true` on the count laundered grep's error status (2) into 0 open conflicts — the same
-    // fail-open, moved. Only exit 1 ("no matches") is a legitimate zero.
-    assert.doesNotMatch(CONVERGENCE, /grep -c '\^- \\\[ \\\] \.\*required_property:' "\$\{REVIEWS_FILE\}" \|\| true/,
-      'the count must not swallow a grep error into zero');
-    assert.match(CONVERGENCE, /grep_status=\$\?/,
-      'the gate must inspect grep\'s exit status rather than assume a zero');
-    assert.match(CONVERGENCE, /if \[ "\$\{grep_status\}" -ne 1 \]; then/,
-      'only grep status 1 (no matches) may be treated as zero conflicts');
-    // `$?` after `if !` reports the negation, not the command — a negated form reads every
-    // failure as success. The status must be read in the else branch.
-    assert.doesNotMatch(CONVERGENCE, /if ! OPEN_CONFLICTS=\$\(grep/,
-      'a negated if inverts $? and makes the status check always see 0');
+      'an unreadable or malformed gate input must block, not pass');
+    assert.match(CONVERGENCE, /OPEN_CONFLICTS=\$\(awk/,
+      'the executable reader must parse the owned slot');
+    assert.match(CONVERGENCE, /awk_status=\$\?/,
+      'a parser failure must remain distinguishable from a legitimate zero');
+    assert.doesNotMatch(extractConflictGate(), /\|\| true/,
+      'the owned-block parser must not launder a failure into zero');
   });
 
   // ── The gate, EXECUTED ───────────────────────────────────────────
   // Source assertions above prove the text says the right thing. These prove the shell does it.
   describe('#3771 the extracted conflict gate behaves', () => {
     test('counts open conflicts and ignores resolved ones', () => {
-      withReviews(`## Plan-Revision Conflicts\n${OPEN('a/1')}\n${RESOLVED('b/2')}\n${OPEN('c/3')}\n`, (f) => {
+      withReviews(reviewsArtifact(`${OPEN('a/1')}\n${RESOLVED('b/2')}\n${OPEN('c/3')}\n`), (f) => {
         const r = runConflictGate(f);
         assert.equal(r.status, 0, `gate should succeed; stderr: ${r.stderr}`);
         assert.equal(r.stdout, '2', 'two open, one resolved');
       });
     });
 
-    test('grep status 1 (no matches) is a legitimate zero, not an error', () => {
-      withReviews('## Reviews\n\nNothing here.\n', (f) => {
+    test('accepts a CRLF artifact without accepting a malformed CRLF boundary', () => {
+      const crlf = (content) => content.replace(/\n/g, '\r\n');
+      withReviews(crlf(reviewsArtifact(`${OPEN('a/1')}\n`)), (f) => {
+        const r = runConflictGate(f);
+        assert.equal(r.status, 0, `valid CRLF artifact should succeed; stderr: ${r.stderr}`);
+        assert.equal(r.stdout, '1');
+      });
+      withReviews(crlf(reviewsArtifact('').replace(CONFLICTS_END, `${CONFLICTS_END} forged`)), (f) => {
+        const r = runConflictGate(f);
+        assert.notEqual(r.status, 0, 'a non-exact CRLF end boundary must still block');
+        assert.match(r.stderr, /BLOCKED/);
+      });
+    });
+
+    test('a nested opening delimiter fails CLOSED', () => {
+      const nested = reviewsArtifact('').replace(
+        '## Plan-Revision Conflicts\n',
+        `## Plan-Revision Conflicts\n${CONFLICTS_BEGIN}\n`
+      );
+      withReviews(nested, (f) => {
+        const r = runConflictGate(f);
+        assert.notEqual(r.status, 0, 'a nested opening delimiter must not hide later state');
+        assert.match(r.stderr, /BLOCKED/);
+      });
+    });
+
+    test('a missing or altered canonical heading fails CLOSED', () => {
+      for (const replacement of ['', '## Altered Conflict Heading\n']) {
+        const malformed = reviewsArtifact(`${OPEN('a/1')}\n`).replace(
+          '## Plan-Revision Conflicts\n',
+          replacement
+        );
+        withReviews(malformed, (f) => {
+          const r = runConflictGate(f);
+          assert.notEqual(r.status, 0, 'a non-canonical owned block must not be accepted or regenerated');
+          assert.match(r.stderr, /BLOCKED/);
+        });
+      }
+    });
+
+    test('an empty owned block is a legitimate zero, not an error', () => {
+      withReviews(reviewsArtifact('', '## Reviews\n\nNothing here.\n'), (f) => {
         const r = runConflictGate(f);
         assert.equal(r.status, 0, `no matches must not fail the gate; stderr: ${r.stderr}`);
         assert.equal(r.stdout, '0');
@@ -394,14 +454,14 @@ describe('#3771 generic revision pattern carries the same separation', () => {
 
     // The defect that started this: a section-scoped scan stops at the first `## ` it meets.
     test('an injected heading cannot hide a conflict beneath it', () => {
-      withReviews(`## Plan-Revision Conflicts\n${RESOLVED('a/1')}\n## Injected By Agent Text\n${OPEN('b/2')}\n`, (f) => {
+      withReviews(reviewsArtifact(`${RESOLVED('a/1')}\n## Injected By Agent Text\n${OPEN('b/2')}\n`), (f) => {
         const r = runConflictGate(f);
         assert.equal(r.status, 0, `gate should succeed; stderr: ${r.stderr}`);
         assert.equal(r.stdout, '1', 'the conflict below the injected heading must still count');
       });
     });
 
-    // `|| true` laundered grep's exit 2 into an empty capture that rendered as 0.
+    // An unreadable artifact must fail before the parser can emit a count.
     test('a scan failure BLOCKS instead of reporting zero conflicts', () => {
       const r = runConflictGate('/nonexistent/definitely-not-here/07-REVIEWS.md');
       assert.notEqual(r.status, 0, 'an unreadable REVIEWS.md must not converge');
@@ -416,12 +476,12 @@ describe('#3771 generic revision pattern carries the same separation', () => {
     });
   });
 
-  // The section is a blocking gate's state. One writer, or it can be forged.
+  // The slot is a blocking gate's state. One content owner, or it can be forged.
   test('only plan-phase may mutate the conflicts section', () => {
-    assert.match(flat(CONVERGENCE), /\*\*Only `\/gsd:plan-phase` writes this section\.\*\*/,
-      'the section needs exactly one declared writer');
-    assert.match(flat(CONVERGENCE), /the review agent included — must leave `## Plan-Revision Conflicts` byte-for-byte alone/,
-      'every other writer of REVIEWS.md must be told to keep out, or a resolution can be forged');
+    assert.match(flat(CONVERGENCE), /\*\*Only `\/gsd:plan-phase` mutates the contents of this slot\.\*\*/,
+      'the section needs exactly one declared content owner');
+    assert.match(flat(CONVERGENCE), /review agent preserves the existing `## Plan-Revision Conflicts` block byte-for-byte/,
+      'the artifact writer may delimit and preserve the slot, never synthesize its state');
   });
 
   test('an issue satisfied by a smaller mechanism counts as resolved for the loop checks', () => {
@@ -541,11 +601,29 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     });
   }
 
+  test('plan-phase checker retry is explicitly the non-conflict return path', () => {
+    const handler = PLAN_PHASE.slice(
+      PLAN_PHASE.indexOf('**If the planner returns `## REVISION_CONFLICT`:**'),
+      PLAN_PHASE.indexOf('## 12.5. Plan Bounce')
+    );
+    assert.match(
+      handler,
+      /\*\*Otherwise \(planner returned revised plans, not `## REVISION_CONFLICT`\):\*\* spawn checker again \(step 10\), then increment `iteration_count`\./,
+      'the normal checker path must be disjoint from the conflict re-entry path'
+    );
+    assert.doesNotMatch(handler, /\nAfter planner returns ->/,
+      'an unconditional post-return instruction textually falls through from REVISION_CONFLICT');
+  });
+
   test('plan-phase records the conflict on a channel it can actually test for', () => {
     assert.match(PLAN_PHASE, /workflow\.plan_review_convergence/,
       'plan-phase must consult the convergence config');
-    assert.match(flat(PLAN_PHASE), /REVIEWS_FILE=\$\(ls "\$\{PHASE_DIR\}"\/\*-REVIEWS\.md/,
-      'the record branch must be gated on a condition the orchestrator can evaluate at runtime');
+    assert.match(PLAN_PHASE, /REVIEWS_FILE="\$\{REVIEWS_PATH\}"/,
+      'conflict persistence must use the path initialized by the workflow');
+    assert.doesNotMatch(PLAN_PHASE, /REVIEWS_FILE=\$\(ls "\$\{PHASE_DIR\}"\/\*-REVIEWS\.md/,
+      'a second glob lookup can select a different review artifact');
+    assert.match(flat(PLAN_PHASE), /CONVERGENCE_ENABLED.*true.*\[ ! -f "\$\{REVIEWS_FILE\}" \].*BLOCKED: cannot persist plan-revision conflict/i,
+      'enabled persistence must fail closed unless REVIEWS_PATH is a regular file');
     assert.match(flat(PLAN_PHASE), /plan-phase wrote the line, so plan-phase closes it/,
       'closure must have exactly one named owner, or a line can be orphaned open');
     assert.match(flat(REVISION_LOOP), /never invokes `\/gsd:plan-review-convergence`/,
@@ -554,7 +632,7 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     // look like data. The recorded shape must be one the reader can match exactly.
     assert.match(flat(REVISION_LOOP), /A checkbox, not a table row/,
       'the recorded conflict must be countable without parsing a table');
-    assert.match(REVISION_LOOP, /- \[ \] \{dimension\}\/\{plan\} — required_property:/,
+    assert.match(REVISION_LOOP, /- \[ \] REVISION_CONFLICT \{dimension\}\/\{plan\} — required_property:/,
       'the shared protocol must define the open form the convergence gate matches');
     assert.match(flat(REVISION_LOOP), /owns flipping it to `- \[x\]`/,
       'the close step must produce the resolved form the gate excludes');
@@ -565,16 +643,13 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
       'the convergence loop must know about the section plan-phase writes');
     assert.match(CONVERGENCE, /OPEN_CONFLICTS=/,
       'the count must be read from REVIEWS.md — CYCLE_SUMMARY does not carry it');
-    // The counter and the writer must agree on the marker, or every resolved conflict reads as
-    // open and the loop deadlocks instead of converging.
-    assert.match(CONVERGENCE, /grep -c '\^- \\\[ \\\] \.\*required_property:'/,
-      'the gate must count the conflict line SHAPE plan-phase writes');
-    assert.doesNotMatch(CONVERGENCE, /grep -c '\^\| '/,
-      'counting table rows would include the header and separator and never reach zero');
-    // A section-scoped scan stops at the first heading it meets, so one stray `## ` hides every
-    // conflict beneath it and returns 0 — reproduced before this was written.
-    assert.doesNotMatch(CONVERGENCE, /\/\^## Plan-Revision Conflicts\/\{f=1;next\}/,
-      'the section-scoped awk is truncatable by an injected heading and must not come back');
+    // The counter and writer must agree on both marker and ownership boundary.
+    assert.match(CONVERGENCE, /in_owned && \/\^- \\\[ \\\] REVISION_CONFLICT \.\*required_property:\//,
+      'the gate must count the conflict line shape only while inside the owned slot');
+    assert.match(CONVERGENCE, /gsd:plan-revision-conflicts:begin/);
+    assert.match(CONVERGENCE, /gsd:plan-revision-conflicts:end/);
+    assert.doesNotMatch(CONVERGENCE, /grep -c/,
+      'the superseded global scan would count raw reviewer text and must not return');
     assert.match(flat(CONVERGENCE), /escalates rather than deadlocking/,
       'the gate must state that an unresolvable conflict still terminates at MAX_CYCLES');
     assert.match(
@@ -584,7 +659,7 @@ describe('#3771 every revision orchestrator routes conflicts instead of retrying
     );
     // Ordering is the whole finding: the gate placed after `state planned-phase` would write
     // and announce convergence over a conflict nobody resolved.
-    const gateAt = CONVERGENCE.indexOf('OPEN_CONFLICTS=$(grep');
+    const gateAt = CONVERGENCE.indexOf('OPEN_CONFLICTS=$(awk');
     const writeAt = CONVERGENCE.indexOf('gsd_run state planned-phase');
     const bannerAt = CONVERGENCE.indexOf('GSD ► CONVERGENCE COMPLETE');
     assert.ok(gateAt > 0 && writeAt > 0 && bannerAt > 0, 'all three anchors must exist');
@@ -663,4 +738,109 @@ describe('#3771 preserves everything that legitimately binds', () => {
     assert.match(REVISION_LOOP, /Do NOT introduce new issues while fixing existing ones/);
     assert.match(REVISION_LOOP, /Preserve all content not flagged by the checker/);
   });
+});
+
+// ── PR #3916 live review remediation ──────────────────────────────
+
+describe('#3916 writer, persistence, reader and migration contracts agree', () => {
+  test('the canonical writer renders one uniquely-discriminated line that the real gate counts', () => {
+    const template = extractConflictTemplate();
+    assert.doesNotMatch(template, /\r?\n/, 'one conflict must be exactly one physical line');
+    assert.match(template, /^- \[ \] REVISION_CONFLICT /,
+      'the writer must start at column zero with a reader-specific discriminator');
+
+    const field = fc.oneof(
+      fc.constantFrom('', 'x', '# heading\nnext', '- item', '| cell', '```fence'),
+      fc.string({ maxLength: 32 })
+    );
+    fc.assert(fc.property(
+      fc.record({ dimension: field, plan: field, property: field, constraint: field, alternatives: field }),
+      (fields) => withReviews(reviewsArtifact(`${renderConflictTemplate(fields)}\n`), (file) => {
+        const result = runConflictGate(file);
+        assert.equal(result.status, 0, `gate should read a rendered canonical record: ${result.stderr}`);
+        assert.equal(result.stdout, '1', 'one rendered open conflict must count as one');
+      })
+    ));
+  });
+
+  test('reviewer-authored conflict markers outside the owned block are not live state', () => {
+    const forged = `${OPEN('forged/reviewer')}\n`;
+    withReviews(reviewsArtifact('', `## Reviewer Notes\n${forged}`), (file) => {
+      const result = runConflictGate(file);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, '0');
+    });
+  });
+
+  test('review regeneration preserves one deterministically bounded conflict block byte-for-byte', () => {
+    assert.match(flat(REVIEW), /capture only the existing conflict entry bytes after the exact/i);
+    assert.match(REVIEW, /\{preserved_plan_revision_conflict_entries\}/,
+      'the REVIEWS.md writer template needs an explicit preservation slot');
+    assert.match(REVIEW, /<!-- gsd:plan-revision-conflicts:begin -->\n## Plan-Revision Conflicts\n\{preserved_plan_revision_conflict_entries\}\n<!-- gsd:plan-revision-conflicts:end -->/,
+      'the first-write template must emit the canonical heading before preserved entries');
+    assert.match(flat(REVIEW), /restore the captured bytes at the explicit slot below/i);
+  });
+
+  test('the canonical flow declares and enforces both conflict counters', () => {
+    const flow = REVISION_LOOP.slice(REVISION_LOOP.indexOf('### Flow'), REVISION_LOOP.indexOf('### Issue Count Tracking'));
+    assert.match(flow, /previous_conflict_property = null/);
+    assert.match(flow, /conflict_return_count = 0/);
+    assert.match(flow, /conflict_return_count \+= 1/);
+    assert.match(flow, /If conflict_return_count >= 3/,
+      'alternating properties must still hit the total-conflict cap');
+    assert.doesNotMatch(flow, /same required_property[\s\S]*bounds this path/,
+      'the repeat-only rule must not claim it bounds alternating conflicts');
+    assert.match(flow, /Else: previous_conflict_property = current required_property[\s\S]*resolve it/,
+      'a non-repeat resolution must advance the property compared by the next return');
+  });
+
+  test('persisted conflicts are idempotent records and reviews-mode replanning closes them', () => {
+    assert.match(flat(REVISION_LOOP), /reuse the existing open line instead of appending a duplicate/i,
+      'identical open state needs idempotency, not a second event identity');
+    assert.match(flat(PLAN_PHASE), /before replanning from `--reviews`, scan `REVIEWS_PATH` for open plan-revision conflicts/i);
+    assert.ok(
+      PLAN_PHASE.indexOf('REVIEWS_PATH=$(_gsd_field "$INIT" reviews_path)') <
+        PLAN_PHASE.indexOf('**If plans exist AND the `--reviews` flag is set:**'),
+      'REVIEWS_PATH must be initialized before reviews-mode scans it'
+    );
+    assert.match(flat(PLAN_PHASE), /flip the matching line to `- \[x\]` once the chosen resolution is applied/i);
+  });
+
+  test('REVIEWS_FILE is a quoted direct path and must be a regular file', () => {
+    assert.match(CONVERGENCE, /REVIEWS_FILE="\$\{phase_dir\}\/\$\{padded_phase\}-REVIEWS\.md"/);
+    assert.doesNotMatch(CONVERGENCE, /REVIEWS_FILE=\$\(ls \$\{phase_dir\}/,
+      'word-splitting and glob expansion must not select the gate input');
+    assert.match(CONVERGENCE, /\[ ! -f "\$\{REVIEWS_FILE\}" \]/,
+      'directories and other readable non-files are not valid review artifacts');
+  });
+
+  test('a config query failure blocks persistence instead of reading as disabled', () => {
+    assert.doesNotMatch(PLAN_PHASE, /config-get workflow\.plan_review_convergence 2>\/dev\/null \|\| echo "false"/);
+    assert.match(flat(PLAN_PHASE), /BLOCKED: cannot read workflow\.plan_review_convergence/i);
+  });
+
+  test('the gate reads a literal-backslash POSIX filename without rewriting it', () => {
+    withReviews(reviewsArtifact(`${OPEN('a/1')}\n`), (file) => {
+      const result = runConflictGate(file);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, '1');
+    }, '07\\-REVIEWS.md');
+    assert.doesNotMatch(CONVERGENCE, /tr '\\\\' '\/'/,
+      'a quoted POSIX path is already exact; rewriting backslashes corrupts a valid filename');
+  });
+
+  test('the scope calibration stays inside a declared threshold band', () => {
+    assert.match(PLAN_CHECKER, /tasks: 4\r?\n\s+files: 8/,
+      'the warning is triggered by 4 tasks; its file count should remain in the 5-8 target band');
+  });
+
+  test('quick mode names locked decisions only when CONTEXT.md exists', () => {
+    assert.match(QUICK_LOOP, /\$\{DISCUSS_MODE \? 'locked decisions in ' \+ quick_id \+ '-CONTEXT\.md, ' : ''\}capability guidance/);
+  });
+
+  test('the command docs include open conflicts in the exit condition', () => {
+    const section = COMMANDS.slice(COMMANDS.indexOf('### `/gsd-plan-review-convergence`'));
+    assert.match(flat(section), /open `## Plan-Revision Conflicts` entries.*must also be zero/i);
+  });
+
 });
