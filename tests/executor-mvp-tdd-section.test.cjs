@@ -2088,6 +2088,34 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     assert.ok(r6.stdout.includes('# S6'),
       'the RED half of the gate must still pass and still emit its trailer: S6 must fail on ' +
       'GREEN alone, so a regression in RED selection cannot hide behind this scenario');
+
+    // ── S7, the RED commit is a Go test file (LANG-01) ───────────────────
+    // Same derivation as `evidence` above — the shipped fixture, never
+    // retyped — with the one field the gate is supposed to read pointed at
+    // a Go test. Go names tests `*_test.go`, with no `tests/` directory and
+    // no `.test.` infix, so a path-shaped rule cannot see this file while
+    // the evidence names it outright.
+    const evidenceFor = (mark, file) => {
+      const parsed = JSON.parse(shipped.slice(shipped.indexOf('{')));
+      parsed.command = `${parsed.command} # ${mark}`;
+      parsed.target_test = file;
+      parsed.location.declared.file = file;
+      parsed.location.observed.file = file;
+      return `red-evidence: ${JSON.stringify(parsed)}`;
+    };
+
+    const s7 = newRepo();
+    commit(s7, 'pricing_test.go', 'test(08-02): add failing test for discount',
+      evidenceFor('S7', 'pricing_test.go'));
+    commit(s7, 'pricing.go', 'feat(08-02): implement discount');
+    const r7 = runGate(s7);
+    assert.strictEqual(r7.exitCode, 0,
+      'LANG-01: the RED commit touches exactly the file its own evidence names, so the gate ' +
+      'must authorize it. A rule that instead asks whether the path looks like a JS or pytest ' +
+      'test rejects every Go, Rust and R project outright — the language-specific class of ' +
+      'rule this phase exists to remove. See #3770 / CR-01.');
+    assert.ok(!r7.stdout.includes('touches no test file'),
+      'CR-01: the gate must not report a compliant Go RED commit as touching no test file');
   });
 
   // The MVP+TDD gate snippet is pure text extraction — hoisted here so both
