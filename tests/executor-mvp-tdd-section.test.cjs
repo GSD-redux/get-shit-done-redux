@@ -1129,6 +1129,25 @@ ${Array(redContractCount).fill(block).join('\n')}
       }),
     },
     {
+      id: 'parametrized-variant-subject',
+      outcome_row: null,
+      verdict: 'red_commit_not_failing',
+      why: "isolates `id_matches` under D-2's exact-equality requirement. The plan names "
+        + '`test_discount_reduces_total`; the run failed a PARAMETRIZED VARIANT of it, '
+        + '`test_discount_reduces_total[case_3]` — a behavior the plan never named. The '
+        + 'prefix-plus-bracket branch this plan deletes would have authorized this as '
+        + 'evidence for the named behavior; exact equality does not. See #3770 (D-2).',
+      vector: vector({
+        trailer: {
+          actual: {
+            phase: 'call',
+            class_or_mode: 'AssertionError',
+            subject: 'tests/test_pricing.py::test_discount_reduces_total[case_3]',
+          },
+        },
+      }),
+    },
+    {
       id: 'outside-in-wrong-file',
       outcome_row: null,
       verdict: 'red_commit_not_failing',
