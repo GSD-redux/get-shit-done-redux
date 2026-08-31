@@ -504,9 +504,6 @@ else
     # Fail closed: unreadable evidence is never authorization.
     echo "the RED commit $RED_SHA carries evidence naming no declared file"
     STATUS=1
-  elif ! git show --name-only --format= "$RED_SHA" | grep -Fxq -- "$DECLARED"; then
-    echo "the RED commit $RED_SHA touches no test file its evidence names ($DECLARED)"
-    STATUS=1
   fi
 fi
 # Check for GREEN gate commit — GATED: `### Gate Definitions` marks GREEN
@@ -524,7 +521,7 @@ exit "$STATUS"
 
 Every search matches the commit **subject**, never the message body: a commit that quotes a `test(...)` subject in its body would otherwise match, and since git logs newest-first the decoy would be selected over the real RED commit.
 
-**This block is illustrative, and its membership check is deliberately stricter than the shipped gate's.** The `grep -Fxq` above demands the changed-file list contain the declared path as an exact whole line. The authoritative check is `task.red-evidence-verdict` (`changedFilesInclude`, `src/task-command-router.cts`), which the task-scoped gate in `execute-phase.md` calls and which additionally accepts a `/`-anchored path-segment match in either direction — so a declaration may be a bare basename, or carry an environment prefix git's output lacks. Read this block for the shape of the gate, never as the specification of what membership admits: a bare-basename declaration matches that basename at any depth here, which the exact-match example above would reject. Where the two disagree, the module and its frozen `MEMBERSHIP_ROWS` table win.
+**This block is illustrative, and it does not check membership at all.** Whether the RED commit actually touches the file its evidence declares is decided in exactly one place: `task.red-evidence-verdict` (`changedFilesInclude`, `src/task-command-router.cts`), which the task-scoped gate in `execute-phase.md` calls. Read this block for the shape of the gate, never as a second specification of what membership admits.
 
 The two RED failures are distinct. No commit whose subject matches `test({phase}-{plan}):` is `missing_red_commit` — there is nothing to read. A matching commit whose `red-evidence:` trailer value comes back empty is a missing RED gate — the commit exists but was made without evidence. Judging the trailer's contents against the RED Predicate **is** mechanised: the gate passes the trailer to `gsd_run query task.red-evidence-verdict` and proceeds only on verdict `authorize`. Any other verdict — `red_commit_not_failing`, `unexpected_pass` — trips the gate under the verdict's own name. Existence of a subject-matching commit authorizes nothing on its own. The predicate is in **RED Contract** above.
 

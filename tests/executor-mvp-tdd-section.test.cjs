@@ -1960,6 +1960,22 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     assert.ok(snippet.includes('missing_red_commit'),
       'no commit whose subject matches is a different outcome from a commit that exists ' +
       'without the trailer; the snippet must report it as `missing_red_commit`. See #3770.');
+
+    // The membership check belongs to `task.red-evidence-verdict` and to
+    // nowhere else. This block carried a second implementation of it
+    // (`git show --name-only | grep -Fxq -- "$DECLARED"`), which was strictly
+    // narrower than the shipped one — exact whole-line equality against a rule
+    // that accepts a `/`-anchored path-segment match — and the response to
+    // that divergence was a paragraph explaining it rather than removing it.
+    // A second implementation of a security check is guaranteed to drift, and
+    // this one already had. Deleted in #3770 (PON-01); pinned here so it
+    // cannot come back by copy-paste. See RULESET.GENERATIVE-FIX.
+    assert.ok(!snippet.includes('grep -Fxq'),
+      'the illustrative block must NOT re-implement the changed-file membership check. That ' +
+      'question is decided once, by `task.red-evidence-verdict` (`changedFilesInclude`, ' +
+      'src/task-command-router.cts), which the task-scoped gate in execute-phase.md calls and ' +
+      'which MEMBERSHIP_ROWS freezes. A copy here reads as a specification and diverges from ' +
+      'the real rule. See #3770 (PON-01).');
   });
 
   test('the shipped gate snippet runs clean on a compliant plan and reads the right commit', (t) => {
@@ -2068,21 +2084,14 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
     assert.ok(!r2.stdout.includes('add another failing test'),
       'the gate must emit the trailer, never a commit subject');
 
-    // ── S3, RED commit touches no test file (CR-02, F1) ──────────────────
-    const s3 = newRepo();
-    commit(s3, 'src/pricing.py', 'test(08-02): add failing test for discount', evidence('S3'));
-    const r3 = runGate(s3);
-    assert.notStrictEqual(r3.exitCode, 0,
-      'F1 / T-02-05-13: a RED commit that touches NO test file is a violation, and the ' +
-      'snippet must exit NON-ZERO on it. The previous draft asserted exitCode === 0 here; ' +
-      'that assertion IS the finding, not the fix. The threat model\'s own words are that ' +
-      'the exit status and the commit selection ARE the gate, so a violation that prints and ' +
-      'returns 0 makes the only shipped gate a diagnostic. Do not relax this without ' +
-      'arguing with that reason. See #3770.');
-    assert.match(r3.stdout, /touches no test file/,
-      'CR-02: the gate must REPORT that the RED commit touches no test file. The ' +
-      'compensating condition previously lived only in execute-mvp-tdd.md, which loads only ' +
-      'when MVP_MODE=true — not this project\'s live path (upstream #4011). See #3770.');
+    // ── S3 removed with the block's membership check (#3770 PON-01) ──────
+    // It committed a source-only file and asserted the fence REPORTED
+    // "touches no test file". That report came from a second implementation
+    // of the membership check, which this block no longer carries: whether the
+    // RED commit touches the file its evidence declares is decided once, by
+    // `task.red-evidence-verdict`, and is covered by G8/G9 and MEMBERSHIP_ROWS
+    // below. Without that branch S3's fixture trips for exactly S6's reason
+    // (no GREEN commit), so it proved nothing S6 does not.
 
     // ── S4, matching commits with no evidence (CR-04, F1) ────────────────
     const s4 = newRepo();
@@ -2152,8 +2161,6 @@ describe("RED contract — tdd.md's own gate sections defer to it (#3770)", () =
       'must authorize it. A rule that instead asks whether the path looks like a JS or pytest ' +
       'test rejects every Go, Rust and R project outright — the language-specific class of ' +
       'rule this phase exists to remove. See #3770 / CR-01.');
-    assert.ok(!r7.stdout.includes('touches no test file'),
-      'CR-01: the gate must not report a compliant Go RED commit as touching no test file');
   });
 
   // The MVP+TDD gate snippet is pure text extraction — hoisted here so both
