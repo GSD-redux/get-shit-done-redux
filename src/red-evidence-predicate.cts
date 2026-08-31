@@ -180,6 +180,25 @@ function evaluateRedEvidence(taskContent: string, trailerText: string): RedEvide
   }
   const plan = extractPlan(block);
 
+  // `extractTag` returns '' for an absent tag, so an empty <red_contract>
+  // yields a plan of empty strings — and every equality conjunct below then
+  // compares '' === '' and holds. Guard the four compared fields here, before
+  // any conjunct runs: a contract that declares nothing authorizes nothing.
+  // (`implementation_target` is deliberately not checked — it participates in
+  // no conjunct, so it cannot manufacture an authorize.)
+  if (![
+    plan.target_test,
+    plan.expected_failure.phase,
+    plan.expected_failure.class_or_mode,
+    plan.expected_failure.subject,
+  ].every(isNonEmptyString)) {
+    return {
+      verdict: 'red_commit_not_failing',
+      reason: 'the <red_contract> must declare a non-empty <target_test> and an '
+        + '<expected_failure> carrying non-empty <phase>, <class_or_mode> and <subject>',
+    };
+  }
+
   const jsonText = extractTrailerJson(trailerText);
   const parsed = safeJsonParse(jsonText, { label: 'red-evidence trailer' });
   if (!parsed.ok) {
