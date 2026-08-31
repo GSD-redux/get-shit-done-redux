@@ -315,10 +315,13 @@ function routeRedEvidenceVerdict({ args, cwd, raw }: RouteTaskCommandOptions): v
  * makes it a path-segment rule rather than a string one, so
  * `tests/test_shipping.py` cannot match `tests/test_pricing.py`.
  *
- * Residual, deliberately accepted: a declaration that is a BARE basename
- * still matches that basename at any depth, because a bare basename does
- * not identify a directory. A declaration carrying directory segments no
- * longer does — which is the decoy WR-01 reported.
+ * Residual, deliberately accepted, and narrower than it first shipped: a
+ * DECLARATION that is a bare basename still matches that basename at any
+ * depth, because a bare basename does not identify a directory, and
+ * `MEMBERSHIP_ROWS` freezes that form as authorizing. Nothing else is
+ * accepted — a declaration carrying directory segments is matched on those
+ * segments, whether the decoy sits in another directory (WR-01) or at the
+ * repo root as a bare name (gsd-core-ifc).
  *
  * This deliberately does NOT reuse `locationsAgree`'s `path.win32.basename`
  * reduction, which it previously borrowed. The two comparisons have
@@ -350,7 +353,12 @@ function changedFilesInclude(changedFilesText: string, declaredFile: string): bo
     .map(norm)
     .some((changed) => changed === declaredPath
       || changed.endsWith(`/${declaredPath}`)
-      || declaredPath.endsWith(`/${changed}`));
+      // The reverse direction is gated on `changed` carrying a directory
+      // segment. Without that guard a bare-basename changed file — any
+      // unrelated file living at the repo root — forges membership for a
+      // directory-qualified declaration, which is the WR-01 decoy mirrored
+      // onto the other side (gsd-core-ifc).
+      || (changed.includes('/') && declaredPath.endsWith(`/${changed}`)));
 }
 
 function routeTaskCommand({ args, cwd, raw }: RouteTaskCommandOptions): void {
