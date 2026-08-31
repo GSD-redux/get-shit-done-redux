@@ -1,7 +1,7 @@
 {
   "id": "gemini",
   "role": "reviewer",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "title": "Gemini CLI",
   "description": "Google Gemini CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Spawned as `gemini -p - -m <model>` with the plan piped on stdin.",
   "tier": "full",
@@ -32,6 +32,7 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 900000,
+    "timeoutConfigKey": "review.timeouts.gemini",
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Gemini",
     "evidenceClass": "source-grounded",
@@ -50,6 +51,11 @@
       "type": "number",
       "default": -1,
       "description": "Prompt-token budget for the Gemini reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    },
+    "review.timeouts.gemini": {
+      "type": "number",
+      "default": -1,
+      "description": "Outer wall-clock timeout override (seconds) for the Gemini reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
     }
   }
 }

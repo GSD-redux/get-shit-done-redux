@@ -220,6 +220,13 @@ Provide structured feedback on plan quality, completeness, and risks.
 
 Findings citing `file:line` evidence are weighted far more heavily than impressionistic ones; a review that only restates the plan's own claims has low value.
 
+**Plan coverage is mandatory (#3301).** The exact list of plan ids and the total plan count for
+this review are given in the "## Plan Coverage Manifest" section below. Give **every** listed id
+its own `##`-level section headed with that id **verbatim** (e.g. `## 12.6-01`) before writing any
+cross-plan comparison, an overall risk assessment, or a consensus-style summary. A review that
+stops before every id has its own section is an incomplete review, not a summary — if you must
+stop early, say so explicitly and name which ids you did not reach.
+
 Analyze each plan and provide:
 
 1. **Summary** — One-paragraph assessment
@@ -262,6 +269,42 @@ for PLAN_FILE in "${PHASE_DIR}"/*-PLAN.md; do
   PLAN_INDEX=$((PLAN_INDEX + 1))
 done
 
+# #3301: plan coverage manifest — tell reviewers exactly which plan ids exist and
+# how many there are, so a review that silently covers 6 of 7 plans is no longer
+# indistinguishable from one that covers all 7. The id is the plan file's own
+# basename with the `-PLAN.md` suffix stripped (e.g. `12.6-01-PLAN.md` ->
+# `12.6-01`) — NOT the `plan:` frontmatter key, which holds only the bare
+# in-phase sequence number ("01") and can never reconstruct the phase-qualified
+# id reviewers need to cite. The filename is guaranteed present for every copied
+# plan, so no plan is ever dropped from the manifest for lacking a key.
+# A plain string accumulator, not an array: zsh and bash disagree on array
+# indexing and this block runs under both (see the nullglob/NULL_GLOB pairing
+# above).
+PLAN_IDS=""
+for PLAN_FILE in "${PHASE_DIR}"/*-PLAN.md; do
+  PLAN_BASENAME=$(basename "$PLAN_FILE")
+  PLAN_IDS="$PLAN_IDS ${PLAN_BASENAME%-PLAN.md}"
+done
+PLAN_IDS="${PLAN_IDS# }"
+PLAN_COUNT=0
+for _ in $PLAN_IDS; do PLAN_COUNT=$((PLAN_COUNT + 1)); done
+
+# Named to avoid BOTH existing RUN_DIR globs: `gsd-review-*.md` (reviewer
+# reports, invoke_reviewers) and `gsd-review-plan-*.md` (the plan copies just
+# above) — a manifest matching either would be picked up as a report or as a
+# plan to review.
+{
+  echo ""
+  echo "## Plan Coverage Manifest"
+  echo ""
+  echo "Total plans in this review: ${PLAN_COUNT}"
+  echo ""
+  echo "Plan ids (give each one its own \`##\`-level section, headed verbatim):"
+  for PLAN_ID in $PLAN_IDS; do
+    echo "- ${PLAN_ID}"
+  done
+} > "${RUN_DIR}/.plans-manifest.md"
+
 # Optional section files (only if content was included in the combined prompt)
 if [ -f ".planning/PROJECT.md" ]; then
   cp .planning/PROJECT.md "${RUN_DIR}/gsd-review-project.md"
@@ -277,6 +320,15 @@ fi
 if [ -f ".planning/REQUIREMENTS.md" ]; then
   cp .planning/REQUIREMENTS.md "${RUN_DIR}/gsd-review-requirements.md"
 fi
+
+# #3301: append the manifest to BOTH files reviewers actually read — the
+# per-lane budget-trimmed instructions file (descriptor lanes get
+# `--instructions-file`) and the full combined prompt (combined-prompt lanes
+# read the whole file). The `instructions` fragment is in prompt-budget's
+# `minimumFor` floor set and is never trimmed, so this survives per-lane
+# budget trimming intact.
+cat "${RUN_DIR}/.plans-manifest.md" >> "${RUN_DIR}/gsd-review-instructions.md"
+cat "${RUN_DIR}/.plans-manifest.md" >> "${RUN_DIR}/gsd-review-prompt.md"
 ```
 
 Note: `INSTRUCTIONS_BLOCK_FILE`, `ROADMAP_SECTION_FILE`, and `PHASE_DIR` come from prompt assembly; `RUN_DIR` is the run-scoped dir from `gather_context` (#2358) re-assigned from `{run_dir}` above. Copy the temp files written during prompt assembly to these section paths (or write each section here if the prompt was built inline).
@@ -536,6 +588,79 @@ fi
   their `.err`/stub files preserved under `.review-diagnostics/` by `present_results`) and stop.
 - **Otherwise** (at least one lane produced a result — R1, unchanged): proceed exactly as below.
 
+**#3301: plan coverage check.** For each dispatched lane that produced a *real* review (not a
+stub, not budget-skipped, not empty), check whether its output mentions every plan id from
+`.plans-manifest.md` — the same manifest `build_prompt` gave the reviewer, so the expected-id list
+here can never diverge from what the reviewer was actually told. This is diagnostic only: it never
+blocks the workflow, never fails a lane, and never changes the `TOTAL_LANE_FAILURE`/
+`ALL_LANES_SKIPPED` gate above.
+
+CodeRabbit is excluded — it is a diff-only lane that never receives the source-grounding prompt
+(and therefore never receives the manifest or the per-id section instruction either), the same fact
+that already excludes it from grounded-review weighting in the Consensus Summary below.
+
+The match is intentionally lenient about *where* an id appears (a `##`-headed section is asked for,
+but plain prose mentioning the id still counts as coverage — grading only the letter of the
+formatting instruction would produce false INCOMPLETE verdicts against a reviewer that cited real
+evidence correctly). It is strict about *what* counts as a match: the id is regex-escaped (a
+decimal phase like `12.6` must not let `12X6-01` satisfy `12.6-01` through an unescaped `.`), and a
+`-`/word character immediately before or after the candidate match does not count as a boundary (so
+a threat id like `T-04-07` elsewhere in the review must not register as covering plan `04-07`).
+
+```bash
+RUN_DIR="{run_dir}"
+MANIFEST="$RUN_DIR/.plans-manifest.md"
+
+# Recompute — a shell variable does not survive across separate fenced blocks
+# (each is its own process), so DISPATCH_SLUGS from the gate-check block above
+# cannot be assumed to still be set here. Same recomputation as that block and
+# as invoke_reviewers.
+DISPATCH_SLUGS=""
+for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+  case " $DISPATCH_SLUGS " in
+    *" $SLUG "*) continue ;;
+  esac
+  DISPATCH_SLUGS="$DISPATCH_SLUGS $SLUG"
+done
+
+for SLUG in $DISPATCH_SLUGS; do
+  [ "$SLUG" = "coderabbit" ] && continue
+  REVIEW_FILE="$RUN_DIR/gsd-review-$SLUG.md"
+  [ -f "$REVIEW_FILE" ] || continue
+  [ -s "$REVIEW_FILE" ] || continue
+  grep -q "review skipped: prompt budget" "$REVIEW_FILE" 2>/dev/null && continue
+  grep -q "failed or returned empty output" "$REVIEW_FILE" 2>/dev/null && continue
+
+  node -e '
+    const fs = require("fs");
+    const { escapeRegex } = require("./gsd-core/bin/lib/pattern.cjs");
+    const manifest = fs.readFileSync(process.argv[1], "utf8");
+    const review = fs.readFileSync(process.argv[2], "utf8");
+    const ids = manifest.split("\n")
+      .filter((l) => l.startsWith("- "))
+      .map((l) => l.slice(2).trim())
+      .filter(Boolean);
+    const missing = ids.filter((id) => {
+      const re = new RegExp("(?<![\\w-])" + escapeRegex(id) + "(?![\\w-])");
+      return !re.test(review);
+    });
+    process.stdout.write(JSON.stringify({ complete: missing.length === 0, missing_ids: missing, total: ids.length }));
+  ' "$MANIFEST" "$REVIEW_FILE" > "$RUN_DIR/.plan-coverage-$SLUG.json"
+done
+```
+
+Each `${RUN_DIR}/.plan-coverage-<slug>.json` carries `{complete, missing_ids, total}` for one
+graded lane. Collect these into a `plan_coverage` frontmatter block — **only** when at least one
+graded lane has `complete: false` (mirrors the existing `trimmed_reviewers` precedent: present
+only when there is something to report):
+
+```yaml
+plan_coverage:        # only present if at least one graded lane is incomplete
+  <slug>:
+    total: 7
+    missing: ["12.6-07"]
+```
+
 Combine all review responses into `{phase_dir}/{padded_phase}-REVIEWS.md`:
 
 After all reviewers complete, collect trim metadata files written during the run. For each reviewer that was trimmed (i.e. a `.metadata.json` file exists and `hardFailed` or `omitted` is non-empty, or `projectMdShrunk` is true, or `planTruncationPct > 0`), include a `trimmed_reviewers` block in the frontmatter. Omit the key entirely if no reviewer was trimmed.
@@ -580,6 +705,10 @@ trimmed_reviewers:        # only present if at least one reviewer was trimmed
     plan_truncation_pct: 22
     hard_failed: false
     note_injected: true
+plan_coverage:            # only present if at least one graded lane is incomplete (#3301)
+  ollama:
+    total: 7
+    missing: ["12.6-07"]
 ---
 
 # Cross-AI Plan Review — Phase {N}

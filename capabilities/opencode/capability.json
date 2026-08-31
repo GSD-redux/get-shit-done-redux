@@ -1,7 +1,7 @@
 {
   "id": "opencode",
   "role": "runtime",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "title": "OpenCode",
   "description": "OpenCode — XDG-based config dir; flat commands/ + skills artifact layout; settings-json config format; no lifecycle hook registration; tier-2 support.",
   "tier": "core",
@@ -158,6 +158,7 @@
       "effortChannel": "argv"
     },
     "timeoutFloorMs": 660000,
+    "timeoutConfigKey": "review.timeouts.opencode",
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "OpenCode",
     "evidenceClass": "source-grounded",
@@ -176,6 +177,11 @@
       "type": "number",
       "default": -1,
       "description": "Prompt-token budget for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    },
+    "review.timeouts.opencode": {
+      "type": "number",
+      "default": -1,
+      "description": "Outer wall-clock timeout override (seconds) for the OpenCode reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
     }
   }
 }

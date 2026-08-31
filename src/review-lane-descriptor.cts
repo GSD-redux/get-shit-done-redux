@@ -44,6 +44,9 @@
  *   4. `flags: string[]` — Antigravity is selected by BOTH `--antigravity` and
  *      `--agy`, which a single-valued field cannot express. This also flattens
  *      D8's uniqueness invariant across every lane's flags.
+ *   5. `NATIVE_TIMEOUT` — a lane whose CLI takes its own native inner timeout flag (today only
+ *      antigravity's `--print-timeout`) declares where the resolved value goes; `resolveLanePlan`
+ *      computes what it is from the same resolved outer `timeoutMs` (#3274).
  *
  * Phase 2 (#2795) implements the manifest validator against the amended
  * vocabulary, which is the point of amending rather than leaving it to be
@@ -110,7 +113,7 @@ export type LaneProbe =
  * and vanishes when it has nothing to contribute (no model configured, no effort channel, prompt on
  * stdin), which is what lets one template serve the configured and unconfigured cases.
  *
- * This is a closed four-member vocabulary with no expressions, no nesting and no conditionals — a
+ * This is a closed five-member vocabulary with no expressions, no nesting and no conditionals — a
  * placeholder set, deliberately not a template language. The moment it needs a conditional, the
  * lane wants a `handler` instead (D6).
  */
@@ -123,6 +126,9 @@ export const ARGV_PLACEHOLDER = Object.freeze({
   OUTPUT: '{{output}}',
   /** The argv-borne prompt, or nothing unless `promptChannel` is `argv`/`argv-file-ref`. */
   PROMPT: '{{prompt}}',
+  /** A lane's own CLI-native inner timeout duration, derived from the resolved outer `timeoutMs`
+   * (never independently configured) — see `resolveLanePlan`'s expansion of this token. */
+  NATIVE_TIMEOUT: '{{nativeTimeout}}',
 } as const);
 
 export interface SpawnInvoke {
@@ -178,6 +184,23 @@ interface ReviewerLaneCommon {
   probe: LaneProbe;
   /** Outer wall-clock bound. An inner tool-native timeout lives in the handler (D6). */
   timeoutFloorMs: number;
+  /**
+   * Dotted config key holding this lane's outer timeout override, in SECONDS, or null when the
+   * lane accepts none.
+   *
+   * Added by #3274 in the same spirit as `promptBudgetKey`/`modelConfigKey`: the frozen
+   * `timeoutFloorMs` table has no reachable override, and a review duration is a property of the
+   * user's repository and model, not of the lane — a cap right for a three-plan phase is wrong
+   * for a fifteen-plan one. Resolved at invocation time (`resolveLanePlan`); an unset key, or a
+   * config value that is not a positive finite number, falls back to `timeoutFloorMs` unchanged.
+   * For a lane whose `args` template ALSO carries a native tool-side timeout (antigravity's
+   * `--print-timeout`, via the `{{nativeTimeout}}` ARGV_PLACEHOLDER), the resolved value feeds both
+   * levels — see `resolveLanePlan`'s expansion of that token. Three lanes — `qwen`, `cursor`,
+   * `coderabbit` — accept neither a model flag nor a host and own no `review.timeouts.<slug>` key
+   * either, matching the same narrow key-ownership invariant `modelConfigKey` already follows for
+   * them (#3691 narrows #2797).
+   */
+  timeoutConfigKey: string | null;
   emptyOutput: EmptyOutputPolicy;
   /** The `## <reviewsSection> Review` heading in write_reviews. Unique (D8). */
   reviewsSection: string;
@@ -249,6 +272,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 900_000,
+    timeoutConfigKey: 'review.timeouts.gemini',
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Gemini',
     evidenceClass: 'source-grounded',
@@ -281,6 +305,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       env: { CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
     },
     timeoutFloorMs: 1_200_000,
+    timeoutConfigKey: 'review.timeouts.claude',
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Claude',
     evidenceClass: 'source-grounded',
@@ -309,6 +334,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'argv',
     },
     timeoutFloorMs: 1_200_000,
+    timeoutConfigKey: 'review.timeouts.codex',
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Codex',
     evidenceClass: 'source-grounded',
@@ -334,6 +360,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 360_000,
+    timeoutConfigKey: null,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'CodeRabbit',
     evidenceClass: 'diff-only',
@@ -359,6 +386,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'argv',
     },
     timeoutFloorMs: 660_000,
+    timeoutConfigKey: 'review.timeouts.opencode',
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'OpenCode',
     evidenceClass: 'source-grounded',
@@ -384,6 +412,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 900_000,
+    timeoutConfigKey: null,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Qwen',
     evidenceClass: 'source-grounded',
@@ -409,6 +438,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 900_000,
+    timeoutConfigKey: null,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Cursor',
     evidenceClass: 'source-grounded',
@@ -428,13 +458,19 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'agy' },
     invoke: {
       binary: 'agy',
-      args: ['--print-timeout', '540s', '{{model}}', '-p', '{{prompt}}'],
+      // `{{nativeTimeout}}` is the fifth ARGV_PLACEHOLDER member (#3274) — `resolveLanePlan`
+      // (review-lane-invocation.cts) expands it to a value DERIVED from this same lane's resolved
+      // outer `timeoutMs`, so the native `--print-timeout` and the outer wall-clock cap can never
+      // drift apart. No other shipped lane's `args` template contains this token, so the expansion
+      // is inert everywhere else.
+      args: ['--print-timeout', '{{nativeTimeout}}', '{{model}}', '-p', '{{prompt}}'],
       promptChannel: 'argv-file-ref',
       outputChannel: 'stdout',
       modelArg: '--model',
       effortChannel: 'none',
     },
     timeoutFloorMs: 600_000,
+    timeoutConfigKey: 'review.timeouts.antigravity',
     emptyOutput: 'handler-owned',
     reviewsSection: 'Antigravity',
     evidenceClass: 'source-grounded',
@@ -465,6 +501,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 120_000,
+    timeoutConfigKey: 'review.timeouts.ollama',
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Ollama',
     evidenceClass: 'source-grounded',
@@ -494,6 +531,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 120_000,
+    timeoutConfigKey: 'review.timeouts.lm_studio',
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'LM Studio',
     evidenceClass: 'source-grounded',
@@ -521,6 +559,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 120_000,
+    timeoutConfigKey: 'review.timeouts.llama_cpp',
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'llama.cpp',
     evidenceClass: 'source-grounded',
@@ -566,6 +605,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       effortChannel: 'none',
     },
     timeoutFloorMs: 900_000,
+    timeoutConfigKey: 'review.timeouts.kimi-code',
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Kimi Code',
     evidenceClass: 'source-grounded',

@@ -1,7 +1,7 @@
 {
   "id": "cursor",
   "role": "runtime",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "title": "Cursor",
   "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
   "tier": "core",
@@ -141,6 +141,7 @@
       "effortChannel": "none"
     },
     "timeoutFloorMs": 900000,
+    "timeoutConfigKey": null,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Cursor",
     "evidenceClass": "source-grounded",

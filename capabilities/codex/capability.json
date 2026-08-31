@@ -1,7 +1,7 @@
 {
   "id": "codex",
   "role": "runtime",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "title": "OpenAI Codex CLI",
   "description": "OpenAI Codex CLI — shell-var command style; per-agent sandbox tiers; config.toml + hooks.json hook surface; tier-1 support.",
   "tier": "core",
@@ -139,6 +139,7 @@
       "effortChannel": "argv"
     },
     "timeoutFloorMs": 1200000,
+    "timeoutConfigKey": "review.timeouts.codex",
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Codex",
     "evidenceClass": "source-grounded",
@@ -157,6 +158,11 @@
       "type": "number",
       "default": -1,
       "description": "Prompt-token budget for the Codex reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    },
+    "review.timeouts.codex": {
+      "type": "number",
+      "default": -1,
+      "description": "Outer wall-clock timeout override (seconds) for the Codex reviewer lane. Unset is -1, a sentinel: 0 or a negative number is also treated as unset (a timeout has no legitimate zero/negative value), so no second sentinel is needed. Falls back to the lane's built-in timeoutFloorMs when unset."
     }
   }
 }
