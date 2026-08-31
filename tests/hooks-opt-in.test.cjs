@@ -834,6 +834,175 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
       'quotes in a chained-after command must not refuse the matched heredoc');
   });
 
+  test('the two reported chained-before shapes are never reached by any guard (round-7 pin)', () => {
+    // Round 7 reported that the FIRST-MESSAGE GUARD's `[;&|]` prefix scan
+    // blocks `git add -A && git commit -m <heredoc>` and
+    // `cd dir && git commit -m <heredoc>`. It does not, and cannot: the
+    // CLASSIFIER GATE runs first and neither shape reaches the guards at all.
+    // `isGitSubcommand` token-walks from the START of the command — `git`→`add`
+    // stops on a non-commit subcommand, and a leading `cd` is not git — so the
+    // hook exits 0 before a single guard is evaluated.
+    //
+    // Both rounds 6 and 7 produced this finding by extracting the guard logic
+    // into a standalone script and feeding it command strings directly, which
+    // bypasses the gate. These rows exist so the same measurement cannot
+    // produce a third phantom: they run the REAL hook, end to end.
+    //
+    // The NON-CONFORMING rows are what make the pin load-bearing. A row
+    // asserting only that a conforming chained message exits 0 is satisfied
+    // both by "resolved correctly" and by "never validated" — the two
+    // hypotheses under dispute. A message that the bare form blocks, passing
+    // in the chained form, can only mean the hook never validated it.
+    const conforming = `"$(cat <<'EOF'
+fix: a perfectly ordinary conforming subject
+EOF
+)"`;
+    const NONCONFORMING = 'nope not conventional';
+
+    // Control FIRST: the hook demonstrably blocks this message when it does
+    // classify the command. Without this row the two below prove nothing,
+    // because a hook that blocks nothing at all also "allows" them.
+    const bare = runHookCmd(`git commit -m "${NONCONFORMING}"`);
+    assert.strictEqual(bare.status, 2,
+      'control: the bare form must BLOCK a non-conforming subject — otherwise the chained rows '
+      + 'below cannot distinguish "not validated" from "validated and allowed"');
+    assert.strictEqual(JSON.parse(bare.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+
+    for (const [label, prefix] of [
+      ['stage-then-commit', 'git add -A && '],
+      ['cd-then-commit', 'cd /repo && '],
+    ]) {
+      // The heredoc shape round 7 says is blocked. It is not.
+      assert.strictEqual(runHookCmd(`${prefix}git commit -m ${conforming}`).status, 0,
+        `${label}: a conforming chained heredoc commit is not blocked`);
+      // ...and the same shape carrying a message the control just proved is
+      // blockable ALSO exits 0, which is only possible if no validation ran.
+      assert.strictEqual(runHookCmd(`${prefix}git commit -m "${NONCONFORMING}"`).status, 0,
+        `${label}: a subject the bare form BLOCKS exits 0 here — proof the classifier gate `
+        + 'returns before the guards, so the guards cannot be over-blocking this shape');
+    }
+
+    // COUNTEREXAMPLE, so this row is not misread as a blanket claim about every
+    // chained-before command (independent review of #3816, round 7). Assignment
+    // detection is prefix-anchored and the tokenizer does not split operators,
+    // so `FOO=bar;` is read as an assignment prefix and the classifier DOES
+    // reach `git commit` — which the separator scan then refuses. That makes it
+    // a genuine false positive of exactly the class round 7 describes, reachable
+    // where the two reported shapes are not. Left unfixed deliberately:
+    // narrowing it means changing `isGitSubcommand`, the shared git-commit
+    // detector every gating hook uses, and it fails CLOSED (a conforming commit
+    // is blocked, which is recoverable). Disclosed in the changeset instead.
+    assert.strictEqual(runHookCmd(`FOO=bar; git commit -m ${conforming}`).status, 2,
+      'a leading assignment carrying a separator IS classified and then refused — pinned as a '
+      + 'known fail-closed false positive, not as desired behaviour. If this ever starts passing, '
+      + 'the classifier or tokenizer changed: re-read the chained-before disclosure before '
+      + 'celebrating.');
+  });
+
+  // ─── round 7: six accept-direction bypasses found by independent review ───
+  //
+  // Every row below was measured base-vs-head against the REAL hook, and the
+  // three that turn on which subject git actually records were confirmed
+  // against the RAW COMMIT OBJECT rather than `git log --pretty=%s`, which
+  // strips trailing whitespace and would have hidden two of them:
+  //
+  //   git commit -mWIP -m <conforming heredoc>              -> subject `WIP`
+  //   --cleanup=whitespace -m <72+spaces> --cleanup=verbatim -> 75 bytes, WS kept
+  //   git commit --squash=<c> -m <conforming heredoc>        -> `squash! …`
+  //
+  // In every case the hook resolved and validated the heredoc and ALLOWED the
+  // commit, while git recorded something the rules would have refused. All six
+  // fixes widen refusal, never narrow it — the direction this file already
+  // documents as the recoverable one.
+
+  const HD_OK = `"$(cat <<'EOF'\nfix: a perfectly ordinary conforming subject\nEOF\n)"`;
+  const S72 = `feat: ${'x'.repeat(66)}`;
+  const HD_LONG_DIRTY = `"$(cat <<'EOF'\n${S72}   \nEOF\n)"`;
+
+  test('the first-message guard recognises attached values and --message abbreviations (round 7)', () => {
+    // The scan required a space or `=` after the option name, so `-mWIP` (git
+    // reads it as `-m WIP`) and `--mes=WIP` (git accepts any unambiguous long
+    // prefix — behaviour this file already models for --cleanup) matched
+    // nothing. git took `WIP` as the subject; the hook validated the later
+    // heredoc and allowed it.
+    assert.strictEqual(S72.length, 72, 'fixture built wrong');
+    for (const [label, cmd] of [
+      ['attached short-option value', `git commit -mWIP -m ${HD_OK}`],
+      ['--message abbreviation', `git commit --mes=WIP -m ${HD_OK}`],
+    ]) {
+      const r = runHookCmd(cmd);
+      assert.strictEqual(r.status, 2,
+        `${label}: git takes the FIRST message as the subject, so the heredoc is not the subject `
+        + 'and must not be resolved and measured as though it were');
+      assert.strictEqual(JSON.parse(r.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+    }
+    // Non-vacuity: the canonical form still resolves. Without this, the rows
+    // above would also pass if resolution had simply been disabled outright.
+    assert.strictEqual(runHookCmd(`git commit -m ${HD_OK}`).status, 0,
+      'the canonical single -m heredoc must still pass — that is the fix this PR exists for');
+  });
+
+  test('option-name scans remove backslashes, as bash does (round 7)', () => {
+    // Round 6 dequoted the option-name windows and the changeset claimed they
+    // are matched "as bash hands it to git". That was not true: bash also
+    // removes syntactic backslashes, so `-\\m` IS `-m` and `--clean\\up=` IS
+    // `--cleanup=`, and both matched no literal.
+    const r1 = runHookCmd(`git commit -\\m WIP -m ${HD_OK}`);
+    assert.strictEqual(r1.status, 2,
+      'a backslash spliced into -m does not stop it claiming the first message');
+    const r2 = runHookCmd(`git commit --allow-empty -m ${HD_LONG_DIRTY} --clean\\up=verbatim`);
+    assert.strictEqual(r2.status, 2,
+      'a backslash spliced into --cleanup does not change the mode git applies, and under verbatim '
+      + 'the trailing spaces count toward the 72-character limit');
+    assert.strictEqual(runHookCmd(`git commit -m ${HD_OK}`).status, 0, 'non-vacuity: canonical form still resolves');
+  });
+
+  test('a newline is a command separator for the first-message guard (round 7)', () => {
+    // The separator scan covered `;`, `&` and `|` but not a literal newline, so
+    // a LATER command's heredoc-shaped -m was taken for this commit's message.
+    // The classifier recognises the leading `git commit`, and the capture reads
+    // across the newline into echo's argument — a conforming string with no
+    // relationship to the commit was validated and the commit allowed.
+    const r = runHookCmd(`git commit --amend --no-edit\necho -m ${HD_OK}`);
+    assert.strictEqual(r.status, 2,
+      "a later command's -m is not this commit's message; a newline separates commands exactly as "
+      + '`;` does');
+    assert.strictEqual(JSON.parse(r.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+  });
+
+  test('more than one cleanup directive is unresolvable — git applies the LAST (round 7)', () => {
+    // A bash regex yields ONE BASH_REMATCH, so only the FIRST directive was
+    // inspected while git applies the last. Measured: mode read as whitespace,
+    // resolution stayed on, and a 72-character subject plus trailing spaces was
+    // accepted while git recorded 75 bytes with the whitespace preserved.
+    // Which directive is last needs an argv order a substring scan does not
+    // have, so multiplicity itself refuses.
+    const r = runHookCmd(`git commit --allow-empty --cleanup=whitespace -m ${HD_LONG_DIRTY} --cleanup=verbatim`);
+    assert.strictEqual(r.status, 2,
+      'a leading whitespace directive must not vouch for a trailing verbatim one');
+
+    // Non-vacuity in BOTH directions: a single whitespace directive still
+    // resolves, and a single non-whitespace one still refuses. Without these,
+    // the row above passes for a guard that simply refuses every cleanup.
+    assert.strictEqual(runHookCmd(`git commit --cleanup=whitespace -m ${HD_OK}`).status, 0,
+      'one explicit whitespace directive is the documented default and must still resolve');
+    assert.strictEqual(runHookCmd(`git commit --allow-empty --cleanup=verbatim -m ${HD_LONG_DIRTY}`).status, 2,
+      'one verbatim directive must still refuse — unchanged behaviour');
+  });
+
+  test('a git-GENERATED subject is never measured against the supplied message (round 7)', () => {
+    // With --squash/--fixup git composes the subject itself, so the supplied
+    // message is not the subject at all. Measured recording
+    // `squash! base: something` while a conforming heredoc sailed through.
+    for (const [label, opt] of [['--squash', '--squash=HEAD'], ['--fixup', '--fixup=HEAD']]) {
+      const r = runHookCmd(`git commit ${opt} -m ${HD_OK}`);
+      assert.strictEqual(r.status, 2,
+        `${label}: git composes the subject, so there is nothing in the -m text worth measuring`);
+      assert.strictEqual(JSON.parse(r.stdout).code, 'CONVENTIONAL_COMMITS_VIOLATION');
+    }
+    assert.strictEqual(runHookCmd(`git commit -m ${HD_OK}`).status, 0, 'non-vacuity: canonical form still resolves');
+  });
+
   test('validate-commit does not trust a relative path ending in cat (round-4 Codex MAJOR)', () => {
     // Recognition accepted any path ending in `/cat`, so a planted `./cat` or
     // `../evil/cat` was trusted to echo its stdin. With such an executable

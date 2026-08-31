@@ -194,6 +194,16 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # message span itself is excluded from both windows either way.
       MSG_PREFIX_DEQ="${MSG_PREFIX//[\"\']/}"
       MSG_SUFFIX_DEQ="${MSG_SUFFIX//[\"\']/}"
+      # BACKSLASH-SPLICED SPELLINGS (independent review of #3816, round 7).
+      # Quote removal alone was not "the command as bash hands it to git": bash
+      # also removes syntactic backslashes, so `-\m WIP` IS `-m WIP` and
+      # `--clean\up=verbatim` IS `--cleanup=verbatim` to git, and both matched
+      # no literal. Measured: `-\m WIP -m <conforming heredoc>` accepted the
+      # heredoc while git recorded `WIP`, and a trailing `--clean\up=verbatim`
+      # accepted a 75-byte subject the length gate measured as 72. Stripped in a
+      # second pass so the class is unambiguous.
+      MSG_PREFIX_DEQ="${MSG_PREFIX_DEQ//\\/}"
+      MSG_SUFFIX_DEQ="${MSG_SUFFIX_DEQ//\\/}"
 
       # ADJACENCY GUARD (review of #3816): text glued to the CLOSING quote —
       # `-m "$(cat <<'EOF' ... )"suffix` — is concatenated by bash into the SAME
@@ -233,9 +243,38 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # subject while git recorded `WIP first`. A standalone `-m` is therefore
       # not the only spelling that claims the message; any short-option cluster
       # ending in `m` does.
-      if [[ "$MSG_PREFIX_DEQ" =~ (^|[[:space:]])(-[a-zA-Z]*m|--message)([[:space:]]|=) ]] \
+      # ATTACHED VALUES AND --message ABBREVIATIONS (independent review of
+      # #3816, round 7). The scan required a space or `=` after the option name,
+      # so two spellings git accepts matched nothing: an ATTACHED short-option
+      # value (`-mWIP`, which git reads as `-m WIP`) and a long-option
+      # abbreviation (`--mes=WIP`), the same abbreviation behaviour this file
+      # already models for `--cleanup`. Both were measured accepting a later
+      # conforming heredoc while git recorded `WIP` as the subject — confirmed
+      # against the raw commit object, not `git log --pretty=%s`. The short arm
+      # therefore drops its trailing requirement entirely: a `-` followed by
+      # letters ending in `m` claims the message however it is spelled. Wider
+      # than git's own abbreviation set on purpose — over-matching only refuses
+      # more, which is the recoverable direction.
+      if [[ "$MSG_PREFIX_DEQ" =~ (^|[[:space:]])(-[a-zA-Z]*m|--m[a-z]*([=[:space:]]|$)) ]] \
         || [[ "$MSG_PREFIX" =~ (^|[[:space:]])--([[:space:]]|$) ]] \
-        || [[ "$MSG_PREFIX" =~ [\;\&\|] ]]; then RESOLVE=0; fi
+        || [[ "$MSG_PREFIX" =~ [\;\&\|] ]] \
+        || [[ "$MSG_PREFIX" == *$'\n'* ]]; then RESOLVE=0; fi
+      # NEWLINE IS A COMMAND SEPARATOR TOO (independent review of #3816, round
+      # 7) — the test above. The separator scan covered `;`, `&` and `|` but not
+      # a literal newline, so a LATER command's heredoc-shaped `-m` was taken
+      # for this commit's message:
+      #
+      #     git commit --amend --no-edit
+      #     echo -m "$(cat <<'EOF'
+      #     fix: conforming text unrelated to the commit
+      #     EOF
+      #     )"
+      #
+      # The classifier recognises the leading commit, the capture reaches across
+      # the newline into `echo`'s argument, and a conforming string with no
+      # relationship to the commit was validated and allowed. Tested as a glob
+      # rather than folded into the bracket class, because a literal newline
+      # inside a bash regex bracket expression is not portably expressible.
 
       # CLEANUP-MODE GUARD (Codex review of #3816, round 4 — BLOCKER). The
       # resolver skips leading blank lines and strips trailing whitespace
@@ -279,9 +318,43 @@ if [ "$CLASSIFY_STATUS" = "0" ]; then
       # subject recorded as 72. The class is deliberately wider than git's own
       # abbreviation set: over-matching only refuses more, which is the safe
       # direction, and no other `--cl` option exists for git commit.
-      if [[ "$MSG_PREFIX_DEQ $MSG_SUFFIX_DEQ" =~ (--cl[a-z]*|commit\.cleanup)[=[:space:]]+([^[:space:]]+) ]]; then
+      # LAST DIRECTIVE WINS, AND ONE MATCH CANNOT SEE IT (independent review of
+      # #3816, round 7). A bash regex yields ONE BASH_REMATCH, so only the
+      # FIRST cleanup directive was inspected — and git applies the LAST one.
+      # `--cleanup=whitespace -m <heredoc> --cleanup=verbatim` therefore read as
+      # mode=whitespace, resolution stayed enabled, and a 72-character subject
+      # plus trailing spaces was accepted while git recorded 75 bytes with the
+      # whitespace preserved (confirmed against the raw commit object). Deciding
+      # WHICH directive is last needs an argv order this substring scan does not
+      # have, so multiplicity itself refuses: more than one directive is
+      # unresolvable, not "probably fine". Single-directive behaviour is
+      # unchanged.
+      CLEANUP_WINDOW="$MSG_PREFIX_DEQ $MSG_SUFFIX_DEQ"
+      # `|| true` is load-bearing: this script runs under `set -euo pipefail`,
+      # and grep exits 1 when it matches NOTHING — which is the common case, a
+      # command with no cleanup directive at all. Without it the pipeline's
+      # non-zero status killed the hook outright (exit 1, no verdict) for every
+      # ordinary commit. Caught by running the real hook rather than the scan.
+      CLEANUP_HITS=$( { printf '%s' "$CLEANUP_WINDOW" | grep -oE '(--cl[a-z]*|commit\.cleanup)[=[:space:]]+[^[:space:]]+' || true; } | wc -l | tr -d ' ')
+      if [ "${CLEANUP_HITS:-0}" -gt 1 ]; then
+        RESOLVE=0
+      elif [[ "$CLEANUP_WINDOW" =~ (--cl[a-z]*|commit\.cleanup)[=[:space:]]+([^[:space:]]+) ]]; then
         if [ "${BASH_REMATCH[2]}" != "whitespace" ]; then RESOLVE=0; fi
       fi
+
+      # GIT-GENERATED SUBJECTS (independent review of #3816, round 7). With
+      # `--squash=<commit>` or `--fixup=<commit>` git composes the subject
+      # itself — measured recording `squash! base: something` while a conforming
+      # heredoc supplied via -m sailed through. The supplied message is not the
+      # subject in these modes at all, so there is nothing here worth measuring
+      # and resolution is refused outright. Abbreviations included for the same
+      # reason as --cleanup's. Deliberately NOT extended to the other
+      # message-SOURCE options (-C/--reuse-message, -c/--reedit-message,
+      # -F/--file, -t/--template): `-c` is also a git GLOBAL option that legally
+      # precedes the subcommand, so a scan for it would refuse ordinary
+      # `git -c k=v commit` invocations. Those remain a disclosed gap rather
+      # than a guessed guard.
+      if [[ "$MSG_PREFIX_DEQ $MSG_SUFFIX_DEQ" =~ (^|[[:space:]])--(squash|fixup|sq[a-z]*|fix[a-z]*)[=[:space:]] ]]; then RESOLVE=0; fi
     fi
 
     if [ "$RESOLVE" = 1 ]; then
