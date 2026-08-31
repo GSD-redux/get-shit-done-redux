@@ -2532,3 +2532,146 @@ describe('MVP+TDD gate — the plan\'s two test-verified prohibitions (#3770)', 
       + 'rather than leaving RED_VERDICT empty and falling through. See #3770.');
   });
 });
+
+describe('task red-evidence-verdict — evidence file membership (#3770 D-1 revised)', () => {
+  const REPO_ROOT = path.join(__dirname, '..');
+
+  function shippedTrailerObject() {
+    const line = trailerLine();
+    return JSON.parse(line.slice(line.indexOf('{')));
+  }
+
+  function trailerTextWithDeclaredFile(declaredFile) {
+    const trailer = shippedTrailerObject();
+    trailer.location.declared.file = declaredFile;
+    return `red-evidence: ${JSON.stringify(trailer)}`;
+  }
+
+  function writeTaskFile(cwd) {
+    const p = path.join(cwd, 'task.md');
+    fs.writeFileSync(p, CONTRACT_TASK_LINES.join('\n'));
+    return p;
+  }
+
+  function runVerdict(args, cwd) {
+    return runNode([GSD_TOOLS, 'query', 'task', 'red-evidence-verdict', ...args], { cwd });
+  }
+
+  // Each row mutates only `location.declared.file` on the shipped exemplar,
+  // holding `location.observed.file` (`/srv/build/tests/test_pricing.py`)
+  // fixed so `locationsAgree`'s own basename comparison keeps passing —
+  // every row's basename is `test_pricing.py` — and only the membership
+  // test, not the predicate's own verdict, varies row to row.
+  const MEMBERSHIP_ROWS = [
+    { name: 'the declared file is in the commit',
+      declaredFile: 'tests/test_pricing.py', changedFiles: 'tests/test_pricing.py',
+      expected: 'authorize' },
+    { name: 'a bare-basename declaration',
+      declaredFile: 'test_pricing.py', changedFiles: 'tests/test_pricing.py',
+      expected: 'authorize' },
+    { name: 'a backslash-separated declaration',
+      declaredFile: 'tests\\test_pricing.py', changedFiles: 'tests/test_pricing.py',
+      expected: 'authorize' },
+    { name: 'an absolute declaration',
+      declaredFile: '/srv/build/tests/test_pricing.py', changedFiles: 'tests/test_pricing.py',
+      expected: 'authorize' },
+    { name: 'the commit touches only source',
+      declaredFile: 'tests/test_pricing.py', changedFiles: 'src/pricing.py',
+      expected: 'red_commit_not_failing' },
+    { name: 'the commit touches a DIFFERENT test file',
+      declaredFile: 'tests/test_pricing.py', changedFiles: 'tests/test_shipping.py',
+      expected: 'red_commit_not_failing' },
+    { name: 'an empty changed-file list',
+      declaredFile: 'tests/test_pricing.py', changedFiles: '',
+      expected: 'red_commit_not_failing' },
+    { name: 'blank lines only',
+      declaredFile: 'tests/test_pricing.py', changedFiles: '\n\n',
+      expected: 'red_commit_not_failing' },
+  ];
+
+  test('the verdict verb refuses a commit that does not touch the file its evidence names', (t) => {
+    const scratch = createTempDir('gsd-3770-changed-files-');
+    t.after(() => cleanup(scratch));
+    const taskFile = writeTaskFile(scratch);
+
+    for (const row of MEMBERSHIP_ROWS) {
+      const trailerText = trailerTextWithDeclaredFile(row.declaredFile);
+      const result = runVerdict(
+        ['--task-file', taskFile, '--trailer', trailerText, '--changed-files', row.changedFiles],
+        scratch,
+      );
+      assert.strictEqual(result.exitCode, 0,
+        `${row.name}: the verb must exit 0 and report its verdict on stdout, not crash. `
+        + `stderr: ${result.stderr}`);
+      const parsed = JSON.parse(result.stdout);
+      assert.strictEqual(parsed.verdict, row.expected,
+        `${row.name}: expected \`${row.expected}\`, got \`${parsed.verdict}\` `
+        + `(reason: ${parsed.reason}). declared_file=${JSON.stringify(row.declaredFile)} `
+        + `changed_files=${JSON.stringify(row.changedFiles)}. See #3770 (D-1 revised).`);
+      if (row.expected === 'red_commit_not_failing') {
+        assert.ok(typeof parsed.reason === 'string' && parsed.reason.includes(row.declaredFile),
+          `${row.name}: the refusal reason must name the declared file so a human reading it `
+          + `can act on it. Got: ${parsed.reason}`);
+      }
+    }
+  });
+
+  test('`--changed-files` is required: omitting it with a valid task file exits non-zero '
+    + 'with a usage error', (t) => {
+    const scratch = createTempDir('gsd-3770-changed-files-usage-');
+    t.after(() => cleanup(scratch));
+    const taskFile = writeTaskFile(scratch);
+    const trailerText = trailerTextWithDeclaredFile('tests/test_pricing.py');
+
+    const result = runVerdict(['--task-file', taskFile, '--trailer', trailerText], scratch);
+    assert.notStrictEqual(result.exitCode, 0,
+      'omitting --changed-files must exit non-zero: a gate that cannot ask the membership '
+      + 'question must not fall through and authorize.');
+    assert.match(`${result.stdout}${result.stderr}`, /--changed-files/,
+      'the usage error must name the missing flag.');
+  });
+
+  test('`--changed-files` omitted with a task file OUTSIDE the project still reports '
+    + '"outside project scope" — pinning that the path guards fire before the usage check', () => {
+    const outside = createTempDir('gsd-3770-changed-files-outside-');
+    const target = path.join(outside, 'outside.md');
+    fs.writeFileSync(target, CONTRACT_TASK_LINES.join('\n'));
+
+    try {
+      const result = runVerdict(['--task-file', target, '--trailer', '{}'], REPO_ROOT);
+      assert.match(`${result.stdout}${result.stderr}`, /outside project scope/,
+        'the path guard must still fire and report "outside project scope" even when '
+        + '--changed-files is ALSO missing — the usage check must sit AFTER the path guards, '
+        + 'never before them, so a security guard is never reported as a mere arity error. '
+        + 'See #3770 (T-04.1-04).');
+    } finally {
+      cleanup(outside);
+    }
+  });
+
+  test('a trailer the predicate already rejects keeps its original verdict and reason when '
+    + 'the changed-file list is empty', (t) => {
+    const scratch = createTempDir('gsd-3770-changed-files-reject-');
+    t.after(() => cleanup(scratch));
+    const taskFile = writeTaskFile(scratch);
+    const trailer = shippedTrailerObject();
+    trailer.exit_status = 0; // the predicate already rejects this: `unexpected_pass`.
+    const trailerText = `red-evidence: ${JSON.stringify(trailer)}`;
+
+    const result = runVerdict(
+      ['--task-file', taskFile, '--trailer', trailerText, '--changed-files', ''],
+      scratch,
+    );
+    const parsed = JSON.parse(result.stdout);
+    const { evaluateRedEvidence } = require(RED_EVIDENCE_PREDICATE_PATH);
+    const direct = evaluateRedEvidence(CONTRACT_TASK_LINES.join('\n'), trailerText);
+
+    assert.strictEqual(parsed.verdict, direct.verdict,
+      'a trailer the predicate already rejects must keep the SAME verdict when the '
+      + 'changed-file list is empty: membership is tested only when the evaluator itself '
+      + 'already said `authorize`, never used to override an existing rejection.');
+    assert.strictEqual(parsed.reason, direct.reason,
+      'and the SAME reason: the membership check must not overwrite an already-failing '
+      + "trailer's own reason.");
+  });
+});
