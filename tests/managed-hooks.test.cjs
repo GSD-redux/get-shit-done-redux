@@ -93,13 +93,13 @@ describe('bug #4076: every MANAGED_HOOKS entry carries a gsd-hook-version header
   for (const entry of MANAGED_HOOKS) {
     test(`${entry} has a gsd-hook-version header matching the worker's detection regex`, () => {
       const hookPath = path.join(HOOKS_DIR, entry);
-      // allow-test-rule: structural-regression-guard (#4076)
-      // The header is a source-text invariant the stale-hook detector reads
-      // via string matching (not a module export) — no behavioral/CLI path
-      // exists to observe "does this file have a version header" other than
-      // reading the file, same rationale as the sibling bug #2136 checks
-      // below (folded bug-2136-sh-hook-version.test.cjs) for this exact class
-      // of bug.
+      // Note: `entry` is a loop variable, not a literal path, so
+      // local/no-source-grep's static literal-path detector does not flag
+      // this read — no allow-test-rule exemption needed. The header is
+      // still a source-text invariant the stale-hook detector reads via
+      // string matching (not a module export), so a source read is the
+      // correct way to observe it, same rationale as the sibling bug #2136
+      // checks below (folded bug-2136-sh-hook-version.test.cjs).
       const content = fs.readFileSync(hookPath, 'utf8');
       const match = content.match(VERSION_HEADER_RE);
       assert.ok(
@@ -118,7 +118,6 @@ describe('bug #4076: every MANAGED_HOOKS entry carries a gsd-hook-version header
     });
   }
 });
-
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-2136-sh-hook-version.test.cjs — consolidation epic #1969 (B6 #1975)
